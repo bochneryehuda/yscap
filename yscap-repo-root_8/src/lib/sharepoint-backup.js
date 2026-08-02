@@ -1441,6 +1441,13 @@ async function auditLogVerify(row, action, details) {
   } catch (_) { /* audit is best-effort here — verdicts live on the document row */ }
 }
 
+// A source read error that means the bytes are GENUINELY gone (not a transient
+// blip and not access-denied). Deliberately NARROWER than the classifier's
+// permanent set: it excludes S3 403 (a creds problem, not a missing file) and
+// config errors, so the verify pass never raises the alarming "only surviving
+// copy" verdict on those.
+const SOURCE_MISSING_RE = /ENOENT|no such file|NoSuchKey|s3 (read|stream) failed \(HTTP 404\)/i;
+
 async function verifyRow(row) {
   const { driveId, itemId } = sp.parseRef(row.sharepoint_backup_ref);
 
@@ -1448,7 +1455,30 @@ async function verifyRow(row) {
   try {
     bytes = await providerForRow(row).read(row.storage_ref);
   } catch (e) {
-    // The portal's own copy is unreadable — the mirror may be the ONLY copy
+    // Distinguish a GENUINELY-missing source copy from a merely TRANSIENT read
+    // failure — the same triage the mirror drain (mirrorRowInner) applies. The
+    // alarming "local-missing / the mirror may be the only copy left — do not
+    // delete it" verdict is STICKY (30-day recheck window) and flips the mirror
+    // unhealthy, so it must fire ONLY when we are confident the source is gone:
+    // the storage is healthy AND the error is a missing-object signal (ENOENT /
+    // S3 404 / NoSuchKey). A transient blip — an S3 5xx/timeout (the dual-read
+    // wrapper only falls back to local on 404/403, so a 5xx propagates straight
+    // here), a transiently unmounted local disk, or an S3 403 access-denied
+    // (creds, not a missing file) — must NOT raise that alarm; re-check on the
+    // next rotation instead.
+    let storageOk = true;
+    try {
+      const p = providerForRow(row).probe();
+      storageOk = !!(p && p.ok && !(p.configured && p.persistent === false));
+    } catch (_) { storageOk = false; }
+    const msg = String((e && e.message) || e);
+    if (!(storageOk && SOURCE_MISSING_RE.test(msg))) {
+      // Transient / access / config error — re-check soon, no false "only copy"
+      // alarm and no 30-day stamp (stampVerdict backdates a verify-error).
+      await stampVerdict(row.id, `verify-error: source read failed (${msg.slice(0, 80)})`);
+      return 'verify-error';
+    }
+    // The portal's own copy is genuinely gone — the mirror may be the ONLY copy
     // left. NEVER touch the mirror; a human must see this.
     await stampVerdict(row.id, 'local-missing');
     try {
@@ -1457,7 +1487,7 @@ async function verifyRow(row) {
         taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
         reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
         clickupValue: null,
-        portalValue: `${row.filename || 'document'} — the portal's local bytes are unreadable (${String(e.message).slice(0, 80)}); the SharePoint mirror copy may be the only surviving copy. Do not delete it.`.slice(0, 300),
+        portalValue: `${row.filename || 'document'} — the portal's stored bytes are unreadable (${msg.slice(0, 80)}); the SharePoint mirror copy may be the only surviving copy. Do not delete it.`.slice(0, 300),
         rawValue: JSON.stringify({ docId: row.id, kind: 'local-missing' }).slice(0, 500) });
     } catch (_) { /* visibility best-effort */ }
     return 'local-missing';
