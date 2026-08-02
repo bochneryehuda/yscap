@@ -52,6 +52,7 @@ const PACE_MS = Number(process.env.RESEARCH_GEOCODE_PACE_MS || 350);
 const MAX_ATTEMPTS = 3;   // after three tries an address is left alone
 
 const txt = (v) => { const s = v == null ? '' : String(v).trim(); return s === '' ? null : s; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** A bounded GET returning parsed JSON, or null. Never throws. */
 function getJson(url) {
@@ -114,7 +115,18 @@ async function census(address) {
  * a real address and put a file on a different street. So a match with no house
  * number is refused here too, rather than stored as if it were the house.
  */
+// OSM's public service has a HARD published limit of one request per second, and
+// exceeding it is a policy breach that gets a user agent blocked — for everyone
+// using it, not just this sweep. The main pace (350ms) is set for Census, which has
+// no such limit, so the OSM call has to hold its own floor. This is a module-level
+// clock on purpose: it is the process's shared budget, not one sweep's.
+let lastOsmAt = 0;
+const OSM_MIN_GAP_MS = 1100;
+
 async function osm(address) {
+  const wait = OSM_MIN_GAP_MS - (Date.now() - lastOsmAt);
+  if (wait > 0) await sleep(wait);
+  lastOsmAt = Date.now();
   const url = 'https://nominatim.openstreetmap.org/search'
     + `?q=${encodeURIComponent(address)}&format=json&addressdetails=1&limit=1&countrycodes=us`;
   const j = await getJson(url);
@@ -164,8 +176,6 @@ async function geocodeProperty(p) {
   }
   return { ok: false, why: 'no service could place that address', query: line };
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * PLACE THE PROPERTIES WE HAVE NOT PLACED YET — bounded, resumable, self-draining.
