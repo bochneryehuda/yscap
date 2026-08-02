@@ -3666,3 +3666,28 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    they must start on the same line. */
 .bprof-pair > .panel{margin-top:0}
 @media (max-width:900px){ .bprof-pair{grid-template-columns:1fr} }
+
+/* ONE BLOCK: the deal snapshot and what's left to clear, joined (owner-directed
+   2026-08-02: "the first section of the overview — with what's left to clear to
+   close MERGED TOGETHER WITH IT (one block, not two)").
+   The two children each brought their own border, radius and bottom margin, so
+   stacked they read as two separate subjects. The wrapper owns the border now
+   and the children give theirs up — neither component had to be rewritten. */
+.deal-block{background:var(--ink-1);border:1px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden}
+.deal-block > .deal-snap{border:0;border-radius:0;margin-bottom:0}
+/* A hairline instead of a gap: still legibly two parts of one card. */
+.deal-block > .nx-panel{margin-bottom:0;border-top:1px solid var(--line);border-radius:0}
+
+/* THE TEAM PANEL (owner-directed 2026-08-02: the old "Entity, team & assignment"
+   mingled three subjects; what remains is only the team, "nicer, better, more
+   modern"). The two pickers and their button sit on ONE line on a desk screen —
+   they are two halves of one action, and stacked they left the Assign button
+   floating under a tall column. `min-width:0` on the fields is load-bearing: a
+   long staff name in a select would otherwise push the row past the page width. */
+.team-assign{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-top:12px}
+.team-assign > .field{min-width:0;margin-bottom:0}   /* the row owns the spacing, not the field */
+.team-assign .input{width:100%}
+@media (max-width:720px){
+  .team-assign{grid-template-columns:1fr}
+  .team-assign > .btn{width:100%}
+}

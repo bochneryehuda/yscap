@@ -409,8 +409,18 @@ const APP_COMPLETENESS_FIELDS = (app) => [
   // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
   // for application completeness. Filled from the Vesting entity (LLC) section
   // above OR from the Term Sheet Studio's entity-name field on register.
-  { key: 'entity_name', label: 'Subject-property LLC', ok: !!(app.entity_name || app.llc_name || app.llc_id),
-    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or type it on Products & Pricing.' },
+  /* VESTING — satisfied by an entity OR by the file being in an individual's
+     name (owner-directed 2026-08-02). It used to check only for an LLC, so a
+     personal-name purchase carried a "Subject-property LLC" pill that could
+     NEVER be filled: there is no entity to link, by definition. The file could
+     therefore never read complete. Answering it with the individual choice is
+     correct — the question is "what does this vest in?", and "an individual" is
+     a real answer, which the non-owner-occupied affidavit condition then
+     documents (db/408). */
+  { key: 'entity_name',
+    label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
+    ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
+    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or mark the file as vesting in an individual\'s name.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -867,8 +877,14 @@ function sowUrl(appId, itemId, app) {
 }
 // The status list moved with the status dropdown into components/ConditionActions
 // — it reads CONDITION_STATUSES from lib/conditions-vocab.js directly.
-const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+/* Kept in the SERVER'S order, and it must stay in step with `APP_STATUS` in
+   routes/staff.js — a status the server accepts but this list omits simply
+   cannot be set from PILOT. That is exactly what happened to `on_hold`: it has
+   been a real status since db/319 (2026-07-26) and settable by the API ever
+   since, but it was missing here, so a file could be parked from ClickUp and
+   never from the portal. */
+const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -4681,14 +4697,20 @@ export default function StaffApplication() {
       {/* Only the file's assigned LO sees this — presets to VIP / Quiet /
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
-      <DealSnapshot app={app} gating={gating} />
-      {/* THE ONE WORK LIST (owner-directed 2026-08-02) — what is holding the file,
-          what is needed before funding, and PILOT's advisory notes, in one place
-          directly under the deal. It carries the permanent #ctc-outstanding
-          anchor, so every deep link and the header's "N to clear before CTC"
-          badge still land here. Sits high in the Overview on purpose: after the
-          deal facts, before everything else. */}
-      <WhatsLeftPanel gating={gating} items={items} conds={conds} />
+      {/* ONE BLOCK, NOT TWO (owner-directed 2026-08-02: the first section of the
+          overview "with what's left to clear to close MERGED TOGETHER WITH IT").
+          The deal facts and the work they imply were two separately-bordered
+          cards stacked on each other, which read as two subjects; they are one.
+          `.deal-block` joins them into a single bordered card — the two children
+          keep their own internals untouched, so nothing about either component
+          had to be rewritten to say they belong together. WhatsLeftPanel keeps
+          the permanent #ctc-outstanding anchor, so every deep link and the
+          header's "N to clear before CTC" badge still land exactly here. */}
+      <div className="deal-block">
+        <DealSnapshot app={app} gating={gating} />
+        <WhatsLeftPanel gating={gating} items={items} conds={conds} />
+      </div>
+      <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
       {/* THE NOTE-BUYER SLOT (owner-directed 2026-07-27) — one obvious home for the
           capital partner: who it is, what they require of this file, and what
           switching would change. It used to live only as a pencil icon on a muted
@@ -4703,7 +4725,6 @@ export default function StaffApplication() {
           responsive 2-col grid (owner-directed redesign 2026-07-14). */}
       {statusClosingBlock}
 
-      <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
 
       {/* THE PEOPLE MOVED INTO APPLICATION DETAILS (owner-directed 2026-08-02:
           "both borrower profiles under Application Details, side by side").
@@ -4731,54 +4752,55 @@ export default function StaffApplication() {
         </div>
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <div className="panel">
-          <h3 style={{ marginBottom: 4 }}>Entity, team &amp; assignment</h3>
-          {/* The headline numbers (purchase, ARV, rehab, loan amount) live in the
-              snapshot above and the sticky summary on the right — this panel shows
-              only what isn't there and what you act on, so the same fact isn't
-              printed three times. */}
-          <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>Headline numbers are in the snapshot above — this is what you act on.</p>
-          <div className="metrow"><span className="k">Entity</span><span className="v">
-            {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
-            {app.llc_id && (app.entity_verified
-              ? <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>
-              : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
-          </span></div>
-          {app.is_assignment && <>
-            <div className="metrow"><span className="k">Assignment</span><span className="v" style={{ color: 'var(--teal)' }}>Yes</span></div>
-            <div className="metrow"><span className="k">Underlying price</span><span className="v">{money(app.underlying_contract_price)}</span></div>
-            <div className="metrow"><span className="k">Assignment fee</span><span className="v">{money(app.assignment_fee)}</span></div>
-          </>}
-          <div className="metrow"><span className="k">As-is</span><span className="v">
-            {money(app.as_is_value ?? (app.is_assignment && app.underlying_contract_price != null
-              ? Number(app.underlying_contract_price) + Number(app.assignment_fee || 0)
-              : app.purchase_price))}
-            {app.as_is_value == null && app.purchase_price != null &&
-              <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
-          </span></div>
-          <TeamAssignees appId={id} officers={officers} processors={processors}
-            closers={team.filter(m => m.role === 'closer')}
-            drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
-            onChanged={load} />
-          {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
-          <div className="gold-rule" style={{ margin: '10px 0' }} />
-          {/* Reassigning a file is an admin function (S3-02) — the server 403s a
-              non-admin, so don't offer the control to them. */}
-          {isAdmin ? (<>
-          <div className="field"><label>Assign loan officer</label>
-            <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
-              <option value="">— select —</option>
-              {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
-            </select></div>
-          <div className="field"><label>Assign processor</label>
-            <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
-              <option value="">— select —</option>
-              {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-            </select></div>
-          <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
-          </>) : <p className="muted small">Only an admin can change who this file is assigned to.</p>}
+      {/* THE TEAM, AND ONLY THE TEAM (owner-directed 2026-08-02: the old
+          "Entity, team & assignment" panel "mingled a few sections for no good
+          reason"). The ENTITY row and the ASSIGNMENT figures moved up into the
+          first overview block, which already owns the parties and the deal's
+          economics; the As-is row went with them (the snapshot has shown it for
+          a while, so this was printing the same number twice).
+
+          What is left is the one thing this panel is for: who is on this file,
+          in every role, and how to change it. It is the LAST thing on the
+          overview — first block, then Status & closing, then the team. */}
+      <div className="panel team-panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 2 }}>
+          <h3 style={{ margin: 0 }}>Team on this file</h3>
+          <span className="small" style={{ color: '#4B585C' }}>Who is working it, in every role.</span>
         </div>
+        <TeamAssignees appId={id} officers={officers} processors={processors}
+          closers={team.filter(m => m.role === 'closer')}
+          drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
+          onChanged={load} />
+        {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
+        {/* Reassigning a file is an admin function (S3-02) — the server 403s a
+            non-admin, so the control is not offered to them. Side by side rather
+            than stacked: they are two halves of one action, and the Assign button
+            sits with them instead of floating under a tall column. */}
+        {isAdmin ? (
+          <div className="team-assign">
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Loan officer</label>
+              <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
+                <option value="">— select —</option>
+                {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Processor</label>
+              <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
+                <option value="">— select —</option>
+                {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+              </select>
+            </div>
+            <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>
+              {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
+            </button>
+          </div>
+        ) : (
+          <p className="small" style={{ color: '#4B585C', marginBottom: 0 }}>
+            Only an admin can change who this file is assigned to.
+          </p>
+        )}
       </div>
       </Section>
 
