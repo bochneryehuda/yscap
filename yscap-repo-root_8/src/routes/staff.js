@@ -11851,12 +11851,16 @@ router.post('/applications/:id/order-flood', async (req, res) => {
   try {
     // Dispatched to the ACTIVE flood provider (Xactus by default; Encompass parked
     // and reversible via FLOOD_ORDER_PROVIDER) — see src/flood/dispatch.js.
+    // `force` re-orders a file that ALREADY has a completed determination (a
+    // corrected property address is the real case). Billable, so it is admin-only
+    // and never the default — an ordinary click can never re-charge us.
     const out = await require('../flood/dispatch').orderFlood({
-      appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id });
+      appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id,
+      force: isAdmin(req) && (req.body || {}).force === true });
     if (!out.ok) {
       // A refusal the user can act on (no address / loan number, already pending,
       // etc.) is a 4xx with the plain message; a real failure is a 502.
-      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
+      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'already_completed', 'check_failed', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
       return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
     }
     return res.json(out);
@@ -11877,8 +11881,32 @@ router.get('/applications/:id/flood-order', async (req, res) => {
       // usable property address, Encompass needs a loan number.
       hasLoanNumber: !!ready.ready,
       needs: ready.needs || null,
+      // Is the certificate REALLY filed? The card used to claim it was filed on
+      // every completed order, even when no PDF came back (owner-reported
+      // 2026-08-02). null = no completed order to judge.
+      hasCertificate: await dispatch.certificateFiled(req.params.id),
+      // Only an admin may deliberately re-order a file that already has a
+      // determination (each order is billable).
+      canReorder: isAdmin(req),
+      // A completed determination exists (any provider) — drives the "we won't order
+      // again" wording AND the admin re-order offer in EVERY state, so a forced order
+      // that then FAILS is not a dead end.
+      hasCompletedOrder: await dispatch.hasCompletedOrder(req.params.id),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Retrieve the certificate PDF for a determination we ALREADY paid for and file it
+// on the flood condition. This is a RETRIEVAL (a vendor StatusQuery), never a new
+// order — so it can be run freely when a determination came back without its PDF.
+router.post('/applications/:id/flood-certificate', async (req, res) => {
+  try {
+    const out = await require('../flood/dispatch').fetchCertificate({ appId: req.params.id, actorId: req.actor.id });
+    if (!out.ok) {
+      const soft = ['no_completed_order', 'no_reference', 'no_pdf', 'disabled', 'not_configured', 'unsupported', 'file_failed', 'lookup_failed'].includes(out.error);
+      return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
+    }
+    return res.json(out);
+  } catch (e) { console.error('[flood-certificate]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- documents ----------------

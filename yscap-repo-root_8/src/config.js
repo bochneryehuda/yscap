@@ -733,6 +733,11 @@ module.exports = {
     // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    // Explicitly ask Xactus to embed the certificate PDF in every response (their
+    // _UseEmbeddedFileIndicator toggle can otherwise EXCLUDE it). ON by default —
+    // set XACTUS_FLOOD_REQUEST_PDF=0 ONLY if Xactus ever rejects the element, which
+    // restores flood ordering without a redeploy.
+    requestPdf: process.env.XACTUS_FLOOD_REQUEST_PDF !== '0',
     // Test mode is REMOVED (owner-directed 2026-08-02: "remove the test mode, go live
     // right away"). A staff click ALWAYS places a REAL, billable order — there is no
     // dry-run gate (flood.js dryrun() is hard-false), because a stored runtime override
