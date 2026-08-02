@@ -28,12 +28,12 @@ const aiSug = require('./ai-suggestions');
 // is a slot on an ENTITY, not a condition on a FILE, so the route matched nothing
 // and every click on "Post the condition" answered 400 "unknown template
 // rtl_llc_opagmt". The head is now the dedicated, application-scoped
-// `rtl_cond_entity_docs` (db/397) — "collect the operating agreement, articles and
+// `rtl_cond_entity_docs` (db/398) — "collect the operating agreement, articles and
 // EIN for the business whose bank funds are being used" — which is exactly what the
 // owner asked this button to post. `rtl_p1_llc` stays as the fallback; the legacy
 // strings are kept only as trailing aliases and are not live anywhere.
 const OA_CASCADE_TEMPLATE_CODES = [
-  'rtl_cond_entity_docs',       // the entity-documents condition on the FILE (db/397)
+  'rtl_cond_entity_docs',       // the entity-documents condition on the FILE (db/398)
   'rtl_p1_llc',                 // fallback: the entity/LLC umbrella condition (db/005:61)
   'rtl_llc_opagmt',             // the entity's own OA SLOT (db/005:114) — scope='llc', not file-postable
   'llc_operating_agreement', 'rtl_p2_vesting', 'entity_vesting',  // legacy aliases (not live)

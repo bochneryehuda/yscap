@@ -104,6 +104,19 @@ const OOP_REHAB_REASONS = Object.freeze({
   other:            'Other (see note)',
 });
 
+// Reasons a data tape is exported BEFORE the loan is in Encompass and every field
+// matches (owner-directed 2026-08-02). By default nobody — not even an admin — may
+// export a capital-provider tape until Encompass reconciles perfectly; this is the
+// super-admin exception that lets it out anyway.
+const TAPE_ENCOMPASS_REASONS = Object.freeze({
+  no_loan_number:   'The loan number isn’t in the system yet, so it isn’t in Encompass',
+  not_in_encompass: 'The loan isn’t in Encompass yet (can’t reconcile it)',
+  fields_differ:    'The loan is in Encompass but some fields still don’t match',
+  buyer_deadline:   'The capital provider needs the tape now, before reconciling',
+  system_issue:     'A system flag is blocking the export in error',
+  other:            'Other (see note)',
+});
+
 // A "no appraisal XML available" waiver. 'transferred_appraisal' auto-waives and
 // asks for a transfer-letter PDF instead (no exception is raised for it); every
 // other reason needs a note and comes here as a real exception for approval.
@@ -154,6 +167,9 @@ const COMPENSATING_FACTORS = Object.freeze({
  *   recordOnly  born approved (documents an in-the-moment authority action);
  *               never open, never decided from the box.
  *   slaHours    review SLA — due_at = requested_at + slaHours (null = none).
+ *   decideRole  the role REQUIRED to decide this type (null = the register's
+ *               default gate, `manage_pricing` = admins + super-admins). Set to
+ *               'super_admin' for a type only a super-admin may grant.
  */
 const EXCEPTION_TYPES = Object.freeze({
   guaranty_waiver: Object.freeze({
@@ -212,9 +228,28 @@ const EXCEPTION_TYPES = Object.freeze({
     recordOnly: false,
     slaHours: 48,
   }),
+  // Owner-directed 2026-08-02: a data tape may not be exported until the loan is
+  // in Encompass and every field matches — not even by an admin. ONLY a
+  // super-admin may grant this (decideRole), so it never widens to plain admins
+  // like the other types did. Expirable so a granted allowance can carry a
+  // validity window; recordOnly:false because it is a real request → decision
+  // (a super-admin's inline allow is recorded born-approved via
+  // recordTapeEncompassOverride, mirroring issuance_override).
+  tape_encompass_override: Object.freeze({
+    label: 'Data-tape export before Encompass match',
+    reasonCodes: TAPE_ENCOMPASS_REASONS,
+    subject: 'file',
+    expirable: true,
+    recordOnly: false,
+    slaHours: 24,
+    decideRole: 'super_admin',
+  }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
 function typeConfig(t) { return EXCEPTION_TYPES[t] || null; }
+// The role REQUIRED to decide a type, or null when the register's default gate
+// (manage_pricing) applies. The decide route enforces this on top of its own gate.
+function decideRoleFor(type) { const c = typeConfig(type); return (c && c.decideRole) || null; }
 
 // The reason-code map for a given exception type + the label for one code. Used so
 // the review box / requester queue can render a friendly reason regardless of type.
@@ -450,6 +485,72 @@ async function requestAppraisalXmlWaiver(client, { appId, reasonCode, reasonNote
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
     reRequestOf,
   });
+}
+
+/**
+ * Request a DATA-TAPE export before Encompass matches (owner-directed 2026-08-02).
+ * By default nobody — not even an admin — may export a capital-provider tape until
+ * the loan is in Encompass and every field matches; this is the request a
+ * super-admin approves to let it out anyway. `gateSnapshot` carries the Encompass
+ * gate picture at request time so the reviewer sees exactly what blocked it.
+ */
+async function requestTapeEncompassOverride(client, { appId, reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId, gateSnapshot, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'tape_encompass_override', appId, reasonCode, reasonNote, requestedBy,
+    requestedByKind, requestedByBorrowerId, gateSnapshot, compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Record a super-admin's INLINE tape-export override — born APPROVED (the super
+ * admin IS the grantor, so their allow is the granted exception, not a request).
+ * Mirrors recordIssuanceOverride: best-effort but NOT silent-on-error here — the
+ * caller wants to know it recorded, because this row is what proves the export was
+ * authorized. Returns the row, or throws so the route can decide.
+ */
+async function recordTapeEncompassOverride({ appId, staffId, note, snapshot, expiresAt }, client = db) {
+  const deal = await dealSnapshotFor(appId);
+  let exp = null;
+  if (expiresAt) {
+    const d = new Date(expiresAt);
+    const ms = d.getTime() - Date.now();
+    if (isFinite(d.getTime()) && ms > 0 && ms <= 366 * 24 * 3600 * 1000) exp = d;
+  }
+  const ins = await client.query(
+    `INSERT INTO loan_exceptions
+       (application_id, exception_type, status, reason_code, reason_note,
+        requested_by, requested_by_kind, decided_by, decided_at, decision_note,
+        gate_snapshot, deal_snapshot, severity, expires_at)
+     VALUES ($1,'tape_encompass_override','approved',$2,$3,$4,'staff',$4,now(),$5,$6,$7,'material',$8)
+     RETURNING *`,
+    [appId,
+     isReasonCodeFor('tape_encompass_override', snapshot && snapshot.reason_code) ? snapshot.reason_code : 'other',
+     note ? String(note).slice(0, 2000) : 'Super-admin allowed the tape export before Encompass matched',
+     staffId || null,
+     note ? String(note).slice(0, 1000) : null,
+     snapshot ? JSON.stringify(snapshot) : null,
+     deal ? JSON.stringify(deal) : null,
+     exp]);
+  return ins.rows[0] || null;
+}
+
+/**
+ * The current APPROVED (and not expired) exception of a type for a file, or null —
+ * used by a gate that lets an action through when a super-admin has granted it.
+ * Fails soft (null) so an unreadable row never GRANTS. Expiry fails CLOSED at read
+ * time (a lapsed approval is presented as expired here too, so it grants nothing
+ * even before the scheduled sweep flips the DB row).
+ */
+async function approvedForApp(appId, type, client = db) {
+  try {
+    const r = await client.query(
+      `SELECT * FROM loan_exceptions
+        WHERE application_id=$1 AND exception_type=$2 AND status='approved'
+        ORDER BY decided_at DESC NULLS LAST, created_at DESC LIMIT 1`, [appId, type]);
+    const row = presentExpiry(r.rows[0] || null);
+    return row && row.status === 'approved' ? row : null;
+  } catch (_) { return null; }
 }
 
 /**
@@ -950,14 +1051,15 @@ module.exports = {
   REASON_CODES, isReasonCode,
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
-  APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS,
+  APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS, TAPE_ENCOMPASS_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
-  EXCEPTION_TYPES, isExceptionType, typeConfig,
+  EXCEPTION_TYPES, isExceptionType, typeConfig, decideRoleFor,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
-  requestAppraisalXmlWaiver, requestOopRehab,
-  recordIssuanceOverride, recordConditionOverride, latestEsignBeforeCtc,
+  requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
+  recordIssuanceOverride, recordConditionOverride, recordTapeEncompassOverride,
+  approvedForApp, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,
   openForApp, latestForApp, registerForApp, getById, listExceptions, pendingCount, metrics,

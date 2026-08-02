@@ -1,5 +1,5 @@
 -- ============================================================================
--- 397 — ADOPT AN OUTSIDE ENTITY ONTO THE BORROWER'S PROFILE
+-- 398 — ADOPT AN OUTSIDE ENTITY ONTO THE BORROWER'S PROFILE
 --       (owner-directed 2026-08-02: "when he is finding assets on a different
 --        LLC it's not major fraud — you just don't have the LLC documents for
 --        that LLC. Give a button on that finding to add this LLC to the
