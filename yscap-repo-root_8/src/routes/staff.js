@@ -32,6 +32,7 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
+const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1436,6 +1437,12 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     acceptUrl, hasAccount: !!hasAuth.rows[0],
   }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
   await audit(req, 'invite_borrower', 'application', appId, { email });
+  // Record that it went out, on the PERSON (lib/portal-invite) — otherwise the
+  // file can never say whether anyone has invited them, and the only safe move
+  // is to send it again. Note this fires for the already-has-a-login case too:
+  // that path mints no invite token, so it was previously invisible even though
+  // an email really was sent.
+  await portalInvite.recordInviteSent(borrowerId, { email, byStaffId: req.actor.id });
   // Best-effort in-app notice to the file's team.
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
 }
@@ -1514,6 +1521,8 @@ router.post('/invite-to-portal', async (req, res) => {
         acceptUrl, hasAccount: !!hasAuth.rows[0],
       }, { replyTo: inv.email || null, from: require('../lib/email').fromWithName(inv.full_name) });
     } catch (_) { /* invite email is best-effort; the profile + lead are already saved */ }
+    // Record it on the person, same as every other invite door (lib/portal-invite).
+    await portalInvite.recordInviteSent(borrowerId, { email, byStaffId: req.actor.id });
     // 3) open a CRM lead for the owning officer so the relationship is tracked from
     // first touch — unless one already exists for this email + officer (idempotent).
     let leadId = null;
@@ -7339,11 +7348,19 @@ router.get('/borrowers/:id', async (req, res) => {
               b.housing_status, b.housing_payment, b.employment_type, b.employer,
               b.contact_type, b.primary_officer_id, b.shares_email,
               b.photo_id_document_id, b.created_at, b.last_seen_at,
-              (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
+              ba.last_login_at,
               (b.ssn_encrypted IS NOT NULL) AS has_ssn,
+              /* Where they stand with the portal (lib/portal-invite). has_account
+                 was missing here entirely — the list endpoint returned it but the
+                 profile did not, so the one screen showing a person could not say
+                 whether they even had a login. */
+              ${portalInvite.PORTAL_SELECT},
+              inv.full_name AS invited_by_name,
               off.full_name AS primary_officer_name
          FROM borrowers b
+         LEFT JOIN borrower_auth ba ON ba.borrower_id = b.id
          LEFT JOIN staff_users off ON off.id = b.primary_officer_id
+         LEFT JOIN staff_users inv ON inv.id = b.portal_invited_by
         WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -7377,7 +7394,15 @@ router.get('/borrowers/:id', async (req, res) => {
         WHERE t.borrower_id=$1 AND t.kind='data_only'
         ORDER BY t.last_seen DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
     // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
-    res.json({ ...require('../lib/residence').withLiveResidence(r.rows[0]), contacts, sharing, otherDeals });
+    // `portal` is the shaped standing + the plain-language sentence, built by the
+    // ONE definition (lib/portal-invite), so the borrower profile and the loan
+    // file can never word it differently.
+    const portal = portalInvite.shapePortal(r.rows[0]);
+    res.json({
+      ...require('../lib/residence').withLiveResidence(r.rows[0]),
+      contacts, sharing, otherDeals,
+      portal: { ...portal, ...portalInvite.describePortalAccess(portal) },
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

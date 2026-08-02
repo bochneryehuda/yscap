@@ -3756,6 +3756,11 @@ async function inviteCoBorrower(appId, primaryName, co) {
       officer,
     }, { replyTo: fileReplyTo(appId), from: officer ? require('../lib/email').fromWithName(officer.name) : null });   // #68 + #150
   } catch (_) {}
+  // Record it on the co-borrower (lib/portal-invite), so the staff file can say
+  // they were already invited instead of the team sending a second one. No
+  // staff id: the PRIMARY borrower sent this from their own portal, and the
+  // panel shows that distinction rather than inventing a staffer.
+  await require('../lib/portal-invite').recordInviteSent(coId, { email: co.email, byStaffId: null });
   return coId;
 }
 

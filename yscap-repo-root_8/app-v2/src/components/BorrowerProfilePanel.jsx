@@ -374,6 +374,63 @@ export function BorrowerSsnRow({ b, onChanged }) {
   );
 }
 
+/* ------------------------------------------------------------ portal access --
+   WHERE THIS PERSON STANDS WITH THE PORTAL (owner-directed 2026-08-02: the file
+   must show, for the borrower AND the co-borrower, whether they were invited and
+   when — with a way to send it again — and whether they joined and when they last
+   signed in).
+
+   It lives HERE, in the one shared borrower panel, for the same reason the editor
+   does: mounted once per person, so the co-borrower gets it for free and the two
+   can never drift. The server does all the judging (lib/portal-invite) and hands
+   down the finished sentence, so the wording is identical on every surface. */
+export function PortalAccessRow({ b, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const p = (b && b.portal) || null;
+  if (!p) return null;
+
+  async function invite() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const r = await api.staffBorrowerInvite(b.id);
+      setMsg(r && r.hasAccount
+        ? 'Sign-in link emailed — they already have a portal login.'
+        : 'Invitation emailed.');
+      if (onChanged) await onChanged();
+    } catch (e) { setErr(e.message || 'Could not send the invitation.'); }
+    finally { setBusy(false); }
+  }
+
+  // Green once they are in, gold while an invitation is out, plain otherwise.
+  const tone = p.state === 'joined' ? '#1F7A4D' : p.state === 'invited' ? '#8A6A22' : '#4B585C';
+  const label = p.state === 'joined' ? 'In the portal'
+    : p.state === 'invited' ? 'Invited' : 'Not invited';
+  // "Invite" the first time, "Send again" afterwards — the button says which.
+  const action = p.hasAccount ? 'Email a sign-in link'
+    : p.inviteCount > 0 ? 'Send the invitation again' : 'Invite to the portal';
+
+  return (
+    <div className="metrow" style={{ alignItems: 'flex-start' }}>
+      <span className="k">Portal access</span>
+      <span className="v" style={{ display: 'block' }}>
+        <span style={{ fontWeight: 600, color: tone }}>{label}</span>
+        <span style={{ color: '#141B22' }}>{' — '}{p.headline}</span>
+        {p.detail && <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>{p.detail}</div>}
+        <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn ghost small" onClick={invite} disabled={busy || !p.canInvite}
+            title={p.canInvite ? '' : 'Add an email address to this profile first'}>
+            {busy ? 'Sending…' : action}
+          </button>
+          {msg && <span className="small" style={{ color: '#1F7A4D' }}>{msg}</span>}
+          {err && <span className="small" style={{ color: '#B3261E' }}>{err}</span>}
+        </div>
+      </span>
+    </div>
+  );
+}
+
 /* ------------------------------------------------- the card on the loan file --
    Self-loading: hand it a borrower id and it fetches that person's record, shows
    the identity at a glance, and opens the full editor in place. Rendered once for
@@ -447,6 +504,7 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
             : null} />
           <Row k="Employment" v={[b.employment_type, b.employer].filter(Boolean).join(' · ')} />
           <Row k="Dependents" v={b.dependents_count} />
+          <PortalAccessRow b={b} onChanged={load} />
         </div>
       ))}
     </div>
