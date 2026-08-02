@@ -64,6 +64,33 @@ const EXC = [
   { k: 'unassigned', label: 'Unassigned' },
   { k: 'post_closing_exceptions', label: 'Post-closing exceptions' },
 ];
+// Current AI model — a small at-a-glance line on the pipeline header so a
+// super-admin can confirm WHICH AI model PILOT is running (e.g. right after
+// switching the Azure OpenAI deployment). Reads the super-admin-only AI stack
+// endpoint; any other role gets a 403 -> the line renders nothing. Also silent
+// until an Azure OpenAI deployment name is configured. Dark text on white per
+// the portal text-colour rule (never a light --ink token).
+function AiModelLine() {
+  const [ai, setAi] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.insightsAiStack()
+      .then((r) => { if (alive) setAi((r && r.stack && r.stack.azureOpenAI) || null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  if (!ai || !ai.deployment) return null;
+  const on = !!ai.enabled;
+  return (
+    <div className="sub" style={{ marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+      title={on ? 'The AI model PILOT is currently running' : 'A model name is set but the AI analyzer is not fully configured yet'}>
+      <span aria-hidden="true" style={{ color: on ? '#3F7A5B' : '#B4741F', fontSize: 10, lineHeight: 1 }}>&#9679;</span>
+      <span style={{ color: '#4B585C' }}>AI model</span>
+      <span style={{ color: '#141B22', fontWeight: 600 }}>{ai.deployment}</span>
+    </div>
+  );
+}
+
 function ExceptionStrip({ e, activeFlag }) {
   if (!e) return null;
   const live = EXC.filter(x => (e[x.k] || 0) > 0);
@@ -519,6 +546,7 @@ export default function StaffQueue() {
         <div>
           <h1>Pipeline</h1>
           <div className="sub">{allFiles ? `${allFiles.length} file(s) across the desk` : 'Loan pipeline'}</div>
+          <AiModelLine />
         </div>
         <div className="page-head-actions">
           <button className={`btn ${tab === 'mine' ? 'btn-ink' : 'btn-ghost'} btn-sm`} onClick={() => setTab('mine')}>
