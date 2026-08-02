@@ -155,6 +155,59 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
   );
 }
 
+/**
+ * "Add this LLC to the borrower's profile" (owner-directed 2026-08-02).
+ *
+ * A bank statement under an LLC we have no documents for is an OWNERSHIP question, not fraud — and
+ * the way out of it is one click: put that entity on the borrower's record (with its three document
+ * slots), carry any operating agreement / articles / EIN already sitting on this file onto those
+ * slots so they are on the profile for every future deal, and post the condition that asks for
+ * whatever is still missing. The server does all four together and reports what it actually did;
+ * this only shows it. The finding is settled only when the operating agreement really landed —
+ * otherwise it stays on the desk, which is the honest outcome.
+ */
+function EntityAdoptButton({ appId, entityName, findingId, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const run = async () => {
+    if (!window.confirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.adoptEntityToProfile(appId, entityName, findingId);
+      setDone(r);
+      onChange && onChange();
+    } catch (e) { alert(`Could not add the entity: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  if (done) {
+    return (
+      <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: '#F2F7F2', border: '1px solid #CBDFCB' }}>
+        <div style={{ fontSize: 12.5, color: '#141B22' }}>{done.summary}</div>
+        {!done.findingResolved && (
+          <div style={{ fontSize: 11.5, color: '#4B585C', marginTop: 4 }}>
+            {done.findingReason === 'no_operating_agreement_yet'
+              ? 'This stays on the desk until the operating agreement for that company is on file — that is what shows the borrower controls it.'
+              : done.findingReason === 'needs_sign_off_permission'
+                ? 'A processor or underwriter still has to close this finding off.'
+                : 'This finding was left open.'}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button disabled={busy} onClick={run} style={btn(true)}
+        title={`Add "${entityName}" to the borrower's profile, carry over any of its documents already on this file, and post the entity-documents condition`}>
+        {busy ? 'Adding…' : `＋ Add “${entityName}” to the borrower’s profile`}
+      </button>
+      <div style={{ fontSize: 11.5, color: '#4B585C', marginTop: 4 }}>
+        Puts the company on the borrower’s record for good, moves any of its documents already on this file onto it, and asks for the rest.
+      </div>
+    </div>
+  );
+}
+
 function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
@@ -465,6 +518,11 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
               style={btn(a.key === 'post_condition' || a.key === 'request_document', a.key === 'decline')}>{a.label}</button>
           ))}
         </div>
+      )}
+      {/* The one-click way out of a different-entity bank finding — see EntityAdoptButton. */}
+      {canAct && f.entityAdopt && f.entityAdopt.entityName && (
+        <EntityAdoptButton appId={appId} entityName={f.entityAdopt.entityName}
+          findingId={f.id || null} onChange={onChange} />
       )}
       {resolvable && actions.length === 0 && allActions.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>
@@ -3516,11 +3574,20 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
-      {/* Appraisal findings are NOT shown here. They moved back to the Appraisal section
-          (owner-directed 2026-07-30, reverting the 2026-07-20 fold-in): the appraisal XML
-          findings are reviewed — and resolved — on the appraisal tab, next to the report they
-          come from, and this desk shows only document-review findings. Do not re-add an
-          api.appraisalGet fold-in here. */}
+      {/* Appraisal findings are NOT shown here. They live on the Appraisal section
+          (owner-directed 2026-07-30, widened 2026-08-02): the appraisal's findings are reviewed —
+          and resolved — next to the report they come from. Since 2026-08-02 that includes the ones
+          THIS desk computes (the AVM-vs-appraised-value check, an appraisal-only tie-out row): the
+          server routes them by subject, not by table, so they no longer show up here. All that is
+          left is a pointer, so a reviewer knows the work exists rather than wondering where a card
+          went. Do not re-add an api.appraisalGet fold-in here. */}
+      {data && Array.isArray(data.appraisalFindings) && data.appraisalFindings.length > 0 && (
+        <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '0 0 18px' }}>
+          {data.appraisalFindings.length} finding{data.appraisalFindings.length === 1 ? '' : 's'} about the appraisal
+          {data.appraisalFindings.length === 1 ? ' is' : ' are'} in the <strong style={{ color: '#141B22' }}>Appraisal</strong> section,
+          with the report {data.appraisalFindings.length === 1 ? 'it comes' : 'they come'} from — that is where {data.appraisalFindings.length === 1 ? 'it is' : 'they are'} resolved.
+        </p>
+      )}
 
       {/* nothing open anywhere — the all-clear */}
       {allFindings.length === 0 && (

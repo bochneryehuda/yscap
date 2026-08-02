@@ -238,6 +238,14 @@ function decorate(f) {
   // one of several conflicting docs as "the" source would be arbitrary and misleading. Only ever
   // ADDS a link (never overrides a real per-document finding's own `document_id`).
   const extra = { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) };
+  // "Add this LLC to the borrower's profile" (owner-directed 2026-08-02). A different-entity bank
+  // finding NAMES an entity that is missing from the borrower's record; stamping the name here is
+  // what puts the one-click button on the card. Pure + best-effort: a finding that names no entity
+  // is unchanged, so no other card grows a button.
+  try {
+    const target = require('../lib/underwriting/entity-adopt').adoptTargetOf(f);
+    if (target) extra.entityAdopt = target;
+  } catch (_) { /* additive */ }
   if (f.document_id == null && f.documentId == null && Array.isArray(f.sources)) {
     const openable = f.sources.filter((s) => s && s.documentId != null);
     if (openable.length === 1) extra.documentId = openable[0].documentId;
@@ -1141,7 +1149,21 @@ router.get('/:appId', async (req, res, next) => {
     // dealbreaker is never sorted below noise. The background pass (setImmediate) fills the rankings.
     let triageMem = new Map();
     try { triageMem = await findingsTriage.readMemory(db, app.id); } catch (_) { triageMem = new Map(); }
-    const openAll = findingsTriage.applyTriage(aiGate.shown, triageMem);
+    const triaged = findingsTriage.applyTriage(aiGate.shown, triageMem);
+
+    // AN APPRAISAL FINDING BELONGS ON THE APPRAISAL PAGE — INCLUDING THE ONES THIS DESK PRODUCES
+    // (owner-reported 2026-08-02: "some of the appraisal findings is going over to the document
+    // findings section"). The 2026-07-30 rule split the desks by TABLE, which covered the appraisal
+    // desk's own rows but not the desks HERE that read the appraisal: the tie-out (whose appraisal
+    // duplicates are now suppressed at source via PERDOC_COVERS, leaving only genuinely
+    // appraisal-only rows such as occupancy) and the AVM-consensus panel. They are removed from
+    // this desk and returned as `appraisalFindings` so nothing is hidden — the Appraisal section
+    // renders and resolves them, and GET /api/appraisal/:id rebuilds the same set from the same
+    // shared predicate, so the two screens can never disagree about where a finding lives.
+    const apprSubject = require('../lib/appraisal/finding-subject');
+    const apprRouted = apprSubject.split(triaged);
+    const openAll = apprRouted.document;
+    const appraisalFindings = apprRouted.appraisal.map(decorate);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -1383,7 +1405,12 @@ router.get('/:appId', async (req, res, next) => {
       // consolidated list) so one can't linger in a section after being filtered off the main desk.
       const readable = unreadableFindings.partition((arr || []).filter(Boolean)).kept;
       const kept = fdec.filterSuppressed(settledKeys, readable).kept;
-      return findingAiReview.annotateFindings(kept, aiReviewMem).shown.map(decorate);
+      // …and the appraisal-subject ones, for the same reason: every section renders its OWN array
+      // as well as the consolidated list, so a finding routed to the Appraisal page would otherwise
+      // still show inside `crossDocument` / `staleness` / `findings` here — the "it didn't actually
+      // move" report, arriving through a sub-panel.
+      const desk = kept.filter((f) => !apprSubject.isAppraisalSubject(f));
+      return findingAiReview.annotateFindings(desk, aiReviewMem).shown.map(decorate);
     };
 
     res.json({
@@ -1467,6 +1494,11 @@ router.get('/:appId', async (req, res, next) => {
       allFindings: [...openWithRisk]
         .sort((x, y) => (SEVERITY_RANK[y && y.severity] || 0) - (SEVERITY_RANK[x && x.severity] || 0))
         .map(decorate),
+      // The findings this desk computed that belong to the APPRAISAL — removed from every list
+      // above and handed over so the Appraisal section can render + resolve them. Returned here
+      // (rather than silently dropped) so this desk can say "N appraisal findings — they're on the
+      // Appraisal tab" instead of a reviewer wondering where a card went.
+      appraisalFindings,
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
@@ -2483,6 +2515,91 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const gate = await ctcGateCounts(app.id);
 
     res.json({ ok: true, finding: decorate(applied.updated), ...gate, fileFix: applied.fileFix });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /:appId/entity-adopt : put an outside entity on the borrower's profile ---------------
+// The button the owner asked for (2026-08-02) on a different-LLC bank finding: "add this LLC to the
+// borrower profile so it's safe for always and we can always see he has this LLC on his record",
+// then "suggest posting a condition to ask for entity documents to allow him to use this LLC", and
+// when the operating agreement is already sitting in the assets condition, "use that operating
+// agreement to satisfy your finding" and carry it onto the new entity's operating-agreement slot.
+//
+// PERMISSIONS. Adding an entity to a borrower's profile is ordinary file work — a loan officer can
+// already do it from the CRM (POST /staff/borrowers/:id/llcs), so this route is gated on FILE
+// ACCESS only, or the button would be dead for the person most likely to press it. RESOLVING the
+// finding is the part that needs `sign_off_conditions`; without it the adoption still happens and
+// the response says the finding was left open, rather than refusing the whole action.
+router.post('/:appId/entity-adopt', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const entityAdopt = require('../lib/underwriting/entity-adopt');
+    const b = req.body || {};
+    const entityName = String(b.entityName || '').trim();
+    if (!entityName) return res.status(400).json({ error: 'entityName required' });
+
+    // The finding this came from, when it came from one. Loaded authoritatively (never trusted from
+    // the body) so the entity name can be checked against what the finding actually says — a click
+    // must not be able to adopt an entity the file never flagged.
+    let finding = null;
+    if (b.findingId && isUuid(b.findingId)) {
+      finding = (await db.query(
+        `SELECT id, code, severity, blocks_ctc, field, doc_value FROM document_findings
+          WHERE id=$1 AND application_id=$2 AND status='open'`, [b.findingId, app.id])).rows[0] || null;
+      if (finding) {
+        const target = entityAdopt.adoptTargetOf(finding);
+        if (!target) return res.status(400).json({ error: 'that finding does not name an entity to add' });
+      }
+    }
+
+    // One transaction: the entity, its slots, the carried documents and the condition are one
+    // record — a half-made one would leave an entity on the profile with nothing explaining it.
+    let result;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      result = await entityAdopt.adoptEntityToProfile(client, {
+        appId: app.id, entityName, actorId: req.actor.id,
+        postCondition: b.postCondition !== false,
+      });
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (e && e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    } finally { client.release(); }
+
+    // Only now that it is committed: refresh the entity condition on any file vesting in it, and
+    // nudge the SharePoint mirror so the carried documents land in the entity's folder.
+    await entityAdopt.afterAdoptCommit(result.llcId);
+
+    await audit(req.actor.id, 'entity_adopted_to_profile', app.id, {
+      entityName: result.entityName, llcId: result.llcId, created: result.created,
+      carried: result.carried.map((d) => d.docType), skipped: result.skipped.map((d) => d.reason),
+      conditionPosted: !!result.conditionId && !result.conditionExisted,
+    });
+
+    // The finding: settled only when the ownership PROOF landed, and only by someone who may settle
+    // a finding. Anything else leaves it open on purpose — the entity is on the record and the
+    // condition is posted, but nobody has shown yet that the borrower controls it.
+    let findingResolved = false, findingReason = null;
+    const summary = entityAdopt.adoptionSummary(result);
+    if (finding) {
+      if (!entityAdopt.ownershipProofLanded(result)) {
+        findingReason = 'no_operating_agreement_yet';
+      } else if (!can(req.actor, 'sign_off_conditions')) {
+        findingReason = 'needs_sign_off_permission';
+      } else {
+        const applied = await applyFindingResolution({
+          actor: req.actor, appId: app.id, finding, action: 'clear', note: summary,
+        });
+        if (applied.ok) findingResolved = true;
+        else findingReason = (applied.body && applied.body.error) || 'could_not_resolve';
+      }
+    }
+
+    res.json({ ok: true, ...result, summary, findingResolved, findingReason });
   } catch (e) { next(e); }
 });
 

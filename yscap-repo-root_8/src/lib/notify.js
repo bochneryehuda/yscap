@@ -295,7 +295,10 @@ async function _captureSentEmail(notificationId, to, opts, audience, msg, replyT
     for (const a of (Array.isArray(attachments) ? attachments : [])) {
       const meta = { filename: a.filename, content_type: a.contentType || a.content_type || null };
       try {
-        const buf = decodeUploadBase64(a.content);
+        // { buf, sha256 } — destructure. Treating the wrapper as a Buffer made
+        // `buf.length` undefined, so an attachment's bytes were never stored and
+        // the saved email could only ever show the filename.
+        const { buf } = decodeUploadBase64(a.content);
         if (buf && buf.length) {
           meta.size = buf.length;
           if (buf.length <= 25 * 1024 * 1024) { const saved = await storage.save(buf, { filename: a.filename }); meta.storage_provider = saved.provider; meta.storage_ref = saved.ref; }

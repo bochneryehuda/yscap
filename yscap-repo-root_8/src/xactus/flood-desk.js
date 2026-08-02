@@ -153,12 +153,15 @@ async function fetchCertificate({ appId, actorId }) {
 
   let documentId = null;
   try {
-    const buf = decodePdf(st.pdfBase64);
-    if (buf && buf.length) documentId = await attachCertificate(order, buf);
+    const { buf, sha256 } = decodePdf(st.pdfBase64);
+    documentId = await attachCertificate(order, buf, sha256);
   } catch (e) {
-    return { ok: false, error: 'file_failed', order, message: `The certificate came back but could not be saved: ${e.message}` };
+    // Say WHAT went wrong — "could not be read as a PDF" with no reason is exactly
+    // what left this undiagnosable the first time.
+    console.warn('[xactus-flood] certificate file failed:', e.message, '—', pdfShape(st.pdfBase64));
+    return { ok: false, error: 'file_failed', order, message: `The certificate came back but PILOT couldn’t save it — ${plainDecodeReason(e)}. Upload it manually instead.` };
   }
-  if (!documentId) return { ok: false, error: 'file_failed', order, message: 'The certificate came back but could not be read as a PDF. Upload it manually instead.' };
+  if (!documentId) return { ok: false, error: 'file_failed', order, message: 'The certificate came back but PILOT couldn’t file it on this condition. Upload it manually instead.' };
 
   await db.query(
     `UPDATE encompass_flood_orders SET document_id=$2, updated_at=now(),
@@ -309,9 +312,9 @@ async function completeOrder(order, parsed, opts = {}) {
 
   if (pdfBase64) {
     try {
-      const buf = decodePdf(pdfBase64);
-      if (buf && buf.length) documentId = await attachCertificate(order, buf);
-    } catch (e) { console.warn('[xactus-flood] certificate file failed (non-fatal):', e.message); }
+      const { buf, sha256 } = decodePdf(pdfBase64);
+      documentId = await attachCertificate(order, buf, sha256);
+    } catch (e) { console.warn('[xactus-flood] certificate file failed (non-fatal):', e.message, '—', pdfShape(pdfBase64)); }
   }
   await db.query(
     `UPDATE encompass_flood_orders
@@ -332,17 +335,55 @@ async function completeOrder(order, parsed, opts = {}) {
   try { await require('../lib/conditions/engine').evaluateApplication(order.application_id, { reason: 'flood_order', notify: false }); } catch (_) {}
 }
 
+// Decode the certificate bytes through the mandated upload-decode chokepoint
+// (strips any data: prefix, REJECTS garbage instead of silently garbling it) —
+// never a bare Buffer.from, per the SharePoint-integrity rule.
+//
+// TWO things here are load-bearing, and getting either wrong silently threw away a
+// certificate we had already paid for:
+//  1. decodeUploadBase64 returns **{ buf, sha256 }**, NOT a Buffer. Both callers
+//     used to do `const buf = decodePdf(...); if (buf && buf.length)` — and
+//     `{buf,sha256}.length` is `undefined`, so the "did we actually get bytes?"
+//     test failed on a PERFECT PDF, the certificate was never attached, and the
+//     owner was told "the certificate came back but could not be read as a PDF".
+//  2. It THROWS the real reason rather than returning null. The old bare
+//     `catch (_) { return null }` collapsed "the vendor sent something that isn't
+//     base64" and "our own code mishandled the return value" into one identical,
+//     undiagnosable message. Same discipline as the vendor-error surfacing in
+//     flood.js: never swallow the reason.
 function decodePdf(b64) {
-  // Route through the mandated upload-decode chokepoint (strips any data: prefix,
-  // rejects garbage) — never a bare Buffer.from, per the SharePoint-integrity rule.
-  try { return require('../lib/upload-bytes').decodeUploadBase64(b64); }
-  catch (_) { return null; }
+  const { buf, sha256 } = require('../lib/upload-bytes').decodeUploadBase64(b64);
+  if (!buf || !buf.length) { const e = new Error('the certificate file came back empty'); e.status = 400; throw e; }
+  return { buf, sha256 };
+}
+
+// What the vendor actually sent, safe to log: the SHAPE only, never the bytes.
+// Enough to tell "they sent nothing", "they sent an error page" and "they sent a
+// PDF we mishandled" apart without dumping a multi-megabyte payload into the logs.
+function pdfShape(b64) {
+  const s = String(b64 == null ? '' : b64);
+  return `${s.length} chars, starts "${s.slice(0, 12)}"`;
+}
+
+// The decode chokepoint's messages are written for a developer ("invalid file data
+// (not base64) — upload the raw base64 bytes…"). Staff get the plain version; the
+// exact wording still goes to the log line beside it, so it stays diagnosable.
+function plainDecodeReason(e) {
+  const m = String((e && e.message) || '');
+  if (/too large/i.test(m)) return 'the file Xactus sent is too big to store';
+  if (/empty/i.test(m)) return 'Xactus sent an empty file';
+  if (/truncated/i.test(m)) return 'the file Xactus sent arrived incomplete';
+  if (/not base64|percent-encoding|data: URL/i.test(m)) return 'the file Xactus sent isn’t a readable PDF';
+  return m || 'the certificate could not be saved';
 }
 
 // File the certificate PDF onto the flood condition — the same chokepoint every
 // upload uses (storage.save → documents row on the checklist item → re-review →
 // SharePoint mirror), so it flows to SharePoint like every other document.
-async function attachCertificate(order, buf) {
+// `sha256` is the content hash decodeUploadBase64 already computed — stamped on the
+// documents row so the SharePoint integrity audit can verify this mirror copy like
+// every other document (db/115). Never re-hash; it travels with the bytes.
+async function attachCertificate(order, buf, sha256) {
   const itemId = order.checklist_item_id || await floodConditionId(order.application_id);
   const filename = `Flood determination${order.order_id ? ` ${order.order_id}` : ''}.pdf`;
   // Idempotent: if this exact certificate is already filed (a completeOrder whose
@@ -358,10 +399,10 @@ async function attachCertificate(order, buf) {
   const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
   const r = await db.query(
     `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
-                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type)
-     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system')
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256)
+     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9)
      RETURNING id`,
-    [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null]);
+    [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null, sha256 || null]);
   if (itemId) {
     try { await require('../lib/checklist-evidence').reopenConditionEvidence(db, itemId, 'received'); } catch (_) {}
   }

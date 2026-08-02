@@ -1,4 +1,4 @@
--- db/400 — Super-admin FIELD EXCEPTIONS on the Encompass reconcile (owner-directed 2026-08-02).
+-- db/402 — Super-admin FIELD EXCEPTIONS on the Encompass reconcile (owner-directed 2026-08-02).
 --
 -- A not-matching / "no data to compare" Encompass field can be escalated: any assigned
 -- staffer REQUESTS an exception, a SUPER ADMIN grants it, and the field then PASSES the

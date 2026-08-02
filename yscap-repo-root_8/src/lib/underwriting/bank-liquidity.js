@@ -324,9 +324,19 @@ function sameHolder(a, b) {
  * @param {{requiredLiquidity?:number|null}} opts
  */
 function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
+  // An entity PILOT itself added to the profile from a bank-statement finding, with nothing yet
+  // proving the borrower owns it, does NOT make its balances countable (owner-directed 2026-08-02).
+  // Recording the entity on the borrower's record and PROVING he may use its money are two
+  // different things — the second one is what the entity-documents condition collects. The names
+  // come from file-view.loadContext (empty when the caller passes a partial ctx, so every existing
+  // caller behaves exactly as before); the account still shows in the table with tied=false and the
+  // excluded-total note already explains that it counts once the ownership is documented.
+  const pending = new Set((ctx.entityDocsPendingNames || []).map((n) => String(n || '').trim().toLowerCase()).filter(Boolean));
   const subject = {
     borrower_name: borrowerName(ctx.borrower) || (ctx.borrower_name || null),
-    entity_names: [ctx.vestingName, ...(ctx.entityNames || [])].filter(Boolean),
+    entity_names: [ctx.vestingName, ...(ctx.entityNames || [])]
+      .filter(Boolean)
+      .filter((n) => !pending.has(String(n).trim().toLowerCase())),
   };
   const requiredLiquidity = num(opts.requiredLiquidity);
 
