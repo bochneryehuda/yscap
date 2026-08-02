@@ -852,6 +852,8 @@ export const api = {
   clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
   clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
+  // Field-by-field: what PILOT holds vs what the card holds. Read-only, file-scoped.
+  clickupCompare:   (appId) => req('GET', `/api/staff/applications/${appId}/clickup/compare`),
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
   clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),

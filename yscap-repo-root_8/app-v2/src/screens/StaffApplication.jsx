@@ -3223,6 +3223,111 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   );
 }
 
+/* WHAT PILOT HOLDS vs WHAT THE CARD HOLDS, field by field (owner-directed
+   2026-08-02: "Pipeline data" becomes ClickUp Sync, with a full every-field data
+   comparison).
+
+   The old panel printed a read-only list of the figures the last PULL happened to
+   leave on the file — PILOT's own columns, labelled as though they came from
+   ClickUp — so it could not answer the one question anyone asks of a sync screen:
+   do the two systems agree right now? Both values are on screen now, and the
+   VERDICT is the sync's own (lib/clickup-compare reuses the same equivalence rule
+   the outbound no-op suppression uses), so a row this table calls "matching" is
+   exactly a row a push would decline to write.
+
+   Disagreements come first — nobody scrolls a 60-row table to find the one thing
+   that is wrong. Everything that agrees is one click away, deliberately kept
+   rather than hidden: "these match" is exactly what somebody is checking. */
+function ClickupCompare({ appId }) {
+  const [state, setState] = useState({ loading: true });
+  const [showAll, setShowAll] = useState(false);
+  const load = useCallback(() => {
+    setState({ loading: true });
+    return api.clickupCompare(appId)
+      .then((r) => setState({ loading: false, ...r }))
+      .catch((e) => setState({ loading: false, error: e.message || 'Could not compare' }));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (state.loading) return <p className="small" style={{ color: '#4B585C' }}>Comparing with ClickUp…</p>;
+  if (state.error) return <p className="small" style={{ color: '#B3261E' }}>{state.error}</p>;
+  if (state.linked === false) {
+    return <p className="small" style={{ color: '#4B585C' }}>This file is not linked to a ClickUp card yet, so there is nothing to compare.</p>;
+  }
+  if (state.unreadable) {
+    return (
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className="small" style={{ color: '#8A6A22' }}>{state.summary}</span>
+        <button className="btn ghost small" onClick={load}>Try again</button>
+      </div>
+    );
+  }
+
+  const rows = state.rows || [];
+  const attention = state.attention || [];
+  const clean = attention.length === 0;
+  const shown = showAll ? rows : attention;
+  const TONE = {
+    differs: { c: '#B3261E', t: 'Different' },
+    only_pilot: { c: '#8A6A22', t: 'Only in PILOT' },
+    only_clickup: { c: '#8A6A22', t: 'Only on the card' },
+    match: { c: '#1F7A4D', t: 'Match' },
+    blank: { c: '#4B585C', t: 'Neither' },
+  };
+
+  return (
+    <div>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+        <span style={{ fontWeight: 600, color: clean ? '#1F7A4D' : '#8A6A22' }}>{state.summary}</span>
+        <div className="spacer" />
+        <button className="btn ghost small" onClick={load}>Re-check</button>
+        <button className="btn ghost small" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? 'Show only what differs' : `Show all ${rows.length} fields`}
+        </button>
+      </div>
+      {clean && !showAll && (
+        <p className="small" style={{ color: '#4B585C', margin: '0 0 8px' }}>
+          Nothing to reconcile. Use &ldquo;Show all&rdquo; to read every field side by side.
+        </p>
+      )}
+      {shown.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="small" style={{ width: '100%', borderCollapse: 'collapse', color: '#141B22' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--line)' }}>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>Field</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>PILOT</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>ClickUp card</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>Syncs</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>&nbsp;</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => {
+                const tone = TONE[r.status] || TONE.blank;
+                return (
+                  <tr key={r.fieldId || r.field} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ padding: '6px 8px', color: '#141B22' }}>{r.label}</td>
+                    <td style={{ padding: '6px 8px', color: r.pilot ? '#141B22' : '#4B585C' }}>{r.pilot || '—'}</td>
+                    <td style={{ padding: '6px 8px', color: r.clickup ? '#141B22' : '#4B585C' }}>{r.clickup || '—'}</td>
+                    <td style={{ padding: '6px 8px', color: '#4B585C' }}>{r.direction}</td>
+                    <td style={{ padding: '6px 8px', color: tone.c, whiteSpace: 'nowrap' }}>{tone.t}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="small" style={{ color: '#4B585C', marginTop: 8, marginBottom: 0 }}>
+        A row reads &ldquo;Match&rdquo; when the two systems mean the same thing, even if they spell it
+        differently — that is the same test the sync itself uses to decide whether a push would
+        actually change anything.
+      </p>
+    </div>
+  );
+}
+
 /* ClickUp sync panel — staff-only surface on the file overview.
    Shows the two-layer status (exact ClickUp mirror vs. borrower-facing), the
    YS loan number, the note buyer (internal only — never borrower-facing), the
@@ -3674,7 +3779,6 @@ export default function StaffApplication() {
   // link/unlink) and the 38-status internal-status dropdown — is shown by default so
   // staff can change/maneuver the ClickUp status and re-sync right from the file. The
   // toggle stays so it can be collapsed when someone wants a quieter overview.
-  const [showPipeline, setShowPipeline] = useState(true);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   // Revealing / adding / correcting the SSN moved into the shared
@@ -4441,7 +4545,6 @@ export default function StaffApplication() {
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />
-      {showPipeline && <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />}
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a
@@ -4459,9 +4562,13 @@ export default function StaffApplication() {
                   title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
           })()}
           <div className="spacer" />
-          <button type="button" className="btn link small" onClick={() => setShowPipeline(v => !v)}
-            title="Show or hide the ClickUp / pipeline controls (internal status, sync, read-only pipeline data)">
-            {showPipeline ? 'Hide pipeline details' : 'Pipeline details'}
+          {/* The ClickUp controls moved to their own tab under Application
+              details, alongside the field-by-field comparison — this is the way
+              in, so the toggle that used to hide them here is retired. */}
+          <button type="button" className="btn link small"
+            onClick={() => { setAppDetailTab('pipeline'); goToSection('sec-application'); }}
+            title="The ClickUp card: the link, re-sync, and a field-by-field comparison of what PILOT holds against what the card holds">
+            ClickUp Sync →
           </button>
         </div>
 
@@ -4634,7 +4741,7 @@ export default function StaffApplication() {
           { k: 'deal', label: 'Deal & property' },
           { k: 'people', label: app.co_borrower_id ? 'Borrower profiles' : 'Borrower profile' },
           { k: 'missing', label: 'Missing info' },
-          { k: 'pipeline', label: 'Pipeline data (read-only)' },
+          { k: 'pipeline', label: 'ClickUp Sync' },
         ].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={appDetailTab === t.k}
             className={`cond-tab${appDetailTab === t.k ? ' active' : ''}`} onClick={() => setAppDetailTab(t.k)}>
@@ -4722,12 +4829,20 @@ export default function StaffApplication() {
         )}
       </>}
 
-      {appDetailTab === 'pipeline' && (
-        /* Read-only pipeline data pulled from ClickUp — its own tab now, no
-           longer buried inside a disclosure; the panel carries its own
-           "Pulled from the pipeline · read-only" intro line. */
+      {/* CLICKUP SYNC (owner-directed 2026-08-02) — everything about the card in
+          ONE place: the link and the re-sync controls (moved down from the
+          overview, where they sat behind a "Pipeline details" toggle on a panel
+          about a different subject), then the field-by-field comparison, then the
+          read-only figures the pipeline carries. The tab was called "Pipeline
+          data (read-only)", which described the least useful third of it. */}
+      {appDetailTab === 'pipeline' && <>
+        <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 8px', color: '#141B22' }}>PILOT vs the ClickUp card</h4>
+          <ClickupCompare appId={app.id} />
+        </div>
         <ClickupFileData app={app} />
-      )}
+      </>}
       </Section>
 
       {/* THE PAYOFF (owner-directed 2026-07-31) — its own section on a refinance,

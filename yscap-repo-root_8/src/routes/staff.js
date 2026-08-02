@@ -14194,6 +14194,48 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
 
 // Preview a move for the confirm dialog: does the pasted card exist, and is it
 // currently linked to another file? Never changes anything.
+/* WHAT PILOT HOLDS vs WHAT THE CARD HOLDS, field by field (owner-directed
+   2026-08-02). READ-ONLY: it fetches the one task and writes nothing, to either
+   system. File-scoped by the /applications/:id middleware — no extra permission,
+   because every staffer who can open the file can already see these values one
+   at a time; this only puts the card's copy beside them.
+
+   The verdict is the SYNC'S OWN (lib/clickup-compare reuses
+   mapper.fieldValueEquivalent), so a field this screen calls "matching" is
+   exactly a field a push would decline to write. Best-effort throughout — a
+   ClickUp outage answers "we could not read the card", never a 500. */
+router.get('/applications/:id/clickup/compare', async (req, res) => {
+  try {
+    const row = (await db.query(
+      `SELECT clickup_pipeline_task_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const taskId = row.clickup_pipeline_task_id;
+    if (!taskId) return res.json({ ok: true, linked: false, rows: [], counts: {}, summary: 'This file is not linked to a ClickUp card yet.' });
+
+    const orchestrator = require('../clickup/orchestrator');
+    const registry = require('../clickup/registry');
+    const client = require('../clickup/client');
+    const cmp = require('../lib/clickup-compare');
+
+    const ctx = await orchestrator.loadPushContext(req.params.id);
+    if (!ctx) return res.status(404).json({ error: 'not found' });
+    let task = null;
+    try { task = await client.getTask(taskId); } catch (e) {
+      return res.json({ ok: true, linked: true, taskId, unreadable: true, rows: [], counts: {},
+        summary: 'Could not read the ClickUp card just now — try again in a moment.',
+        reason: (e && e.message) || 'clickup unreachable' });
+    }
+    const options = await registry.optionMap(null).catch(() => ({}));
+    const { rows, counts } = cmp.compare(ctx, task, options);
+    res.json({ ok: true, linked: true, taskId, rows, counts,
+      attention: cmp.needsAttention(rows), summary: cmp.summarize(counts) });
+  } catch (e) {
+    console.warn('[clickup-compare] failed:', db.describeError(e));
+    res.json({ ok: true, linked: true, unreadable: true, rows: [], counts: {},
+      summary: 'Could not build the comparison just now.' });
+  }
+});
+
 router.get('/applications/:id/clickup/relink-preview', requireRole('admin'), async (req, res) => {
   try {
     const out = await require('../clickup/relink').relinkPreview({ appId: req.params.id, taskInput: req.query.taskId });
