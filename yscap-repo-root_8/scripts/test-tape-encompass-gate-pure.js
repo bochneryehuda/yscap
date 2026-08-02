@@ -110,7 +110,10 @@ ok('couldn’t-compute: unconfigured stays dormant, configured fails CLOSED (str
   assert.ok(/3 fields still differ\b/.test(mMany), `plural field grammar (got: ${mMany})`);
   assert.ok(/reconcile every field/.test(mMany), 'unreconciled message tells staff to reconcile every field');
   const mErr = recon.tapeGateMessage(tapeGateError(true));
-  assert.ok(/couldn’t confirm/i.test(mErr) && /admin can override/i.test(mErr), 'fail-closed error message names the retry + admin override');
+  // The base error message no longer promises an admin override (owner-directed
+  // 2026-08-02: only a super-admin can allow it, and the route appends that copy).
+  assert.ok(/couldn’t confirm/i.test(mErr) && /try again/i.test(mErr), 'fail-closed error message names the retry');
+  assert.ok(!/admin can override/i.test(mErr), 'fail-closed message no longer promises a plain-admin override');
   ok('plain-language gate messages: not-in-Encompass + singular/plural + fail-closed error');
 
   console.log(`\ntape Encompass gate pure — ${passed} checks passed`);
