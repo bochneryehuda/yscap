@@ -17,6 +17,10 @@
 const crypto = require('crypto');
 const express = require('express');
 const router = require('../lib/safe-router')();
+const F = require('../lib/fields');           // jsonbText: this router is mounted ABOVE
+                                              // the request-boundary NUL stripper (it needs the
+                                              // RAW body for signature checks), so the helper is
+                                              // genuinely the only guard here (audit 2026-08-02).
 const db = require('../db');
 const cfg = require('../config');
 const { rateLimit } = require('../lib/rate-limit');
@@ -42,10 +46,10 @@ router.post('/', async (req, res) => {
     const event = String(p.event || p.event_type || '').toUpperCase().replace(/\s+/g, '_').slice(0, 64);
     if (!event) return res.status(400).json({ error: 'missing event' });
     const data = p.data && typeof p.data === 'object' ? p.data : p;
-    let payload = JSON.stringify(data);
+    let payload = F.jsonbText(data);
     // NEVER slice a JSON string (an invalid fragment fails the ::jsonb cast and 500s the
     // receive — TrustPoint drops non-2xx forever). Oversize → a marker object instead.
-    if (payload.length > 100000) payload = JSON.stringify({ truncated: true, event, draw_id: data.draw_id || null, project_id: data.project_id || null, loan_id: data.loan_id || null });
+    if (payload.length > 100000) payload = F.jsonbText({ truncated: true, event, draw_id: data.draw_id || null, project_id: data.project_id || null, loan_id: data.loan_id || null });
     const day = new Date().toISOString().slice(0, 10);
     const hash = crypto.createHash('sha256').update(event + '|' + day + '|' + payload).digest('hex');
     await db.query(

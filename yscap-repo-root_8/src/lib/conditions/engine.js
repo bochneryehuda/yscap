@@ -453,6 +453,20 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
     if (fieldKey === 'fico' && (value < 300 || value > 850)) { const err = new Error('credit score must be between 300 and 850'); err.status = 400; throw err; }
     if (fieldKey === 'requested_ir_months' && (value < 0 || value > 24)) { const err = new Error('interest reserve must be 0–24 months'); err.status = 400; throw err; }
     if (/^(requested_exp|units|sqft)/.test(fieldKey)) value = Math.round(value);
+    /* …AND IT HAS TO FIT THE COLUMN (post-merge audit round 2, 2026-08-02).
+       The freeze axis and the text axis were both brought to parity with the
+       door that owns the field; the NUMBER axis was missed. So a borrower
+       answering an information condition with a big number got Postgres's own
+       words back — "numeric field overflow", or `value "10000000000" is out of
+       range for type integer` — naming no field, quoting no limit, on a
+       BORROWER-facing screen, where the staff details door answers a plain
+       sentence. Same table, same wording, keyed on the column this field
+       actually writes. A CUSTOM field has no column, so there is nothing to
+       check (its value lands in application_field_values as jsonb). */
+    if (target && !f.custom) {
+      const bad = require('../number-bounds').tableColumnProblem(target.table, target.column, value, f.label);
+      if (bad) { const err = new Error(bad); err.status = 400; throw err; }
+    }
   } else if (f.type === 'date') {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a shape-only regex accepted '0026-07-17' here, which is the
