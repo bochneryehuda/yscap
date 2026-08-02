@@ -1024,7 +1024,7 @@ function tapeGateMessage(gate) {
     return 'This loan isn’t in Encompass yet. Finish syncing it to Encompass and reconcile the file (every field matching) before exporting its tape.';
   }
   if (gate.reason === 'error') {
-    return 'We couldn’t confirm this loan matches Encompass right now. Try again in a moment — or an admin can override with a reason.';
+    return 'We couldn’t confirm this loan matches Encompass right now. Try again in a moment.';
   }
   const n = gate.openBlocking || 0;
   const fields = n === 1 ? '1 field' : `${n} fields`;

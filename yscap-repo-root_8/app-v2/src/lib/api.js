@@ -586,6 +586,8 @@ export const api = {
   fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
   requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
   requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
+  // Ask a super admin to allow the data tape out before Encompass matches (owner-directed 2026-08-02).
+  requestTapeException:      (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/tape-encompass`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
