@@ -867,7 +867,11 @@ function roleDone(it, role) {
 // Per-user sticky filters (client-side; keyed per filter surface).
 function useStickyFilter(key, fallback) {
   const [v, setV] = useState(() => { try { return localStorage.getItem('pilot.filter.' + key) || fallback; } catch { return fallback; } });
-  const set = (nv) => { setV(nv); try { localStorage.setItem('pilot.filter.' + key, nv); } catch { /* private mode */ } };
+  // Memoized: consumers put this setter in hook deps (e.g. the Seven Rooms
+  // runReveal), and an unstable identity re-ran those effects on EVERY render —
+  // which is what let a re-render cancel a queued cross-room reveal (audit
+  // 2026-08-02 #1). Same behavior, stable identity.
+  const set = useCallback((nv) => { setV(nv); try { localStorage.setItem('pilot.filter.' + key, nv); } catch { /* private mode */ } }, [key]);
   return [v, set];
 }
 
@@ -3792,6 +3796,10 @@ export default function StaffApplication() {
   const [fileViewPref, setFileViewPref] = useStickyFilter('fileView', 'rooms');
   const classic = fileViewPref === 'classic';
   const [activeStation, setActiveStation] = useState('st-overview');
+  // Opening a DIFFERENT file starts at Overview — the component is reused
+  // across /internal/app/:id, so without this file B opened in whatever room
+  // file A was left in (audit 2026-08-02 #3).
+  useEffect(() => { setActiveStation('st-overview'); pendingRevealRef.current = null; }, [id]);
   const activeStationRef = useRef(activeStation); activeStationRef.current = activeStation;
   const pendingRevealRef = useRef(null);
   // Permission-gated rooms vanish exactly as their sections do today; a deep
@@ -3839,8 +3847,12 @@ export default function StaffApplication() {
   useEffect(() => {
     const t = pendingRevealRef.current;
     if (!t) return undefined;
-    pendingRevealRef.current = null;
-    const timer = setTimeout(() => runReveal(t), 120);
+    // Consume INSIDE the timer — never eagerly. load() commits several state
+    // updates in a row right when a landing queues its reveal, and each commit
+    // re-runs this effect; consuming eagerly + clearing the timer in cleanup
+    // silently swallowed the jump (audit 2026-08-02 #1, MAJOR). Left queued, a
+    // cancelled timer is simply re-scheduled by the re-run.
+    const timer = setTimeout(() => { pendingRevealRef.current = null; runReveal(t); }, 120);
     return () => clearTimeout(timer);
   }, [activeStation, runReveal]);
   // Register the jump resolver (goToSection/revealAnchor consult it first).
@@ -3921,7 +3933,6 @@ export default function StaffApplication() {
   if (!app) return <div className="panel muted">Loading…</div>;
   const processors = team.filter(m => m.role === 'processor');
   const officers = team.filter(m => ['loan_officer', 'admin', 'super_admin'].includes(m.role));
-  const procName = (team.find(m => m.id === app.processor_id) || {}).full_name;
   const uwName = (team.find(m => m.id === app.underwriter_id) || {}).full_name;
   // Headline the file with the property's one-line address (incl. zip) so it's
   // instantly obvious which property this file is — with a graceful fallback.

@@ -146,6 +146,11 @@ export function Section({ id, title, info, badge, children, style, collapsible =
   const headAction = (fullBtn || action)
     ? <>{action}{fullBtn}</>
     : null;
+  // A section in CSS full-screen that gets hidden by a room hop must drop out
+  // of full-screen too — it renders null below, and leaving `full` set would
+  // keep document.body scroll-locked with no overlay to escape from (audit
+  // 2026-08-02 #2).
+  useEffect(() => { if (hidden) setFull(false); }, [hidden]);
   // Seven Rooms: a section whose room isn't showing renders NOTHING — but stays
   // MOUNTED, so its open/closed state survives room switches and the section bus
   // can pre-open it while its room is off screen. Sits AFTER every hook above

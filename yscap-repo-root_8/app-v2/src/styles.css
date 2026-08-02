@@ -2274,10 +2274,10 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    Presentation only. A new outer grid wraps the (unchanged) FileSections
    layout on the main side and a NEW presentational right rail on the other,
    matching web/preview/pilot-borrower-file.html and pilot-staff-file.html.
-   `.file-rail-grid` / `.file-rail` (and `.rail-*`) are NEW hooks used ONLY in
-   Application.jsx (borrower) and StaffApplication.jsx (staff). Every rule is
-   scoped to the surface root — borrower under .shell, staff under .app — so
-   one variant's styling can never reach the other, and the shared FileSections
+   `.file-rail-grid` / `.file-rail` (and `.rail-*`) are hooks used ONLY in
+   Application.jsx (the BORROWER loan file) — the staff screen's aside was
+   retired by Seven Rooms Phase 1. Every rule is scoped under .shell, so the
+   styling can never reach another surface, and the shared FileSections
    `.file-*` base classes / behaviour are untouched. Colours resolve from the
    light palette (no dark-on-dark); the grid degrades to a single column with
    the rail below on narrow screens (first-paint safe, reduced-motion safe).
@@ -2310,14 +2310,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .shell .file-rail{position:static;margin-top:20px}
 }
 
-/* ---- Staff (.app) ---- */
-.app .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px;align-items:start}
-.app .file-rail{position:sticky;top:152px;display:flex;flex-direction:column;gap:20px;min-width:0}
-.app .file-rail .panel{margin-top:0}
-@media(max-width:1080px){
-  .app .file-rail-grid{display:block}
-  .app .file-rail{position:static;margin-top:20px}
-}
+/* ---- Staff (.app): RETIRED (Seven Rooms Phase 1) — the staff file's
+   right-hand summary aside is gone; only the borrower (.shell) rail remains.
+   Do not re-add staff-scoped .file-rail* rules without re-adding the aside. */
 
 /* =====================================================================
    BLUEPRINT DERIVED-DATA ELEMENTS (frontend-only, 2026-07-13)
