@@ -210,6 +210,47 @@ const tplFor = async (code) => (await db.query(
     // (H) idempotent + never duplicated.
     assert((await itemsFor(legacy, SSN_CODE)).length === 1,
       'the backfill never adds a SECOND SSN condition to a file that already has one');
+
+    // THE BACKFILL ITSELF, exercised with a real row. Everything above reached the
+    // condition through the ENGINE (files created after the migration ran), so the
+    // migration's own INSERT — the half that reaches files that ALREADY EXIST, and
+    // the only half a fresh test database never runs — would otherwise be unproven.
+    // A wrong column there fails on the first real deploy and nowhere else.
+    {
+      const backfilled = (await db.query(
+        `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'underwriting','CorrFirst') RETURNING id`,
+        [borrowerId])).rows[0].id;
+      await db.query(
+        `DELETE FROM checklist_items ci USING checklist_templates t
+          WHERE ci.template_id=t.id AND ci.application_id=$1 AND t.code=$2`, [backfilled, SSN_CODE]);
+      assert((await itemsFor(backfilled, SSN_CODE)).length === 0, 'set-up: the file starts without the condition');
+
+      await ensureSchema();   // the deploy that carries db/396 to an existing file
+
+      const got = (await itemsFor(backfilled, SSN_CODE))[0];
+      assert(!!got, 'PREVIOUS FILES: the migration BACKFILLS the condition onto an existing open CorrFirst file');
+      assert(got && got.origin_kind === 'auto' && got.created_by_kind === 'system',
+        'the backfilled row is engine-owned, exactly as evaluateApplication would have made it');
+      assert(got && got.audience === 'both' && got.item_kind === 'document' && got.is_required === true,
+        'the backfilled row carries the same shape as the template');
+      assert(got && got.label === 'Social Security number verification'
+        && /social security card/i.test(got.borrower_hint || ''),
+        'the backfilled row carries the real wording, not an empty shell');
+
+      // …and it is genuinely engine-equivalent: the engine retracts it like its own.
+      await db.query(`UPDATE applications SET lender='Fidelis' WHERE id=$1`, [backfilled]);
+      await engine.evaluateApplication(backfilled, { reason: 'test', notify: false });
+      assert((await itemsFor(backfilled, SSN_CODE)).length === 0,
+        'a BACKFILLED row retracts on a note-buyer change exactly like an engine-created one');
+
+      // A terminal file is never backfilled — the engine attaches nothing there either.
+      const funded = (await db.query(
+        `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'funded','CorrFirst') RETURNING id`,
+        [borrowerId])).rows[0].id;
+      await ensureSchema();
+      assert((await itemsFor(funded, SSN_CODE)).length === 0,
+        'a FUNDED CorrFirst file is left alone — a closed loan never gains a new open condition');
+    }
     const emdTpl2 = await tplFor(EMD_CODE);
     assert(emdTpl2.label === 'Earnest money deposit (EMD) verification'
       && emdTpl2.borrower_label === 'Proof of your earnest money deposit (EMD)',
