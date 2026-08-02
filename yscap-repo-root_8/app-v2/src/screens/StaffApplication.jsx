@@ -3318,17 +3318,37 @@ export default function StaffApplication() {
     // landing would burn itself on the old file and never fire for the new one.
     if (!app || String(app.id) !== String(id) || landed.current) return;
     landed.current = true;
+    const rawHash = String(window.location.hash || '');
+    // A `?finding=` / `?focus=` arrival is OWNED by its own landing effect below.
+    // Without this stand-down the closer landing fires 300ms later, hops to
+    // Signing & Closing, and strands the anchor's scroll in a room that is no
+    // longer rendered — and admin/super_admin/closer all hold manage_closings,
+    // so it hit exactly the people the fatal-finding email fans out to
+    // (pre-merge audit 2026-08-02).
+    const qAt = rawHash.indexOf('?');
+    const landingQuery = new URLSearchParams(search || (qAt >= 0 ? rawHash.slice(qAt + 1) : ''));
+    if (landingQuery.get('finding') || landingQuery.get('focus')) return;
     // Any anchor the room map knows, not only a `sec-*` one: the old
     // `#(sec-[a-z-]+)` filter dropped `#ai-findings` (emitted by
     // src/lib/ai/cost-meter.js) before it was ever looked up, so that email
     // landed on the file top with nothing opened (post-merge audit 2026-08-02).
-    // revealAnchor hops to the owning room AND opens the section; a plain
-    // `sec-*` keeps the byte-identical goToSection path it always had.
-    const m = String(window.location.hash || '').match(/#([a-z][a-z0-9-]*)$/);
+    const m = rawHash.match(/#([a-z][a-z0-9-]*)$/);
     if (m && stationOf(m[1])) {
       const target = m[1];
       const t = setTimeout(() => {
-        if (target.startsWith('sec-')) goToSection(target); else revealAnchor(target);
+        if (target.startsWith('sec-')) { goToSection(target); return; }
+        // Rooms view: the resolver hops to the owning room, opens it and scrolls.
+        if (revealAnchor(target)) return;
+        // Classic view registers NO resolver, and the owning section may be
+        // collapsed — a collapsed Section unmounts its children, so there is
+        // nothing for revealAnchor to find. Open the section first, then scroll:
+        // the same shape the ?focus=ai-findings landing already uses.
+        const owner = ANCHOR_SECTION[target];
+        if (owner) requestOpenSection(owner);
+        setTimeout(() => {
+          const el = document.getElementById(target) || (owner ? document.getElementById(owner) : null);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 400);
       }, 250);
       return () => clearTimeout(t);
     }

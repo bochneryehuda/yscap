@@ -146,9 +146,14 @@ export default function WhatsLeftPanel({ gating, items, conds }) {
         {next.length > 0 && <span className="nx-count">{next.length} before funding</span>}
         {nOverdue > 0 && <span className="nx-count late">{nOverdue} overdue</span>}
       </div>
-      <p className="nx-sub">
-        Worst first. <strong>Go fix →</strong> opens the exact section that clears it.
-      </p>
+      {/* Only when there IS work below it. On a file whose only open rows are
+          advisories the buttons all read "Review →", so this line described
+          controls that were not on the screen (pre-merge audit 2026-08-02). */}
+      {(holding.length > 0 || next.length > 0) && (
+        <p className="nx-sub">
+          Worst first. <strong>Go fix →</strong> opens the exact section that clears it.
+        </p>
+      )}
 
       {clear && (
         <div className="row nx-cleared" style={{ alignItems: 'center', gap: 10 }}>
