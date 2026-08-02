@@ -38,11 +38,18 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
         // embedded tool follows the portal's white coloring).
         win.document.documentElement.setAttribute('data-theme', 'light');
         const style = win.document.createElement('style');
-        // Keep the tool's OWN brand-paper background (matches the perfect standalone
-        // version) instead of forcing transparent — forcing transparent showed the
-        // portal's gray sheet through and read as "ugly gray". And stop looping
-        // decorative motion (the "Live" dot pulse etc.) that reads as blinking here.
-        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:#F4F0E7!important}'
+        // WHITE, matching the portal page around it (owner-directed 2026-08-02:
+        // the embed "should not look like an iframe. It should look like real part
+        // of the thing"). Do NOT go back to transparent — that was tried and let
+        // the portal's grey sheet show through, reading as "ugly gray"; and do not
+        // go back to the tool's brand paper #F4F0E7, which is the beige rectangle
+        // the owner was pointing at. The host .toolframe must be white in the same
+        // breath or only one of the two layers changes.
+        // --ds-paper is overridden too, or the tool's own cards keep assuming they
+        // sit on beige; --ds-card stays as-is so the cards remain visible on white
+        // (they all carry a --ds-line border).
+        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:#fff!important}'
+          + ':root{--ds-paper:#fff!important}'
           // Hide the tool's OWN marketing header (both variants) + footer so the
           // embed reads as standalone — no double header inside the portal.
           + '.ys-theme-toggle,.topbar,.tool-bar,.suite-footer{display:none!important}'
