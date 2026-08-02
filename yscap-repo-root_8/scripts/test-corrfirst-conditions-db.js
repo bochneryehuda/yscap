@@ -377,6 +377,29 @@ const tplFor = async (code) => (await db.query(
         'the borrower door never carries the note-buyer mark');
       assert((bRows || []).every((x) => !PARTNER_RE.test(String(x.label || '')) && !PARTNER_RE.test(String(x.hint || ''))),
         'no note-buyer name reaches ANY borrower-facing condition field');
+
+      // THE EXTERNAL HALF HAS TO WORK, not just be visible. "Internal and external"
+      // means the borrower can actually ANSWER it — an audience the borrower can see
+      // but not upload to would be a dead row on their side. Proven through the real
+      // upload door, then re-read from the server rather than trusted from its 200.
+      const up = await fetch(`${base}/api/borrower/documents`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${bTok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          applicationId: cf, checklistItemId: bSsn.id,
+          filename: 'ssn-card.pdf', contentType: 'application/pdf',
+          dataBase64: Buffer.from('%PDF-1.4 test social security card').toString('base64'),
+        }),
+      });
+      assert(up.status === 200 || up.status === 201,
+        `the borrower can UPLOAD to the condition (${up.status}) — the external half is real, not just visible`);
+      const after = (await db.query(
+        `SELECT ci.status, (SELECT count(*)::int FROM documents d
+                             WHERE d.checklist_item_id=ci.id AND d.is_current) AS docs
+           FROM checklist_items ci WHERE ci.id=$1`, [bSsn.id])).rows[0];
+      assert(after && after.docs === 1 && after.status === 'received',
+        're-read after the upload: the document landed on the condition and it moved to review');
+
     } else {
       console.log('SKIP borrower-door checks (no borrower_auth row)');
     }
@@ -386,6 +409,8 @@ const tplFor = async (code) => (await db.query(
     console.error('FAIL (exception)', (e && e.stack) || e); failures++;
   } finally {
     try { if (srv) srv.close(); } catch (_) { /* throwaway listener */ }
+    try { if (borrowerId) await db.query(`DELETE FROM documents WHERE borrower_id=$1 OR application_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]); } catch (_) {}
+    try { if (borrowerId) await db.query(`DELETE FROM credit_reports WHERE application_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]); } catch (_) {}
     try { if (borrowerId) await db.query(`DELETE FROM checklist_items WHERE application_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]); } catch (_) {}
     try { if (borrowerId) await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]); } catch (_) {}
     try { if (borrowerId) await db.query(`DELETE FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]); } catch (_) {}
