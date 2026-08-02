@@ -22,7 +22,14 @@ async function loadContext(client, appId) {
   const app = (await client.query(
     `SELECT id, borrower_id, co_borrower_id, llc_id, property_address, purchase_price, loan_amount,
             as_is_value, arv, rehab_budget, program, property_type, units,
-            ys_loan_number, is_assignment, assignment_fee, underlying_contract_price
+            ys_loan_number, is_assignment, assignment_fee, underlying_contract_price,
+            -- The facts the appraisal states, now carried on the file (db/403). Without them here
+            -- facts.js has nothing to read and the data-comparison shows the appraiser's figure
+            -- beside an empty cell — "Nothing to compare" — which is exactly what the owner was
+            -- looking at. OCCUPANCY is deliberately NOT in this list: the appraisal's occupancy is
+            -- the SELLER's use today and our file's is the borrower's use after closing, so the two
+            -- are never compared (owner-directed 2026-08-02, "the occupancy — skip").
+            seller_name, year_built, living_area_sqft, market_rent
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
   const loadBorrower = async (id) => (id

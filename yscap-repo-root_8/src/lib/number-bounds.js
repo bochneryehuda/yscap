@@ -225,12 +225,17 @@ const COLUMN_KIND = Object.freeze({
     requested_ir_amount: 'money', second_lien: 'money',
     underlying_contract_price: 'money', verified_cash_out: 'money',
     verified_hard_costs: 'money',
+    /* Added by main while this branch was open, and caught by the live-schema
+       check rather than by anyone remembering (2026-08-02) — which is the whole
+       reason that check reads information_schema instead of a hard-coded list. */
+    market_rent: 'money',
     // numeric(6,3) — a PERCENT (or a ratio), NOT money. Ten times tighter.
     deferred_orig_pct: 'pct', dscr_ratio: 'pct', ltv: 'pct', rate_pct: 'pct',
     // int4
     requested_exp_flips: 'int', requested_exp_ground: 'int',
     requested_exp_holds: 'int', requested_exp_reo: 'int',
     sqft_post: 'int', sqft_pre: 'int', units: 'int',
+    year_built: 'int', living_area_sqft: 'int',
     /* int4 with a CHECK narrower than the type (db/030), so the CONSTRAINT is
        the ceiling and int4's number would be the wrong one to quote. */
     requested_ir_months: IR_MONTHS,

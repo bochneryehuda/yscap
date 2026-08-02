@@ -15,6 +15,10 @@
  * and UI never change.
  */
 const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISODate, digitsOnly, num, norm } = require('./compare');
+// Pure, and the ONE place that knows which words are a MISMO attachment style rather than a
+// property type — shared with lib/appraisal/property-category.js so a style can never be read as a
+// category on one desk and dropped on the other.
+const { isAttachmentStyle } = require('../appraisal/property-category');
 
 // ---- Enum canonicalizers (collateral classifications) ----------------------------------------
 // Property type + occupancy come off different documents in different words ("SFR" / "Single
@@ -68,7 +72,13 @@ const identKey = (v) => String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0
 
 // The canonical facts. `kind` selects the match + display logic; `severity` is the finding
 // severity when this fact disagrees; `file(ctx)` reads the loan-file value (null when the file
-// doesn't store it — e.g. the seller, which only documents carry, so it's a doc-vs-doc fact).
+// doesn't store it, which makes it a doc-vs-doc fact).
+//
+// `noFlag: true` marks a READ-ONLY fact: it is shown in the comparison and the matrix like any
+// other, but it never produces a discrepancy finding and never gates anything (owner-directed
+// 2026-08-02: these "should not be a requirement for us to fill anywhere, should not be missing …
+// it should just be a slot in our file"). Use it for a fact that is carried onto the file for
+// reference — the property's age, its size, the appraiser's rent opinion, who lives there today.
 const FACTS = [
   { key: 'borrower_name', label: 'Borrower name', category: 'identity', kind: 'name', severity: 'fatal', file: (c) => borrowerName(c.borrower) },
   { key: 'borrower_dob', label: 'Date of birth', category: 'identity', kind: 'date', severity: 'fatal', file: (c) => (c.borrower ? dateStr(c.borrower.date_of_birth) : null) },
@@ -80,7 +90,13 @@ const FACTS = [
   // must reference the SAME policy as the binder, so they tie out on this. A warning when they differ.
   { key: 'policy_number', label: 'Insurance policy number', category: 'collateral', kind: 'ident', severity: 'warning', file: () => null },
   { key: 'purchase_price', label: 'Purchase price', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.purchase_price : null) },
-  { key: 'seller_name', label: 'Seller', category: 'economics', kind: 'nameOrEntity', severity: 'fatal', file: () => null },
+  // THE SELLER IS NOW A FILE FACT (db/403, owner-directed 2026-08-02: "we have a seller's name on
+  // file, so we can do stuff with it to make sure it matches other documentation"). The appraisal
+  // import writes `applications.seller_name` from the appraiser's owner of record, so the contract,
+  // the title report and the settlement statement are all measured against ONE value of record
+  // instead of only against each other. On a wholesale deal the file's seller is the ORIGINAL
+  // seller — tieout.js judges a flipper-role document against the flipper, never against this.
+  { key: 'seller_name', label: 'Seller', category: 'economics', kind: 'nameOrEntity', severity: 'fatal', file: (c) => (c.app ? c.app.seller_name : null) },
   { key: 'underlying_price', label: "Seller's original price", category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.underlying_contract_price : null) },
   { key: 'assignment_fee', label: 'Assignment fee', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.assignment_fee : null) },
   { key: 'loan_amount', label: 'Loan amount', category: 'economics', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.loan_amount : null) },
@@ -89,14 +105,23 @@ const FACTS = [
   { key: 'rehab_budget', label: 'Rehab budget', category: 'rehab', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.rehab_budget : null) },
   // ---- collateral physicals (owner-directed 2026-07-21 — pull EVERY appraisal fact into the
   // comparison). The appraisal is the authority; the application/file carries units/type/occupancy,
-  // so these cross-check appraisal-vs-file. Year built / living area / market rent are appraisal-
-  // carried facts we surface even when nothing else states them (single-source display).
+  // so these cross-check appraisal-vs-file. Year built / living area / market rent used to read
+  // `file: () => null` — nothing on the loan file stored them, so every one of those rows showed the
+  // appraiser's figure beside an empty cell and the verdict "· Nothing to compare". db/403 gave the
+  // file the four columns and the appraisal import fills them, so they answer now.
   { key: 'units', label: 'Number of units', category: 'collateral', kind: 'count', severity: 'warning', file: (c) => (c.app ? c.app.units : null) },
   { key: 'property_type', label: 'Property type', category: 'collateral', kind: 'propertyType', severity: 'warning', file: (c) => (c.app ? c.app.property_type : null) },
+  // OCCUPANCY IS NEVER IMPORTED FROM THE APPRAISAL (owner-directed 2026-08-02, and the reason it is
+  // the one fact db/403 left alone): the appraisal states who lives there TODAY — usually the
+  // SELLER, and "OwnerOccupied" on a purchase simply means the seller lives in the house they are
+  // selling. Our file's occupancy is the BORROWER's use after closing, and we only lend
+  // non-owner-occupied, so the two legitimately differ. `lib/appraisal/import.js` must never write
+  // it, and `file-view.loadContext` deliberately does not load it, which is why this row reads
+  // "nothing to compare" against a lone appraisal instead of flagging an ordinary purchase.
   { key: 'occupancy', label: 'Occupancy', category: 'collateral', kind: 'occupancy', severity: 'info', file: (c) => (c.app ? c.app.occupancy : null) },
-  { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', file: () => null },
-  { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', file: () => null },
-  { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', file: () => null },
+  { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.year_built : null) },
+  { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.living_area_sqft : null) },
+  { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.market_rent : null) },
   // ---- closing economics (owner-directed 2026-07-21 — the settlement statement is the
   // reconciliation SINK; surface its figures in the comparison). Doc-carried facts (the loan file
   // doesn't store the earnest money or cash-to-close), so they show + tie out doc-vs-doc.
@@ -124,12 +149,20 @@ const DOC_CLAIMS = {
   title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners }),
   appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
     // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
-    // authority for what the property physically IS; these tie out against the application. NOTE
-    // (owner 2026-07-27): the appraisal's property_type is usually the MISMO AttachmentType, a STYLE
-    // ("Detached"/"Attached") — canonPropertyType now treats a bare style as UNCOMPARABLE, so it can
-    // never false-mismatch the file's unit CATEGORY ("Multi 2–4"); a real category (Condo/SFR) still
-    // ties out. The count-vs-type-range check is owned by appraisal-underwriter.js (via `units`).
-    units: pick(f.units, f.unitCount), property_type: pick(f.propertyType, f.property_type),
+    // authority for what the property physically IS; these tie out against the application.
+    //
+    // THE PROPERTY TYPE IS A CATEGORY, AND AN ATTACHMENT STYLE IS NOT ONE (owner-reported
+    // 2026-08-02, the comparison row "Property type | Detached | Multi 2–4"). The MISMO
+    // AttachmentType's whole controlled list is Detached / Attached — it says whether the building
+    // touches its neighbour, not what the property IS. The 2026-07-27 patch stopped it FALSE-
+    // MISMATCHING (canonPropertyType returns null for a bare style) but still let it be CLAIMED, so
+    // the appraisal column printed a word that is not an answer. A bare style is now dropped at the
+    // claim, which reads as "this document didn't state it" — the truth. The real category comes
+    // from the appraisal's own form + unit count + ownership signals via
+    // lib/appraisal/property-category.js (`file-review.js` folds it in); an AI-read appraisal PDF
+    // that genuinely says "Single Family" / "Condo" still ties out normally. The count-vs-type-range
+    // check stays owned by appraisal-underwriter.js (via `units`).
+    units: pick(f.units, f.unitCount), property_type: categoryOnly(pick(f.propertyType, f.property_type)),
     occupancy: pick(f.occupancy), year_built: pick(f.yearBuilt, f.year_built),
     living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
@@ -185,6 +218,10 @@ const DOC_CARRIES = {
 function nm(a, b) { const n = `${a || ''} ${b || ''}`.trim(); return n || null; }
 function arr(v) { return v ? [v] : null; }
 function pick(...vals) { for (const v of vals) if (v != null) return v; return null; }
+// A property-type claim, unless the value is only an attachment STYLE (Detached / Attached), which
+// is not a property type at all. ONE definition of what a style is — shared with the appraisal's
+// own derivation, so the two can never drift on which words are styles.
+function categoryOnly(v) { return isAttachmentStyle(v) ? null : v; }
 
 // An assignment / wholesale FEE is a FRACTION of the price — it can never BE the whole price. The
 // extractor sometimes drops the TOTAL purchase price into the "assignment fee" field (owner-reported

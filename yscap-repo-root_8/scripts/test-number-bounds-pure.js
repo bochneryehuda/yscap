@@ -302,6 +302,7 @@ console.log('\n--- the column table ---');
     'verified_hard_costs', 'deferred_orig_pct', 'dscr_ratio', 'ltv', 'rate_pct',
     'requested_exp_flips', 'requested_exp_ground', 'requested_exp_holds', 'requested_exp_reo',
     'sqft_post', 'sqft_pre', 'units', 'requested_ir_months',
+    'market_rent', 'year_built', 'living_area_sqft',
   ];
   const missing = MUST_HAVE.filter((c) => !nb.columnKindOf('applications', c));
   eq(missing.join(',') || '(none)', '(none)', 'every bounded applications column is in the table');

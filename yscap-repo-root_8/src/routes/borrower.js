@@ -762,6 +762,11 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'appraiser_name', 'cda_value', 'first_lien', 'second_lien', 'actual_rate', 'desired_rate',
   'encompass_status', 'application_submitted', 'prepayment_penalty', 'property_taxes',
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
+  // The appraiser's own opinion of market rent, copied onto the file by the appraisal import
+  // (db/403). Same posture as the two appraised rental figures beside it: an internal valuation the
+  // underwriting desk reads, never a borrower-facing number. The other three db/403 facts (seller,
+  // year built, living area) are ordinary facts about the borrower's own deal and stay visible.
+  'market_rent',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
   'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
@@ -1337,6 +1342,9 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const appr = (await db.query(
     `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
+  // Same correction as the staff tab: the property TYPE is the category (single family / 2–4 /
+  // condo), never the Detached / Attached attachment style (owner-reported 2026-08-02).
+  require('../lib/appraisal/property-category').applyPropertyType(appr);
   const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
@@ -2974,6 +2982,12 @@ router.post('/documents', async (req, res) => {
   // PDF captured from the Term Sheet Studio: each re-registration supersedes
   // the previous term sheet so exactly one is current on the file.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  // WHICH STAMP those bytes print (owner-directed 2026-08-02, db/404) — the
+  // borrower mirror of the staff door. The INITIAL/FINAL wording is drawn into
+  // the PDF at generation time, so only the generator knows; it reports what it
+  // printed and we record it. A description of the file, never an
+  // authorization — the send gate alone decides whether a package may go out.
+  const termSheetFinal = docKind === 'term_sheet' ? (b.termSheetFinal === true) : null;
   // Optional slot: a condition holds several coexisting documents, each in its
   // own named slot. Every slot keeps EVERY document — a plain add never replaces.
   let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
@@ -2989,14 +3003,14 @@ router.post('/documents', async (req, res) => {
   const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
     applicationId: b.applicationId || null, checklistItemId: b.checklistItemId || null,
-    llcId: b.llcId || null, trackRecordId, slotLabel: slot, docKind });
+    llcId: b.llcId || null, trackRecordId, slotLabel: slot, docKind, termSheetFinal });
   if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'borrower',$11,$12,$13) RETURNING id`,
+    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'borrower',$11,$12,$13,$14) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null, trackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot]);
+     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot, termSheetFinal]);
   // The requested line item has its document — reflect it on the line too.
   if (trackRecordId) {
     await db.query(
