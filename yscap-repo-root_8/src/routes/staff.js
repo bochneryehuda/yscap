@@ -9979,7 +9979,7 @@ async function completeFields(req, res, borrowerScoped) {
         /* A money box is either a number or a refusal — see the borrower door's
            note. The character-deleting parse this replaces stored 15 for "1e5"
            and a POSITIVE 500000 for "-500000", on pricing columns. */
-        const mp = require('../lib/fields').moneyTextProblem(v, k);
+        const mp = require('../lib/fields').moneyTextProblem(v, numberBounds.COLUMN_LABEL[k] || k);
         if (mp) return res.status(400).json({ error: mp });
         v = require('../lib/fields').moneyValue(v);
         if (v == null) continue;

@@ -1071,6 +1071,24 @@ if (!process.env.DATABASE_URL) {
       const row = (await db.query(`SELECT residence_since, cell_phone FROM borrowers WHERE id=$1`, [id])).rows[0];
       assert(!!row.residence_since, '…and the move-in anchor SURVIVED (it used to be silently wiped)');
       eq(row.cell_phone, '555-0144', '…along with the field they actually edited');
+      /* THE STAFF DOOR CARRIES THE SAME GUARD AND HAD NO ASSERTION (sixth audit,
+         2026-08-02) — reverting it alone failed nothing anywhere in the suite. */
+      const id2 = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name,residence_since)
+         VALUES ($1,'Anchor','Staff',(now() - interval '1300 months')::date) RETURNING id`,
+        [`anchor-staff-${sfx}@test.local`])).rows[0].id;
+      const before2 = (await db.query(`SELECT residence_since FROM borrowers WHERE id=$1`, [id2])).rows[0].residence_since;
+      const live2 = require('../src/lib/residence').withLiveResidence(
+        (await db.query(`SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`, [id2])).rows[0]);
+      const sr2 = await call('PATCH', `/api/staff/borrowers/${id2}`, sTok, {
+        citizenship: 'US Citizen',
+        yearsAtResidence: live2.years_at_residence, monthsAtResidence: live2.months_at_residence,
+      });
+      eq(sr2.status, 200, 'the STAFF door takes the same over-cap re-save');
+      const after2 = (await db.query(`SELECT residence_since, citizenship FROM borrowers WHERE id=$1`, [id2])).rows[0];
+      eq(String(after2.residence_since), String(before2), '…and the anchor SURVIVED there too');
+      eq(after2.citizenship, 'US Citizen', '…along with the field they actually edited');
+
       // …while a duration we CAN anchor still re-anchors.
       eq((await call('PUT', '/api/borrower/profile', t, { yearsAtResidence: 3, monthsAtResidence: 2 })).status, 200,
         'a real duration still saves');

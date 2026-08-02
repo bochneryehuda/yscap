@@ -2182,13 +2182,12 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
         if (!(k in B_COMPLETE_APP) && !(k in B_COMPLETE_BORROWER)) continue;
         if (v === '' || v == null) continue;
         if (k === 'purchase_price' && refiPre) continue;
-        /* SKIP EXACTLY WHAT THE WRITER SKIPS (re-audit, 2026-08-02). The money
-           branch below IGNORES a value with no digits in it — `purchase_price:
-           'TBD'` has always been passed over — so refusing it here made the
-           pre-pass STRICTER than the door it guards: a post carrying a good ARV
-           and a "TBD" price saved nothing on a registered file while the same
-           post on an unregistered one still saved the ARV. A pre-check that
-           refuses work the writer would have done is its own bug. */
+        /* THE PRE-PASS AND THE WRITER ASK THE SAME QUESTION (re-audit
+           2026-08-02, corrected 2026-08-02 evening). It began as "skip exactly
+           what the writer skips" — but round 4 turned that skip into a REFUSAL
+           on both halves, because ignoring a money box the borrower typed into
+           is a 200 with nothing saved. Both now read `moneyBoxProblem`, so they
+           cannot answer the same body differently in either direction. */
         if (B_COMPLETE_APP[k] === 'money') {
           const mp = moneyBoxProblem(k, v);
           if (mp) return res.status(400).json({ error: mp });
