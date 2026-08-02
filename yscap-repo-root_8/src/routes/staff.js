@@ -3545,6 +3545,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
+            -- The condition's own rule tree, read ONLY to derive the note-buyer MARK
+            -- below (never sent to the client). A condition that exists because of one
+            -- capital partner must say so on its face — owner-directed 2026-08-02.
+            (SELECT rule_logic FROM checklist_templates t WHERE t.id=ci.template_id) AS rule_logic,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
@@ -3571,6 +3575,22 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
+  // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
+  // file only because of one capital partner carries that partner's name on its
+  // row, DERIVED from the rule that put it there (note-buyer-effects.noteBuyerMark)
+  // so it can never disagree with what the engine did. STAFF-ONLY — the borrower
+  // checklist route never selects rule_logic and never gains this field. rule_logic
+  // itself is dropped from the response: it was read to compute the mark, and the
+  // client has no business with a raw rule tree.
+  try {
+    const { noteBuyerMark } = require('../lib/note-buyer-effects');
+    for (const row of r.rows) {
+      let mark = null;
+      try { mark = noteBuyerMark(row.rule_logic); } catch (_) { mark = null; }
+      row.note_buyer_mark = mark ? mark.label : null;
+      delete row.rule_logic;
+    }
+  } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
   // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
   // response stays a bare array (no shape change for the UI); an ager hiccup
@@ -5987,6 +6007,33 @@ async function signOffGate(itemId, actor) {
               AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
+      }
+      // SSN VERIFICATION — the credit report is one of the three accepted proofs
+      // (owner-directed 2026-08-02; CorrFirst cond 1050). The guideline reads
+      // "SSN verified via the credit report … ELSE a copy of the Social Security
+      // card or a completed SSA-89", so the card/SSA-89 is the FALLBACK, not the
+      // only way. When the report already proves it there is no document to
+      // upload, and the strict doc-gate would leave a genuinely-verified SSN
+      // signable only through a super-admin override. Same shape as the gov-ID
+      // reuse above: real fulfillment that lives somewhere other than a document
+      // on this item.
+      //
+      // NOT a weakening. `ssnCompleteness` is a PROVEN state, stricter than "a
+      // file is attached": every borrower on the file (primary AND co-borrower)
+      // must have an SSN on record and a COMPLETED credit report whose parsed
+      // SSN last-4 EQUALS it. Anything short of that — one borrower unpulled, a
+      // report naming a different last-4, no SSN on file — falls straight
+      // through to the ordinary refusal below and a document is required.
+      //
+      // Deliberately NOT gated on SSN_AUTOCLEAR_ENABLED: that switch governs
+      // PILOT clearing the condition BY ITSELF. This is a human signing off on
+      // evidence that already exists, which is always allowed to read the file.
+      if (code === 'cond_ssn_verify_corrfirst') {
+        try {
+          const c = await require('../lib/underwriting/ssn-autoclear').ssnCompleteness(db, item.application_id);
+          if (c && c.complete) return null;
+        } catch (_) { /* unreadable → fall through to the document requirement */ }
+        return 'Attach the borrower’s Social Security card or a completed SSA-89 before signing this off — or import a credit report whose Social Security number matches the one on file for every borrower, which verifies it on its own.';
       }
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
     }
