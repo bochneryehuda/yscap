@@ -49,7 +49,7 @@ const { enqueueChecklistStatusPush } = require('../../clickup/enqueue');
  * and DELETED off every open file long before this was built. So it has never had a
  * condition to clear: the guideline was mapped, the row never existed, and the owner
  * reported exactly that ("SS NUMBER VERIFICATION — no condition on the file").
- * db/397 creates the real, rule-driven `cond_ssn_verify_corrfirst`, and that is the
+ * db/398 creates the real, rule-driven `cond_ssn_verify_corrfirst`, and that is the
  * condition this clears now.
  *
  * The retired code stays in the list deliberately: a terminal file may still carry a

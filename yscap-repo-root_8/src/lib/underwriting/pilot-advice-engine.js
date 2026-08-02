@@ -141,7 +141,7 @@ const EVALUATORS = {
       return { complete: !!c.complete, contradicted };
     },
   },
-  // The REAL SSN-verification condition (db/397). Its predecessor `rtl_p1_ssn` was
+  // The REAL SSN-verification condition (db/398). Its predecessor `rtl_p1_ssn` was
   // retired by db/040 and deleted off every open file, so this evaluator could never
   // run — the CorrFirst SSN guideline was tracked against a condition that did not
   // exist. Both codes are mapped: the retired one so a terminal file still carrying a

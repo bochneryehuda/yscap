@@ -1,5 +1,5 @@
 -- ============================================================================
--- 397 — CorrFirst: the SS NUMBER VERIFICATION condition (new), and the EMD
+-- 398 — CorrFirst: the SS NUMBER VERIFICATION condition (new), and the EMD
 --       condition reworded to say exactly what it verifies.
 --       Owner-directed 2026-08-02.
 --
@@ -172,7 +172,7 @@ SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
        COALESCE(t.tpr_exclude, false), 'system',
        COALESCE(t.is_required, true), t.category,
        'auto',
-       jsonb_build_object('rule', 'Note buyer is CorrFirst', 'reason', 'backfill_397'),
+       jsonb_build_object('rule', 'Note buyer is CorrFirst', 'reason', 'backfill_398'),
        a.id
   FROM applications a
  CROSS JOIN checklist_templates t

@@ -1,6 +1,6 @@
 /**
  * CORRFIRST: THE SSN-VERIFICATION CONDITION, THE EMD WORDING, AND THE NOTE-BUYER MARK
- * (owner-directed 2026-08-02; db/397).
+ * (owner-directed 2026-08-02; db/398).
  *
  * The report was "CorrFirst requires SS NUMBER VERIFICATION — no condition on the
  * file". It was literally true: CorrFirst condition 1050 was mapped to `rtl_p1_ssn`,
@@ -83,7 +83,7 @@ const tplFor = async (code) => (await db.query(
     // this fails the day the migration stops applying.
     // ======================================================================
     const ssnTpl = await tplFor(SSN_CODE);
-    assert(!!ssnTpl, 'db/397 seeded the SSN-verification template');
+    assert(!!ssnTpl, 'db/398 seeded the SSN-verification template');
     assert(ssnTpl && ssnTpl.is_active === true && ssnTpl.auto_apply === 'rules',
       'the SSN condition is ACTIVE and rule-driven (unlike the retired rtl_p1_ssn it replaces)');
     assert(ssnTpl && ssnTpl.audience === 'both',
@@ -225,7 +225,7 @@ const tplFor = async (code) => (await db.query(
           WHERE ci.template_id=t.id AND ci.application_id=$1 AND t.code=$2`, [backfilled, SSN_CODE]);
       assert((await itemsFor(backfilled, SSN_CODE)).length === 0, 'set-up: the file starts without the condition');
 
-      await ensureSchema();   // the deploy that carries db/397 to an existing file
+      await ensureSchema();   // the deploy that carries db/398 to an existing file
 
       const got = (await itemsFor(backfilled, SSN_CODE))[0];
       assert(!!got, 'PREVIOUS FILES: the migration BACKFILLS the condition onto an existing open CorrFirst file');
@@ -254,7 +254,7 @@ const tplFor = async (code) => (await db.query(
     const emdTpl2 = await tplFor(EMD_CODE);
     assert(emdTpl2.label === 'Earnest money deposit (EMD) verification'
       && emdTpl2.borrower_label === 'Proof of your earnest money deposit (EMD)',
-      'the template wording SURVIVES a second boot (db/191 re-asserts the old borrower_label; db/397 runs after it)');
+      'the template wording SURVIVES a second boot (db/191 re-asserts the old borrower_label; db/398 runs after it)');
 
     // ======================================================================
     // (G) THE CONSUMERS NOW POINT AT A CONDITION THAT EXISTS.

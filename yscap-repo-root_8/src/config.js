@@ -274,7 +274,7 @@ module.exports = {
   // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
   assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
 
-  // Auto-clear the "SSN verification" condition (cond_ssn_verify_corrfirst, db/397) —
+  // Auto-clear the "SSN verification" condition (cond_ssn_verify_corrfirst, db/398) —
   // CorrFirst note buyer ONLY —
   // once an imported credit report's SSN provably matches the SSN on file for every
   // borrower. Note-buyer-specific (CorrFirst verifies the SSN off the credit report),
