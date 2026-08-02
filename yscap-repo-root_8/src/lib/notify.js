@@ -43,6 +43,7 @@ const KICKER_OF = {
   // to review, and the decision sent back to the file's team.
   guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
   guaranty_exception_comment: 'Exception comment',
+  encompass_exception: 'Encompass exception', encompass_exception_decided: 'Encompass exception',
   esign_before_ctc_exception: 'Send-before-CTC exception', esign_before_ctc_exception_decided: 'Send-before-CTC exception',
   // Exception-workflow redesign (2026-07-24): the pricing/guideline exception is
   // a first-class register record; comments got a type-generic kicker; the aging
@@ -506,6 +507,9 @@ const CATEGORY_OF = {
   // events (super-admin review request + decision), so they email the recipient.
   guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
   guaranty_exception_comment: 'conditions',
+  // Encompass field exception (owner-directed 2026-08-02) — a super-admin review
+  // request + the decision back to the file team; action-bearing, so they email.
+  encompass_exception: 'conditions', encompass_exception_decided: 'conditions',
   esign_before_ctc_exception: 'conditions', esign_before_ctc_exception_decided: 'conditions',
   // Exception-workflow redesign (2026-07-24) — action-bearing staff events (a
   // super-admin review request, the decision back to the team, thread comments,
