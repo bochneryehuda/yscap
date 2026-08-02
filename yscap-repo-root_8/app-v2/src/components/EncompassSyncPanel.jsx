@@ -95,6 +95,10 @@ function fmtAgo(iso) {
 function statusOf(f) {
   if (f.status === 'match') return { fg: V.good, bg: V.goodBg, text: f.resolution === 'replaced' ? 'Matches (pulled)' : 'Matches' };
   if (f.status === 'reference') return { fg: V.muted, bg: V.paper, text: 'Reference (not checked)' };
+  // A super-admin granted an exception on this field — it passes the gate. A pending
+  // request is awaiting the super admin and still blocks.
+  if (f.excepted) return { fg: V.teal, bg: '#E3EEF0', text: 'Exception granted' };
+  if (f.exceptionRequested) return { fg: V.amber, bg: V.amberBg, text: 'Exception requested' };
   // NOT APPLICABLE — this field can't exist on this kind of loan (an exit plan on a
   // bridge / ground-up deal). There is nothing to go and enter, and the section does
   // NOT wait on it, so it must not look like an attention-needed "no data" row.
@@ -130,9 +134,13 @@ function Legend() {
         {item(V.good, V.goodBg, 'Matches', 'Our file and Encompass agree on this — good.')}
         {item(V.crit, V.critBg, "Doesn't match", 'The two do not agree. Fix it (on either side) so they match — this holds the term sheet.')}
         {item(V.amber, V.amberBg, 'No data to compare', 'Encompass has nothing entered for this. Add it in Encompass so it can be checked — an empty field is NOT a pass.')}
+        {item(V.teal, '#E3EEF0', 'Exception granted', 'A super admin decided this field doesn’t need to match, with a reason — it no longer holds the term sheet. (It re-blocks on its own if the values later change.)')}
         {item(V.muted, V.paper, 'Reference', 'Shown for context only — not checked, never holds the term sheet.')}
         <div style={{ color: V.ink, fontSize: 11.5, fontWeight: 700, marginTop: 6 }}>
-          Every checked field must say “Matches” before a term sheet can be issued.
+          Every checked field must say “Matches” (or have a super-admin exception) before a term sheet can be issued.
+        </div>
+        <div style={{ color: V.muted, fontSize: 11, marginTop: 4 }}>
+          Can’t make a field match? Use “Escalate to super admin” — a super admin can grant an exception so it stops holding the term sheet.
         </div>
       </div>
     </details>
@@ -284,6 +292,37 @@ export default function EncompassSyncPanel({ appId }) {
     finally { setBusy(''); }
   }, [appId, load]);
 
+  // Any assigned staffer escalates a not-matching / "no data" field to a super admin.
+  const requestException = useCallback(async (fieldKey) => {
+    const reason = window.prompt('Why should this field be excepted? A short note for the super admin.');
+    if (reason == null) return;                          // cancelled
+    if (!reason.trim()) { setErr('Add a short reason to request an exception.'); return; }
+    setBusy(fieldKey); setErr(''); setFlash('');
+    try { await api.encompassRequestException(appId, fieldKey, reason.trim()); await load(); setFlash('Exception requested — a super admin will review it.'); }
+    catch (e) { setErr(e.message || 'Could not request an exception.'); }
+    finally { setBusy(''); }
+  }, [appId, load]);
+
+  // Super admin grants / denies / revokes a field exception.
+  const decideException = useCallback(async (fieldKey, decision) => {
+    let reason = '';
+    if (decision === 'grant') {
+      const r = window.prompt('Reason for granting this exception (recorded on the file):');
+      if (r == null) return;
+      if (!r.trim()) { setErr('Add a short reason to grant an exception.'); return; }
+      reason = r.trim();
+    }
+    setBusy(fieldKey); setErr(''); setFlash('');
+    try {
+      await api.encompassDecideException(appId, fieldKey, decision, reason);
+      await load();
+      setFlash(decision === 'grant'
+        ? 'Exception granted — this field no longer holds the term sheet.'
+        : (decision === 'revoke' ? 'Exception removed — this field must match again.' : 'Exception denied.'));
+    } catch (e) { setErr(e.message || 'Could not update the exception.'); }
+    finally { setBusy(''); }
+  }, [appId, load]);
+
   // Type the loan number → set it (the server saves it AND pulls Encompass) → reload.
   const submitLoan = useCallback(async () => {
     const v = (loanInput || '').trim();
@@ -378,9 +417,11 @@ export default function EncompassSyncPanel({ appId }) {
             {sum.mismatched - (sum.resolved || 0) > 0 && <span style={{ color: V.crit, fontWeight: 700 }}>· {sum.mismatched - (sum.resolved || 0)} don&apos;t match</span>}
             {sum.resolved > 0 && <span style={{ color: V.crit, fontWeight: 700 }}>· {sum.resolved} still differ</span>}
             {sum.incomparable > 0 && <span style={{ color: V.amber, fontWeight: 700 }}>· {sum.incomparable} no data</span>}
+            {sum.excepted > 0 && <span style={{ color: V.teal, fontWeight: 700 }}>· {sum.excepted} excepted</span>}
           </div>
 
-          <ComparisonTable fields={compareFields} busy={busy} onReplace={replace} withActions />
+          <ComparisonTable fields={compareFields} busy={busy} onReplace={replace}
+            isSuper={isSuper} onRequestException={requestException} onDecide={decideException} withActions />
           {refFields.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, margin: '0 0 4px' }}>
@@ -397,23 +438,68 @@ export default function EncompassSyncPanel({ appId }) {
 }
 
 // One comparison row.
-function Row({ f, busy, onReplace, withActions }) {
+function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestException = () => {}, onDecide = () => {} }) {
   const s = statusOf(f);
   const canReplace = withActions && f.writable && f.status === 'mismatch' && f.open && f.theirs != null && f.theirs !== '';
+  // "Doesn't apply to this loan" fields never block, so they are not escalatable.
+  const naDoesntApply = f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined);
+  const isBlocking = !f.excepted && (f.status === 'mismatch' || (f.status === 'incomparable' && !naDoesntApply));
+  const rowBusy = busy === f.key;
+  const outBtn = (color) => ({ fontSize: 11, fontWeight: 700, color, background: 'transparent', border: `1px solid ${color}66`, borderRadius: 7, padding: '4px 9px', cursor: rowBusy ? 'default' : 'pointer', whiteSpace: 'nowrap' });
   return (
     <tr style={{ borderTop: `1px solid ${V.line}` }}>
-      <td style={{ padding: '7px 10px', color: V.ink }}>{label(f)}</td>
+      <td style={{ padding: '7px 10px', color: V.ink }}>
+        {label(f)}
+        {f.excepted && (
+          <div style={{ color: V.teal, fontSize: 10 }}>Excepted{f.exceptionNote ? ` — ${f.exceptionNote}` : ''}</div>
+        )}
+        {f.exceptionRequested && (
+          <div style={{ color: V.amber, fontSize: 10 }}>Exception requested{f.exceptionNote ? ` — ${f.exceptionNote}` : ''}</div>
+        )}
+      </td>
       <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>
       <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'theirs')}</td>
       <td style={{ padding: '7px 10px' }}><Pill s={s} /></td>
       {withActions && (
         <td style={{ padding: '7px 10px', textAlign: 'right' }}>
-          {canReplace ? (
-            <button onClick={() => onReplace(f.key)} disabled={!!busy}
-              style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: V.teal, border: 'none', borderRadius: 7, padding: '4px 9px', cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-              {busy === f.key ? 'Pulling…' : 'Use Encompass value'}
-            </button>
-          ) : null}
+          <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+            {canReplace && (
+              <button onClick={() => onReplace(f.key)} disabled={!!busy}
+                style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: V.teal, border: 'none', borderRadius: 7, padding: '4px 9px', cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+                {rowBusy ? 'Pulling…' : 'Use Encompass value'}
+              </button>
+            )}
+            {/* A blocking field with no pending request: a super admin grants directly;
+                any other staffer escalates it to a super admin. */}
+            {isBlocking && !f.exceptionRequested && (
+              isSuper ? (
+                <button onClick={() => onDecide(f.key, 'grant')} disabled={!!busy} style={outBtn(V.teal)}>
+                  {rowBusy ? '…' : 'Grant exception'}
+                </button>
+              ) : (
+                <button onClick={() => onRequestException(f.key)} disabled={!!busy} style={outBtn(V.amber)}>
+                  {rowBusy ? '…' : 'Escalate to super admin'}
+                </button>
+              )
+            )}
+            {/* A pending request: the super admin grants or denies; others just wait. */}
+            {f.exceptionRequested && (
+              isSuper ? (
+                <span style={{ display: 'inline-flex', gap: 4 }}>
+                  <button onClick={() => onDecide(f.key, 'grant')} disabled={!!busy} style={{ ...outBtn(V.teal), color: '#fff', background: V.teal, border: 'none' }}>{rowBusy ? '…' : 'Grant'}</button>
+                  <button onClick={() => onDecide(f.key, 'deny')} disabled={!!busy} style={outBtn(V.crit)}>Deny</button>
+                </span>
+              ) : (
+                <span style={{ color: V.amber, fontSize: 10.5, fontWeight: 700 }}>Awaiting super admin</span>
+              )
+            )}
+            {/* A granted exception: only a super admin can remove it. */}
+            {f.excepted && isSuper && (
+              <button onClick={() => onDecide(f.key, 'revoke')} disabled={!!busy} style={outBtn(V.crit)}>
+                {rowBusy ? '…' : 'Remove exception'}
+              </button>
+            )}
+          </div>
         </td>
       )}
     </tr>
@@ -422,7 +508,7 @@ function Row({ f, busy, onReplace, withActions }) {
 
 // The comparison table. With actions, fields are COLLECTED into display groups
 // (each subheader appears once, in GROUP_ORDER); the reference table is flat.
-function ComparisonTable({ fields, busy, onReplace, withActions }) {
+function ComparisonTable({ fields, busy, onReplace, withActions, isSuper = false, onRequestException = () => {}, onDecide = () => {} }) {
   const cols = withActions ? 5 : 4;
   // Collect into groups (registry order preserved within each group).
   const byGroup = {};
@@ -451,7 +537,7 @@ function ComparisonTable({ fields, busy, onReplace, withActions }) {
               {withActions && (
                 <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
               )}
-              {byGroup[g].map((f) => <Row key={f.key} f={f} busy={busy} onReplace={onReplace} withActions={withActions} />)}
+              {byGroup[g].map((f) => <Row key={f.key} f={f} busy={busy} onReplace={onReplace} withActions={withActions} isSuper={isSuper} onRequestException={onRequestException} onDecide={onDecide} />)}
             </React.Fragment>
           ))}
         </tbody>
