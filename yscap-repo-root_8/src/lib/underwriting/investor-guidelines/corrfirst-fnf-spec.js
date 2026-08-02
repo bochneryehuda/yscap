@@ -158,7 +158,11 @@ const CONDITIONS = [
   { cond_no: 1050, name: 'SS NUMBER VERIFICATION', domain: 'ssn_verification', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.always,
     required_evidence: 'SSN verified via the credit report (if no other SSN is listed and the report is verified); else a copy of the Social Security card or a completed SSA-89 sent for 3rd-party verification.',
     checks: [S('SSA-89 e-sign only via an IRS-approved e-sign vendor, else a wet-signed form is required', true)],
-    clears_by: 'internal_verification', pilot_template_code: 'rtl_p1_ssn', match_quality: 'partial', source_row: 40 },
+    // Mapped to the REAL condition db/398 creates. It used to point at `rtl_p1_ssn`,
+    // which db/040 retired and deleted off every open file — so the desk reported this
+    // guideline against a template that can never be on a file, and the owner saw it as
+    // "SS NUMBER VERIFICATION — no condition on the file" (2026-08-02).
+    clears_by: 'internal_verification', pilot_template_code: 'cond_ssn_verify_corrfirst', match_quality: 'exact', source_row: 40 },
   { cond_no: 1145, name: 'AKA AFFIDAVIT', domain: 'closing_docs', scope: 'note_buyer', lifecycle: 'hold_attorney_closing', trigger: T.always,
     required_evidence: 'Borrower signs a statement at closing regarding the AKAs shown on the credit report.', checks: [], clears_by: 'attorney_closing', pilot_template_code: null, match_quality: 'new', source_row: 43 },
   { cond_no: 1147, name: 'Note and Security instrument and applicable riders.', domain: 'closing_docs', scope: 'all_note_buyers', lifecycle: 'hold_attorney_closing', trigger: T.always,
