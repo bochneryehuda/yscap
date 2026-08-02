@@ -144,8 +144,12 @@ function buildStatusBody(certId) {
 }
 
 // ── Response reading ─────────────────────────────────────────────────────────
-const DONE = /(success|complete|fulfil|finished|approved)/i;
-const FAILED = /(error|reject|declin|fail|cancel)/i;
+// A completed determination is decided by the PAYLOAD (a certificate PDF or a
+// concrete flood-zone / SFHA reading), NEVER by STATUS wording: a `basic` product
+// may return the zone with no embedded PDF, and a manual ACK can carry a
+// "completed"-ish word with no determination yet. Errors are read off the STATUS
+// condition / name / description.
+const FAILED = /(error|reject|declin|fail|cancel|unable)/i;
 
 // The certificate PDF is base64 inside FLOOD_RESPONSE/EMBEDDED_FILE/DOCUMENT.
 function embeddedPdfBase64(root) {
@@ -180,11 +184,15 @@ function parseResponse(text) {
   const zone = building ? clean(X.attr(building, 'NFIPFloodZoneIdentifier')) : '';
   const pdfBase64 = embeddedPdfBase64(root);
 
-  const s = `${stCond} ${stName}`.toLowerCase();
+  // A concrete determination came back = the order is DONE, whatever the wording:
+  // a certificate PDF, a FEMA flood zone, or an SFHA indicator. Errors win over a
+  // stray result; an ack (cert id, nothing else yet) polls later.
+  const hasResult = !!pdfBase64 || !!zone || sfhaRaw !== '';
+  const failWords = `${stCond} ${stName} ${stDesc}`.toLowerCase();
   let outStatus;
-  if (FAILED.test(s)) outStatus = 'error';
-  else if (pdfBase64 || DONE.test(s)) outStatus = 'completed';
-  else if (certId) outStatus = 'ordered';   // ack for a manual order — poll later
+  if (FAILED.test(failWords)) outStatus = 'error';
+  else if (hasResult) outStatus = 'completed';
+  else if (certId) outStatus = 'ordered';   // an ACK for a manual order — poll later
   else outStatus = 'error';
 
   let sfha = null;
@@ -195,7 +203,7 @@ function parseResponse(text) {
   return {
     status: outStatus,
     certId: certId || null,
-    sfha: sfha === undefined ? null : sfha,
+    sfha,
     floodZone: zone || null,
     pdfBase64: pdfBase64 || null,
     statusText: stDesc || '',

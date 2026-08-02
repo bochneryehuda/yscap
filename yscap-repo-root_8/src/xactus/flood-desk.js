@@ -53,13 +53,18 @@ async function resolveFile(appId) {
   };
 }
 
-// Whether the file has what a Xactus flood order needs (a usable property address).
+// Whether the file has what a Xactus flood order needs: a usable property address
+// AND a borrower name (the cert is issued in the borrower's name). The button gates
+// on `ready`, so it stays disabled — never enabled-but-errors — when either is missing.
 async function readiness(appId) {
   try {
     const f = await resolveFile(appId);
     if (f.error) return { ready: false, needs: 'not_found' };
-    const ready = addressUsable(f.address);
-    return { ready, needs: ready ? null : 'address', hasLoanNumber: !!f.loanNumber };
+    const hasAddr = addressUsable(f.address);
+    const hasName = f.borrowers.length > 0;
+    const ready = hasAddr && hasName;
+    const needs = !hasAddr ? 'address' : !hasName ? 'borrower' : null;
+    return { ready, needs, hasLoanNumber: !!f.loanNumber };
   } catch (_) { return { ready: false, needs: 'error' }; }
 }
 
@@ -159,6 +164,16 @@ async function orderFlood({ appId, checklistItemId, actorId }) {
 // ── Poll pending (manual) orders ─────────────────────────────────────────────
 async function pollPendingOnce() {
   if (!client.enabled() || !client.configured()) return { checked: 0 };
+  // Dry-run sends nothing — not even a read-only StatusQuery.
+  if (client.dryrun()) return { checked: 0 };
+  // Reap a reservation whose order was never confirmed placed (both the place AND
+  // the release-on-failure had to fail — rare). It holds the pending slot via the
+  // unique index, so free it as an error after 15 min so the file can re-order.
+  try {
+    await db.query(
+      `UPDATE encompass_flood_orders SET status='error', last_error='order was never confirmed placed', updated_at=now()
+        WHERE provider='xactus' AND status='ordered' AND order_id IS NULL AND ordered_at < now() - interval '15 minutes'`);
+  } catch (_) {}
   let rows;
   try {
     rows = (await db.query(

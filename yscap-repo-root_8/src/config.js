@@ -730,7 +730,12 @@ module.exports = {
     // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
-    dryrun:   process.env.XACTUS_FLOOD_DRYRUN === '1',
+    // TEST MODE defaults ON for safety: because the login + endpoint fall back to
+    // the live credit connection, the button would otherwise place a REAL billable
+    // order the moment it deploys. Test mode builds + logs the order but sends
+    // nothing; flip it OFF on the API-Health page (or XACTUS_FLOOD_DRYRUN=0) to go
+    // live — mirroring the owner's "dry-run first, then a real test order" staging.
+    dryrun:   process.env.XACTUS_FLOOD_DRYRUN !== '0',
     // Auth style follows CREDIT by default (same login on the same connection):
     // 'basic' (HTTP Basic header — the credit default) or 'query'
     // (LoginAccountIdentifier/LoginAccountPassword URL params). Override with

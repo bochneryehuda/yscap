@@ -150,6 +150,49 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   ok(/Invalid Client Account/.test(p.error || ''), 'error message surfaced');
 }
 
+// ── 8b. Completed determination with a ZONE but NO PDF and no success word ────
+// (reachable for the `basic` product) → must be COMPLETED, not misfiled as pending.
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="777" SpecialFloodHazardAreaIndicator="No">
+      <_BUILDING_INFORMATION NFIPFloodZoneIdentifier="X"/>
+    </FLOOD_DETERMINATION>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Code="200" _Name="external" _Condition="Status" _Description="Determination returned"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'completed', 'zone present, no PDF, no success word → completed (payload-driven)');
+  ok(p.floodZone === 'X' && p.sfha === false, 'determination captured');
+}
+
+// ── 8c. An ACK whose STATUS says "Order Completed" but has NO determination ────
+// → must stay ORDERED (poll later), not be finalized empty.
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="888"/>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Name="Order Completed" _Condition="Status" _Description="queued"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'ordered', 'ack with a "completed" word but no result → ordered');
+  ok(p.sfha === null && p.floodZone === null, 'no determination yet');
+}
+
+// ── 8d. An error surfaced only in _Description → error ─────────────────────────
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <FLOOD_RESPONSE><FLOOD_DETERMINATION FloodCertificationIdentifier="999"/></FLOOD_RESPONSE>
+  <STATUS _Name="external" _Condition="Status" _Description="Order rejected: duplicate request"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'error', 'error in _Description → error (not ordered)');
+}
+
 // ── 9. Credential scrub ───────────────────────────────────────────────────────
 {
   const s = scrubCredentials('POST https://x/flood?LoginAccountIdentifier=op123&LoginAccountPassword=secretpw failed');
