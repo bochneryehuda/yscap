@@ -229,10 +229,59 @@ async function auditEngine(action, appId, detail, actor) {
 }
 
 /**
- * The core pass. opts: { actor: {id}, reason: 'details_edited' | … , notify: true }
- * Returns { added: [{id,label,audience}], removed: [{label}] } (empty on skip).
+ * ONE PASS AT A TIME PER FILE (owner-reported 2026-08-02: "check if there is more than
+ * one EMD condition on a file … if there's any potentials we can get more than 1").
+ *
+ * There are. The duplicate suppression below is READ-THEN-WRITE with nothing in
+ * between: the pass reads the file's existing items, decides a template has no
+ * instance, and then inserts. Two passes running at the same moment both read
+ * "not there" and both insert — and `checklist_items` has NO unique constraint on
+ * (application, template), so the database accepts both. REPRODUCED: two concurrent
+ * evaluateApplication calls on one CorrFirst file produce TWO EMD rows and TWO SSN
+ * rows; run one after the other they produce one each.
+ *
+ * This is not hypothetical traffic. `evaluateApplication` is called from the staff
+ * completeness save, the details PATCH, the borrower edit, the ClickUp inbound
+ * ingest, the file-view sync and the boot sweep — and the note buyer in particular
+ * is written from BOTH the portal and ClickUp, so "a staffer saves the note buyer
+ * while that card's webhook lands" is the ordinary way it happens. The class covers
+ * EVERY rule-driven condition, not only the CorrFirst pair.
+ *
+ * The fix is a per-FILE advisory lock, so concurrent passes queue instead of racing.
+ * It is database-wide, so it holds across the web process, the worker, and every
+ * Render instance — a JS-side mutex would not. Same shape as sitewire/orchestrator.
+ *
+ * FAILS OPEN, deliberately: if the lock cannot be taken (pool exhausted, a hiccup)
+ * the pass runs anyway. A missed lock costs a duplicate row a human can delete;
+ * refusing to evaluate would silently stop conditions attaching to files, which is
+ * far worse. The lock is always released in the `finally`, including on a throw.
  */
 async function evaluateApplication(appId, opts = {}) {
+  let lockConn = null;
+  const lockKey = `cond-eval:${appId}`;
+  try {
+    lockConn = await db.getClient();
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+  } catch (_) {
+    if (lockConn) { try { lockConn.release(); } catch (_e) {} }
+    lockConn = null;                       // fail open — never block evaluation
+  }
+  try {
+    return await evaluateApplicationLocked(appId, opts);
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
+  }
+}
+
+/**
+ * The core pass. opts: { actor: {id}, reason: 'details_edited' | … , notify: true }
+ * Returns { added: [{id,label,audience}], removed: [{label}] } (empty on skip).
+ * Always call it through evaluateApplication above, which holds the per-file lock.
+ */
+async function evaluateApplicationLocked(appId, opts = {}) {
   const out = { added: [], removed: [] };
   const loaded = await loadRuleContext(appId);
   if (!loaded) return out;
