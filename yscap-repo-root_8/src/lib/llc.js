@@ -490,10 +490,12 @@ function normalizeEin(raw) {
 // Find one of this borrower's entities by NORMALIZED name (case- and
 // whitespace-insensitive, same key as uq_llcs_borrower_name). Returns the id or
 // null. The one place this predicate lives, so every create path agrees.
-async function findLlcByName(borrowerId, name) {
+// `client` is optional and defaults to the pool — a caller inside a transaction
+// (the entity-adoption path) passes its own so the lookup sees its own writes.
+async function findLlcByName(borrowerId, name, client = db) {
   const nm = String(name || '').trim();
   if (!nm) return null;
-  const r = await db.query(
+  const r = await client.query(
     `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`,
     [borrowerId, nm]);
   return r.rows[0] ? r.rows[0].id : null;
@@ -508,13 +510,13 @@ async function findLlcByName(borrowerId, name) {
 // screen, never silently overwritten by a re-create). Returns { id, existed }.
 // Callers should skip member/checklist setup and any data overwrite when
 // existed === true, and link the returned id into their file/application.
-async function findOrCreateLlc(borrowerId, fields) {
+async function findOrCreateLlc(borrowerId, fields, client = db) {
   const name = String((fields && fields.llcName) || '').trim();
   if (!name) throw new Error('llcName required');
-  const existingId = await findLlcByName(borrowerId, name);
+  const existingId = await findLlcByName(borrowerId, name, client);
   if (existingId) return { id: existingId, existed: true };
   try {
-    const r = await db.query(
+    const r = await client.query(
       `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
       [borrowerId, name, (fields.ein || null), (fields.formationState || null),
@@ -524,7 +526,7 @@ async function findOrCreateLlc(borrowerId, fields) {
     // Only reachable where uq_llcs_borrower_name exists: a concurrent create
     // won the race for the same name — reuse the winner instead of erroring.
     if (e && e.code === '23505') {
-      const again = await findLlcByName(borrowerId, name);
+      const again = await findLlcByName(borrowerId, name, client);
       if (again) return { id: again, existed: true };
     }
     throw e;

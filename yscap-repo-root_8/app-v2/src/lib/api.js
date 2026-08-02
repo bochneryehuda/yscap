@@ -653,6 +653,11 @@ export const api = {
   // "What to look for" — the note-buyer checklist for a document type (fetched on demand).
   documentReviewGuide:       (appId, docType) => req('GET', `/api/underwriting/${appId}/document-review-guide?docType=${encodeURIComponent(docType || '')}`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
+  // Owner-directed 2026-08-02 — a bank statement under a different LLC: put that entity on the
+  // borrower's profile (with its document slots), carry any operating agreement / articles / EIN
+  // already on this file onto those slots, and post the entity-documents condition. The finding is
+  // only settled when the operating agreement actually landed.
+  adoptEntityToProfile:      (appId, entityName, findingId) => req('POST', `/api/underwriting/${appId}/entity-adopt`, { entityName, findingId: findingId || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
   // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
   fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
