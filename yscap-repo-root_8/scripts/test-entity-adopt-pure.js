@@ -154,10 +154,10 @@ assert.notStrictEqual(OA_CASCADE_TEMPLATE_CODES[0], 'rtl_llc_opagmt',
   'never propose an llc-scoped slot as a FILE condition — the route cannot instantiate it');
 
 // The migration that installs it must actually be there, with that scope.
-const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '398_entity_adoption.sql'), 'utf8');
-assert.ok(sql.includes(`'${ea.ENTITY_DOCS_TEMPLATE_CODE}'`), 'db/398 seeds the entity-documents template');
+const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '399_entity_adoption.sql'), 'utf8');
+assert.ok(sql.includes(`'${ea.ENTITY_DOCS_TEMPLATE_CODE}'`), 'db/399 seeds the entity-documents template');
 assert.ok(/'application', 'both', 'document'/.test(sql), 'and seeds it application-scoped so it can be posted on a file');
-assert.ok(/adopted_from_application_id/.test(sql) && /adopted_at/.test(sql), 'db/398 adds the adoption stamp the liquidity guard reads');
+assert.ok(/adopted_from_application_id/.test(sql) && /adopted_at/.test(sql), 'db/399 adds the adoption stamp the liquidity guard reads');
 
 // ---- 6. adoptionSummary — the sentence recorded on the finding -----------------------------
 const s1 = ea.adoptionSummary({ entityName: 'Beta Holdings LLC', created: true,

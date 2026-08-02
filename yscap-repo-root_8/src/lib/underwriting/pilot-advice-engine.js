@@ -141,11 +141,24 @@ const EVALUATORS = {
       return { complete: !!c.complete, contradicted };
     },
   },
-  rtl_p1_ssn: {
+  // The REAL SSN-verification condition (db/398). Its predecessor `rtl_p1_ssn` was
+  // retired by db/040 and deleted off every open file, so this evaluator could never
+  // run — the CorrFirst SSN guideline was tracked against a condition that did not
+  // exist. Both codes are mapped: the retired one so a terminal file still carrying a
+  // historical instance behaves identically, the new one because it is what exists.
+  cond_ssn_verify_corrfirst: {
     domain: 'ssn',
     async evaluate(client, appId) {
       const c = await ssnCompleteness(client, appId);
       // SSN has no findings row; only advise when CorrFirst is the accepted verification.
+      if (!c.corrfirst) return null;
+      return { complete: !!c.complete, contradicted: false };
+    },
+  },
+  rtl_p1_ssn: {
+    domain: 'ssn',
+    async evaluate(client, appId) {
+      const c = await ssnCompleteness(client, appId);
       if (!c.corrfirst) return null;
       return { complete: !!c.complete, contradicted: false };
     },

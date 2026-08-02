@@ -21,7 +21,7 @@
  * suggestion, any future one) calls `adoptEntityToProfile` rather than re-assembling the steps —
  * the four of them have to happen together or the record is half-made.
  *
- * WHY THE ADOPTION IS STAMPED (`llcs.adopted_*`, db/398) — the load-bearing safety property.
+ * WHY THE ADOPTION IS STAMPED (`llcs.adopted_*`, db/399) — the load-bearing safety property.
  * `bank-liquidity.js` counts an account as the borrower's when its holder matches ANY entity on the
  * borrower's profile. So merely writing the NAME onto the profile would, by itself, move that
  * account's whole balance into the file's provable liquidity — before a single document proved the
@@ -61,7 +61,7 @@ const ENTITY_DOC_TYPES = Object.keys(SLOT_FOR_DOC_TYPE);
 const ADOPTABLE_CODES = new Set(['bank_account_other_entity', 'bank_business_entity_unverified']);
 
 // The condition a human may post from the finding: collect the entity's documents so the borrower
-// may use its funds. Application-scoped, auto_apply='manual' (db/398) — an LLC-scoped code such as
+// may use its funds. Application-scoped, auto_apply='manual' (db/399) — an LLC-scoped code such as
 // `rtl_llc_opagmt` can NOT be instantiated on a loan file and 400s the convert-to-condition route.
 const ENTITY_DOCS_TEMPLATE_CODE = 'rtl_cond_entity_docs';
 
