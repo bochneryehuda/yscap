@@ -54,8 +54,16 @@ const { tieoutForFile } = require('../src/lib/underwriting/file-review');
     assert.ok(!to.discrepancies.some((d) => d.field === 'occupancy'), 'Investment vs TenantOccupied → no false occupancy mismatch');
     // property_type "Single Family" vs "Single Family Detached" canonicalize equal → no discrepancy.
     assert.ok(!to.discrepancies.some((d) => d.field === 'property_type'), 'wording-different property type does not flag');
-    // A REAL disagreement — file 2 units vs appraisal 4 units — IS surfaced.
-    assert.ok(to.discrepancies.some((d) => d.field === 'units'), 'file 2 units vs appraisal 4 units → discrepancy');
+    // A REAL disagreement — file 2 units vs appraisal 4 units — IS surfaced, in the MATRIX. Since
+    // 2026-08-02 the tie-out no longer raises a duplicate FINDING for a fact the appraisal desk
+    // itself compares (units / property type / address / price / as-is / ARV): that mismatch is a
+    // real, resolvable `units_mismatch` on the Appraisal tab, and raising a second card on the
+    // document desk meant resolving one left the other standing.
+    const unitRow = to.matrix.find((m) => m.key === 'units');
+    assert.ok(unitRow && unitRow.cells.some((c) => c.label === 'Appraisal' && c.status === 'disagree'),
+      'file 2 units vs appraisal 4 units → the matrix shows the disagreement');
+    assert.ok(!to.discrepancies.some((d) => d.field === 'units'),
+      '…and the appraisal desk owns the finding — the tie-out raises no duplicate');
     // Market rent summed from the two units (1200+1300=2500) appears in the matrix.
     const mr = to.matrix.find((m) => m.key === 'market_rent');
     assert.ok(mr && mr.cells.some((c) => c.value === '$2,500'), 'market rent summed from appraisal_units and shown');
