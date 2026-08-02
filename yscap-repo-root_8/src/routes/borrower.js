@@ -284,7 +284,16 @@ router.put('/profile', async (req, res) => {
         && Number(shown.months_at_residence || 0) === Number(m || 0);
       if (!same) return res.status(400).json({ error: rProblem });
     }
-    fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+    /* NEVER WIPE AN ANCHOR WE CANNOT REBUILD (fifth audit, 2026-08-02).
+       `moveInFrom` returns null past the cap, and on the "unchanged" bypass
+       above that turned an ordinary re-save into silent destruction of
+       `residence_since` — the anchor is what keeps the duration LIVE, so losing
+       it freezes the number at the stored count. A count we cannot anchor leaves
+       the existing anchor exactly where it was. */
+    {
+      const anchor = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+      if (anchor || !(y || m)) fields.residence_since = anchor;
+    }
   }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
   if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
@@ -2283,6 +2292,20 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       const prevUnits = curU ? curU.units : null;
       const nextUnits = require('../lib/units').unitsForPropertyType(newPt, prevUnits);
       if (nextUnits !== prevUnits) { appVals.push(nextUnits); appSets.push(`units=$${appVals.length}`); appKeys.push('units'); }
+    }
+    /* VALIDATE THE PERSONAL FIELDS BEFORE THE APPLICATION UPDATE COMMITS (fifth
+       audit, 2026-08-02). Round 4 turned "silently drop a junk FICO" into a
+       refusal but left the refusal AFTER the economics write, so
+       `{arv:950000, fico:'abc'}` answered 400 with the ARV already changed and
+       the pricing-reopen triggers already fired — "half of it happened and you
+       were told it failed", which is the state this door's own locked-path
+       pre-pass exists to prevent. Same rule, other path. */
+    for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (t === 'int' && k === 'fico'
+          && String(b[k]).trim() !== '' && require('../lib/fields').sanitizeFico(b[k]) == null) {
+        return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+      }
     }
     if (appSets.length) {
       appSets.push('updated_at=now()');

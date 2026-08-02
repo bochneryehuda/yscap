@@ -64,11 +64,18 @@ const FIELD_OPTIONS = {
      file", which was a lie; surfacing the refusal made an offered-but-rejected
      option visible. Offering a choice and then refusing it is the bug — a
      borrower can only pick what we show them. */
-  /* 'Not sure yet' is a real entry in the PROGRAMS picker and db/382/db/385
-     deliberately CANONICALIZE it on write, so the staff door takes it and the
-     trigger rewrites it. Refusing it on the borrower's door was the same
-     offer-then-refuse bug. */
-  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental', 'Not sure yet'],
+  /* 'Not sure yet' is DELIBERATELY ABSENT, and adding it was a mistake (fifth
+     audit, 2026-08-02). db/385's `trg_default_deal_program` CANONICALIZES it to
+     'Fix & Flip w/ Construction' in a BEFORE UPDATE trigger — so the write lands,
+     the verify-after-write below re-reads a DIFFERENT value than the one
+     requested, and Approve throws 500 and rolls back. Forever: the request stays
+     pending, the loan team has been emailed, and Reject is the only way out.
+     It is the one offered program `pilot_program_norm()` rewrites.
+     This is NOT the offer-then-refuse bug that got `DSCR / Rental` added: the
+     change-request panel filters `Not sure yet` out of its own options
+     (`ChangeRequestPanel.jsx`), so it is never offered here — a borrower reaches
+     it only by hand-crafting the call, and a clean 400 is the right answer. */
+  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental'],
   loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
@@ -208,10 +215,16 @@ async function anchorForBorrower(borrowerId, client = db) {
 function normalizeValue(field, raw) {
   if (raw == null) return null;
   if (MONEY_FIELDS.has(field)) {
-    const s = String(raw).replace(/[^0-9.]/g, '');
-    if (s === '') return null;
-    const n = Number(s);
-    return Number.isFinite(n) ? String(n) : null;
+    /* `fields.moneyValue`, not a character-delete (fifth audit, 2026-08-02). The
+       strip this replaces dropped the SIGN, so a borrower typing -500000 on a
+       REGISTERED file filed a request for +500000 and the approval stored the
+       positive — while the same value on an unregistered file stored -500000.
+       Round 4 fixed that parse on the direct-write path and left it here, which
+       is the two-doors-onto-one-column shape all over again. `moneyValue` is the
+       repo's one definition of what a money string MEANS, and its own comment
+       says the sign is kept deliberately. */
+    const n = require('./fields').moneyValue(raw);
+    return n == null ? null : String(n);
   }
   if (INT_FIELDS.has(field)) {
     const s = String(raw).replace(/[^0-9-]/g, '');

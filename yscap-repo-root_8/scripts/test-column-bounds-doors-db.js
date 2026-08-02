@@ -882,10 +882,13 @@ if (!process.env.DATABASE_URL) {
          property-type.js and stores fine via PATCH /details. The list is derived
          now, so it cannot drift from its source again. */
       const appId = await newFile();
-      for (const [k, v] of [['program', 'Not sure yet'], ['property_type', 'PUD']]) {
+      for (const [k, v] of [['property_type', 'PUD'], ['program', 'DSCR / Rental']]) {
         const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { [k]: v });
         eq(r.status, 200, `the borrower can set ${k} = "${v}" — a value the system supports elsewhere`);
       }
+      /* 'Not sure yet' is the DELIBERATE exception, and round 4 got it wrong by
+         adding it: db/385 rewrites it on write, so a change request for it can
+         never satisfy the verify-after-write. See V1. */
       const CR = require('../src/lib/change-requests');
       const canonical = require('../src/lib/property-type').PROPERTY_TYPES.map((p) => p.label);
       const missing = canonical.filter((lbl) => !CR.FIELD_OPTIONS.property_type.includes(lbl));
@@ -989,6 +992,90 @@ if (!process.env.DATABASE_URL) {
       const a = await call('POST', `/api/borrower/applications/${refi}/complete-fields`, bTok, { purchase_price: HUGE_MONEY });
       const b2 = await call('POST', `/api/borrower/applications/${open2}/complete-fields`, bTok, { purchase_price: HUGE_MONEY });
       eq(a.status, b2.status, 'on a REFINANCE the two paths still answer the same way');
+    }
+
+    /* ================================================================ *
+     * THE FIFTH AUDIT'S FINDINGS (2026-08-02).
+     * ================================================================ */
+    console.log('\n--- V1: a change request we accept is a change request we can APPROVE ---');
+    {
+      /* Round 4 added `Not sure yet` to the governed list because the system
+         supports it elsewhere. It does — via a db/385 trigger that CANONICALIZES
+         it on write, which means the verify-after-write re-reads a different
+         value than the one requested and Approve throws 500. Forever: the
+         request stays pending and Reject is the only way out. */
+      const appId = await newFile();
+      await register(appId);
+      const filed = [];
+      for (const v of ['Bridge', 'Fix & Hold', 'Ground-Up Construction', 'DSCR / Rental']) {
+        const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: v });
+        eq(r.status, 200, `a change request can be OPENED for "${v}"`);
+        const row = (await db.query(
+          `SELECT id FROM change_requests WHERE application_id=$1 AND field='program' AND status='pending'`, [appId])).rows[0];
+        if (row) filed.push([v, row.id]);
+      }
+      for (const [v, id] of filed.slice(-1)) {
+        const ap = await call('POST', `/api/staff/change-requests/${id}/approve`, sTok, {});
+        eq(ap.status, 200, `…and APPROVED for "${v}" (a value we accept but cannot apply is worse than a refusal)`);
+      }
+      const nope = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: 'Not sure yet' });
+      eq(nope.status, 400, 'a program the database rewrites on write is refused up front, not left unapprovable');
+    }
+
+    console.log('\n--- V2: a NEGATIVE money value keeps its sign on BOTH paths ---');
+    {
+      const CR = require('../src/lib/change-requests');
+      eq(CR.normalizeValue('arv', '-500000'), '-500000', 'the change-request path keeps the sign');
+      eq(CR.normalizeValue('arv', '$1,250,000.50'), '1250000.5', '…and still reads a formatted amount');
+      const open3 = await newFile();
+      const locked3 = await newFile(); await register(locked3);
+      await call('POST', `/api/borrower/applications/${open3}/complete-fields`, bTok, { arv: '-500000' });
+      await call('POST', `/api/borrower/applications/${locked3}/complete-fields`, bTok, { arv: '-500000' });
+      const direct = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [open3])).rows[0];
+      const req3 = (await db.query(
+        `SELECT new_value FROM change_requests WHERE application_id=$1 AND field='arv' AND status='pending'`, [locked3])).rows[0];
+      eq(Number(direct.arv), -500000, 'the direct write stores the negative');
+      eq(Number(req3 && req3.new_value), -500000, '…and so does the request filed for the same value');
+    }
+
+    console.log('\n--- V3: a refusal never lands AFTER the economics were written ---');
+    {
+      for (const [who, path, tok] of [
+        ['borrower', (id) => `/api/borrower/applications/${id}/complete-fields`, bTok],
+        ['staff', (id) => `/api/staff/applications/${id}/complete-fields`, sTok],
+      ]) {
+        const appId = await newFile();
+        const before = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+        const r = await call('POST', path(appId), tok, { arv: '950000', fico: 'abc' });
+        eq(r.status, 400, `${who}: a junk credit score refuses the whole post`);
+        const after = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+        eq(String(after), String(before), `${who}: …and the ARV was NOT written first`);
+      }
+    }
+
+    console.log('\n--- V4: a count we cannot anchor never destroys the anchor we have ---');
+    {
+      const id = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name,residence_since)
+         VALUES ($1,'Anchor','Keep',(now() - interval '1201 months')::date) RETURNING id`,
+        [`anchor-keep-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [id]);
+      const t = C.signJwt({ sub: id, kind: 'borrower', tv: 0 });
+      const shown = await call('GET', '/api/borrower/profile', t);
+      const r = await call('PUT', '/api/borrower/profile', t, {
+        cellPhone: '555-0144',
+        yearsAtResidence: shown.body && shown.body.years_at_residence,
+        monthsAtResidence: shown.body && shown.body.months_at_residence,
+      });
+      eq(r.status, 200, 'the ordinary re-save still succeeds');
+      const row = (await db.query(`SELECT residence_since, cell_phone FROM borrowers WHERE id=$1`, [id])).rows[0];
+      assert(!!row.residence_since, '…and the move-in anchor SURVIVED (it used to be silently wiped)');
+      eq(row.cell_phone, '555-0144', '…along with the field they actually edited');
+      // …while a duration we CAN anchor still re-anchors.
+      eq((await call('PUT', '/api/borrower/profile', t, { yearsAtResidence: 3, monthsAtResidence: 2 })).status, 200,
+        'a real duration still saves');
+      const row2 = (await db.query(`SELECT residence_since FROM borrowers WHERE id=$1`, [id])).rows[0];
+      assert(String(row2.residence_since) !== String(row.residence_since), '…and re-anchors the move-in date');
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL column-bounds door assertions passed');

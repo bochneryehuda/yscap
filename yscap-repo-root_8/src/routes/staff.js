@@ -7546,7 +7546,12 @@ router.patch('/borrowers/:id', async (req, res) => {
       }
       put('years_at_residence', Number.isFinite(y) ? y : null);
       put('months_at_residence', Number.isFinite(m) ? m : null);
-      put('residence_since', (y || m) ? require('../lib/residence').moveInFrom(y, m) : null);
+      // See the borrower door's note: a count we cannot anchor must not destroy
+      // the anchor we already have.
+      {
+        const anchor = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+        if (anchor || !(y || m)) put('residence_since', anchor);
+      }
     }
     // DOB from the borrower-profile edit (owner-directed 2026-07-15 night: DOB
     // must be fully editable from PILOT — the profile screen previously showed
@@ -9985,6 +9990,17 @@ async function completeFields(req, res, borrowerScoped) {
     // Pricing (db/072) so the underwriter re-signs, and the Clear-to-Close /
     // Funded / term-sheet-sent freeze below (structuralLockReason) still blocks
     // everyone equally once the file is locked.
+    /* VALIDATE THE PERSONAL FIELDS BEFORE THE ECONOMICS UPDATE COMMITS (fifth
+       audit, 2026-08-02). The borrower door's note applies here identically:
+       `{arv:950000, fico:'abc'}` answered 400 with the ARV already written and
+       the pricing-reopen triggers already fired. */
+    for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (t === 'int' && k === 'fico'
+          && String(b[k]).trim() !== '' && require('../lib/fields').sanitizeFico(b[k]) == null) {
+        return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+      }
+    }
     if (appSets.length) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
