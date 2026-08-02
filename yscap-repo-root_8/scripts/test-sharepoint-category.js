@@ -76,5 +76,24 @@ ok(sk({ checklist_item_id: 'ci1', template_code: 'rtl_cond_fraud', slot_label: '
    === 'item:ci1:background-check',
   'fraud/background stream key is item id + clean category slug');
 
+// ---- FLOOD CERTIFICATE: the Xactus flood determination PDF must reach the SAME
+// "Flood Cert" folder in the mirror that it gets in the TPR package, and must not
+// be mistaken for a system-regenerable artifact. The commit that added flood
+// ordering claimed both were "verified" with nothing pinning it (pre-merge audit,
+// 2026-08-02) — this is that pin.
+{
+  const floodDoc = { doc_kind: 'flood_determination', template_code: 'rtl_cond_flood',
+    slot_label: 'Flood determination', filename: 'Flood determination 2322271.pdf', item_label: 'Flood certificate' };
+  ok(cat(floodDoc) === 'Flood Cert', 'flood determination PDF → "Flood Cert" (mirror)');
+  ok(require('../src/lib/tpr-export').categoryFor(floodDoc) === 'Flood Cert',
+    'flood determination PDF → "Flood Cert" (TPR export) — the same folder, one categorizer');
+  // 'flood_determination' must NOT read as a regen artifact: those get the long
+  // settle window and can be settled WITHOUT ever uploading.
+  ok(backup.isRegenKind('flood_determination') === false, 'flood determination is not a regen kind');
+  // Even with no condition attached, the filename keeps it out of "Other Documents".
+  ok(cat({ doc_kind: 'flood_determination', filename: 'Flood determination 2322271.pdf' }) === 'Flood Cert',
+    'flood cert with no condition still files under "Flood Cert"');
+}
+
 console.log(`\nsharepoint-category: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

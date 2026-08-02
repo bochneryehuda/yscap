@@ -11854,14 +11854,13 @@ router.post('/applications/:id/order-flood', async (req, res) => {
     // `force` re-orders a file that ALREADY has a completed determination (a
     // corrected property address is the real case). Billable, so it is admin-only
     // and never the default — an ordinary click can never re-charge us.
-    const isAdmin = ['admin', 'super_admin'].includes(req.actor.role);
     const out = await require('../flood/dispatch').orderFlood({
       appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id,
-      force: isAdmin && (req.body || {}).force === true });
+      force: isAdmin(req) && (req.body || {}).force === true });
     if (!out.ok) {
       // A refusal the user can act on (no address / loan number, already pending,
       // etc.) is a 4xx with the plain message; a real failure is a 502.
-      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'already_completed', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
+      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'already_completed', 'check_failed', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
       return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
     }
     return res.json(out);
@@ -11888,7 +11887,11 @@ router.get('/applications/:id/flood-order', async (req, res) => {
       hasCertificate: await dispatch.certificateFiled(req.params.id),
       // Only an admin may deliberately re-order a file that already has a
       // determination (each order is billable).
-      canReorder: ['admin', 'super_admin'].includes(req.actor.role),
+      canReorder: isAdmin(req),
+      // A completed determination exists (any provider) — drives the "we won't order
+      // again" wording AND the admin re-order offer in EVERY state, so a forced order
+      // that then FAILS is not a dead end.
+      hasCompletedOrder: await dispatch.hasCompletedOrder(req.params.id),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

@@ -75,6 +75,16 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   const fr = X.firstDeep(root, 'FLOOD_REQUEST');
   ok(X.attr(fr, '_ActionType') === 'StatusQuery', 'StatusQuery action');
   ok(X.attr(fr, 'FloodCertificationIdentifier') === '2322271', 'status query carries the cert id');
+  // A StatusQuery is how a MISSING certificate is RETRIEVED, so it must ask for the
+  // embedded PDF exactly like the order does. Without this it inherits the same
+  // account default that dropped the PDF in the first place and the whole recovery
+  // path silently returns nothing (found by pre-merge audit, 2026-08-02).
+  const pref = X.firstDeep(root, 'PREFERRED_RESPONSE');
+  ok(!!pref && X.attr(pref, '_UseEmbeddedFileIndicator') === 'Y', 'the StatusQuery asks for the certificate PDF too');
+  // It must NEVER carry order fields — a StatusQuery that looked like an order
+  // would place (and be charged for) a second determination.
+  ok(!X.firstDeep(root, '_PRODUCT'), 'no product on a status query');
+  ok(!X.firstDeep(root, 'PROPERTY'), 'no property on a status query');
 }
 
 // ── 5. Parse a COMPLETED response (instant, PDF inline, zone X = not SFHA) ─────

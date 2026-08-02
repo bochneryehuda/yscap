@@ -945,13 +945,18 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
             : order.sfha === false
               ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
               : 'The determination came back.'}
-          {' '}{state.hasCertificate === false
-            ? 'The certificate PDF is not on this condition yet.'
-            : 'The certificate PDF is filed on this condition — it’s in the documents above.'}
+          {/* Three states, never conflated: filed / definitely missing / can't tell.
+              "Can't tell" must NEVER read as "filed" — claiming a certificate is on
+              the file when it isn't is the exact bug this card had. */}
+          {' '}{state.hasCertificate === true
+            ? 'The certificate PDF is filed on this condition — it’s in the documents above.'
+            : state.hasCertificate === false
+              ? 'The certificate PDF is not on this condition yet.'
+              : 'Check the documents above for the certificate PDF.'}
         </div>
-        {/* Only offered when the PDF really is missing. This RETRIEVES the report we
+        {/* Offered unless the PDF is confirmed filed. This RETRIEVES the report we
             already paid for — it never places (or is charged for) a second order. */}
-        {state.hasCertificate === false && (
+        {state.hasCertificate !== true && (
           <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={fetchCert}>
             {busy ? 'Getting the certificate…' : 'Get the certificate PDF'}
           </button>
@@ -1008,6 +1013,25 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
                 ? 'Add a loan number to this file first.'
                 : 'This file isn’t ready to order a flood certificate yet.'}
         </div>
+      )}
+      {/* A determination already exists but the newest row is an error/dry run, so the
+          "done" panel isn't showing. Say so, and keep the admin's deliberate re-order
+          reachable here — otherwise a forced order that FAILS is a dead end: every
+          later click is refused as already-completed with no way through. */}
+      {state.hasCompletedOrder && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+          This file already has a flood determination, so an ordinary order is refused — each order is billable.
+          {' '}Use “Get the certificate PDF” to pull down the one we already paid for.
+        </div>
+      )}
+      {state.hasCompletedOrder && (
+        <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={fetchCert}>
+          {busy ? 'Getting the certificate…' : 'Get the certificate PDF'}
+        </button>
+      )}
+      {state.hasCompletedOrder && state.canReorder && (
+        <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+          disabled={busy} onClick={reorder}>Order a new determination anyway (charges again)</button>
       )}
       {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
           you can still attach it by hand — it's not the up-front action. */}

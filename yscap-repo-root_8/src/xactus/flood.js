@@ -110,20 +110,29 @@ function isResidential(people) {
   return !!clean(primary.firstName);
 }
 
+// REQUESTING_PARTY, carrying the explicit "send me the certificate PDF" request.
+// PREFERRED_RESPONSE/_UseEmbeddedFileIndicator="Y" asks for the certificate to ride
+// back as a base64 EMBEDDED_FILE. Xactus documents this as a toggle that can
+// EXCLUDE the PDF, so we never leave it to the account default — a determination
+// with no certificate is useless to us (owner-reported 2026-08-02: the zone came
+// back, no PDF was filed). It goes on EVERY request shape, not just the order: a
+// StatusQuery is how we RETRIEVE a missing certificate, so if it inherited the same
+// account default the recovery path would come back empty too.
+// Escape hatch: XACTUS_FLOOD_REQUEST_PDF=0 omits the element entirely, so if Xactus
+// ever rejects it, flood ordering is restored by an env change and no redeploy.
+function requestingPartyEl() {
+  const { el } = X;
+  const kids = cfg.requestPdf === false ? [] : [el('PREFERRED_RESPONSE', { _UseEmbeddedFileIndicator: 'Y' }, [])];
+  return el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, kids);
+}
+
 // Build the Original flood-order request body. `property` = {street, city, state, zip}.
 function buildOrderBody({ loanNumber, borrowers, property, product } = {}) {
   const { el } = X;
   const prop = property || {};
   const residential = isResidential(borrowers);
   const req = el('REQUEST_GROUP', { MISMOVersionID: version() }, [
-    // PREFERRED_RESPONSE/_UseEmbeddedFileIndicator="Y" EXPLICITLY asks for the
-    // certificate PDF to ride back inside the response as a base64 EMBEDDED_FILE.
-    // Xactus documents this as a toggle that can EXCLUDE the PDF, so we never leave
-    // it to the account default — a determination with no certificate is useless to
-    // us (owner-reported 2026-08-02: the zone came back but no PDF was filed).
-    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, [
-      el('PREFERRED_RESPONSE', { _UseEmbeddedFileIndicator: 'Y' }, []),
-    ]),
+    requestingPartyEl(),
     el('SUBMITTING_PARTY', { _Name: 'PILOT by YS Capital' }, []),
     el('REQUEST', {}, [el('REQUEST_DATA', {}, [
       el('FLOOD_REQUEST', { _ActionType: 'Original' }, [
@@ -146,7 +155,10 @@ function buildOrderBody({ loanNumber, borrowers, property, product } = {}) {
 function buildStatusBody(certId) {
   const { el } = X;
   const req = el('REQUEST_GROUP', { MISMOVersionID: version() }, [
-    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, []),
+    // Same explicit PDF request as the order — a StatusQuery is how a MISSING
+    // certificate is retrieved, so it must never inherit an "exclude the PDF"
+    // account default or the whole recovery path comes back empty.
+    requestingPartyEl(),
     el('SUBMITTING_PARTY', { _Name: 'PILOT by YS Capital' }, []),
     el('REQUEST', {}, [el('REQUEST_DATA', {}, [
       el('FLOOD_REQUEST', { FloodCertificationIdentifier: clean(certId), _ActionType: 'StatusQuery' }, []),
@@ -284,12 +296,12 @@ function buildUrlAndHeaders(over) {
   return { url, headers };
 }
 
-async function postXml(body) {
+async function postXml(body, timeoutMs) {
   if (!configured()) throw notConfiguredError();
   const { url, headers } = buildUrlAndHeaders();
   let r, respText;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  const timer = setTimeout(() => controller.abort(), Number(timeoutMs) > 0 ? Number(timeoutMs) : 90000);
   try {
     r = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
     respText = await r.text();
@@ -344,9 +356,13 @@ async function placeOrder({ loanNumber, borrowers, property, product } = {}) {
 }
 
 // Poll a pending (manual) order's status.
-async function getOrderStatus(certId) {
+// `timeoutMs` bounds the wait — the certificate-retrieval fallback runs INSIDE a
+// staff request that has already spent time placing the order, so it uses a short
+// budget rather than the full 90s (a staffer must never hit a gateway timeout on an
+// order that actually succeeded).
+async function getOrderStatus(certId, timeoutMs) {
   if (!certId) throw new Error('getOrderStatus: FloodCertificationIdentifier is required.');
-  return postXml(buildStatusBody(certId));
+  return postXml(buildStatusBody(certId), timeoutMs);
 }
 
 // ── Connection test (the API-Health "Test now" button) ───────────────────────
