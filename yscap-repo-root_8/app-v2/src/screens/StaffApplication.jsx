@@ -757,6 +757,50 @@ function ClickupFileData({ app }) {
   );
 }
 
+/* THE FACTS THE APPRAISAL PUT ON THE FILE (db/403, owner-directed 2026-08-02:
+   "all these things that he's getting from the appraisal … please add this field
+   in our file and that field should automatically be tabulated once you import
+   the XML of the appraisal").
+
+   Filled by the appraisal import, blank-only — there is nothing to type here and
+   nothing to chase: these are NOT part of application completeness and never
+   appear on a missing-info panel ("this field should not be a requirement for us
+   to fill anywhere"). The seller is the useful one: it gives the purchase
+   contract, the title report and the settlement statement a single value of
+   record to be matched against on the data comparison.
+
+   OCCUPANCY IS NOT HERE ON PURPOSE. The appraisal's occupancy is the SELLER's use
+   of the property today — a seller living in the house they are selling is
+   perfectly ordinary — while the file's occupancy is the borrower's use after
+   closing, and we only lend non-owner-occupied. The import never writes it.
+
+   Renders nothing until an appraisal has been imported. */
+function AppraisalFileFacts({ app }) {
+  const rows = [
+    ['Seller', app.seller_name || null],
+    ['Year built', app.year_built == null ? null : String(app.year_built)],
+    ['Living area', app.living_area_sqft == null ? null : `${Number(app.living_area_sqft).toLocaleString('en-US')} sq ft`],
+    ['Market rent (1007)', app.market_rent == null ? null : '$' + Number(app.market_rent).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' / mo'],
+  ].filter(([, v]) => v != null);
+  if (!rows.length) return null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>Property facts from the appraisal</h3>
+        <div className="spacer" />
+        <span className="muted small">Filled when the appraisal XML was imported · read-only</span>
+      </div>
+      <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
+        Nothing to fill in here — these come off the appraisal and are never required on the file.
+        They are on the file so the data comparison can match them against the other documents.
+      </p>
+      {rows.map(([k, v]) => (
+        <div className="metrow" key={k}><span className="k">{k}</span><span className="v">{v}</span></div>
+      ))}
+    </div>
+  );
+}
+
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 // Fees / cash-to-close / liquidity / reserves show EXACT cents (owner-directed
 // 2026-07-16); loan amount / advance / holdback stay whole-dollar (frozen).
@@ -4485,7 +4529,12 @@ export default function StaffApplication() {
            correction is made once a super-admin has unlocked the file up top.
            openByDefault: the form IS this tab, so it renders expanded instead
            of hiding behind a second collapse. */
-        <EditFileDetails app={app} onSaved={load} openByDefault />
+        <>
+          <EditFileDetails app={app} onSaved={load} openByDefault />
+          {/* Read-only, under the editable deal fields: what the appraisal put on
+              the file (db/403). Renders nothing until an appraisal is imported. */}
+          <AppraisalFileFacts app={app} />
+        </>
       )}
 
       {appDetailTab === 'missing' && <>

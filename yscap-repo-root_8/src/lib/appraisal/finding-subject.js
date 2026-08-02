@@ -43,9 +43,11 @@
  *   units            → units_mismatch
  *   property_type    → property_type_mismatch / property_style_note
  * NOT listed, on purpose: seller_name (the appraisal's owner-of-record vs the CONTRACT's seller is
- * a cross-document reconciliation — chain-of-title's job), and year_built / living_area /
- * market_rent (the loan file holds no value for them, so the tie-out only ever fires them
- * document-vs-document).
+ * a cross-document reconciliation — chain-of-title's job; db/403 gave the file its own seller, so
+ * that reconciliation now runs against a value of record, but it is still cross-document and still
+ * belongs on the document desk), and year_built / living_area / market_rent, which db/403 also put
+ * on the file but marked `noFlag` in facts.js — they are shown in the comparison and never raise a
+ * finding on either desk, so there is no duplicate to suppress.
  */
 const APPRAISAL_DESK_FACTS = Object.freeze([
   'property_address', 'purchase_price', 'as_is_value', 'arv', 'units', 'property_type',
