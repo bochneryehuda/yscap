@@ -182,6 +182,11 @@ router.get('/:appId', async (req, res, next) => {
       `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`,
       [app.id])).rows[0];
     if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false, open: 0 } });
+    // "Property type" must answer what the property IS, not whether the building touches its
+    // neighbour (owner-reported 2026-08-02). db/402 + the importer store the real category going
+    // forward; this re-derives it for any row the boot repair has not reached yet, and moves the
+    // Detached / Attached style into its own field instead of dropping it.
+    require('../lib/appraisal/property-category').applyPropertyType(appr);
     const [comps, units, findings, photos] = await Promise.all([
       db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
       db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
@@ -431,11 +436,15 @@ router.post('/:appId/photos/refresh', async (req, res, next) => {
 
 // ---- POST /findings/:fid/resolve -------------------------------------------
 // Fields a "replace"/"custom" may write to the loan file (each trips the reprice trigger).
-// property_type is DELIBERATELY excluded: the appraisal never yields a valid portal
-// property_type CATEGORY (it gives a unit count / a MISMO form code, e.g. "3 units" /
-// "FNM1004"), so auto/custom write-back to it would corrupt the enum. A property-type
-// finding is keep/dismiss only; a wrong property_type is corrected on the application
-// form (the validated place). `units` stays — the appraisal's unit count IS a real int.
+// property_type is DELIBERATELY excluded, and STAYS excluded. The original reason was that the
+// appraisal never yielded a valid portal CATEGORY (it gave a unit count or a MISMO form code) —
+// that half is now fixed (lib/appraisal/property-category.js derives a real portal category from
+// the form + unit count + ownership signals, owner-reported 2026-08-02), but the exclusion is not
+// about the value's shape: property_type is a PRICING INPUT (db/071/072 reopen Products & Pricing
+// on any change) and the one validated door for it is the application form, which refuses an
+// appraisal form code outright (property-type.sanitizePropertyType). A property-type finding stays
+// keep/dismiss; a wrong property type is corrected on the application. `units` stays — the
+// appraisal's unit count IS a real int.
 const REPRICE_COLS = { arv: 'numeric', as_is_value: 'numeric', purchase_price: 'numeric', units: 'int' };
 const ACTIONS = new Set(['replace', 'keep', 'custom', 'dismiss', 'decline', 'acknowledge', 'grant_exception', 'request_revision']);
 

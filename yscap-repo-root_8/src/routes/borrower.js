@@ -1276,6 +1276,9 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const appr = (await db.query(
     `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
+  // Same correction as the staff tab: the property TYPE is the category (single family / 2–4 /
+  // condo), never the Detached / Attached attachment style (owner-reported 2026-08-02).
+  require('../lib/appraisal/property-category').applyPropertyType(appr);
   const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
