@@ -45,12 +45,16 @@ function sessionExpired(reason) {
 /* Confirm the SESSION is dead before acting on a 401 — /auth/me answers for the
    session and nothing else. Plain fetch so it can never recurse. Anything but a
    clean 401 means keep the session. */
-async function confirmSessionDead(token) {
+async function confirmSessionDead() {
+  // Probe with the CURRENT stored token and report which one it was, so the caller
+  // only ever signs out the exact token it proved dead (mirrors app-v2/src/lib/api.js).
+  const token = getToken();
+  if (!token) return null;
   try {
     const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
     if (res.status !== 401) return null;
     let data = null; try { data = await res.json(); } catch { /* empty */ }
-    return { dead: true, reason: (data && data.error) || '' };
+    return { dead: true, reason: (data && data.error) || '', token };
   } catch { return null; }
 }
 
@@ -58,10 +62,11 @@ let deadCheck = null;   // one probe at a time, however many calls 401 at once
 async function handle401(data) {
   const token = getToken();
   if (!token) return;
-  if (!deadCheck) deadCheck = confirmSessionDead(token).finally(() => { deadCheck = null; });
+  if (!deadCheck) deadCheck = confirmSessionDead().finally(() => { deadCheck = null; });
   const verdict = await deadCheck;
   if (!verdict || !verdict.dead) return;
-  if (getToken() !== token) return;
+  // Sign out ONLY the token we proved dead, and only if it is STILL the active one.
+  if (verdict.token !== getToken()) return;
   sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
