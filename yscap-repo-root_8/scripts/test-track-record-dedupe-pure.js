@@ -84,8 +84,14 @@ const hit = TRK.matchTrackRecord(rows, '26 S 10th St, Brooklyn, NY 11249');
 ok(hit && hit.id === 'r1', 'a row carrying an OLD ClickUp-style key still matches the same house');
 
 console.log('\n6. what may be folded away, and what may never be');
-const keeper = { id: 'k', is_verified: true, origin: 'portal', purchase_price: 400000, sale_price: null };
-const refuse = (row) => HEAL.refuseReason(row, keeper);
+/* Both sides carry the SAME address on purpose: these cases are about the other
+   guards, and `refuseReason` now refuses outright when the two rows are not the
+   same property (section 6b). So the fixtures state the precondition the real
+   flow guarantees, rather than leaving it to chance. */
+const KEEPER_ADDR = '26 S 10th St, Brooklyn, NY 11249';
+const keeper = { id: 'k', is_verified: true, origin: 'portal', purchase_price: 400000, sale_price: null, property_address: KEEPER_ADDR };
+const refuse = (row) => HEAL.refuseReason(
+  Object.assign({ property_address: KEEPER_ADDR }, row), keeper);
 ok(refuse({ id: 'a', is_verified: true, origin: 'clickup_backfill' }) === 'verified',
   'a VERIFIED line is locked evidence — never folded away');
 ok(refuse({ id: 'b', origin: 'portal' }) === 'human_authored',
@@ -104,6 +110,52 @@ ok(refuse({ id: 'h', origin: 'clickup_backfill', purchase_price: 400000 }) === n
   '…and one that AGREES on a figure is safe too');
 ok(refuse({ id: 'i', inferred: true, origin: 'something_new', sale_price: 500000 }) === null,
   'an INFERRED line adding a figure the keeper lacks is safe (it will be carried over)');
+
+console.log('\n6b. GROUPING IS TRANSITIVE AND sameAddress IS NOT — the loser must match the KEEPER');
+/* Two documented rules make `sameAddress` non-transitive, and both occur in real
+   data. A bare row (no unit) matches EVERY unit in the building, and a
+   house-number RANGE matches every number it spans — so one bare row can chain
+   two genuinely different properties into a single group. Membership of a group
+   is therefore not proof, and without this guard the second unit is DELETED as a
+   duplicate of the first: real evidence destroyed, silently. */
+const at = (line1) => ({ line1, city: 'Lakewood', state: 'NJ', zip: '08701' });
+const mkRow = (id, line1, extra) => Object.assign(
+  { id, property_address: at(line1), origin: 'clickup_backfill', is_verified: false }, extra || {});
+
+{
+  const bare = mkRow('bare', '5 Main St');
+  const unit1 = mkRow('unit1', '5 Main St Apt 1', { purchase_price: 500000 });
+  const unit2 = mkRow('unit2', '5 Main St Apt 2');
+  // The premise: all three land in ONE group, because the bare row bridges them.
+  const grp = HEAL.groupByProperty([bare, unit1, unit2]);
+  ok(grp.length === 1 && grp[0].length === 3,
+    'a bare row really does chain two different units into one group (the premise)');
+  ok(TRK.sameProperty(unit1.property_address, unit2.property_address) === false,
+    '…yet Apt 1 and Apt 2 are NOT the same property');
+  ok(HEAL.refuseReason(unit2, unit1) === 'not_same_property',
+    'so folding Apt 2 into Apt 1 is REFUSED — a distinct condo unit is never deleted');
+  ok(HEAL.refuseReason(bare, unit1) === null,
+    '…while the bare row, which IS this property, still folds away');
+}
+{
+  const span = mkRow('span', '27-29 Oak Ave');
+  const n27 = mkRow('n27', '27 Oak Ave', { purchase_price: 400000 });
+  const n29 = mkRow('n29', '29 Oak Ave');
+  ok(HEAL.groupByProperty([span, n27, n29])[0].length === 3,
+    'a house-number RANGE chains 27 and 29 into one group (the premise)');
+  ok(HEAL.refuseReason(n29, n27) === 'not_same_property',
+    'so folding 29 into 27 is REFUSED — two different houses are never merged');
+  ok(HEAL.refuseReason(span, n27) === null,
+    '…while the range row, which covers 27, still folds away');
+}
+ok(HEAL.refuseReason(
+  { id: 'x', property_address: '26 South 10th Street, Brooklyn, NY 11249, USA', origin: 'clickup_backfill' },
+  { id: 'y', property_address: '26 S 10th St, Brooklyn, NY 11249', origin: 'portal' }) === null,
+  'and the whole point still works: the same house spelled two ways DOES merge');
+ok(HEAL.refuseReason(
+  { id: 'x', property_address: null, origin: 'clickup_backfill' },
+  { id: 'y', property_address: '26 S 10th St, Brooklyn, NY 11249', origin: 'portal' }) === 'not_same_property',
+  'an unreadable address is never assumed to be the keeper — it fails CLOSED');
 
 console.log('\n7. the line that survives is the one carrying the most');
 const pick = (rows2) => HEAL.pickKeeper(rows2).id;

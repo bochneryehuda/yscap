@@ -70,6 +70,18 @@ const norm = (v) => {
 
 /** Is this row safe to fold into `keep`? Returns a reason string, or null when safe. */
 function refuseReason(row, keep) {
+  /* THE LOSER MUST MATCH THE KEEPER ITSELF — grouping is TRANSITIVE and
+     `sameAddress` deliberately is NOT, so membership of a group is not proof.
+     Two documented rules make it non-transitive, and both occur in real data:
+     a house-number RANGE covers each number it spans ('27-29' ≈ '27' and ≈ '29',
+     while '27' ≉ '29'), and a MISSING unit matches every unit in the building
+     ('5 Main St' ≈ 'Apt 1' and ≈ 'Apt 2', while 'Apt 1' ≉ 'Apt 2'). So a bare
+     row can chain two genuinely different condo units into one group, and
+     without this test the second unit is deleted as a duplicate of the first —
+     exactly the mistake the key/verdict split in track-record-key.js exists to
+     prevent, re-introduced by the grouping. Asked here rather than in the loop
+     so it is structural: no caller can merge without having asked. */
+  if (!TRK.sameProperty(row.property_address, keep.property_address)) return 'not_same_property';
   if (row.is_verified) return 'verified';
   const machine = MACHINE_ORIGINS.has(String(row.origin || '')) || row.inferred === true;
   if (!machine) return 'human_authored';
