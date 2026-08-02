@@ -3938,7 +3938,10 @@ export default function StaffApplication() {
   // Permission-gated rooms vanish exactly as their sections do today; a deep
   // link into a hidden room stays a silent no-op (parity with today).
   const stationEnabled = useCallback((stId) => {
-    if (stId === 'st-delivery') return can('export_data_tapes');
+    // Send to investor is open to anyone on the file: it now carries the TPR and
+    // MISMO exports as well as the data tape, and only the TAPE needs the
+    // export_data_tapes permission (gated inside the section, 2026-08-02).
+    if (stId === 'st-delivery') return true;
     if (stId === 'st-draws') return can('manage_draws');
     return STATIONS.some((s) => s.id === stId);
   }, [can]);
@@ -4223,23 +4226,33 @@ export default function StaffApplication() {
     // exceptions); Encompass sync reads as the room's "advanced" tail.
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
     { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
-    { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: badges.appraisal.short },
-    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: badges.underwriting.short },
-    { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
+    /* REVIEW & CONDITIONS, in the owner's order (2026-08-02): conditions, track
+       record, appraisal and findings, document review, documents. This array is
+       what the RAIL reads, so it has to move in lock-step with the JSX order
+       below and with lib/stations.js — see the note at the top of that file.
+       One shared `group` keeps the classic view's group headers contiguous. */
+    { id: 'sec-conditions', label: 'Conditions', group: 'Review & conditions', badge: nCondOpen || '' },
+    { id: 'sec-track', label: 'Track record', group: 'Review & conditions' },
+    { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Review & conditions', badge: badges.appraisal.short },
+    { id: 'sec-underwriting', label: 'Document review', group: 'Review & conditions', badge: badges.underwriting.short },
+    // "& exports" is gone with the exports themselves (owner-directed 2026-08-02:
+    // "that section should just be called Documents").
+    { id: 'sec-documents', label: 'Documents', group: 'Review & conditions', badge: badges.documents.short },
+    // Orders is its own room now, so it gets its own group rather than sharing
+    // one with signing. Same count the section's own summary line uses — derived
+    // once above, so the rail and the header can't drift the way the badges once did.
+    { id: 'sec-orders', label: 'Orders (title, insurance & closing prep)', group: 'Orders',
+      badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
+    // E-signatures BEFORE closing (owner-directed 2026-08-02).
+    { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
     // Closing — the closer's desk. Shown to closers/admins always, and to the
     // file's officer once the file is heading to (or is at) closing so they have
     // their own closing view. The panel gates closer-only actions internally.
-    ...(showClosing ? [{ id: 'sec-closing', label: 'Closing', group: 'Closing', badge: app.status === 'funded' ? '' : (app.closer_id ? 'active' : '') }] : []),
-    { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
-    // Same count the section's own summary line uses — derived once above, so the
-    // rail and the header can't drift the way the badges once did.
-    { id: 'sec-orders', label: 'Orders (title, insurance & closing prep)', group: 'Signing & documents',
-      badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
-    { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: badges.documents.short },
-    // Data tapes are visible only to staff who may export them (processor /
-    // underwriter / admin by default; a loan officer only if granted per-person).
-    ...(can('export_data_tapes') ? [{ id: 'sec-tapes', label: 'Capital-provider data tapes', group: 'Signing & documents' }] : []),
-    { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
+    ...(showClosing ? [{ id: 'sec-closing', label: 'Closing', group: 'Signing & closing', badge: app.status === 'funded' ? '' : (app.closer_id ? 'active' : '') }] : []),
+    // Send to investor holds the TPR + MISMO exports (open to anyone on the file)
+    // AND the capital-provider data tape, which keeps its own permission gate
+    // inside the section — see the note on the section itself.
+    { id: 'sec-tapes', label: 'Send to investor', group: 'Send to investor' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
@@ -4261,7 +4274,9 @@ export default function StaffApplication() {
     .map((st) => {
       let badge = stationNeeds(st.sections);
       if (st.id === 'st-deal' && isRefiFile) badge += payoffMissing.length;
-      if (st.id === 'st-signing') badge += nOrdersToAssign;
+      // Follows sec-orders into its own room (2026-08-02) — a badge left on the
+      // room the section came FROM points at work that is no longer there.
+      if (st.id === 'st-orders') badge += nOrdersToAssign;
       // Open conditions vs the gating rows for the same sections overlap —
       // take the larger, never the sum (no double counting).
       if (st.id === 'st-review') badge = Math.max(badge, nCondOpen);
@@ -4669,31 +4684,6 @@ export default function StaffApplication() {
         <EncompassSyncPanel appId={id} />
       </Section>
 
-      <Section hidden={!show('sec-appraisal')} id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
-        info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
-        badge={badges.appraisal.long}>
-        {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
-            point (the review task itself is worked from My Tasks, not the
-            conditions list). It self-hides on a file that already has an imported
-            appraisal (there IS XML), and shares the SAME As-Is/ARV values as the
-            appraisal-documents waiver, so entering on either side shows "already
-            entered — confirm" on the other. */}
-        <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
-        <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
-      </Section>
-
-      <Section hidden={!show('sec-underwriting')} id="sec-underwriting" summary={summaries['sec-underwriting']} title="Document review" defaultOpen={false}
-        info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
-        badge={badges.underwriting.long}>
-        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
-        {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
-            not a separate section, not a separate AI pass — the same review, one place. */}
-        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '2px solid var(--line,#E7E1D3)' }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: '#141B22', marginBottom: 4 }}>Investor-specific guidelines</div>
-          <InvestorGuidelinesPanel appId={id} />
-        </div>
-      </Section>
-
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
           conditions, the underwriting conditions, the internal staff conditions +
           checklist, and the LLC used to be four separate sections — they're now one
@@ -4777,29 +4767,47 @@ export default function StaffApplication() {
       </>)}
       </Section>
 
+      <Section hidden={!show('sec-track')} id="sec-track" title="Track record" defaultOpen={false}
+        info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
+      {app.borrower_id
+        ? <StaffTrackRecordPanel app={app} role={role} />
+        : <p className="muted small">No borrower linked yet.</p>}
+      </Section>
+
+      <Section hidden={!show('sec-appraisal')} id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
+        info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
+        badge={badges.appraisal.long}>
+        {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
+            point (the review task itself is worked from My Tasks, not the
+            conditions list). It self-hides on a file that already has an imported
+            appraisal (there IS XML), and shares the SAME As-Is/ARV values as the
+            appraisal-documents waiver, so entering on either side shows "already
+            entered — confirm" on the other. */}
+        <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
+        <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
+      </Section>
+
       {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
-          the investor-specific guidelines are now a subsection of "Document review & PILOT findings"
-          above — one review, one place, no separate AI pass. */}
+          the investor-specific guidelines are now a subsection of THIS section —
+          one review, one place, no separate AI pass. */}
 
-      {showClosing && (
-        <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
-          info="The closer's desk — cash-to-close vs verified liquidity, the warehouse line, collateral tracking, closing conditions, checklists, TPR / investor-delivery sign-off, and the funded-date reconciliation.">
-          <ClosingPanel appId={id} app={app} can={can} onDownloadDoc={downloadDoc} onPreview={openPreview} onChanged={load} />
-        </Section>
-      )}
-
-      <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
-        info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
-      <EsignFileSection appId={id} role={role} onChanged={load} />
+      <Section hidden={!show('sec-underwriting')} id="sec-underwriting" summary={summaries['sec-underwriting']} title="Document review" defaultOpen={false}
+        info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
+        badge={badges.underwriting.long}>
+        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
+        {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
+            not a separate section, not a separate AI pass — the same review, one place. */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '2px solid var(--line,#E7E1D3)' }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#141B22', marginBottom: 4 }}>Investor-specific guidelines</div>
+          <InvestorGuidelinesPanel appId={id} />
+        </div>
       </Section>
 
-      <Section hidden={!show('sec-orders')} id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
-        info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
-      <OrdersPanel appId={id} canAccept={canComplete(role)} />
-      </Section>
-
-      <Section hidden={!show('sec-documents')} id="sec-documents" summary={summaries['sec-documents']} title="Documents & exports" defaultOpen={false}
-        info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
+      {/* Just "Documents" now (owner-directed 2026-08-02: "since we don't have any
+          exports anymore in the document section, that section should just be called
+          Documents where you can just see all the documents"). */}
+      <Section hidden={!show('sec-documents')} id="sec-documents" summary={summaries['sec-documents']} title="Documents" defaultOpen={false}
+        info="Every document on the file, titled by condition — with the working set on top and rejected/replaced versions in the trash."
         badge={badges.documents.long}>
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6 }}>
@@ -4868,25 +4876,45 @@ export default function StaffApplication() {
           })()}
       </div>
       {app.status === 'funded' && <PostClosing appId={id} />}
-      <TprExport appId={id} />
-      <MismoExport appId={id} />
+      {/* TprExport + MismoExport used to sit here. They moved to Send to Investor
+          (owner-directed 2026-08-02) — which is also why this section is no longer
+          called "Documents & exports". */}
       </Section>
+
+      <Section hidden={!show('sec-orders')} id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
+        info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} />
+      </Section>
+
+      <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
+        info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
+      <EsignFileSection appId={id} role={role} onChanged={load} />
+      </Section>
+      {showClosing && (
+        <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
+          info="The closer's desk — cash-to-close vs verified liquidity, the warehouse line, collateral tracking, closing conditions, checklists, TPR / investor-delivery sign-off, and the funded-date reconciliation.">
+          <ClosingPanel appId={id} app={app} can={can} onDownloadDoc={downloadDoc} onPreview={openPreview} onChanged={load} />
+        </Section>
+      )}
 
       {/* Closed by default like the other 13 sections. It was the ONLY export tool
           sitting open on every file — above the collapsed Track record and
           Communication sections, which matter more day to day. */}
-      {can('export_data_tapes') && (
-      <Section hidden={!show('sec-tapes')} id="sec-tapes" title="Capital-provider data tapes" defaultOpen={false}
-        info="Export this loan onto a capital provider's own tape (their Excel workbook with this loan's figures filled in). You can only export the tape for the provider this loan is currently set to; to export a different one, change the loan's capital provider first. For a seasoned loan you'll confirm the current balance, next payment date and interest reserve before it downloads.">
-      <TapeExport appId={id} />
-      </Section>
-      )}
+      {/* SEND TO INVESTOR — everything that leaves this file for an outside party
+          (owner-directed 2026-08-02: "the TPR Clean File Export should be part of
+          the Send to Investor section. The Mismo 3.4 exports should also be part
+          of the Send to Investor section").
 
-      <Section hidden={!show('sec-track')} id="sec-track" title="Track record" defaultOpen={false}
-        info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
-      {app.borrower_id
-        ? <StaffTrackRecordPanel app={app} role={role} />
-        : <p className="muted small">No borrower linked yet.</p>}
+          The SECTION is deliberately no longer wrapped in `can('export_data_tapes')`.
+          That permission is about a capital provider's own WORKBOOK, and gating the
+          whole section on it would have taken the TPR and MISMO exports away from
+          every loan officer who has them today — the room itself disappears without
+          it (stationEnabled). So the tape workbook keeps its own gate, INSIDE. */}
+      <Section hidden={!show('sec-tapes')} id="sec-tapes" title="Send to investor" defaultOpen={false}
+        info="Everything that leaves this file for an outside party: the TPR clean-file export, the MISMO 3.4 file, and the capital provider's own data tape.">
+      <TprExport appId={id} />
+      <MismoExport appId={id} />
+      {can('export_data_tapes') && <TapeExport appId={id} />}
       </Section>
 
       {/* Conversations, Email Center and Activity are one "Communication & history"
