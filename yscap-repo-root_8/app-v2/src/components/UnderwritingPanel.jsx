@@ -31,6 +31,10 @@ const DOC_LABEL = {
   // carry these sources — label them clearly so they read as "investor-specific" in the one list.
   investor_guideline: 'Investor-specific guideline', investor_guideline_desk: 'Investor-specific guideline',
   investor_guideline_ai: 'Investor-specific guideline (AI)',
+  // The chain desks. Without these the finding line reads "assignment chain" / "chain of title" —
+  // the underscore-replace fallback — which is legible but looks unfinished next to every other
+  // labelled source.
+  assignment_chain: 'Assignment chain', chain_of_title: 'Chain of title', seller_chain: 'Purchase chain',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
