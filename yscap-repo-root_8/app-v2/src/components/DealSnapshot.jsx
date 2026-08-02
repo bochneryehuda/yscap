@@ -1,6 +1,7 @@
 import React from 'react';
 import { fullNameOf } from '../lib/personName.js';
 import { dealPurchase } from '../lib/dealPrice.js';
+import { revealAnchor } from './FileSections.jsx';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -73,7 +74,7 @@ export default function DealSnapshot({ app, gating }) {
           // section that fixes it. Not-ready shows the count; ready shows "Ready".
           <button type="button" className="snap-stat snap-stat-btn"
             title={g.ready ? 'All prerequisites met — see the checklist' : `${openCount} item(s) to clear — click to see exactly what's left and jump to each`}
-            onClick={() => { const el = document.getElementById('ctc-outstanding'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+            onClick={() => revealAnchor('ctc-outstanding')}>
             <span className="snap-stat-k">Clear to close</span>
             <span className="snap-stat-v" style={{ color: g.ready ? 'var(--ok)' : 'var(--warning)' }}>
               {g.ready ? 'Ready' : openCount}

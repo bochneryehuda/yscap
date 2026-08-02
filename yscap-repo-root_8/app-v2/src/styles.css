@@ -3607,3 +3607,28 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   background:#fff;border-bottom:1px solid var(--border);
   padding-top:calc(10px + env(safe-area-inset-top,0px))}
 .isuite-full-body{flex:1;min-height:0;display:flex}
+
+/* ===== Seven Rooms rail (staff loan file, Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md) ===== */
+/* Room rows reuse the .file-nav a treatment; the ACTIVE room's child sections
+   nest under it as slimmer "spoke" rows. The nested list must not re-apply the
+   outer list's card chrome (the descendant selector would). */
+.file-nav ol.file-nav-spokes{background:transparent;border:none;border-radius:0;
+  margin:2px 0 4px 12px;padding:0 0 2px 8px;border-left:1px solid var(--line)}
+.file-nav a.file-nav-station{font-weight:600}
+.file-nav ol.file-nav-spokes a{padding:6px 10px;font-size:12.5px;font-weight:400}
+/* Rail footer: the classic-view toggle + "where did everything go?" one-pager.
+   Explicit dark text — never a --ink* token (those are LIGHT). */
+.file-nav-foot{padding:10px 6px 2px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.file-nav-help summary{cursor:pointer;list-style:none;font-size:12px;color:#4B585C;padding:2px 0}
+.file-nav-help summary::-webkit-details-marker{display:none}
+.file-nav-help summary::before{content:'▸ ';color:#4B585C}
+.file-nav-help[open] summary::before{content:'▾ '}
+.file-nav-help ul{list-style:none;margin:6px 0 0;padding:0;font-size:12px;color:#4B585C}
+.file-nav-help li{padding:2px 0}
+.file-nav-help li b{color:#141B22}
+@media(max-width:720px){
+  /* Phone chip bar: 7 room chips on one row; the in-room section headers are
+     the drill-down there, so the spokes and footer stay off the strip. */
+  .file-nav ol.file-nav-spokes{display:none}
+  .file-nav-foot{display:none}
+}

@@ -34,7 +34,8 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
@@ -105,10 +106,9 @@ function ClosingDateField({ value, onSave }) {
  *
  * STAFF-ONLY — the note buyer name is never shown to a borrower. */
 function NoteBuyerRef({ value }) {
-  const jump = () => {
-    const el = document.getElementById('note-buyer-slot');
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
+  // revealAnchor: the slot lives on the Overview room — from another room the
+  // resolver switches rooms first, then scrolls (Seven Rooms, Phase 1).
+  const jump = () => { revealAnchor('note-buyer-slot', { block: 'center' }); };
   return (
     <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">
       Note buyer: <b>{value || '—'}</b>
@@ -153,7 +153,7 @@ function CondNoteBuyerEntry({ appId, onSaved }) {
           each one requires and what switching changes. This quick entry stays (it is
           owner-directed, 2026-07-20), but it now says where the full view lives. */}
       <button type="button" className="btn link small"
-        onClick={() => { const el = document.getElementById('note-buyer-slot'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+        onClick={() => revealAnchor('note-buyer-slot', { block: 'center' })}
         title="Open the Note buyer panel, which shows what each note buyer requires on this file">
         see what each one requires ↑
       </button>
@@ -3325,6 +3325,9 @@ export default function StaffApplication() {
     if (!app || focusedAi.current) return;
     if (new URLSearchParams(search || '').get('focus') !== 'ai-findings') return;
     focusedAi.current = true;
+    // Seven Rooms: from another room the resolver hops + opens + scrolls; when
+    // already on the Review room (or in classic view) keep today's path.
+    if (revealAnchor('ai-findings')) return;
     requestOpenSection('sec-underwriting');
     const tid = setTimeout(() => {
       const el = document.getElementById('ai-findings') || document.getElementById('sec-underwriting');
@@ -3374,6 +3377,8 @@ export default function StaffApplication() {
     finally { setInviteBusy(false); }
   }
   function jumpToChat() {
+    // From another room the resolver switches to Messages & History first.
+    if (revealAnchor('conversations')) return;
     // Fall back to the section itself if the conversation panel is still mounting,
     // so the jump always lands somewhere useful rather than nowhere at all.
     const el = document.getElementById('conversations') || document.getElementById('sec-messages');
@@ -3443,12 +3448,44 @@ export default function StaffApplication() {
       // while closed) AND only renders on the Chats tab — so arriving from the Chat
       // hub used to scroll to an element that wasn't there. Open the section and
       // select the tab, then scroll once both have rendered.
-      requestOpenSection('sec-messages');
       setCommTab('messages');
-      setTimeout(jumpToChat, 250);
+      if (!revealAnchor('conversations')) {
+        requestOpenSection('sec-messages');
+        setTimeout(jumpToChat, 250);
+      }
     }
     /* eslint-disable-next-line */
   }, [app]);
+
+  // Arriving from "Findings to review" (?finding=<id>): that link was DEAD —
+  // StaffFindingEscalations emits it, but no handler existed here and the pulse
+  // code lives inside UnderwritingPanel, which is UNMOUNTED while its section
+  // is collapsed (and it starts collapsed) — so the click landed and did
+  // nothing (red-team R1, docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md §6).
+  // NOTE the producer puts the query INSIDE the hash (…#/internal/app/:id?finding=x),
+  // which location.search never sees — parse both forms, exactly as the
+  // panel's own pulse does. Once the section mounts, the panel takes over
+  // (scrolls to the exact finding and pulses it gold).
+  const focusedFinding = useRef(false);
+  useEffect(() => { focusedFinding.current = false; }, [id]);
+  useEffect(() => {
+    if (!app || focusedFinding.current) return;
+    let fid = new URLSearchParams(search || '').get('finding');
+    if (!fid) {
+      const h = String(window.location.hash || '');
+      const q = h.indexOf('?');
+      if (q >= 0) fid = new URLSearchParams(h.slice(q + 1)).get('finding');
+    }
+    if (!fid) return;
+    focusedFinding.current = true;
+    if (revealAnchor('ai-findings')) return;
+    requestOpenSection('sec-underwriting');
+    const tid = setTimeout(() => {
+      const el = document.getElementById('sec-underwriting');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 400);
+    return () => clearTimeout(tid);
+  }, [app, search]);
 
   // In-place document preview (any PDF/image/text) — see it before signing off,
   // without downloading. Uses the same authenticated loader as the download.
@@ -3741,6 +3778,110 @@ export default function StaffApplication() {
   const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
+
+  /* ===== SEVEN ROOMS (Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md) =====
+     The 17 sections regroup into 7 rooms and ONE room renders at a time; the
+     other rooms' sections are not on the page at all (the ~27-screen scroll is
+     gone structurally). Every section moves WHOLE — ids, labels, badges,
+     summaries, collapse behavior and full-screen are byte-identical inside a
+     room. "Full file (classic view)" (persisted per user) renders today's page
+     exactly — the rooms code stands aside entirely, incl. the jump resolver. */
+  const [fileViewPref, setFileViewPref] = useStickyFilter('fileView', 'rooms');
+  const classic = fileViewPref === 'classic';
+  const [activeStation, setActiveStation] = useState('st-overview');
+  const activeStationRef = useRef(activeStation); activeStationRef.current = activeStation;
+  const pendingRevealRef = useRef(null);
+  // Permission-gated rooms vanish exactly as their sections do today; a deep
+  // link into a hidden room stays a silent no-op (parity with today).
+  const stationEnabled = useCallback((stId) => {
+    if (stId === 'st-delivery') return can('export_data_tapes');
+    if (stId === 'st-draws') return can('manage_draws');
+    return STATIONS.some((s) => s.id === stId);
+  }, [can]);
+  // The ONE executor for a queued jump — runs after the target's room has
+  // mounted (flush effect below), or immediately for a same-room jump whose
+  // target section is merely collapsed.
+  const runReveal = useCallback((t) => {
+    if (!t) return;
+    if (t.kind === 'section') {
+      requestOpenSection(t.id);
+      if (t.tab) requestConditionsTab(t.tab);
+      setTimeout(() => {
+        const el = document.getElementById(t.id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+    } else if (t.kind === 'anchor') {
+      const owner = ANCHOR_SECTION[t.id];
+      if (owner) requestOpenSection(owner);
+      if (t.id === 'conversations') setCommTab('messages');
+      setTimeout(() => {
+        const el = document.getElementById(t.id) || (owner ? document.getElementById(owner) : null);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: t.block || 'start' });
+      }, owner ? 400 : 60);
+    } else if (t.kind === 'action' && t.action === 'open-studio') {
+      // Cross-room "Open the studio": ProductStudioPanel mounts only while
+      // sec-pricing is open, and its imperative ref lands a beat later — poll
+      // briefly, then degrade to today's scroll-to-the-section fallback.
+      requestOpenSection('sec-pricing');
+      let tries = 0;
+      const poll = () => {
+        if (studioRef.current) { studioRef.current.openStudio(); return; }
+        if (++tries < 60) requestAnimationFrame(poll);
+        else { const el = document.getElementById('sec-pricing'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      };
+      setTimeout(poll, 120);
+    }
+  }, [setCommTab]);
+  // Flush a queued jump once the newly-active room's sections have mounted.
+  useEffect(() => {
+    const t = pendingRevealRef.current;
+    if (!t) return undefined;
+    pendingRevealRef.current = null;
+    const timer = setTimeout(() => runReveal(t), 120);
+    return () => clearTimeout(timer);
+  }, [activeStation, runReveal]);
+  // Register the jump resolver (goToSection/revealAnchor consult it first).
+  // Registered in an effect WITH CLEANUP so the borrower screen / Draw Center —
+  // which share FileSections — can never be hijacked by an unmounted file
+  // screen; ids outside the map (and hidden rooms) decline to today's behavior.
+  useEffect(() => {
+    if (classic) return undefined;
+    return setSectionResolver((t) => {
+      const st = stationOf(t.id);
+      if (!st || !stationEnabled(st)) return false;
+      if (st === activeStationRef.current) {
+        // Right room already — but the target section may be collapsed
+        // (unmounted). Take over only for the anchor/tab work goToSection's
+        // default path already handles… it does, so decline. The one caller
+        // that needs more (open-studio) queues an action explicitly.
+        return false;
+      }
+      pendingRevealRef.current = t;
+      setActiveStation(st);
+      return true;
+    });
+  }, [classic, stationEnabled]);
+  // A rail click: switch rooms and start at the top of the new room.
+  const goStation = useCallback((stId) => {
+    if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    pendingRevealRef.current = null;
+    setActiveStation(stId);
+    window.scrollTo({ top: 0 });
+  }, []);
+  // "Open the studio" from a condition row — works from ANY room (red-team R2):
+  // ref alive → straight in; otherwise hop to The Deal (or just open the
+  // section when already there / in classic view) and invoke once mounted.
+  const openStudioAnywhere = useCallback(() => {
+    if (studioRef.current) { studioRef.current.openStudio(); return; }
+    const t = { kind: 'action', action: 'open-studio' };
+    if (!classic && activeStationRef.current !== 'st-deal') {
+      pendingRevealRef.current = t;
+      setActiveStation('st-deal');
+      return;
+    }
+    runReveal(t);
+  }, [classic, runReveal]);
+  /* ===== end Seven Rooms machinery (render wiring further down) ===== */
   // "Application details" is ONE tabbed sub-hub too (owner-directed 2026-07-31:
   // "split in between 100 places… clean up the view"): Deal & property ·
   // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
@@ -3931,8 +4072,10 @@ export default function StaffApplication() {
     // carry a section that would only ever say so.
     ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
-    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
+    // Exceptions sits directly under pricing (most exceptions are pricing
+    // exceptions); Encompass sync reads as the room's "advanced" tail.
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
+    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: badges.appraisal.short },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: badges.underwriting.short },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
@@ -3957,6 +4100,48 @@ export default function StaffApplication() {
     ...(can('manage_draws') ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
   ];
 
+  // Seven Rooms render wiring. `show` decides whether a section renders (its
+  // room is on screen, or classic view shows everything); the room badges roll
+  // up ONLY from page-level sources — the server-stamped gating counts and the
+  // queue counts. The appraisal/underwriting summary ladders are reported up by
+  // panels that mount on first visit, so they are after-visit enrichment and
+  // never a roll-up source (a never-visited room must still show its work —
+  // red-team R3 in docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md).
+  const show = (sid) => classic || STATION_OF[sid] === activeStation;
+  const stationNeeds = (ids) => ids.reduce((n, sid) => n + (needsBySection[sid] || 0), 0);
+  const STATION_DEFS = STATIONS
+    .filter((st) => stationEnabled(st.id))
+    .map((st) => {
+      let badge = stationNeeds(st.sections);
+      if (st.id === 'st-deal' && isRefiFile) badge += payoffMissing.length;
+      if (st.id === 'st-signing') badge += nOrdersToAssign;
+      // Open conditions vs the gating rows for the same sections overlap —
+      // take the larger, never the sum (no double counting).
+      if (st.id === 'st-review') badge = Math.max(badge, nCondOpen);
+      return { id: st.id, label: st.label, badge: badge || '' };
+    });
+  const railFooter = (
+    <div className="file-nav-foot">
+      <button type="button" className="btn link small" style={{ color: '#4B585C' }}
+        title={classic
+          ? 'Back to the seven-room view'
+          : 'Show the whole file on one page, exactly as before — for printing, QC, and Ctrl-F across everything'}
+        onClick={() => setFileViewPref(classic ? 'rooms' : 'classic')}>
+        {classic ? '← Back to the room view' : 'Full file (classic view)'}
+      </button>
+      {!classic && (
+        <details className="file-nav-help">
+          <summary>Where did everything go?</summary>
+          <ul>
+            {whereDidItGo(SECTIONS).map((r) => (
+              <li key={r.old}><span>{r.old}</span> → <b>{r.now}</b></li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+
   return (
     <>
       {/* The file's identity bar STAYS while you scroll — borrower, address,
@@ -3966,7 +4151,7 @@ export default function StaffApplication() {
         <Link to="/internal" className="btn link" style={{ flex: 'none' }}>← Pipeline</Link>
         <div className="file-top-main">
           <h1 className="file-top-addr">{app.first_name} {app.last_name}{app.co_borrower_id ? ` & ${app.co_first_name || ''} ${app.co_last_name || ''}`.trimEnd() : ''} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
-          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
+          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}{app.loan_amount != null ? <> · <b style={{ color: '#141B22' }}>{money(app.loan_amount)}</b></> : null}</span>
         </div>
         {/* BORROWER VIEW (owner-directed 2026-07-26) — step into this
             borrower's portal straight from their file, landing on THIS loan, so
@@ -3988,6 +4173,12 @@ export default function StaffApplication() {
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div role="alert" className="notice err">{err}</div>}
 
+      {/* The stage dots ride the top of the page in EVERY room (moved out of
+          the Overview section — Seven Rooms Phase 1), so "where does this deal
+          stand" never needs a room switch: every room switch starts at the top,
+          where this is. */}
+      <LoanProgress status={app.status} />
+
       {/* THE FRONT DOOR (blueprint Move 1). Above the section nav on purpose:
           the few things that want you today, before the sixteen sections. It
           renders the SAME server payload ClearToClosePanel already used — which
@@ -4006,18 +4197,23 @@ export default function StaffApplication() {
           non-locked status; the button itself stays super-admin-only. */}
       <StructuralLockBanner app={app} role={role} onChanged={load} />
 
-      {/* Blueprint 2-column shell (pilot-staff-file): the existing section nav +
-          FileSections content stay exactly as they were on the main side; a NEW
-          presentation-only file-summary rail sits beside them. Wrapping markup
-          only — FileSections and its .file-* internals are untouched. */}
-      <div className="file-rail-grid">
-      <FileSections sections={SECTIONS}>
+      {/* THE SEVEN ROOMS CANVAS (Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md).
+          The rail lists 7 rooms; ONE room's sections render at a time (each
+          section byte-identical inside). "Full file (classic view)" in the rail
+          footer renders all sections + the flat grouped rail, exactly as
+          before. The old right-hand file-summary aside is RETIRED — everything
+          it showed lives in the header (loan #, status, amount), the Overview
+          room (team, internal status), or a room badge (documents count). */}
+      <FileSections
+        sections={classic ? SECTIONS : SECTIONS.filter((s) => STATION_OF[s.id] === activeStation)}
+        stations={classic ? null : STATION_DEFS}
+        activeStation={activeStation} onStationGo={goStation}
+        footer={railFooter}>
 
-      <Section id="sec-overview" title="File overview"
+      <Section hidden={!show('sec-overview')} id="sec-overview" title="File overview"
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
-      {/* Where the loan is up to — visible INSIDE the loan, not just on the
-          pipeline (owner-directed 2026-07-20). */}
-      <LoanProgress status={app.status} />
+      {/* The LoanProgress stepper moved ABOVE the rooms (page top) so it shows
+          in every room, not only here. */}
       {/* Only the file's assigned LO sees this — presets to VIP / Quiet /
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
@@ -4042,7 +4238,7 @@ export default function StaffApplication() {
           {gating && (() => {
             const g = gating.clear_to_close || {};
             const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
-            const jump = () => { const el = document.getElementById('ctc-outstanding'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+            const jump = () => revealAnchor('ctc-outstanding');
             return g.ready
               ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
               : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
@@ -4060,7 +4256,7 @@ export default function StaffApplication() {
             dropdown. Only a super-admin keeps a manual override. Everyone else
             sees the status read-only. */}
         {role === 'super_admin' ? (
-        <div className={showPipeline ? 'grid cols-2' : ''} style={{ gap: 16 }}>
+        <div className="grid cols-2" style={{ gap: 16 }}>
           <div className="field" style={{ marginBottom: 0 }}>
             <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
             <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
@@ -4068,7 +4264,10 @@ export default function StaffApplication() {
             </select>
             <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
           </div>
-          {showPipeline && <div className="field" style={{ marginBottom: 0 }}>
+          {/* The internal status renders UNCONDITIONALLY (it used to hide with
+              the pipeline toggle; the retired right aside was then its only
+              always-visible surface — red-team minor, Seven Rooms Phase 1). */}
+          <div className="field" style={{ marginBottom: 0 }}>
             <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
             <select className="input" value={app.internal_status || ''}
               onChange={e => changeInternalStatus(e.target.value)}
@@ -4089,14 +4288,14 @@ export default function StaffApplication() {
               })()}
             </select>
             <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
-          </div>}
+          </div>
         </div>
         ) : (
           <div className="field" style={{ marginBottom: 0 }}>
             <label>Status</label>
             <div className="row" style={{ gap: 8, alignItems: 'center' }}>
               <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
-              {showPipeline && app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
+              {app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
             </div>
             <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
           </div>
@@ -4205,7 +4404,7 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-application" title="Application details" defaultOpen={false}
+      <Section hidden={!show('sec-application')} id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
       {/* ONE TABBED SUB-HUB (owner-directed 2026-07-31: "the application details
           are split in between 100 places… everything together, easier for the
@@ -4284,36 +4483,37 @@ export default function StaffApplication() {
           which loan, states what the borrower walks away with on a cash-out, and
           explains how a payoff works. Purchases never see it. */}
       {isRefiFile && (
-        <Section id="sec-payoff" summary={summaries['sec-payoff']} title="Payoff" defaultOpen={false}
+        <Section hidden={!show('sec-payoff')} id="sec-payoff" summary={summaries['sec-payoff']} title="Payoff" defaultOpen={false}
           info="The loan already on this property: what it costs to clear it, who holds it, and which of their loans it is — everything the closing attorney needs to order a payoff letter. On a cash-out refinance it also shows what the borrower actually walks away with after the payoff and the closing costs."
           badge={payoffBadge.long}>
           <PayoffCard appId={id} app={app} onSaved={load} />
         </Section>
       )}
 
-      <Section id="sec-pricing" summary={summaries['sec-pricing']} title="Structure & pricing" defaultOpen={false}
+      <Section hidden={!show('sec-pricing')} id="sec-pricing" summary={summaries['sec-pricing']} title="Structure & pricing" defaultOpen={false}
         info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."
         badge={badges.pricing.long}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
-      <Section id="sec-encompass" title="Encompass sync" defaultOpen={false}
-        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. Pull any Encompass value into your file with one click. A term sheet can't be issued while a field here doesn't match. Encompass is never written to.">
-        <EncompassSyncPanel appId={id} />
-      </Section>
-
       {/* The file's policy-exception REGISTER (redesign 2026-07-24): every
           deviation this loan asked for or carries — guaranty waiver, early
           send, pricing exception, recorded overrides — with EX-n references.
           Requests are made from the sections they belong to; this is the
-          one-look history a diligence conversation starts from. */}
-      <Section id="sec-exceptions" title="Exceptions" defaultOpen={false}
+          one-look history a diligence conversation starts from. Sits directly
+          under Structure & pricing (most exceptions are pricing exceptions). */}
+      <Section hidden={!show('sec-exceptions')} id="sec-exceptions" title="Exceptions" defaultOpen={false}
         info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      <Section id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
+      <Section hidden={!show('sec-encompass')} id="sec-encompass" title="Encompass sync" defaultOpen={false}
+        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. Pull any Encompass value into your file with one click. A term sheet can't be issued while a field here doesn't match. Encompass is never written to.">
+        <EncompassSyncPanel appId={id} />
+      </Section>
+
+      <Section hidden={!show('sec-appraisal')} id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={badges.appraisal.long}>
         {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
@@ -4326,7 +4526,7 @@ export default function StaffApplication() {
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      <Section id="sec-underwriting" summary={summaries['sec-underwriting']} title="Document review" defaultOpen={false}
+      <Section hidden={!show('sec-underwriting')} id="sec-underwriting" summary={summaries['sec-underwriting']} title="Document review" defaultOpen={false}
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
         badge={badges.underwriting.long}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
@@ -4344,7 +4544,7 @@ export default function StaffApplication() {
           section you switch between with tabs, so there's a single place to look. */}
       {/* fullscreenable: owner-directed — the conditions list is the one section
           you sit and work through, so it gets a button to fill the screen. */}
-      <Section id="sec-conditions" summary={summaries['sec-conditions']} title="Conditions" defaultOpen={false}
+      <Section hidden={!show('sec-conditions')} id="sec-conditions" summary={summaries['sec-conditions']} title="Conditions" defaultOpen={false}
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''} fullscreenable>
 
@@ -4375,7 +4575,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
+          onOpenStudio={openStudioAnywhere} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -4421,23 +4621,23 @@ export default function StaffApplication() {
           above — one review, one place, no separate AI pass. */}
 
       {showClosing && (
-        <Section id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
+        <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
           info="The closer's desk — cash-to-close vs verified liquidity, the warehouse line, collateral tracking, closing conditions, checklists, TPR / investor-delivery sign-off, and the funded-date reconciliation.">
           <ClosingPanel appId={id} app={app} can={can} onDownloadDoc={downloadDoc} onPreview={openPreview} onChanged={load} />
         </Section>
       )}
 
-      <Section id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
+      <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
       <EsignFileSection appId={id} role={role} onChanged={load} />
       </Section>
 
-      <Section id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
+      <Section hidden={!show('sec-orders')} id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
         info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
       <OrdersPanel appId={id} canAccept={canComplete(role)} />
       </Section>
 
-      <Section id="sec-documents" summary={summaries['sec-documents']} title="Documents & exports" defaultOpen={false}
+      <Section hidden={!show('sec-documents')} id="sec-documents" summary={summaries['sec-documents']} title="Documents & exports" defaultOpen={false}
         info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
         badge={badges.documents.long}>
       <div className="panel" style={{ marginTop: 0 }}>
@@ -4515,13 +4715,13 @@ export default function StaffApplication() {
           sitting open on every file — above the collapsed Track record and
           Communication sections, which matter more day to day. */}
       {can('export_data_tapes') && (
-      <Section id="sec-tapes" title="Capital-provider data tapes" defaultOpen={false}
+      <Section hidden={!show('sec-tapes')} id="sec-tapes" title="Capital-provider data tapes" defaultOpen={false}
         info="Export this loan onto a capital provider's own tape (their Excel workbook with this loan's figures filled in). You can only export the tape for the provider this loan is currently set to; to export a different one, change the loan's capital provider first. For a seasoned loan you'll confirm the current balance, next payment date and interest reserve before it downloads.">
       <TapeExport appId={id} />
       </Section>
       )}
 
-      <Section id="sec-track" title="Track record" defaultOpen={false}
+      <Section hidden={!show('sec-track')} id="sec-track" title="Track record" defaultOpen={false}
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
       {app.borrower_id
         ? <StaffTrackRecordPanel app={app} role={role} />
@@ -4531,7 +4731,7 @@ export default function StaffApplication() {
       {/* Conversations, Email Center and Activity are one "Communication & history"
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
-      <Section id="sec-messages" title="Communication & history" defaultOpen={false}
+      <Section hidden={!show('sec-messages')} id="sec-messages" title="Communication & history" defaultOpen={false}
         info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs below.">
       <div className="comm-tabs" role="tablist" aria-label="Communication">
         {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Activity' }].map(t => (
@@ -4549,7 +4749,7 @@ export default function StaffApplication() {
       {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
           not inside the file. The file just hands off to it. */}
       {can('manage_draws') && (
-        <Section id="sec-draws" title="Construction draws" collapsible={false}>
+        <Section hidden={!show('sec-draws')} id="sec-draws" title="Construction draws" collapsible={false}>
           {app.status === 'funded' ? (
             <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
               <b>This file is funded — its draws are managed in the Draw Center.</b>
@@ -4587,33 +4787,10 @@ export default function StaffApplication() {
 
       </FileSections>
 
-      {/* RIGHT RAIL — presentation only. Reads ONLY variables already in scope
-          on this screen (app.*, procName, uwName, docs). No fetch, no
-          derivation, no handlers. Staff-only surface. */}
-      <aside className="file-rail" aria-label="File summary">
-        <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>File summary</h3>
-          <div className="metrow"><span className="k">Loan number</span><span className="v">{app.ys_loan_number || 'Pending'}</span></div>
-          <div className="metrow"><span className="k">Status</span><span className="v">{APP_STATUS_LABEL[app.status] || app.status}</span></div>
-          <div className="metrow"><span className="k">Internal status</span><span className="v">{app.internal_status || '—'}</span></div>
-          <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
-          <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
-          <div className="metrow"><span className="k">Target closing</span><span className="v">{app.expected_closing ? fmtDay(app.expected_closing) : '—'}</span></div>
-        </div>
-
-        <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>Team</h3>
-          <div className="metrow"><span className="k">Loan officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}</span></div>
-          <div className="metrow"><span className="k">Processor</span><span className="v">{procName || 'Unassigned'}</span></div>
-          <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName || 'Unassigned'}</span></div>
-        </div>
-
-        <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>Documents</h3>
-          <div className="metrow"><span className="k">On file</span><span className="v">{docs.length}</span></div>
-        </div>
-      </aside>
-      </div>
+      {/* The old right-hand "File summary" aside is RETIRED (Seven Rooms Phase
+          1) — it only duplicated facts that now live in the header (loan #,
+          status, amount), the Status & closing panel (internal status, target
+          closing), the Overview room (team) and the room badges (documents). */}
 
       {previewDoc && (
         <DocPreview
