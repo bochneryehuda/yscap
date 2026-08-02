@@ -88,6 +88,12 @@ const TYPE_META = {
     defaultPolicy: () => 'The appraisal condition needs the XML data file, the PDF report, and a successful MISMO import.',
     requestedChange: () => <>Accept this appraisal with <b>no XML data file</b> — the PDF report is still required and the ARV + As-Is were entered by hand. Approving lets the appraisal condition be signed off without the XML.</>,
   },
+  encompass_mismatch: {
+    chip: 'Encompass exception',
+    jumpHash: '#sec-encompass', jumpLabel: 'Jump to Encompass sync',
+    defaultPolicy: () => 'Every field must match the Encompass loan copy before the term sheet can be issued.',
+    requestedChange: () => <>A <b>super-admin excepted an Encompass field</b> that does not match (or has no data on one side) so it no longer holds the term sheet. This is the record of that grant — it was decided on the Encompass sync panel. The note names the field and both values.</>,
+  },
 };
 
 export default function ExceptionCard({ r, reasonCodes = {}, compFactors = {}, highlight = false, forwardRef, gateSelect, children }) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
+import { audienceLabel } from '../lib/conditions-vocab.js';
 import RuleBuilder, { emptyGroup, summarize } from '../components/RuleBuilder.jsx';
 
 /**
@@ -14,7 +15,11 @@ import RuleBuilder, { emptyGroup, summarize } from '../components/RuleBuilder.js
  * builder with live "matches N of M open files" preview), or manual attach.
  */
 
-const AUDIENCE_LABEL = { borrower: 'External', staff: 'Internal', both: 'External + internal' };
+/* Visibility words come from lib/conditions-vocab.js §4 — two answers
+   ("Internal + external" / "Internal only"), never a bare "External": staff
+   see every condition, so external-only does not exist (owner 2026-08-02).
+   The pickers below still offer borrower vs both — that is who WORKS it,
+   spelled out per option — but the label a definition wears is the shared one. */
 const APPLY_LABEL = {
   always: 'Every file (automatic)',
   rules: 'Rule-based (automatic)',
@@ -367,10 +372,10 @@ export default function StaffConditionStudio() {
               {(() => {
                 const internalOnly = form.conditionType === 'internal_task' || form.conditionType === 'internal_condition';
                 const opts = internalOnly
-                  ? [['staff', 'Internal — staff only']]
+                  ? [['staff', 'Internal only — the borrower never sees it']]
                   : form.conditionType === 'info_field'
-                    ? [['borrower', 'External — borrower sees & completes it'], ['both', 'External + internal — both work it']]
-                    : [['borrower', 'External — borrower sees & completes it'], ['both', 'External + internal — both work it'], ['staff', 'Internal — staff only']];
+                    ? [['borrower', 'Internal + external — the borrower completes it'], ['both', 'Internal + external — borrower and team both work it']]
+                    : [['borrower', 'Internal + external — the borrower completes it'], ['both', 'Internal + external — borrower and team both work it'], ['staff', 'Internal only — the borrower never sees it']];
                 return (
                   <select className="input" value={form.audience} disabled={internalOnly}
                     onChange={(e) => setForm((f) => ({ ...f, audience: e.target.value }))}>
@@ -492,10 +497,12 @@ export default function StaffConditionStudio() {
           <option value="all">All types</option>
           {meta.types.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
         </select>
-        <select className="input" style={{ maxWidth: 210 }} value={fAud} onChange={(e) => setFAud(e.target.value)}>
-          <option value="all">Internal + external</option>
-          <option value="borrower">External (borrower)</option>
-          <option value="both">External + internal</option>
+        {/* "All visibilities" — the old no-filter label was "Internal + external",
+            which is now literally one of the choices below it. */}
+        <select className="input" style={{ maxWidth: 260 }} value={fAud} onChange={(e) => setFAud(e.target.value)}>
+          <option value="all">All visibilities</option>
+          <option value="borrower">Internal + external (borrower completes it)</option>
+          <option value="both">Internal + external (team works it too)</option>
           <option value="staff">Internal only</option>
         </select>
         <label className="small muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -514,7 +521,7 @@ export default function StaffConditionStudio() {
                 <div className="cc-defline">
                   <strong className="cc-def-title">{d.label}</strong>
                   <span className={`pill cc-type cc-type-${d.conditionType}`}>{typeLabel[d.conditionType] || d.conditionType}</span>
-                  <span className={'pill cc-aud-' + d.audience}>{AUDIENCE_LABEL[d.audience] || d.audience}</span>
+                  <span className={'pill cc-aud-' + d.audience}>{audienceLabel(d.audience)}</span>
                   {d.category && <span className="pill">{catLabel[d.category] || d.category}</span>}
                   {d.origin === 'system' && <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Built-in</span>}
                   {d.fieldKey && <span className="pill">→ {d.fieldKey}</span>}

@@ -399,6 +399,9 @@ export const api = {
   // Super-admin only: the raw Encompass troubleshooting view.
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
+  // Field exceptions: any assigned staffer requests; a super admin grants/denies/revokes.
+  encompassRequestException: (id, fieldKey, reason) => req('POST', `/api/staff/applications/${id}/encompass/request-exception`, { fieldKey, reason }),
+  encompassDecideException:  (id, fieldKey, decision, reason) => req('POST', `/api/staff/applications/${id}/encompass/decide-exception`, { fieldKey, decision, reason }),
   // Flood-certificate ordering (the one owner-authorized Encompass write).
   floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
   orderFlood:        (id, itemId, force) => req('POST', `/api/staff/applications/${id}/order-flood`, { ...(itemId ? { checklistItemId: itemId } : {}), ...(force ? { force: true } : {}) }),

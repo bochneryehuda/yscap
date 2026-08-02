@@ -99,7 +99,7 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
 
   return (
     <div className="panel">
-      <h3 style={{ marginBottom: 8 }}>Add a condition <InfoTip tip="Build a one-off condition for THIS file — document, information field, form, e-sign or internal. External conditions appear on the borrower's list and notify them; internal ones stay with the team." /></h3>
+      <h3 style={{ marginBottom: 8 }}>Add a condition <InfoTip tip="Build a one-off condition for THIS file — document, information field, form, e-sign or internal. An 'Internal + external' condition appears on the borrower's list and notifies them (the team always sees it here too); 'Internal only' never shows to the borrower." /></h3>
       <div className="cc-addgrid" role="group" aria-label="Condition type">
         {TYPE_CHIPS.map((t) => (
           <button key={t.v} type="button" className={'cc-addtype' + (f.conditionType === t.v ? ' on' : '')}
@@ -145,10 +145,12 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
         {!internal && (
           <div className="field">
             <label>Visibility</label>
+            {/* Two visibilities (conditions-vocab §4): the borrower/both choice is
+                about who WORKS it — both are seen internally either way. */}
             <select className="input" value={f.audience} onChange={(e) => setF((x) => ({ ...x, audience: e.target.value }))}>
-              <option value="borrower">External — borrower completes it</option>
-              <option value="both">External + internal</option>
-              {f.conditionType !== 'info_field' && <option value="staff">Internal — staff only</option>}
+              <option value="borrower">Internal + external — the borrower completes it</option>
+              <option value="both">Internal + external — borrower and team both work it</option>
+              {f.conditionType !== 'info_field' && <option value="staff">Internal only — the borrower never sees it</option>}
             </select>
           </div>
         )}
