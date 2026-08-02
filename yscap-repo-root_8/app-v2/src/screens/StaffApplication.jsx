@@ -166,26 +166,14 @@ function CondNoteBuyerEntry({ appId, onSaved }) {
    dedicated /loan-number endpoint, which enforces the YSCAP format and
    cross-file/ClickUp uniqueness (a duplicate is rejected here and parked to
    manual review). Filling it retracts the condition. STAFF-ONLY. */
+/* The loan-number box ON the "loan number missing" condition. It is the SAME
+   control Application details carries (LoanNumberEntry) — this used to be a
+   second, near-identical implementation with its own input, its own save and its
+   own error line, which is exactly how two write paths drift apart. Here it opens
+   straight into the box (the condition already says the number is missing) and
+   carries no label column of its own. */
 function CondLoanNumberEntry({ appId, onSaved }) {
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  async function save() {
-    const v = draft.trim(); if (!v) return;
-    setBusy(true); setErr('');
-    try { await api.post(`/api/staff/applications/${appId}/loan-number`, { loanNumber: v }); if (onSaved) await onSaved(); }
-    catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
-  }
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input className="input small" style={{ maxWidth: 220 }} placeholder="YSCAP…" value={draft} disabled={busy}
-          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
-        <button className="btn primary small" onClick={save} disabled={busy || !draft.trim()}>{busy ? '…' : 'Set loan number'}</button>
-      </div>
-      {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
-    </div>
-  );
+  return <LoanNumberEntry appId={appId} value={null} onSaved={onSaved} autoOpen label={null} />;
 }
 
 /* INTERNAL As-Is panel ON the "Confirm the As-Is value" condition (owner-directed 2026-07-28).
@@ -3328,6 +3316,63 @@ function ClickupCompare({ appId }) {
   );
 }
 
+/* THE YS LOAN NUMBER, enterable where every other detail is (owner-directed
+   2026-08-02: "YS loan number — add an action to ENTER it"). Until now it could
+   only be typed on a completeness pill, which DISAPPEARS once the number is
+   set — so a wrong one could never be corrected from anywhere.
+
+   ONE WRITE PATH: it posts to the same dedicated `/loan-number` door, which is
+   what enforces the YSCAP format and refuses a number already used on another
+   file or ClickUp card (a duplicate is parked to manual review). This is a
+   second BUTTON, never a second rule. */
+function LoanNumberEntry({ appId, value, onSaved, autoOpen = false, label = 'YS loan number' }) {
+  const [editing, setEditing] = useState(!!autoOpen);
+  const [val, setVal] = useState(value || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function save() {
+    const v = String(val || '').trim();
+    if (!v) { setErr('Enter the loan number.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await api.staffSetLoanNumber(appId, v);
+      setEditing(false);
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save that loan number.'); }
+    finally { setBusy(false); }
+  }
+  const inner = (
+    <>
+        {!editing ? (
+          <span className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ color: value ? '#141B22' : '#4B585C' }}>{value || 'not set yet'}</span>
+            <button className="btn ghost small" onClick={() => { setVal(value || ''); setErr(''); setEditing(true); }}>
+              {value ? 'Change' : 'Enter the loan number'}
+            </button>
+          </span>
+        ) : (
+          <span className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" style={{ maxWidth: 220 }} value={val} placeholder="YSCAP…"
+              onChange={(e) => setVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }} />
+            <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+            <button className="btn ghost small" disabled={busy} onClick={() => { setEditing(false); setErr(''); }}>Cancel</button>
+          </span>
+        )}
+        {err && <div className="small" style={{ color: '#B3261E', marginTop: 4 }}>{err}</div>}
+    </>
+  );
+  // On a condition card there is no label column — the condition's own wording is
+  // the label, and a `metrow` there would read as a stray table row.
+  if (label === null) return <div style={{ marginTop: 8 }}>{inner}</div>;
+  return (
+    <div className="metrow" style={{ alignItems: 'flex-start' }}>
+      <span className="k">{label}</span>
+      <span className="v" style={{ display: 'block' }}>{inner}</span>
+    </div>
+  );
+}
+
 /* ClickUp sync panel — staff-only surface on the file overview.
    Shows the two-layer status (exact ClickUp mirror vs. borrower-facing), the
    YS loan number, the note buyer (internal only — never borrower-facing), the
@@ -4456,6 +4501,113 @@ export default function StaffApplication() {
     </div>
   );
 
+  /* STATUS & CLOSING — ONE definition, rendered in BOTH places (owner-directed
+     2026-08-02: it belongs under Application details, and "may stay on the
+     overview too").
+
+     It is a plain element built once and rendered twice rather than a second
+     copy of the markup, so the two can never drift — the trap the borrower
+     editor fell into. Safe to render twice because sec-overview and
+     sec-application live in DIFFERENT ROOMS: only one of them is ever on screen,
+     so nobody sees two identical status panels at once. */
+  const statusClosingBlock = (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+            <b>Status &amp; closing</b>
+            {gating && (() => {
+              const g = gating.clear_to_close || {};
+              const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+              const jump = () => revealAnchor('ctc-outstanding');
+              return g.ready
+                ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
+                : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
+                    title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
+            })()}
+            <div className="spacer" />
+            {/* The ClickUp controls moved to their own tab under Application
+                details, alongside the field-by-field comparison — this is the way
+                in, so the toggle that used to hide them here is retired. */}
+            <button type="button" className="btn link small"
+              onClick={() => { setAppDetailTab('pipeline'); goToSection('sec-application'); }}
+              title="The ClickUp card: the link, re-sync, and a field-by-field comparison of what PILOT holds against what the card holds">
+              ClickUp Sync →
+            </button>
+          </div>
+
+          {/* The workflow moves the status automatically now (owner-directed
+              2026-07-21) — the team uses the Submit buttons above, not this
+              dropdown. Only a super-admin keeps a manual override. Everyone else
+              sees the status read-only. */}
+          {role === 'super_admin' ? (
+          <div className="grid cols-2" style={{ gap: 16 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
+              <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
+                {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
+              </select>
+              <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
+            </div>
+            {/* The internal status renders UNCONDITIONALLY (it used to hide with
+                the pipeline toggle; the retired right aside was then its only
+                always-visible surface — red-team minor, Seven Rooms Phase 1). */}
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
+              <select className="input" value={app.internal_status || ''}
+                onChange={e => changeInternalStatus(e.target.value)}
+                title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
+                {/* Keep the current value selectable even if it isn't a normalized known key
+                    (live ClickUp statuses carry irregular casing / trailing spaces). */}
+                {!app.internal_status && <option value="">— not set —</option>}
+                {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
+                  <option value={app.internal_status}>{app.internal_status} (current)</option>}
+                {(() => {
+                  const groups = {};
+                  for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
+                  return Object.keys(groups).map(ext => (
+                    <optgroup key={ext} label={ext}>
+                      {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
+                    </optgroup>
+                  ));
+                })()}
+              </select>
+              <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
+            </div>
+          </div>
+          ) : (
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Status</label>
+              <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
+                {app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
+              </div>
+              <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
+            </div>
+          )}
+
+          <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Expected closing</label>
+              <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
+              <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Actual closing</label>
+              <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+            <button className="btn ghost" onClick={() => setChatOpen(true)}><IconMessage />Message</button>
+            <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says"><IconBell />Remind</button>
+            <div className="spacer" />
+            <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
+              title="Email the borrower an invite to join this file in PILOT">
+              {inviteBusy ? 'Sending…' : 'Invite borrower'}
+            </button>
+          </div>
+        </div>
+  );
+
   return (
     <>
       {/* The file's identity bar STAYS while you scroll — borrower, address,
@@ -4549,101 +4701,7 @@ export default function StaffApplication() {
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a
           responsive 2-col grid (owner-directed redesign 2026-07-14). */}
-      <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-          <b>Status &amp; closing</b>
-          {gating && (() => {
-            const g = gating.clear_to_close || {};
-            const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
-            const jump = () => revealAnchor('ctc-outstanding');
-            return g.ready
-              ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
-              : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
-                  title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
-          })()}
-          <div className="spacer" />
-          {/* The ClickUp controls moved to their own tab under Application
-              details, alongside the field-by-field comparison — this is the way
-              in, so the toggle that used to hide them here is retired. */}
-          <button type="button" className="btn link small"
-            onClick={() => { setAppDetailTab('pipeline'); goToSection('sec-application'); }}
-            title="The ClickUp card: the link, re-sync, and a field-by-field comparison of what PILOT holds against what the card holds">
-            ClickUp Sync →
-          </button>
-        </div>
-
-        {/* The workflow moves the status automatically now (owner-directed
-            2026-07-21) — the team uses the Submit buttons above, not this
-            dropdown. Only a super-admin keeps a manual override. Everyone else
-            sees the status read-only. */}
-        {role === 'super_admin' ? (
-        <div className="grid cols-2" style={{ gap: 16 }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
-            <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
-              {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
-            </select>
-            <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
-          </div>
-          {/* The internal status renders UNCONDITIONALLY (it used to hide with
-              the pipeline toggle; the retired right aside was then its only
-              always-visible surface — red-team minor, Seven Rooms Phase 1). */}
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
-            <select className="input" value={app.internal_status || ''}
-              onChange={e => changeInternalStatus(e.target.value)}
-              title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
-              {/* Keep the current value selectable even if it isn't a normalized known key
-                  (live ClickUp statuses carry irregular casing / trailing spaces). */}
-              {!app.internal_status && <option value="">— not set —</option>}
-              {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
-                <option value={app.internal_status}>{app.internal_status} (current)</option>}
-              {(() => {
-                const groups = {};
-                for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
-                return Object.keys(groups).map(ext => (
-                  <optgroup key={ext} label={ext}>
-                    {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
-                  </optgroup>
-                ));
-              })()}
-            </select>
-            <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
-          </div>
-        </div>
-        ) : (
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Status</label>
-            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-              <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
-              {app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
-            </div>
-            <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
-          </div>
-        )}
-
-        <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Expected closing</label>
-            <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
-            <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
-          </div>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Actual closing</label>
-            <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
-          </div>
-        </div>
-
-        <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          <button className="btn ghost" onClick={() => setChatOpen(true)}><IconMessage />Message</button>
-          <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says"><IconBell />Remind</button>
-          <div className="spacer" />
-          <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
-            title="Email the borrower an invite to join this file in PILOT">
-            {inviteBusy ? 'Sending…' : 'Invite borrower'}
-          </button>
-        </div>
-      </div>
+      {statusClosingBlock}
 
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
 
@@ -4741,6 +4799,7 @@ export default function StaffApplication() {
           { k: 'deal', label: 'Deal & property' },
           { k: 'people', label: app.co_borrower_id ? 'Borrower profiles' : 'Borrower profile' },
           { k: 'missing', label: 'Missing info' },
+          { k: 'status', label: 'Status & closing' },
           { k: 'pipeline', label: 'ClickUp Sync' },
           { k: 'encompass', label: 'Encompass sync' },
         ].map(t => (
@@ -4828,6 +4887,29 @@ export default function StaffApplication() {
             address={app.co_current_address}
             name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
         )}
+      </>}
+
+      {/* EVERY DETAIL, EVERY EDIT (owner-directed 2026-08-02: "you should not
+          look where you need to change stuff, everything should be available
+          right there"). The owner named five things: the YS loan number with an
+          action to ENTER it, the expected and actual closing dates, BOTH
+          statuses, and the note buyer.
+
+          The Status & closing panel is the SAME ELEMENT the overview renders —
+          built once, rendered twice — so the two can never drift. That is safe
+          here because sec-overview and sec-application are in different ROOMS:
+          only one is ever on screen. The owner explicitly asked for it in both
+          places ("may stay on the overview too"). */}
+      {appDetailTab === 'status' && <>
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 8px', color: '#141B22' }}>File identity</h4>
+          <LoanNumberEntry appId={app.id} value={app.ys_loan_number} onSaved={load} />
+        </div>
+        {statusClosingBlock}
+        {/* The note buyer's ONE editor, mounted here as well — same card, same
+            single write path (complete-fields with `lender`). Never a second
+            editor: this is the card itself. */}
+        <NoteBuyerCard appId={id} value={app.lender} onSaved={load} />
       </>}
 
       {/* CLICKUP SYNC (owner-directed 2026-08-02) — everything about the card in

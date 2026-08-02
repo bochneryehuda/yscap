@@ -37,6 +37,7 @@ const order = (a, b) => keys.indexOf(a) >= 0 && keys.indexOf(b) >= 0 && keys.ind
 ok(keys[0] === 'deal', 'Deal & property is FIRST — the deal editor is the right first thing every time');
 ok(order('deal', 'people'), 'Borrower profiles comes after Deal & property');
 ok(order('people', 'pipeline'), 'ClickUp Sync comes after Borrower profiles');
+ok(order('status', 'pipeline'), 'Status & closing sits before the two sync tabs');
 ok(order('pipeline', 'encompass'), 'Encompass sync comes after ClickUp Sync');
 ok(keys[keys.length - 1] === 'encompass', 'Encompass sync is LAST, exactly as the order given');
 // Missing info is not in the owner's four, but it is real work — it must not have
@@ -51,6 +52,7 @@ for (const [k, needle, what] of [
   ['deal', '<EditFileDetails', 'the deal editor'],
   ['people', '<BorrowerProfilePanel', 'both borrower profiles'],
   ['missing', '<BorrowerCompleteness', 'the three completeness lists'],
+  ['status', '<LoanNumberEntry', 'the loan-number entry'],
   ['pipeline', '<ClickupCompare', 'the ClickUp field-by-field comparison'],
   ['encompass', '<EncompassSyncPanel', 'the Encompass comparison'],
 ]) {
@@ -63,6 +65,35 @@ for (const [k, needle, what] of [
     const body = file.slice(at, at + 10 + (next < 0 ? 2000 : next));
     ok(body.includes(needle), `…and it renders ${what}`);
   }
+}
+
+console.log('\nB2. every detail and every edit the owner NAMED is reachable here');
+
+{
+  const at = file.indexOf("appDetailTab === 'status'");
+  const body = file.slice(at, file.indexOf("appDetailTab === 'pipeline'"));
+  ok(/<LoanNumberEntry/.test(body), 'the YS loan number can be ENTERED here — the owner named it');
+  ok(/\{statusClosingBlock\}/.test(body),
+    'both statuses and the two closing dates are here (the Status & closing block)');
+  ok(/<NoteBuyerCard/.test(body), 'the note buyer is changeable here');
+}
+{
+  // ONE definition rendered twice, never two copies of the markup — the trap the
+  // borrower editor fell into. Safe only because the two sections are in
+  // DIFFERENT rooms, so both are never on screen at once.
+  const built = (file.match(/const statusClosingBlock = \(/g) || []).length;
+  const rendered = (file.match(/\{statusClosingBlock\}/g) || []).length;
+  ok(built === 1, `the Status & closing markup exists ONCE (found ${built})`);
+  ok(rendered === 2, `…and is rendered in both places (found ${rendered})`);
+}
+{
+  // The loan number had TWO near-identical controls with two save calls. One now.
+  const defs = (file.match(/function LoanNumberEntry\(/g) || []).length;
+  ok(defs === 1, 'there is ONE loan-number control');
+  ok(/return <LoanNumberEntry appId=\{appId\} value=\{null\}/.test(file),
+    '…and the condition card calls it rather than keeping its own copy');
+  const posts = (file.match(/loan-number`/g) || []).length;
+  ok(posts <= 1, `only one place posts the loan number (found ${posts})`);
 }
 
 console.log('\nC. the two outside systems sit together, and Encompass stays read-only');
