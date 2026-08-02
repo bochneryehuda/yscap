@@ -57,6 +57,57 @@ function mentionsNoteBuyer(node) {
 }
 
 /**
+ * THE NOTE-BUYER MARK — "this condition is here because of THIS capital partner"
+ * (owner-directed 2026-08-02, on the CorrFirst SSN/EMD conditions).
+ *
+ * DERIVED FROM THE RULE, never restated. The rule tree IS the reason the condition
+ * is on the file, so reading the buyer back out of it can never drift from what the
+ * engine actually did — a column or a per-code lookup table could. Add any future
+ * note-buyer-gated condition and it gets its mark for free.
+ *
+ * Only a row that PINS the note buyer to specific buyer(s) marks the condition:
+ *   · `note_buyer eq|in <key…>`            → those buyers
+ *   · `note_buyer_is_fidelis|_emcap is_true` → that buyer
+ * An `is_false` / `neq` / `not_in` row is an EXCLUSION, not a mark — the flood-cert
+ * rule (db/335) excluded Fidelis, and labelling that condition "Fidelis" would say
+ * the exact opposite of what it means. Anything unrecognized yields no mark rather
+ * than a guess.
+ *
+ * PURE — no DB, never throws. Returns { keys:[…], labels:[…], label:'CorrFirst' } or
+ * null. Labels come from the field registry's own enum options (so the chip and the
+ * rule builder always spell a buyer the same way); an unlisted key falls back to the
+ * key itself rather than being dropped.
+ *
+ * STAFF-ONLY, like everything in this module — a note buyer's name is never exposed
+ * to a borrower, so no borrower-facing route may carry this value.
+ */
+const BOOL_FIELD_BUYER = { note_buyer_is_fidelis: 'fidelis', note_buyer_is_emcap: 'emcap' };
+
+function noteBuyerMark(node) {
+  const keys = [];
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n.rules)) { n.rules.forEach(walk); return; }
+    const op = String(n.operator || '');
+    if (n.field === 'note_buyer' && (op === 'eq' || op === 'in')) {
+      const vals = op === 'in' ? (Array.isArray(n.value) ? n.value : []) : [n.value];
+      for (const v of vals) {
+        const k = String(v == null ? '' : v).trim().toLowerCase();
+        if (k) keys.push(k);
+      }
+      return;
+    }
+    if (BOOL_FIELD_BUYER[n.field] && op === 'is_true') keys.push(BOOL_FIELD_BUYER[n.field]);
+  };
+  walk(node);
+  const uniq = [...new Set(keys)];
+  if (!uniq.length) return null;
+  const opts = ((registry.BY_KEY.note_buyer || {}).options) || [];
+  const labels = uniq.map((k) => (opts.find((o) => o.v === k) || {}).label || k);
+  return { keys: uniq, labels, label: labels.join(' / ') };
+}
+
+/**
  * The engine's own "untouched" test (engine.evaluateApplication) — only an auto
  * condition nobody has worked is ever retracted, so only those may be previewed as
  * dropping. Keep in lock-step with the engine.
@@ -273,4 +324,4 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
   return out;
 }
 
-module.exports = { noteBuyerSlot, requirementsFor, _internals: { mentionsNoteBuyer, isUntouched } };
+module.exports = { noteBuyerSlot, requirementsFor, noteBuyerMark, _internals: { mentionsNoteBuyer, isUntouched } };
