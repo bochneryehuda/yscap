@@ -274,7 +274,7 @@ module.exports = {
   // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
   assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
 
-  // Auto-clear the "SSN verification" condition (cond_ssn_verify_corrfirst, db/396) —
+  // Auto-clear the "SSN verification" condition (cond_ssn_verify_corrfirst, db/397) —
   // CorrFirst note buyer ONLY —
   // once an imported credit report's SSN provably matches the SSN on file for every
   // borrower. Note-buyer-specific (CorrFirst verifies the SSN off the credit report),
@@ -734,6 +734,11 @@ module.exports = {
     // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    // Explicitly ask Xactus to embed the certificate PDF in every response (their
+    // _UseEmbeddedFileIndicator toggle can otherwise EXCLUDE it). ON by default —
+    // set XACTUS_FLOOD_REQUEST_PDF=0 ONLY if Xactus ever rejects the element, which
+    // restores flood ordering without a redeploy.
+    requestPdf: process.env.XACTUS_FLOOD_REQUEST_PDF !== '0',
     // Test mode is REMOVED (owner-directed 2026-08-02: "remove the test mode, go live
     // right away"). A staff click ALWAYS places a REAL, billable order — there is no
     // dry-run gate (flood.js dryrun() is hard-false), because a stored runtime override

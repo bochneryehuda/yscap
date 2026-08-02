@@ -902,16 +902,37 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
   const errored = order && order.status === 'error';
   const box = { marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' };
 
-  async function placeOrder() {
+  // `force` re-orders a file that already has a determination — ALWAYS passed
+  // explicitly (a bare onClick={placeOrder} would hand the click event in as
+  // `force`, which is truthy, and silently re-charge us).
+  async function placeOrder(force) {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const out = await api.orderFlood(appId, itemId);
+      const out = await api.orderFlood(appId, itemId, force === true);
       setMsg(out.message || 'Flood certificate ordered.');
       await load();
       onChanged && onChanged();
     } catch (e) {
       setErr((e.data && e.data.message) || e.message || 'Could not order the flood certificate.');
     } finally { setBusy(false); }
+  }
+
+  // Retrieval of a certificate already paid for — never places a new order.
+  async function fetchCert() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const out = await api.fetchFloodCertificate(appId);
+      setMsg(out.message || 'Flood certificate retrieved.');
+      await load();
+      onChanged && onChanged();
+    } catch (e) {
+      setErr((e.data && e.data.message) || e.message || 'Could not get the certificate.');
+    } finally { setBusy(false); }
+  }
+
+  function reorder() {
+    if (!window.confirm('This places a NEW flood order with Xactus and we will be charged again.\n\nOnly do this if the determination on file is wrong (for example the property address was corrected). Continue?')) return;
+    placeOrder(true);
   }
 
   if (done) {
@@ -924,8 +945,35 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
             : order.sfha === false
               ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
               : 'The determination came back.'}
-          {' '}The certificate is filed on this condition.
+          {/* Three states, never conflated: filed / definitely missing / can't tell.
+              "Can't tell" must NEVER read as "filed" — claiming a certificate is on
+              the file when it isn't is the exact bug this card had. */}
+          {' '}{state.hasCertificate === true
+            ? 'The certificate PDF is filed on this condition — it’s in the documents above.'
+            : state.hasCertificate === false
+              ? 'The certificate PDF is not on this condition yet.'
+              : 'Check the documents above for the certificate PDF.'}
         </div>
+        {/* Offered unless the PDF is confirmed filed. This RETRIEVES the report we
+            already paid for — it never places (or is charged for) a second order. */}
+        {state.hasCertificate !== true && (
+          <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={fetchCert}>
+            {busy ? 'Getting the certificate…' : 'Get the certificate PDF'}
+          </button>
+        )}
+        <div style={{ color: '#4B585C', marginTop: 6 }}>
+          PILOT won’t order another one for this file — each order is billable.
+        </div>
+        {state.canReorder && (
+          <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+            disabled={busy} onClick={reorder}>Order a new determination anyway (charges again)</button>
+        )}
+        {onUploadTo && (
+          <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+            onClick={() => onUploadTo({ itemId, slotBase: 0 })}>Upload a certificate manually instead</button>
+        )}
+        {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
+        {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
       </div>
     );
   }
@@ -952,10 +1000,12 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
           )}
         </div>
       )}
-      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
-        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
-      </button>
-      {!state.hasLoanNumber && (
+      {!state.hasCompletedOrder && (
+        <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={() => placeOrder(false)}>
+          {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
+        </button>
+      )}
+      {!state.hasCompletedOrder && !state.hasLoanNumber && (
         <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
           {state.needs === 'address'
             ? 'Add the full property address (street, city, state, ZIP) to this file first — the flood certificate is ordered on the property address.'
@@ -965,6 +1015,25 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
                 ? 'Add a loan number to this file first.'
                 : 'This file isn’t ready to order a flood certificate yet.'}
         </div>
+      )}
+      {/* A determination already exists but the newest row is an error/dry run, so the
+          "done" panel isn't showing. Say so, and keep the admin's deliberate re-order
+          reachable here — otherwise a forced order that FAILS is a dead end: every
+          later click is refused as already-completed with no way through. */}
+      {state.hasCompletedOrder && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+          This file already has a flood determination, so an ordinary order is refused — each order is billable.
+          {' '}Use “Get the certificate PDF” to pull down the one we already paid for.
+        </div>
+      )}
+      {state.hasCompletedOrder && (
+        <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={fetchCert}>
+          {busy ? 'Getting the certificate…' : 'Get the certificate PDF'}
+        </button>
+      )}
+      {state.hasCompletedOrder && state.canReorder && (
+        <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+          disabled={busy} onClick={reorder}>Order a new determination anyway (charges again)</button>
       )}
       {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
           you can still attach it by hand — it's not the up-front action. */}

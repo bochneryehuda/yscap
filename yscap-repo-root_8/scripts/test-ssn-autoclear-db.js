@@ -40,7 +40,7 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
 // Seed a file (borrower with SSN, the SSN-verification condition, note buyer = lender).
 //
 // The condition is seeded from `code` — defaulting to the LIVE template
-// `cond_ssn_verify_corrfirst` (db/396). It used to be hard-coded to `rtl_p1_ssn`, which
+// `cond_ssn_verify_corrfirst` (db/397). It used to be hard-coded to `rtl_p1_ssn`, which
 // db/040 retired and deleted off every open file: the template row still exists, so this
 // suite passed while the module it tests could never find a condition on a real file.
 // The retired code is still accepted as an argument so the legacy path stays covered.
@@ -98,7 +98,7 @@ async function condRow(itemId) {
   ok(m1b.satisfied === false && m1b.reason === 'already_satisfied', 'a second pass is a no-op');
 
   // ── 1b) THE CONDITION IT TARGETS IS REAL. Everything above ran against
-  // `cond_ssn_verify_corrfirst` (db/396). Before it existed this module targeted
+  // `cond_ssn_verify_corrfirst` (db/397). Before it existed this module targeted
   // `rtl_p1_ssn`, which db/040 retired and deleted off every open file, so it could
   // never find anything to clear on a live file — the owner's "SS NUMBER VERIFICATION
   // — no condition on the file" (2026-08-02). Two guards so that cannot recur:
