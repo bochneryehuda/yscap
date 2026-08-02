@@ -3651,3 +3651,18 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .file-nav ol.file-nav-spokes{display:none}
   .file-nav-foot{display:none}
 }
+
+/* BOTH BORROWERS, SIDE BY SIDE (owner-directed 2026-08-02: "both borrower
+   profiles under Application Details, side by side"). Two equal columns on a
+   desk screen, stacked on anything narrower — a person's record is a long list
+   of label/value rows, so forcing two columns into a phone width would make
+   both unreadable. `min-width:0` on the children is load-bearing: a grid child
+   defaults to min-content, and a long email or address would otherwise push the
+   grid wider than the page — the phantom-overflow class that silently switches
+   OFF every mobile breakpoint (see the mobile rule in CLAUDE.md). */
+.bprof-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.bprof-pair > *{min-width:0}
+/* The panels bring their own top margin for the stacked layout; side by side
+   they must start on the same line. */
+.bprof-pair > .panel{margin-top:0}
+@media (max-width:900px){ .bprof-pair{grid-template-columns:1fr} }

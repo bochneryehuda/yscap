@@ -447,8 +447,8 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   // SSN is entered on its own audited line in the Borrower section (it has a
   // duplicate-profile resolver and a reveal that this compact panel can't carry),
   // so the pill jumps you straight there rather than naming a screen to go hunt.
-  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the SSN line in the Borrower section — click to go there.' },
+  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTab: 'people',
+    hint: 'Add it on the SSN line of the Borrower profile — click to go there.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   // Note buyer / capital partner (applications.lender). Normally fed from ClickUp;
@@ -483,15 +483,25 @@ const PLACEHOLDER_NAME = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tb
 const realName = (v) => !!v && !PLACEHOLDER_NAME.has(String(v).trim().toLowerCase());
 const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name' in app)) ? [
   { key: 'co_name', label: 'Co-borrower name', ok: realName(app.co_first_name) && realName(app.co_last_name), type: 'text' },
-  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the Email line in the Co-borrower block — click to go there.' },
+  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, goTab: 'people',
+    hint: 'Add it on the Email line of the Co-borrower profile — click to go there.' },
   { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
   { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
   { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'fico' },
   { key: 'co_citizenship', label: 'Co-borrower citizenship', ok: !!app.co_citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
-  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the SSN line in the Co-borrower block (stored encrypted) — click to go there.' },
+  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, goTab: 'people',
+    hint: 'Add it on the SSN line of the Co-borrower profile (stored encrypted) — click to go there.' },
 ] : []);
+
+/* "Show me the tab that edits this" — a one-line channel, the shape FileSections
+   already uses for the Conditions hub (requestConditionsTab/subscribe).
+   `CompletenessPanel` is a module-level component with no access to the section's
+   own state, and its pills for fields it cannot edit itself (the Social, the
+   co-borrower's email) now point at a SIBLING TAB of the very section they are
+   rendered in — so they need to flip a tab, not navigate anywhere. */
+const appTabSubs = new Set();
+function requestAppDetailTab(tab) { for (const fn of appTabSubs) { try { fn(tab); } catch (_) { /* a dead subscriber never breaks a click */ } } }
+function subscribeAppDetailTab(fn) { appTabSubs.add(fn); return () => appTabSubs.delete(fn); }
 
 /* Application completeness with INLINE editing — click a missing field to enter
    it right there; it saves to the file (and syncs to ClickUp) without a form.
@@ -568,9 +578,10 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
               // A field this compact panel can't edit itself is still one CLICK
               // from where it IS edited — it used to be a dead grey pill naming a
               // panel that had no such control (owner-reported 2026-07-27).
-              f.goTo ? (
+              (f.goTo || f.goTab) ? (
                 <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
-                  onClick={() => goToSection(f.goTo)} title={f.hint}>+ {f.label} →</button>
+                  onClick={() => { if (f.goTab) requestAppDetailTab(f.goTab); if (f.goTo) goToSection(f.goTo); }}
+                  title={f.hint}>+ {f.label} →</button>
               ) : (
                 <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
               )
@@ -4038,6 +4049,9 @@ export default function StaffApplication() {
   // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
   // editor is the right first thing every time the section is opened.
   const [appDetailTab, setAppDetailTab] = useState('deal');
+  // A completeness pill for a field only the Borrower profile can edit asks for
+  // that tab (they are two tabs of THIS section, so nothing has to navigate).
+  useEffect(() => subscribeAppDetailTab(setAppDetailTab), []);
   // ONE "off my plate" rule for every surface — see roleDone() above.
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
@@ -4492,32 +4506,31 @@ export default function StaffApplication() {
 
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
 
-      {/* THE BORROWER SECTION — every field, editable, for EVERY borrower
-          (owner-directed 2026-07-27: "in the BORROWER profile section you can
-          only edit a few fields from the first borrower, you can't edit the
-          fields from the 2nd borrower … you need to be able to edit any field on
-          the entire BORROWER section from any BORROWER").
+      {/* THE PEOPLE MOVED INTO APPLICATION DETAILS (owner-directed 2026-08-02:
+          "both borrower profiles under Application Details, side by side").
+          They used to render right here on the overview — see the "Borrower
+          profiles" tab in sec-application for the panels themselves and for why
+          the discoverability worry that put them here is now handled.
 
-          This spot — the Borrower panel on the file overview — is the section the
-          owner was looking at, and it was a hand-rolled list of READ-ONLY rows
-          with exactly two editable ones (date of birth and SSN); the co-borrower
-          block under it had none at all. Both now render the shared
-          BorrowerProfilePanel, which is the ONE definition of the person's
-          record and its editor (#850), so the primary and the co-borrower are
-          the same code path and neither can drift.
-
-          The panel is mounted HERE rather than down in "Application details" —
-          that section is collapsed by default, so a Borrower editor inside it is
-          invisible until you go looking, which is how this surface stayed
-          read-only in the first place. It is mounted exactly ONCE per person:
-          two editors for one record on one page is worse than none. */}
-      {app.borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
-      )}
-      {app.co_borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
-      )}
-      <CoBorrowerBlock appId={id} app={app} onChanged={load} />
+          A POINTER, NOT A SECOND COPY. The record is edited in exactly ONE place
+          per person; printing a read-only echo of it here would recreate the
+          very drift the shared panel exists to prevent. */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, color: '#141B22' }}>
+            {app.co_borrower_id ? 'Borrower & co-borrower' : 'Borrower'}
+          </span>
+          <span className="small" style={{ color: '#4B585C' }}>
+            {[fullNameOf(app), app.co_borrower_id ? fullNameOf(app, 'co_') : null].filter(Boolean).join(' · ')}
+          </span>
+          <div className="spacer" />
+          <button type="button" className="btn primary small"
+            onClick={() => { setAppDetailTab('people'); goToSection('sec-application'); }}
+            title="Every field on both borrowers' records — name, contact, date of birth, Social, home address, housing, employment, and where each of them stands with the portal">
+            Open borrower profiles
+          </button>
+        </div>
+      </div>
 
       <div style={{ marginTop: 14 }}>
         <div className="panel">
@@ -4582,15 +4595,10 @@ export default function StaffApplication() {
           two BorrowerProfilePanel mounts up on the file overview, once per
           person, never twice on one page — the line under the tabs points
           there so nobody hunts this section for them. */}
-      <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
-        Borrower personal details (name, contact, home address) are edited in the Borrower panel —{' '}
-        <button type="button" className="btn link small" onClick={() => goToSection('sec-overview')}>
-          Open the Borrower panel
-        </button>
-      </p>
       <div className="cond-tabs" role="tablist" aria-label="Application details">
         {[
           { k: 'deal', label: 'Deal & property' },
+          { k: 'people', label: app.co_borrower_id ? 'Borrower profiles' : 'Borrower profile' },
           { k: 'missing', label: 'Missing info' },
           { k: 'pipeline', label: 'Pipeline data (read-only)' },
         ].map(t => (
@@ -4615,6 +4623,37 @@ export default function StaffApplication() {
           <AppraisalFileFacts app={app} />
         </>
       )}
+
+      {/* BOTH PEOPLE, SIDE BY SIDE (owner-directed 2026-08-02). Each is the ONE
+          shared BorrowerProfilePanel (#850) keyed on a borrower id, so the
+          primary and the co-borrower are literally the same code path and
+          neither can drift — and each is mounted exactly ONCE on the page.
+
+          WHY IT IS SAFE HERE NOW. These panels sat on the overview because
+          "Application details" is collapsed by default, and a Borrower editor
+          nobody can see is how this surface stayed read-only in the first place
+          (2026-07-27). That worry is answered rather than ignored: the overview
+          carries a named button that opens this exact tab, the completeness
+          pills that used to point at the overview now land here with the tab
+          already open, and the tab is named after the people it holds. */}
+      {appDetailTab === 'people' && <>
+        <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
+          Every field on each person&rsquo;s own record — name, contact, date of birth, Social,
+          home address, housing and employment — plus where each of them stands with the portal.
+          A change here follows the person onto every file they are on.
+        </p>
+        <div className="bprof-pair">
+          {app.borrower_id && (
+            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+          )}
+          {app.co_borrower_id && (
+            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+          )}
+        </div>
+        {/* What is about the LINK rather than about the person: find / add /
+            remove / invite. It stays full width under the pair. */}
+        <CoBorrowerBlock appId={id} app={app} onChanged={load} />
+      </>}
 
       {appDetailTab === 'missing' && <>
         <p className="small" style={{ margin: '0 0 4px', color: '#4B585C' }}>
