@@ -14,7 +14,7 @@
  */
 const assert = require('assert');
 const R = require('../src/encompass/reconcile');
-const { compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel } = R._internals;
+const { compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues } = R._internals;
 
 let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
@@ -221,5 +221,99 @@ ok('G: when our borrower is nowhere in Encompass, the comparison still surfaces 
   assert.strictEqual(f.id_coborrower_name.status, 'incomparable', 'ours blank vs their extra person → incomparable (flags the disagreement, never a false match)');
 }
 ok('H: an Encompass co-borrower we do not have still surfaces (incomparable), never silently dropped');
+
+// ── _partyFromFieldValues: build a party from the BY-NUMBER read (or null) ───
+{
+  assert.strictEqual(_partyFromFieldValues(null, 'coBorrower'), null, 'null fv → null');
+  assert.strictEqual(_partyFromFieldValues({}, 'coBorrower'), null, 'no fields → null (never a fabricated empty party)');
+  const cb = _partyFromFieldValues({ '4004': 'Patrick', '4006': 'Kamara', '1403': '1999-08-30', '1268': 'p@x.com', '98': '7322095023', '1480': '2015550000', '4534': '2015551111', '_ssn_cb_hash': 'H', '_ssn_cb_last4': '8028' }, 'coBorrower');
+  assert.strictEqual(cb.firstName, 'Patrick'); assert.strictEqual(cb.lastName, 'Kamara');
+  assert.strictEqual(cb.birthDate, '1999-08-30'); assert.strictEqual(cb.emailAddressText, 'p@x.com');
+  assert.deepStrictEqual(_phones(cb).slice().sort(), ['2015550000', '2015551111', '7322095023'].sort(), 'home/cell/work all mapped so _phones reads all three');
+  assert.strictEqual(cb._ssnHash, 'H'); assert.strictEqual(cb._ssnLast4, '8028');
+  // The borrower slot reads the BORROWER ids (4000/4002/66 …), not the co-borrower's.
+  const b = _partyFromFieldValues({ '4000': 'John', '4002': 'Smith', '66': '5551112222' }, 'borrower');
+  assert.strictEqual(b.firstName, 'John'); assert.strictEqual(b.lastName, 'Smith'); assert.strictEqual(b.homePhoneNumber, '5551112222');
+  // An SSN-only party is still built (so the SSN can match even with no name in the read).
+  const ssnOnly = _partyFromFieldValues({ '_ssn_b_hash': 'H2' }, 'borrower');
+  assert.ok(ssnOnly && ssnOnly._ssnHash === 'H2' && !ssnOnly.firstName, 'ssn-only party built');
+}
+ok('_partyFromFieldValues builds a borrower/co-borrower party from the by-number read (name/DOB/email/phone/SSN), or null');
+
+// ── SCENARIO I — co-borrower MISSING from applications[], recovered BY NUMBER ─
+// The reported bug (YSCAP258134762): Patrick Kamara IS a co-borrower in Encompass but the
+// stored applications[] subtree has NO co-borrower, so every co-borrower field read "No
+// data to compare" and BLOCK-held the term sheet. The identity fields read BY NUMBER into
+// `_fieldValues` (4004/4006/1403/1268/98/_ssn_cb_hash) — the same location-independent,
+// self-healing read economics uses for 1859/388 — recover him.
+{
+  const loan = {
+    applications: [ app(P('Christopher', 'Rodriguez'), null) ],   // NO co-borrower in the subtree
+    _fieldValues: {
+      '4000': 'Christopher', '4002': 'Rodriguez',                 // borrower by number (matches the subtree)
+      '4004': 'Patrick', '4006': 'Kamara',                        // co-borrower ONLY exists by number
+      '1403': '1999-08-30', '1268': 'pkamara555@gmail.com', '98': '7322095023',
+      '_ssn_cb_hash': 'CBHASH', '_ssn_cb_last4': '8028',
+    },
+  };
+  const row = bor('Christopher', 'Rodriguez', {
+    co_borrower_id: 'x', cb_first_name: 'Patrick', cb_last_name: 'Kamara',
+    cb_dob: '1999-08-30', cb_email: 'pkamara555@gmail.com', cb_cell_phone: '+1 732-209-5023',
+    cb_ssn_hash: 'CBHASH', cb_ssn_last4: '8028',
+  });
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_borrower_name.status, 'match', 'primary still matches');
+  assert.strictEqual(f.id_coborrower_name.status, 'match', 'co-borrower NAME recovered by number → MATCH (was "no data to compare")');
+  assert.strictEqual(f.id_coborrower_dob.status, 'match', 'co-borrower DOB recovered by number');
+  assert.strictEqual(f.id_coborrower_email.status, 'match', 'co-borrower email recovered by number');
+  assert.strictEqual(f.id_coborrower_phone.status, 'match', 'co-borrower phone recovered by number (home 98)');
+  assert.strictEqual(f.id_coborrower_ssn.status, 'match', 'co-borrower SSN recovered by number (hashed)');
+  assert.strictEqual(f.id_coborrower_name.matchNote, 'Matched to Encompass borrower pair 1 (co-borrower), by SSN.', 'the note says where/how it matched');
+}
+ok('I: a co-borrower missing from applications[] is recovered from the BY-NUMBER read (the YSCAP258134762 bug)');
+
+// ── SCENARIO I2 — same recovery, matched by NAME when no SSN is on file ──────
+{
+  const loan = {
+    applications: [ app(P('Christopher', 'Rodriguez'), null) ],
+    _fieldValues: { '4004': 'Patrick', '4006': 'Kamara', '1268': 'p@x.com' },
+  };
+  const row = bor('Christopher', 'Rodriguez', { co_borrower_id: 'x', cb_first_name: 'Patrick', cb_last_name: 'Kamara', cb_email: 'p@x.com' });
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_coborrower_name.status, 'match', 'co recovered by NAME from the by-number read');
+  assert.strictEqual(f.id_coborrower_name.matchNote, 'Matched to Encompass borrower pair 1 (co-borrower), by name.');
+  assert.strictEqual(f.id_coborrower_email.status, 'match');
+}
+ok('I2: a by-number co-borrower is matched by NAME when there is no SSN on file');
+
+// ── SCENARIO J — single-borrower file, by-number BORROWER present, NO phantom co ─
+// The synthetic borrower must NOT be appended when the subtree already has a named pair-1
+// borrower, or the co-borrower fallback (first unclaimed party) could surface the PRIMARY
+// again as a phantom "co-borrower" and falsely hold the term sheet.
+{
+  const loan = {
+    applications: [ app(P('John', 'Smith'), null) ],
+    _fieldValues: { '4000': 'John', '4002': 'Smith', '66': '5551112222' },   // borrower by number; NO co-borrower fields
+  };
+  const row = bor('John', 'Smith');   // single-borrower file (no co on our side)
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_borrower_name.status, 'match', 'primary matches');
+  assert.ok(!f.id_coborrower_name, 'NO phantom co-borrower row — the primary is never duplicated into the co slot');
+  assert.strictEqual(_collectParties(loan).length, 1, 'only the subtree borrower — the synthetic borrower is suppressed when the pair-1 slot is named');
+}
+ok('J: a single-borrower file with a by-number borrower never creates a phantom co-borrower');
+
+// ── SCENARIO K — a present subtree co-borrower wins; the by-number duplicate is ignored ─
+{
+  const loan = {
+    applications: [ app(P('John', 'Smith'), P('Jane', 'Smith')) ],
+    _fieldValues: { '4000': 'John', '4002': 'Smith', '4004': 'Jane', '4006': 'Smith' },
+  };
+  const row = bor('John', 'Smith', { co_borrower_id: 'x', cb_first_name: 'Jane', cb_last_name: 'Smith' });
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_coborrower_name.status, 'match', 'co matches (subtree copy claimed; the by-number duplicate is never double-counted via `used`)');
+  assert.strictEqual(_collectParties(loan).length, 3, 'subtree borrower + subtree co + one synthetic co candidate (matching claims 2, ignores the dup)');
+}
+ok('K: when the subtree already has the co-borrower, the by-number duplicate is never double-counted');
 
 console.log(`\nEncompass borrower-pairs pure — ${passed} groups passed`);

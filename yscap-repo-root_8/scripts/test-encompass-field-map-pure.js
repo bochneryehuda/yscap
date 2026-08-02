@@ -345,4 +345,25 @@ ok('capital provider: LLC/Inc/spelling variants of the SAME buyer MATCH; unmappe
 
 ok('PII governance: economics registry is PII-free; SSN/DOB sensitive; 1859 vesting in identity map');
 
+// identityFieldIds() — every standard IDENTITY_MAP field id for BOTH parties, so the
+// fieldReader can read borrower/co-borrower identity BY NUMBER (owner-directed 2026-08-02,
+// YSCAP258134762). This is what recovers a co-borrower the stored applications[] subtree
+// left out. Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map.
+{
+  const ids = m.identityFieldIds();
+  const set = new Set(ids);
+  // Borrower + co-borrower name / DOB / email / phone / SSN std ids are all present.
+  for (const id of ['4000', '4002', '4001', '1402', '1240', '66', '1490', '4533', '65',   // borrower
+                    '4004', '4006', '4005', '1403', '1268', '98', '1480', '4534', '97']) { // co-borrower
+    assert.ok(set.has(id), `identityFieldIds includes ${id}`);
+  }
+  // The SSN ids ARE fetched (65/97) — the raw value is hashed + stripped in the reader
+  // layer before storage, never here.
+  assert.ok(set.has('65') && set.has('97'), 'SSN ids fetched by number (hashed downstream, never stored raw)');
+  // Deduped (a Set-clean list), and no empty entries.
+  assert.strictEqual(ids.length, new Set(ids).size, 'identityFieldIds is deduped');
+  assert.ok(ids.every((x) => typeof x === 'string' && x !== ''), 'every id is a non-empty string');
+}
+ok('identityFieldIds(): borrower + co-borrower name/DOB/email/phone/SSN std ids, derived from IDENTITY_MAP, deduped');
+
 console.log(`\nWO-A Encompass field-map pure — ${passed} checks passed`);

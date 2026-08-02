@@ -341,6 +341,38 @@ function _addrStr(a) {
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 
+// Build a synthetic Encompass party from the values read BY FIELD NUMBER (owner-directed
+// 2026-08-02, YSCAP258134762). Encompass standard field ids address the pair-1 borrower
+// (4000/4002/…) and pair-1 co-borrower (4004/4006/…); reading them BY NUMBER is
+// location-independent, so this recovers a party the stored applications[] JSON subtree
+// left out — a snapshot pulled before the co-borrower was added, or a name at a
+// non-standard path. Field numbers are the owner-confirmed standard ids in
+// map.IDENTITY_MAP; the phone slots map home→homePhoneNumber, cell→mobilePhone,
+// work→workPhoneNumber so `_phones` reads them. The SSN is already the HASHED form
+// (reader.scrubFieldValuesSsn replaced raw 65/97 with _ssn_*_hash/_last4 before storage),
+// so plaintext SSN never reaches here. Returns null when there is no name AND no SSN —
+// never a fabricated empty party. Pure.
+function _partyFromFieldValues(fv, slot) {
+  if (!fv || typeof fv !== 'object') return null;
+  const g = (id) => { const v = fv[id]; return (v == null || String(v).trim() === '') ? null : String(v).trim(); };
+  const B = slot === 'coBorrower'
+    ? { first: '4004', last: '4006', middle: '4005', dob: '1403', email: '1268', home: '98', cell: '1480', work: '4534', ssnHash: '_ssn_cb_hash', ssnL4: '_ssn_cb_last4' }
+    : { first: '4000', last: '4002', middle: '4001', dob: '1402', email: '1240', home: '66', cell: '1490', work: '4533', ssnHash: '_ssn_b_hash', ssnL4: '_ssn_b_last4' };
+  const first = g(B.first), last = g(B.last), ssnHash = g(B.ssnHash);
+  if (!first && !last && !ssnHash) return null; // nothing to represent
+  const p = {};
+  if (first) p.firstName = first;
+  if (last) p.lastName = last;
+  const mid = g(B.middle); if (mid) p.middleName = mid;
+  const dob = g(B.dob); if (dob) p.birthDate = dob;
+  const email = g(B.email); if (email) p.emailAddressText = email;
+  const home = g(B.home); if (home) p.homePhoneNumber = home;
+  const cell = g(B.cell); if (cell) p.mobilePhone = cell;
+  const work = g(B.work); if (work) p.workPhoneNumber = work;
+  if (ssnHash) { p._ssnHash = ssnHash; const l4 = g(B.ssnL4); if (l4) p._ssnLast4 = l4; }
+  return p;
+}
+
 // ── Borrower-pair party resolution (owner-directed 2026-08-02) ───────────────
 // Encompass models up to FOUR borrower pairs — `applications[0..3]`, each with a
 // `.borrower` and a `.coBorrower`. Our SECOND borrower is NOT always Encompass's
@@ -358,6 +390,35 @@ function _collectParties(loan) {
     if (!app || typeof app !== 'object') continue;
     if (app.borrower && _named(app.borrower)) out.push({ party: app.borrower, pairIndex: i, role: 'borrower' });
     if (app.coBorrower && _named(app.coBorrower)) out.push({ party: app.coBorrower, pairIndex: i, role: 'coBorrower' });
+  }
+  // AUTHORITATIVE BY-NUMBER fallback (owner-directed 2026-08-02, YSCAP258134762): the
+  // co-borrower is sometimes MISSING from the stored applications[] subtree above (added
+  // in Encompass after the snapshot, or stored at a non-standard JSON path), so every
+  // co-borrower field reads "no data to compare" and BLOCK-holds the term sheet. The
+  // identity fields ALSO have standard field ids read BY NUMBER into `_fieldValues` (the
+  // same location-independent, self-healing read economics uses for 1859/388); append a
+  // synthetic pair-1 co-borrower (and, only when the pair-1 borrower slot is itself empty,
+  // a synthetic borrower) as ADDITIONAL candidates. Matching claims each party at most
+  // once and prefers SSN then name, so a synthetic DUPLICATE of a party already present is
+  // simply never chosen, while a genuinely missing party is now found.
+  //
+  // WHY the borrower guard: the co-borrower synthetic can only ever be surfaced as a
+  // co-borrower, but a synthetic BORROWER duplicating an already-present pair-1 borrower
+  // would sit unclaimed after the primary matches the subtree copy, and the co-borrower
+  // fallback (first unclaimed party) could then surface the PRIMARY again as a phantom
+  // "co-borrower" on a single-borrower file. Appending the borrower synthetic ONLY when
+  // the subtree has no named pair-1 borrower removes that path while still recovering a
+  // genuinely missing primary. Degrades to nothing when the by-number read did not run
+  // (Encompass unconfigured / fieldReader unavailable / a pre-wiring snapshot).
+  const fv = loan && loan._fieldValues;
+  if (fv && typeof fv === 'object') {
+    const cb = _partyFromFieldValues(fv, 'coBorrower');
+    if (cb) out.push({ party: cb, pairIndex: 0, role: 'coBorrower' });
+    const app0Borrower = apps[0] && apps[0].borrower;
+    if (!_named(app0Borrower)) {
+      const b = _partyFromFieldValues(fv, 'borrower');
+      if (b) out.push({ party: b, pairIndex: 0, role: 'borrower' });
+    }
   }
   return out;
 }
@@ -662,6 +723,19 @@ function _hasFieldValues(loan) {
   return !!(loan && loan._fieldValues && typeof loan._fieldValues === 'object' && Object.keys(loan._fieldValues).length);
 }
 
+// True when the stored `_fieldValues` already carries the BY-NUMBER identity read
+// (owner-directed 2026-08-02). A snapshot from before this wiring may have the economics
+// `_fieldValues` (1859/388) but NO identity fields, so the co-borrower still can't be
+// recovered by number — that file must re-heal to pull identity too. The markers are the
+// borrower name ids (present on every loan once identity is fetched) and the hashed-SSN
+// keys (present when only an SSN, no name, came back). Absent all of them → heal.
+function _hasIdentityFieldValues(loan) {
+  const fv = loan && loan._fieldValues;
+  if (!fv || typeof fv !== 'object') return false;
+  return ('4002' in fv) || ('4000' in fv) || ('4006' in fv) || ('4004' in fv)
+    || ('_ssn_b_hash' in fv) || ('_ssn_cb_hash' in fv);
+}
+
 // Best-effort SELF-HEAL of a stale stored loan copy (owner-reported 2026-07-26). The
 // panel reads applications.encompass_extra — a snapshot pulled BEFORE the read-by-number
 // wiring (or before this code deployed) has no `_fieldValues`, so 1859/388 read wrong.
@@ -672,12 +746,21 @@ function _hasFieldValues(loan) {
 // path-based read exactly as it was. Returns the (possibly healed) loan object.
 // READ-ONLY w.r.t. Encompass (fieldReader is allowlisted); it only writes OUR own cache.
 async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
-  if (!loan || typeof loan !== 'object' || _hasFieldValues(loan) || !guid) return loan;
+  // Heal when the by-number values are missing OR present without the identity read
+  // (a pre-2026-08-02 snapshot may hold economics `_fieldValues` but no identity, so the
+  // co-borrower still can't be recovered by number). Once both are stored the file skips
+  // this on every later view.
+  if (!loan || typeof loan !== 'object' || !guid) return loan;
+  if (_hasFieldValues(loan) && _hasIdentityFieldValues(loan)) return loan;
   try {
     const enc = require('../lib/integrations/encompass');
     if (!enc.configured()) return loan;
-    const vals = await require('./client').readFields(guid, map.allFieldIds());
+    // Economics AND identity (name/DOB/email/phone/SSN) BY NUMBER — so the identity
+    // compare is location-independent + self-healing exactly like 1859/388.
+    const vals = await require('./client').readFields(guid, map.allFieldIds().concat(map.identityFieldIds()));
     if (!vals || !Object.keys(vals).length) return loan;
+    // Hash + strip the plaintext SSN (65/97) BEFORE it is used or persisted.
+    require('./reader').scrubFieldValuesSsn(vals);
     const norm = (v) => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, '');
     const theirLoanNo = vals['364'];
     // If field 364 came back and disagrees with our loan number, these values are for a
@@ -1062,5 +1145,5 @@ module.exports = {
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues },
 };

@@ -388,6 +388,32 @@ function comparableKeys() {
 // read them BY NUMBER instead of guessing where each one lives in the loan JSON.
 function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(Boolean); }
 
+// Every STANDARD Encompass field id in IDENTITY_MAP, for BOTH the borrower and the
+// co-borrower (owner-directed 2026-08-02, file YSCAP258134762). Handed to the
+// fieldReader so borrower/co-borrower name, DOB, email, phone AND SSN can be read BY
+// NUMBER — the SAME location-independent, self-healing read economics already uses for
+// 1859/388. This is what recovers a co-borrower the stored applications[] JSON subtree
+// left out: a snapshot pulled BEFORE the co-borrower was added, or a name stored at a
+// non-standard path, would otherwise leave every co-borrower field reading "no data to
+// compare" and BLOCK-holding the term sheet — with no self-heal, unlike economics.
+// Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map. The SSN ids
+// (65/97) ARE included, but the raw value is HASHED + stripped in the impure reader
+// layer (reader.scrubFieldValuesSsn) before anything is stored — plaintext SSN is never
+// kept in encompass_extra, exactly as _scrubForStorage guarantees for the loan subtree.
+function identityFieldIds() {
+  const ids = [];
+  for (const e of IDENTITY_MAP) {
+    const s = e.stdFieldId;
+    if (!s) continue;
+    for (const slot of ['borrower', 'coBorrower']) {
+      const v = s[slot];
+      if (Array.isArray(v)) { for (const x of v) if (x != null && x !== '') ids.push(String(x)); }
+      else if (v != null && v !== '') ids.push(String(v));
+    }
+  }
+  return [...new Set(ids)];
+}
+
 // Normalize a raw Encompass fieldReader response into a flat { fieldId: value } map,
 // regardless of which wire shape it arrived in. This exists because the shape is NOT
 // stable across API versions / gateways (VERIFIED LIVE 2026-07-26 on the tenant):
@@ -696,6 +722,7 @@ module.exports = {
   extractFields,
   flattenLoan,
   allFieldIds,
+  identityFieldIds,
   fieldReaderToMap,
   mapValue,
   compareField,
