@@ -16,11 +16,13 @@ import { nextStep, pendingDocs } from '../lib/condition-actions.js';
  *
  * WHAT SURVIVES ON THE LINE is only what decides whether to open it:
  *   • the status dot and the name
- *   • ONE stamp — Internal / External / External + internal — replacing the
+ *   • ONE stamp — "Internal + external" / "Internal only" — replacing the
  *     four raw-database chips (Staff, Processor, Document, Condition) that were
  *     on every row. The owner's words: "a nice modern stamp saying if it's
  *     external… or if it's internal only… externals would be the borrower can
- *     also see it on their end."
+ *     also see it on their end." Two answers, not three, since 2026-08-02 —
+ *     staff see everything, so "External" alone was a claim nothing satisfies
+ *     (see conditions-vocab.js §4).
  *   • what is waiting: documents to review, the status, "sent back", overridden
  *   • the ONE next action, so a list of forty can be worked without opening
  *     every one of them
