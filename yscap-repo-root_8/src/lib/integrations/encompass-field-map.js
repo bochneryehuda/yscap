@@ -211,8 +211,17 @@ const IDENTITY_MAP = Object.freeze([
   Object.freeze({ key: 'date_of_birth', our: 'borrowers.date_of_birth', enc: 'applications[].{party}.birthDate', stdFieldId: { borrower: '1402', coBorrower: '1403' }, match: 'dateEquals', sensitive: true, note: 'Respect sanitizeDob + DOB-review rules' }),
   Object.freeze({ key: 'ssn', our: 'borrowers.ssn_hash / ssn_last4', enc: 'applications[].{party}.taxIdentificationIdentifier', stdFieldId: { borrower: '65', coBorrower: '97' }, match: 'ssnHash', sensitive: true, note: 'Compare by HMAC hash / last-4 ONLY; reveal stays behind the audited view_ssn gate; never fetch-print-store plaintext' }),
   Object.freeze({ key: 'current_address', our: 'borrowers.current_address (jsonb)', enc: 'applications[].{party}.residences[] (current) / mailing', match: 'addressCanon', note: 'Canonicalize with address-canon.samePlace' }),
-  Object.freeze({ key: 'phone', our: 'borrowers.cell_phone', enc: 'applications[].{party}.mobilePhone / .homePhoneNumber', match: 'digitsEquals' }),
-  Object.freeze({ key: 'email', our: 'borrowers.email', enc: 'applications[].{party}.emailAddressText', match: 'lowerEquals' }),
+  // PHONE — Encompass carries THREE numbers per party (home / cell / work); our
+  // ONE cell_phone matches ANY of them (owner-directed 2026-08-02: "one is home,
+  // one is cell, one is work — any of them is good"). Std field ids: borrower home
+  // 66, cell 1490, work 4533; co-borrower home 98, cell 1480, work 4534. Read
+  // per-pair off the applications[] subtree so a SECOND borrower pair resolves to
+  // its OWN numbers, not pair 1's.
+  Object.freeze({ key: 'phone', our: 'borrowers.cell_phone', enc: 'applications[].{party}.homePhoneNumber / mobilePhone / workPhoneNumber', stdFieldId: { borrower: ['66', '1490', '4533'], coBorrower: ['98', '1480', '4534'] }, match: 'digitsEqualsAny', note: 'Home / cell / work — our one number matches any of the three' }),
+  // EMAIL — the party's personal email (owner-directed 2026-08-02: borrower field
+  // 1240, co-borrower field 1268 = emailAddressText). workEmailAddress is a
+  // tolerant fallback for display/compare.
+  Object.freeze({ key: 'email', our: 'borrowers.email', enc: 'applications[].{party}.emailAddressText', stdFieldId: { borrower: '1240', coBorrower: '1268' }, match: 'lowerEquals' }),
   Object.freeze({ key: 'vesting_llc', our: 'llcs.name via applications.llc_id', enc: 'field 1859 (subject LLC vesting name)', stdFieldId: { borrower: '1859' }, match: 'nameEquals', note: 'Owner-directed: match field 1859 with our subject LLC vesting' }),
 ]);
 
@@ -379,6 +388,34 @@ function comparableKeys() {
 // read them BY NUMBER instead of guessing where each one lives in the loan JSON.
 function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(Boolean); }
 
+// Every STANDARD Encompass field id in IDENTITY_MAP, for BOTH the borrower and the
+// co-borrower (owner-directed 2026-08-02, file YSCAP258134762). Handed to the
+// fieldReader so borrower/co-borrower name, DOB, email, phone AND SSN can be read BY
+// NUMBER — the same by-number read economics uses for 1859/388, applied at PARTY
+// granularity: reconcile.compareIdentity uses these to RECOVER A WHOLE PARTY the stored
+// applications[] subtree left out (it does not per-field re-heal a party already present).
+// A snapshot pulled BEFORE the co-borrower was added, or one whose co-borrower name is at
+// a non-standard path (so the party reads as unnamed and drops out), would otherwise leave
+// every co-borrower field reading "no data to compare" and BLOCK-holding the term sheet —
+// the identity subtree, unlike economics, had no by-number read and no self-heal.
+// Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map. The SSN ids
+// (65/97) ARE included, but the raw value is HASHED + stripped in the impure reader
+// layer (reader.scrubFieldValuesSsn) before anything is stored — plaintext SSN is never
+// kept in encompass_extra, exactly as _scrubForStorage guarantees for the loan subtree.
+function identityFieldIds() {
+  const ids = [];
+  for (const e of IDENTITY_MAP) {
+    const s = e.stdFieldId;
+    if (!s) continue;
+    for (const slot of ['borrower', 'coBorrower']) {
+      const v = s[slot];
+      if (Array.isArray(v)) { for (const x of v) if (x != null && x !== '') ids.push(String(x)); }
+      else if (v != null && v !== '') ids.push(String(v));
+    }
+  }
+  return [...new Set(ids)];
+}
+
 // Normalize a raw Encompass fieldReader response into a flat { fieldId: value } map,
 // regardless of which wire shape it arrived in. This exists because the shape is NOT
 // stable across API versions / gateways (VERIFIED LIVE 2026-07-26 on the tenant):
@@ -429,6 +466,13 @@ function flattenLoan(rawLoan) {
   if (authoritative) {
     for (const [id, v] of Object.entries(authoritative)) {
       if (v === undefined || v === null || v === '') continue;
+      // REGISTRY-mapped ids ONLY (economics). `_fieldValues` now ALSO carries borrower/
+      // co-borrower identity read by number (name/DOB/email/phone + the keyed-HMAC SSN +
+      // the `_idRead` marker) for the missing-co-borrower recovery in
+      // reconcile.compareIdentity — which reads `_fieldValues` DIRECTLY. Those keys must
+      // never leak into the economics extract or the super-admin raw diagnostic, so
+      // flattenLoan stays registry-only exactly as its header documents.
+      if (!KNOWN_FIELD_IDS.has(id)) continue;
       out[id] = { value: v };
     }
   }
@@ -687,6 +731,7 @@ module.exports = {
   extractFields,
   flattenLoan,
   allFieldIds,
+  identityFieldIds,
   fieldReaderToMap,
   mapValue,
   compareField,

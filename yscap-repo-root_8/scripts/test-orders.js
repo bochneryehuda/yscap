@@ -94,18 +94,33 @@ const fuNote = orders.buildOrderEmail('insurance', insData, { followup: true, no
 assert.ok(fuNote.html.includes('Any update on the binder?'), 'a custom follow-up message is used');
 ok('follow-up email is separate, lists deliverables, and honors a custom message');
 
-/* ---- recipient / CC assembly ---- */
+/* ---- recipient / CC assembly (owner-directed 2026-07-31: the borrower is NOT
+   CC'd on the TITLE order by default; a per-order choice or the LO's own
+   setting turns it on. Insurance keeps its borrower CC by default.) ---- */
 const r = orders.recipientsFor('title', base);
 assert.deepStrictEqual(r.to, ['title@abc.com'], 'TO is the vendor');
-assert.ok(r.cc.includes('john@example.com'), 'borrower is CC');
+assert.ok(!r.cc.includes('john@example.com'), 'borrower is NOT CC on a title order by default');
+assert.strictEqual(r.ccBorrower, false, 'the effective ccBorrower flag reports off');
 assert.ok(r.cc.includes('lo@yscapgroup.com'), 'loan officer is CC');
 assert.ok(r.cc.includes('proc@yscapgroup.com'), 'processor is CC');
 assert.ok(!r.cc.includes('title@abc.com'), 'the vendor is never also CC');
 assert.strictEqual(r.replyTo, `title+${APP}@reply.yscapgroup.com`, 'reply-to is the unique order address');
+// The explicit per-order choice wins…
+const rOn = orders.recipientsFor('title', base, { ccBorrower: true });
+assert.ok(rOn.cc.includes('john@example.com'), 'ccBorrower:true loops the borrower in on a title order');
+// …and the officer's own default (lo-settings) turns title on when set.
+const rLo = orders.recipientsFor('title', base, { loCcSetting: true });
+assert.ok(rLo.cc.includes('john@example.com'), 'the LO setting defaults the borrower CC on');
+assert.strictEqual(orders.ccBorrowerDefault('title'), false, 'title default is OFF with no setting');
+assert.strictEqual(orders.ccBorrowerDefault('insurance'), true, 'insurance default stays ON');
+const rIns = orders.recipientsFor('insurance', { ...base, vendors: { insurance: { email: 'ins@abc.com' } } });
+assert.ok(rIns.cc.includes('john@example.com'), 'insurance order still CCs the borrower by default');
+const rInsOff = orders.recipientsFor('insurance', { ...base, vendors: { insurance: { email: 'ins@abc.com' } } }, { ccBorrower: false });
+assert.ok(!rInsOff.cc.includes('john@example.com'), 'insurance CC can be turned off per order');
 // CC de-dupes case-insensitively (borrower == officer edge case).
-const dupCc = orders.recipientsFor('title', { ...base, officer: { name: 'x', email: 'JOHN@example.com' } });
+const dupCc = orders.recipientsFor('title', { ...base, officer: { name: 'x', email: 'JOHN@example.com' } }, { ccBorrower: true });
 assert.strictEqual(dupCc.cc.filter((e) => e === 'john@example.com').length, 1, 'CC is deduped case-insensitively');
-ok('recipients: vendor=TO, borrower/LO/processor=CC (deduped), unique reply-to');
+ok('recipients: vendor=TO; title borrower-CC off by default (per-order/LO-setting turns on); LO/processor CC (deduped); unique reply-to');
 
 /* ---- order-inbox: returned docs file into the real title/insurance condition ---- */
 const orderInbox = require('../src/lib/order-inbox');

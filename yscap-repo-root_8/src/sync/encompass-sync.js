@@ -158,13 +158,23 @@ async function pollFloodOnce() {
     return out;
   } catch (e) { console.warn('[encompass-flood] poll threw:', e.message); return null; }
 }
+// Xactus flood is the active provider (its manual/not-on-FEMA-maps orders poll to
+// completion the same way). A tick is a no-op while the Xactus flood switch is off.
+async function pollXactusFloodOnce() {
+  try {
+    const out = await require('../xactus/flood-desk').pollPendingOnce();
+    if (out && (out.completed || out.failed)) console.log('[xactus-flood] poll:', JSON.stringify(out));
+    return out;
+  } catch (e) { console.warn('[xactus-flood] poll threw:', e.message); return null; }
+}
 function startFloodPoller() {
   if (floodStarted) return;
   floodStarted = true;
-  // Warm one-shot shortly after boot, then a steady interval. The tick is a no-op
-  // while the flood switch is off, so this is safe to always start.
-  setTimeout(() => { pollFloodOnce(); }, 20000);
-  setInterval(pollFloodOnce, FLOOD_POLL_MS);
+  // Warm one-shot shortly after boot, then a steady interval. Each tick is a no-op
+  // while its provider's flood switch is off, so this is safe to always start.
+  const tick = () => { pollFloodOnce(); pollXactusFloodOnce(); };
+  setTimeout(tick, 20000);
+  setInterval(tick, FLOOD_POLL_MS);
 }
 
-module.exports = { start, startFloodPoller, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce, pollFloodOnce };
+module.exports = { start, startFloodPoller, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce, pollFloodOnce, pollXactusFloodOnce };

@@ -24,17 +24,20 @@ const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const manualProgram = require('../lib/manual-program');
+const registrationGuard = require('../lib/registration-guard');
 const loanExceptions = require('../lib/loan-exceptions');
 const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
 const closing = require('../lib/closing');
+const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
+const esignCtcGate = require('../lib/esign/ctc-gate');
 const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
 const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI findings are ADVISORY ONLY (owner-directed 2026-07-27)
 const conditionRules = require('../lib/conditions/rules');
@@ -1104,6 +1107,14 @@ router.post('/applications', async (req, res) => {
     if (!addr || !(addr.oneLine || addr.street || addr.line1))
       return res.status(400).json({ error: 'property address required' });
   }
+  // A number too big for its column is a bad request, not a 500 — the same rule
+  // the details door below enforces, on the door that CREATES the file (see
+  // fields.applicationNumberProblem). Before the borrower row is written, so a
+  // refused create leaves nothing behind.
+  {
+    const numProblem = require('../lib/fields').applicationNumberProblem(b);
+    if (numProblem) return res.status(400).json({ error: numProblem });
+  }
   try {
     // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
     // — authoritatively, never a match-or-create off the email (owner-reported
@@ -2166,8 +2177,49 @@ router.get('/applications/:id/pricing', async (req, res) => {
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
       };
     } catch (_) { pricingDefaults = null; }
+    // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal findings
+    // hold term-sheet generation — the panel shows the reason up front and the
+    // studio's Download button refuses with it (window.TS_ISSUE_HOLD).
+    let termSheetHold = null;
+    try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
+    // Provenance (owner-directed 2026-07-31): once EVERY e-sign prerequisite is
+    // met (the same gate that lets the DocuSign package send), a regenerated
+    // term sheet is stamped FINAL TERM SHEET; before that, every sheet is
+    // stamped initial. Best-effort — an error just keeps the initial stamp.
+    let termSheetFinal = false;
+    try {
+      if (current) {
+        const g = await require('../lib/esign/gate').esignSendGate(req.params.id, { db });
+        termSheetFinal = !!(g && g.ready);
+      }
+    } catch (_) { /* initial stamp */ }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults, termSheetHold, termSheetFinal });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Waive / restore the 1% closing-cost liquidity buffer on this file
+// (owner-authorized 2026-07-31: the buffer is part of the liquidity requirement
+// everywhere; "we can waive it on certain scenarios — on the manual side").
+// Admin-gated (manage_pricing), audited; keeps the current registration's
+// stored quote + the assets condition in step (see liquidity.setClosingBufferWaiver).
+router.post('/applications/:id/liquidity-buffer', async (req, res) => {
+  try {
+    if (!can(req.actor, 'manage_pricing')) {
+      return res.status(403).json({ error: 'Waiving the closing-cost buffer needs the Manage pricing permission (an admin).' });
+    }
+    // The waiver rewrites the current registration's stored liquidity figure —
+    // an economics-adjacent write, so it honors the SAME structural freeze as
+    // every other one (pre-merge audit #9): a term-sheet-sent / CTC / funded
+    // file refuses (a sent sheet prints the liquidity WITH the buffer; waiving
+    // after sending would make the file disagree with it). A super-admin
+    // unlock lifts it, exactly like the other frozen doors.
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked });
+    const waived = !!(req.body && req.body.waived);
+    const out = await require('../lib/liquidity').setClosingBufferWaiver(req.params.id, waived, db);
+    await audit(req, 'liquidity_buffer_waiver', 'application', req.params.id, out);
+    res.json({ ok: true, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2215,6 +2267,22 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Pricing). What the staffer saw is what registers; a knob moved off the
     // company default routes the registration to an admin for approval below.
     const { overrides } = sanitizeOverrides(req, b.overrides || {});
+
+    // THE REGISTRATION MUST AGREE WITH THE APPLICATION (owner-directed
+    // 2026-07-31: an SFR file was priced + registered as "2-4 units" and the
+    // two records disagreed forever). Property type / units / loan type /
+    // deal strategy / state are compared by MEANING (never spelling); any
+    // disagreement FAILS the registration with a plain error naming both
+    // sides — fix the application details (or the studio pick) and register
+    // again. Unclassifiable values stay silent (never a guessed refusal).
+    const fileConflicts = registrationGuard.registrationFileConflicts(f.app, overrides);
+    if (fileConflicts.length) {
+      return refuse(422, {
+        error: registrationGuard.conflictMessage(fileConflicts),
+        code: 'file_mismatch',
+        conflicts: fileConflicts,
+      }, 'file_mismatch', { fields: fileConflicts.map((c) => c.key).join(',') });
+    }
     // The admin-zone knobs this registration moved off the company default —
     // a reduced rate markup, reduced origination, a discounted/waived fee, an
     // approved effective purchase price, a manual basis. ANY of them makes this
@@ -2274,11 +2342,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
         // Same rule as the details door: zero is a real answer, a negative is not.
         if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
-        /* …and the SAME ceiling. This door writes the same numeric(14,2) column,
-           from a studio box with no digit cap, and was the last place in this
-           family still able to turn a fat-fingered paste into a 500 (audit round
-           7). Magnitude-rounded, matching how Postgres rounds before it checks. */
-        if (Math.round(Math.abs(nCo) * 100) / 100 >= 1e12) {
+        /* …and the SAME ceiling — from the SAME definition (`lib/number-bounds`),
+           because this door writes the same numeric(14,2) column and its inline
+           copy of the rule is exactly how a correction to the details door kept
+           failing to reach it. Magnitude-rounded, matching how Postgres rounds
+           before it checks for overflow. */
+        if (numberBounds.moneyOverflows(nCo)) {
           return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
         }
       }
@@ -2367,7 +2436,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     const prev = prevQ.rows[0] || null;
 
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — checked before the transaction opens, so a refusal leaves nothing
+       half-done and answers with the box to look at. See
+       product-registration.quoteStorageProblem. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return refuse(400, { error: storeProblem }, 'quote_not_storable');
+    }
+
     const client = await db.getClient();
+    let released = false;            // the connection is handed back exactly once
     let regId;
     let economicsChanged = true;   // first registration always notifies the borrower
     let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
@@ -2455,9 +2534,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          the sheet the borrower was shown quoted different cash — and re-opening
          the studio silently reverted the PDF to the structural number.
 
-         DISPLAY/RECORD ONLY: `estimated_cash_out` is read by no engine (the
-         investor-guideline cash-out rule is gated on `refinance_economic_type`,
-         which still has no writer), so this can neither price nor block a deal.
+         NO FROZEN ENGINE READS IT — but "no engine reads it" was too strong and
+         is corrected here (post-merge audit 2026-07-31). It is absent from every
+         pricing/guideline engine and from `buildInputs`, so it can never move a
+         number on a term sheet. It IS read by the advisory whole-loan run
+         (`underwriting/run.js gatherInvestorInputs`) as the fallback basis for
+         `cash_out_proceeds`, behind `verified_cash_out`, feeding ONE Blue Lake
+         escalation (`isg_bl_cashout_over_250k`, cash out over $250k → review).
+         That path is doubly inert today: it is gated on
+         `refinance_economic_type`, which still has no writer anywhere in the
+         repo, and an ISG finding is advisory — a super-admin-overridable hard
+         warning that can never block. Worth stating accurately anyway: the day
+         that column gains a writer, this figure starts reaching a rule, and a
+         comment claiming otherwise is how that would go unnoticed.
          Refinance only, and only when the studio actually sent the key — a
          re-register that never opened the box leaves the file's figure alone.
          An explicit blank DOES clear it: blank means "use the structure", which
@@ -2484,7 +2573,21 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
       await client.query('COMMIT');
-    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    } catch (e) {
+      /* RELEASE THE CONNECTION ON THE WAY OUT — the `finally` below belongs to
+         the VESTING try/catch that starts after this block, so a rethrow here
+         skipped it entirely and leaked a pooled client, permanently (post-merge
+         audit 2026-07-31). Measured: an oversized admin-pricing override raises
+         a numeric overflow inside this transaction, and TEN of them exhaust
+         DB_POOL_MAX (10) — after which EVERY request in the app answers 503.
+         One bad paste in the studio's admin zone could take the whole service
+         down. Released here, and `released` stops the later `finally` from
+         double-releasing (pg treats that as an error). */
+      released = true;
+      try { await client.query('ROLLBACK'); } catch (_) { /* the connection may already be gone */ }
+      try { client.release(); } catch (_) { /* best-effort */ }
+      throw e;
+    }
 
     // Vesting LLC on register (owner-directed 2026-07-21): if the staffer typed
     // an entity name on the Products & Pricing / Term Sheet Studio screen and
@@ -2503,7 +2606,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
       }
     } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
-    finally { client.release(); }
+    finally { if (!released) client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
 
@@ -2661,7 +2764,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // 2026-07-21 — a manual-review / manual-program registration is confirmed to
       // the borrower ONLY after a super-admin approves the escalation; see
       // admin-manual-programs.js). The team's own notice above always fires.
-      if (economicsChanged && !needsEscalation) {
+      // (c) ALSO withheld while a fatal appraisal finding is open (owner-directed
+      // 2026-07-31: appraisal fatals hold off generating term sheets — a
+      // terms-are-ready email is a term sheet reaching the borrower).
+      const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
+      if (economicsChanged && !needsEscalation && !apprHold) {
         try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term, encompassOverride: encompassOverridden }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
@@ -3003,6 +3110,22 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // authorization is already in place.
     overrides.forcePrice = true;
 
+    // THE REGISTRATION MUST AGREE WITH THE APPLICATION here too (pre-merge audit
+    // 2026-07-31 #3): the replayed escalation blob carries the ORIGINAL request's
+    // propertyType/loanType/strategy/state — if the application was corrected
+    // between the escalation and this acceptance, accepting would persist the
+    // exact mismatch the register door now refuses. Same guard, same wording.
+    const acFileConflicts = registrationGuard.registrationFileConflicts(f.app, overrides);
+    if (acFileConflicts.length) {
+      return res.status(422).json({
+        error: 'The application changed since this counter-offer was made, and the countered scenario no longer matches it.\n'
+          + registrationGuard.conflictMessage(acFileConflicts)
+          + '\nRe-price the file in the studio (or ask for a fresh counter) instead of accepting this one.',
+        code: 'file_mismatch',
+        conflicts: acFileConflicts,
+      });
+    }
+
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     inputs.forcePrice = true;
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
@@ -3014,6 +3137,15 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // the borrower's "Your loan terms are ready" email led with "Your loan
     // amount: $0". Same expression the /register route uses.
     const total = quote && quote.sizing ? Number(quote.sizing.totalLoan) || 0 : 0;
+
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — and on THIS door the counter was authored in the admin pricing zone, so
+       it is exactly the shape that produced one. See
+       product-registration.quoteStorageProblem. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return res.status(400).json({ error: storeProblem });
+    }
 
     // Persist + mark the escalation approved in ONE transaction so an accept
     // never half-lands (registered without the escalation closing, or vice versa).
@@ -3088,11 +3220,16 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // Take the escalation hand-off off the super-admin Workflow (mirrors decide).
     try { await require('../lib/workflow-automation').closeEscalationWorkflow(appId, 'Counter accepted'); } catch (_) {}
 
-    // Send the borrower their confirmed terms — same email the plain-approval path sends.
+    // Send the borrower their confirmed terms — same email the plain-approval path
+    // sends. WITHHELD while a fatal appraisal finding is open (owner-directed
+    // 2026-07-31; pre-merge audit #1 — this door bypassed the register routes' hold).
     try {
-      await require('../lib/terms-notify').sendBorrowerTerms(appId, {
-        quote, total, termMonths: inputs && inputs.term,
-      });
+      const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
+      if (!apprHold) {
+        await require('../lib/terms-notify').sendBorrowerTerms(appId, {
+          quote, total, termMonths: inputs && inputs.term,
+        });
+      }
     } catch (_) { /* best-effort */ }
 
     res.json({ ok: true, registrationId: regId, totalLoan: total });
@@ -4034,7 +4171,7 @@ function recipientsOfRow(r) {
     opened_at: r.opened_at || null,
   }));
 }
-const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
+const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1, self_reply: 1 };
 const worseStatus = (a, b) => ((_STATUS_RANK[b] || 0) > (_STATUS_RANK[a] || 0) ? b : a);
 
 // Consolidate a notify FAN-OUT (the same email sent to many people as one row
@@ -4506,9 +4643,29 @@ router.get('/applications/:id/orders', async (req, res) => {
     if (!data) return res.status(404).json({ error: 'not found' });
     const rows = (await db.query(
       `SELECT order_type, status, vendor_name, vendor_email, ordered_at, last_followup_at,
-              followup_count, send_count
+              followup_count, send_count, meta
          FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
     const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
+    // Whether the borrower is CC'd on each order (owner-directed 2026-07-31:
+    // title defaults OFF; the file's LO's own setting can default it on; a
+    // per-order choice — persisted in file_orders.meta — always wins).
+    let loCcSetting = false;
+    try {
+      const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (lo.rows[0] && lo.rows[0].loan_officer_id) {
+        loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+      }
+    } catch (_) { /* defaults stand (off) */ }
+    const storedCc = (k) => {
+      const row = orderOf(k);
+      const m = row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+      return m && m.ccBorrower != null ? !!m.ccBorrower : null;
+    };
+    const ccEffective = (k) => {
+      const stored = storedCc(k);
+      if (stored != null) return stored;
+      return orders.ccBorrowerDefault(k, loCcSetting);
+    };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
       `SELECT id, doc_kind, filename, slot_label, review_status, is_current, size_bytes, created_at
@@ -4548,8 +4705,8 @@ router.get('/applications/:id/orders', async (req, res) => {
     };
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
-      const { to, cc } = orders.recipientsFor(k, data);
-      return { to, cc };
+      const { to, cc, ccBorrower } = orders.recipientsFor(k, data, { ccBorrower: ccEffective(k) });
+      return { to, cc, ccBorrower };
     };
     res.json({
       file: {
@@ -4559,8 +4716,8 @@ router.get('/applications/:id/orders', async (req, res) => {
         officer: data.officer, processor: data.processor,
       },
       orders: {
-        title: { ...shape('title'), recipients: recipientsPreview('title') },
-        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance') },
+        title: { ...shape('title'), recipients: recipientsPreview('title'), ccBorrower: ccEffective('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'), ccBorrower: ccEffective('insurance') },
       },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -4583,14 +4740,30 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     // The address must be the USPS-verified, imported one before it leaves the building.
     if (blk.includes('usps')) return res.status(422).json({ error: `Import the USPS-verified property address before ordering ${kind === 'title' ? 'title' : 'insurance'}. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — an order sent with an unverified address can go out with the wrong ZIP or unit.`, code: 'usps' });
 
-    const existing = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const existing = (await db.query(`SELECT status, send_count, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
     }
 
+    // Borrower CC (owner-directed 2026-07-31): explicit per-order choice from the
+    // panel checkbox → prior stored choice on this order → the file's LO's own
+    // default (title: off unless the officer's setting turns it on; insurance:
+    // on). The choice is persisted so follow-ups reuse it.
+    let ccBorrower = null;
+    if (req.body && req.body.ccBorrower != null) ccBorrower = !!req.body.ccBorrower;
+    else if (existing && existing.meta && typeof existing.meta === 'object' && existing.meta.ccBorrower != null) ccBorrower = !!existing.meta.ccBorrower;
+    if (ccBorrower == null) {
+      let loCcSetting = false;
+      try {
+        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+      } catch (_) { /* off */ }
+      ccBorrower = orders.ccBorrowerDefault(kind, loCcSetting);
+    }
+
     const built = orders.buildOrderEmail(kind, data, {});
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     await email.sendMail({
       to, cc,
@@ -4601,16 +4774,17 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     });
     const vendor = data.vendors[kind];
     await db.query(
-      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count)
-       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1)
+      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
+       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
        ON CONFLICT (application_id, order_type)
        DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
                      vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
-                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1, updated_at=now()`,
+                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
+                     meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()`,
       [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
-       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id]);
-    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force });
-    res.json({ ok: true, sent_to: to, cc });
+       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower]);
+    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower });
+    res.json({ ok: true, sent_to: to, cc, ccBorrower });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
 
@@ -4622,7 +4796,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
   if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(`SELECT status FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const row = (await db.query(`SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
       return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
     }
@@ -4634,7 +4808,22 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const built = orders.buildOrderEmail(kind, data, { followup: true, note });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    // Follow-ups keep the borrower-CC footing the ORDER was placed with
+    // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
+    // off). An order placed BEFORE this existed has no stored choice — fall to
+    // the same LO-setting default the place door uses, so the thread's footing
+    // matches what a fresh order would do (pre-merge audit #6).
+    const storedCc = row.meta && typeof row.meta === 'object' && row.meta.ccBorrower != null ? !!row.meta.ccBorrower : null;
+    let fuCc = storedCc;
+    if (fuCc == null) {
+      let loCcSetting = false;
+      try {
+        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+      } catch (_) { /* off */ }
+      fuCc = orders.ccBorrowerDefault(kind, loCcSetting);
+    }
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     await email.sendMail({
       to, cc,
@@ -6392,45 +6581,99 @@ router.get('/applications/:id/assignees', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Roles a file can carry people for. loan_officer/processor since db/103;
+// closer + draw_coordinator since db/392 (owner-directed 2026-07-31: the
+// defaults stay, but the file can name its own closer(s)/draw coordinator(s),
+// multiple per role, and their workflow shows only files assigned to them).
+const ASSIGNEE_ROLES = ['loan_officer', 'processor', 'closer', 'draw_coordinator'];
+const ASSIGNEE_ROLE_LABEL = {
+  loan_officer: 'a loan officer', processor: 'a processor',
+  closer: 'a closer', draw_coordinator: 'a draw coordinator',
+};
+
 router.post('/applications/:id/assignees', async (req, res) => {
   try {
     const b = req.body || {};
-    const role = b.role === 'processor' ? 'processor' : b.role === 'loan_officer' ? 'loan_officer' : null;
+    const role = ASSIGNEE_ROLES.includes(b.role) ? b.role : null;
     const staffId = b.staffId;
-    if (!role || !staffId) return res.status(400).json({ error: 'staffId and role (loan_officer|processor) required' });
-    // Active + role-appropriate (mirrors the /assign validation): a processor
-    // assistant must actually hold the processor role.
+    const asPrimary = b.primary === true;
+    if (!role || !staffId) return res.status(400).json({ error: `staffId and role (${ASSIGNEE_ROLES.join('|')}) required` });
+    // Active + role-appropriate (mirrors the /assign validation): the person
+    // must actually hold the role they're being assigned as (loan_officer
+    // assistants stay unrestricted, as before — admins help on files).
     const s = await db.query(`SELECT id, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
     if (!s.rows[0]) return res.status(404).json({ error: 'staff member not found' });
-    if (role === 'processor' && s.rows[0].role !== 'processor')
-      return res.status(400).json({ error: 'A processor assistant must be a staffer with the processor role.' });
-    const dup = await db.query(
-      `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
-      [req.params.id, role, staffId]);
-    if (dup.rows[0]) return res.status(409).json({ error: dup.rows[0].is_primary ? 'Already the primary for this role on this file.' : 'Already an assistant on this file.' });
-    await db.query(
-      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
-      [req.params.id, staffId, role, req.actor.id]);
+    if (role !== 'loan_officer' && s.rows[0].role !== role)
+      return res.status(400).json({ error: `A ${role.replace(/_/g, ' ')} on a file must be a staffer with the ${role.replace(/_/g, ' ')} role.` });
+
+    if (asPrimary && role === 'closer') {
+      // The closer PRIMARY is the applications.closer_id pointer (what the
+      // closing workflow submit reads); the db/392 trigger keeps the assignee
+      // row in lock-step. Writing the pointer IS the assignment.
+      await db.query(`UPDATE applications SET closer_id=$2 WHERE id=$1`, [req.params.id, staffId]);
+    } else if (asPrimary && role === 'draw_coordinator') {
+      // No pointer exists for the draw coordinator — the assignee row is the
+      // record. Demote the current primary (kept as an additional person, so
+      // "swap the primary" never silently drops anyone), then promote/insert.
+      await db.query(
+        `UPDATE application_assignees SET is_primary=false
+          WHERE application_id=$1 AND role='draw_coordinator' AND is_primary=true AND removed_at IS NULL AND staff_id<>$2`,
+        [req.params.id, staffId]);
+      const up = await db.query(
+        `UPDATE application_assignees SET is_primary=true
+          WHERE application_id=$1 AND role='draw_coordinator' AND staff_id=$2 AND removed_at IS NULL`,
+        [req.params.id, staffId]);
+      if (!up.rowCount) {
+        await db.query(
+          `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,'draw_coordinator',true,$3)`,
+          [req.params.id, staffId, req.actor.id]);
+      }
+    } else {
+      const dup = await db.query(
+        `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+        [req.params.id, role, staffId]);
+      if (dup.rows[0]) return res.status(409).json({ error: dup.rows[0].is_primary ? 'Already the primary for this role on this file.' : 'Already on this file for that role.' });
+      await db.query(
+        `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
+        [req.params.id, staffId, role, req.actor.id]);
+    }
     await notify.notifyStaff(staffId, {
-      type: 'assignment', title: `You were added to a file as ${role === 'processor' ? 'a processor' : 'a loan officer'}`,
-      body: `${req.actor.name || 'A teammate'} added you to this file with full access. The file details are below.`,
+      type: 'assignment', title: `You were ${asPrimary ? 'assigned to a file' : 'added to a file'} as ${ASSIGNEE_ROLE_LABEL[role] || role}`,
+      body: `${req.actor.name || 'A teammate'} ${asPrimary ? 'assigned you as the ' + (ASSIGNEE_ROLE_LABEL[role] || role).replace(/^an? /, '') + ' on' : 'added you to'} this file. Its ${role.replace(/_/g, ' ')} workflow items now show in your queue.`,
       applicationId: req.params.id, ctaLabel: 'Open the loan file', link: `/internal/app/${req.params.id}` });
-    await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role });
+    await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role, primary: asPrimary });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
   try {
-    const role = req.query.role === 'processor' ? 'processor' : 'loan_officer';
+    const role = ASSIGNEE_ROLES.includes(req.query.role) ? req.query.role : 'loan_officer';
     const row = await db.query(
       `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
       [req.params.id, role, req.params.staffId]);
     if (!row.rows[0]) return res.status(404).json({ error: 'not an active assignee on this file' });
-    if (row.rows[0].is_primary) return res.status(400).json({ error: 'Reassign the primary through Assign — a primary can’t be removed here.' });
-    await db.query(
-      `UPDATE application_assignees SET removed_at=now() WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
-      [req.params.id, role, req.params.staffId]);
+    if (row.rows[0].is_primary) {
+      // LO / processor primaries move through Assign (unchanged). The NEW roles
+      // (db/392) can be cleared here: the closer primary clears the pointer
+      // (the trigger retires the row); a draw-coordinator primary retires
+      // directly (no pointer exists). The file then falls back to the role's
+      // whole-desk inbox — the pre-assignment default.
+      if (role === 'closer') {
+        await db.query(`UPDATE applications SET closer_id=NULL WHERE id=$1 AND closer_id=$2`, [req.params.id, req.params.staffId]);
+      } else if (role === 'draw_coordinator') {
+        await db.query(
+          `UPDATE application_assignees SET is_primary=false, removed_at=now()
+            WHERE application_id=$1 AND role='draw_coordinator' AND staff_id=$2 AND removed_at IS NULL`,
+          [req.params.id, req.params.staffId]);
+      } else {
+        return res.status(400).json({ error: 'Reassign the primary through Assign — a primary can’t be removed here.' });
+      }
+    } else {
+      await db.query(
+        `UPDATE application_assignees SET removed_at=now() WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+        [req.params.id, role, req.params.staffId]);
+    }
     await audit(req, 'remove_assignee', 'application', req.params.id, { staffId: req.params.staffId, role });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -8554,9 +8797,23 @@ async function advancementBlockers(appId, target) {
   const aiRows = [...underwritingFatals, ...aiAdvisories, ...aiReviewConds];
   const enforcedAi = aiRows.filter((r) => r.source === 'underwriting');
   const advisoryAi = aiRows.filter((r) => r.source !== 'underwriting');
+  // THE FULLY-EXECUTED TERM SHEET PACKAGE IS A REAL GATE (owner-directed
+  // 2026-08-01). Not a condition anyone can tick — a read of the actual DocuSign
+  // state. `rtl_cond_signedts` stays exactly as it is (required, borrower-facing,
+  // nudged to 'received' when the package completes); this sits BESIDE it so the
+  // file cannot reach clear-to-close on a ticked box with nothing executed behind
+  // it. Returned as a GATE, which means the readiness widget reads "not ready"
+  // and the status door refuses — while an ADMIN can still force past it, the
+  // same recorded escape hatch every other gate has. Fails OPEN on a DB error
+  // (see lib/esign/ctc-gate.js) so a wobble can never freeze the pipeline.
+  let esignGates = [];
+  try {
+    const g = await esignCtcGate.termSheetGate(appId, db);
+    if (g) esignGates = [g];
+  } catch (_) { esignGates = []; }
   return {
     conditions: [...underwriting, ...checklistConds.rows, ...enforcedAi].map(r => decorateBlocker(r, 'condition')),
-    gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+    gates: [...gates.rows, ...esignGates].map(r => decorateBlocker(r, 'gate')),
     advisories: advisoryAi.map(r => decorateBlocker(r, 'advisory')),
   };
 }
@@ -8647,40 +8904,23 @@ router.patch('/applications/:id/details', async (req, res) => {
      the limit. Add a key to NUM above and add it here too. */
   const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
     'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
-  const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
-  const INT_MAX = 2147483647, INT_MIN = -2147483648;    // int4
   /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
      not int4's — quoting 2,147,483,647 for a field the database refuses past 24
      is the same "follow the message, get another 500" trap the previous round
      fixed for `units`, reintroduced one column over (audit round 7). */
   const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
   /**
-   * The reason this number cannot be stored, or '' if it can. ONE place, because
-   * the previous three rounds each fixed one column's ceiling and left another's
-   * wrong. Never throws.
+   * The reason this number cannot be stored, or '' if it can.
+   *
+   * The LIMITS themselves live in `lib/number-bounds` (post-merge audit
+   * 2026-07-31): this door, the register door and the cash-to-close door each
+   * carried their own inline copy of the money ceiling, so the four corrections
+   * this rule has already needed only ever reached whichever copy was being
+   * looked at. Here we say which COLUMN TYPE each key is; the shared module
+   * says what that type can hold. Add a key to NUM above and add it here too.
    */
-  const numberOutOfRange = (key, n) => {
-    const chk = CHECKED_RANGE[key];
-    if (chk) {
-      if (!Number.isInteger(n)) return `${key} must be a whole number of ${chk.what}`;
-      if (n < chk.min || n > chk.max) return `${key} must be between ${chk.min} and ${chk.max} ${chk.what}`;
-      return '';
-    }
-    if (MONEY_KEYS.has(key)) {
-      /* ROUND THE MAGNITUDE, NOT THE SIGNED VALUE. numeric(14,2) rounds to two
-         decimals before it checks for overflow, and it rounds HALF AWAY FROM
-         ZERO — while JavaScript's Math.round breaks ties toward +∞. So
-         -999999999999.995 rounded signed came back inside the ceiling and went
-         on to overflow in Postgres, a 500 the previous round believed it had
-         closed for both signs (audit round 7). */
-      return Math.round(Math.abs(n) * 100) / 100 >= MONEY_MAX
-        ? `${key} is too large — the largest amount this field can hold is 999,999,999,999.99` : '';
-    }
-    // Everything else in NUM is an int4 column.
-    if (!Number.isInteger(n)) return `${key} must be a whole number`;
-    return (n > INT_MAX || n < INT_MIN)
-      ? `${key} is too large — the largest value this field can hold is 2,147,483,647` : '';
-  };
+  const numberOutOfRange = (key, n) => numberBounds.columnProblem(
+    key, n, CHECKED_RANGE[key] || (MONEY_KEYS.has(key) ? 'money' : 'int'));
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -8739,7 +8979,14 @@ router.patch('/applications/:id/details', async (req, res) => {
      itself COMPLETE with a green tick, and the borrower's own screen read
      "Lender being paid off: null". The trap was latent on every STR key here;
      the payoff card was simply the first caller in the repo to send null. */
-  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = (b[k] === '' || b[k] == null) ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
+  /* …and a BOX OF SPACES IS AN EMPTY BOX here too, with the cap coming from the
+     COLUMN rather than from this door (post-merge audit 2026-07-31). This slice
+     was one of three different answers — 200 here, 200 on the borrower's
+     application door, 500 on the info-condition door — to a question about the
+     same two columns; and none of the three trimmed, so "   " stored three
+     spaces, counted as answered, and rendered an empty labelled row under a
+     green tick. `fields.textColumn` is now the one definition of all of it. */
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = require('../lib/fields').textColumn(b[k] === '' ? null : b[k], col); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of
@@ -9766,6 +10013,14 @@ router.get('/applications/:id/workflow/options', async (req, res) => {
       workflow.candidatesForRole('super_admin'),
       workflow.allActiveStaff(),
     ]);
+    // The file's PRIMARY draw coordinator (db/392): no pointer column exists, so
+    // it's read from application_assignees — the panel shows "Goes to X (already
+    // on this file)" and the submit route routes to them automatically.
+    const drawPrimary = (await db.query(
+      `SELECT aa.staff_id AS id, s.full_name AS name
+         FROM application_assignees aa JOIN staff_users s ON s.id=aa.staff_id AND s.is_active=true
+        WHERE aa.application_id=$1 AND aa.role='draw_coordinator' AND aa.is_primary=true AND aa.removed_at IS NULL
+        LIMIT 1`, [appId])).rows[0] || null;
     res.json({
       types: workflow.TYPES,
       appStatus: app.status,
@@ -9774,6 +10029,7 @@ router.get('/applications/:id/workflow/options', async (req, res) => {
         processor: app.processor_id ? { id: app.processor_id, name: app.processor_name } : null,
         closer: app.closer_id ? { id: app.closer_id, name: app.closer_name } : null,
         underwriter: app.underwriter_id ? { id: app.underwriter_id, name: app.underwriter_name } : null,
+        draw_coordinator: drawPrimary,
       },
       candidates: { processor: procs, closer: closers, draw_coordinator: draws, super_admin: sadmins, all: everyone },
       completeness,
@@ -9828,10 +10084,25 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
       if (!b.toStaffId) return res.status(400).json({ error: 'pick_recipient', role: null });
     }
 
-    // ---- RESOLVE the recipient: assigned person, else the submitter's pick ----
+    // ---- RESOLVE the recipient: the FILE's assigned person for the role, else
+    // the sticky pointer, else the submitter's pick, else the sole role holder.
+    // (owner-directed 2026-07-31: a file can name its own closer / draw
+    // coordinator — a submission goes to THEIR workflow. The primary assignee
+    // outranks nothing for LO/processor — for those the pointer IS the primary,
+    // kept in lock-step by the db/103 trigger — but for draw_coordinator, which
+    // has no pointer, the assignee row is the only per-file record.)
     let toStaffId = null, setPointer = false;
+    const primaryAssignee = cfg.role
+      ? (await db.query(
+          `SELECT aa.staff_id FROM application_assignees aa JOIN staff_users s ON s.id=aa.staff_id AND s.is_active=true
+            WHERE aa.application_id=$1 AND aa.role=$2 AND aa.is_primary=true AND aa.removed_at IS NULL LIMIT 1`,
+          [appId, cfg.role])).rows[0]
+      : null;
     if (cfg.pointer && app[cfg.pointer]) {
       toStaffId = app[cfg.pointer];
+    } else if (primaryAssignee) {
+      toStaffId = primaryAssignee.staff_id;
+      setPointer = !!(cfg.pointer && cfg.assigns);
     } else if (b.toStaffId) {
       toStaffId = b.toStaffId;
       setPointer = !!(cfg.pointer && cfg.assigns);
@@ -9946,6 +10217,28 @@ router.get('/workflow/count', async (req, res) => {
 // personal queue of exception requests they raised, across ALL their files (not
 // file-scoped). Lets them track/comment/withdraw a pending exception without
 // digging into each file. `status`: open (default) | all-active | approved | denied | cleared | all.
+// ---- MY SETTINGS (owner-directed 2026-07-31): each officer's own business
+// settings — a validated per-staffer bag (src/lib/lo-settings.js owns the key
+// whitelist + defaults; first key: CC my borrowers on title orders, default
+// off). Self-scoped: a staffer reads/writes only their OWN settings. ----
+router.get('/my-settings', async (req, res) => {
+  try {
+    const loSettings = require('../lib/lo-settings');
+    res.json({ settings: await loSettings.getSettings(req.actor.id), keys: loSettings.SETTINGS_KEYS });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.put('/my-settings', async (req, res) => {
+  try {
+    const loSettings = require('../lib/lo-settings');
+    const settings = await loSettings.setSettings(req.actor.id, (req.body && req.body.settings) || req.body || {});
+    await audit(req, 'lo_settings_updated', 'staff', req.actor.id, { keys: Object.keys((req.body && req.body.settings) || req.body || {}) });
+    res.json({ ok: true, settings });
+  } catch (e) {
+    if (e && e.status === 400) return res.status(400).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 router.get('/my-exceptions', async (req, res) => {
   try {
     const status = ['open', 'all-active', 'approved', 'denied', 'withdrawn', 'expired', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
@@ -9976,9 +10269,18 @@ router.post('/workflow/:itemId/pickup', async (req, res) => {
     if (!it) return res.status(404).json({ error: 'not found' });
     // Mine, OR an UNASSIGNED role-inbox item addressed to my role (listQueue shows those to
     // every member of the role — pickup must accept the same set, else a non-admin coordinator
-    // sees an item they can never claim; phase-1 audit finding #2), OR an admin.
+    // sees an item they can never claim; phase-1 audit finding #2), OR an ACTIVE
+    // same-role ASSIGNEE of the item's file (db/392, owner-directed 2026-07-31:
+    // multiple closers/draw coordinators work one file's queue — listQueue shows
+    // them the item, so they can act on it too), OR an admin.
     const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
-    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    const fileRoleMine = !roleInboxMine && it.to_role
+      ? !!(await db.query(
+          `SELECT 1 FROM application_assignees aa JOIN workflow_items w ON w.id=$1 AND aa.application_id=w.application_id
+            WHERE aa.role=w.to_role AND aa.staff_id=$2 AND aa.removed_at IS NULL LIMIT 1`,
+          [req.params.itemId, req.actor.id])).rows[0]
+      : false;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !fileRoleMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
     const client = await db.getClient();
     let item;
     try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
@@ -9996,9 +10298,16 @@ router.post('/workflow/:itemId/return', async (req, res) => {
   try {
     const it = (await db.query(`SELECT application_id, to_staff_id, to_role, from_staff_id, submission_type, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
     if (!it) return res.status(404).json({ error: 'not found' });
-    // Same role-inbox acceptance as pickup (an unassigned item addressed to my role is mine to finish).
+    // Same acceptance as pickup: role inbox, or an active same-role assignee of
+    // the item's file (db/392 — a co-assigned closer may finish it too).
     const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
-    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    const fileRoleMine = !roleInboxMine && it.to_role
+      ? !!(await db.query(
+          `SELECT 1 FROM application_assignees aa
+            WHERE aa.application_id=$1 AND aa.role=$2 AND aa.staff_id=$3 AND aa.removed_at IS NULL LIMIT 1`,
+          [it.application_id, it.to_role, req.actor.id])).rows[0]
+      : false;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !fileRoleMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
     if (!['open', 'in_progress'].includes(it.status)) return res.status(409).json({ error: 'this item is already finished' });
     const client = await db.getClient();
     let item;
@@ -10241,15 +10550,32 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   const blank = raw == null || String(raw).trim() === '';
   const val = blank ? null : Number(raw);
   if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
-  // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
-  // ceiling and the same rounded test as the details door (audit round 6).
-  // Magnitude-rounded — Postgres rounds half AWAY FROM ZERO while Math.round
-  // breaks ties toward +∞, so rounding the signed value let a negative edge slip
-  // through to a 500 (audit round 7).
-  if (!blank && Math.round(Math.abs(val) * 100) / 100 >= 1e12) {
+  // …and too big for the column is a bad request, not a 500 — the same
+  // numeric(14,2) ceiling as the details door, now from the same definition
+  // (`lib/number-bounds`) rather than a third inline copy of it.
+  if (!blank && numberBounds.moneyOverflows(val)) {
     return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
   }
-  const docId = req.body && req.body.docId ? String(req.body.docId) : null;
+  /* THE ATTACHED ALTA MUST BE A REAL DOCUMENT ON THIS FILE (post-merge audit
+     2026-07-31). `actual_cash_to_close_doc_id` is a uuid with a foreign key
+     (db/315), and this bound whatever string arrived:
+       · anything not shaped like a uuid raised 22P02 and came back a 500;
+       · a well-formed uuid that is not a document — or one deleted between the
+         click and the save — raised 23503 and came back a 500;
+       · and a document belonging to a DIFFERENT file was accepted, quietly
+         citing another borrower's settlement statement as the evidence for this
+         one's cash to close.
+     All three are answered here, in words the closer can act on, before the
+     transaction opens. Omitting the attachment stays valid — the number may be
+     read off an ALTA that has not been uploaded yet. */
+  let docId = req.body && req.body.docId ? String(req.body.docId).trim() : null;
+  if (docId) {
+    if (!UUID_RE.test(docId)) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
+    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2`, [docId, appId]);
+    if (!dq.rows[0]) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
+  } else {
+    docId = null;
+  }
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);
     const client = await db.getClient();
@@ -11393,7 +11719,33 @@ router.post('/leads/:id/convert', async (req, res) => {
     // of an unexpected type, or a non-object bucket falls back to a bare file
     // (the borrower/officer fill the economics on registration) instead of
     // throwing. numv + pv stay in the outer scope; the INSERT reads them below.
-    const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
+    /* A NUMBER THIS COLUMN CANNOT HOLD IS "NOT PROVIDED" HERE — deliberately
+       NOT a 400 (post-merge audit 2026-07-31). Everything below is bound from
+       the LEAD's stored payload, typed on the public marketing tool by a
+       visitor who may never be heard from again; nothing on the convert screen
+       can edit it. So refusing the conversion would strand the lead with no way
+       through, while letting it reach numeric(14,2) raises 22003 and returns
+       the "convert to loan comes up a server error when the lead has a lot of
+       information" the owner already reported once. Dropped instead, exactly as
+       this function already drops a non-numeric value and as the surrounding
+       catch already falls back to a bare file — the economics are entered on
+       registration either way. The COUNT fields below get the same treatment via
+       `intv`. Ceiling from lib/number-bounds, so it can never drift from the
+       ceiling the edit doors quote. */
+    const numv = (x) => {
+      const n = Number(String(x == null ? '' : x).replace(/,/g, ''));
+      if (!(isFinite(n) && n > 0) || numberBounds.moneyOverflows(n)) return null;
+      return n;
+    };
+    /* Deliberately `parseInt(x) || null` PLUS the bound — identical to what each
+       of these call sites did before (a zero or an unreadable value has always
+       read as "not stated" on this door), with only the out-of-range value newly
+       dropped instead of sent on to overflow int4. */
+    const intv = (x) => {
+      const n = parseInt(x, 10);
+      if (!isFinite(n) || n === 0 || numberBounds.intOverflows(n)) return null;
+      return n;
+    };
     let pv = {};
     let econIsAssign = false, econPrice = null, econSeller = null, econFee = null,
         econReserveOn = false, econFico = null, econLoanType = 'Purchase';
@@ -11447,10 +11799,23 @@ router.post('/leads/:id/convert', async (req, res) => {
         econLoanType,
         econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
         pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
-        (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
+        /* requested_ir_months carries a CHECK of 0..24, NARROWER than its type,
+           so int4's ceiling is not the limit that matters here — an out-of-range
+           month count raised a CHECK violation (23514) and returned the same 500.
+           CLAMPED rather than dropped, matching what the public intake door
+           already does with the identical field. */
+        (econReserveOn ? (() => { const m = intv(pv.resMonths); return m == null ? null : Math.max(0, Math.min(24, m)); })() : null),
         (econReserveOn ? numv(pv.resAmount) : null),
         econIsAssign, econSeller, econFee,
-        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
+        // requested_exp_* are integer NOT NULL DEFAULT 0. Compose the two fixes that
+        // landed here in parallel: intv() (from the audit) guards int4 overflow by
+        // returning null on a blank/zero/out-of-range count, and `|| 0` coalesces that
+        // null to 0 so a NOT-NULL column never receives NULL. The old
+        // `parseInt(...) || null` sent NULL into a NOT-NULL column, so a lead missing
+        // any experience count 500'd the whole convert (the "server error on Convert
+        // to loan file" report); a raw intv() would 500 the same way on a blank, and a
+        // raw intField() would 500 on an overflowing count — together they close both.
+        (intv(pv.expFlips) || 0), (intv(pv.expBrrrr) || 0), (intv(pv.expGround) || 0)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
@@ -11468,7 +11833,8 @@ router.post('/leads/:id/convert', async (req, res) => {
   } catch (e) {
     // NEVER silent (owner-directed "NEVER silent" rule): a convert 500 used to
     // return a bare "server error" with nothing logged, so the reported failure
-    // could never be diagnosed. Log the real cause (PII-safe describeError).
+    // — a NOT-NULL experience column receiving NULL — could never be diagnosed.
+    // Log the real cause (PII-safe describeError) like every other write path.
     console.error('[lead-convert] failed:', db.describeError ? db.describeError(e) : (e && e.message));
     res.status(500).json({ error: 'server error' });
   }
@@ -11483,12 +11849,14 @@ router.post('/leads/:id/convert', async (req, res) => {
 // links the file to its Encompass loan.
 router.post('/applications/:id/order-flood', async (req, res) => {
   try {
-    const out = await require('../encompass/flood-desk').orderFlood({
+    // Dispatched to the ACTIVE flood provider (Xactus by default; Encompass parked
+    // and reversible via FLOOD_ORDER_PROVIDER) — see src/flood/dispatch.js.
+    const out = await require('../flood/dispatch').orderFlood({
       appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id });
     if (!out.ok) {
-      // A refusal the user can act on (no loan number, already pending, etc.) is a
-      // 4xx with the plain message; a real failure is a 502.
-      const soft = ['loan_number_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous'].includes(out.error);
+      // A refusal the user can act on (no address / loan number, already pending,
+      // etc.) is a 4xx with the plain message; a real failure is a 502.
+      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
       return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
     }
     return res.json(out);
@@ -11497,13 +11865,18 @@ router.post('/applications/:id/order-flood', async (req, res) => {
 // The newest flood order for a file — drives the button's state.
 router.get('/applications/:id/flood-order', async (req, res) => {
   try {
-    const flood = require('../encompass/flood-desk');
-    const row = await flood.latestFloodOrder(req.params.id);
-    const ln = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    const dispatch = require('../flood/dispatch');
+    const row = await dispatch.latestFloodOrder(req.params.id);
+    const ready = await dispatch.readiness(req.params.id);
     res.json({
       order: row,
-      enabled: require('../encompass/flood-order').enabled(),
-      hasLoanNumber: !!(ln && ln.ys_loan_number && String(ln.ys_loan_number).trim()),
+      enabled: dispatch.enabled(),
+      provider: dispatch.providerName(),
+      // The UI shows/enables the button on `hasLoanNumber`; keep the field name but
+      // make it mean "ready to order for the active provider" — Xactus needs a
+      // usable property address, Encompass needs a loan number.
+      hasLoanNumber: !!ready.ready,
+      needs: ready.needs || null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -11559,6 +11932,13 @@ router.post('/applications/:id/documents', async (req, res) => {
     if (l.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
     llcId = l.rows[0].id;
     borrowerId = l.rows[0].borrower_id;
+  }
+  // TERM SHEETS ARE HELD while a fatal appraisal finding is open (owner-directed
+  // 2026-07-31). The DocuSign package was already held transitively; this stops a
+  // freshly-generated term sheet PDF landing on the file too. Fails open on error.
+  if (b.docKind === 'term_sheet') {
+    const hold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id);
+    if (hold) return res.status(422).json({ error: hold, code: 'appraisal_hold' });
   }
   // Term sheets auto-attach to the Products & Pricing register condition as a
   // document slot (owner-directed #139): the registered term sheet saves STRAIGHT
@@ -11991,11 +12371,15 @@ router.delete('/documents/:id', async (req, res) => {
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
     // Permanent, irreversible deletion (and SharePoint-backup suppression) is
-    // more destructive than accept/reject, so gate it on the same capability the
-    // UI gates the Delete button on (`canComplete` = sign-off-capable roles) —
-    // an assigned loan_officer / software_setup is never shown the button and
-    // must not be able to delete via a direct API call.
-    if (!can(req.actor, 'sign_off_conditions'))
+    // more destructive than accept/reject, so it is gated: sign-off-capable
+    // roles (`sign_off_conditions`) — AND, owner-directed 2026-07-31 ("loan
+    // officers didn't see the option to delete a document from a condition,
+    // they can only replace — not only admin should have that option"), a
+    // LOAN OFFICER on the file. The file scope is already proven by
+    // canSeeDocument above (an LO only sees documents on their own files), and
+    // every delete is audited. software_setup stays excluded.
+    const isLoanOfficer = req.actor && req.actor.role === 'loan_officer';
+    if (!can(req.actor, 'sign_off_conditions') && !isLoanOfficer)
       return res.status(403).json({ error: 'You do not have permission to permanently delete documents.' });
 
     // Remove the stored bytes best-effort (never block the DB delete on a

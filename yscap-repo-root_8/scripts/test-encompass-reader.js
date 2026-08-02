@@ -384,7 +384,53 @@ async function main() {
   assert.ok(!queries.some((q) => /encompass_extra=\$1::jsonb/.test(q.sql)), 'NOTHING from the wrong loan is stored');
   assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the stale GUID is cleared so the next pull re-searches');
 
-  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check).');
+  // (14) IDENTITY BY NUMBER (owner-directed 2026-08-02, file YSCAP258134762). The pull
+  // now ALSO reads borrower/co-borrower identity (name/DOB/email/phone/SSN) BY NUMBER, so
+  // a co-borrower the stored applications[] subtree left out is still recoverable — and
+  // the raw SSN (fields 65/97) is HASHED + stripped before storage, the SAME PII
+  // guarantee the loan subtree already has (never a plaintext SSN in encompass_extra).
+  {
+    const fm = require('../src/lib/integrations/encompass-field-map');
+    let capturedIds = null;
+    mockDb._appRows = [{ id: 'app-id', ys_loan_number: 'YS-ID', encompass_loan_guid: 'guid-id' }];
+    mockClient.getLoan = async (guid) => ({ guid, loanNumber: 'YS-ID', applications: [{ borrower: { firstName: 'Chris', lastName: 'Rodriguez' } }] }); // NO co-borrower in the subtree
+    mockClient.readFields = async (guid, ids) => {
+      capturedIds = ids.slice();
+      return {
+        '364': 'YS-ID',
+        '4000': 'Chris', '4002': 'Rodriguez',                        // borrower name by number
+        '4004': 'Patrick', '4006': 'Kamara',                         // CO-BORROWER only exists by number
+        '1403': '1999-08-30', '1268': 'pkamara555@gmail.com', '98': '7322095023',
+        '65': '111-22-3333', '97': '444-55-8028',                    // raw SSNs — MUST be scrubbed
+        '1859': 'MW TRADING LLC',
+      };
+    };
+    queries.length = 0;
+    const rId = await reader.pullLoanForApplication('app-id');
+    assert.strictEqual(rId.ok, true, 'identity-by-number pull ok');
+    // The fetch asked for the identity field ids (not just economics).
+    for (const id of fm.identityFieldIds()) assert.ok(capturedIds.includes(id), `readFields was asked for identity id ${id}`);
+    const extra = queries.find((q) => /encompass_extra=\$1::jsonb/.test(q.sql));
+    const stored = JSON.parse(extra.params[0]);
+    // Identity read by number is stored so the co-borrower is recoverable downstream.
+    assert.strictEqual(stored._fieldValues['4004'], 'Patrick', 'co-borrower first name stored by number');
+    assert.strictEqual(stored._fieldValues['4006'], 'Kamara', 'co-borrower last name stored by number');
+    // The identity-read sentinel is stamped so the panel self-heal treats this as
+    // already-identity-read and never re-fires a live read on every view.
+    assert.strictEqual(stored._fieldValues['_idRead'], 1, 'the _idRead sentinel is stamped on a non-empty read');
+    // Raw SSN is NEVER stored — replaced by the PII-safe keyed HMAC + last-4.
+    assert.strictEqual(stored._fieldValues['65'], undefined, 'raw borrower SSN (65) stripped from _fieldValues');
+    assert.strictEqual(stored._fieldValues['97'], undefined, 'raw co-borrower SSN (97) stripped from _fieldValues');
+    const idn = require('../src/clickup/identity'); const cfg2 = require('../src/config');
+    assert.strictEqual(stored._fieldValues['_ssn_b_hash'], idn.ssnHash('111-22-3333', cfg2.ssnMatchKey), 'borrower SSN → keyed HMAC in _fieldValues');
+    assert.strictEqual(stored._fieldValues['_ssn_cb_hash'], idn.ssnHash('444-55-8028', cfg2.ssnMatchKey), 'co-borrower SSN → keyed HMAC in _fieldValues');
+    assert.strictEqual(stored._fieldValues['_ssn_cb_last4'], '8028', 'co-borrower SSN last-4 kept for masked compare');
+    const s = JSON.stringify(stored);
+    assert.ok(!s.includes('111-22-3333') && !s.includes('111223333'), 'raw borrower SSN never stored (any format)');
+    assert.ok(!s.includes('444-55-8028') && !s.includes('444558028'), 'raw co-borrower SSN never stored (any format)');
+  }
+
+  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check + identity-by-number + SSN scrub).');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

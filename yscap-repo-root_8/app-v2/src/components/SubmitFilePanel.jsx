@@ -56,7 +56,12 @@ export default function SubmitFilePanel({ appId, onChange }) {
     const cfg = T[type] || {};
     if (cfg.pointer === 'processor_id') return { assigned: opts.assigned.processor, candidates: opts.candidates.processor, role: 'processor' };
     if (cfg.pointer === 'closer_id') return { assigned: opts.assigned.closer, candidates: opts.candidates.closer, role: 'closer' };
-    if (type === 'draw_setup') return { assigned: null, candidates: opts.candidates.draw_coordinator, role: 'draw coordinator' };
+    // Draw hand-offs route to the FILE's assigned draw coordinator when one is
+    // set (owner-directed 2026-07-31; opts.assigned.draw_coordinator from the
+    // primary application_assignees row) — else the desk / picker as before.
+    if (cfg.role === 'draw_coordinator' || type === 'draw_setup') {
+      return { assigned: opts.assigned.draw_coordinator || null, candidates: opts.candidates.draw_coordinator, role: 'draw coordinator' };
+    }
     if (type === 'escalation') return { assigned: null, candidates: opts.candidates.super_admin, role: 'super admin' };
     // post_closing + exception → pick anyone.
     return { assigned: null, candidates: opts.candidates.all, role: 'a teammate' };

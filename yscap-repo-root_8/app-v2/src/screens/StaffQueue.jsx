@@ -64,6 +64,7 @@ const EXC = [
   { k: 'unassigned', label: 'Unassigned' },
   { k: 'post_closing_exceptions', label: 'Post-closing exceptions' },
 ];
+
 function ExceptionStrip({ e, activeFlag }) {
   if (!e) return null;
   const live = EXC.filter(x => (e[x.k] || 0) > 0);

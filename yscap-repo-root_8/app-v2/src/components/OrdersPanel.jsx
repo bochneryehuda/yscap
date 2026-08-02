@@ -159,12 +159,26 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const [followMsg, setFollowMsg] = useState('');
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null);
+  // Borrower CC (owner-directed 2026-07-31): title defaults OFF (or the file
+  // LO's own setting); the officer can flip it per order before sending. The
+  // server returns the effective default; null = not yet loaded.
+  const [ccBorrower, setCcBorrower] = useState(order.ccBorrower != null ? !!order.ccBorrower : null);
+  useEffect(() => { if (order.ccBorrower != null) setCcBorrower((prev) => (prev == null ? !!order.ccBorrower : prev)); }, [order.ccBorrower]);
 
   const blockers = order.blockers || [];
   const needsLoan = blockers.includes('loan_number');
   const needsContact = blockers.includes('contact');
   const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
-  const recips = order.recipients || { to: [], cc: [] };
+  const recipsRaw = order.recipients || { to: [], cc: [] };
+  // The preview follows the checkbox live: the server built the cc list with the
+  // effective default, so flipping the box adds/removes the borrower emails here.
+  const borrowerEmails = [file && file.borrowerEmail, file && file.coBorrowerEmail]
+    .filter(Boolean).map((e) => String(e).toLowerCase());
+  const recips = (() => {
+    const cc = (recipsRaw.cc || []).filter((e) => !borrowerEmails.includes(String(e).toLowerCase()));
+    if (ccBorrower) for (const e of borrowerEmails) if (!cc.includes(e)) cc.unshift(e);
+    return { to: recipsRaw.to || [], cc };
+  })();
 
   const cancel = async (reopen) => {
     if (!reopen && !window.confirm(`Cancel the ${kind} order? It won't email anyone; you can re-order afterward.`)) return;
@@ -177,7 +191,9 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const place = async (force) => {
     setBusy('place'); setMsg(null);
     try {
-      const r = await api.staffPlaceOrder(appId, kind, force ? { force: true } : {});
+      const body = force ? { force: true } : {};
+      if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+      const r = await api.staffPlaceOrder(appId, kind, body);
       setMsg({ tone: 'ok', text: `${KIND_LABEL[kind]} order sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''}.` });
       onChanged && onChanged();
     } catch (e) {
@@ -235,6 +251,16 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         </div>
       )}
 
+      {/* Loop the borrower in? (owner-directed 2026-07-31: title default OFF; the
+          officer flips it per order; their My-settings default can turn it on.) */}
+      {!placed && (
+        <label className="row small" style={{ gap: 6, marginBottom: 6, alignItems: 'center', color: '#4B585C' }}>
+          <input type="checkbox" checked={!!ccBorrower} disabled={!!busy}
+            onChange={(e) => setCcBorrower(e.target.checked)} />
+          <span>CC the borrower on this {kind} order email{kind === 'title' ? ' (off by default — change your default in My settings)' : ''}</span>
+        </label>
+      )}
+
       {order.condition && <div className="muted small" style={{ marginBottom: 6 }}>Documents file into the <b style={{ color: 'var(--ivory,#141B22)' }}>{order.condition.label}</b> condition{order.condition.status ? ` (${order.condition.status})` : ''}.</div>}
 
       {order.orderedAt && <div className="muted small" style={{ marginBottom: 6 }}>Ordered {when(order.orderedAt)}{order.lastFollowupAt ? ` · last follow-up ${when(order.lastFollowupAt)}` : ''}</div>}
@@ -268,7 +294,9 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           </button>
         )}
         {!placed && !needsLoan && !needsContact && (
-          <span className="muted small" style={{ alignSelf: 'center' }}>Emails the {CONTACT_ASK[kind]}, cc’ing the borrower, loan officer and processor.</span>
+          <span className="muted small" style={{ alignSelf: 'center' }}>
+            Emails the {CONTACT_ASK[kind]}, cc’ing the loan officer and processor{ccBorrower ? ' — and the borrower' : ''}.
+          </span>
         )}
         {placed && (
           <>

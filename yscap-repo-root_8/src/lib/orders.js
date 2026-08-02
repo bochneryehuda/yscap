@@ -238,23 +238,49 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   return built;
 }
 
-/** Recipients for an order: TO the vendor; CC the borrower(s), loan officer and
-    processor (deduped, minus the vendor). Reply-To is the unique per-order box. */
-function recipientsFor(kind, data) {
+/**
+ * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31: "By
+ * default, the borrower should not be included and looped in the title
+ * insurance order email … the officer can turn that on on each and every file
+ * … and the loan officers should have their settings section [to] default to
+ * CC their borrowers").
+ * Precedence, per kind:
+ *   1. an explicit per-order choice (the checkbox at place time, or the choice
+ *      persisted on file_orders.meta.ccBorrower from the first send — follow-ups
+ *      stay on the same footing as the order they follow);
+ *   2. TITLE: the file's loan officer's own default (lo-settings
+ *      ccBorrowerOnTitleOrder) — false when unset;
+ *   3. INSURANCE: true (unchanged behavior — the borrower usually picked the
+ *      agent; the checkbox can still turn it off per order).
+ */
+function ccBorrowerDefault(kind, loSetting) {
+  if (kind === 'title') return loSetting === true;
+  return true;
+}
+
+/** Recipients for an order: TO the vendor; CC the loan officer + processor, and
+    the borrower(s) ONLY when opts.ccBorrower says so (see ccBorrowerDefault —
+    title defaults OFF, owner-directed 2026-07-31). Reply-To is the unique
+    per-order box. */
+function recipientsFor(kind, data, opts) {
+  const o = opts || {};
   const vendor = data.vendors[kind];
   const to = vendor && vendor.email ? [vendor.email] : [];
   const cc = [];
   const seen = new Set(to.map((e) => e.toLowerCase()));
   const add = (e) => { const k = String(e || '').trim().toLowerCase(); if (k && !seen.has(k)) { seen.add(k); cc.push(k); } };
-  add(data.borrowerEmail);
-  add(data.coBorrowerEmail);
+  const ccBorrower = o.ccBorrower != null ? !!o.ccBorrower : ccBorrowerDefault(kind, o.loCcSetting);
+  if (ccBorrower) {
+    add(data.borrowerEmail);
+    add(data.coBorrowerEmail);
+  }
   if (data.officer) add(data.officer.email);
   if (data.processor) add(data.processor.email);
-  return { to, cc, replyTo: orderReplyTo(data.appId, kind) };
+  return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower };
 }
 
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
-  getOrderData, blockers, buildOrderEmail, recipientsFor,
+  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
   transactionType, propertyLine, money,
 };

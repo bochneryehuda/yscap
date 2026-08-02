@@ -57,6 +57,18 @@ function call(server, method, path, token, body) {
   });
 }
 
+/* The conditions engine attaches items to every file by itself (the flood
+   certificate on every file per db/374, USPS address verification, the note-buyer
+   and loan-number prompts). This test is about the WORKFLOW — which hand-off is
+   allowed when, and which stage flips the file — so clear anything the engine put
+   there and leave only the conditions the test created itself (labelled 'C'). */
+async function clearEngineConditions(appId) {
+  await db.query(
+    `UPDATE checklist_items SET status='satisfied', signed_off_at=now()
+      WHERE application_id=$1 AND COALESCE(label,'') <> 'C'
+        AND status <> 'satisfied'`, [appId]);
+}
+
 (async () => {
   const server = app.listen(0);
   await new Promise(r => server.once('listening', r));
@@ -143,6 +155,12 @@ function call(server, method, path, token, body) {
     for (let i = 0; i < 3; i++) await mkCond(false);   // 0/3 cleared
     r = await call(server, 'POST', `/api/staff/applications/${appId}/workflow/submit`, loT, { submissionType: 'condition_clearing' });
     assert(r.status === 409 && r.body.error === 'conditions_not_ready', 'Condition Clearing blocked below 80% cleared');
+    // The conditions engine now attaches items to EVERY file on its own (the flood
+    // certificate per db/374, USPS address verification, …), so the file carries
+    // conditions this test never created and the 80% arithmetic below is no longer
+    // this test's to control. Clear whatever the engine attached — this block is
+    // about the PERCENTAGE gate, not about which conditions exist.
+    await clearEngineConditions(appId);
     // clear enough: add signed items until >=80%
     for (let i = 0; i < 12; i++) await mkCond(true);   // now 12/15 = 80%
     r = await call(server, 'POST', `/api/staff/applications/${appId}/workflow/submit`, loT, { submissionType: 'condition_clearing' });
@@ -156,6 +174,12 @@ function call(server, method, path, token, body) {
     const app2 = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, closer_id, status, program, loan_type, property_type)
        VALUES ($1,$2,$3,'approved','Fix & Flip','Purchase','SFR') RETURNING id`, [borrowerId, loId, closerId])).rows[0].id;
+    // The fully-executed term sheet package gates clear-to-close AND funding
+    // (esign/ctc-gate.js). This is the CLEAN file, so it carries a real executed
+    // package and the closing → funded walk is measured on the workflow alone.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [app2]);
     // ---- Closing: est closing date recorded + closing sub-workflow opens ----
     r = await call(server, 'POST', `/api/staff/applications/${app2}/workflow/submit`, loT, { submissionType: 'closing', estClosingDate: '2026-09-15' });
     assert(r.status === 200, 'Closing submits (routes to the assigned closer)');
@@ -165,6 +189,11 @@ function call(server, method, path, token, body) {
     assert(exp === '2026-09-15', 'the estimated closing date was written onto the file');
 
     // ---- advance closing to fully_closed → the file becomes funded ----
+    // "fully closed" drives the file through the status door, which refuses an open
+    // REQUIRED condition. The engine attaches several to every file on its own now
+    // (flood certificate, USPS address verification), so clear them — this block is
+    // about the closing stages flipping the file to funded, not about readiness.
+    await clearEngineConditions(app2);
     await call(server, 'POST', `/api/staff/applications/${app2}/closing-workflow`, closerT, { stage: 'ready_for_docs' });
     await call(server, 'POST', `/api/staff/applications/${app2}/closing-workflow`, closerT, { stage: 'wire_sent' });
     r = await call(server, 'POST', `/api/staff/applications/${app2}/closing-workflow`, closerT, { stage: 'fully_closed' });

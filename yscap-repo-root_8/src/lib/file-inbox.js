@@ -18,7 +18,8 @@
  * Design guarantees (owner spec + round-2 audit):
  *  - IDEMPOTENT, RETRY-SAFE: the Resend email_id is a unique claim in
  *    inbound_file_emails. TERMINAL outcomes (forwarded, unknown_app, archived_app,
- *    no_recipients, auto_reply, rate_limited, chat_posted) never reprocess.
+ *    no_recipients, self_reply, auto_reply, rate_limited, chat_posted) never
+ *    reprocess.
  *    RETRYABLE failures (retrieval_failed / forward_failed / lookup_failed) and
  *    claims stuck at 'received' (crash mid-processing, >10 min old) are RECLAIMED
  *    by a webhook redelivery, up to 8 attempts — a transient failure never
@@ -31,8 +32,14 @@
  *    ping-pong through the shared reply address. Belt-and-suspenders: at most
  *    MAX_FORWARDS_PER_HOUR forwards per file per hour.
  *  - SILENT (200, terminal) on the non-actionable cases: malformed address,
- *    unknown or archived file, no assignees (which also alerts the admins —
- *    a dropped borrower reply must never be invisible).
+ *    unknown or archived file, a reply from the file's ONLY active assignee (or
+ *    only active admin) — that sender's own message needs no echo and no alarm;
+ *    it is recorded on the file (status self_reply).
+ *  - A file with NO active assignees never drops a reply: the message itself is
+ *    FORWARDED to the admin fallback (active admins + the NOTIFY_ADMINS list)
+ *    with an "assign this file" note leading the body. Only when even that
+ *    audience is empty does it record no_recipients and raise the old alert —
+ *    a dropped borrower reply must never be invisible.
  *  - NEVER logs email bodies, tax ids, api keys, or secrets.
  *  - The forward carries the SAME file+<id>@ Reply-To so a staffer's reply
  *    continues the shared thread; the original sender is excluded (no self-echo);
@@ -310,6 +317,30 @@ async function assigneesForFile(applicationId) {
   return out;
 }
 
+/** Fallback audience for a file with NO active assignees: every active admin /
+    super_admin (the same set notifyAdmins reaches) plus the configured
+    NOTIFY_ADMINS inbox list (staff_id null — email-only, no in-app row).
+    De-duplicated on email. THROWS on a DB error — like assigneesForFile, a
+    transient outage must be retried, never misread as "no admins exist". */
+async function adminFallbackRecipients() {
+  const { rows } = await db.query(
+    `SELECT id AS staff_id, lower(email) AS email
+       FROM staff_users
+      WHERE role IN ('admin','super_admin') AND is_active = true
+        AND email IS NOT NULL AND btrim(email) <> ''`);
+  const seen = new Set();
+  const out = [];
+  const add = (staffId, email) => {
+    const e = String(email || '').trim().toLowerCase();
+    if (!e || seen.has(e)) return;
+    seen.add(e);
+    out.push({ staff_id: staffId, email: e });
+  };
+  for (const r of rows) add(r.staff_id, r.email);
+  for (const e of cfg.notifyAdmins || []) add(null, e);
+  return out;
+}
+
 /** Split the reply body into paragraph lines for the branded template. */
 function bodyLines(text) {
   const s = String(text || '').slice(0, MAX_BODY_CHARS);
@@ -336,8 +367,10 @@ function htmlToText(html) {
 /** Forward the reply (branded, from our verified sender) to the staff recipients.
     If the send fails WITH attachments (provider size limits — Graph especially),
     it retries once WITHOUT them so the text always gets through. Throws only
-    when the text-only send failed too. */
-async function forwardToAssignees({ applicationId, fromEmail, subject, text, html, attachments, toEmails }) {
+    when the text-only send failed too.
+    `noTeam` = the recipients are the ADMIN FALLBACK (the file has no active
+    assignees): the email leads with that and asks for the file to be assigned. */
+async function forwardToAssignees({ applicationId, fromEmail, subject, text, html, attachments, toEmails, noTeam }) {
   const ctx = await notify.fileContext(applicationId).catch(() => null);
   const who = fromEmail || 'Someone';
   // We forward the PLAIN TEXT inside our own branded wrapper rather than inlining
@@ -346,15 +379,22 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
   const plain = text || htmlToText(html);
   const lines = bodyLines(plain);
   const send = async (atts, note) => {
+    const bodyLead = lines.length ? lines : ['(no message text — see the attachment, if any)'];
     const built = notify.buildEmail({
       title: 'New reply on a loan file',   // the file (loan# · borrower · property) rides in the subject tag — not doubled in the title
       body: `${who} replied${ctx ? ` on ${ctx.addr}` : ''}${subject ? ` — “${String(subject).slice(0, 200)}”` : ''}:`,
-      lines: (lines.length ? lines : ['(no message text — see the attachment, if any)']).concat(note ? [note] : []),
+      // The no-team warning LEADS the body (not fine print): the reader must know
+      // they are receiving this as an admin because nobody is assigned.
+      lines: (noTeam
+        ? ['⚠ This file has no active team assigned, so this reply was sent to the admins. Assign the file so replies reach the right people.'].concat(bodyLead)
+        : bodyLead).concat(note ? [note] : []),
       meta: ctx ? ctx.meta : [],
       applicationId,
       link: `/internal/app/${applicationId}`,
       ctaLabel: 'Open the loan file',
-      note: 'This is a reply to a file email. Reply to this message and it reaches everyone assigned to the file.',
+      note: noTeam
+        ? 'This file has no active team assigned. Replying to this message continues the file thread; assign a loan officer or processor on the file so replies reach the right people.'
+        : 'This is a reply to a file email. Reply to this message and it reaches everyone assigned to the file.',
     }, 'staff');
     const r = await email.sendMail({
       to: toEmails,
@@ -888,19 +928,57 @@ async function processReceivedEvent(event) {
       continue;
     }
     // Exclude the original sender (no self-echo / reduced loop risk).
-    const targets = assignees.filter((a) => a.email && a.email !== fromEmail);
+    let targets = assignees.filter((a) => a.email && a.email !== fromEmail);
+    // Set when the forward goes to the ADMIN FALLBACK, not the assigned team —
+    // the forward email then says so and asks for the file to be assigned.
+    let noTeam = false;
     if (!targets.length) {
-      appResults[applicationId] = 'no_recipients'; lastTerminal = 'no_recipients';
-      // A borrower's reply with nobody to receive it must never be invisible.
-      try {
-        await notify.notifyAdmins({
-          type: 'inbound_reply_dropped',
-          title: 'A file reply had no one to receive it',
-          body: `A reply${fromEmail ? ` from ${fromEmail}` : ''} arrived for a file with no active assignees (or the sender is its only assignee). Assign the file so replies reach someone.`,
-          applicationId, link: `/internal/app/${applicationId}`, ctaLabel: 'Open the loan file',
-        });
-      } catch (_) { /* best-effort */ }
-      continue;
+      if (assignees.length) {
+        // The sender IS the file's only active assignee — a staffer replying into
+        // their own solo thread. Nothing is wrong and nothing was lost: the reply
+        // is recorded on the file's Email Center, and its author obviously has it.
+        // This used to fall into no_recipients and alarm every admin with "assign
+        // the file so replies reach someone" — a false alarm on a file that IS
+        // assigned (owner-reported 2026-07-31, solomon@ / YSCAP258134774). Quiet,
+        // terminal.
+        appResults[applicationId] = 'self_reply'; lastTerminal = 'self_reply';
+        continue;
+      }
+      // NO active team at all. The reply must still REACH someone — not just be
+      // recorded with an FYI: forward the actual message (attachments included)
+      // to the admins. Same audience the old dead-end alert emailed, but now they
+      // receive the content itself, with an "assign this file" note, and can act
+      // without fishing the body out of the Email Center.
+      let fallback;
+      try { fallback = await adminFallbackRecipients(); }
+      catch (e) {
+        console.error('[inbound-file-email] admin fallback lookup failed:', safeErr(e));
+        retryableFailure = retryableFailure || { status: 'lookup_failed' };
+        continue;
+      }
+      targets = fallback.filter((a) => a.email && a.email !== fromEmail);
+      noTeam = true;
+      if (!targets.length) {
+        if (fallback.length) {
+          // The sender is the only active admin — their own reply needs no echo
+          // and no alarm; it is already on the file's record.
+          appResults[applicationId] = 'self_reply'; lastTerminal = 'self_reply';
+        } else {
+          // Pathological: no active admin has an email at all. Record it, and
+          // still raise the alert — notifyAdmins writes in-app rows even for an
+          // email-less admin, so the drop stays visible somewhere.
+          appResults[applicationId] = 'no_recipients'; lastTerminal = 'no_recipients';
+          try {
+            await notify.notifyAdmins({
+              type: 'inbound_reply_dropped',
+              title: 'A file reply had no one to receive it',
+              body: `A reply${fromEmail ? ` from ${fromEmail}` : ''} arrived for a file with no active assignees, and no admin could be emailed either. Assign the file so replies reach someone.`,
+              applicationId, link: `/internal/app/${applicationId}`, ctaLabel: 'Open the loan file',
+            });
+          } catch (_) { /* best-effort */ }
+        }
+        continue;
+      }
     }
 
     const attachments = await attachmentsOnce();
@@ -908,6 +986,7 @@ async function processReceivedEvent(event) {
       await forwardToAssignees({
         applicationId, fromEmail, subject,
         text: full.text, html: full.html, attachments, toEmails: targets.map((t) => t.email),
+        noTeam,
       });
     } catch (e) {
       console.error('[inbound-file-email] forward failed:', safeErr(e));
@@ -918,7 +997,7 @@ async function processReceivedEvent(event) {
     anyForwarded = true;
     forwardedTotal += targets.length;
     forwardedRecipients = forwardedRecipients.concat(targets.map((t) => t.email));
-    await notifyForwardedInApp({ applicationId, staffIds: targets.map((t) => t.staff_id), fromEmail, subject });
+    await notifyForwardedInApp({ applicationId, staffIds: targets.map((t) => t.staff_id).filter(Boolean), fromEmail, subject });
   }
 
   // ---- aggregate outcome ----
@@ -973,7 +1052,7 @@ function safeErr(e) {
 module.exports = {
   fileReplyTo, applicationIdFromRecipient,
   recipientsFromEvent, chatKeyFromRecipients, retrieveInboundEmail, retrieveAttachmentsSafe,
-  assigneesForFile, forwardToAssignees, processReceivedEvent, inboundKey,
+  assigneesForFile, adminFallbackRecipients, forwardToAssignees, processReceivedEvent, inboundKey,
   isAutoGenerated, extractAddress, htmlToText, topReply,
   // exported for tests
   _internals: { senderAuth, headerVal },

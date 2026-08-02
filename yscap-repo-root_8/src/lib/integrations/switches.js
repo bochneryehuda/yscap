@@ -36,6 +36,13 @@ const SWITCHES = [
   // gate (checked first), so it is always safe to leave on while verifying.
   { key: 'ENCOMPASS_FLOOD_DRYRUN', integration: 'encompass', label: 'Flood orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.encompassFlood && cfg.encompassFlood.dryrun) },
   { key: 'ENCOMPASS_FLOOD_OUTBOUND_ENABLED', integration: 'encompass', label: 'Place flood orders in Encompass (write)', dangerous: true, envDefault: () => cfg.encompassFloodOutboundEnabled },
+  // Xactus "Flood ReportX" — the ACTIVE flood-cert provider (owner-directed
+  // 2026-07-30). This master switch turns the button's Xactus ordering on/off — the
+  // ONE control here. There is deliberately NO "TEST MODE" toggle: test mode was
+  // REMOVED entirely (owner-directed 2026-08-02, "remove the test mode … go live right
+  // away") because a stored test-mode override kept surviving deploys and pinning the
+  // button in dry-run. Ordering is always LIVE; turn this master switch off to pause it.
+  { key: 'XACTUS_FLOOD_ENABLED', integration: 'xactus', label: 'Order flood certificates from Xactus (the active flood provider)', dangerous: false, resume: true, envDefault: () => cfg.xactusFloodEnabled },
   // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
   // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.
   { key: 'APPRAISAL_ASIS_AUTO_ENABLED', integration: 'azure_docint', label: 'Lower the As-Is value automatically when the appraisal reads lower than the purchase price', dangerous: true, envDefault: () => cfg.appraisalAsIsAutoEnabled },
