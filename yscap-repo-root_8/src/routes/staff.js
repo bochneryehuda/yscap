@@ -11834,12 +11834,14 @@ router.post('/leads/:id/convert', async (req, res) => {
 // links the file to its Encompass loan.
 router.post('/applications/:id/order-flood', async (req, res) => {
   try {
-    const out = await require('../encompass/flood-desk').orderFlood({
+    // Dispatched to the ACTIVE flood provider (Xactus by default; Encompass parked
+    // and reversible via FLOOD_ORDER_PROVIDER) — see src/flood/dispatch.js.
+    const out = await require('../flood/dispatch').orderFlood({
       appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id });
     if (!out.ok) {
-      // A refusal the user can act on (no loan number, already pending, etc.) is a
-      // 4xx with the plain message; a real failure is a 502.
-      const soft = ['loan_number_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous'].includes(out.error);
+      // A refusal the user can act on (no address / loan number, already pending,
+      // etc.) is a 4xx with the plain message; a real failure is a 502.
+      const soft = ['loan_number_required', 'address_required', 'borrower_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous', 'not_found'].includes(out.error);
       return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
     }
     return res.json(out);
@@ -11848,13 +11850,18 @@ router.post('/applications/:id/order-flood', async (req, res) => {
 // The newest flood order for a file — drives the button's state.
 router.get('/applications/:id/flood-order', async (req, res) => {
   try {
-    const flood = require('../encompass/flood-desk');
-    const row = await flood.latestFloodOrder(req.params.id);
-    const ln = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    const dispatch = require('../flood/dispatch');
+    const row = await dispatch.latestFloodOrder(req.params.id);
+    const ready = await dispatch.readiness(req.params.id);
     res.json({
       order: row,
-      enabled: require('../encompass/flood-order').enabled(),
-      hasLoanNumber: !!(ln && ln.ys_loan_number && String(ln.ys_loan_number).trim()),
+      enabled: dispatch.enabled(),
+      provider: dispatch.providerName(),
+      // The UI shows/enables the button on `hasLoanNumber`; keep the field name but
+      // make it mean "ready to order for the active provider" — Xactus needs a
+      // usable property address, Encompass needs a loan number.
+      hasLoanNumber: !!ready.ready,
+      needs: ready.needs || null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

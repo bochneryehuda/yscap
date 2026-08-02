@@ -712,6 +712,31 @@ module.exports = {
     // collection style). Flip to 'query' only if your Xactus endpoint needs it.
     authMode: /^query$/i.test((process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
   },
+  //   Xactus "Flood ReportX" (MISMO 2.4) — the ACTIVE flood-cert provider
+  //   (owner-directed 2026-07-30, "much cheaper for us to use"). The Encompass
+  //   flood provider is parked; FLOOD_ORDER_PROVIDER picks which the button uses.
+  //   Credentials default to a dedicated flood login; username/password fall back
+  //   to the shared credit login (same Xactus account). The flood ENDPOINT is its
+  //   own address — email Integrations@xactus.com for the flood endpoint + login.
+  xactusFlood: {
+    endpoint: (process.env.XACTUS_FLOOD_API_URL || '').trim().replace(/\/+$/, ''),
+    username: (process.env.XACTUS_FLOOD_USERNAME || process.env.XACTUS_API_USERNAME || '').trim(),
+    password: process.env.XACTUS_FLOOD_PASSWORD || process.env.XACTUS_API_PASSWORD || '',
+    version:  (process.env.XACTUS_FLOOD_VERSION || '2.4').trim(),
+    // 'life' = Life-of-Loan (monitored for the life of the loan) — the default for
+    // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
+    product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
+    requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    dryrun:   process.env.XACTUS_FLOOD_DRYRUN === '1',
+    // Auth: 'query' (LoginAccountIdentifier/LoginAccountPassword URL params — the
+    // Postman-collection style, the flood default) or 'basic' (HTTP Basic header).
+    authMode: /^basic$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || process.env.XACTUS_AUTH_MODE || 'query').trim()) ? 'basic' : 'query',
+  },
+  // Which flood provider the "Order flood certificate" button uses.
+  floodProvider: (process.env.FLOOD_ORDER_PROVIDER || 'xactus').trim().toLowerCase(),
+  // Xactus flood master switch (default ON; the configured-check still gates any
+  // real order until the flood endpoint + login are set). Off = pause the button.
+  xactusFloodEnabled: process.env.XACTUS_FLOOD_ENABLED !== '0',
   //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
   houseCanary: {
     key:      process.env.HOUSECANARY_KEY || '',
