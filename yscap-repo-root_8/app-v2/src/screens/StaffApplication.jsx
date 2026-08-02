@@ -15,6 +15,7 @@ import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
+import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
@@ -3497,7 +3498,14 @@ export default function StaffApplication() {
   const [apprReload, setApprReload] = useState(0);   // bumped when an XML upload auto-builds the appraisal
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
-  const activityFetcher = useCallback(() => api.staffActivity(id), [id]);
+  // The file's audit log. `deepActivity` adds the request-level layer — one
+  // line per API call that touched this file. Opt-in, because it is enormous
+  // and mostly page loads; it is what you turn on when the business trail
+  // doesn't explain what happened.
+  const [deepActivity, setDeepActivity] = useState(false);
+  const activityFetcher = useCallback(
+    () => api.staffActivity(id, { requests: deepActivity, limit: deepActivity ? 1200 : 600 }),
+    [id, deepActivity]);
 
   async function inviteBorrower() {
     setInviteBusy(true); setErr('');
@@ -4807,74 +4815,10 @@ export default function StaffApplication() {
           exports anymore in the document section, that section should just be called
           Documents where you can just see all the documents"). */}
       <Section hidden={!show('sec-documents')} id="sec-documents" summary={summaries['sec-documents']} title="Documents" defaultOpen={false}
-        info="Every document on the file, titled by condition — with the working set on top and rejected/replaced versions in the trash."
+        info="Every document on the file, titled by condition — with the working set on top and rejected/replaced versions in the trash. Open a document for where it was uploaded, why it was asked for, and its full history: accepted, rejected, replaced, synced."
         badge={badges.documents.long}>
-      <div className="panel" style={{ marginTop: 0 }}>
-        <div className="row" style={{ marginBottom: 6 }}>
-          <h3>Documents</h3>
-          <div className="spacer" />
-          <span className="muted small">{docs.length} uploaded</span>
-        </div>
-        {docs.length === 0
-          ? <p className="muted small">No documents uploaded yet. Request one below and the borrower will see it on their checklist.</p>
-          : (() => {
-            // Rejected / superseded documents live in the file's TRASH: kept
-            // for the record (named by their condition) but out of the working
-            // set and never part of the TPR / clean-file export.
-            const inTrash = (d) => d.review_status === 'rejected' || d.review_status === 'superseded' || d.is_current === false;
-            const working = docs.filter(d => !inTrash(d));
-            const trash = docs.filter(inTrash);
-            const row = (d) => {
-              const rs = d.review_status || 'pending';
-              const tone = rs === 'accepted' ? 'done' : rs === 'rejected' ? '' : 'outstanding';
-              const pillStyle = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
-                : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' }
-                : rs === 'superseded' ? { opacity: .6 } : { borderColor: 'var(--gold)', color: 'var(--gold)' };
-              return (
-              <div className="checkitem" key={d.id} style={{ alignItems: 'flex-start', flexWrap: 'wrap', opacity: d.is_current ? 1 : .6 }}>
-                <span className={`dot ${tone}`} style={{ marginTop: 4 }} />
-                <div style={{ flex: 1, minWidth: 200 }}>
-                  {/* The condition is the document's identity — filename second. */}
-                  <div style={{ fontWeight: 600 }}>
-                    {d.item_label || (d.doc_kind === 'term_sheet' ? 'Term sheet' : d.doc_kind === 'photo_id' ? 'Government photo ID' : 'General upload')}
-                    {d.slot_label && <span className="muted small" style={{ fontWeight: 400 }}> · {d.slot_label}</span>}
-                    {!d.is_current && <span className="muted small" style={{ fontWeight: 400 }}> · old version</span>}
-                  </div>
-                  <div className="muted small">
-                    {d.filename} · {kb(d.size_bytes)} · uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
-                  </div>
-                  {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)', marginTop: 2 }}>Rejected: {d.rejection_reason}</div>}
-                  {d.reviewed_by_name && <div className="muted small">Reviewed by {d.reviewed_by_name}</div>}
-                </div>
-                <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                  <span className="pill" style={pillStyle}>{rs}</span>
-                  <button className="btn ghost small" title="Preview without downloading" onClick={() => openPreview(d)}>Preview</button>
-                  <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
-                    {dlBusy === d.id ? '…' : 'Download'}
-                  </button>
-                  {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
-                  {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
-                  {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
-                </div>
-              </div>
-              );
-            };
-            return (
-              <>
-                {working.length === 0 && <p className="muted small">Nothing in the working set.</p>}
-                {working.map(row)}
-                {trash.length > 0 && (
-                  <details style={{ marginTop: 10 }}>
-                    <summary className="muted small" style={{ cursor: 'pointer' }}>
-                      🗑 Trash — {trash.length} rejected / replaced document{trash.length === 1 ? '' : 's'} (kept for the record, excluded from the TPR export)
-                    </summary>
-                    {trash.map(row)}
-                  </details>
-                )}
-              </>
-            );
-          })()}
-      </div>
+      <DocumentsPanel docs={docs} role={role} dlBusy={dlBusy}
+        onPreview={openPreview} onDownload={downloadDoc} onReview={reviewDoc} />
       {app.status === 'funded' && <PostClosing appId={id} />}
       {/* TprExport + MismoExport used to sit here. They moved to Send to Investor
           (owner-directed 2026-08-02) — which is also why this section is no longer
@@ -4921,9 +4865,9 @@ export default function StaffApplication() {
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
       <Section hidden={!show('sec-messages')} id="sec-messages" title="Communication & history" defaultOpen={false}
-        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs below.">
+        info="Everything said and logged on this file — chats, the email history, and the full AUDIT LOG: every action, who did it, what changed, every notification and email that went out, every push to ClickUp or the LOS, and (on request) every single API call. This is where you look when you need to know what happened.">
       <div className="comm-tabs" role="tablist" aria-label="Communication">
-        {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Activity' }].map(t => (
+        {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Audit log' }].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={commTab === t.k}
             className={`comm-tab${commTab === t.k ? ' active' : ''}`}
             onClick={(e) => keepTabPlace(commTabY.current, commTab, t.k, e.currentTarget, () => setCommTab(t.k))}>{t.label}</button>
@@ -4931,7 +4875,10 @@ export default function StaffApplication() {
       </div>
       {commTab === 'messages' && <ChatPanel appId={id} onTaskCreated={load} />}
       {commTab === 'emails' && <EmailCenter mode="file" appId={id} />}
-      {commTab === 'activity' && <ActivityFeed fetcher={activityFetcher} title="File activity" />}
+      {commTab === 'activity' && (
+        <ActivityFeed fetcher={activityFetcher} title="File audit log" audit
+          deep={deepActivity} onDepth={setDeepActivity} />
+      )}
       </Section>
 
       {/* Construction draws — the LAST phase (post-funding), so the LAST section. Opens in its own full

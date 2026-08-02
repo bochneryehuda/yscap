@@ -431,6 +431,10 @@ export const api = {
   // Returns { ok, pages:[{page,text}], engine, reason }. Never throws for the
   // caller's UX — a not-configured / failed read is a shaped { ok:false }.
   staffOcrDoc:      (id) => req('POST', `/api/staff/documents/${id}/ocr`, {}),
+  // Everything the system knows about ONE document: where it landed, why it was
+  // asked for, its versions, its review verdicts, its sync state, and its full
+  // event history. Read-only.
+  staffDocDossier:  (id) => req('GET', `/api/staff/documents/${id}/dossier`),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
@@ -490,7 +494,12 @@ export const api = {
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffConditions:  (appId) => req('GET', `/api/staff/applications/${appId}/conditions`),
-  staffActivity:    (appId) => req('GET', `/api/staff/applications/${appId}/activity`),
+  // The file's audit log. `requests:true` adds the HTTP request-level layer
+  // (opt-in — it is enormous and mostly page loads).
+  staffActivity:    (appId, opts) => req('GET', `/api/staff/applications/${appId}/activity`
+    + ((opts && (opts.requests || opts.limit))
+      ? '?' + [opts.requests ? 'requests=1' : null, opts.limit ? `limit=${opts.limit}` : null].filter(Boolean).join('&')
+      : '')),
   // ---- Email Center (per-file history + global mailbox + reply) ----
   staffAppEmails:   (appId, scope) => req('GET', `/api/staff/applications/${appId}/emails` + (scope ? `?scope=${encodeURIComponent(scope)}` : '')),   // per-file email history (scope='draw' → draw inbox)
   staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
