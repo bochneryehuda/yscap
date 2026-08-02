@@ -36,7 +36,19 @@ ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
   'the rooms cover exactly the 17 sections — nothing homeless, nothing invented');
-ok(STATIONS.length === 7, 'seven rooms, as the owner was promised');
+/* EIGHT rooms now. The original promise was seven; the owner then asked for
+   Orders to get its own button ("the same way we have a button now Signing and
+   Closing, we should have a button Orders", 2026-08-02), which is a room the
+   owner ADDED deliberately. The number is pinned rather than derived so that
+   another room can never appear by accident — growing this list is a decision. */
+ok(STATIONS.length === 8, 'eight rooms — the original seven plus the owner-requested Orders');
+ok(STATIONS.some((s) => s.id === 'st-orders' && s.sections.join() === 'sec-orders'),
+  'Orders is its own room, holding sec-orders');
+ok(STATIONS.find((s) => s.id === 'st-signing').sections.join() === 'sec-esign,sec-closing',
+  'Signing & Closing is e-signatures THEN closing, with orders gone');
+ok(STATIONS.find((s) => s.id === 'st-review').sections.join()
+   === 'sec-conditions,sec-track,sec-appraisal,sec-underwriting,sec-documents',
+  'Review & Conditions is in the owner\'s order: conditions, track record, appraisal, document review, documents');
 ok(STATIONS.every((s) => s.label && !/hub|station|palette|canvas/i.test(s.label)),
   'room labels are plain words (no internal jargon)');
 ok(stationLabel('st-delivery') === 'Send to Investor',
@@ -141,9 +153,32 @@ ok(/Full file \(classic view\)/.test(staff), 'the classic-view escape hatch exis
 ok(/Where did everything go\?/.test(staff), 'the "where did X go" one-pager exists');
 ok(/hidden=\{!show\('sec-draws'\)\} id="sec-draws" title="Construction draws" collapsible=\{false\}/.test(staff),
   'sec-draws keeps collapsible={false}');
-ok(/'st-delivery'\) return can\('export_data_tapes'\)/.test(staff)
-  && /'st-draws'\) return can\('manage_draws'\)/.test(staff),
-  'permission-gated rooms use the SAME gates as their sections');
+/* A room must never be reachable but empty, and must never hide something the
+   viewer is allowed to use. st-draws still pairs 1:1 with its section's gate.
+   st-delivery no longer does, ON PURPOSE: it gained the TPR and MISMO exports
+   (owner-directed 2026-08-02), which every staffer on the file may run, so
+   gating the room on export_data_tapes would have taken them away from every
+   loan officer who has them today. The tape workbook keeps that permission,
+   inside the section. */
+ok(/'st-draws'\) return can\('manage_draws'\)/.test(staff),
+  'Construction Draws uses the same gate as its section');
+ok(/'st-delivery'\) return true;/.test(staff),
+  'Send to investor is open to anyone on the file (its exports are ungated)');
+ok(/\{can\('export_data_tapes'\) && <TapeExport/.test(staff),
+  '…and the capital-provider tape keeps its own permission, inside the section');
+ok(/id="sec-tapes"[^>]*title="Send to investor"/.test(staff)
+  && !/\{can\('export_data_tapes'\) && \(\s*<Section/.test(staff),
+  'the Send-to-investor SECTION itself is no longer permission-wrapped');
+ok(/<TprExport appId=\{id\} \/>\s*<MismoExport appId=\{id\} \/>/.test(staff.slice(staff.indexOf('id="sec-tapes"'))),
+  'the TPR and MISMO exports live in Send to investor, not in Documents');
+ok(/id="sec-documents"[^>]*title="Documents"/.test(staff),
+  'Documents is called just "Documents" now that the exports have left');
+/* A badge must follow its section. When sec-orders moved into its own room the
+   "N to assign" count was still being added to Signing & Closing, which would
+   have pointed at work that is no longer in that room. */
+ok(/if \(st\.id === 'st-orders'\) badge \+= nOrdersToAssign;/.test(staff)
+  && !/'st-signing'\) badge \+= nOrdersToAssign/.test(staff),
+  'the orders badge followed sec-orders into the Orders room');
 
 /* ----------------------- 5. the legacy path stays byte-identical elsewhere */
 console.log('5. legacy consumers untouched');
