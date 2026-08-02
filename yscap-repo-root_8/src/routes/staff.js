@@ -12428,7 +12428,7 @@ router.post('/applications/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
-  // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/403). The
+  // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
   // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
   // generator is the only thing that knows — it reports what it printed and we
   // record it. This is a description of the file, never an authorization: the

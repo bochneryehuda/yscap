@@ -118,7 +118,7 @@ CREATE TABLE documents (
   slot_label text,
   is_current boolean DEFAULT true,
   review_status text,
-  -- db/403: which stamp a stored term sheet PDF actually prints. The send
+  -- db/404: which stamp a stored term sheet PDF actually prints. The send
   -- refuses a sheet whose face reads "INITIAL TERM SHEET — NOT FINAL", so the
   -- orchestration path reads this column (owner-directed 2026-08-02).
   term_sheet_final boolean,

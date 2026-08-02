@@ -821,7 +821,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     // 2026-08-02): "that term sheet should not be 'not final' — it is going to
     // everybody through DocuSign after you finished all the required steps."
     // The INITIAL/FINAL wording is PRINTED INTO the PDF at generation time, so
-    // by the time the bytes are here nothing can read it back — db/403 records
+    // by the time the bytes are here nothing can read it back — db/404 records
     // what the generator printed. A sheet whose own face says "INITIAL TERM
     // SHEET — NOT FINAL" (or a legacy sheet whose stamp was never recorded, all
     // of which were generated under the rule that produced that wording) is

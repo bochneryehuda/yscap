@@ -2807,7 +2807,7 @@ router.post('/documents', async (req, res) => {
   // PDF captured from the Term Sheet Studio: each re-registration supersedes
   // the previous term sheet so exactly one is current on the file.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
-  // WHICH STAMP those bytes print (owner-directed 2026-08-02, db/403) — the
+  // WHICH STAMP those bytes print (owner-directed 2026-08-02, db/404) — the
   // borrower mirror of the staff door. The INITIAL/FINAL wording is drawn into
   // the PDF at generation time, so only the generator knows; it reports what it
   // printed and we record it. A description of the file, never an

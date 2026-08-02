@@ -34,7 +34,7 @@
  * NOTHING UNSAFE ISSUES BECAUSE OF THAT ONE OMISSION. The two halves meet:
  *   · the real SEND gate (gate.js) still enforces the P&P sign-off in full, and
  *   · orchestrate.js additionally REFUSES to mail a term sheet that is not
- *     recorded as FINAL-stamped (`documents.term_sheet_final`, db/403).
+ *     recorded as FINAL-stamped (`documents.term_sheet_final`, db/404).
  * So only a final-stamped sheet can go out, and a sheet is stamped final only
  * when everything but the imminent sign-off is done.
  *

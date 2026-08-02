@@ -1,4 +1,4 @@
--- db/403 — record WHICH stamp a stored term sheet PDF actually prints
+-- db/404 — record WHICH stamp a stored term sheet PDF actually prints
 -- (owner-directed 2026-08-02).
 --
 -- The INITIAL/FINAL wording is drawn INTO the term-sheet PDF by the static tool
@@ -20,4 +20,4 @@
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS term_sheet_final boolean;
 
 COMMENT ON COLUMN documents.term_sheet_final IS
-  'term_sheet documents only: true when the stored PDF prints the FINAL stamp, false when it prints "INITIAL TERM SHEET - NOT FINAL", NULL when unknown (pre-db/403). Describes the bytes; never an authorization.';
+  'term_sheet documents only: true when the stored PDF prints the FINAL stamp, false when it prints "INITIAL TERM SHEET - NOT FINAL", NULL when unknown (pre-db/404). Describes the bytes; never an authorization.';
