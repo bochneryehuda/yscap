@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import ToolScenarioBar from '../components/ToolScenarioBar.jsx';
 import { api } from '../lib/api.js';
+import { rememberScroll, restoreRemembered } from '../lib/keep-scroll.js';
 import { scenarioToDraft } from '../lib/scenario.js';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
@@ -134,14 +135,24 @@ export default function StaffInvestorSuite({ initialTool = null }) {
     }
   }
 
-  // Lock the page scroll while the full-screen tool is open.
+  // Lock the page scroll while the full-screen tool is open — and give the
+  // reader their place back when it closes. Locking the body drops the document
+  // to the viewport height, so the browser clamps them to 0 on open and never
+  // restores the offset on unlock; without the second half, closing a tool
+  // dumped them at the top of the suite (the #108 class, same as ToolModal and
+  // CreditReport, found alongside the loan-file report of 2026-08-02).
   useEffect(() => {
     if (!open) return undefined;
     const prev = document.body.style.overflow;
+    const y = rememberScroll();
     document.body.style.overflow = 'hidden';
     const onKey = (e) => { if (e.key === 'Escape') showTool(null); };
     window.addEventListener('keydown', onKey);
-    return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey); };
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+      restoreRemembered(y);
+    };
   }, [open, showTool]);
 
   if (open) {

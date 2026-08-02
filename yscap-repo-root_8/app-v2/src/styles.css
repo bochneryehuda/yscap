@@ -799,9 +799,11 @@ a.checkitem:hover{transform:translateY(-1px)}
 .snap-stat-btn:hover{background:var(--surface-soft,rgba(47,127,134,.06))}
 .snap-stat-btn:hover .snap-stat-sub{color:var(--teal-br,var(--teal))}
 
-/* "What's left to clear to close" — the single clear outstanding view */
-.ctc-panel{border-left:4px solid var(--warning,#c98a1a)}
-.ctc-panel.ctc-ready{border-left-color:var(--ok,#2f7f4f)}
+/* The file's one work list — WhatsLeftPanel.jsx.
+   `.ctc-panel` / `.ctc-panel.ctc-ready` lived here for the retired
+   ClearToClosePanel and were deleted with it (post-merge audit 2026-08-02);
+   the panel's own accent is `.nx-panel`. The rules BELOW are still live — the
+   Advisories block reuses .ctc-list / .ctc-item / .ctc-item-title / .ctc-tick. */
 .ctc-tick{flex:none;width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
   background:var(--ok,#2f7f4f);color:#fff;font-weight:800}
 .ctc-list{display:flex;flex-direction:column;gap:2px}
@@ -1109,8 +1111,15 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 /* The static tools (Track Record, Scope of Work, Term Sheet Studio) render in
    same-origin frames that disappear into the page: no border, no inner
    scrollbar (auto-height), one page scroll. */
-.toolframe{position:relative;width:100%;background:#F4F0E7}
-.toolsheet-body{background:#F4F0E7}
+/* WHITE, not the tool's brand paper (owner-directed 2026-08-02: "take away this
+   beige background… it should not look like an iframe. It should look like real
+   part of the thing"). The host div sits inside a white .panel, so a #F4F0E7
+   rectangle on white is precisely what read as an embedded frame. NOTE the trap
+   recorded in StaticToolFrame.jsx: transparent was tried and is WRONG — it lets
+   the portal's grey sheet show through. White is the fix, on both layers
+   together (this rule AND the frame's injected html/body rule). */
+.toolframe{position:relative;width:100%;background:#fff}
+.toolsheet-body{background:#fff}
 .toolframe.fill{flex:1;display:flex;flex-direction:column;min-height:0}
 .toolframe-loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;
   align-items:center;justify-content:center;color:var(--muted);font-size:14px;min-height:120px}
