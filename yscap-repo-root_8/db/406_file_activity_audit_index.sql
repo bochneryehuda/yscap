@@ -1,4 +1,4 @@
--- 405 — index the two lookups the file's AUDIT LOG makes (owner-directed
+-- 406 — index the two lookups the file's AUDIT LOG makes (owner-directed
 -- 2026-08-02: "File activity … should be much more audit-log oriented … every
 -- notification, every log, everything that happens in that file should be
 -- logged in that activity").
