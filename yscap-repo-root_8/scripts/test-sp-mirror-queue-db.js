@@ -1,7 +1,7 @@
 'use strict';
 /* DB-gated tests for the SharePoint mirror claim-queue (src/lib/sp-mirror-queue.js).
  * Proves: atomic claim (PENDING/FAILED -> IN_PROGRESS, attempts++, lease/holder),
- * exclusion of terminal/pre-settle/superseded-regen/non-local rows, no double-claim,
+ * exclusion of terminal/pre-settle/superseded-regen rows (s3 rows ARE claimed), no double-claim,
  * lease reaper (PENDING below cap / DEAD at cap), fenced outcome persistence,
  * dual-write reconcile (and that it never stomps IN_PROGRESS), shadow-compare parity
  * with the legacy pendingBatch, and SQL-derive == JS deriveStatus parity.
@@ -47,19 +47,22 @@ async function seed({ docKind = null, isCurrent = true, ageHours = 7, provider =
   // skipped_reason (never one without the other), so pendingBatch excludes it.
   const skippedRow = await seed({ status: 'SKIPPED', skipped: 'never mirrored', backedUp: true });
   const presettle = await seed({ status: 'PENDING', ageHours: 0 });            // inside 3s settle window
-  const nonlocal = await seed({ status: 'PENDING', provider: 's3' });          // not local bytes
+  const s3doc = await seed({ status: 'PENDING', provider: 's3' });             // s3 bytes — now first-class
   const noref = await seed({ status: 'PENDING', ref: false });                 // no storage_ref
   const supersededRegen = await seed({ status: 'PENDING', docKind: 'track_record_html', isCurrent: false });
   const exhausted = await seed({ status: 'FAILED', attempts: 8 });             // attempts >= MAX
 
   const claimed = await q.claimBatch(100, { holder: 'H1' });
   assert.ok(has(claimed, pending) && has(claimed, failed), 'PENDING and FAILED are claimed');
+  // The claim is provider-agnostic (in lock-step with the legacy pendingBatch):
+  // an s3 doc is CLAIMED like any local one — bytes are read via the storage layer.
+  assert.ok(has(claimed, s3doc), 's3-provider row IS claimed (provider-agnostic drain)');
   for (const [id, why] of [[done, 'DONE'], [dead, 'DEAD'], [skippedRow, 'SKIPPED'], [presettle, 'pre-settle'],
-                           [nonlocal, 'non-local'], [noref, 'no storage_ref'],
+                           [noref, 'no storage_ref'],
                            [supersededRegen, 'superseded regen'], [exhausted, 'attempts>=MAX']]) {
     assert.ok(!has(claimed, id), `${why} row is NOT claimed`);
   }
-  ok('claimBatch claims only gated PENDING/FAILED rows; excludes terminal/pre-settle/non-local/superseded/exhausted');
+  ok('claimBatch claims gated PENDING/FAILED rows on any provider; excludes terminal/pre-settle/superseded/exhausted');
 
   // ---- 2. claim mutates the row: IN_PROGRESS + attempts++ + lease + holder ---
   const row = (await db.query(
