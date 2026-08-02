@@ -5,6 +5,7 @@ import DocCompare from './DocCompare.jsx';
 import DocPreview from './DocPreview.jsx';
 import AiReasoningChat from './AiReasoningChat.jsx';
 import { useAuth } from '../lib/auth.jsx';
+import { revealAnchor } from './FileSections.jsx';
 // Severity words + colours: ONE shared map. Three screens each kept a private copy
 // and had already drifted — this one said "Fatal" for the same finding the
 // escalations screen called something else. See lib/findings-vocab.js.
@@ -3442,9 +3443,15 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
                 try { await api.fraudBannerSnooze(appId, hours); load(); }
                 catch (e) { alert(`Snooze failed: ${(e && e.message) || 'error'}`); }
               }}>Snooze banner</button>
-              <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => {
-                document.querySelector('h4')?.scrollIntoView({ behavior: 'smooth' });
-              }}>Open AI Findings panel</button>
+              {/* This used to scroll to the FIRST <h4> on the whole page, which is
+                  above the reader — so a button labelled "open the findings panel"
+                  reliably threw them upward instead (owner-reported 2026-08-02:
+                  "any button that we click, we should stay in that section"). The
+                  findings panel carries id="ai-findings"; going through revealAnchor
+                  also opens its room and section first, so the target exists to
+                  scroll to. */}
+              <button className="btn ghost" style={{ fontSize: 11 }}
+                onClick={() => revealAnchor('ai-findings')}>Open AI Findings panel</button>
             </div>
           </div>
         );

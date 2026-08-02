@@ -6,6 +6,13 @@ friendly**, **easier to find sections**."_
 
 **This document changes no code.** It is the plan.
 
+> **ONE COMPONENT RENAMED SINCE (2026-08-02).** Every reference below to
+> `ClearToClosePanel` (and to its sibling `NextUpPanel`) now means
+> **`app-v2/src/components/WhatsLeftPanel.jsx`** — the owner asked for the file's
+> two competing work lists to become one, inside the Overview, and both old
+> components were deleted in that merge. The `#ctc-outstanding` anchor and the
+> gating payload it consumes are unchanged.
+
 ---
 
 ## The three rules this plan obeys
