@@ -611,10 +611,47 @@ never attempted. Everything in this phase costs about $10, one time.
   **distinct appraisers**, the IQR (never a σ), and **the count of declines** — an
   appraiser who saw a 200 sqft gap and adjusted $0 made a judgement, not a rate
   of zero. Cap any one appraiser at 40%.
-- [ ] **5.4 Show the score's factors, and let a human weight a comp.**
-  `scoreComp.parts[]` and `weight` both exist and are unrendered.
+- [x] **5.4 Show the score's factors, and let a human weight a comp** — **DONE**,
+  in the QC panel. `scoreComp` has always returned named `parts[]` with a weight
+  each and the screen showed only the total: *"fair, 62"* is not something a
+  reviewer can act on, while *"distance 20/20, size 6/15, condition not stated"*
+  names the comparable to look at and why. A part nobody stated reads
+  **"not stated"** rather than 0/15 — a fact neither report gave is not a bad
+  match, which is the same rule `scoreComp` itself already applies to the
+  arithmetic. **`weight` was writable through the API since the day it was built
+  with no control anywhere**: a reviewer who can see a poor match and do nothing
+  about it is being shown a problem and denied the fix. Proven end to end — the
+  render check types a weight and re-reads it out of the database.
+  **Fixed at the source while wiring it:** `buildGrid` never attached the score to
+  its rows, so any consumer wanting to show WHY a comparable scored what it did
+  had to call `scoreComp` again with its own idea of the subject — which is how
+  two screens come to disagree about the same comparable. One call now, on the
+  same row the adjustments were computed for.
 - [ ] **5.5 Confirm-the-facts step, then instant re-value**
-- [ ] **5.6 Bracketing + QC panel** — `compWarnings` exists, scattered
+- [x] **5.6 Bracketing + QC panel** — **DONE**
+  (`src/lib/research/bracketing.js`, 50 assertions; panel
+  `app-v2/src/components/ValuationQc.jsx` on the valuation screen).
+  **The oldest quality check in appraisal review, and the one a grid full of
+  plausible comparables most often fails.** If every comparable is bigger than
+  the subject, the value rests on extrapolating DOWN from all of them — nothing
+  in the set says what a smaller house sells for and the ADJUSTMENT is doing the
+  work rather than a sale. One on each side turns that extrapolation into an
+  interpolation, which is a different quality of evidence entirely.
+  Three rules keep it from crying wolf: a dimension **nobody stated** is a gap in
+  our records and never a miss (worded from whichever side is missing); an
+  **exact match brackets on both sides**, because a comparable identical to the
+  subject needs no extrapolation in either direction and counting it as neither
+  would report the strongest possible support as the weakest; and **condition and
+  quality run BACKWARDS** — C1 is the best — so the ranks come from
+  `valuation.CONDITION_SCALE` rather than a private table, and the wording flips
+  to "better"/"worse" instead of "larger"/"smaller".
+  It also checks the CONCLUSION, not only the evidence: an indicated value above
+  every adjusted comparable means **no sale in the set supports it**, which is
+  more serious than a dimension not bracketing and is shown first. Judged on the
+  comparables ACTUALLY IN USE — a switched-off comparable supports nothing, and
+  counting it would report a set as surrounding the subject on the strength of a
+  sale the value does not rest on. Advisory throughout: it blocks nothing,
+  changes no number, and never breaks the screen it sits on.
 - [x] **5.7 Flip finder** — sold twice in 24 months, the spread, both photos.
   `property_sales` holds it; the search only ever reads `last_sale_*`. **BUILT**
   (`src/lib/research/flips.js`, `GET /api/research/flips`, a section on the

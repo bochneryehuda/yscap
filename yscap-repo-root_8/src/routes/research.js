@@ -42,6 +42,7 @@ const MARKET = require('../lib/research/market');
 const FLIPS = require('../lib/research/flips');
 const V = require('../lib/research/valuation');
 const QA = require('../lib/research/quick-answer');
+const BR = require('../lib/research/bracketing');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
@@ -1075,7 +1076,17 @@ async function loadValuation(id) {
   }));
   const grid = V.buildGrid(subject, gridComps, { today: todayNY(), method: v.method,
     roundTo: 1000 });
-  return { valuation: v, comps, grid };
+  /* BRACKETING is judged on the comparables ACTUALLY IN USE. A comparable
+     somebody switched off supports nothing, so counting it would report a set as
+     surrounding the subject on the strength of a sale the value does not rest
+     on — the one way this check could mislead rather than warn. Advisory, and
+     never allowed to break the screen it sits on. */
+  let bracketing = null;
+  try {
+    bracketing = BR.assessBracketing(subject, (grid.comps || []).filter((c) => c.include !== false),
+      { indicatedValue: grid.value && grid.value.indicatedValue });
+  } catch (e) { bracketing = null; }
+  return { valuation: v, comps, grid, bracketing };
 }
 
 router.get('/valuations', async (req, res, next) => {

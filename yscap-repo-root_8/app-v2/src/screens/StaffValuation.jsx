@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import ValuationQc from '../components/ValuationQc.jsx';
 import {
   INK, MUTED, GOLD, S, money, sqft, num, saleMonth, day, baths,
   conditionLabel, compSetShort, severityColor,
@@ -222,6 +223,18 @@ export default function StaffValuation() {
           adjustment and not the rate behind it is exactly the document this panel
           exists to prevent. */}
       <MarketRates rates={v.market_rates} forceOpen={printing} />
+
+      {/* DOES THIS SET SUPPORT THE NUMBER? Bracketing, the set-level warnings,
+          each comparable's score BROKEN INTO ITS PARTS, and the per-comparable
+          weight — all four already existed and none of them reached a screen. */}
+      <ValuationQc
+        bracketing={d.bracketing}
+        comps={comps}
+        warnings={g.warnings || []}
+        disabled={isFinal}
+        onWeight={isFinal ? null : (compId, weight) =>
+          act('weight', () => api.valuationEditComp(id, compId, { weight }))}
+      />
 
 
       {/* ---- the grid ---- */}

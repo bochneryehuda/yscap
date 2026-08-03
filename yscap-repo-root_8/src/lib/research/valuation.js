@@ -955,6 +955,13 @@ function buildGrid(subject, comps, opts = {}) {
     const adj = adjustComp(c, c.adjustments);
     const merged = Object.assign({}, c, adj);
     merged.warnings = compWarnings(subject, c, adj, { today });
+    /* THE SCORE TRAVELS WITH THE ROW. `scoreComp` has always returned named
+       `parts[]` with a weight each, and nothing ever attached it here — so every
+       consumer that wanted to show WHY a comparable scored what it did had to
+       call it again with its own idea of the subject, which is how two screens
+       come to disagree about the same comparable. One call, on the same row the
+       adjustments were computed for. */
+    merged.score = scoreComp(subject, c, { today });
     return merged;
   });
   const value = reconcile(subject, rows, opts);
