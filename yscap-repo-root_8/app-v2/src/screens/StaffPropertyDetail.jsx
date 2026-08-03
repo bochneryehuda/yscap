@@ -111,6 +111,9 @@ export default function StaffPropertyDetail() {
       {/* ---- comparable sales near it ---- */}
       <NearbyComps propertyId={id} subjectAddress={p.display_address} />
 
+      {/* ---- where the reports disagree about this house ---- */}
+      <Conflicts list={data.conflicts || []} />
+
       {/* ---- what we know about the property ---- */}
       <section style={{ ...S.panel, marginBottom: 14 }}>
         <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>What we know about it</h2>
@@ -307,6 +310,58 @@ export default function StaffPropertyDetail() {
  * everything needed and had no caller anywhere in the app.
  *
  * Self-hiding: a property nobody has valued shows nothing at all. */
+/* WHERE TWO REPORTS DISAGREE ABOUT THIS HOUSE.
+
+   The block above shows ONE answer per fact — the best-sourced, most recent
+   reading — which is what you want for "what do we think this house is", and it
+   necessarily throws away the fact that the reports did not agree. This hands
+   that back. It is a review signal nobody else can compute, because nobody else
+   holds several appraisals of one property.
+
+   NOT AN ACCUSATION. Two appraisers are allowed to differ, and the tolerances
+   are set so that rounding never appears here: a year built one apart is
+   silence, twenty is a card. Nothing here resolves anything — a person decides,
+   or decides both readings are fine. */
+function Conflicts({ list }) {
+  if (!list || !list.length) return null;
+  const TONE = { high: '#B4423A', medium: GOLD, low: MUTED };
+  return (
+    <section style={{ ...S.panel, marginBottom: 14, borderColor: GOLD }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
+        The reports don’t agree on {list.length === 1 ? 'one thing' : `${list.length} things`}
+      </h2>
+      <p style={{ margin: '0 0 12px', color: MUTED, fontSize: 13 }}>
+        Two or more appraisals describe this property differently. Neither is presumed wrong —
+        small differences are already ignored, so what is here is worth a look.
+      </p>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {list.map((c) => (
+          <div key={c.field} style={{ border: '1px solid #E4DECF', borderRadius: 8, padding: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <strong style={{ color: INK, fontSize: 14 }}>{c.label}</strong>
+              <span style={{ ...S.tag, borderColor: TONE[c.severity] || MUTED, color: TONE[c.severity] || MUTED }}>
+                {c.severity === 'high' ? 'worth checking' : c.severity === 'medium' ? 'worth a look' : 'minor'}
+              </span>
+            </div>
+            <div style={{ marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              {c.values.map((v, i) => (
+                <div key={i} style={{ minWidth: 120 }}>
+                  <div style={{ fontSize: 18, color: INK, fontWeight: 600 }}>{String(v.value)}</div>
+                  <div style={{ color: MUTED, fontSize: 12 }}>
+                    {v.said_by.length} report{v.said_by.length === 1 ? '' : 's'}
+                    {v.said_by[0] && v.said_by[0].observed_on ? ` · ${day(v.said_by[0].observed_on)}` : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 6, color: MUTED, fontSize: 12 }}>{c.why}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function PriorValuations({ propertyId }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {

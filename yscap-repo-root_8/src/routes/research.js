@@ -44,6 +44,9 @@ const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
 const { formatRefusalCounts } = require('../lib/appraisal/import');
+// Where two reports describe the same house differently — a review signal only
+// a warehouse holding several appraisals of one property can compute.
+const { findConflicts } = require('../lib/research/conflicts');
 
 router.use(requireAuth, requireStaff);
 
@@ -183,7 +186,13 @@ router.get('/properties/:id', async (req, res, next) => {
           WHERE pp.property_id = $1 AND d.is_current
           ORDER BY pp.is_primary DESC, pp.sequence`, [req.params.id]),
     ]);
-    res.json({ property: p, observations: obs.rows, sales: sales.rows, photos: photos.rows });
+    // WHERE THE REPORTS DISAGREE ABOUT THIS HOUSE. The roll-up above picks one
+    // answer per fact and necessarily discards the disagreement; this hands it
+    // back. Advisory — it resolves nothing, and two appraisers are allowed to
+    // differ. Computed from the observations already loaded, so it costs no
+    // extra query, and it never throws.
+    const conflicts = findConflicts(obs.rows);
+    res.json({ property: p, observations: obs.rows, sales: sales.rows, photos: photos.rows, conflicts });
   } catch (e) { next(e); }
 });
 

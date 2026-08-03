@@ -67,6 +67,16 @@ const REFS = Object.freeze({
   // no collision to fold. (`market_periods` hangs off the observation, not off
   // `properties`, so it follows automatically and is correctly absent here.)
   'market_observations.property_id': { how: 'move' },
+  // db/440 — the appraiser's adjustment lines for one comparable.
+  // MOVE, and the guard is right to have demanded a decision. The row's real
+  // anchor is `observation_id`, which CASCADES from `property_observations` —
+  // and those observations are themselves MOVED to the survivor above, so the
+  // lines follow their observation either way. What would NOT follow is this
+  // denormalised `property_id`: left pointing at the loser it would be
+  // SET NULL when the loser is deleted, quietly detaching a slice of the
+  // adjustment corpus from the house it describes. Nothing collides — several
+  // reports may adjust one property, and the corpus is the point.
+  'property_adjustments.property_id': { how: 'move' },
   // THE LEDGER'S OWN SURVIVOR POINTER, which CASCADES. Merging B into A and later
   // A into C deleted A — and with it the "B → A" row, so `survivorOf(B)` went
   // from A to NULL, a link to B stopped redirecting and started reading as data
