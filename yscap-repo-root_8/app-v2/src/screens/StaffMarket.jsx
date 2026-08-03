@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, TEAL, S, money, num } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
 
 /* THE MARKET — what our own appraisers have said about the areas we lend in.
  *
@@ -121,6 +122,9 @@ export default function StaffMarket() {
       </header>
 
       {err && <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A', marginBottom: 12 }}>{err}</div>}
+
+      <TownLookup style={{ marginBottom: 12, maxWidth: 460 }}
+        onFill={({ city, state, zip }) => setForm((f) => ({ ...f, city: city || f.city, state: state || f.state, zip: zip || f.zip }))} />
 
       <section style={{ ...S.panel, marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <label style={{ display: 'block' }}>

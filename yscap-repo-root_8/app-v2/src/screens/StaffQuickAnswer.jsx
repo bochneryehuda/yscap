@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, TEAL, S } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
 
 /* QUICK ANSWER — an address, a few basics, and roughly what properties like that
  * have been coming in at.
@@ -72,6 +73,9 @@ export default function StaffQuickAnswer() {
         <b style={{ color: INK }}> in the appraisals we have paid for</b>. It is not a valuation and it
         is never a single figure — below five matches it says nothing at all.
       </p>
+
+      <TownLookup style={{ marginBottom: 12, maxWidth: 460 }}
+        onFill={({ city: c, state: s }) => { if (c) setCity(c); if (s) setState(s); }} />
 
       <form onSubmit={search} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-end' }}>
         <label style={{ fontSize: 12, color: MUTED }}>Town<br />

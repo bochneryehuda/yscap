@@ -76,7 +76,19 @@ async function osmSuggest(q) {
     // suggestion copies the label into the field, and that is one of the ways
     // the long "…, Kings County, New York, 11249, United States" form got into
     // files in the first place (2026-07-26).
-    return { id: 'osm:' + r.place_id, label: cleanLabel(address) || compactFormattedAddress(r.display_name), address };
+    const out = { id: 'osm:' + r.place_id, label: cleanLabel(address) || compactFormattedAddress(r.display_name), address };
+    // THE POSITION RIDES ALONG FREE. Nominatim's search response already carries
+    // lat/lon on every row, and a screen that wants to run a distance search from
+    // the address needs it — so throwing it away meant a second lookup (or, as
+    // the owner found, a half-mile search with nothing to measure from). Only an
+    // answer that actually placed the HOUSE is carried: a road-level match puts
+    // every house on the street at one point, which is worse than no position.
+    const house = r.address && (r.address.house_number || r.address.housenumber);
+    const lat = Number(r.lat), lng = Number(r.lon);
+    if (house && Number.isFinite(lat) && Number.isFinite(lng)) {
+      out.position = { lat, lng, source: 'osm', precision: 'address' };
+    }
+    return out;
   });
 }
 
@@ -154,6 +166,72 @@ router.get('/details', async (req, res) => {
 router.get('/parse', (req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
   res.json({ address: parseAddress(String(req.query.q || '')) });
+});
+
+/**
+ * WHERE IS THIS ADDRESS? — the position, so a distance search can actually run.
+ *
+ * The owner reported that a half-mile search "comes up properties from different
+ * states". It did: the search measures from a point, the typed subject had no
+ * point, and a radius with nothing to measure from is unanswerable (the search
+ * now refuses instead of quietly answering with the country). This endpoint is
+ * the other half of that fix — it gives a typed address the position the radius
+ * needs, so the search can be answered rather than refused.
+ *
+ * KEYLESS SOURCES ONLY, AND THAT IS A RULE, NOT A COST SAVING. Google Maps
+ * Platform caps a stored latitude/longitude at 30 days unless the cache belongs
+ * to a single end user, and a shared comparable warehouse is not that — so a
+ * Google coordinate can never be written into this system (the full comparison,
+ * with the terms quoted, is in docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md).
+ * Google may SUGGEST the address; the coordinate always comes from the US Census
+ * geocoder (a federal service, no key, no term on the answer) or OpenStreetMap.
+ * That way a position from this endpoint is safe to store anywhere, and nothing
+ * downstream has to know which provider the address came from.
+ *
+ * Only an ADDRESS-level match is returned. Both providers already refuse to
+ * answer with a road or a town rather than the house — a street-level answer puts
+ * every house on the road at one point, and a quarter-mile search over that looks
+ * like it worked, which is the expensive way to be wrong.
+ */
+const RG = require('../lib/research/geocode');
+router.get('/position', async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=600');
+  // Either a free-text line or the components the autocomplete already has.
+  const q = String(req.query.q || '').trim();
+  const line = q || ADDR.canonicalOneLine({
+    line1: req.query.line1 || req.query.street || '',
+    city: req.query.city || '', state: req.query.state || '', zip: req.query.zip || '',
+  });
+  if (!line || line.length < 5) {
+    return res.json({ lat: null, lng: null, source: null, why: 'that is not enough of an address to look up' });
+  }
+  // A GEOCODER RESOLVES A BUILDING, NOT AN APARTMENT — a unit token in the query
+  // is a common cause of a match failing outright, and every unit of one building
+  // sharing a coordinate is correct: they ARE at the same place.
+  const lookup = ADDR.withoutUnit(line);
+  const key = 'pos:' + lookup.toLowerCase();
+  const hit = cget(key);
+  if (hit) return res.json(hit);
+  const answer = async () => {
+    // Census first: no rate limit, no key, and it only ever answers with a real
+    // address match. OSM is the fallback, run through THIS module's throttle as
+    // well as its own — the two modules keep separate clocks, and the published
+    // limit is one request per second for the whole process, not per module.
+    const c = await RG._internals.census(lookup);
+    if (c) return c;
+    return osmThrottle(() => RG._internals.osm(lookup));
+  };
+  try {
+    const p = await answer();
+    const out = p
+      ? { lat: p.lat, lng: p.lng, source: p.source, precision: p.precision, matched: p.matched || null, why: null }
+      : { lat: null, lng: null, source: null, why: 'we could not place that address on the map' };
+    cset(key, out);
+    res.json(out);
+  } catch (e) {
+    // Never break the form. No position simply means no distance search.
+    res.json({ lat: null, lng: null, source: null, why: 'the address lookup is not answering right now' });
+  }
 });
 
 // Verify / standardize an address against USPS — the authoritative standardizer.

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import CompMap from '../components/CompMap.jsx';
 import { INK, MUTED, GOLD, TEAL, S } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
 
 /* DRAW THE NEIGHBOURHOOD — because a radius is a bad model of one.
  *
@@ -93,6 +94,9 @@ export default function StaffMarketAreas() {
         <b style={{ color: INK }}> this side of the highway</b> — a drawn boundary can, and every one
         of these records who drew it.
       </p>
+
+      <TownLookup style={{ marginBottom: 12, maxWidth: 460 }}
+        onFill={({ city: c, state: s }) => { if (c) setCity(c); if (s) setState(s); }} />
 
       <form onSubmit={search} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, alignItems: 'flex-end' }}>
         <label style={{ fontSize: 12, color: MUTED }}>State<br />

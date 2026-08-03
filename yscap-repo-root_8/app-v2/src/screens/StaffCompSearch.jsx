@@ -6,6 +6,7 @@ import {
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
+import AddressBox from '../components/AddressBox.jsx';
 import CompMap from '../components/CompMap.jsx';
 import { geoBasisInfo } from '../lib/geoBasis.js';
 
@@ -64,16 +65,18 @@ export default function StaffCompSearch() {
     return o;
   }, [params]);
 
-  const [subjForm, setSubjForm] = useState({
-    address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '',
-    gla: q.gla || '', beds: q.beds || '', year_built: q.year_built || '', condition_uad: q.condition_uad || '',
+  // `lat`/`lng` ride along with the rest of the typed subject — they are what makes
+  // a distance search answerable from a typed address (owner-reported 2026-08-03:
+  // a half-mile search returning properties in nine states). They are only ever
+  // filled by PICKING an address from the suggestions; typing over the top clears
+  // them, because a coordinate belongs to the address it was looked up for.
+  const blankSubj = (o) => ({
+    address: o.address || '', city: o.city || '', state: o.state || '', zip: o.zip || '',
+    gla: o.gla || '', beds: o.beds || '', year_built: o.year_built || '', condition_uad: o.condition_uad || '',
+    lat: o.lat || '', lng: o.lng || '',
   });
-  useEffect(() => {
-    setSubjForm({
-      address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '',
-      gla: q.gla || '', beds: q.beds || '', year_built: q.year_built || '', condition_uad: q.condition_uad || '',
-    });
-  }, [q]);
+  const [subjForm, setSubjForm] = useState(() => blankSubj(q));
+  useEffect(() => { setSubjForm(blankSubj(q)); }, [q]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const anchored = !!(q.property_id || q.application_id);
   const typedEnough = !!(subjForm.city && subjForm.state) || !!subjForm.zip;
@@ -328,8 +331,20 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
   return (
     <section style={{ ...S.panel, marginBottom: 12 }}>
       <div style={{ marginBottom: 8, color: INK, fontWeight: 600 }}>Describe the property you are valuing</div>
+      {/* THE ADDRESS IS THE WHOLE SET. Picking a suggestion fills the town, state
+          and ZIP below it AND gives the property a position — which is the only
+          way a "within half a mile" search can be answered from a typed address
+          rather than refused. Typing an address by hand still works; it just
+          cannot be measured from, and the field says so. */}
+      <AddressBox
+        value={form}
+        onChange={(next) => setForm({ ...form, ...next })}
+        label="Address"
+        placeholder="26 S 10th St"
+        hint="Pick it from the list and the town, state and ZIP fill themselves in — and distance searches become possible."
+        style={{ marginBottom: 10, maxWidth: 520 }}
+      />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-        <Field label="Address"><input style={S.input} value={form.address} onChange={set('address')} placeholder="26 S 10th St" /></Field>
         <Field label="Town"><input style={S.input} value={form.city} onChange={set('city')} placeholder="Piscataway" /></Field>
         <Field label="State"><input style={S.input} maxLength={2} value={form.state} onChange={set('state')} placeholder="NJ" /></Field>
         <Field label="ZIP"><input style={S.input} value={form.zip} onChange={set('zip')} placeholder="08854" /></Field>

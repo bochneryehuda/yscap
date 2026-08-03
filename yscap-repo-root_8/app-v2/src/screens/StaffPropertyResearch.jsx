@@ -6,6 +6,7 @@ import {
   INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel, conditionRead,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
 import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
 
 /* PROPERTY RESEARCH — the search engine over every property and every comparable
@@ -154,6 +155,18 @@ export default function StaffPropertyResearch() {
               <button className="btn ghost small" onClick={clearAll}>Clear ({activeCount})</button>
             )}
           </div>
+
+          {/* THE SAME ADDRESS BOX AS EVERY OTHER RESEARCH SCREEN (owner-directed
+              2026-08-03). The person searching has the property's address in
+              front of them, not its town spelled the way our reports spell it.
+              It fills the TOWN and STATE — not the ZIP, which on this screen is
+              an independent filter and would narrow the search twice over. */}
+          <TownLookup style={{ marginBottom: 10 }}
+            onFill={({ city, state }) => {
+              const next = { city: city || draft.city, state: state || draft.state };
+              setDraft({ ...draft, ...next });
+              apply(next);
+            }} />
 
           <Field label="Address, town or ZIP">
             <input style={S.input} value={draft.q} placeholder="e.g. 10th St Piscataway"
