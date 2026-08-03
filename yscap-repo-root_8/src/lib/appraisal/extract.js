@@ -68,6 +68,21 @@ function parseBaths(raw) {
   if (n) return { text: s, full: bf(n[1]), half: 0 };
   return { text: s, full: null, half: null };
 }
+/**
+ * The UAD `full.half` text for a bath count we ADDED UP ourselves.
+ *
+ * Only used when a 1025 grid states its rooms per unit and there is no summary
+ * row to copy — the property's own text has to be composed from the parts, and
+ * it must speak the same notation every other row here uses (2.1 = 2 full + 1
+ * half, NOT a decimal 2.5). Returns null rather than inventing a shape when the
+ * halves would not fit that notation, because a "12.11" nobody can parse back is
+ * worse than no text beside the two numeric columns that are already right.
+ */
+function bathsTextOf(full, half) {
+  if (full == null && half == null) return null;
+  const f = full == null ? 0 : full, h = half == null ? 0 : half;
+  return h >= 0 && h <= 9 ? `${f}.${h}` : null;
+}
 
 // ---- enrichment readers (never-guess; db/158) -------------------------------
 // A MISMO Y/N indicator → strict boolean. Blank/other → null (NEVER default false — a missing
@@ -298,16 +313,76 @@ function compGrid(c) {
     else if (t === 'Condition' && d) { if (UAD_C.test(d)) out.conditionUad = d; else out.conditionText = d; }
     else if (t === 'Quality' && d) { if (UAD_Q.test(d)) out.qualityUad = d; else out.qualityText = d; }
   }
-  // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the single most-missed
-  // grid fact. On a multi-unit file it may repeat per unit; take the first (subject-comparison) row.
-  const ra = X.find(c, 'ROOM_ADJUSTMENT');
-  if (ra) {
-    out.totalRooms = count(X.attr(ra, 'TotalRoomCount'), 99);
-    out.beds = count(X.attr(ra, 'TotalBedroomCount'), 99);
-    const b = parseBaths(X.attr(ra, 'TotalBathroomCount'));
-    out.baths = b.text; out.bathsFull = b.full; out.bathsHalf = b.half;
-    const raAmt = toNum(X.attr(ra, 'RoomAdjustmentAmount'));
-    if (raAmt != null) out.adjustments.push({ type: 'RoomCount', description: null, amount: raAmt });
+  // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the
+  // single most-missed grid fact.
+  //
+  // IT REPEATS PER UNIT ON A 1025, AND TAKING THE FIRST ROW WAS A WRONG ANSWER,
+  // NOT A MISSING ONE. This used to do `X.find(c, 'ROOM_ADJUSTMENT')` — the first
+  // element — which on a 2-4 unit grid is UNIT 1, not the property. Measured end
+  // to end on a three-unit comparable whose grid states 14 rooms / 7 beds / 3
+  // baths: the warehouse stored 5 / 3 / 1. That is worse than NULL, because
+  // `beds` rolls up onto `properties` and `scoreComp` drops an unknown from its
+  // denominator while scoring a wrong number as a confident match — a 7-bedroom
+  // triplex was being offered as a comparable for a 3-bedroom house.
+  //
+  // So read EVERY row. The counts are the PROPERTY's totals; the rows themselves
+  // are the per-unit breakdown, which is a fact we have never stored about a
+  // comparable at all.
+  const raRows = X.findAll(c, 'ROOM_ADJUSTMENT').map((r) => ({
+    rooms: count(X.attr(r, 'TotalRoomCount'), 99),
+    beds: count(X.attr(r, 'TotalBedroomCount'), 99),
+    baths: parseBaths(X.attr(r, 'TotalBathroomCount')),
+    amount: toNum(X.attr(r, 'RoomAdjustmentAmount')),
+  // A FORM PADS. A vendor emitting four unit rows on a two-unit property leaves
+  // the spares blank, and an empty row must not be counted as a unit.
+  })).filter((r) => r.rooms != null || r.beds != null || r.baths.full != null || r.baths.half != null);
+
+  if (raRows.length) {
+    const sum = (k) => {
+      const vals = raRows.map((r) => r[k]).filter((v) => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+    };
+    // EVERY ROW IS A UNIT. There is deliberately NO "is one of these a summary
+    // row?" heuristic here, and the first draft's was removed after it failed its
+    // own test on the commonest 2-4 shape there is: a DUPLEX WITH TWO IDENTICAL
+    // UNITS. "One row equals the sum of the others" is trivially true of any two
+    // equal rows, so 5+5 was read as "a total of 5 with one unit" and reported
+    // half the property. At three rows it is still unresolvable — 10/5/5 is
+    // equally "a total of 10 over two units" and "three units totalling 20" — and
+    // no structural signal in MISMO 2.6 distinguishes them.
+    //
+    // The measured shape is one row per unit with no total row, so that is what
+    // this reads. A vendor that writes a total row would need to be SEEN before
+    // it is handled; guessing at one here trades a bug nobody has for a bug
+    // everybody with a duplex would have.
+    const sumBaths = (k) => {
+      const v = raRows.map((r) => r.baths[k]).filter((x) => x != null);
+      return v.length ? v.reduce((a, b) => a + b, 0) : null;
+    };
+    const one = raRows.length === 1;
+    out.totalRooms = one ? raRows[0].rooms : sum('rooms');
+    out.beds = one ? raRows[0].beds : sum('beds');
+    out.bathsFull = one ? raRows[0].baths.full : sumBaths('full');
+    out.bathsHalf = one ? raRows[0].baths.half : sumBaths('half');
+    // A single row keeps the grid's OWN text; a summed one has to be composed,
+    // and it speaks the same UAD full.half notation rather than a decimal.
+    out.baths = one ? raRows[0].baths.text : bathsTextOf(out.bathsFull, out.bathsHalf);
+    // THE UNIT COUNT IS STATED, NOT INFERRED — but only by a grid that actually
+    // wrote a row per unit. One row proves nothing about how many units there are
+    // (a 1004 has exactly one), so it stays NULL rather than claiming "1".
+    if (raRows.length > 1) {
+      out.units = raRows.length;
+      out.unitMix = raRows.map((r, i) => ({
+        unit: i + 1, rooms: r.rooms, beds: r.beds,
+        baths_full: r.baths.full, baths_half: r.baths.half, baths: r.baths.text,
+      }));
+    }
+    // The dollar line repeats with the rows; the grid reconciles on their sum.
+    const raAmt = raRows.map((r) => r.amount).filter((v) => v != null);
+    if (raAmt.length) {
+      out.adjustments.push({ type: 'RoomCount', description: null,
+        amount: raAmt.reduce((a, b) => a + b, 0) });
+    }
   }
   // OTHER_FEATURE_ADJUSTMENT — garage/fireplace/pool/attic/porch extras; a traditional grid shows
   // every adjustment line, and net_adjustment won't reconcile without these.
@@ -397,6 +472,11 @@ function comparables(root) {
       compConcession: (() => { const n = toNum(X.attr(cd, 'GSEConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })(),
       priorSaleAmount: psAmt, priorSaleDate: psDate, priorSaleNominal: isNominal(psAmt),
       beds: g.beds, bathsText: g.baths, bathsFull: g.bathsFull, bathsHalf: g.bathsHalf, totalRooms: g.totalRooms,
+      // Stated per unit by a 1025 grid, absent from a 1004 (db/426). Never
+      // inherited from the subject — a comparable's unit count is genuinely not
+      // on most MISMO 2.6 grids, and guessing it would file a duplex as a
+      // single-family every time we appraised one.
+      units: g.units == null ? null : g.units, unitMix: g.unitMix || null,
       // A comp's PropertySalesAmount holds the LIST/asking price on an active or pending listing —
       // NOT a closed sale. The review checks + scoring must not count a listing as a settled comp
       // (it inflates the "closed comps" pool and pollutes the implied-value median with an asking

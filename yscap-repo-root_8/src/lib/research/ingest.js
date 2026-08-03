@@ -63,8 +63,13 @@ const ID = require('./identity');
  * BUMP THIS whenever the ingest starts reading a fact it did not read before.
  */
 // 2 — db/422's 59 facts and db/424's `attachment_type` are read off the report,
-// so the reports have to be re-read for the corpus we already hold.
-const INGEST_VERSION = 2;
+//     so the reports have to be re-read for the corpus we already hold.
+// 3 — db/426: a 2-4 unit comparable's rooms/beds/baths were read off the FIRST
+//     `ROOM_ADJUSTMENT` row, which is UNIT 1, not the property. Every such comp
+//     in the warehouse is holding a wrong number right now (measured: a grid
+//     stating 14 rooms / 7 beds / 3 baths stored 5 / 3 / 1), and `beds` rolls up,
+//     so the wrong number is on `properties` too. Only re-reading fixes it.
+const INGEST_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -1162,7 +1167,11 @@ async function writeReport(db, { a, comps, link, out }) {
       price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
       neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
       zoning_id: null, zoning_desc: null,
-      occupancy_status: null, market_rent: null, unit_mix: null,
+      occupancy_status: null, market_rent: null,
+      // THE PER-UNIT ROOM LINE the 1025 grid stated (db/426). Through `bindable`
+      // because a jsonb column reads back as a JS array and binding it raw makes
+      // node-postgres send a Postgres array literal — the roll-up wipe of #974.
+      unit_mix: bindable(c.unit_mix),
       owner_of_record: null, property_rights: null,
       hoa_fee_amount: null, hoa_fee_period: null, condo_floor: null,
       effective_age: null, remaining_economic_life: null,

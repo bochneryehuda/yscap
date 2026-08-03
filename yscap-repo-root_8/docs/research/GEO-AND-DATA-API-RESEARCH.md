@@ -790,7 +790,7 @@ its date, so a licence that ends can be honoured by deleting exactly those rows.
 | 4 | **Switch on USPS** (`USPS_CLIENT_ID` / `USPS_CLIENT_SECRET`, `USPS_BACKFILL_ENABLED=1`) | $0 | — | Free, already written, stamped on zero files |
 | 5 | **Take the Census `geographies` endpoint** — tract + county + place for every property, comps included | $0 | M | Turns "same neighbourhood" from a guess into a fact, in a call we already make |
 | 6 | Fix splits 4–10 in `property-key.js` | $0 | M | Fewer duplicate rows, better roll-ups |
-| 7 | Fix the `dLng` divisor (`69.1710` → `69.0932`), the antimeridian wrap, and the polar clamp | $0 | S | Makes the box a true superset; small but it is a stated invariant |
+| 7 | Make the bounding box a provable superset (`1.001 · radius / (69.0932 · cos φ)`), fix the antimeridian wrap and the polar clamp | $0 | S | Small, but "the box is a superset of the circle" is a stated invariant that is false today |
 | 8 | Narrow `sameAddress`'s hyphen-range rule for Queens-format addresses | $0 | M | Affects USPS stamps and review closing, so it needs care and a test battery |
 | 9 | Use the appraiser's stated `proximity` as a labelled fallback distance | $0 | M | 55 % of comps already carry it |
 | 10 | Add tract / municipality / school district to `scoreComp` as **`unknown`-aware** parts | $0 | M | The owner's "not just the city" ask, using only free data |

@@ -370,6 +370,11 @@ function comparableRowFrom(c) {
     // The worded condition/quality rating a non-UAD vendor wrote, and which of
     // the two AREA measures this comp's `gla` actually is (db/409 §7).
     condition_text: c.conditionText, quality_text: c.qualityText, gla_basis: c.glaBasis,
+    // THE UNITS, as the 1025 grid stated them (db/426). `units` has existed since
+    // db/409 §7 and was written by nothing — this key was simply never emitted.
+    // Both are NULL on a single-unit grid: one room row is the property, not a
+    // unit, and neither may ever be inherited from the subject.
+    units: c.units, unit_mix: c.unitMix ? JSON.stringify(c.unitMix) : null,
   };
 }
 
