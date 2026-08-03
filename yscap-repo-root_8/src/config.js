@@ -384,6 +384,19 @@ module.exports = {
     // 0 disables the check (not recommended — it is the only detector of a stopped nightly).
     verifyMaxAgeHours: Number.isFinite(parseFloat(process.env.BACKUP_VERIFY_MAX_AGE_HOURS))
       ? parseFloat(process.env.BACKUP_VERIFY_MAX_AGE_HOURS) : 48,
+    // The DAILY watch, run by the WEB service (src/lib/notification-digests.js), not by either cron.
+    //
+    // The drill above is the only thing that reports a stopped nightly — and it runs WEEKLY, so a
+    // backup that stops on Monday is not noticed until Sunday. Six unprotected days is the gap; the
+    // web service is already awake every 30 minutes and can read the same ledger, so it checks daily.
+    // 36h = one missed night plus half a day of slack, so a merely LATE run never cries wolf.
+    // 0 disables it.
+    watchMaxAgeHours: Number.isFinite(parseFloat(process.env.BACKUP_WATCH_MAX_AGE_HOURS))
+      ? parseFloat(process.env.BACKUP_WATCH_MAX_AGE_HOURS) : 36,
+    // How many days a passing restore DRILL stays believable before the watch mentions it. The drill
+    // is weekly, so this must clear a missed week without nagging — it is a heads-up, never an alarm.
+    watchVerifyStaleDays: Number.isFinite(parseFloat(process.env.BACKUP_WATCH_VERIFY_STALE_DAYS))
+      ? parseFloat(process.env.BACKUP_WATCH_VERIFY_STALE_DAYS) : 10,
   },
 
   // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---

@@ -312,6 +312,51 @@ actually works.
 The scratch database is wiped on every run, so two guards stand in front of it: it refuses a target
 that is the live database, and it refuses one whose name does not say it is disposable (it must contain `verify`, `scratch` or `drill` — deliberately NOT `restore` or `test`, because during an incident `yscap_restore` is the freshly recovered data).
 
+### The daily watch — `backupFreshnessWatchOnce` (every morning, from the website)
+The drill above is what reports a stopped nightly, and it runs **weekly** — so a backup that stops on
+a Monday is not noticed until Sunday, and those six days are exactly the window in which someone
+believes they are protected and is not.
+
+Neither cron job can close that gap, because a job that is not running cannot report its own absence.
+The **web service** can: it is awake every 30 minutes anyway, and `backup_runs` is an ordinary table
+it already reads for `/api/health`. So every morning it asks one question — *is the newest good
+backup less than 36 hours old?* — and emails if it is not. It costs one query a day, needs no new
+service and no new credential, and nothing in the request path touches it.
+
+Three rules keep it useful rather than noisy:
+- **Silence is the healthy state.** A protected system sends nothing. The only "all good" worth
+  reading is the drill's, because it is the only message that proves a restore actually works.
+- **It only watches a backup that has ever worked.** With no successful run on record, this is a
+  deployment where the backup was never turned on — and a daily "you have no backup" to someone who
+  never asked for one is the fastest way to train them to ignore the alarm. That same line is what
+  makes an unreadable database degrade to silence instead of a false "your backups have stopped".
+- **A stale drill is a separate, quieter message.** Backups being taken but not tested is a different
+  problem from no backups at all, with a different urgency and a different action. It never fires
+  while the louder one is firing.
+
+Settings: `BACKUP_WATCH_MAX_AGE_HOURS` (36), `BACKUP_WATCH_VERIFY_STALE_DAYS` (10), `0` to disable.
+These go on the **web service**, and it emails through `BACKUP_ALERT_EMAIL` → `NOTIFY_ADMINS`.
+
+### Getting a fix to the backup jobs — the deploy hooks
+Auto-Deploy is **Off** on both cron services by design: a nightly job must not redeploy itself
+mid-run. The consequence used to be that a merged fix never reached them — they kept running whatever
+image was last built by hand. That is not hypothetical: PR #973 corrected `PG_MAJOR=17` against a
+PostgreSQL 18.4 server, a defect that would have stopped every backup dead, and on the old wiring it
+would have sat on `main` indefinitely.
+
+`.github/workflows/test.yml` now posts to **three** deploy hooks after the tests pass on `main` — the
+website plus both backup services. Each is an independent, optional repo secret; an unset one skips
+with a notice rather than failing.
+
+| Repo secret | Publishes | Where to get it |
+|---|---|---|
+| `RENDER_DEPLOY_HOOK_URL` | the website | Render → the service → Settings → Deploy Hook |
+| `RENDER_BACKUP_DEPLOY_HOOK_URL` | `ys-capital-backup` | same, on that cron service |
+| `RENDER_BACKUP_VERIFY_DEPLOY_HOOK_URL` | `ys-capital-backup-verify` | same, on that cron service |
+
+Add them under **Settings → Secrets and variables → Actions**. They are URLs that trigger a deploy,
+so treat them as passwords — never commit one.
+
 ### How long backups are kept
 | Age | What is kept |
 |---|---|
