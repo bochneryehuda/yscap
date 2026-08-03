@@ -61,6 +61,15 @@ const REFS = Object.freeze({
   'property_observations.property_id': { how: 'move' },
   'property_valuations.property_id': { how: 'move' },
   'research_imports.subject_property_id': { how: 'move' },
+  // THE LEDGER'S OWN SURVIVOR POINTER, which CASCADES. Merging B into A and later
+  // A into C deleted A — and with it the "B → A" row, so `survivorOf(B)` went
+  // from A to NULL, a link to B stopped redirecting and started reading as data
+  // loss, and `merged_snapshot` — this module's own guarantee that "the only
+  // honest way to delete a row is to be able to say what was there" — was
+  // destroyed. Re-pointing it at the new survivor keeps the chain walkable and
+  // the snapshot alive. Its `merged_id` is deliberately NOT moved: that column
+  // names the row that was absorbed, which is history and never changes.
+  'property_merges.survivor_id': { how: 'move' },
   'property_sales.property_id': {
     how: 'dedupe',
     // Mirrors uq_property_sale (property_id, sale_date, COALESCE(sale_price,-1)).
@@ -115,8 +124,10 @@ async function assertRefsComplete(db) {
         AND ccu.column_name = 'id'`)).rows;
   const unknown = rows
     .map((r) => `${r.table_name}.${r.column_name}`)
-    // The merge ledger points at the survivor and is written by the merge itself.
-    .filter((k) => !REFS[k] && !k.startsWith('property_merges.') && !k.startsWith('property_not_duplicates.'));
+    // `property_merges.survivor_id` IS declared in REFS (it CASCADEs, so a second
+    // merge would delete the first merge's record along with its snapshot).
+    // `merged_id` is history — the row that was absorbed — and is never moved.
+    .filter((k) => !REFS[k] && k !== 'property_merges.merged_id' && !k.startsWith('property_not_duplicates.'));
   if (unknown.length) {
     throw new Error(
       `property-merge does not know what to do with ${unknown.join(', ')} — add it to REFS. `

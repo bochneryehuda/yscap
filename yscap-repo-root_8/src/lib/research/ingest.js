@@ -250,6 +250,40 @@ async function upsertProperty(db, parts, extra = {}) {
   if (!key) return null;
   const p = K.normalizeParts(parts);
   const display = K.displayAddress(parts);
+
+  // A MERGE MUST SURVIVE THE NEXT RE-INGEST. Merging deletes the losing row,
+  // which frees its `address_key` — so the next report that mentions that
+  // spelling re-created it here and `upsertObservation`'s ON CONFLICT moved the
+  // observation off the survivor, quietly undoing a human's decision and leaving
+  // the survivor's counts describing rows it no longer owns. `property_merges`
+  // records `merged_key` for exactly this and was never read (only written).
+  // Re-ingest is ordinary traffic — the comp-split back-fill, the second pass
+  // after photo extraction, and any forced back-fill all reach it.
+  //
+  // Best-effort: if the lookup fails the ordinary upsert still runs, so a
+  // database blip can never stop a report being filed.
+  try {
+    const m = (await db.query(
+      `SELECT survivor_id FROM property_merges WHERE merged_key = $1
+        ORDER BY created_at DESC LIMIT 1`, [key])).rows[0];
+    if (m && m.survivor_id) {
+      // The survivor may itself have been merged since; follow the chain.
+      const M = require('./property-merge');
+      const finalId = (await M.survivorOf(db, m.survivor_id)) || m.survivor_id;
+      const still = (await db.query(`SELECT id FROM properties WHERE id = $1`, [finalId])).rows[0];
+      if (still) {
+        // Fill-only, exactly as the ON CONFLICT branch below does — a report that
+        // omits the ZIP or the county must never blank one already learned.
+        await db.query(
+          `UPDATE properties SET
+             zip = COALESCE(zip, $2), county = COALESCE(county, $3), apn = COALESCE(apn, $4),
+             last_seen_at = now()
+           WHERE id = $1`,
+          [still.id, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn)]);
+        return still.id;
+      }
+    }
+  } catch (e) { /* fall through to the ordinary upsert */ }
   const r = await db.query(
     `INSERT INTO properties (address_key, display_address, street, unit, city, state, zip, county, apn,
                              first_seen_at, last_seen_at)
