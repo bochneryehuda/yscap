@@ -5173,7 +5173,13 @@ router.get('/applications/:id/orders', async (req, res) => {
               o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.completed_at, o.notes,
               NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email
          FROM file_orders o
-         LEFT JOIN staff_users su ON su.id = o.assigned_to
+         -- ACTIVE ONLY, matching the overdue nudge's own join. Without it the
+         -- card and the desk printed a departed staffer's name while the nudge
+         -- (which filters on is_active) told the team nobody owned the order —
+         -- two surfaces disagreeing about the same row. An assignment to
+         -- somebody who has left now reads as unassigned everywhere, which is
+         -- the truth and is what gets it picked up.
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
         WHERE o.application_id=$1`, [req.params.id])).rows;
     const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
     // Whether the borrower is CC'd on each order (owner-directed 2026-07-31:
@@ -5963,9 +5969,20 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
-      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      `SELECT status, ordered_at, (ordered_at > now() - interval '10 seconds') AS just_sent
+         FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
+    }
+    // A FORCED RE-SEND STILL HAS A DOUBLE-CLICK WINDOW. Forcing passes no dedupe
+    // key to the thread (deliberately — a genuine re-send must be allowed to
+    // repeat), which left the biggest email in the system with NO protection at
+    // all: two clicks, or two tabs, sent the whole package — up to 20 MB of the
+    // borrower's term sheet, contract, entity documents and ID — to outside
+    // counsel twice. Its title and insurance siblings each got exactly this
+    // ten-second window in this same feature; this is that window.
+    if (existing && existing.just_sent && force) {
+      return res.status(409).json({ error: 'That closing-prep request has just gone out — give it a moment before sending it again.', code: 'too_soon' });
     }
 
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
@@ -6185,6 +6202,13 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+/* How many order ROWS the desk will read. Rows, not files — a file can carry up
+   to three — so this is roughly 400 files at the extreme. Bounded because an
+   admin loads this for the whole book and every row costs business-day
+   arithmetic; surfaced to the screen because a queue that quietly stops at N
+   reads as "that is everything". */
+const ORDERS_DESK_CAP = 1200;
+
 // GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
 // can see, so a processor can track all orders (and what's waiting to be
 // classified) in one place. Scoped like every other cross-file view.
@@ -6203,7 +6227,13 @@ router.get('/orders', async (req, res) => {
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
-         LEFT JOIN staff_users su ON su.id = o.assigned_to
+         -- ACTIVE ONLY, matching the overdue nudge's own join. Without it the
+         -- card and the desk printed a departed staffer's name while the nudge
+         -- (which filters on is_active) told the team nobody owned the order —
+         -- two surfaces disagreeing about the same row. An assignment to
+         -- somebody who has left now reads as unassigned everywhere, which is
+         -- the truth and is what gets it picked up.
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
          LEFT JOIN LATERAL (
            -- "unassigned" means a returned VENDOR document nobody has classified yet
            -- (binder / invoice / commitment). A closing-chain document needs no
@@ -6246,7 +6276,17 @@ router.get('/orders', async (req, res) => {
         -- and a second copy of that would eventually disagree with the card and the
         -- nudge about the same order. This ordering makes the pre-sort stable; the
         -- real one is by daysLate, computed once, right after.
-        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at ASC NULLS LAST, o.id`, params);
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at ASC NULLS LAST, o.id
+        -- BOUNDED. This read had no cap at all while two comments above reasoned
+        -- about a capped read being deterministic — an unbounded desk query is the
+        -- one an admin loads for the whole book, and it is why orderState had to
+        -- stop walking a day at a time in the first place. The pre-sort is oldest
+        -- and needs-classifying first, so a truncated page is still the right end
+        -- of the queue, and a truncated page SAYS SO rather than reading as "that
+        -- is everything" (no silent caps).
+        LIMIT ${ORDERS_DESK_CAP + 1}`, params);
+    const capped = r.rows.length > ORDERS_DESK_CAP;
+    if (capped) { r.rows.length = ORDERS_DESK_CAP; console.warn(`[orders] desk read hit its ${ORDERS_DESK_CAP}-row cap`); }
     const now = new Date();
     // Group into one row per file, with a sub-object per order kind.
     const byFile = new Map();
@@ -6290,7 +6330,7 @@ router.get('/orders', async (req, res) => {
     files.sort((a, b) => (b.worstDaysLate - a.worstDaysLate)
       || (b.toAssign - a.toAssign)
       || String(a.applicationId).localeCompare(String(b.applicationId)));
-    res.json(files);
+    res.json({ files, capped, cap: ORDERS_DESK_CAP });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

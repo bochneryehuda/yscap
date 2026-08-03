@@ -152,9 +152,16 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const [settled, setSettled] = useState(false);
   useEffect(() => {
     if (!expanded) {
-      // COLLAPSING NEEDS A NUMBER TO ANIMATE FROM. Going straight from 'none' to 0
-      // is a jump CSS cannot interpolate, so an open email SNAPPED shut. Put the
-      // numeric ceiling back for one frame, then let the transition run.
+      // RESET FOR THE NEXT OPEN. Re-opening while `settled` was still true would
+      // jump straight to 'none' with no number to animate to, so the email would
+      // appear instantly instead of unfolding.
+      //
+      // It does NOT smooth the COLLAPSE, and the comment here used to claim it
+      // did. It cannot: the style is `expanded ? (settled ? 'none' : N) : 0`, so
+      // the moment `expanded` goes false the SAME render already yields 0 — this
+      // effect runs afterwards — and the body is unmounted by `{expanded ? … :
+      // null}` in the same breath, so there is nothing left on screen to animate.
+      // Closing is a snap by design; only opening is animated.
       if (settled) {
         // Off `window` rather than the bare globals: an undeclared identifier
         // compiles cleanly and only fails at render, which is the trap this repo
@@ -331,11 +338,28 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   const [recips, setRecips] = useState(null);
   useEffect(() => { if (!isNew) setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject, isNew]);
   useEffect(() => {
-    // On a scoped thread the file's own recipient list is simply the wrong list —
-    // fetching it would only give us people to display who will not receive this.
-    if (!open || scoped) return;
+    if (!open) return;
+    // On a scoped thread the file's own recipient list is the WRONG list — but
+    // "wrong list" was answered by showing no list at all, and the heading then
+    // named only the vendor. An insurance order CC's the borrower by default
+    // (owner-directed: they usually chose the agent), so the one line this
+    // composer printed understated who reads the reply — the same class of error,
+    // pointing the other way, as the borrower-named heading it replaced. The
+    // order's OWN preview is the right answer, and the server already computes it.
+    if (scoped) {
+      if (scope === 'title' || scope === 'insurance') {
+        api.staffOrders(appId)
+          .then((d) => {
+            const rec = d && d.orders && d.orders[scope] && d.orders[scope].recipients;
+            const list = rec ? [...(rec.to || []), ...(rec.cc || [])] : [];
+            setRecips(list.map((e) => ({ email: e })));
+          })
+          .catch(() => setRecips([]));
+      }
+      return;
+    }
     api.staffAppReplyRecipients(appId).then((r) => setRecips(Array.isArray(r) ? r : [])).catch(() => setRecips([]));
-  }, [open, appId, scoped]);
+  }, [open, appId, scoped, scope]);
   const send = async () => {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
@@ -362,7 +386,13 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
     <div className="ec-reply">
       <div className="ec-reply-to">
         <span className="ec-metalabel">To</span>
-        {scoped ? <span className="small" style={{ color: '#141B22' }}>{scoped.who}</span>
+        {/* EVERY ADDRESS, on a scoped thread as much as an ordinary one. The
+            descriptive phrase is only the fallback for a scope with no per-order
+            preview (the closing chain, whose audience the attorney controls) and
+            for a preview that could not be read. */}
+        {scoped && recips && recips.length ? recips.map((r, i) => (
+          <span className="ec-chip" key={i}><Avatar name={r.name} email={r.email} size={20} />{r.name || r.email}</span>))
+          : scoped ? <span className="small" style={{ color: '#141B22' }}>{scoped.who}</span>
           : recips === null ? <span className="muted small">loading…</span>
           : recips.length ? recips.map((r, i) => (
               <span className="ec-chip" key={i}><Avatar name={r.name} email={r.email} size={20} inbound={r.kind === 'borrower'} />{r.name || r.email}</span>))

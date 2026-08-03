@@ -1432,6 +1432,12 @@ async function retireClosedOrdersOnce({ limit = 500 } = {}) {
     const r = await db.query(
       `UPDATE file_orders o
           SET status = 'completed', updated_at = now(),
+              -- STAMPED LIKE ITS TWO SIBLINGS. order-tracking.completeOrder writes
+              -- completed_at and a timeline line when it retires a title or
+              -- insurance order; this wrote neither, so a finished attorney order
+              -- had a null finish date on the tracking strip and a timeline that
+              -- simply stopped after the last human action. Same fact, same record.
+              completed_at = COALESCE(o.completed_at, now()),
               -- ONCE PER ORDER. A human who deliberately REOPENS a retired order on a
               -- funded file (there is still work with counsel — a payoff letter, the
               -- recorded mortgage) must not watch a sweep close it again half an hour
@@ -1458,8 +1464,21 @@ async function retireClosedOrdersOnce({ limit = 500 } = {}) {
              -- order instead of re-picking an arbitrary slice each tick.
              ORDER BY o2.updated_at ASC, o2.id ASC
              LIMIT ${Math.min(2000, Math.max(1, Number(limit) || 500))})
-      RETURNING o.application_id`);
+      RETURNING o.id, o.application_id, a.status AS file_status`);
     if (r.rows.length) console.log(`[closing-prep] retired ${r.rows.length} attorney order(s) on files whose deal is over`);
+    // The timeline line, best-effort and AFTER the status write — the retirement
+    // is the fact; failing to describe it must never roll one back or throw out of
+    // a boot sweep. `reason` states what actually ended the deal rather than
+    // assuming it funded (this sweep fires on declined and withdrawn files too).
+    for (const row of r.rows) {
+      try {
+        await require('./order-tracking').recordEvent({
+          applicationId: row.application_id, orderType: 'attorney', kind: 'completed',
+          orderId: row.id, actorId: null,
+          detail: { reason: row.file_status === 'funded' ? 'the loan funded' : `the file was ${row.file_status}` },
+        });
+      } catch (_) { /* best effort */ }
+    }
     return r.rows.length;
   } catch (e) {
     console.error('[closing-prep] could not retire closed attorney orders:', (e && e.message) || e);

@@ -59,9 +59,28 @@ function OrderCell({ o, appId, kind, onChased }) {
      and find their way back to it. The attorney order has its own door (its
      recipients and package share nothing with a vendor order), so it links across
      instead of pretending one button fits both. */
+  /* IT SAYS WHO IT REACHES BEFORE IT SENDS. This fired straight into
+     `staffOrderFollowup` with no preview and no confirmation, from a queue row —
+     and an insurance follow-up CC's the BORROWER by default (owner-directed: they
+     usually chose the agent). So one click from a cross-file list sent a full
+     re-statement of the order — property, loan number, transaction type — to the
+     borrower, on a screen that never named them. The file's own order card has
+     always shown its CC list; this is that same disclosure, asked for at the
+     moment of sending. The recipients come from the server's own preview, so this
+     screen can never describe a different audience from the one that receives it. */
   const chase = async () => {
     setBusy(true); setMsg('');
     try {
+      let to = [];
+      try {
+        const d = await api.staffOrders(appId);
+        const rec = d && d.orders && d.orders[kind] && d.orders[kind].recipients;
+        to = rec ? [...(rec.to || []), ...(rec.cc || [])] : [];
+      } catch (_) { to = []; }
+      const who = to.length
+        ? `This follow-up goes to:\n\n${to.join('\n')}\n\nSend it?`
+        : 'Send the follow-up on this order?\n\n(The recipient list could not be loaded — open the file to see it.)';
+      if (!window.confirm(who)) { setBusy(false); return; }
       const r = await api.staffOrderFollowup(appId, kind, {});
       setMsg(r.unconfirmed ? 'Sent — but unconfirmed, check the thread' : 'Chased');
       onChased && onChased();
@@ -106,8 +125,16 @@ export default function StaffOrders() {
   const [mine, setMine] = useState('');   // '' = anyone, or a staff id
   const [me, setMe] = useState(null);
 
+  const [capped, setCapped] = useState(null);
   const load = useCallback(() => {
-    api.staffAllOrders().then(setRows).catch(e => setErr((e && e.message) || 'Could not load orders.'));
+    // Tolerant of BOTH shapes: the desk now answers {files, capped, cap} so a
+    // truncated read can say so, and a bare array is still accepted so an older
+    // cached bundle talking to a newer server does not render an empty queue.
+    api.staffAllOrders().then((r) => {
+      const list = Array.isArray(r) ? r : (r && Array.isArray(r.files) ? r.files : []);
+      setRows(list);
+      setCapped(!Array.isArray(r) && r && r.capped ? (r.cap || list.length) : null);
+    }).catch(e => setErr((e && e.message) || 'Could not load orders.'));
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { api.me().then(setMe).catch(() => setMe(null)); }, []);
@@ -151,6 +178,14 @@ export default function StaffOrders() {
         Every title, insurance and attorney closing-prep order across your files, the latest first.
         Chase a vendor from here, or open the file to order, reassign or classify what came back.
       </p>
+      {/* NO SILENT CAPS. A queue that quietly stops at N reads as "that is
+          everything", which is the one thing this screen must never imply. */}
+      {capped && (
+        <div className="notice" style={{ marginTop: 0, marginBottom: 10 }}>
+          This is the oldest {capped} orders, and there are more. Work these off, or narrow
+          the list with the filters above, and the rest will appear.
+        </div>
+      )}
 
       <div className="row" style={{ gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
         <div className="cond-tabs" role="tablist">

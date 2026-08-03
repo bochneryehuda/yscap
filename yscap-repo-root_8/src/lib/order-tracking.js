@@ -20,6 +20,11 @@
  */
 
 const db = require('../db');
+// The order↔condition map is IMPORTED, never restated. A second copy of a code
+// mapping is the "silently dead mapping" class CLAUDE.md documents: the day one
+// side is renamed the other still matches zero rows, and every consumer reads
+// "clean" rather than "broken".
+const { CONDITION_CODE } = require('./order-slots');
 
 /** The three order types this desk tracks. */
 const ORDER_TYPES = ['title', 'insurance', 'attorney'];
@@ -168,8 +173,22 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
  * RETIRE THE TITLE AND INSURANCE ORDERS THE FILE HAS FINISHED WITH.
  *
  * An order is done when the condition it exists to satisfy is signed off — that
- * is the file itself saying the documents arrived and were accepted — or when the
- * loan funds, which finishes everything.
+ * is the file itself saying the documents arrived and were accepted.
+ *
+ * FUNDING ALONE IS NOT ENOUGH, and that distinction is the whole safety of this
+ * sweep. Funding used to retire every open order on the file outright, which
+ * looked right (the deal is over) and quietly hid real work: the final title
+ * policy and the recorded mortgage routinely arrive AFTER the loan funds, which
+ * is exactly why the follow-up and reply doors stay open past funding. Within
+ * thirty minutes of funding such an order was `completed`, the desk hid it (its
+ * carve-out needs documents that by definition had not arrived), the overdue
+ * nudge skips it — and nobody would ever chase that vendor again. So funding only
+ * retires an order the vendor has actually ANSWERED (`first_response_at`); one
+ * that funded with nothing ever received stays open, visible and chaseable,
+ * because that is an anomaly somebody should see rather than a finished job.
+ * In practice this costs nothing on a healthy file — title is a clear-to-close
+ * gate, so a funded loan's condition is signed off and the first arm already
+ * qualifies it.
  *
  * Deliberately NOT keyed on 'documents_in': documents arriving is the vendor's
  * half. The insurance condition needs a binder AND an invoice, and a title
@@ -179,7 +198,6 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
  * Bounded, idempotent, never throws. Returns how many it retired.
  */
 async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
-  const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
   let done = 0;
   try {
     const r = await db.query(
@@ -195,6 +213,22 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
         WHERE o.order_type IN ('title','insurance')
           AND o.status IN ('ordered','documents_in')
           AND a.deleted_at IS NULL
+          -- THE QUALIFYING TEST IS IN THE **WHERE**, NOT IN THE LOOP BELOW.
+          -- It used to run in JavaScript AFTER the LIMIT, so an order that can
+          -- never qualify re-occupied the same slot on every tick: with 250 open
+          -- orders, a file that funds today sits at position 240 by ordered_at, is
+          -- never inside the window of 200, and is never retired — it sits on the
+          -- desk forever. That is the silt-up CLAUDE.md documents for the closing
+          -- catch-up sweep ("a handful of long-closed deals permanently crowded out
+          -- the live file"), which was fixed there by filtering in SQL.
+          AND (
+            (SELECT bool_or(ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL)
+               FROM checklist_items ci
+               JOIN checklist_templates t ON t.id = ci.template_id
+              WHERE ci.application_id = o.application_id
+                AND t.code = CASE o.order_type WHEN 'title' THEN $1 ELSE $2 END) IS TRUE
+            OR (a.status = 'funded' AND o.first_response_at IS NOT NULL)
+          )
           -- A HUMAN'S REOPEN OUTRANKS THE SWEEP. Reopening a finished order is a
           -- real button on the card, and without this the very next pass (or the
           -- next deploy) closed it again with nothing recorded to say why — the
@@ -210,10 +244,11 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
         ORDER BY o.ordered_at ASC NULLS LAST, o.id
         LIMIT $3`, [CONDITION_CODE.title, CONDITION_CODE.insurance, Math.max(1, Math.min(1000, Number(limit) || 200))]);
     for (const row of r.rows) {
-      const funded = row.file_status === 'funded';
-      if (!funded && row.condition_done !== true) continue;
+      // The condition is the REAL finish line, so it names the reason whenever it
+      // is the thing that qualified the row; funding is the fallback.
+      const byCondition = row.condition_done === true;
       const ok = await completeOrder(row.application_id, row.order_type, {
-        reason: funded ? 'the loan funded' : `the ${row.order_type} condition was signed off`,
+        reason: byCondition ? `the ${row.order_type} condition was signed off` : 'the loan funded',
       });
       if (ok) done += 1;
     }

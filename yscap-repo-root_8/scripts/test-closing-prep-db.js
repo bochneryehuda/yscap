@@ -268,6 +268,22 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(again.status === 409 && again.body.code === 'already_ordered',
       'a second send is refused — the attorney and the whole Cc chain are not blasted twice');
     assert(sends.length === 0, 'and nothing went out');
+    // A FORCED re-send inside ten seconds is a double-click, not a decision.
+    // Forcing passes no dedupe key (a real re-send must be allowed to repeat), so
+    // without this window the biggest email in the system — the borrower's term
+    // sheet, contract, entity documents and ID — went to outside counsel twice on
+    // two clicks. Its title and insurance siblings each carry the same window.
+    const tooSoon = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(tooSoon.status === 409 && tooSoon.body.code === 'too_soon',
+      'a forced re-send one second later is refused as the double-click it is');
+    assert(sends.length === 0, 'and that one did not go out either');
+    // …and it says so in its OWN words rather than advising "force a re-send" to
+    // somebody who just pressed exactly that.
+    assert(!/force a re-send/i.test(String(tooSoon.body.error || '')),
+      'the refusal does not tell them to do the thing they just did');
+    // Past the window, the deliberate re-send is allowed.
+    await db.query(`UPDATE file_orders SET ordered_at = ordered_at - interval '1 minute'
+                     WHERE application_id=$1 AND order_type='attorney'`, [appId]);
     const forced = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
     assert(forced.status === 200 && sends.length === 1, 'a DELIBERATE re-send is allowed');
     assert(sends[0].headers['In-Reply-To'], 'the re-send threads onto the existing chain');
@@ -772,7 +788,10 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   /* ───────────────── 10. the global orders queue sees it ─────────────────── */
   {
     const r = await call('GET', '/api/staff/orders');
-    const row = (r.body || []).find((f) => f.applicationId === appId);
+    // The desk answers {files, capped, cap} so a truncated read can say so — it
+    // used to be a bare array with no cap at all.
+    const deskFiles = Array.isArray(r.body) ? r.body : ((r.body && r.body.files) || []);
+    const row = deskFiles.find((f) => f.applicationId === appId);
     assert(!!row && !!row.attorney, 'the closing-prep order appears in the global orders queue');
     assert(row.attorney.unassignedDocs === 0,
       'and its chain documents are never counted as "waiting to be classified" (they need no slot)');

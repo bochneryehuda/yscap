@@ -487,8 +487,21 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         : { tone: 'ok', text: `${KIND_LABEL[kind]} order sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''}.` });
       onChanged && onChanged();
     } catch (e) {
-      if (e && e.status === 409) setMsg({ tone: 'warn', text: `${KIND_LABEL[kind]} was already ordered. Use Follow-up, or force a re-send below.`, canForce: true });
-      else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the order.' });
+      // THE SERVER'S OWN WORDING WINS on a 409, because it distinguishes two cases
+      // this screen cannot: "already ordered, use Follow-up" and "you just pressed
+      // force, give it a moment". Hard-coding one string here told the operator who
+      // had JUST pressed "force a re-send" to force a re-send — the advice-to-do-
+      // the-thing-you-just-did trap the server-side fix was written to close, made
+      // inert by the client throwing that message away.
+      if (e && e.status === 409) {
+        setMsg({
+          tone: 'warn',
+          text: (e && e.message) || `${KIND_LABEL[kind]} was already ordered. Use Follow-up, or force a re-send below.`,
+          // A double-click inside the re-send window is not a reason to offer the
+          // button again — waiting is the fix.
+          canForce: !(e.data && e.data.code === 'too_soon'),
+        });
+      } else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the order.' });
     } finally { setBusy(''); }
   };
   const followup = async () => {

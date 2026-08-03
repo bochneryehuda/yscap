@@ -106,6 +106,9 @@ function weekdayOf(day) {
 }
 
 function isWeekend(day) { const w = weekdayOf(day); return w === 0 || w === 6; }
+/** The same question asked of a weekday NUMBER, so an arithmetic counter can use
+    the one definition of "weekend" rather than restating 0-and-6. */
+function isWeekendDow(dow) { return dow === 0 || dow === 6; }
 
 /** Whole calendar days between two 'YYYY-MM-DD' dates, or null if either is
     unreadable. Anchored at UTC midnight, so it is exact and DST-proof. Negative
@@ -185,17 +188,34 @@ function effectiveDueOn(order) {
   } catch (_e) { return null; }
 }
 
-/** Business days past due. 0 when on time, unknown or not yet sent. */
+/**
+ * Business days past due. 0 when on time, unknown or not yet sent.
+ *
+ * COUNTED BY ARITHMETIC, NOT BY WALKING. The day-at-a-time loop this replaces
+ * carried a 400-step guard, so every order more than about 400 calendar days past
+ * its date reported the SAME 286 business days — and `daysLate` is the desk's
+ * PRIMARY SORT KEY, so the very worst rows all tied and fell back to being ordered
+ * by application id. A silent cap that mis-sorts exactly the rows the queue exists
+ * to surface is the worst place to put one. (Measured before the fix: a three-year
+ * -old order reported 286 against a real 780.)
+ *
+ * Whole weeks contribute five days each; the remainder is counted off the start
+ * day's weekday, which is at most six steps whatever the age of the order.
+ */
 function daysLate(dueOn, today) {
   try {
     const due = str(dueOn) && parseYMD(dueOn) ? fmtYMD(parseYMD(dueOn)) : null;
     const now = str(today) && parseYMD(today) ? fmtYMD(parseYMD(today)) : null;
     if (!due || !now || now <= due) return 0;
-    let cur = due, n = 0, guard = 0;
-    while (cur < now && guard++ < 400) {
-      cur = nextDay(cur);
-      if (!cur) return n;
-      if (!isWeekend(cur)) n += 1;
+    const span = daysBetween(due, now);
+    if (span == null) return 0;
+    const startDow = weekdayOf(due);         // 0=Sun … 6=Sat, of the DUE date
+    if (startDow == null) return 0;
+    const weeks = Math.floor(span / 7);
+    let n = weeks * 5;
+    // The leftover days, walked off the due date — never more than six steps.
+    for (let i = 1; i <= span - weeks * 7; i++) {
+      if (!isWeekendDow((startDow + i) % 7)) n += 1;
     }
     return n;
   } catch (_e) { return 0; }

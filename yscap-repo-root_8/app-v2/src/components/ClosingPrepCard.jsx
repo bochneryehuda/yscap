@@ -282,7 +282,10 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
       setNote('');
       reload();
     } catch (e) {
-      if (e && e.status === 409) setMsg({ tone: 'warn', text: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: true });
+      // The server's own wording wins — see the note on the same branch in
+      // OrdersPanel: a hard-coded string here tells somebody who just pressed
+      // "force a re-send" to force a re-send.
+      if (e && e.status === 409) setMsg({ tone: 'warn', text: (e && e.message) || 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: !(e.data && e.data.code === 'too_soon') });
       else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the closing-prep request.' });
     } finally { setBusy(''); }
   };

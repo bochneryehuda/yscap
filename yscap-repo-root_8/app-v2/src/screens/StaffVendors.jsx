@@ -315,7 +315,14 @@ function VendorScorecards() {
             <option value="">Everyone</option>
             <option value="title_company">Title companies</option>
             <option value="insurance_agent">Insurance agents</option>
-            <option value="attorney">Attorneys</option>
+            {/* NO "Attorneys" OPTION. The scorecard is built from `file_orders`
+                joined to the vendor contact the order went to, and a closing-prep
+                order carries no vendor contact — it goes to the firm's fixed group
+                inbox, while the `attorney` contact type on a file is the
+                BORROWER's counsel, who is never ordered from. So the filter could
+                only ever answer "nothing to compare", which is a false statement
+                about work we really do send. An option that can never return a row
+                is worse than no option. */}
           </select>
         </div>
         {rows == null ? <p className="muted small">Working it out…</p>

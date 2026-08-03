@@ -212,13 +212,49 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     assert(evAfter.filter((e) => e.kind === 'completed').length === 1,
       're-running the sweep does not record it twice');
 
-    // A FUNDED file finishes everything, condition or not.
+    // FUNDING ALONE IS NOT ENOUGH — the vendor must actually have ANSWERED.
+    //
+    // This used to assert "a funded loan finishes its orders, condition or not",
+    // which is what an audit caught as a real hole: the final title policy and the
+    // recorded mortgage routinely arrive AFTER funding, and retiring the order
+    // outright hid it from the desk (whose carve-out needs documents that had not
+    // arrived) while the overdue nudge skipped funded files entirely — so nobody
+    // would ever chase that vendor again.
     const appC = await mkApp();
     await addVendor(appC, 'insurance_agent', `${uniq}-i2@vendor.test`);
     await placeOrder(appC, 'insurance');
     await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appC]);
     await tracking.retireSatisfiedOrdersOnce();
-    assert((await orderRow(appC, 'insurance')).status === 'completed', 'a funded loan finishes its orders');
+    assert((await orderRow(appC, 'insurance')).status !== 'completed',
+      'a funded loan does NOT finish an order the vendor never answered — that is still real work, and it must stay visible');
+    // The same order, once they reply, is genuinely done.
+    await tracking.noteFirstResponse(appC, 'insurance');
+    await tracking.retireSatisfiedOrdersOnce();
+    const cRow = await orderRow(appC, 'insurance');
+    assert(cRow.status === 'completed', 'once they have answered, funding finishes it');
+    const cEv = await tracking.listEvents(appC, 'insurance');
+    assert(cEv.some((e) => e.kind === 'completed' && e.detail && e.detail.reason === 'the loan funded'),
+      'and the history says the loan funded, which is what actually finished it');
+
+    // STARVATION. The qualifying test lives in the WHERE, not after the LIMIT — so
+    // an order that can never qualify cannot re-occupy a slot every tick and keep
+    // a genuinely finished one out of the window forever.
+    const appE = await mkApp();
+    await addVendor(appE, 'title_company', `${uniq}-t9@vendor.test`);
+    await placeOrder(appE, 'title');
+    await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appE]);
+    await tracking.noteFirstResponse(appE, 'title');
+    // Ask for ONE row while a non-qualifying order is older, so it would have
+    // taken the only slot under the old post-LIMIT filter.
+    await db.query(`UPDATE file_orders SET ordered_at = now() - interval '900 days'
+                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
+    await db.query(`UPDATE file_orders SET status='ordered', completed_at=NULL
+                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
+    await db.query(`UPDATE file_orders SET first_response_at=NULL
+                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
+    await tracking.retireSatisfiedOrdersOnce({ limit: 1 });
+    assert((await orderRow(appE, 'title')).status === 'completed',
+      'a qualifying order is retired even when an older order that can NEVER qualify sits ahead of it');
   }
 
   /* ── G. a late order is chased, once, and the right person is told ────────── */

@@ -153,7 +153,18 @@ async function scorecardsFor(contactIds, { now = new Date(), excludeApplicationI
       `SELECT o.vendor_contact_id, o.order_type, o.status, o.ordered_at, o.first_response_at,
               o.completed_at, o.followup_count, o.due_on, o.sla_days
          FROM file_orders o
+         -- A DEAD DEAL IS NOT A VENDOR'S FAULT, and it never closes on its own.
+         -- The retire sweep only completes an order when its condition is signed
+         -- off or the loan funds, so an order on a declined or withdrawn file stays
+         -- 'ordered' FOREVER -- and the due-date arithmetic keeps running on it, so
+         -- it counted as open AND overdue for good. Since the leaderboard sorts on
+         -- the overdue count FIRST, the worst-vendors table would fill up with title
+         -- companies holding orders nobody will ever chase, crowding out the ones
+         -- actually letting us down; the per-file card's "late on N other orders
+         -- right now" was wrong the same way. The desk already refuses to list a
+         -- dead file for exactly this reason -- this is the same rule, one place on.
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
+          AND a.status NOT IN ('declined','withdrawn')
         WHERE o.vendor_contact_id = ANY($1::uuid[]) AND o.ordered_at IS NOT NULL ${notThisFile}
         -- id last so a capped read would be deterministic; there is no cap here
         -- because the set is bounded by the caller's id list.

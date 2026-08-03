@@ -149,17 +149,44 @@ UPDATE file_orders o
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM sync_runtime_state WHERE key = 'orders_funded_retire_v1') THEN
-    UPDATE file_orders o
-       SET status = 'completed', completed_at = COALESCE(o.completed_at, now()), updated_at = now()
-      FROM applications a
-     WHERE a.id = o.application_id
-       AND a.status = 'funded'
-       AND o.status IN ('ordered', 'documents_in');
+    -- The event insert is scoped to the rows THIS statement retired, via RETURNING.
+    -- Scoped to "every completed order with no completed event" instead, it also
+    -- stamped orders that closing-prep.retireClosedOrdersOnce had already retired
+    -- on DECLINED and WITHDRAWN files, giving each of them a timeline line reading
+    -- "the loan funded" — a plainly false statement about a dead deal, dated at
+    -- deploy time, on the desk's own history.
+    --
+    -- `first_response_at IS NOT NULL` matches the LIVE sweep
+    -- (order-tracking.retireSatisfiedOrdersOnce): funding retires an order the
+    -- vendor actually ANSWERED, never one that funded with nothing received —
+    -- that one stays open, visible and chaseable, because the final policy and the
+    -- recorded mortgage routinely arrive after funding. A back-fill must not close
+    -- what the live rule would leave open, or the two disagree from day one.
+    WITH retired AS (
+      UPDATE file_orders o
+         SET status = 'completed', completed_at = COALESCE(o.completed_at, now()), updated_at = now()
+        FROM applications a
+       WHERE a.id = o.application_id
+         AND a.status = 'funded'
+         AND o.status IN ('ordered', 'documents_in')
+         AND o.first_response_at IS NOT NULL
+      RETURNING o.id, o.application_id, o.order_type
+    )
+    INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
+    SELECT r.id, r.application_id, r.order_type, 'completed', NULL,
+           jsonb_build_object('backfilled', true, 'reason', 'the loan funded')
+      FROM retired r
+     WHERE NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = r.id AND e.kind = 'completed');
 
+    -- An order something ELSE had already completed still deserves a line, but one
+    -- that says what actually ended it, read from the file rather than assumed.
     INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
     SELECT o.id, o.application_id, o.order_type, 'completed', NULL,
-           jsonb_build_object('backfilled', true, 'reason', 'the loan funded')
+           jsonb_build_object('backfilled', true, 'reason',
+             CASE WHEN a.status = 'funded' THEN 'the loan funded'
+                  ELSE 'the file was ' || a.status END)
       FROM file_orders o
+      JOIN applications a ON a.id = o.application_id
      WHERE o.status = 'completed'
        AND NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = o.id AND e.kind = 'completed');
 

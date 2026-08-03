@@ -934,13 +934,25 @@ async function orderOverdueOnce() {
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id
           AND a.deleted_at IS NULL
-          AND a.status NOT IN ('withdrawn','declined','on_hold','funded')
+          -- FUNDED FILES ARE IN. A vendor still owes the final policy and the
+          -- recorded mortgage after the loan funds, which is why the follow-up and
+          -- reply doors stay open past funding and why the desk keeps those rows.
+          -- Excluding them here made the nudge disagree with the desk about the
+          -- same order: it was listed as outstanding and never chased. The retire
+          -- sweep only completes a funded file's order once the vendor has
+          -- actually answered, so what survives to here is genuinely still owed.
+          AND a.status NOT IN ('withdrawn','declined','on_hold')
          LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
         WHERE o.status IN ('ordered','documents_in')
           AND o.ordered_at IS NOT NULL
-          -- Coarse superset of "past due": N business days is always at least N
-          -- calendar days, so nothing genuinely late is filtered out here.
-          AND o.ordered_at < now() - ((COALESCE(o.sla_days, 2))::text || ' days')::interval
+          -- Coarse superset of "past due". N business days is always at least N
+          -- calendar days, so the SLA arm never filters out something genuinely
+          -- late — but a HUMAN-PINNED due date can be EARLIER than the SLA implies
+          -- ("they said tomorrow" on a rush title order), and that row is overdue
+          -- before the SLA window opens. Without the second arm the nudge arrived
+          -- up to sla_days late on exactly the orders somebody cared most about.
+          AND (o.ordered_at < now() - ((COALESCE(o.sla_days, 2))::text || ' days')::interval
+               OR (o.due_on IS NOT NULL AND o.due_on < (now() AT TIME ZONE 'America/New_York')::date))
           AND ${notThrottled('o.application_id', DIGEST_ACTION.ORDER_OVERDUE, "interval '2 days'")}
         -- Deterministic, oldest first, so the cap can never hide the same order
         -- forever. The id LAST makes it a TOTAL order: without a unique final term
@@ -952,6 +964,7 @@ async function orderOverdueOnce() {
 
   const now = new Date();
   for (const r of rows) {
+    let claimId = null;
     try {
       const st = orderSla.orderState(r, now);
       if (!st.overdue) continue;   // the coarse filter over-selected — correct, and cheap
@@ -959,13 +972,24 @@ async function orderOverdueOnce() {
       // to be — audit_log's per-file index is what makes it fast). Two late orders
       // on one file therefore share a slot; the body names the one that is worst,
       // which is the one somebody should pick up first anyway.
-      if (!(await _gate(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, '2 days'))) continue;
+      // Claimed BY ID, so a send that throws can give the exact row back (below)
+      // rather than leaving the file silenced for two days with nothing delivered.
+      claimId = await _claim(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, '2 days');
+      if (!claimId) continue;
       const label = orderSla.ORDER_LABEL[r.order_type] || r.order_type;
       const vendorWord = orderSla.VENDOR_LABEL[r.order_type] || 'the vendor';
       const ours = st.pendingOn === 'us';
       const days = st.daysLate;
       const who = r.assigned_name ? `${r.assigned_name} has it` : 'Nobody is assigned to it';
-      await notify.notifyAppStaff(r.application_id, {
+      /* THE LADDER IS ACTUALLY WALKED, not just described and recorded.
+         `st.chase` was computed, written into the audit detail as `tier`, and then
+         ignored: every nudge at every tier went through one unconditional
+         `notifyAppStaff`, which fans out to `application_assignees` ONLY. Since an
+         order may be assigned to ANY active staff member (owner-directed, "and
+         also any staff members"), a coordinator who is not on the file team got a
+         nudge that said "Jane Smith has it" delivered to everyone EXCEPT Jane —
+         the one person being asked to act. */
+      const payload = {
         type: 'order_overdue',
         title: ours
           ? `${label}: ${days} day${days === 1 ? '' : 's'} of documents waiting to be filed`
@@ -979,12 +1003,31 @@ async function orderOverdueOnce() {
         applicationId: r.application_id,
         link: `/internal/app/${r.application_id}${r.order_type === 'title' ? '#sec-order-title' : r.order_type === 'insurance' ? '#sec-order-insurance' : '#sec-order-closing'}`,
         ctaLabel: 'Open the order',
-      });
+      };
+      /* WHO IS TOLD, by tier. The ASSIGNEE is always told when there is one — at
+         every tier, because escalating past the owner would be telling everyone
+         except the person doing the work. Higher tiers ADD the file team and then
+         the administrators. `exceptStaffId` stops the assignee getting two copies
+         when they are also on the file team. */
+      const tier = st.chase;
+      if (r.assigned_to) await notify.notifyStaff(r.assigned_to, { ...payload });
+      if (tier === 'team' || tier === 'admins' || !r.assigned_to) {
+        await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: r.assigned_to || null });
+      }
+      if (tier === 'admins') await notify.notifyAdmins({ ...payload });
       await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
-        orderType: r.order_type, daysLate: days, tier: st.chase, pendingOn: st.pendingOn,
+        orderType: r.order_type, daysLate: days, tier, pendingOn: st.pendingOn,
+        toldAssignee: !!r.assigned_to,
       });
       sent++;
-    } catch (e) { console.error('[digest] order-overdue', r.application_id, e && e.message); }
+    } catch (e) {
+      // RELEASE THE CLAIM. The throttle stamp is written BEFORE the send, so a send
+      // that threw used to leave the file silenced for two days with nothing
+      // delivered — the one outcome a nudge must never produce. Released BY ID, so
+      // it can only ever remove the row this pass just wrote.
+      await _releaseClaim(claimId);
+      console.error('[digest] order-overdue', r.application_id, e && e.message);
+    }
   }
   return sent;
 }
