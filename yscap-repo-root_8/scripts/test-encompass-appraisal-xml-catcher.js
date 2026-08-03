@@ -617,11 +617,17 @@ t('a non-url is refused with a plain reason', () => {
   // as "disabled" and the catcher would stop forever in total silence. The guard
   // keeps it running and says so — but must say so ONCE, not once per sweep.
   //
-  // The switch module is STUBBED THROUGH require.cache rather than imported. This
-  // suite is deliberately pure — no DB, no network — and `switches` pulls in
-  // flags -> db -> the `pg` driver, so importing it would couple a pure suite to
-  // an installed dependency. `catchDisabled` requires the module lazily inside a
-  // try, so seeding the cache hands it the stub and nothing real is loaded.
+  // The switch module is STUBBED THROUGH require.cache rather than imported, for
+  // one reason that always holds: you cannot make the REAL registry lack the key,
+  // and a registry without the key is the whole state under test.
+  //
+  // Do not read this as "nothing real is loaded" — that was the first version of
+  // this comment and it is only true where `pg` is absent. Wherever node_modules
+  // IS installed (CI), `catchDisabled`'s lazy require has already pulled
+  // switches -> flags -> db -> pg into the cache during the earlier sweep tests,
+  // which is exactly why `savedMod` is truthy and this block RESTORES the real
+  // module rather than deleting the entry. Both paths are handled; only the
+  // claim was wrong.
   {
     const KEY = 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED';
     const swPath = require.resolve(
