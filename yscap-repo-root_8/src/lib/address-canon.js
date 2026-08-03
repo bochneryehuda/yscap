@@ -15,6 +15,10 @@ const db = require('../db');
 const cfg = require('../config');
 const ADDR = require('./address');   // canonical one-line formatting (pure)
 
+// An OSM-sourced row is keyed and identified with this prefix so it can never be
+// confused with a Google place_id — which is also what decides whether its
+// coordinates expire (db/413).
+const OSM_PREFIX = 'osm:';
 const inputKey = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300);
 
 // A match that resolves only to a STREET (or coarser) is not this property.
@@ -100,7 +104,8 @@ function negativeExpired(resolvedAt, nowMs = Date.now()) {
 async function cacheGet(key) {
   try {
     const hit = (await db.query(
-      `SELECT place_id, formatted, lat, lng, zip, resolved_at FROM address_canon_cache WHERE input_key=$1`,
+      `SELECT place_id, formatted, lat, lng, zip, resolved_at, coords_expire_at
+         FROM address_canon_cache WHERE input_key=$1`,
       [key])).rows[0];
     if (!hit) return undefined;
     if (hit.place_id) return hit;
@@ -115,24 +120,112 @@ async function cacheGet(key) {
 async function cachePut(key, parsed) {
   try {
     await db.query(
-      `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip, resolved_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
+      `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip,
+                                        resolved_at, coords_expire_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now(), $7)
        ON CONFLICT (input_key) DO UPDATE
           SET place_id=EXCLUDED.place_id, formatted=EXCLUDED.formatted,
-              lat=EXCLUDED.lat, lng=EXCLUDED.lng, zip=EXCLUDED.zip, resolved_at=now()
+              lat=EXCLUDED.lat, lng=EXCLUDED.lng, zip=EXCLUDED.zip, resolved_at=now(),
+              coords_expire_at=EXCLUDED.coords_expire_at
         WHERE address_canon_cache.place_id IS NULL`,
       [key, parsed && parsed.place_id, parsed && parsed.formatted,
-       parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip]);
+       parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip,
+       coordsExpiryFor(key, parsed)]);
   } catch (_) { /* best-effort */ }
 }
 
+// ---------------------------------------------------------------------------
+// GOOGLE COORDINATES EXPIRE; THE PLACE ID DOES NOT (db/413)
+// ---------------------------------------------------------------------------
+/**
+ * Google Maps Platform permits keeping a `place_id` indefinitely and caps a stored
+ * latitude/longitude at 30 consecutive calendar days. OpenStreetMap's licence has
+ * no such cap. So the expiry is decided by WHICH SERVICE ANSWERED, and that is read
+ * off the row's own key/id rather than passed in — a caller that forgot to say
+ * would otherwise silently create a row we may not keep.
+ *
+ * Returns a Date for a Google row, or null for an OSM row (never expires) and for
+ * an unresolvable row (no coordinates to expire). PURE.
+ */
+const GOOGLE_COORD_TTL_DAYS = Math.max(1, parseInt(process.env.GOOGLE_COORD_TTL_DAYS || '30', 10) || 30);
+function coordsExpiryFor(key, parsed) {
+  if (!parsed || !parsed.place_id) return null;
+  if (String(key || '').startsWith(OSM_PREFIX) || String(parsed.place_id).startsWith(OSM_PREFIX)) return null;
+  return new Date(Date.now() + GOOGLE_COORD_TTL_DAYS * 24 * 3600 * 1000);
+}
+
+/** Have this row's coordinates passed the window we are licensed to hold them for? */
+function coordsLapsed(row, nowMs = Date.now()) {
+  if (!row || !row.coords_expire_at) return false;      // OSM, or never stamped
+  const t = Date.parse(row.coords_expire_at instanceof Date
+    ? row.coords_expire_at.toISOString() : String(row.coords_expire_at));
+  return Number.isFinite(t) ? nowMs > t : false;
+}
+
+/**
+ * Refresh the COORDINATES on a row whose identity we already hold.
+ *
+ * Deliberately separate from `cachePut`, whose whole contract is that a resolved
+ * row is immutable — `place_id` identity is what `samePlace` compares, and letting
+ * a later lookup rewrite it would silently re-point every past comparison. This
+ * updates only the licensed-window fields, and ONLY where the place id still
+ * matches, so a provider that answers differently today changes nothing.
+ */
+async function cacheRefreshCoords(key, parsed) {
+  if (!parsed || !parsed.place_id) return;
+  try {
+    await db.query(
+      `UPDATE address_canon_cache
+          SET formatted=$3, lat=$4, lng=$5, zip=$6, coords_expire_at=$7, resolved_at=now()
+        WHERE input_key=$1 AND place_id=$2`,
+      [key, parsed.place_id, parsed.formatted, parsed.lat, parsed.lng, parsed.zip,
+       coordsExpiryFor(key, parsed)]);
+  } catch (_) { /* best-effort */ }
+}
+
+/**
+ * BLANK THE COORDINATES WE ARE NO LONGER LICENSED TO HOLD — bounded, idempotent,
+ * never throws. Keeps `place_id` and `resolved_at`, so `samePlace()` and the whole
+ * address-matching feature this table exists for are completely unaffected: no
+ * extra API call, no behaviour change, nothing slower.
+ *
+ * Self-draining, because a swept row no longer has a `lat` and drops out of the
+ * partial index the query rides.
+ */
+async function expireGoogleCoordsOnce({ limit = 5000 } = {}) {
+  try {
+    const r = await db.query(
+      `UPDATE address_canon_cache
+          SET formatted = NULL, lat = NULL, lng = NULL, zip = NULL
+        WHERE input_key IN (
+          SELECT input_key FROM address_canon_cache
+           WHERE coords_expire_at IS NOT NULL
+             AND coords_expire_at < now()
+             AND lat IS NOT NULL
+           LIMIT $1)`,
+      [Math.min(50000, Math.max(1, limit))]);
+    return { expired: r.rowCount || 0 };
+  } catch (e) { return { expired: 0, error: (e && e.message) || String(e) }; }
+}
+
 /** Resolve free text → { place_id, formatted, lat, lng, zip } | null. Cached. */
-async function canonicalize(text) {
+async function canonicalize(text, { needCoords = false } = {}) {
   const key = inputKey(text);
   if (!key || key.length < 8) return null;
   const cached = await cacheGet(key);
-  if (cached !== undefined) return cached;   // resolved row, or a still-fresh "unresolvable"
-  if (!cfg.googlePlacesKey) return null;
+  if (cached !== undefined) {
+    if (cached === null) return null;                 // a still-fresh "unresolvable"
+    // A RESOLVED ROW STILL PROVES IDENTITY EVEN WITH ITS COORDINATES GONE (db/413).
+    // `samePlace` — the reason this cache exists — compares `place_id` and asks for
+    // no coordinates, so it is served from cache exactly as before, forever. Only a
+    // caller that actually NEEDS coordinates (the ClickUp location push) pays for a
+    // fresh lookup, and only when the licensed window has lapsed.
+    if (!needCoords || cached.lat != null) return cached;
+  }
+  // Nothing to re-ask with: hand back whatever we hold rather than pretending the
+  // address is unknown. The identity is still good, and the caller's own fallback
+  // (the keyless provider in `geocode`) can supply coordinates.
+  if (!cfg.googlePlacesKey) return cached === undefined ? null : cached;
   let parsed = null, definitive = false;
   try {
     const url = 'https://maps.googleapis.com/maps/api/geocode/json?components=country:US'
@@ -141,9 +234,14 @@ async function canonicalize(text) {
     const j = r.ok ? await r.json() : null;
     definitive = googleDefinitive(r.ok, j);
     if (definitive) parsed = parseGeocodeResult(j);
-  } catch (_) { return null; }   // network failure: DON'T cache — retry later
-  if (!definitive) return null;  // quota / denied / unknown: about US, not the address
-  await cachePut(key, parsed);
+  } catch (_) { return cached && cached.place_id ? cached : null; }   // network failure: DON'T cache — retry later
+  // quota / denied / unknown: about US, not the address. A row we already hold is
+  // still the truth about the property, so it is returned rather than discarded.
+  if (!definitive) return cached && cached.place_id ? cached : null;
+  // An already-resolved row keeps its identity: only the licensed-window fields are
+  // rewritten, and only if the provider still names the same place.
+  if (cached && cached.place_id) await cacheRefreshCoords(key, parsed);
+  else await cachePut(key, parsed);
   return parsed;
 }
 
@@ -178,7 +276,6 @@ async function samePlace(a, b) {
 // `osm:` key prefix so they can never be confused with a Google `place_id`
 // (place_id identity is what samePlace compares).
 // ---------------------------------------------------------------------------
-const OSM_PREFIX = 'osm:';
 let _osmChain = Promise.resolve(); let _osmLast = 0;
 function osmPolite(fn) {
   // Nominatim's usage policy asks for at most 1 request/second. Serialize and
@@ -284,7 +381,10 @@ async function geocode(text) {
   // untouched.
   const q = ADDR.withoutUnit(t);
   try {
-    const g = await canonicalize(q);
+    // COORDINATES ARE WHAT THIS CALLER IS FOR, so it asks for them explicitly —
+    // which is what re-fetches a Google row whose licensed window has lapsed
+    // (db/413) instead of quietly answering with a row that no longer has any.
+    const g = await canonicalize(q, { needCoords: true });
     if (g && g.lat != null && g.lng != null) return g;
   } catch (_) { /* fall through to the keyless provider */ }
   try { return await osmGeocode(q); } catch (_) { return null; }
@@ -294,4 +394,7 @@ module.exports = {
   canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey,
   // Pure — exported for the never-cache-a-transient-failure test.
   googleDefinitive, osmDefinitive, negativeExpired, NEGATIVE_TTL_DAYS,
+  // Google's 30-day coordinate window (db/413).
+  expireGoogleCoordsOnce, coordsExpiryFor, coordsLapsed, cacheRefreshCoords,
+  GOOGLE_COORD_TTL_DAYS,
 };

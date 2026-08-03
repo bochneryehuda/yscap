@@ -49,6 +49,13 @@ import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
+// The research desk: the property / comparable / appraiser database (db/409) and
+// the build-your-own valuation grid (db/410).
+import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
+import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
+import StaffAppraisers from './screens/StaffAppraisers.jsx';
+import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
+import StaffValuation from './screens/StaffValuation.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
@@ -193,6 +200,13 @@ export default function App() {
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
           <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
+          {/* Research desk — every staff role, no per-file scoping (owner-directed:
+              "make it available for all the staff users to see all the things"). */}
+          <Route path="/internal/research" element={<StaffPrivate><StaffPropertyResearch /></StaffPrivate>} />
+          <Route path="/internal/research/property/:id" element={<StaffPrivate><StaffPropertyDetail /></StaffPrivate>} />
+          <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
+          <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />
+          <Route path="/internal/research/valuation/:id" element={<StaffPrivate><StaffValuation /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />
           <Route path="/internal/pipeline-shadow" element={<StaffPrivate><StaffPipelineShadow /></StaffPrivate>} />

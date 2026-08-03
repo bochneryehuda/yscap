@@ -147,7 +147,63 @@ function auditManifest(manifest, head, { minPlausibleBytes = 1024 } = {}) {
   return problems;
 }
 
+/**
+ * PURE — is the newest backup recent enough to still be protecting us?
+ *
+ * WHY THIS EXISTS, and why it lives on the DRILL rather than the nightly job: the nightly backup
+ * only emails when it FAILS, and a job that never runs never fails, so it never emails. Suspend the
+ * cron, break its image, get the schedule wrong, lose the billing — and the system goes completely
+ * quiet, which is indistinguishable from "everything is fine".
+ *
+ * The weekly drill is the one thing that runs on its own and reports either way, and it always
+ * restored whatever the NEWEST backup happened to be. A three-week-old backup restores perfectly —
+ * it is a valid backup — so the drill would compare it to its own receipt, match to the row, and
+ * send "Backup test passed". That is worse than silence: it is active reassurance about data that
+ * has stopped being current.
+ *
+ * So freshness is judged SEPARATELY from restorability, and both are reported. A stale backup that
+ * restores cleanly is a passing RESTORE and a failing SCHEDULE, and conflating the two is exactly
+ * how a backup system lies to the person relying on it.
+ *
+ * `maxAgeHours` defaults to 48 — one missed night is a blip worth flagging, but the threshold sits
+ * beyond a single late run so a job that merely started late does not cry wolf.
+ */
+function freshness(createdAt, now = Date.now(), maxAgeHours = 48) {
+  const limit = Number(maxAgeHours);
+  // An unreadable date is NOT treated as fresh: we cannot show it is recent, and the whole point of
+  // this check is that "we could not tell" must never read as "we are protected".
+  //
+  // The ABSENT case is separated out deliberately, because `new Date(null)` is not an Invalid Date
+  // — it is the epoch. So a missing timestamp would have sailed through the isNaN check as a
+  // genuine 1970 reading, still stale (safe) but reported to the reader as "20,549 days old".
+  // `new Date(undefined)` IS invalid, so the two behave differently for no good reason; both are
+  // simply "we do not have a date".
+  if (createdAt == null || createdAt === '') {
+    return { stale: true, ageHours: null, maxAgeHours: limit, unreadable: true };
+  }
+  const at = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  if (isNaN(at.getTime())) return { stale: true, ageHours: null, maxAgeHours: limit, unreadable: true };
+  if (!Number.isFinite(limit) || limit <= 0) return { stale: false, ageHours: null, maxAgeHours: limit, disabled: true };
+  const ageHours = (now - at.getTime()) / 3600000;
+  return {
+    // A clock skew that puts the backup slightly in the future is not staleness.
+    stale: ageHours > limit,
+    ageHours: Math.round(ageHours * 10) / 10,
+    maxAgeHours: limit,
+    unreadable: false,
+  };
+}
+
+/** Plain-language age, for an email read by someone who is not a developer. */
+function describeAge(ageHours) {
+  if (ageHours == null) return 'of an unknown age';
+  if (ageHours < 48) return `${Math.round(ageHours)} hours old`;
+  const days = Math.round(ageHours / 24);
+  return `${days} day${days === 1 ? '' : 's'} old`;
+}
+
 module.exports = {
   MANIFEST_SCHEMA_VERSION, newBackupId, keysFor, parseKey, buildManifest, parseManifest, auditManifest,
+  freshness, describeAge,
   _internals: { stamp },
 };

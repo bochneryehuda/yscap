@@ -211,16 +211,25 @@ function insuranceSlots(docs) {
   };
 }
 
-/** The per-message attachment budget for the ACTIVE provider. Graph rejects inline
-    attachments past ~3 MB (it needs an upload session we do not implement), so it
-    gets its own much smaller budget rather than failing the whole send.
-    Returns `{ cap, encoded }` — see `encodedLen` for why the unit matters. */
+/** The per-MESSAGE attachment budget for the ACTIVE provider, as TWO ceilings that
+    both bind:
+      · `raw`     — a self-limit on the decoded bytes we will put on one message.
+      · `encoded` — the size of that message ON THE WIRE, which is what a receiving
+                    mail server measures (attachments travel base64, 4 characters
+                    per 3 bytes). Graph refuses an inline attachment past ~3 MB
+                    outright — it needs an upload session we do not implement — and
+                    Google Workspace and most corporate gateways refuse a message
+                    over 25 MB, which a 20 MB raw package already exceeds once
+                    encoded. Measuring only raw bytes is how a package that looked
+                    like it fit got rejected after we had said it was sent.
+    A package larger than this is no longer truncated: it is SPLIT across messages
+    on the same closing chain (see `packAttachments`). */
 function attachBudget() {
   let provider = '';
   try { provider = String(require('./email').name || cfg.emailProvider || '').toLowerCase(); } catch (_) { provider = ''; }
   return provider === 'graph'
-    ? { cap: cfg.closingAttachBudgetGraphBytes, encoded: true }
-    : { cap: cfg.closingAttachBudgetBytes, encoded: false };
+    ? { raw: Infinity, encoded: cfg.closingAttachBudgetGraphBytes }
+    : { raw: cfg.closingAttachBudgetBytes, encoded: cfg.closingAttachWireBytes };
 }
 
 /**
@@ -235,29 +244,42 @@ function attachBudget() {
  */
 function encodedLen(rawLen) { return Math.ceil(rawLen / 3) * 4; }
 
-/** The budget expressed in RAW document bytes, for the card's "these add up to more
-    than one email can carry" warning — the card compares stored file sizes, so it
-    must be told the capacity in the same unit it is measuring. */
-function attachBudgetRawBytes() {
-  const b = attachBudget();
-  return b.encoded ? Math.floor(b.cap * 3 / 4) : b.cap;
+/** ONE MESSAGE's capacity in RAW document bytes — the tighter of the two ceilings.
+    The card compares stored file sizes, so it must be told the capacity in the same
+    unit it is measuring, and it is also the ceiling on a SINGLE attachment: a
+    document that cannot fit a message even on its own is the only size that can
+    still be left behind. */
+function attachBudgetRawBytes(budget = null) {
+  const b = budget || attachBudget();
+  // `floor(encoded * 3/4)` is NOT the inverse of encodedLen — base64 pads to a
+  // 4-character boundary, so that answer can round back UP over the ceiling by a
+  // few bytes and make a document that is exactly "one message" fail to fit one.
+  // The exact largest N with encodedLen(N) <= encoded is floor(encoded / 4) * 3.
+  const fromEncoded = Number.isFinite(b.encoded) ? Math.floor(b.encoded / 4) * 3 : Infinity;
+  return Math.min(Number.isFinite(b.raw) ? b.raw : Infinity, fromEncoded);
 }
+
+/** How many messages one package may be split across. */
+function maxParts() { return Math.max(1, Number(cfg.closingAttachMaxParts) || 1); }
 
 /** What we can tell WILL be skipped without reading a single byte, so the card can
     say so before the send rather than the email saying so after it. Deliberately
-    only the two certainties (`size_bytes` over the single-attachment ceiling, and no
+    only the two certainties (`size_bytes` bigger than a whole message, and no
     stored copy) — an unreadable or empty file can only be discovered by reading it,
-    and `buildAttachments` still reports those. */
+    and `packAttachments` still reports those. Since a package that does not fit one
+    email is now SPLIT across several rather than truncated, "the total is over the
+    budget" is no longer a skip and no longer belongs here. */
 function predictSkips(orderedDocs) {
+  const one = attachBudgetRawBytes();
   const out = [];
   for (const d of orderedDocs || []) {
-    if (!d.storage_ref) out.push({ id: d.id, filename: d.filename, reason: 'no stored copy' });
-    else if (Number(d.size_bytes) > MAX_ONE_ATTACHMENT) out.push({ id: d.id, filename: d.filename, reason: 'too large to email' });
+    // `size_bytes` rides along so the card can subtract what is NOT going before it
+    // works out how many emails the rest will take.
+    if (!d.storage_ref) out.push({ id: d.id, filename: d.filename, size_bytes: d.size_bytes, reason: 'no stored copy' });
+    else if (Number(d.size_bytes) > one) out.push({ id: d.id, filename: d.filename, size_bytes: d.size_bytes, reason: 'too large to email' });
   }
   return out;
 }
-
-const MAX_ONE_ATTACHMENT = 10 * 1024 * 1024;
 
 /** A filename an outside law firm can read at a glance, with the group named when
     the document's own name doesn't say what it is. */
@@ -279,50 +301,120 @@ function attachName(doc, usedNames = null) {
   return candidate;
 }
 
+/** Normalize the `budget` option into the two-ceiling shape. A bare number is a RAW
+    cap (the shape callers and tests have always passed). */
+function normalizeBudget(budget) {
+  if (budget == null) return attachBudget();
+  if (typeof budget === 'number') return { raw: budget, encoded: Infinity };
+  // Historic `{ cap, encoded:boolean }` shape — cap measured in whichever unit the
+  // flag named. Kept so an old caller cannot silently get an unbounded budget.
+  if (typeof budget.cap === 'number') {
+    return budget.encoded ? { raw: Infinity, encoded: budget.cap } : { raw: budget.cap, encoded: Infinity };
+  }
+  return {
+    raw: Number.isFinite(budget.raw) ? budget.raw : Infinity,
+    encoded: Number.isFinite(budget.encoded) ? budget.encoded : Infinity,
+  };
+}
+
 /**
- * Read the bytes and build the provider attachment list, in priority order, until
- * the budget is spent.
+ * Read the bytes and pack them into as many messages as the package needs, filling
+ * each one in priority order.
  *
- * NOTHING IS EVER SILENTLY DROPPED. Anything that doesn't fit — or that can't be
- * read — comes back in `skipped` with a reason, and every caller puts that list in
- * the email body AND in the response the sender sees. A closing attorney being
- * quietly short one document is exactly the "sounding like fools" failure this
- * feature exists to prevent.
+ * WHY IT SPLITS (owner-reported 2026-08-02: "I can't order closing prep and it
+ * needs to attach one document … if it's too big we need to find a solution").
+ * A single ceiling meant a real closing package — 18 documents, 16.7 MB, one
+ * appraisal PDF over the old hard-coded 10 MB single-attachment limit — simply
+ * LEFT THAT DOCUMENT BEHIND, and told the attorney to ask for it by hand. Splitting
+ * costs nothing: `closing-thread.sendOnThread` already puts every message on the
+ * one closing conversation, so parts 2..N land in the same thread, in order, under
+ * the same subject. Compression is not the answer here — a PDF is already
+ * compressed, and re-encoding a document an attorney drafts a security instrument
+ * from is not something to do quietly.
+ *
+ * NOTHING IS EVER SILENTLY DROPPED. Anything that cannot be read, or that is bigger
+ * than a whole message on its own, or that falls past the part cap, comes back in
+ * `skipped` with a reason — and every caller puts that list in the email body AND
+ * in the response the sender sees. A closing attorney being quietly short one
+ * document is exactly the failure this feature exists to prevent.
+ *
+ * Returns `{ parts, attached, skipped, totalBytes, budget, oneMessageBytes, partCount }`
+ * where each part is `{ attachments, attached, totalBytes }`.
  */
-async function buildAttachments(orderedDocs, { budget = null } = {}) {
-  const b = budget != null
-    ? (typeof budget === 'object' ? budget : { cap: budget, encoded: false })
-    : attachBudget();
-  const cap = b.cap;
-  const cost = (len) => (b.encoded ? encodedLen(len) : len);
-  const attachments = [];
+async function packAttachments(orderedDocs, { budget = null, parts: partLimit = null } = {}) {
+  const b = normalizeBudget(budget);
+  const one = attachBudgetRawBytes(b);            // what ONE message can carry, raw
+  const limit = Math.max(1, Number(partLimit) || maxParts());
   const attached = [];
   const skipped = [];
-  const usedNames = new Set();
-  let total = 0;   // raw bytes, for reporting
-  let spent = 0;   // budget units (raw or base64), for the cap
+  const usedNames = new Set();                    // filenames stay unique ACROSS parts
+  const parts = [{ attachments: [], attached: [], totalBytes: 0, encoded: 0 }];
+  let total = 0;
+
+  const fits = (part, len) =>
+    part.totalBytes + len <= b.raw && part.encoded + encodedLen(len) <= b.encoded;
+
   for (const d of orderedDocs || []) {
     if (!d.storage_ref) { skipped.push({ ...d, reason: 'no stored copy' }); continue; }
-    if (Number(d.size_bytes) > MAX_ONE_ATTACHMENT) {
-      skipped.push({ ...d, reason: 'too large to email' });
-      continue;
-    }
+    // The stored size is a free pre-check for the one size we genuinely cannot send.
+    if (Number(d.size_bytes) > one) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
     let buf;
     try { buf = await storage.read(d.storage_ref); }
     catch (_) { skipped.push({ ...d, reason: 'could not be read' }); continue; }
     if (!buf || !buf.length) { skipped.push({ ...d, reason: 'empty file' }); continue; }
-    if (buf.length > MAX_ONE_ATTACHMENT) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
-    if (spent + cost(buf.length) > cap) { skipped.push({ ...d, reason: 'over the email size limit' }); continue; }
-    spent += cost(buf.length);
-    total += buf.length;
-    attachments.push({
+    // Bigger than one whole message even by itself — the only size that is still
+    // left behind, and the reason the email gives for it says exactly that.
+    if (buf.length > one) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
+
+    let part = parts[parts.length - 1];
+    if (!fits(part, buf.length)) {
+      if (parts.length >= limit) {
+        // A cap that truncates must never do so silently.
+        skipped.push({ ...d, reason: 'over the email size limit' });
+        continue;
+      }
+      part = { attachments: [], attached: [], totalBytes: 0, encoded: 0 };
+      // A document within `one` always fits an EMPTY part, so this can only fire if
+      // the two ceilings are ever changed out of step. Report rather than overflow.
+      if (!fits(part, buf.length)) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
+      parts.push(part);
+    }
+    part.attachments.push({
       filename: attachName(d, usedNames),
       contentType: d.content_type || 'application/octet-stream',
       content: buf.toString('base64'),
     });
-    attached.push({ ...d, bytes: buf.length });
+    const row = { ...d, bytes: buf.length, part: parts.length };
+    part.attached.push(row);
+    part.totalBytes += buf.length;
+    part.encoded += encodedLen(buf.length);
+    attached.push(row);
+    total += buf.length;
   }
-  return { attachments, attached, skipped, totalBytes: total, budget: cap, encodedBudget: !!b.encoded };
+
+  // An empty trailing part can only happen when nothing was attachable at all.
+  const used = parts.filter((p, i) => i === 0 || p.attachments.length);
+  return {
+    parts: used.map((p) => ({ attachments: p.attachments, attached: p.attached, totalBytes: p.totalBytes })),
+    attached, skipped, totalBytes: total,
+    budget: Number.isFinite(b.raw) ? b.raw : one,
+    oneMessageBytes: one,
+    partCount: used.filter((p) => p.attachments.length).length || 0,
+  };
+}
+
+/**
+ * The SINGLE-message form, for the callers that send exactly one email (the executed
+ * term sheet riding the chain by itself). Same contract it has always had; the
+ * packing, the reading and the reasons are `packAttachments`' — one definition.
+ */
+async function buildAttachments(orderedDocs, { budget = null } = {}) {
+  const p = await packAttachments(orderedDocs, { budget, parts: 1 });
+  const first = p.parts[0] || { attachments: [] };
+  return {
+    attachments: first.attachments, attached: p.attached, skipped: p.skipped,
+    totalBytes: p.totalBytes, budget: p.budget, encodedBudget: !Number.isFinite(normalizeBudget(budget).raw),
+  };
 }
 
 /* ──────────────────────────────── the file data ─────────────────────────────── */
@@ -692,7 +784,14 @@ function bodySections(data, pkg, attach, address) {
     if (!names || !names.length) continue;
     docLines.push(`${g.label}: ${names.join(', ')}`);
   }
-  if (docLines.length) sections.push({ title: 'Attached', body: docLines });
+  // A package too big for one email is SPLIT, not trimmed — so this list is the
+  // whole package and the reader is told plainly where the rest of it is, rather
+  // than counting attachments and finding fewer than the list promises.
+  const partCount = (attach && Number(attach.partCount)) || 1;
+  if (partCount > 1) {
+    docLines.push(`These are more than one email can carry, so they come across ${partCount} emails on this same chain — this is the first. The rest follow immediately.`);
+  }
+  if (docLines.length) sections.push({ title: partCount > 1 ? 'Attached (across all parts)' : 'Attached', body: docLines });
 
   // 2. Anything we could NOT attach — named, never silently missing.
   if (attach && attach.skipped.length) {
@@ -849,6 +948,39 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     audience: 'staff',
   });
   return built;
+}
+
+/**
+ * Parts 2..N of a package that does not fit one email. Deliberately short: the
+ * request, the deal block and the chain instruction were all in part 1, and
+ * repeating them would read as a second request rather than the rest of the first.
+ * The one thing it must be unmistakable about is WHICH email it belongs to, which
+ * is why the loan/property tag and the part number lead.
+ */
+function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, files = [], senderName = '' } = {}) {
+  const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+  return tpl.render({
+    // The SAME title as the order, so every part threads into the one conversation.
+    title: CLOSING_PREP_TITLE,
+    subjectTag: `${subjectTagFor(data)} · documents ${part} of ${of}`,
+    kicker: `Documents ${part} of ${of}`,
+    preheader: `Closing prep documents (${part} of ${of}) for ${data.propertyLine || 'the subject property'}`,
+    greeting: 'Hello,',
+    intro: `The closing-prep package for this file is larger than one email can carry, so it is coming in ${of} parts. `
+      + `This is part ${part} — the request itself, the deal details and the contacts are all in part 1 of this same chain.`,
+    lines: [`Please confirm you have all ${of} parts.`, '', signOff],
+    sections: files.length ? [{ title: `Attached in this part`, body: files }] : [],
+    meta: [
+      { label: 'Loan number', value: data.loanNumber || '(pending)' },
+      { label: 'Property', value: data.propertyLine || '—' },
+      { label: 'Borrower', value: data.borrowerName },
+    ],
+    officer: officerCard(data),
+    files,
+    note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
+    replyable: true,
+    audience: 'staff',
+  });
 }
 
 /** A follow-up on the closing chain, sent by a human from the desk. */
@@ -1339,10 +1471,10 @@ module.exports = {
   GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS, DEAD_DEAL_STATUSES, DEAD_DEAL_SQL,
   retireClosedOrdersOnce,
   SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES, CONTACT_LABEL, CLOSING_PREP_TITLE,
-  gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, attachBudget,
-  attachBudgetRawBytes, predictSkips, encodedLen, attachName,
+  gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
+  attachBudgetRawBytes, maxParts, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
-  buildClosingPrepEmail, buildFollowupEmail, buildAutoEmail,
+  buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail,
   announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
