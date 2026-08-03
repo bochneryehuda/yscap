@@ -623,8 +623,14 @@ function compGrid(c) {
     // e.g. a grid stating 2500 (total), 2500 (unit 1), 0 (unit 2) stored 5000.
     const raAmt = unitRows.map((r) => r.amount).filter((v) => v != null);
     if (raAmt.length) {
+      // AND THE LINE SAYS HOW MANY DWELLINGS IT COVERS. On a 1025 this is a SUM
+      // across 2-4 units, not a figure about one property — measured, 255 of 567
+      // real RoomCount lines span more than one unit. Stored as `spansUnits`, so
+      // a market benchmark can tell a per-property adjustment from a
+      // whole-building total instead of averaging the two into a number that
+      // describes neither. `1` is an ordinary single-dwelling line.
       out.adjustments.push({ type: 'RoomCount', description: null,
-        amount: raAmt.reduce((a, b) => a + b, 0) });
+        amount: raAmt.reduce((a, b) => a + b, 0), spansUnits: raAmt.length });
     }
   }
   // OTHER_FEATURE_ADJUSTMENT — garage/fireplace/pool/attic/porch extras; a traditional grid shows

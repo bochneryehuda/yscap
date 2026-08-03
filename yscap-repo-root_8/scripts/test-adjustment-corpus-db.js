@@ -292,6 +292,39 @@ if (!process.env.DATABASE_URL) {
     // THE SAMPLE FLOOR MUST NOT FAIL OPEN. `3 < null` and `3 < NaN` are both FALSE,
     // and the `= 8` default only applies to `undefined` — so a floor read from
     // config as null returned a "benchmark" from three numbers with ok:true.
+
+    // A WHOLE-BUILDING TOTAL IS NOT A PER-PROPERTY ADJUSTMENT (db/442). A 1025
+    // states its room line PER DWELLING and the parser sums them, because that
+    // sum is what the grid reconciles on — so the stored row is sometimes about
+    // one property and sometimes a total across four. Measured: 313 real room
+    // lines cover one dwelling, 237 cover several, and averaging them gives a
+    // median describing neither.
+    const oSpan = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-07-01','[]'::jsonb) RETURNING id`, [pid]))[0].id;
+    const spanLines = [];
+    for (let i = 0; i < 10; i++) spanLines.push({ type: 'SpanLine', amount: -1000, spansUnits: 1 });
+    for (let i = 0; i < 10; i++) spanLines.push({ type: 'SpanLine', amount: -9000, spansUnits: 4 });
+    await writeAdjustments(db, { observationId: oSpan, propertyId: pid, adjustments: spanLines, place, on: '2026-07-01' });
+
+    const single = await ingest.adjustmentBenchmark(db, { lineType: 'SpanLine', city: 'Paterson', state: 'NJ', months: 6000 });
+    ok(single.ok && single.n === 10 && Number(single.median) === -1000,
+      `by default the benchmark answers from lines describing ONE property (n=${single.n}, ${single.median})`);
+    ok(/ONE property/.test(single.spanning || ''), 'and says so, so no screen can mislabel it');
+    const spanned = await ingest.adjustmentBenchmark(db, { lineType: 'SpanLine', city: 'Paterson', state: 'NJ', months: 6000, spanning: true });
+    ok(spanned.ok && spanned.n === 10 && Number(spanned.median) === -9000,
+      `whole-building totals can be asked for on their own — a real question about multi-family grids (n=${spanned.n})`);
+    const both = await ingest.adjustmentBenchmark(db, { lineType: 'SpanLine', city: 'Paterson', state: 'NJ', months: 6000, spanning: 'all' });
+    ok(both.ok && both.n === 20, `and both together only when explicitly asked (n=${both.n})`);
+    ok(Number(single.median) !== Number(both.median),
+      'the mixed answer really is different — which is why the default excludes it');
+
+    // Every OTHER line type describes one property, so a NULL span must not be
+    // excluded — that would silently empty every other benchmark.
+    const stillThere = await ingest.adjustmentBenchmark(db, { lineType: 'BathCount', city: 'Paterson', state: 'NJ', months: 6000 });
+    ok(stillThere.ok && stillThere.n === 12,
+      `a line type that never spans units is unaffected (n=${stillThere.n})`);
+
     // Seeded with exactly THREE, so the floor is the only thing standing between
     // a caller and a "benchmark" built from three numbers.
     const oThin = (await q(

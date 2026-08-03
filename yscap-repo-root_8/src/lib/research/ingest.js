@@ -668,27 +668,31 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
   if (rows.length) {
     const vals = [];
     const chunks = rows.map((a, i) => {
-      const b = i * 11;
+      const b = i * 12;
       const ud = unitDeltaFor(String(a.type), subjectGla, compGla);
       vals.push(observationId, i, propertyId || null, String(a.type),
         a.description == null ? null : String(a.description).slice(0, 500),
         // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
         adjAmount(a.amount),
         (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null,
-        ud ? ud.delta : null, ud ? ud.basis : null);
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${rows.length * 11 + 1})`;
+        ud ? ud.delta : null, ud ? ud.basis : null,
+        // How many dwellings this line covers (db/442) — a 1025 room line is a
+        // SUM across 2-4 units and is not comparable with a single-property one.
+        Number.isFinite(Number(a.spansUnits)) && Number(a.spansUnits) > 0 ? Math.trunc(Number(a.spansUnits)) : null);
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12},$${rows.length * 12 + 1})`;
     });
     vals.push(on || null);
     await db.query(
       `INSERT INTO property_adjustments
          (observation_id, seq, property_id, line_type, description, amount, state, city, zip,
-          unit_delta, unit_delta_basis, observed_on)
+          unit_delta, unit_delta_basis, spans_units, observed_on)
        VALUES ${chunks.join(',')}
        ON CONFLICT (observation_id, seq) DO UPDATE SET
          property_id = EXCLUDED.property_id, line_type = EXCLUDED.line_type,
          description = EXCLUDED.description, amount = EXCLUDED.amount,
          state = EXCLUDED.state, city = EXCLUDED.city, zip = EXCLUDED.zip,
          unit_delta = EXCLUDED.unit_delta, unit_delta_basis = EXCLUDED.unit_delta_basis,
+         spans_units = EXCLUDED.spans_units,
          observed_on = EXCLUDED.observed_on`, vals);
   }
   // A re-read that found FEWER lines must not leave the extra ones standing.
@@ -712,7 +716,7 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
  *
  * Never throws.
  */
-async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample } = {}) {
+async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample, spanning } = {}) {
   if (!lineType) return { ok: false, reason: 'no line type' };
   // `= 8` only defaults `undefined`. A caller reading the floor from config where
   // the key is absent-as-null passed null, and `3 < null` is FALSE — so the guard
@@ -722,6 +726,13 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
     const p = [String(lineType), String(months)];
     const where = ['line_type = $1', 'amount IS NOT NULL', 'amount <> 0',
       "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    // A WHOLE-BUILDING TOTAL IS NOT A PER-PROPERTY ADJUSTMENT (db/442). A 1025
+    // room line is the SUM across 2-4 dwellings — 237 of 550 real ones — and
+    // averaging those with single-property figures gives a median describing
+    // neither. Excluded by default; `spanning: true` asks for exactly them, which
+    // is a real question when comparing multi-family grids.
+    if (spanning === true) where.push('spans_units > 1');
+    else if (spanning !== 'all') where.push('(spans_units IS NULL OR spans_units = 1)');
     // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
     // Springfield NJ and Springfield OH answered together as one "market" with a
     // median describing neither — and a zip scope ignored a contradicting state
@@ -746,6 +757,9 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
       q1: row.q1 == null ? null : Number(row.q1),
       q3: row.q3 == null ? null : Number(row.q3),
       months,
+      spanning: spanning === true ? 'whole-building totals only'
+        : spanning === 'all' ? 'single-property and whole-building lines together'
+          : 'lines describing ONE property',
       // Said explicitly so no screen can present this as a rate per room / per foot.
       basis: 'the dollar adjustment appraisers wrote on this grid line, not a per-unit rate',
     };
