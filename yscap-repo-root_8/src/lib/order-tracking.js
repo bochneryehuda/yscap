@@ -175,20 +175,29 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
  * An order is done when the condition it exists to satisfy is signed off — that
  * is the file itself saying the documents arrived and were accepted.
  *
- * FUNDING ALONE IS NOT ENOUGH, and that distinction is the whole safety of this
- * sweep. Funding used to retire every open order on the file outright, which
- * looked right (the deal is over) and quietly hid real work: the final title
- * policy and the recorded mortgage routinely arrive AFTER the loan funds, which
- * is exactly why the follow-up and reply doors stay open past funding. Within
- * thirty minutes of funding such an order was `completed`, the desk hid it (its
- * carve-out needs documents that by definition had not arrived), the overdue
- * nudge skips it — and nobody would ever chase that vendor again. So funding only
- * retires an order the vendor has actually ANSWERED (`first_response_at`); one
- * that funded with nothing ever received stays open, visible and chaseable,
- * because that is an anomaly somebody should see rather than a finished job.
- * In practice this costs nothing on a healthy file — title is a clear-to-close
- * gate, so a funded loan's condition is signed off and the first arm already
- * qualifies it.
+ * FUNDING DOES NOT RETIRE AN ORDER AT ALL, and that is the whole safety of this
+ * sweep. It used to: the deal is over, so close everything. That quietly hid real
+ * work, because the final title policy and the recorded mortgage routinely arrive
+ * AFTER the loan funds — which is exactly why the follow-up and reply doors stay
+ * open past funding. Within thirty minutes such an order read `completed`, the
+ * desk hid it (its carve-out needs documents that by definition had not arrived)
+ * and the nudge skipped it, so nobody would ever chase that vendor again.
+ *
+ * The first attempt at this narrowed funding to "an order the vendor has
+ * ANSWERED" — and an audit was right that this is the same mistake wearing a
+ * disguise. `first_response_at` is stamped the moment the FIRST document is
+ * filed, which is precisely the 'documents_in' signal the paragraph below
+ * forbids: an insurance agent who sends the binder and never the invoice sets it,
+ * so the order was retired with half the condition outstanding — and on the very
+ * files the fix was written for, where the commitment came back long before
+ * funding, it was set already and changed nothing.
+ *
+ * So there is ONE finish line, the one this module always named: the condition is
+ * signed off. That is the file itself saying the documents arrived and were
+ * accepted. It costs nothing on a healthy file — title is a clear-to-close gate,
+ * so a funded loan's condition is signed off and the order retires normally — and
+ * a funded loan whose condition was NEVER signed off is an anomaly that should be
+ * looked at, not swept off the desk.
  *
  * Deliberately NOT keyed on 'documents_in': documents arriving is the vendor's
  * half. The insurance condition needs a binder AND an invoice, and a title
@@ -227,7 +236,6 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
                JOIN checklist_templates t ON t.id = ci.template_id
               WHERE ci.application_id = o.application_id
                 AND t.code = CASE o.order_type WHEN 'title' THEN $1 ELSE $2 END) IS TRUE
-            OR (a.status = 'funded' AND o.first_response_at IS NOT NULL)
           )
           -- A HUMAN'S REOPEN OUTRANKS THE SWEEP. Reopening a finished order is a
           -- real button on the card, and without this the very next pass (or the
@@ -244,11 +252,9 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
         ORDER BY o.ordered_at ASC NULLS LAST, o.id
         LIMIT $3`, [CONDITION_CODE.title, CONDITION_CODE.insurance, Math.max(1, Math.min(1000, Number(limit) || 200))]);
     for (const row of r.rows) {
-      // The condition is the REAL finish line, so it names the reason whenever it
-      // is the thing that qualified the row; funding is the fallback.
-      const byCondition = row.condition_done === true;
+      // There is only one way to qualify now, so there is only one reason.
       const ok = await completeOrder(row.application_id, row.order_type, {
-        reason: byCondition ? `the ${row.order_type} condition was signed off` : 'the loan funded',
+        reason: `the ${row.order_type} condition was signed off`,
       });
       if (ok) done += 1;
     }

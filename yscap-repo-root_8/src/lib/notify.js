@@ -820,14 +820,24 @@ async function notifyAppStaff(appId, opts = {}) {
     `SELECT DISTINCT staff_id FROM application_assignees
       WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [appId]);
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
+  // `exceptStaffIds` is the PLURAL form, for a caller fanning out over several
+  // audiences in turn (the order-overdue ladder tells the assignee, then the team,
+  // then the admins) that must not hand the same person two identical emails.
+  // Additive: with neither option the behaviour is unchanged.
+  const exceptMany = new Set((Array.isArray(opts.exceptStaffIds) ? opts.exceptStaffIds : []).map(String));
   // Fetch the file's identity ONCE and share it across the whole team so each
   // staffer's email says WHICH file without re-querying per recipient.
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
+  // Returns the staff ids actually notified, so a caller running a LADDER can
+  // exclude them from its next rung. Every existing caller only tests `.length`
+  // ("was anybody on this file?"), which is unaffected.
   const out = [];
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
-    out.push(await notifyStaff(r.staff_id, { ...shared }));
+    if (exceptMany.has(String(r.staff_id))) continue;
+    await notifyStaff(r.staff_id, { ...shared });
+    out.push(r.staff_id);
   }
   return out;
 }
@@ -839,8 +849,15 @@ async function notifyAdmins(opts) {
   opts = await enrichFileOpts(opts, 'staff');
   const { rows } = await db.query(
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
+  // Same plural exclusion as notifyAppStaff — an admin who is ALSO on the file, or
+  // who IS the order's assignee, was getting two identical emails and two in-app
+  // rows from a single escalation, every two days, for as long as it stayed late.
+  const exceptMany = new Set((Array.isArray(opts.exceptStaffIds) ? opts.exceptStaffIds : []).map(String));
   const ids = [];
-  for (const a of rows) ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
+  for (const a of rows) {
+    if (exceptMany.has(String(a.id))) continue;
+    ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
+  }
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
   // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose
   // email went to the sales desk) must not email this list either — the whole

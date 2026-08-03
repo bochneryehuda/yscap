@@ -84,6 +84,12 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
   };
   const orderRow = async (appId, kind) => (await db.query(
     `SELECT * FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+  // The file itself saying the documents arrived AND were accepted — the ONE
+  // finish line the retire sweep recognises.
+  const signOffCondition = async (appId, code) => (await db.query(
+    `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, status, signed_off_at)
+     SELECT t.id, 'application', $1, t.label, 'staff', 'document', 'satisfied', now()
+       FROM checklist_templates t WHERE t.code=$2 RETURNING id`, [appId, code])).rows[0];
 
   /* ── A. placing an order gives it an owner and a first line of history ────── */
   console.log('\nA. an order arrives with an owner and a history');
@@ -212,29 +218,37 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     assert(evAfter.filter((e) => e.kind === 'completed').length === 1,
       're-running the sweep does not record it twice');
 
-    // FUNDING ALONE IS NOT ENOUGH — the vendor must actually have ANSWERED.
+    // FUNDING DOES NOT RETIRE AN ORDER AT ALL — there is ONE finish line.
     //
-    // This used to assert "a funded loan finishes its orders, condition or not",
-    // which is what an audit caught as a real hole: the final title policy and the
-    // recorded mortgage routinely arrive AFTER funding, and retiring the order
-    // outright hid it from the desk (whose carve-out needs documents that had not
-    // arrived) while the overdue nudge skipped funded files entirely — so nobody
-    // would ever chase that vendor again.
+    // This assertion has been rewritten twice, and the history is the point. It
+    // first demanded "a funded loan finishes its orders, condition or not", which
+    // hid the final policy and the recorded mortgage behind a completed badge. The
+    // second version narrowed funding to "the vendor answered" — and an audit was
+    // right that `first_response_at` is stamped when the FIRST document lands, so
+    // an insurance agent who sends the binder and never the invoice still had the
+    // order swept away with half the condition outstanding.
     const appC = await mkApp();
     await addVendor(appC, 'insurance_agent', `${uniq}-i2@vendor.test`);
     await placeOrder(appC, 'insurance');
     await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appC]);
     await tracking.retireSatisfiedOrdersOnce();
     assert((await orderRow(appC, 'insurance')).status !== 'completed',
-      'a funded loan does NOT finish an order the vendor never answered — that is still real work, and it must stay visible');
-    // The same order, once they reply, is genuinely done.
+      'funding alone does NOT finish an order — the final policy and the recorded mortgage arrive afterwards');
+    // The binder arriving is NOT the finish line either — that is the exact
+    // half-done state `first_response_at` could not tell apart.
     await tracking.noteFirstResponse(appC, 'insurance');
     await tracking.retireSatisfiedOrdersOnce();
+    assert((await orderRow(appC, 'insurance')).status !== 'completed',
+      'nor does the vendor merely having SENT something — a binder without its invoice is not a finished order');
+    // Signing off the condition is. That is the file saying the documents arrived
+    // AND were accepted.
+    await signOffCondition(appC, 'rtl_cond_insurance');
+    await tracking.retireSatisfiedOrdersOnce();
     const cRow = await orderRow(appC, 'insurance');
-    assert(cRow.status === 'completed', 'once they have answered, funding finishes it');
+    assert(cRow.status === 'completed', 'signing off the condition finishes it');
     const cEv = await tracking.listEvents(appC, 'insurance');
-    assert(cEv.some((e) => e.kind === 'completed' && e.detail && e.detail.reason === 'the loan funded'),
-      'and the history says the loan funded, which is what actually finished it');
+    assert(cEv.some((e) => e.kind === 'completed' && e.detail && /signed off/.test(String(e.detail.reason || ''))),
+      'and the history names the condition, which is what actually finished it');
 
     // STARVATION. The qualifying test lives in the WHERE, not after the LIMIT — so
     // an order that can never qualify cannot re-occupy a slot every tick and keep
@@ -242,19 +256,18 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     const appE = await mkApp();
     await addVendor(appE, 'title_company', `${uniq}-t9@vendor.test`);
     await placeOrder(appE, 'title');
-    await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appE]);
-    await tracking.noteFirstResponse(appE, 'title');
-    // Ask for ONE row while a non-qualifying order is older, so it would have
-    // taken the only slot under the old post-LIMIT filter.
+    await signOffCondition(appE, 'rtl_cond_title');
+    // An older order that can NEVER qualify sits ahead of it.
+    const appF = await mkApp();
+    await addVendor(appF, 'title_company', `${uniq}-t10@vendor.test`);
+    await placeOrder(appF, 'title');
     await db.query(`UPDATE file_orders SET ordered_at = now() - interval '900 days'
-                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
-    await db.query(`UPDATE file_orders SET status='ordered', completed_at=NULL
-                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
-    await db.query(`UPDATE file_orders SET first_response_at=NULL
-                     WHERE application_id=$1 AND order_type='insurance'`, [appC]);
+                     WHERE application_id=$1 AND order_type='title'`, [appF]);
     await tracking.retireSatisfiedOrdersOnce({ limit: 1 });
     assert((await orderRow(appE, 'title')).status === 'completed',
       'a qualifying order is retired even when an older order that can NEVER qualify sits ahead of it');
+    assert((await orderRow(appF, 'title')).status !== 'completed',
+      'and the one that cannot qualify is left alone');
   }
 
   /* ── G. a late order is chased, once, and the right person is told ────────── */

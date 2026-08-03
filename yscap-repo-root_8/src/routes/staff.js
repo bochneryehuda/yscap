@@ -5969,20 +5969,34 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
-      `SELECT status, ordered_at, (ordered_at > now() - interval '10 seconds') AS just_sent
-         FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
-    // A FORCED RE-SEND STILL HAS A DOUBLE-CLICK WINDOW. Forcing passes no dedupe
-    // key to the thread (deliberately — a genuine re-send must be allowed to
-    // repeat), which left the biggest email in the system with NO protection at
-    // all: two clicks, or two tabs, sent the whole package — up to 20 MB of the
-    // borrower's term sheet, contract, entity documents and ID — to outside
-    // counsel twice. Its title and insurance siblings each got exactly this
-    // ten-second window in this same feature; this is that window.
-    if (existing && existing.just_sent && force) {
-      return res.status(409).json({ error: 'That closing-prep request has just gone out — give it a moment before sending it again.', code: 'too_soon' });
+    /* A FORCED RE-SEND IS CLAIMED, NOT CHECKED.
+       Forcing passes no dedupe key to the thread (deliberately — a genuine re-send
+       must be allowed to repeat), which left the biggest email in the system with
+       no protection at all: two clicks, or two tabs, sent the whole package — up to
+       20 MB of the borrower's term sheet, contract, entity documents and ID — to
+       outside counsel twice.
+       The first attempt at this SELECTed "was it sent in the last ten seconds?"
+       and then acted on the answer, which an audit correctly called a lookalike
+       rather than the real thing: `ordered_at` is only written AFTER every part has
+       gone out (seconds later), so two concurrent clicks both read the OLD value,
+       both saw a clear window, and both sent. This is the ATOMIC form its title and
+       insurance siblings use — the row is claimed by moving `ordered_at` FIRST, so
+       the second click matches no row and is refused. A send that then fails leaves
+       the stamp a few seconds early on an order that was already placed, which the
+       next successful send overwrites anyway. */
+    if (existing && force) {
+      const claim = await db.query(
+        `UPDATE file_orders SET ordered_at = now(), updated_at = now()
+          WHERE application_id=$1 AND order_type='attorney'
+            AND (ordered_at IS NULL OR ordered_at < now() - interval '10 seconds')
+          RETURNING id`, [appId]);
+      if (!claim.rows[0]) {
+        return res.status(409).json({ error: 'That closing-prep request has just gone out — give it a moment before sending it again.', code: 'too_soon' });
+      }
     }
 
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
@@ -6264,11 +6278,19 @@ router.get('/orders', async (req, res) => {
         -- · A DECLINED or WITHDRAWN file has no work left on it at all, and showing
         --   one here put a one-click "chase the vendor" button on a dead deal — while
         --   the overdue sweep already refused to touch it, so the desk and the nudge
-        --   disagreed about the same order. Funded and on-hold files stay: an order
-        --   on one can still be genuinely outstanding.
+        --   disagreed about the same order.
+        -- · AN ON-HOLD file is the same disagreement one status further on. A held
+        --   file is deliberately paused everywhere else in PILOT (it is in
+        --   INACTIVE_FILE_STATUSES, so it is out of the KPIs, the task lists and every
+        --   reminder) and the overdue sweep already refuses to chase one — so leaving
+        --   it here offered a "Chase now" button for work the system has decided not
+        --   to pursue, and the vendor scorecard went on counting the order against
+        --   that company for as long as the hold lasted. All three now agree.
+        --   FUNDED files stay: the final policy and the recorded mortgage arrive
+        --   after funding, and that is genuinely outstanding work.
         WHERE o.status NOT IN ('cancelled','not_ordered')
           AND (o.status <> 'completed' OR COALESCE(dc.unassigned, 0) > 0)
-          AND a.status NOT IN ('declined','withdrawn')
+          AND a.status NOT IN ('declined','withdrawn','on_hold')
           ${scopeSql}
         -- OLDEST FIRST, and the LATENESS ordering is applied below rather than
         -- here: "late" is a BUSINESS-day question against a per-order SLA, which

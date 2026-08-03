@@ -164,7 +164,10 @@ async function scorecardsFor(contactIds, { now = new Date(), excludeApplicationI
          -- right now" was wrong the same way. The desk already refuses to list a
          -- dead file for exactly this reason -- this is the same rule, one place on.
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
-          AND a.status NOT IN ('declined','withdrawn')
+          -- 'on_hold' too: a held file is paused everywhere else in PILOT and the
+          -- overdue sweep will not chase it, so counting its order as open and
+          -- overdue blames a vendor for a wait WE chose. Same list as the desk.
+          AND a.status NOT IN ('declined','withdrawn','on_hold')
         WHERE o.vendor_contact_id = ANY($1::uuid[]) AND o.ordered_at IS NOT NULL ${notThisFile}
         -- id last so a capped read would be deterministic; there is no cap here
         -- because the set is bounded by the caller's id list.

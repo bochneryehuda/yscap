@@ -965,6 +965,7 @@ async function orderOverdueOnce() {
   const now = new Date();
   for (const r of rows) {
     let claimId = null;
+    let delivered = 0;   // declared out here so the catch can see it
     try {
       const st = orderSla.orderState(r, now);
       if (!st.overdue) continue;   // the coarse filter over-selected — correct, and cheap
@@ -1004,29 +1005,61 @@ async function orderOverdueOnce() {
         link: `/internal/app/${r.application_id}${r.order_type === 'title' ? '#sec-order-title' : r.order_type === 'insurance' ? '#sec-order-insurance' : '#sec-order-closing'}`,
         ctaLabel: 'Open the order',
       };
-      /* WHO IS TOLD, by tier. The ASSIGNEE is always told when there is one — at
-         every tier, because escalating past the owner would be telling everyone
-         except the person doing the work. Higher tiers ADD the file team and then
-         the administrators. `exceptStaffId` stops the assignee getting two copies
-         when they are also on the file team. */
+      /* WHO IS TOLD, by tier. The ASSIGNEE is told at every tier, because
+         escalating past the owner would tell everyone except the person doing the
+         work. Higher tiers ADD the file team and then the administrators.
+
+         THE ASSIGNEE MUST BE ACTIVE, and that is judged on `assigned_name`, not on
+         `assigned_to`. The row's join is `… AND su.is_active = true`, so a
+         DEPARTED staffer leaves the id set and the name NULL. Branching on the id
+         meant: notifyStaff wrote an in-app row on an account that cannot sign in
+         (notify.js skips the email for an inactive staffer), and the file-team arm
+         was skipped BECAUSE the id was truthy — so at the first tier the nudge
+         reached NOBODY, and the audit stamp recorded that the assignee had been
+         told. The assign route already refuses a deactivated staffer for exactly
+         this reason: "indistinguishable from nobody, except that it LOOKS
+         covered". An order owned by somebody who has left is an UNOWNED order, and
+         the team is told.
+
+         NOTE, deliberately accepted: an order may be assigned to any active staff
+         member (owner-directed), including one not on the file, so this can email
+         the file's identity to somebody whose "Open the order" link will refuse
+         them. Telling the assigned person is the whole point of an assignment;
+         withholding the nudge would be the worse failure. */
       const tier = st.chase;
-      if (r.assigned_to) await notify.notifyStaff(r.assigned_to, { ...payload });
-      if (tier === 'team' || tier === 'admins' || !r.assigned_to) {
-        await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: r.assigned_to || null });
+      const assignee = r.assigned_name ? r.assigned_to : null;
+      /* ONE COPY PER PERSON. `exceptStaffId` covers only the file-team arm, and
+         nothing stopped notifyAdmins repeating what the other two already sent —
+         so an admin who is on the file, or an order assigned TO an admin, produced
+         two identical emails and two in-app rows every time, every two days, for as
+         long as the order stayed late. */
+      const told = [];
+      if (assignee) { await notify.notifyStaff(assignee, { ...payload }); told.push(String(assignee)); delivered++; }
+      if (tier === 'team' || tier === 'admins' || !assignee) {
+        const team = await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: assignee || null, exceptStaffIds: told });
+        if (Array.isArray(team)) told.push(...team.map(String));
+        delivered++;
       }
-      if (tier === 'admins') await notify.notifyAdmins({ ...payload });
+      if (tier === 'admins') { await notify.notifyAdmins({ ...payload, exceptStaffIds: told }); delivered++; }
       await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
         orderType: r.order_type, daysLate: days, tier, pendingOn: st.pendingOn,
-        toldAssignee: !!r.assigned_to,
+        toldAssignee: !!assignee,
+        // An assignment left behind by somebody who has gone is worth seeing.
+        assigneeInactive: !!(r.assigned_to && !r.assigned_name),
       });
       sent++;
     } catch (e) {
-      // RELEASE THE CLAIM. The throttle stamp is written BEFORE the send, so a send
-      // that threw used to leave the file silenced for two days with nothing
-      // delivered — the one outcome a nudge must never produce. Released BY ID, so
-      // it can only ever remove the row this pass just wrote.
-      await _releaseClaim(claimId);
-      console.error('[digest] order-overdue', r.application_id, e && e.message);
+      /* RELEASE THE CLAIM — but ONLY when nothing went out. The stamp is written
+         BEFORE the send, so a send that threw used to leave the file silenced for
+         two days with nothing delivered. Now that the ladder is THREE sends, an
+         unconditional release is its own bug: if the assignee's nudge landed and
+         the team's then threw, releasing means the next pass re-sends to the
+         assignee, who is the one person guaranteed to have received it. Keeping
+         the claim costs at most one delayed escalation; releasing it costs a
+         duplicate. Released BY ID, so it can only ever remove this pass's row. */
+      if (!delivered) await _releaseClaim(claimId);
+      console.error('[digest] order-overdue', r.application_id, e && e.message,
+        delivered ? `(${delivered} already delivered — the throttle is KEPT so nobody is told twice)` : '');
     }
   }
   return sent;

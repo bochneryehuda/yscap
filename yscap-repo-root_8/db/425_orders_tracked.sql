@@ -148,50 +148,75 @@ UPDATE file_orders o
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM sync_runtime_state WHERE key = 'orders_funded_retire_v1') THEN
-    -- The event insert is scoped to the rows THIS statement retired, via RETURNING.
-    -- Scoped to "every completed order with no completed event" instead, it also
-    -- stamped orders that closing-prep.retireClosedOrdersOnce had already retired
-    -- on DECLINED and WITHDRAWN files, giving each of them a timeline line reading
-    -- "the loan funded" — a plainly false statement about a dead deal, dated at
-    -- deploy time, on the desk's own history.
+  -- MARKER KEY v2, NOT v1. The rule inside this block CHANGED after v1 had already
+  -- run on developer and staging databases, and a one-shot that keeps its old key
+  -- can never repair what the old rule did there -- it simply never executes again.
+  -- Bumping the key is what makes a corrected one-shot actually correct everywhere,
+  -- not only on a database seeing this migration for the first time. Re-running is
+  -- safe: every statement below is idempotent, and the SET is a no-op on a row that
+  -- is already completed.
+  IF NOT EXISTS (SELECT 1 FROM sync_runtime_state WHERE key = 'orders_funded_retire_v2') THEN
+    -- WHAT THIS DOES *NOT* DO, deliberately: retire an order because the loan
+    -- funded. Two earlier versions of this block did, and both were wrong in the
+    -- same way -- the final title policy and the recorded mortgage routinely arrive
+    -- AFTER funding, so closing the order hides real work behind a completed badge.
+    -- The second attempt narrowed it to "the vendor answered" (first_response_at),
+    -- which is the moment the FIRST document lands -- so an insurance agent who
+    -- sent the binder and never the invoice still had the order swept off the desk
+    -- with half its condition outstanding. The live sweep now has exactly one
+    -- finish line, the condition being signed off, and this matches it, because a
+    -- back-fill that closes what the live rule leaves open puts the two permanently
+    -- out of step.
     --
-    -- `first_response_at IS NOT NULL` matches the LIVE sweep
-    -- (order-tracking.retireSatisfiedOrdersOnce): funding retires an order the
-    -- vendor actually ANSWERED, never one that funded with nothing received —
-    -- that one stays open, visible and chaseable, because the final policy and the
-    -- recorded mortgage routinely arrive after funding. A back-fill must not close
-    -- what the live rule would leave open, or the two disagree from day one.
-    WITH retired AS (
-      UPDATE file_orders o
-         SET status = 'completed', completed_at = COALESCE(o.completed_at, now()), updated_at = now()
-        FROM applications a
-       WHERE a.id = o.application_id
-         AND a.status = 'funded'
-         AND o.status IN ('ordered', 'documents_in')
-         AND o.first_response_at IS NOT NULL
-      RETURNING o.id, o.application_id, o.order_type
-    )
-    INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
-    SELECT r.id, r.application_id, r.order_type, 'completed', NULL,
-           jsonb_build_object('backfilled', true, 'reason', 'the loan funded')
-      FROM retired r
-     WHERE NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = r.id AND e.kind = 'completed');
+    -- So this REPAIRS: it re-opens anything the earlier rules wrongly completed
+    -- (only where nothing else has since happened to the order), and it gives every
+    -- genuinely completed order the timeline line it is missing.
+    UPDATE file_orders o
+       SET status = 'ordered', completed_at = NULL, updated_at = now()
+      FROM applications a
+     WHERE a.id = o.application_id
+       AND o.order_type IN ('title','insurance')
+       AND o.status = 'completed'
+       AND a.status = 'funded'
+       -- Only a row an EARLIER RUN OF THIS BLOCK closed: the condition is still
+       -- not signed off (so the live rule would not have closed it), and no human
+       -- has touched it since. A completion somebody recorded by hand, or one the
+       -- live sweep made on a signed-off condition, is left exactly as it is.
+       AND NOT EXISTS (
+         SELECT 1 FROM checklist_items ci
+           JOIN checklist_templates t ON t.id = ci.template_id
+          WHERE ci.application_id = o.application_id
+            AND t.code = CASE o.order_type WHEN 'title' THEN 'rtl_cond_title' ELSE 'rtl_cond_insurance' END
+            AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL))
+       AND NOT EXISTS (
+         SELECT 1 FROM file_order_events e
+          WHERE e.order_id = o.id AND e.kind = 'completed' AND e.actor_id IS NOT NULL);
 
-    -- An order something ELSE had already completed still deserves a line, but one
-    -- that says what actually ended it, read from the file rather than assumed.
+    -- Any timeline line the earlier rules left behind on a row just re-opened is
+    -- now a statement about something that did not happen.
+    DELETE FROM file_order_events e
+     USING file_orders o
+     WHERE e.order_id = o.id
+       AND e.kind = 'completed'
+       AND e.actor_id IS NULL
+       AND COALESCE(e.detail->>'backfilled','') = 'true'
+       AND o.status <> 'completed';
+
+    -- Every order that IS finished gets its line, with a reason read from the file
+    -- rather than assumed. An order completed because its condition was signed off
+    -- says so; one on a file whose deal ended says that instead.
     INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
     SELECT o.id, o.application_id, o.order_type, 'completed', NULL,
            jsonb_build_object('backfilled', true, 'reason',
-             CASE WHEN a.status = 'funded' THEN 'the loan funded'
-                  ELSE 'the file was ' || a.status END)
+             CASE WHEN a.status IN ('funded','declined','withdrawn') THEN 'the file was ' || a.status
+                  ELSE 'this order was already finished when its history began' END)
       FROM file_orders o
       JOIN applications a ON a.id = o.application_id
      WHERE o.status = 'completed'
        AND NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = o.id AND e.kind = 'completed');
 
     INSERT INTO sync_runtime_state (key, value)
-    VALUES ('orders_funded_retire_v1', jsonb_build_object('done_at', now()))
+    VALUES ('orders_funded_retire_v2', jsonb_build_object('done_at', now()))
     ON CONFLICT (key) DO NOTHING;
   END IF;
 END $$;

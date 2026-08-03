@@ -141,18 +141,27 @@ export default function StaffOrders() {
 
   // Everyone who currently has an order, built from the rows themselves so the
   // picker can only ever offer somebody who really is on this queue.
+  /* AN ORDER OWNED BY SOMEBODY WHO HAS LEFT IS AN UNOWNED ORDER — everywhere on
+     this screen, not just in the cell text. The server joins the assignee with
+     `AND su.is_active = true`, so a departed staffer leaves the id set and the
+     name NULL. Keying off the id meant the picker listed those people under the
+     literal label "Someone", and "Chased by → Nobody yet" EXCLUDED exactly the
+     orders it exists to surface, while the same row's text read "nobody
+     assigned". One definition, used by the picker and both filters. */
+  const ownerOf = (o) => (o.assignedName ? o.assignedTo : null);
+
   const owners = useMemo(() => {
     const seen = new Map();
     for (const f of rows || []) {
-      for (const o of orderOf(f)) if (o.assignedTo && !seen.has(o.assignedTo)) seen.set(o.assignedTo, o.assignedName || 'Someone');
+      for (const o of orderOf(f)) { const id = ownerOf(o); if (id && !seen.has(id)) seen.set(id, o.assignedName); }
     }
     return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [rows]);
 
   const filtered = useMemo(() => {
     let list = rows || [];
-    if (mine === '__none') list = list.filter(f => orderOf(f).some(o => !o.assignedTo && o.open));
-    else if (mine) list = list.filter(f => orderOf(f).some(o => o.assignedTo === mine));
+    if (mine === '__none') list = list.filter(f => orderOf(f).some(o => !ownerOf(o) && o.open));
+    else if (mine) list = list.filter(f => orderOf(f).some(o => ownerOf(o) === mine));
     if (filter === 'late') return list.filter(f => f.anyOverdue);
     if (filter === 'to_assign') return list.filter(f => orderOf(f).some(o => o.unassignedDocs > 0));
     if (filter === 'open') return list.filter(f => orderOf(f).some(o => o.open));
