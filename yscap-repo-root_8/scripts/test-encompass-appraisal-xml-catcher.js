@@ -764,34 +764,44 @@ t('a non-url is refused with a plain reason', () => {
       // THE POST-MERGE AUDIT'S FINDING, and the reason the naming changed. Under
       // the shipped `otherFormat === 1` gate this fixture named the licence PDF
       // and nothing else — the audit's own probe asked "mentions the genuine ZIP
-      // anywhere?" and got false. Both shapes must be named, and the assertion is
-      // on the ZIP specifically: a count of 2 would also pass if the wrong two
-      // were named.
+      // anywhere?" and got false.
+      //
+      // The two lists are asserted SEPARATELY because which list a shape lands in
+      // is the whole point: the ZIP carries the appraisal type URN, the licence
+      // matched only on its filename, and a reader has to be able to tell those
+      // apart without opening the code.
       const names = zipSweep.otherFormatNames || [];
+      const companions = zipSweep.otherFormatCompanions || [];
       assert.ok(names.some((n) => /AppraisalReport\.zip/.test(n)),
-        `the unreachable appraisal must be named, saw: ${JSON.stringify(names)}`);
-      assert.ok(names.some((n) => /Appraiser_License\.pdf/.test(n)),
-        `and the companion document too — it is how a reader tells them apart, saw: ${JSON.stringify(names)}`);
+        `the URN-matched appraisal must be named, saw: ${JSON.stringify(names)}`);
+      assert.ok(!names.some((n) => /Appraiser_License\.pdf/.test(n)),
+        `and a filename-only match must NOT sit in that list, saw: ${JSON.stringify(names)}`);
+      assert.ok(companions.some((n) => /Appraiser_License\.pdf/.test(n)),
+        `the companion is still reported, in its own list, saw: ${JSON.stringify(companions)}`);
       const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
       assert.ok(mine.some((e) => /AppraisalReport\.zip/.test(e)),
         `the ZIP must reach errors[], not only the names list, saw: ${JSON.stringify(mine)}`);
+      assert.ok(mine.some((e) => /matched by type/.test(e)) && mine.some((e) => /matched by name/.test(e)),
+        'and each error line must say HOW it matched — that is what makes it actionable');
     });
 
     t('but a REPEATED shape spends the budget ONCE — per shape, never per resource', () => {
-      // The half that must survive the change. `errors[]` is ONE shared 50-slot
-      // budget whose first three are printed, and nothing is written to the ledger
-      // for these, so the same resources are re-seen every sweep for as long as
-      // their loan sits in the window. Per resource, an appraiser's licence PDF
-      // beside the XML would burn a slot 288 times a day and crowd out a real
-      // orders/expand/record failure on another loan.
+      // The half that must survive every revision of this rule. `errors[]` is ONE
+      // shared 50-slot budget whose first three are printed, and nothing is written
+      // to the ledger for these, so the same resources are re-seen every sweep for
+      // as long as their loan sits in the window. Per resource, an appraiser's
+      // licence PDF beside the XML would burn a slot on every sweep and crowd out a
+      // real orders/expand/record failure on another loan.
       //
       // Three unparsable resources, TWO distinct shapes, TWO error lines — the
       // third resource repeats the second's shape and must add nothing.
       const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
       assert.strictEqual(mine.length, 2,
         `3 resources of 2 shapes must produce 2 error lines, saw ${mine.length}: ${JSON.stringify(mine)}`);
-      assert.strictEqual((zipSweep.otherFormatNames || []).length, 2,
-        'and the same for the names list — a repeat is not a new shape');
+      assert.strictEqual((zipSweep.otherFormatNames || []).length, 1,
+        'one URN-matched shape, named once — a repeat is not a new shape');
+      assert.strictEqual((zipSweep.otherFormatCompanions || []).length, 1,
+        'and one filename-only shape in the companion list');
       assert.ok(mine.every((e) => /see otherFormat for the count/.test(e)),
         'each line must point at the count, so 2 named is never mistaken for 2 seen');
     });
@@ -809,7 +819,7 @@ t('a non-url is refused with a plain reason', () => {
         location: 'https://skydrive.ellieservices.com/m?validity=zzz', authorization: 'sig',
       };
     }
-    let capped;
+    let cappedSweep;
     {
       const og = enc3.apiGet, op = enc3.pipelineSearch, oc = enc3.configured, oe = console.error;
       const ol2 = console.log;
@@ -822,12 +832,83 @@ t('a non-url is refused with a plain reason', () => {
           if (/serviceOrders$/.test(String(p))) return [{ id: 'o-many', serviceSetup: { category: 'APPRAISAL' } }];
           return [];
         };
-        capped = await M._internals.makeTick(db)();
+        cappedSweep = await M._internals.makeTick(db)();
       } finally {
         console.error = oe; console.log = ol2;
         enc3.apiGet = og; enc3.pipelineSearch = op; enc3.configured = oc;
       }
     }
+
+    // ── THE AUDIT'S REPRODUCED FAILURE, ACROSS TWO LOANS ──────────────────────
+    // The pre-merge audit of the first cut ran exactly this and got
+    // `ZIP named anywhere: false`. AMCs stamp the order number and the property
+    // into companion filenames, so ONE order really does carry three DISTINCT
+    // "Appraisal …" PDFs — enough to fill a single 3-slot budget before the loop
+    // ever reaches the loan whose genuine UAD 3.6 package we cannot read.
+    //
+    // Two loans, because that is the shape of the finding: the companions are on
+    // the loan reached FIRST. Nothing resets the naming lists per loan (`out` is
+    // built once in sweepOnce), so this also pins that they are sweep-wide.
+    const COMPANIONS = [
+      { id: 'c1', name: 'Appraisal Invoice 884120.pdf', mimeType: 'application/pdf' },
+      { id: 'c2', name: 'Appraiser_License_NJ_44219.pdf', mimeType: 'application/pdf' },
+      { id: 'c3', name: 'Appraisal UCDP SSR 884120.pdf', mimeType: 'application/pdf' },
+    ].map((r) => ({ ...r, location: 'https://skydrive.ellieservices.com/c?validity=zzz', authorization: 'sig' }));
+    const GENUINE = {
+      id: 'g1', name: 'AppraisalReport_991733_UAD36.zip', mimeType: 'application/zip',
+      type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+      location: 'https://skydrive.ellieservices.com/g?validity=zzz', authorization: 'sig',
+    };
+    let twoLoan;
+    {
+      const og = enc3.apiGet, op = enc3.pipelineSearch, oc = enc3.configured;
+      const oe = console.error, ol3 = console.log;
+      try {
+        console.error = () => {}; console.log = () => {};
+        enc3.configured = () => true;
+        enc3.pipelineSearch = async () => ([
+          { loanId: 'loanA', fields: { 'Loan.LoanNumber': 'A1' } },
+          { loanId: 'loanB', fields: { 'Loan.LoanNumber': 'B1' } },
+        ]);
+        enc3.apiGet = async (p) => {
+          const path = String(p);
+          if (/serviceOrders\/[^/?]+\?/.test(path)) {
+            return { response: { resources: /loanA/.test(path) ? COMPANIONS : [GENUINE] } };
+          }
+          if (/serviceOrders$/.test(path)) {
+            return [{ id: /loanA/.test(path) ? 'o-A' : 'o-B', serviceSetup: { category: 'APPRAISAL' } }];
+          }
+          return [];
+        };
+        twoLoan = await M._internals.makeTick(db)();
+      } finally {
+        console.error = oe; console.log = ol3;
+        enc3.apiGet = og; enc3.pipelineSearch = op; enc3.configured = oc;
+      }
+    }
+
+    t('three companions on an EARLIER loan cannot bury a later loan\'s real package', () => {
+      // The assertion the audit's probe failed. It must be on the ZIP by name —
+      // a count would pass with the wrong three named, which is the bug.
+      const names = twoLoan.otherFormatNames || [];
+      assert.ok(names.some((n) => /AppraisalReport_991733_UAD36\.zip/.test(n)),
+        `the genuine package must be named despite 3 earlier companions, saw: ${JSON.stringify(names)}`);
+      const mine = (twoLoan.errors || []).filter((e) => /do not parse/.test(e));
+      assert.ok(mine.some((e) => /AppraisalReport_991733_UAD36\.zip/.test(e)),
+        `and reach errors[], saw: ${JSON.stringify(mine)}`);
+      assert.strictEqual(twoLoan.loans, 2, 'fixture check: both loans were walked');
+      assert.strictEqual(twoLoan.otherFormat, 4, 'all four unparsable resources are still counted');
+    });
+
+    t('and the companions are still reported — bounded, in their own list', () => {
+      // The other half: splitting the budgets must not silence the companion
+      // class altogether. One is a sample; the count carries the rest.
+      const companions = twoLoan.otherFormatCompanions || [];
+      assert.strictEqual(companions.length, M._internals.MAX_OTHER_FORMAT_COMPANION,
+        `the companion budget is spent to its cap and no further, saw ${JSON.stringify(companions)}`);
+      assert.ok(companions.every((n) => /\.pdf/i.test(n)),
+        'and it holds only the filename-matched documents');
+    });
 
     t('and the naming is BOUNDED — a tenant-wide format change cannot drain the budget', () => {
       // The cap is what makes the distinct-shape rule affordable. Without it a
@@ -839,10 +920,10 @@ t('a non-url is refused with a plain reason', () => {
       const CAP = M._internals.MAX_OTHER_FORMAT_NAMED;
       assert.ok(Number.isInteger(CAP) && CAP > 0 && CAP < 6,
         `fixture check: the cap must be a small positive integer under the 6 shapes offered, saw ${CAP}`);
-      assert.strictEqual(capped.otherFormat, 6, 'every resource is still COUNTED');
-      assert.strictEqual((capped.otherFormatNames || []).length, CAP,
-        `naming must stop at MAX_OTHER_FORMAT_NAMED, saw ${JSON.stringify(capped.otherFormatNames)}`);
-      const mine = (capped.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(cappedSweep.otherFormat, 6, 'every resource is still COUNTED');
+      assert.strictEqual((cappedSweep.otherFormatNames || []).length, CAP,
+        `naming must stop at MAX_OTHER_FORMAT_NAMED, saw ${JSON.stringify(cappedSweep.otherFormatNames)}`);
+      const mine = (cappedSweep.errors || []).filter((e) => /do not parse/.test(e));
       assert.strictEqual(mine.length, CAP,
         `and so must the error slots it spends, saw ${mine.length}`);
     });
@@ -874,12 +955,24 @@ t('a non-url is refused with a plain reason', () => {
     t('the sweep line CARRIES the shape names — the count alone is not readable', () => {
       // `otherFormat: 3` on its own cannot be acted on: three companion invoices
       // and three unreachable appraisal packages print the same number. The names
-      // are what make the log line answerable, so they have to reach the payload,
-      // not just the return value.
+      // are what make the log line answerable, so they have to reach the PAYLOAD.
+      //
+      // ASSERT ON THE PARSED KEY, never on the raw line. The first version of this
+      // test matched /AppraisalReport\.zip/ against the whole string and was proven
+      // vacuous: the shape is also inside the pushErr message, which the same
+      // payload prints under `errors`, so deleting `otherFormatNames` from the
+      // payload left the suite green. Parsing is what makes it bite.
       const line = zipSweepLog.find((l) => /\[encompass-xml\] sweep:/.test(l));
       assert.ok(line, 'fixture check: the sweep must have logged at all');
-      assert.ok(/AppraisalReport\.zip/.test(line),
-        `the sweep line must name the unreachable appraisal, saw: ${String(line).slice(0, 400)}`);
+      const payload = JSON.parse(String(line).slice(String(line).indexOf('{')));
+      assert.ok(Array.isArray(payload.otherFormatNames)
+        && payload.otherFormatNames.some((n) => /AppraisalReport\.zip/.test(n)),
+        `the payload's own otherFormatNames must name the unreachable appraisal, saw: ${
+          JSON.stringify(payload.otherFormatNames)}`);
+      assert.ok(Array.isArray(payload.otherFormatCompanions)
+        && payload.otherFormatCompanions.some((n) => /Appraiser_License\.pdf/.test(n)),
+        `and its own otherFormatCompanions must carry the companion, saw: ${
+          JSON.stringify(payload.otherFormatCompanions)}`);
     });
 
     t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {

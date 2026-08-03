@@ -85,10 +85,24 @@ const encompass = require('../lib/integrations/encompass');
 // sample and COUNT the rest — a silent truncation would read as "only three
 // things went wrong".
 const MAX_ERRORS = 50;
-// How many DISTINCT unparsable shapes a sweep names. Enough to tell a companion
-// invoice from a licence from the report itself, and it bounds what this branch
-// can spend of the MAX_ERRORS shared slots however many resources carry them.
+// How many DISTINCT unparsable shapes a sweep names, and the two budgets are
+// SEPARATE on purpose — see appraisalMatchKind.
+//
+// A resource carrying the appraisal TYPE URN is the vendor saying "this is the
+// report", so an unparsable one is the signal worth a slot. A resource matched
+// only by the word "apprais" in its filename is the generous backstop, and in
+// practice it is an invoice or a licence.
+//
+// ONE shared budget was not enough, and the reason is specific: AMCs stamp the
+// order number and the property into companion filenames, so
+// "Appraisal Invoice 884120.pdf" and "Appraisal UCDP SSR 884120.pdf" are two
+// DISTINCT shapes on one order. Three of those on an early loan filled a single
+// 3-slot budget and a genuine UAD 3.6 ZIP on a later loan was named nowhere —
+// the exact failure the distinct-shape rule was written to fix, made three times
+// less likely rather than fixed. A companion can now only ever crowd out another
+// companion.
 const MAX_OTHER_FORMAT_NAMED = 3;
+const MAX_OTHER_FORMAT_COMPANION = 1;
 function pushErr(out, msg) {
   if (out.errors.length < MAX_ERRORS) out.errors[out.errors.length] = msg;
   else out.errorsDropped = (out.errorsDropped || 0) + 1;
@@ -281,10 +295,15 @@ const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
  * name fallback matches real companion documents on a fulfilled order
  * ("Appraisal Invoice.pdf", "Appraiser_License.pdf"), and because nothing is
  * recorded for one of these the same resource is re-seen on EVERY sweep. So the
- * cost is a recurring `otherFormat` tick plus, unbounded, a recurring alarm and a
- * slot out of the shared error budget — which is why the call site fires both of
- * those exactly ONCE per sweep. With that bound the residual cost really is one
- * line per sweep that mentions a companion document, and the alarm text says so
+ * cost is a recurring `otherFormat` tick plus, if it were unbounded, a recurring
+ * alarm and a slot out of the shared error budget on every sweep forever.
+ *
+ * That is what the call site's caps are for, and why a filename-only match gets
+ * its OWN small budget rather than sharing one: companion filenames carry order
+ * numbers, so a single order can present several DISTINCT ones, and on a shared
+ * budget those crowd out the resource that actually carries the appraisal type
+ * URN. With the split, the residual cost of this generosity is a bounded sample
+ * of companion shapes per sweep, and the alarm text says which test matched
  * rather than claiming nothing is being caught.
  *
  * The trade is deliberate in this direction: a false negative is the silence this
@@ -293,10 +312,22 @@ const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
  * "apprais" in their type names — so the fallback is a backstop for a delivery
  * whose type URN ALSO changed, not the primary signal.
  */
+// WHICH of the two tests matched, because the caller has to tell them apart. A
+// `type` match is the vendor's own machine-readable claim that this resource IS
+// the appraisal report — an unparsable one is the tenant-wide signal this alarm
+// exists to raise. A `name` match is the generous backstop described above, and
+// in practice it is nearly always a companion document. Collapsing both to a
+// boolean is what let three invoices crowd a genuine delivery out of the naming
+// budget; see the two budgets at the call site.
+function appraisalMatchKind(res) {
+  if (!res) return null;
+  if (String(res.type || '').toLowerCase().startsWith(APPRAISAL_TYPE_PREFIX)) return 'type';
+  if (/apprais/i.test(String(res.name || ''))) return 'name';
+  return null;
+}
+
 function isAppraisalResource(res) {
-  if (!res) return false;
-  if (String(res.type || '').toLowerCase().startsWith(APPRAISAL_TYPE_PREFIX)) return true;
-  return /apprais/i.test(String(res.name || ''));
+  return appraisalMatchKind(res) !== null;
 }
 
 /** Guard the download URL's host. Throws with a plain reason. */
@@ -719,7 +750,7 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   paceMs = envNum('ENCOMPASS_APPRAISAL_XML_PACE_MS', 350, { min: 0, max: 10000 }) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
-    skipped: 0, noLink: 0, otherFormat: 0, otherFormatNames: [],
+    skipped: 0, noLink: 0, otherFormat: 0, otherFormatNames: [], otherFormatCompanions: [],
     capturedUnrecorded: 0, capturedBookkeepingFailed: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
@@ -834,11 +865,12 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
           // NOT downloading it is still right (see isAppraisalXml). Counting it
           // is what was missing. The counter is in the log gate below, so one of
           // these makes the sweep speak up.
-          if (isAppraisalResource(res)) {
+          const matchKind = appraisalMatchKind(res);
+          if (matchKind) {
             out.otherFormat++;
-            // NAME EACH DISTINCT SHAPE, capped — not the first resource, and not
-            // every resource. Both of the obvious answers are wrong, in opposite
-            // directions, and the cost of each is worth stating.
+            // NAME EACH DISTINCT SHAPE, capped, in TWO SEPARATE BUDGETS. All three
+            // of the simpler answers are wrong, and the cost of each is worth
+            // stating because two of them have already shipped.
             //
             // PER RESOURCE is unaffordable. `errors[]` is ONE shared 50-slot budget
             // for the whole sweep and only the first three are printed, so a push
@@ -847,18 +879,24 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // `errorsDropped` tick. And nothing is written to the ledger for one of
             // these, so the SAME resource is re-seen on EVERY sweep for as long as
             // its loan stays in the window — an appraiser's licence PDF sitting
-            // beside the XML would burn a slot 288 times a day, which is precisely
+            // beside the XML would burn a slot on every sweep, which is precisely
             // the failure the `warnOnce` note above this file describes.
             //
-            // FIRST ONLY was what shipped, and it buried the finding. The one alarm
-            // went to whichever resource the loop reached first, so a companion
+            // FIRST ONLY shipped, and it buried the finding. The one alarm went to
+            // whichever resource the loop reached first, so a companion
             // "Appraisal Invoice.pdf" on an early loan hid a genuine UAD 3.6 ZIP on
-            // a later one and the ZIP appeared nowhere but in the count — the exact
-            // reading this alarm exists to make possible.
+            // a later one and the ZIP appeared nowhere but in the count.
             //
-            // DISTINCT-AND-CAPPED keeps the bound that matters (at most
-            // MAX_OTHER_FORMAT_NAMED of the 50 shared slots, however many resources
-            // there are) while guaranteeing a new shape is always named.
+            // DISTINCT SHAPES ON ONE SHARED BUDGET also shipped, and it only made
+            // that three times less likely — AMCs stamp the order number into
+            // companion filenames, so a single order really does carry three
+            // distinct "Appraisal …" PDFs, which is enough to fill a 3-slot budget
+            // before a later loan's genuine package is ever reached.
+            //
+            // So the budgets are SPLIT BY HOW THE RESOURCE MATCHED. A companion can
+            // now only crowd out another companion. Past either cap the count still
+            // rises and the names stop — that is the deliberate bound, NOT a
+            // guarantee that every distinct shape gets named.
             //
             // WHAT TO READ THIS WITH, stated precisely because the obvious answer
             // is wrong twice over. `captured` is not it: an XML we already hold
@@ -867,21 +905,32 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // the historical back book is legitimately expired. `resources` is not
             // it either on its own — it is a SWEEP-WIDE total, so one healthy loan
             // is enough to make it non-zero while another loan's appraisal is
-            // genuinely unreachable. The names below are the discriminator: an
-            // invoice or a licence reads as a companion document, a `.zip` of the
-            // report does not. `resources: 0` across the whole sweep is the
-            // tenant-wide signal that the format has changed.
-            const shape = `${res.mimeType || 'no mime'} / ${res.name || 'no name'}`;
-            if (!out.otherFormatNames.includes(shape)
-                && out.otherFormatNames.length < MAX_OTHER_FORMAT_NAMED) {
-              out.otherFormatNames.push(shape);
+            // genuinely unreachable. `otherFormatNames` is the discriminator, and
+            // it is now only the URN-matched class — a `.zip` of the report reads
+            // very differently from the invoice in `otherFormatCompanions`.
+            // `resources: 0` across the whole sweep is the tenant-wide signal that
+            // the format has changed.
+            //
+            // t500 because both halves are VENDOR strings off an API response and
+            // this one is retained for the whole sweep, pushed to errors[], printed
+            // and JSON-stringified. Nothing else in this module lets an unbounded
+            // vendor string through to a log line.
+            const byType = matchKind === 'type';
+            const named = byType ? out.otherFormatNames : out.otherFormatCompanions;
+            const cap = byType ? MAX_OTHER_FORMAT_NAMED : MAX_OTHER_FORMAT_COMPANION;
+            const shape = t500(`${res.mimeType || 'no mime'} / ${res.name || 'no name'}`);
+            if (!named.includes(shape) && named.length < cap) {
+              named[named.length] = shape;
               console.error('[encompass-xml] ALARM: an appraisal-looking resource arrived in a format ' +
-                `this catcher does not parse (${shape}). It was NOT downloaded. A companion document ` +
-                '(an invoice, a licence) is the common and harmless case; if the report itself is ' +
-                'arriving this way and nothing is being captured, the delivery format has changed and ' +
-                'the catcher needs updating.');
+                `this catcher does not parse (${shape}). It was NOT downloaded. ` +
+                (byType
+                  ? 'It carries the appraisal TYPE URN, so the vendor is calling this the report itself — ' +
+                    'if nothing is being captured, the delivery format has changed and the catcher needs updating.'
+                  : 'It matched only on its FILENAME, so a companion document (an invoice, a licence) is the ' +
+                    'common and harmless case.'));
               pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
-                `(${shape}) — see otherFormat for the count and otherFormatNames for the shapes`);
+                `(${shape}, matched by ${matchKind}) — see otherFormat for the count, otherFormatNames and ` +
+                'otherFormatCompanions for the shapes');
             }
           }
           continue;
@@ -976,8 +1025,9 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
         if (verdict.startsWith('captured-unrecorded')) out.capturedUnrecorded = (out.capturedUnrecorded || 0) + 1;
         // COUNTED SEPARATELY, for the same reason capturedUnrecorded is. The bytes
         // are in hand so this is a capture, not a failure — but the ledger row it
-        // left carries only status/storage_ref/error, with captured_at, sha256,
-        // byte_size and research_import_id all NULL. Rolling it silently into
+        // left carries only status, storage_ref, error and a bumped attempts,
+        // with captured_at, sha256, byte_size and research_import_id all NULL
+        // (read back off a real row driven through this path). Rolling it into
         // `captured` would make a row that needs a human look identical to a clean
         // one on the only surface anybody reads.
         if (verdict.startsWith('captured-bookkeeping-failed')) out.capturedBookkeepingFailed++;
@@ -1048,6 +1098,7 @@ function makeTick(db) {
             // or capturing bytes the ledger never recorded, must not look like a
             // clean run.
             otherFormatNames: r.otherFormatNames || [],
+            otherFormatCompanions: r.otherFormatCompanions || [],
             capturedUnrecorded: r.capturedUnrecorded || 0,
             capturedBookkeepingFailed: r.capturedBookkeepingFailed || 0,
             errorsDropped: r.errorsDropped || 0,
@@ -1114,7 +1165,8 @@ module.exports = {
   // exported for tests
   _internals: {
     validityOf, isAppraisalXml, isAppraisalResource, APPRAISAL_TYPE_PREFIX,
-    assertStorageHost, STORAGE_HOST_RE, makeTick, MAX_OTHER_FORMAT_NAMED,
+    assertStorageHost, STORAGE_HOST_RE, makeTick,
+    MAX_OTHER_FORMAT_NAMED, MAX_OTHER_FORMAT_COMPANION, appraisalMatchKind,
     decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };
