@@ -212,6 +212,107 @@ if (!process.env.DATABASE_URL) {
     ok(drained.scanned === 0, `and it genuinely drains rather than re-picking forever (scanned ${drained.scanned})`);
   }
 
+
+  // -------------------------------------------------------------------------
+  // THE AUDIT'S FINDINGS, PINNED.
+  // -------------------------------------------------------------------------
+  {
+    const rowsOf = async (id) => (await q('SELECT count(*)::int n FROM property_adjustments WHERE observation_id=$1', [id]))[0].n;
+
+    // A NULL AMOUNT IS NOT ZERO — and `Number('')`, `Number('  ')`, `Number(false)`
+    // and `Number([])` are ALL 0, so the old finite-check turned four kinds of
+    // nothing into a stated zero.
+    const oNul = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-04-01','[]'::jsonb) RETURNING id`, [pid]))[0].id;
+    await writeAdjustments(db, { observationId: oNul, propertyId: pid, place, on: '2026-04-01',
+      adjustments: [{ type: 'A', amount: '' }, { type: 'B', amount: '   ' }, { type: 'C', amount: false },
+        { type: 'D', amount: [] }, { type: 'E', amount: '1200' }, { type: 'F', amount: 0 }] });
+    const amts = (await q('SELECT seq, amount FROM property_adjustments WHERE observation_id=$1 ORDER BY seq', [oNul]))
+      .map((r) => (r.amount == null ? null : Number(r.amount)));
+    ok(amts.slice(0, 4).every((a) => a === null),
+      `blank, whitespace, false and [] are all NOTHING, not zero (${JSON.stringify(amts.slice(0, 4))})`);
+    ok(amts[4] === 1200, 'a numeric STRING is still a real figure');
+    ok(amts[5] === 0, 'and a stated zero is still a stated zero');
+
+    // ONE OUT-OF-RANGE FIGURE MUST NOT TAKE THE WHOLE COMPARABLE DOWN. The column
+    // is numeric(14,2) and the parser reads the grid amount with no ceiling, so a
+    // single corrupt vendor field raised an overflow that lost every line on that
+    // comparable — and then jammed the back-fill queue for ever.
+    const oBig = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-04-02','[]'::jsonb) RETURNING id`, [pid]))[0].id;
+    await writeAdjustments(db, { observationId: oBig, propertyId: pid, place, on: '2026-04-02',
+      adjustments: [{ type: 'GrossLivingArea', amount: 99999999999999 }, { type: 'Condition', amount: -3000 }] });
+    const big = (await q('SELECT seq, amount FROM property_adjustments WHERE observation_id=$1 ORDER BY seq', [oBig]));
+    ok(big.length === 2, `both lines survive an unstorable figure (${big.length})`);
+    ok(big[0].amount === null && Number(big[1].amount) === -3000,
+      'the unstorable figure is dropped and its SIBLING is kept');
+
+    // THE BACK-FILL MUST NOT STARVE. An observation that yields no rows was
+    // re-selected on every boot, and under the real LIMIT window it blocked every
+    // writable observation behind it — measured: three passes scanned the same 2,
+    // wrote 0, and the good one was never reached.
+    const oNone = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-05-01',$2::jsonb) RETURNING id`,
+      [pid, JSON.stringify([{ description: 'no type at all', amount: 1 }])]))[0].id;
+    const oGood = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2019-01-01',$2::jsonb) RETURNING id`,
+      [pid, JSON.stringify([{ type: 'Condition', description: 'C4', amount: -1000 }])]))[0].id;
+    // limit 1, newest first — the stuck observation owns the whole window.
+    let sawGood = 0;
+    for (let i = 0; i < 6; i++) { await ingest.backfillAdjustmentRowsOnce(db, { limit: 1 }); sawGood = await rowsOf(oGood); if (sawGood) break; }
+    ok(await rowsOf(oNone) === 0, 'an observation with nothing to file writes nothing');
+    ok(sawGood === 1, 'and the writable observation BEHIND it is still reached — it no longer owns the window');
+    const drain = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
+    ok(drain.scanned === 0, `and the queue genuinely drains (scanned ${drain.scanned})`);
+
+    // THE SCOPE MUST NARROW ON EVERY PART GIVEN. A city-only benchmark spanned
+    // states — Springfield NJ and Springfield OH answered as one "market" whose
+    // median described neither.
+    const other = (await q(
+      `INSERT INTO properties (address_key, display_address, state, city, zip)
+       VALUES ('adjscope-' || gen_random_uuid(), '2 Scope Rd', 'OH', 'Paterson', '43613')
+       RETURNING id`))[0].id;
+    const oOh = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-02-01','[]'::jsonb) RETURNING id`, [other]))[0].id;
+    const ohLines = [];
+    for (let i = 0; i < 12; i++) ohLines.push({ type: 'BathCount', amount: -9000 });
+    await writeAdjustments(db, { observationId: oOh, propertyId: other, adjustments: ohLines,
+      place: { state: 'OH', city: 'Paterson', zip: '43613' }, on: '2026-02-01' });
+    const nj = await ingest.adjustmentBenchmark(db, { lineType: 'BathCount', city: 'Paterson', state: 'NJ', months: 6000 });
+    const oh = await ingest.adjustmentBenchmark(db, { lineType: 'BathCount', city: 'Paterson', state: 'OH', months: 6000 });
+    ok(nj.ok && oh.ok && nj.median !== oh.median,
+      `two towns of the same name in different states are two markets (NJ ${nj.median} vs OH ${oh.median})`);
+    ok(oh.n === 12, `and the state genuinely narrows rather than being ignored (n=${oh.n})`);
+
+    // THE SAMPLE FLOOR MUST NOT FAIL OPEN. `3 < null` and `3 < NaN` are both FALSE,
+    // and the `= 8` default only applies to `undefined` — so a floor read from
+    // config as null returned a "benchmark" from three numbers with ok:true.
+    // Seeded with exactly THREE, so the floor is the only thing standing between
+    // a caller and a "benchmark" built from three numbers.
+    const oThin = (await q(
+      `INSERT INTO property_observations (property_id, role, observed_on, adjustments)
+       VALUES ($1,'comparable','2026-06-01','[]'::jsonb) RETURNING id`, [pid]))[0].id;
+    await writeAdjustments(db, { observationId: oThin, propertyId: pid, place, on: '2026-06-01',
+      adjustments: [{ type: 'ThinLine', amount: -100 }, { type: 'ThinLine', amount: -200 }, { type: 'ThinLine', amount: -300 }] });
+    const thinDefault = await ingest.adjustmentBenchmark(db, { lineType: 'ThinLine', city: 'Paterson', state: 'NJ', months: 6000 });
+    ok(!thinDefault.ok && thinDefault.n === 3,
+      `three adjustments are refused at the default floor (n=${thinDefault.n})`);
+    for (const bad of [null, NaN, 0, -5, 'abc']) {
+      const r = await ingest.adjustmentBenchmark(db, { lineType: 'ThinLine', city: 'Paterson', state: 'NJ', months: 6000, minSample: bad });
+      ok(!r.ok, `a minSample of ${JSON.stringify(bad)} falls back to the real floor rather than opening the gate`);
+    }
+    const explicit = await ingest.adjustmentBenchmark(db, { lineType: 'ThinLine', city: 'Paterson', state: 'NJ', months: 6000, minSample: 2 });
+    ok(explicit.ok && explicit.n === 3, 'while a real, deliberate floor of 2 is honoured');
+
+    await db.query('DELETE FROM property_observations WHERE property_id=$1', [other]);
+    await db.query('DELETE FROM properties WHERE id=$1', [other]);
+  }
+
   await db.query('DELETE FROM property_observations WHERE property_id=$1', [pid]);
   await db.query('DELETE FROM properties WHERE id=$1', [pid]);
   await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email = $1)`,

@@ -36,6 +36,13 @@
 -- is really "the median of every bathroom adjustment regardless of size" is worse
 -- than no figure, because it gets believed.
 
+-- `CREATE TABLE IF NOT EXISTS` IS A NO-OP ON AN EXISTING TABLE, so a column added
+-- to this file later is never added to a database that already ran it — the
+-- migration then dies on the first statement naming that column, and
+-- `migrate-boot` classifies a 23505 "… is duplicated" by regex and records the
+-- file as APPLIED. That is the db/436 trap, one file later. Every column is
+-- therefore also added explicitly below, and duplicates are removed before the
+-- unique index that would otherwise refuse to build over them.
 CREATE TABLE IF NOT EXISTS property_adjustments (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   observation_id uuid NOT NULL REFERENCES property_observations(id) ON DELETE CASCADE,
@@ -59,6 +66,41 @@ CREATE TABLE IF NOT EXISTS property_adjustments (
   observed_on    date,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
+
+-- The columns again, for a database that created the table under an earlier
+-- version of this file. `ADD COLUMN IF NOT EXISTS` is the pattern db/439 and
+-- db/441 use and the one this file should have used from the start.
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS seq integer;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS property_id uuid;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS amount numeric(14,2);
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS state text;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS zip text;
+ALTER TABLE property_adjustments ADD COLUMN IF NOT EXISTS observed_on date;
+
+-- A row with no `seq` predates the keyed version and cannot take part in the
+-- unique index; number them by their own insertion order so nothing is lost.
+UPDATE property_adjustments a SET seq = n.rn - 1
+  FROM (SELECT id, row_number() OVER (PARTITION BY observation_id ORDER BY created_at, id) AS rn
+          FROM property_adjustments WHERE seq IS NULL) n
+ WHERE a.id = n.id AND a.seq IS NULL;
+
+-- And remove the duplicates the pre-keyed writer could produce, keeping the
+-- oldest of each group.
+DELETE FROM property_adjustments a
+ USING property_adjustments b
+ WHERE a.observation_id = b.observation_id AND a.seq = b.seq
+   AND (a.created_at, a.id) > (b.created_at, b.id);
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'property_adjustments' AND column_name = 'seq'
+                AND is_nullable = 'YES')
+     AND NOT EXISTS (SELECT 1 FROM property_adjustments WHERE seq IS NULL) THEN
+    ALTER TABLE property_adjustments ALTER COLUMN seq SET NOT NULL;
+  END IF;
+END $$;
 
 -- ONE ROW PER LINE PER OBSERVATION — and this index is the only thing that makes
 -- it true under concurrency. The writer replaces a report's lines on every

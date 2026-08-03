@@ -185,12 +185,21 @@ function locationTypeOf(nodes) {
 // the property's financing type. So a value is taken only when it contains an
 // actual letter and is not merely a number with punctuation around it.
 const ADJ_JUNK = /^[\s;:,.\-+$()0-9]*$/;
-function adjText(adjustments, type) {
+// AND A LETTER IS NOT ENOUGH ON THE FINANCING ROW. Many vendors use the Financing
+// Concessions line for something else entirely — days on market, the
+// under-contract date, the listing status, the list-to-sale ratio. Measured over
+// the corpus: of 277 comparables newly given a financing type from the grid row,
+// 75 were none of the kind — "None/DOM 3", "Unk -42 DOM", "UCD09/30/2025",
+// "SaleLst96%;0", "Pending;0", "SELLER CONC. $10,000". A letter test alone let
+// every one of them into a column a person reads as how the sale was financed.
+const NOT_FINANCING = /\bDOM\b|\bUCD\b|days?\s*on\s*market|\bLP\s*to\s*SP\b|\bSaleLst\b|\bactive\b|\bpending\b|\bexpired\b|\bwithdrawn\b|\blisting\b|\bconc(ession)?\b|\bprice\b|\d{1,2}\/\d{1,2}\/\d{2,4}|%/i;
+function adjText(adjustments, type, reject) {
   for (const a of (adjustments || [])) {
     if (a.type !== type) continue;
     const d = clean(a.description);
     if (!d || ADJ_JUNK.test(d)) continue;      // a number, a separator, or nothing
     if (!/[A-Za-z]/.test(d)) continue;         // belt and braces: no letters, no word
+    if (reject && reject.test(d)) continue;    // a word, but not of this KIND
     return d;
   }
   return null;
@@ -762,7 +771,7 @@ function comparables(root, effectiveYear) {
       // (307 comparables). NEVER the other way round — the coded value is the
       // structured one.
       financingType: clean(X.attr(cd, 'GSEFinancingType'))
-        || adjText(g.adjustments, 'FinancingConcessions'),
+        || adjText(g.adjustments, 'FinancingConcessions', NOT_FINANCING),
       // FUNCTIONAL UTILITY — how well the layout works ("Conforms", "Average",
       // "Inferior-2beds"). A real appraisal fact, stated on the grid of every one
       // of the 769 comparables in the corpus, and read by nothing until now. It

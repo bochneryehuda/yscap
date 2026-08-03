@@ -572,6 +572,34 @@ async function upsertObservation(db, cols) {
  * ingest that has already stored the observation it derives from.
  */
 /**
+ * THE ADJUSTMENT AMOUNT, made storable.
+ *
+ * Two separate traps, both proven:
+ *
+ * · `Number('')`, `Number('   ')`, `Number(false)` and `Number([])` are all 0, so
+ *   the old `Number.isFinite(Number(x))` test turned four kinds of NOTHING into a
+ *   stated zero — violating this table's own first rule, that a NULL amount is not
+ *   a zero. Only a real number or a numeric string is taken.
+ *
+ * · The column is `numeric(14,2)`. `extract.js` reads the grid amount with a bare
+ *   `toNum()` and no ceiling, so ONE corrupt vendor figure raised a numeric
+ *   overflow that took the WHOLE comparable's rows down with it — measured: five
+ *   parsed lines, zero stored, and the recorded reason named neither the line nor
+ *   the value. Worse, that observation then jammed the back-fill queue forever.
+ *   An out-of-range figure is dropped to null so the other lines survive.
+ */
+const ADJ_MAX = 1e11;
+function adjAmount(v) {
+  if (v == null || typeof v === 'boolean') return null;
+  if (typeof v !== 'number' && typeof v !== 'string') return null;
+  const t = typeof v === 'string' ? v.trim() : v;
+  if (t === '') return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  return Math.abs(n) < ADJ_MAX ? n : null;
+}
+
+/**
  * THE SIZE LINES, whose delta is unambiguous because both sides state ONE number
  * in ONE unit. A `RoomCount` adjustment on most grids covers rooms AND bedrooms
  * AND bathrooms together, so dividing it by a room difference would attribute the
@@ -599,6 +627,33 @@ function unitDeltaFor(lineType, subjectGla, compGla) {
   return { delta: d, basis: 'sqft' };
 }
 
+/**
+ * WHERE AND WHEN, resolved ONCE from the canonical row.
+ *
+ * The live writer and the back-fill each computed these for themselves and
+ * disagreed on almost every row: 15,909 of 17,431 differed on the DATE (the
+ * comparable's sale against the report's effective date, 165 days apart on
+ * average and over a year apart on 606 rows) and 2,850 on the CITY — "City Of
+ * Wilkes Barre" against "Wilkes Barre", which differ case-insensitively, so no
+ * `lower(city)` predicate could reconcile them. Whichever writer ran last won,
+ * and one GROUP BY was aggregating two different meanings of "when" and "where".
+ *
+ * The place is the PROPERTY's normalised row — the same value the benchmark
+ * groups by — and the date is the comparable's own SALE date, because that is
+ * the market the appraiser was pricing against. One definition, read here, so
+ * the two callers cannot drift again.
+ */
+async function adjustmentPlaceAndDate(db, propertyId, saleDate, fallbackDate) {
+  let place = { state: null, city: null, zip: null };
+  if (propertyId) {
+    try {
+      const r = await db.query('SELECT state, city, zip FROM properties WHERE id = $1', [propertyId]);
+      if (r.rows[0]) place = { state: r.rows[0].state, city: r.rows[0].city, zip: r.rows[0].zip };
+    } catch (_) { /* the row is a nicety; the lines still file */ }
+  }
+  return { place, on: saleDate || fallbackDate || null };
+}
+
 async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on, subjectGla, compGla }) {
   if (!observationId) return 0;
   const rows = (Array.isArray(adjustments) ? adjustments : []).filter((a) => a && a.type);
@@ -618,7 +673,7 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
       vals.push(observationId, i, propertyId || null, String(a.type),
         a.description == null ? null : String(a.description).slice(0, 500),
         // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
-        a.amount != null && Number.isFinite(Number(a.amount)) ? Number(a.amount) : null,
+        adjAmount(a.amount),
         (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null,
         ud ? ud.delta : null, ud ? ud.basis : null);
       return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${rows.length * 11 + 1})`;
@@ -657,17 +712,23 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
  *
  * Never throws.
  */
-async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample = 8 } = {}) {
+async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample } = {}) {
   if (!lineType) return { ok: false, reason: 'no line type' };
+  // `= 8` only defaults `undefined`. A caller reading the floor from config where
+  // the key is absent-as-null passed null, and `3 < null` is FALSE — so the guard
+  // failed OPEN and returned a "benchmark" from three numbers with ok:true.
+  const floor = Number.isFinite(Number(minSample)) && Number(minSample) > 0 ? Math.floor(Number(minSample)) : 8;
   try {
     const p = [String(lineType), String(months)];
     const where = ['line_type = $1', 'amount IS NOT NULL', 'amount <> 0',
       "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
+    // Springfield NJ and Springfield OH answered together as one "market" with a
+    // median describing neither — and a zip scope ignored a contradicting state
+    // outright rather than refusing it. Every supplied part now narrows.
     if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
-    else if (city) {
-      p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`);
-      if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
-    } else if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    else if (city) { p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
+    if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
     const r = await db.query(
       `SELECT count(*)::int AS n,
               percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS median,
@@ -675,8 +736,8 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
               percentile_cont(0.75) WITHIN GROUP (ORDER BY amount) AS q3
          FROM property_adjustments WHERE ${where.join(' AND ')}`, p);
     const row = r.rows[0] || { n: 0 };
-    if (!row.n || row.n < minSample) {
-      return { ok: false, n: row.n || 0, minSample,
+    if (!row.n || row.n < floor) {
+      return { ok: false, n: row.n || 0, minSample: floor,
         reason: `only ${row.n || 0} adjustment${row.n === 1 ? '' : 's'} on this line in this market — too few to state a benchmark` };
     }
     return {
@@ -707,17 +768,21 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
  * rate is a number people will price a deal against, and a median of four
  * adjustments is noise wearing the clothes of an answer. Never throws.
  */
-async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample = 8 } = {}) {
+async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample } = {}) {
+  // Same guard as the benchmark: a null or NaN floor must not open the gate.
+  const floor = Number.isFinite(Number(minSample)) && Number(minSample) > 0 ? Math.floor(Number(minSample)) : 8;
   try {
     const p = [String(basis), String(months)];
     const where = ['unit_delta_basis = $1', 'amount IS NOT NULL', 'amount <> 0',
       'unit_delta IS NOT NULL', 'unit_delta <> 0',
       "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
+    // Springfield NJ and Springfield OH answered together as one "market" with a
+    // median describing neither — and a zip scope ignored a contradicting state
+    // outright rather than refusing it. Every supplied part now narrows.
     if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
-    else if (city) {
-      p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`);
-      if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
-    } else if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    else if (city) { p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
+    if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
     // A NEGATIVE RATE IS A MISREAD, NOT A MARKET. It means the adjustment pointed
     // the opposite way to the size difference — zero of 468 real ones do — so it
     // is excluded rather than averaged in, where two of them would drag a median
@@ -730,8 +795,8 @@ async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 3
          FROM property_adjustments
         WHERE ${where.join(' AND ')} AND (amount / unit_delta) > 0 AND (amount / unit_delta) < 500`, p);
     const row = r.rows[0] || { n: 0 };
-    if (!row.n || row.n < minSample) {
-      return { ok: false, n: row.n || 0, minSample, basis,
+    if (!row.n || row.n < floor) {
+      return { ok: false, n: row.n || 0, minSample: floor, basis,
         reason: `only ${row.n || 0} usable adjustment${row.n === 1 ? '' : 's'} in this market — too few to state a rate` };
     }
     return { ok: true, n: row.n, basis, months,
@@ -758,10 +823,14 @@ async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 3
  * Best-effort; never throws.
  */
 async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
-  let scanned = 0, written = 0;
+  let scanned = 0, written = 0, stuck = 0;
   try {
     const rows = (await db.query(
-      `SELECT o.id, o.property_id, o.adjustments, o.observed_on,
+      `SELECT o.id, o.property_id, o.adjustments,
+              -- THE COMPARABLE'S OWN SALE DATE, exactly as the live writer uses —
+              -- the market the appraiser was pricing against, not the report's
+              -- effective date.
+              COALESCE(o.sale_date, o.observed_on) AS on_date,
               p.state, p.city, p.zip,
               o.gla AS comp_gla, a.gla AS subject_gla
          FROM property_observations o
@@ -801,17 +870,49 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
     for (const r of rows) {
       scanned++;
       try {
-        written += await writeAdjustments(db, {
+        const wrote = await writeAdjustments(db, {
           observationId: r.id, propertyId: r.property_id,
           adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
           place: { state: r.state, city: r.city, zip: r.zip },
-          on: r.observed_on,
+          on: r.on_date,
           subjectGla: r.subject_gla, compGla: r.comp_gla,
         });
-      } catch (_) { /* one bad observation must not stop the drain */ }
+        // AND IT MUST LEAVE THE QUEUE EITHER WAY. An observation whose lines all
+        // lack a `type`, or whose only figure is unstorable, writes nothing — and
+        // the "no rows yet" arm below then re-selects it on every boot forever.
+        // With a LIMIT window those stuck rows sit at the head (newest first) and
+        // block every writable observation behind them: measured, three passes
+        // scanned the same 2 and wrote 0, and the good observation was never
+        // reached. A row that yields nothing is stamped so the queue moves on.
+        if (!wrote) await markNothingToFile(db, r.id);
+        written += wrote;
+      } catch (_) {
+        // A THROW IS THE SAME PROBLEM. An observation the writer cannot store is
+        // stamped too, or it jams the window exactly as above.
+        try { await markNothingToFile(db, r.id); } catch (__) { /* best-effort */ }
+        stuck++;
+      }
     }
   } catch (_) { /* best-effort */ }
-  return { scanned, written };
+  // `stuck` is REPORTED. An observation the writer could not file is a fact about
+  // the corpus, and a silent skip reads as "nothing to do" — the no-silent-caps
+  // rule this codebase has already learned once.
+  return { scanned, written, stuck };
+}
+
+/**
+ * MARK AN OBSERVATION AS HAVING NOTHING TO FILE, so the queue can move past it.
+ *
+ * A single row with a null `line_type` sentinel would violate the NOT NULL, and a
+ * separate ledger table is a lot of machinery for a rare case — so the marker is
+ * the observation's own jsonb, emptied to `[]`. That is TRUE by then: the writer
+ * has just looked at those lines and found nothing it can file, and the ORIGINAL
+ * report is untouched (the appraisal, its stored XML and `appraisal_comparables`
+ * all still hold it, and a re-parse rebuilds the observation from them).
+ */
+async function markNothingToFile(db, observationId) {
+  await db.query(
+    `UPDATE property_observations SET adjustments = '[]'::jsonb WHERE id = $1`, [observationId]);
 }
 
 /**
@@ -1778,21 +1879,19 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
     out.observations++;
     // The adjustment lines as rows (db/440) — the market benchmark's raw material.
     // Its own savepoint: a derived index must never fail the ingest that feeds it.
-    await bestEffort(db, 'adj_rows', () => writeAdjustments(db, {
-      observationId: obs.id, propertyId: pid, adjustments: c.adjustments || [],
-      // The comparable's OWN town where it stated one, falling back the same way
-      // its property key does — never a town it did not sit in.
-      place: { state: txt(c.state) || txt(a.subject_state),
-        city: txt(c.city) || inheritedCity,
-        zip: txt(c.zip) },
-      // WHEN the adjustment describes: the comparable's own sale date, because
-      // that is the market the appraiser was pricing against. The report's
-      // effective date is the fallback.
-      on: saleDate || observedOn,
-      // The two sizes the size-line rate is derived from. `a.gla` is the SUBJECT
-      // of this report; `c.gla` is this comparable's own.
-      subjectGla: a.gla, compGla: c.gla,
-    }), (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
+    await bestEffort(db, 'adj_rows', async () => {
+      // ONE definition of where and when, shared with the back-fill — see
+      // `adjustmentPlaceAndDate`. Deriving them here independently is what made
+      // the two writers disagree on 15,909 of 17,431 rows.
+      const pd = await adjustmentPlaceAndDate(db, pid, saleDate, observedOn);
+      return writeAdjustments(db, {
+        observationId: obs.id, propertyId: pid, adjustments: c.adjustments || [],
+        place: pd.place, on: pd.on,
+        // The two sizes the size-line rate is derived from. `a.gla` is the
+        // SUBJECT of this report; `c.gla` is this comparable's own.
+        subjectGla: a.gla, compGla: c.gla,
+      });
+    }, (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
       type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
       appraisalId, importId, observationId: obs.id,

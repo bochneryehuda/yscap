@@ -695,7 +695,12 @@ if (require.main === module) {
         // picked again).
         require('./lib/research/ingest').backfillAdjustmentRowsOnce(require('./db'),
           { limit: Number(process.env.RESEARCH_ADJUSTMENT_BACKFILL || 2000) })
-          .then((r) => r && r.written && console.log('[boot] adjustment corpus backfill:', JSON.stringify(r)))
+          // GATED ON `scanned`, NOT `written`. A pass that looked at 2,000 rows and
+          // wrote none is the single most important thing an operator can be told,
+          // and gating on `written` printed silence — which reads as "nothing to
+          // do". The comparable re-parse three blocks up documents this exact
+          // lesson; this call had not learned it.
+          .then((r) => r && r.scanned && console.log('[boot] adjustment corpus backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] adjustment corpus backfill failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
