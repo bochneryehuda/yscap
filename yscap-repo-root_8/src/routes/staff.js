@@ -1621,6 +1621,17 @@ router.get('/applications/:id', async (req, res) => {
   fileRow.requires_estimated_rent = conditionRegistry.isEmcapNoteBuyer(fileRow.lender)
     && conditionRegistry.normStrategy(
       [fileRow.program, fileRow.loan_type, fileRow.rehab_type].filter(Boolean).join(' ')) === 'fix_hold';
+  /* MAY THIS FILE BE MARKED INDIVIDUAL? Decided HERE, by the one rule the
+     personal-name door enforces (lib/vesting-program-rule), and sent as a plain
+     reason string — so the three places that now offer the choice can grey the
+     control and say WHY before the click, instead of only after a 409. Never
+     re-derive the Blue Lake / Gold test in the browser: that would put a capital
+     partner's name in the bundle every visitor downloads (the `isEmcapBuyer`
+     lesson directly above) and would drift from the door the moment the rule
+     moves. null = allowed. */
+  fileRow.vesting_individual_blocked = require('../lib/vesting-program-rule').markIndividualRefusal({
+    registeredProgram: fileRow.registered_program, noteBuyer: fileRow.lender,
+  });
   res.json(fileRow);
 });
 
@@ -2134,12 +2145,27 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
     if (!can(req.actor, 'sign_off_conditions'))
       return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
     const app = (await db.query(
-      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, a.lender, l.is_verified AS llc_verified,
+              (SELECT r.program FROM product_registrations r
+                WHERE r.application_id = a.id AND r.is_current LIMIT 1) AS registered_program
          FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
         WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
     if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
       return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
+    /* THE BLUE LAKE GATE, in the direction this door faces (owner-directed
+       2026-08-03). `vesting-program-rule.registrationRefusal` already refuses
+       registering an individual file into Gold; this refuses the mirror move —
+       marking a file individual while it is already on Gold / Blue Lake — so the
+       same forbidden state can't be reached by doing the two steps in the other
+       order. The UNDO branch below is deliberately NOT gated: going back to an
+       LLC is always allowed, and is the fix this refusal points at. */
+    if (b.undo !== true) {
+      const refusal = require('../lib/vesting-program-rule').markIndividualRefusal({
+        registeredProgram: app.registered_program, noteBuyer: app.lender,
+      });
+      if (refusal) return res.status(409).json({ error: refusal, code: 'individual_not_allowed' });
+    }
 
     // The LLC condition must exist so the affidavit has somewhere to hang / to sign off.
     try { await require('../lib/vesting').ensureLlcCondition(req.params.id); } catch (_) {}
@@ -9238,6 +9264,52 @@ router.delete('/borrowers/:id/notes/:nid', async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+/* THE TRACK-RECORD REVIEW QUEUE (owner-directed 2026-08-03: "if the borrower is
+   entering the track record, it should go to the processing queue to review the
+   track record that the borrower imported, and this should be pending review").
+
+   Every deal a person types is self-reported until somebody reads the closing
+   statement / deed / lease behind it, and until db/458 nothing in the system
+   recorded WHO typed a line — so "what is waiting on us?" was a question the
+   data could not answer, and the only way to find a borrower's new deals was to
+   open their profile and look. This is that question, answered.
+
+   SCOPED THE BORROWER WAY (`VISIBLE_BORROWER_SQL`), not the file way: a track
+   record hangs on a PERSON and not on a loan file, and the officer who owns the
+   relationship is exactly who should be reviewing it — the same rule the
+   borrower list, the profile and the Encompass review rows already follow.
+   `seesAllBorrowers` (admins / underwriters / processors) see the whole desk.
+
+   Deliberately BORROWER-ENTERED only. A line PILOT imported from ClickUp or
+   Encompass is stamped 'clickup'/'encompass' and is already labelled unverified
+   wherever it appears; putting the whole automated back-book in a human's queue
+   would bury the handful of deals somebody is actually waiting on. A pre-db/458
+   row has a NULL kind — nobody recorded who typed it — and is likewise left out
+   rather than guessed into somebody's work list. */
+router.get('/track-record-reviews', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_BORROWER_SQL('b', '$1')}`; }
+    const r = await db.query(
+      `SELECT t.id, t.borrower_id, t.property_address, t.deal_type, t.verification_status,
+              t.entered_at, t.purchase_price, t.sale_price, t.sale_date, t.rent_date, t.refi_date,
+              NULLIF(TRIM(b.full_name),'') AS borrower_name,
+              (SELECT count(*)::int FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS doc_count
+         FROM track_records t
+         JOIN borrowers b ON b.id = t.borrower_id
+        WHERE t.entered_by_kind = 'borrower'
+          AND t.is_verified = false
+          ${scope}
+        ORDER BY t.entered_at DESC NULLS LAST, t.created_at DESC
+        LIMIT 200`, params);
+    res.json({ pending: r.rows.length, lines: r.rows });
+  } catch (e) {
+    console.warn('[staff] track-record review queue failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load the track-record review queue' });
+  }
+});
+
 // A borrower's investment track record (experience) — drives the pricing tier.
 router.get('/borrowers/:id/track-records', async (req, res) => {
   try {
@@ -9268,14 +9340,17 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing, trackRecordEnteredCols } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  // A staffer typing a line is still SOMEBODY entering it, so it lands pending
+  // review exactly as the borrower's does (owner-directed 2026-08-03: "anyone
+  // that enters the track record first should be pending review").
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.llcId) {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, req.params.id]);
     if (l.rows[0]) cols.llc_id = b.llcId;
@@ -9316,7 +9391,11 @@ router.put('/track-records/:id', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  // Same stamp as the create door: whoever last put these figures on the line is
+  // recorded, so "who typed this?" is answerable on an edit and not only on a
+  // create. (No status reset — see trackRecordEnteredCols: a staffer may
+  // deliberately correct a VERIFIED line.)
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {
     if (b.llcId) {

@@ -177,6 +177,25 @@ function isEmcapNoteBuyer(raw) {
   return !!key && key.startsWith(EMCAP_KEY_PREFIX);
 }
 
+// BLUE LAKE — the capital provider the GOLD program is paired with
+// (tapes/program-provider.js: gold ↔ bluelake). Same PREFIX shape as the two
+// helpers above, and for the same reason: the real ClickUp label is routinely
+// "Blue Lake Capital" (→ 'bluelakecapital'), which an exact key never matches.
+// No other note buyer's key starts with 'bluelake'.
+// This does NOT loosen `normNoteBuyer` (which stays EXACT) and the tape EXPORT
+// gate deliberately does not use it — the export direction is the one where an
+// over-match ships a data tape to the wrong buyer. Blast radius here: the
+// individual-vesting refusal (lib/vesting-program-rule.js) — the direction where
+// matching a genuine Blue Lake spelling is strictly safer than missing it,
+// because Blue Lake does not buy a loan taken in a personal name at all.
+const BLUELAKE_KEY_PREFIX = 'bluelake';
+
+/** True when this note-buyer label (applications.lender) is Blue Lake, however it is spelled. */
+function isBlueLakeNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(BLUELAKE_KEY_PREFIX);
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -487,4 +506,5 @@ module.exports = {
   normCitizenship, normOccupancy, normNoteBuyer,
   FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
   EMCAP_KEY_PREFIX, isEmcapNoteBuyer,
+  BLUELAKE_KEY_PREFIX, isBlueLakeNoteBuyer,
 };

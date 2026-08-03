@@ -80,9 +80,97 @@ for (const [what, a, p] of [
   ok(r === null || typeof r === 'string', `${what} → a reason or nothing, never junk`);
 }
 {
-  // Pure means pure: no db, no network, nothing that can fail at import time.
+  /* Pure means pure: no db, no network, nothing that can fail at import time.
+     The module is allowed EXACTLY ONE dependency — the conditions field registry,
+     which is itself dependency-free — because the note-buyer normalizer must not
+     be re-inlined here (a second copy of "which spellings are Blue Lake" is how
+     two gates end up disagreeing about the same file). Asserted transitively, so
+     the day someone gives the registry a `require` this fails loudly. */
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'vesting-program-rule.js'), 'utf8');
-  ok(!/require\(/.test(src), 'the module requires NOTHING — it cannot fail at load');
+  const reqs = (src.match(/require\(['"][^'"]+['"]\)/g) || []);
+  ok(reqs.length === 1 && /field-registry/.test(reqs[0]),
+    `the module's ONLY dependency is the field registry (found ${JSON.stringify(reqs)})`);
+  const regSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'conditions', 'field-registry.js'), 'utf8');
+  ok(!/require\(/.test(regSrc), '…and the field registry itself requires NOTHING — the chain cannot fail at load');
+}
+
+console.log('\nB2. THE BLUE LAKE GATE, the other way round (owner-directed 2026-08-03)');
+
+{
+  /* `registrationRefusal` only ever fires when an ALREADY-individual file is
+     registered into Gold. Doing the two steps in the other order — register into
+     Gold, then mark the file individual — reached the same forbidden state with
+     no gate at all. Either signal alone is enough: Gold is our name for the
+     product, Blue Lake is whose money it is, and they arrive independently. */
+  ok(!!V.markIndividualRefusal({ registeredProgram: 'gold' }), 'a Gold-registered file may not be marked individual');
+  ok(!!V.markIndividualRefusal({ registeredProgram: 'Gold Standard' }), '…however Gold is spelled');
+  ok(!!V.markIndividualRefusal({ noteBuyer: 'Blue Lake' }), 'a Blue Lake file may not be marked individual');
+  // The real ClickUp label is routinely longer than the key — an EXACT match
+  // would have left the gate dark on every live Blue Lake file.
+  for (const spelling of ['Blue Lake Capital', 'BlueLake', 'bluelake capital llc', 'BLUE LAKE']) {
+    ok(!!V.markIndividualRefusal({ noteBuyer: spelling }), `…spelled "${spelling}"`);
+  }
+  ok(/does not buy/i.test(V.markIndividualRefusal({ noteBuyer: 'Blue Lake' }) || ''),
+    'the refusal says WHY, in plain words');
+  ok(/LLC/i.test(V.markIndividualRefusal({ noteBuyer: 'Blue Lake' }) || ''),
+    '…and names the way out — keep it in an LLC');
+
+  // SCOPE. Every other capital partner and program is untouched, and a file that
+  // is neither registered nor assigned a buyer is the ORDINARY state — refusing
+  // there would make the choice unusable at exactly the doors it was asked for.
+  for (const nb of ['Fidelis Investors LLC', 'EMCAP Financial', 'CorrFirst', '', null]) {
+    ok(V.markIndividualRefusal({ noteBuyer: nb }) === null, `"${nb || '(no note buyer)'}" is not refused`);
+  }
+  for (const p of ['standard', 'silver', 'manual', '', null]) {
+    ok(V.markIndividualRefusal({ registeredProgram: p }) === null, `a "${p || '(unregistered)'}" file is not refused`);
+  }
+  ok(V.markIndividualRefusal({}) === null, 'a brand-new file may be marked individual');
+  ok(V.markIndividualRefusal(null) === null, 'no file → nothing to refuse');
+  // "Fidelity" must never be read as "Fidelis"/"Blue Lake" by a sloppy prefix.
+  ok(V.markIndividualRefusal({ noteBuyer: 'Blueline Partners' }) === null,
+    'a DIFFERENT partner whose name merely starts similarly is not refused');
+  for (const [what, arg] of [['junk', 42], ['array', []], ['nested junk', { noteBuyer: {} }]]) {
+    let threw = false, r;
+    try { r = V.markIndividualRefusal(arg); } catch (_) { threw = true; }
+    ok(!threw && (r === null || typeof r === 'string'), `${what} → no throw, a reason or nothing`);
+  }
+}
+
+console.log('\nB3. the door that MARKS a file individual asks the gate');
+
+{
+  const staff = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8');
+  const route = staff.slice(staff.indexOf('vesting/personal-name'));
+  const body = route.slice(0, 9000);
+  ok(/markIndividualRefusal\(/.test(body), 'the personal-name door asks the rule before marking');
+  ok(/b\.undo !== true/.test(body),
+    'the UNDO is deliberately NOT gated — going back to an LLC is always allowed, and is the fix');
+  ok(/vesting_individual_blocked/.test(staff),
+    'the file payload carries the reason so the screens can grey the control BEFORE the click');
+}
+
+console.log('\nB4. what a file vests in, in words — ONE definition');
+
+{
+  const L = require('../src/lib/vesting-label');
+  ok(L.vestingCell({ individual: true }) === 'Individual',
+    'an investor tape cell says Individual, never a blank that reads as "nobody filled this in"');
+  ok(/individual/i.test(L.vestingLabel({ individual: true })), 'a screen/email says it in a sentence');
+  ok(L.vestingLabel({ llc: 'Acme LLC', individual: true }) === 'Acme LLC',
+    'a LINKED ENTITY ALWAYS WINS over a stale individual flag — the same precedence everywhere else');
+  ok(L.vestingLabel({}) === '' && L.vestingCell({}) === '',
+    'an UNANSWERED file stays blank — an unanswered question must never read as an answer');
+  ok(L.isIndividual({ personalNamePurchase: true }) === true
+    && L.isIndividual({ personalNamePurchase: true, llcId: 'x' }) === false,
+    'isIndividual follows the same precedence');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'vesting-label.js'), 'utf8');
+  ok(!/require\(/.test(src), 'the wording module requires nothing — it can never throw into an export');
+  // Every tape's Borrowing Entity column must go through it, or one investor's
+  // spreadsheet ships a blank where another says Individual.
+  for (const tape of ['bluelake', 'emcap', 'fidelis']) {
+    const t = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'tapes', `${tape}.js`), 'utf8');
+    ok(/vestingCell\(l\.vesting\)/.test(t), `the ${tape} tape's Borrowing Entity uses the shared wording`);
+  }
 }
 
 console.log('\nD. THE FROZEN ENGINES ARE UNTOUCHED — the whole point of putting it here');
@@ -139,7 +227,7 @@ console.log('\nF. the affidavit is a CONDITION now, not a prerequisite of markin
   ok(/if \(pn && pn\.personal_name_purchase\) return null;/.test(staff),
     'the LLC sign-off gate stands down on a personal-name file — there is no entity to verify');
   const route = staff.slice(staff.indexOf("vesting/personal-name"));
-  const body = route.slice(0, 8000);
+  const body = route.slice(0, 11000);
   ok(/personal_name_purchase=true/.test(body), 'marking the file individual still works');
   ok(/waived_at=now\(\), is_required=false/.test(body),
     'with no affidavit the LLC condition is WAIVED as not-applicable, never signed off as met');

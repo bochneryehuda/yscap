@@ -424,15 +424,30 @@ const APP_COMPLETENESS_FIELDS = (app) => [
      It saves through the file's one vesting door rather than complete-fields:
      `applications.llc_id` is a LINK to the borrower's entity, never a text
      column, and a name written into a column would be a name with no documents
-     behind it. Individual vesting still lives in the Vesting entity section —
-     it is a sign-off (it waives the LLC condition), not a field to type. */
+     behind it.
+
+     AND THE OTHER ANSWER IS RIGHT HERE TOO (owner-directed 2026-08-03: "you have
+     a plus mark where you can put an LLC. We need over there to have a tool to
+     select that this is on an individual"). The pill asks "what does this vest
+     in?" and there are TWO answers, but only one of them could be given here —
+     the other was a sentence telling the officer to go and find a different
+     section, on the one pill they had already opened to answer the question.
+     "An individual" is a SIGN-OFF (it stands the LLC condition down), so it
+     still saves through the personal-name door — a second button on the same
+     editor, never a value typed into the name box. */
   { key: 'entity_name',
     label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
     ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
     type: 'entity', placeholder: 'Acme Holdings LLC',
     postEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting-llc'),
     postBody: (v) => ({ entityName: v }),
-    hint: 'The LLC taking title — type the name. Individual vesting is set in the Vesting entity section.' },
+    // The second answer, offered beside the name box by CompletenessPanel.
+    altEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting/personal-name'),
+    altBody: () => ({}),
+    altLabel: 'No LLC — an individual',
+    altNote: 'Saved — this file closes in the borrower’s own name. The signed non-owner-occupied affidavit is now asked for on its own condition.',
+    altBlocked: app.vesting_individual_blocked || '',
+    hint: 'The LLC taking title — type the name, or say it closes in the borrower’s own name.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -603,6 +618,23 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
     } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
+  /* THE OTHER ANSWER — a field whose question has a second, non-typed answer
+     (today: "this vests in an individual", which is a sign-off through the
+     personal-name door, not a name to type). It posts NOTHING from the box, so
+     it deliberately does not go through `save` and is never gated on the box
+     having a value. `altBlocked` carries the server's own reason (Blue Lake /
+     Gold), so the button is greyed WITH the reason rather than answering 409. */
+  async function saveAlt(f) {
+    if (!f.altEndpoint || f.altBlocked) return;
+    setBusy(true); setErr(''); setNote('');
+    try {
+      await api.post(f.altEndpoint(endpoint), f.altBody ? f.altBody() : {});
+      setEditing(null); setVal('');
+      if (f.altNote) setNote(f.altNote);
+      await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 8 }}>
@@ -641,7 +673,14 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                       onChange={(e) => setVal(f.type === 'fico' ? cleanFICO(e.target.value) : e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
                 <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                {f.altEndpoint && (
+                  <button className="btn ghost small" disabled={busy || !!f.altBlocked}
+                    title={f.altBlocked || 'No company takes title — the borrower buys in their own name.'}
+                    onClick={() => saveAlt(f)}>{f.altLabel || 'Other'}</button>
+                )}
                 <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
+                {f.altEndpoint && f.altBlocked
+                  && <span className="small" style={{ flexBasis: '100%', color: '#8A6D3B' }}>{f.altBlocked}</span>}
               </span>
             ) : f.edit === false ? (
               // A field this compact panel can't edit itself is still one CLICK
@@ -1911,7 +1950,12 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       {llcs == null ? <p className="muted small">Loading…</p>
         : llcs.length === 0 ? <p className="muted small">{app.llc_id
             ? "The vesting entity linked to this file isn't loading — refresh the page."
-            : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
+            : app.personal_name_purchase
+              /* An individual purchase has no entity BY DEFINITION, so telling
+                 the officer to go and create one is the one instruction that
+                 must never appear here (owner-reported 2026-08-03). */
+              ? 'This file closes as an individual — title goes in the borrower’s own name, so there is no entity to verify. Switch it back to an LLC on the entity condition below if that is wrong.'
+              : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
         : (() => {
           // #57 — render JUST the vesting entity for THIS file up top; the file's
           // track-record entities collapse behind a toggle so staff verify the one
@@ -2409,6 +2453,26 @@ function StaffTrackRecordPanel({ app, role }) {
       )}
       {trs.length > 0 && (
         <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
+          {/* WHAT IS WAITING ON US (owner-directed 2026-08-03: a track record the
+              borrower typed "should go to the processing queue to review … and
+              this should be pending review"). The per-line status pill was
+              already here, but nothing added the pills up, so a borrower who had
+              just entered ten deals produced no signal at all — the officer had
+              to notice ten grey "pending" chips. Counted off the same rows the
+              list below renders, so the two can never disagree. */}
+          {(() => {
+            const waiting = trs.filter((t) => !t.is_verified
+              && (t.verification_status || 'pending') !== 'limited').length;
+            if (!waiting) return null;
+            return (
+              <div className="small" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8,
+                border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
+                <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
+                Nothing counts toward this file&rsquo;s experience until it is verified — read the closing
+                statement, deed or lease on each one, then set its status to Verified below.
+              </div>
+            );
+          })()}
           <div className="muted small" style={{ marginBottom: 6 }}>
             Raise a request against a specific past project — it becomes a named condition on this file the borrower can respond to.
           </div>
@@ -2871,52 +2935,85 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-// Personal-name purchase (owner-directed 2026-07-31): buy in an individual name
-// instead of an LLC. Upload a non-owner-occupied affidavit (in lieu of LLC docs)
-// to waive the LLC condition — vesting flips to Individual (default is LLC).
+/* IT'S AN INDIVIDUAL — the CHOICE, not an upload (owner-directed 2026-07-31,
+   corrected 2026-08-03: "on the Condition Slot on the LLC, if there's no LLC
+   selected, the LLC condition says 'Add LLC,' but it doesn't have a way for this
+   condition because it's an individual").
+
+   The affidavit stopped being a PREREQUISITE of the choice on 2026-08-02 (db/417
+   moved it to its own rule-driven condition, `cond_noo_affidavit_individual`),
+   and the server's 400 went with it — but this control never followed. Its only
+   button opened a FILE PICKER, so the one door that could answer "this file has
+   no entity" still demanded a document the officer usually doesn't have yet, and
+   a file with no LLC was left with nothing to click but "Add LLC". So the plain
+   choice comes first now, and the upload stays beside it for whoever DOES have
+   the affidavit in hand — one request files it and marks the file in one step,
+   exactly as before.
+
+   THE BLUE LAKE GATE rides both buttons: the reason comes from the server
+   (`app.vesting_individual_blocked`, the same rule the door enforces), so the
+   control is greyed WITH the reason instead of answering 409 after the click. */
 function PersonalNameWaiver({ appId, app, onChanged }) {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState('');
+  const [err, setErr] = React.useState('');
   const fileRef = React.useRef(null);
   const isPersonal = !!(app && app.personal_name_purchase);
-  const waive = async (file) => {
-    if (!file) return;
-    setBusy(true); setMsg('');
+  const blocked = (app && app.vesting_individual_blocked) || '';
+  const run = async (body, okMsg, failMsg) => {
+    setBusy(true); setMsg(''); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => {
-        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
-      });
-      await api.staffVestingPersonalName(appId, { filename: file.name, contentType: file.type || 'application/pdf', dataUrl });
-      setMsg('Saved — this is a personal-name purchase. Vesting is now Individual.');
+      await api.staffVestingPersonalName(appId, body);
+      setMsg(okMsg);
       onChanged && await onChanged();
-    } catch (e) { setMsg(e.message || 'could not save the affidavit'); }
+    } catch (e) { setErr(e.message || failMsg); }
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
   };
-  const undo = async () => {
-    setBusy(true); setMsg('');
-    try { await api.staffVestingPersonalName(appId, { undo: true }); setMsg('Back to an LLC purchase — vesting is LLC.'); onChanged && await onChanged(); }
-    catch (e) { setMsg(e.message || 'could not undo'); }
-    finally { setBusy(false); }
+  // The plain choice — no document required. This is what the owner asked for.
+  const markIndividual = () => run({},
+    'Saved — this file closes in the borrower’s own name. The LLC documents stand down; the signed non-owner-occupied affidavit is now asked for as its own condition.',
+    'could not mark this file individual');
+  // The same choice WITH the affidavit already in hand: filed as the condition's
+  // evidence in the same request, so it is never a second step.
+  const waive = async (file) => {
+    if (!file) return;
+    let dataUrl;
+    try {
+      dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
+      });
+    } catch (e) { setErr(e.message || 'could not read the file'); return; }
+    await run({ filename: file.name, contentType: file.type || 'application/pdf', dataUrl },
+      'Saved — this file closes in the borrower’s own name and the affidavit is on file.',
+      'could not save the affidavit');
   };
+  const undo = () => run({ undo: true }, 'Back to an LLC purchase — vesting is LLC.', 'could not undo');
   return (
     <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
       {isPersonal ? (
         <>
-          <span className="pill ok">Personal name (Individual) — affidavit on file</span>
-          <span className="muted small" style={{ color: '#4B585C' }}>Bought in an individual name, not an LLC. ClickUp vesting is Individual.</span>
+          <span className="pill ok">Closing as an individual — no entity</span>
+          <span className="muted small" style={{ color: '#4B585C' }}>Title goes in the borrower’s own name, not an LLC. ClickUp vesting is Individual.</span>
           <button className="btn link small" disabled={busy} onClick={undo}>Undo — back to an LLC</button>
         </>
       ) : (
         <>
           <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
             onChange={(e) => waive(e.target.files && e.target.files[0])} />
-          <button className="btn small" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}>
-            {busy ? 'Saving…' : 'Buying in a personal name? Upload the non-owner-occupied affidavit'}
+          <button className="btn small" disabled={busy || !!blocked} title={blocked || undefined} onClick={markIndividual}>
+            {busy ? 'Saving…' : 'No LLC — this file closes as an individual'}
           </button>
-          <span className="muted small" style={{ color: '#4B585C' }}>Waives the LLC documents and sets vesting to Individual.</span>
+          <button className="btn ghost small" disabled={busy || !!blocked} title={blocked || undefined}
+            onClick={() => fileRef.current && fileRef.current.click()}>
+            …and I have the affidavit
+          </button>
+          <span className="muted small" style={{ color: '#4B585C' }}>
+            {blocked || 'Stands the LLC documents down and asks for the signed non-owner-occupied affidavit on its own condition.'}
+          </span>
         </>
       )}
-      {msg && <span className="muted small" style={{ color: '#4B585C', flexBasis: '100%' }}>{msg}</span>}
+      {msg && <span className="muted small" style={{ color: '#256168', flexBasis: '100%' }}>{msg}</span>}
+      {err && <span className="small" style={{ color: 'var(--danger)', flexBasis: '100%' }}>{err}</span>}
     </div>
   );
 }
@@ -3181,7 +3278,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
                 <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>gate</span>
                 <span className="cnd-meta">
-                  {app.entity_verified ? 'Verified' : app.llc_id ? 'In progress' : 'No entity linked'}
+                  {/* "No entity linked" is the wrong answer on a file that HAS
+                      answered — with "an individual". It read as an unanswered
+                      question and pointed at an Add-LLC step that must never
+                      happen here (owner-reported 2026-08-03). */}
+                  {app.entity_verified ? 'Verified'
+                    : app.llc_id ? 'In progress'
+                      : app.personal_name_purchase ? 'Individual — no entity'
+                        : 'No entity linked'}
                 </span>
               </div>
             </div>
@@ -3195,17 +3299,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
                 {app.entity_verified
                   ? <span className="pill ok">Verified ✓</span>
-                  : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
+                  : app.llc_id ? <span className="pill">In progress</span>
+                    : app.personal_name_purchase ? <span className="pill ok">Individual — no entity</span>
+                      : <span className="pill">No entity linked</span>}
                 <div className="spacer" />
                 <button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button>
               </div>
-              <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
+              <div className="muted small">
+                {app.personal_name_purchase && !app.llc_id
+                  ? 'Condition to close. This file closes in the borrower’s own name, so there is no entity to document — the signed non-owner-occupied affidavit is chased on its own condition instead.'
+                  : 'Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.'}
+              </div>
+              {/* THE FULL LOGIC FOR A FILE WITH NO ENTITY (owner-reported
+                  2026-08-03). There are two reasons an entity can be missing and
+                  they need opposite answers: nobody has picked one yet (link or
+                  create one), or the file vests in an individual (there is
+                  nothing to pick, by definition). Saying "link or create one" to
+                  the second was a dead end — the only way out of this condition
+                  was an entity it must never have. */}
               {app.llc_id
                 ? <LlcManager llcId={app.llc_id} staff compactHeader
                     coBorrower={app.co_borrower_id
                       ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
-                : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+                : app.personal_name_purchase
+                  ? <p className="muted small" style={{ margin: 0 }}>No entity on this file, and none is needed — title goes in the borrower’s own name.</p>
+                  : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above, or mark this file individual below.</p>}
               {!app.entity_verified && <PersonalNameWaiver appId={appId} app={app} onChanged={onChanged} />}
             </div>
           )

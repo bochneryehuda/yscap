@@ -669,9 +669,39 @@ a.checkitem:hover{transform:translateY(-1px)}
 /* Edit-file-details: a fixed, even 4-col grid (vs. auto-fill, which left short
    fields orphaned on half-empty rows). Fields span explicit columns via
    .col-2/.col-4 so every row fills evenly. Collapses to 2 cols, then 1. */
-.edit-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px 12px;align-items:end}
-.edit-grid label{display:flex;flex-direction:column;gap:4px;min-width:0}
-.edit-grid label span{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
+/* THE CAPTION IS THE FIRST DIRECT SPAN — NOT "every span in the label"
+   (owner-reported 2026-08-03: a cash-out refinance's Edit application details
+   "was messed up to CSS … everything was not designed correctly").
+   `.edit-grid label span` matched EVERY descendant span, so the two things a
+   refinance adds to this form — the helper line under As-is value and the two
+   under Refinance details — rendered as UPPERCASE, BOLD, letter-spaced label
+   text instead of as quiet explanatory copy, and MoneyInput's own `$` adornment
+   was restyled with them. A purchase never shows those lines, which is why only
+   a refinance looked broken. The Assignment checkbox already carried a hand-
+   written inline override to escape this selector — that workaround is the tell,
+   and it is now removed. */
+.edit-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px 12px;align-items:start}
+/* `.edit-fld` is a label-shaped cell for a control that CANNOT be a <label> —
+   a radio group, where nesting one label inside another is invalid HTML. */
+.edit-grid label,.edit-grid .edit-fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.edit-grid label>span:first-child,.edit-grid .edit-fld>span:first-child{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;
+  /* Two lines are RESERVED for the caption and the text sits at the bottom of
+     that box, so a caption that wraps ("…or interest reserve (exact $)") and a
+     one-word caption still put their control at the same height. With
+     align-items:end a helper line under one control LIFTED it out of line with
+     its neighbours; with align-items:start a wrapped caption PUSHED it down.
+     Reserving the caption fixes both, which is why the grid can now start-align. */
+  min-height:2.5em;display:flex;align-items:flex-end}
+/* Explanatory copy under a control: normal sentence case, dark enough to read on
+   the white canvas, and it never affects where the control above it sits. */
+.edit-grid .edit-hint{font-size:11.5px;line-height:1.35;color:#4B585C;font-weight:400;text-transform:none;letter-spacing:0}
+.edit-grid .edit-hint.warn{color:#8A6D3B;font-weight:600}
+/* A radio choice inside the grid: sentence case, dark on white, never the caption look. */
+.edit-choice{display:flex;gap:16px;flex-wrap:wrap;align-items:center;padding:6px 0 2px}
+.edit-choice label{flex-direction:row!important;align-items:center;gap:7px;cursor:pointer;
+  font-size:14px;font-weight:500;color:#141B22;text-transform:none;letter-spacing:0}
+.edit-choice label.is-off{cursor:not-allowed;opacity:.55}
+.edit-choice input{flex:none;margin:0}
 .edit-grid .input{padding:8px 10px;width:100%}
 .edit-grid .col-2{grid-column:span 2}
 .edit-grid .col-4{grid-column:1 / -1}
