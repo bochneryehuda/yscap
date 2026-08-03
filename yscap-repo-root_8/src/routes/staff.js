@@ -1677,6 +1677,24 @@ router.post('/applications/:id/track-record-findings/:findingId', async (req, re
   }
 });
 
+/* WHAT IS STILL LEFT ON THE TRACK RECORD (owner-directed 2026-08-03: "after the
+   track record there should be the skew of the stuff that still needs to be done
+   … nicely laid out within the file as well"). File-scoped by the same
+   `/applications/:id` middleware; `?borrower=` narrows it to one person on a
+   co-borrower file, and a borrower who is not on the file is ignored rather than
+   honoured, so the query string can never widen the scope. Read-only. */
+router.get('/applications/:id/track-record-todo', async (req, res) => {
+  try {
+    const out = await require('../lib/track-record-todo').trackRecordTodo(req.params.id, {
+      borrowerId: (req.query && req.query.borrower) || null,
+    });
+    res.json(out);
+  } catch (e) {
+    console.warn('[track-record] to-do list failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not work out what is left on the track record' });
+  }
+});
+
 router.get('/applications/:id/usps-verification', async (req, res) => {
   try {
     const row = (await db.query(
@@ -10112,11 +10130,11 @@ router.post('/track-records/:id/verify', async (req, res) => {
          FROM track_records WHERE id=$1`, [req.params.id]);
     const e = elig.rows[0] || {};
     if (e.no_exit || e.future || e.expired) {
-      const msg = e.no_exit
-        ? 'This project has no completed exit date (a sale date for a flip, or a lease / refinance date for a hold). It can’t be verified toward experience until the exit is recorded — request the exit documents instead.'
-        : e.future
-          ? 'This project’s exit date is in the future — it can’t be verified until the exit has actually closed.'
-          : 'This project’s exit is more than 3 years ago, so it no longer counts toward experience (only exits within the last 36 months count). It can’t be verified toward experience.';
+      // ONE wording, shared with the file's track-record to-do list, which warns
+      // about these BEFORE the click. Two copies would let the panel call a line
+      // ready and the click refuse it in different words.
+      const M = require('../lib/track-record-todo').EXIT_PROBLEM_MSG;
+      const msg = e.no_exit ? M.no_exit : e.future ? M.future_exit : M.exit_expired;
       return res.status(422).json({ error: msg, code: e.no_exit ? 'no_exit_date' : e.future ? 'future_exit' : 'exit_expired' });
     }
   }

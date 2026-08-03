@@ -83,6 +83,32 @@ function fileBorrowerIds(app) {
   return [app && app.borrower_id, app && app.co_borrower_id].filter(Boolean);
 }
 
+/**
+ * The experience threshold that must be VERIFIED before the experience condition
+ * can be signed off — the CURRENT registered product's experience, which is the
+ * SAME number `signOffGate` reads (staff.js, is_current registration inputs).
+ *
+ * ONE definition, because three places now ask the question — the condition
+ * sync, the sign-off gate's shortfall message, and the file's track-record
+ * to-do list. Two of them disagreeing would show an officer a list of work that
+ * does not match what the gate actually refuses on.
+ *
+ * Falls back to the caller's value (the application's own claim) when nothing is
+ * registered yet; in that state the gate blocks sign-off outright, so the
+ * fallback is never what decides anything. Never throws — a read failure is the
+ * same fallback.
+ */
+async function registeredExperienceNeed(appId, client = db, fallback = null) {
+  const base = fallback || { flips: 0, holds: 0, ground: 0 };
+  try {
+    const cur = await client.query(
+      `SELECT inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+    if (!cur.rows[0]) return base;
+    const pin = cur.rows[0].inputs || {};
+    return { flips: int(pin.expFlips), holds: int(pin.expHolds), ground: int(pin.expGround) };
+  } catch (_) { return base; }
+}
+
 async function syncExperienceChecklistForApplication(appId, client = db) {
   const ar = await client.query(
     `SELECT id, borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
@@ -113,15 +139,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   // condition on every recompute (a loop the gate can never permanently satisfy).
   // Falls back to the application claim when nothing is registered yet — in that
   // state the gate blocks sign-off anyway, so the fallback is never the gate.
-  let gateNeed = required;
-  try {
-    const cur = await client.query(
-      `SELECT inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
-    if (cur.rows[0]) {
-      const pin = cur.rows[0].inputs || {};
-      gateNeed = { flips: int(pin.expFlips), holds: int(pin.expHolds), ground: int(pin.expGround) };
-    }
-  } catch (_) { /* best-effort — fall back to the application claim */ }
+  const gateNeed = await registeredExperienceNeed(appId, client, required);
   // Per-borrower breakdown (#103) — on a co-borrower file the experience
   // condition shows BOTH borrowers, each named, with their OWN 3-year-window
   // counts and a link to their OWN track record. The requirement is still the
@@ -304,6 +322,7 @@ module.exports = {
   requestedFromApp,
   hasRequirement,
   requirementMet,
+  registeredExperienceNeed,
   syncExperienceChecklistForApplication,
   syncExperienceChecklistForBorrower,
   RECENT_EXIT_SQL,
