@@ -501,7 +501,9 @@ async function makeAppraisal(appId, o) {
     // The per-foot adjustment always says WHICH KIND of claim it is — evidence
     // from our own reports, or the national rule of thumb — because those deserve
     // very different amounts of trust and the number alone cannot tell them apart.
-    ok(['peer', 'convention', 'none'].includes(ratesOnAdd.glaAdjustmentPerSqft.source),
+    // `|| {}` so this FAILS rather than THROWS on a regression: an unguarded
+    // dereference aborts the whole run and every check after it silently stops.
+    ok(['peer', 'convention', 'none'].includes((ratesOnAdd.glaAdjustmentPerSqft || {}).source),
       'the size-adjustment rate names its source, so a rule of thumb can never pass for local evidence');
 
     // A caller asking for the comparables RAW must not blank a record an earlier
@@ -514,6 +516,21 @@ async function makeAppraisal(appId, o) {
       'a comparable already on the grid is not added twice');
     ok(Object.keys(rawAdd.body.valuation.market_rates || {}).length > 0,
       'adding a comparable WITHOUT suggestions never erases the record of what the grid was pre-filled from');
+
+    // …AND NEITHER DOES A LATER PASS THAT HAS NO MARKET TO READ. Clear the
+    // subject's town and add another comparable: the second pass cannot derive
+    // anything, and writing its refusal over the first pass's rates would destroy
+    // the provenance of the suggested lines already on the grid.
+    await call(server, 'PATCH', `/api/research/valuations/${vid}`, token,
+      { subject: { city: '', state: '' } });
+    const noMarket = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id] });
+    ok(noMarket.status === 200 && (noMarket.body.valuation.market_rates || {}).pricePerSqft !== undefined,
+      'a later pass with no market to read never overwrites the rates an earlier pass captured');
+    // Put the market back, so nothing downstream is working on a subject this
+    // check quietly emptied.
+    await call(server, 'PATCH', `/api/research/valuations/${vid}`, token,
+      { subject: { city: subj.city, state: subj.state } });
 
     const compRow = added.body.comps.find((c) => c.property_id === maple3[0].id);
     const edited = await call(server, 'PATCH', `/api/research/valuations/${vid}/comps/${compRow.id}`, token,

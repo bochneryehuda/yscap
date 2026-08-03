@@ -36,7 +36,11 @@
  * disagree — a human decides which is right, or that both are.
  *
  * Pure except for `conflictsForProperty`, which is a thin database read on top.
+ * `property-type` is required for its comparison key and is itself pure — it
+ * carries no database and no clock.
  */
+
+const { propertyTypeCompareKey } = require('../property-type');
 
 /**
  * WHAT COUNTS AS A DISAGREEMENT, per fact.
@@ -60,6 +64,17 @@ const COMPARED = Object.freeze({
     label: 'Property type', kind: 'exact',
     why: 'a house is a house or it is a duplex; the two are not a matter of degree',
     severity: 'high',
+    // COMPARED BY MEANING, NEVER BY SPELLING. The warehouse deliberately stores
+    // TWO VOCABULARIES for this one column, both written by the ingest: a SUBJECT
+    // observation carries the canonical key (`multi_2_4`, `sfr`) and a COMPARABLE
+    // carries the display label (`Multi 2–4`, `SFR (1 unit)`). Comparing the text
+    // made every such pair a HIGH-severity "a house is a house or it is a duplex"
+    // — measured on the real corpus, 2 of the 3 high-severity conflicts in the
+    // whole warehouse, and 100% of the property-type hits, were this artifact,
+    // sorted to the top of the list. `propertyTypeCompareKey` is the repo's own
+    // definition of what two property types mean the same thing, so the two can
+    // never drift; an unrecognized value keys to itself and is never collapsed.
+    compareKey: propertyTypeCompareKey,
   },
   year_built: {
     label: 'Year built', kind: 'absolute', tolerance: 3,
@@ -107,6 +122,21 @@ const txt = (v) => {
 };
 
 /**
+ * The value as it is COMPARED — the one definition, used by `disagrees` and by
+ * the grouping below, so the two can never judge the same pair differently.
+ * Null means "said nothing", which is not a competing opinion.
+ */
+function exactKey(spec, v) {
+  const s = txt(v);
+  if (s == null) return null;
+  if (spec && typeof spec.compareKey === 'function') {
+    const k = spec.compareKey(s);
+    if (k != null && String(k) !== '') return String(k).toLowerCase();
+  }
+  return s.toLowerCase();
+}
+
+/**
  * Do these two values disagree ENOUGH to be worth a person's attention?
  * Returns false when either side is silent — a report that did not state a fact
  * has not contradicted one that did.
@@ -114,9 +144,9 @@ const txt = (v) => {
 function disagrees(spec, a, b) {
   if (!spec) return false;
   if (spec.kind === 'exact') {
-    const x = txt(a), y = txt(b);
+    const x = exactKey(spec, a), y = exactKey(spec, b);
     if (x == null || y == null) return false;
-    return x.toLowerCase() !== y.toLowerCase();
+    return x !== y;
   }
   const x = num(a), y = num(b);
   if (x == null || y == null) return false;
@@ -148,17 +178,60 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
     // nothing is not represented at all — silence is not a competing opinion.
     const stated = obs.filter((o) => txt(o[field]) != null);
     if (stated.length < 2) continue;
+
+    // ONE REPORT IS ONE OPINION — the unit of disagreement is the REPORT, not the
+    // observation. One appraisal routinely describes the same address more than
+    // once: as its comparable #3 and again as its comparable #4, or in the sales
+    // grid and again in the rent schedule, or as the subject and again in its own
+    // rent schedule. Treating each row as an independent voice made a report
+    // disagree with ITSELF and reported it as "Two reports describe this property
+    // differently" — measured on the real corpus, 3 of 21 conflicts, with 27% of
+    // multi-observation properties exposed to it. The tolerance measurements this
+    // module is built on counted REPORTS, so this is also the population they
+    // describe.
+    const byReport = new Map();
+    stated.forEach((o, i) => {
+      // A row with no appraisal id cannot be PROVEN to share a report with any
+      // other, so it stands alone rather than being pooled with the rest.
+      const key = o.appraisal_id ? `a:${o.appraisal_id}` : `x:${i}`;
+      if (!byReport.has(key)) byReport.set(key, []);
+      byReport.get(key).push(o);
+    });
+
+    // A report that contradicts ITSELF about this fact has no settled opinion, so
+    // it takes no part in the comparison. It is COUNTED rather than dropped in
+    // silence — but it is deliberately not reported as a conflict, because it is a
+    // different question ("this report is inconsistent") with a different answer,
+    // and answering it here under this module's wording would be a false claim.
+    const opinions = []; let selfDisagreed = 0;
+    for (const rows of byReport.values()) {
+      let internal = false;
+      for (let i = 0; i < rows.length && !internal; i++) {
+        for (let j = i + 1; j < rows.length; j++) {
+          if (disagrees(spec, rows[i][field], rows[j][field])) { internal = true; break; }
+        }
+      }
+      if (internal) selfDisagreed++; else opinions.push(rows);
+    }
+    if (opinions.length < 2) continue;
+
     const seen = new Map();
-    for (const o of stated) {
-      const key = spec.kind === 'exact' ? String(txt(o[field])).toLowerCase() : String(num(o[field]));
-      if (!seen.has(key)) seen.set(key, { value: o[field], said_by: [] });
-      seen.get(key).said_by.push({
-        observation_id: o.id || null,
-        appraisal_id: o.appraisal_id || null,
-        observed_on: o.observed_on || null,
-        role: o.role || null,
-        appraiser_id: o.appraiser_id || null,
-      });
+    for (const rows of opinions) {
+      // Every row of this report agrees about this fact, so any of them speaks
+      // for it — but all of them are still listed, so the screen can show every
+      // place the report said it.
+      const lead = rows[0];
+      const key = spec.kind === 'exact' ? exactKey(spec, lead[field]) : String(num(lead[field]));
+      if (!seen.has(key)) seen.set(key, { value: lead[field], said_by: [] });
+      for (const o of rows) {
+        seen.get(key).said_by.push({
+          observation_id: o.id || null,
+          appraisal_id: o.appraisal_id || null,
+          observed_on: o.observed_on || null,
+          role: o.role || null,
+          appraiser_id: o.appraiser_id || null,
+        });
+      }
     }
     const values = [...seen.values()];
     if (values.length < 2) continue;
@@ -184,6 +257,9 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
       tolerance: spec.kind === 'exact' ? 'none — any difference is a disagreement'
         : (spec.kind === 'fraction' ? `${Math.round(spec.tolerance * 100)}%` : `${spec.tolerance}`),
       values,
+      // Reports that could not take part because they contradicted themselves
+      // about this fact. Never silently dropped.
+      reports_inconsistent: selfDisagreed || undefined,
       widest_gap: worst.gap,
       // Said plainly so no screen can turn this into an accusation: two
       // appraisers disagreeing is normal and is a question, not a finding of

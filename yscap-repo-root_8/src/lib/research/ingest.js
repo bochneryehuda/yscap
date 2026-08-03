@@ -617,14 +617,35 @@ const MIN_SQFT_DELTA = 25;
  * which is the evidence that the convention holds rather than an assumption.
  * Returns null the moment either side is silent — a rate we cannot ground is a
  * rate we do not state.
+ *
+ * THE TWO SIDES MUST BE MEASURING THE SAME THING, and on 36% of the rows they
+ * were not. `appraisals.gla` is ALWAYS `GrossLivingAreaSquareFeetCount`, while a
+ * comparable's `gla` may be gross BUILDING area — a 1025 grid states building
+ * area under the same element, which is why db/427 added `gla_basis` to record
+ * which one it is. Measured over the 557 delta-carrying rows: 358 were living
+ * area on both sides, and **199 subtracted a comparable's BUILDING area from the
+ * subject's LIVING area** and then labelled the result `'sqft'`, exactly as if
+ * the two were the same measure. All 199 are 1025 forms — the owner's own 2-4
+ * unit segment — and the two populations answer differently ($45/sq ft against
+ * $28), so blending them under one label produced a median describing neither.
+ * db/436's own header states the rule: "'$150 a foot of living area' and '$150 a
+ * foot of building area' describe different properties."
+ *
+ * So the basis is RECORDED rather than assumed. The rows are not dropped — a
+ * building-area adjustment is real information about how that grid was worked,
+ * and discarding the entire 2-4 unit population would be worse than separating
+ * it — and `unit_delta_basis` exists precisely so no consumer has to guess what
+ * a rate is per. A NULL comparable basis is treated as living area, which is
+ * what it is on a 1004 and what every row written before db/427 assumed.
  */
-function unitDeltaFor(lineType, subjectGla, compGla) {
+function unitDeltaFor(lineType, subjectGla, compGla, compGlaBasis) {
   if (!SIZE_LINES.has(lineType)) return null;
   const s = Number(subjectGla), c = Number(compGla);
   if (!Number.isFinite(s) || !Number.isFinite(c) || s <= 0 || c <= 0) return null;
   const d = s - c;
   if (Math.abs(d) < MIN_SQFT_DELTA) return null;
-  return { delta: d, basis: 'sqft' };
+  const basis = String(compGlaBasis || '').toLowerCase() === 'gba' ? 'sqft_gba' : 'sqft';
+  return { delta: d, basis };
 }
 
 /**
@@ -654,7 +675,7 @@ async function adjustmentPlaceAndDate(db, propertyId, saleDate, fallbackDate) {
   return { place, on: saleDate || fallbackDate || null };
 }
 
-async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on, subjectGla, compGla }) {
+async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on, subjectGla, compGla, compGlaBasis }) {
   if (!observationId) return 0;
   const rows = (Array.isArray(adjustments) ? adjustments : []).filter((a) => a && a.type);
   // UPSERT BY POSITION, THEN TRIM — never delete-then-insert. Two ingests of one
@@ -669,7 +690,7 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
     const vals = [];
     const chunks = rows.map((a, i) => {
       const b = i * 12;
-      const ud = unitDeltaFor(String(a.type), subjectGla, compGla);
+      const ud = unitDeltaFor(String(a.type), subjectGla, compGla, compGlaBasis);
       vals.push(observationId, i, propertyId || null, String(a.type),
         a.description == null ? null : String(a.description).slice(0, 500),
         // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
@@ -778,6 +799,13 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
  * Measured over the 152 real reports before it was built: 468 of 473 usable,
  * ZERO negative and ZERO above $500 — median $40/sq ft, quartiles $25 and $50.
  *
+ * ONE MEASURE AT A TIME. That 468 blended two different feet: 290 where both
+ * sides state LIVING area, and 178 where the comparable stated gross BUILDING
+ * area on a 1025 grid ($45/sq ft against $28 — see db/443). The default `basis`
+ * is `'sqft'`, so the published rate is living-area-only; `'sqft_gba'` asks for
+ * the building-area population by name. They are never returned together,
+ * because a median of the two describes neither.
+ *
  * REFUSES rather than answers thinly, on the same rule as everything else here: a
  * rate is a number people will price a deal against, and a median of four
  * adjustments is noise wearing the clothes of an answer. Never throws.
@@ -815,7 +843,11 @@ async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 3
     }
     return { ok: true, n: row.n, basis, months,
       median: Number(row.median), q1: Number(row.q1), q3: Number(row.q3),
-      of: 'dollars per square foot of difference, as appraisers in this market actually adjusted' };
+      // The wording NAMES the measure, so a building-area rate can never be read
+      // as a living-area one on the strength of the sentence beside it.
+      of: basis === 'sqft_gba'
+        ? 'dollars per square foot of gross BUILDING area of difference, as appraisers in this market actually adjusted'
+        : 'dollars per square foot of living area of difference, as appraisers in this market actually adjusted' };
   } catch (_) { return { ok: false, basis, reason: 'could not read the adjustment corpus' }; }
 }
 
@@ -846,7 +878,7 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
               -- effective date.
               COALESCE(o.sale_date, o.observed_on) AS on_date,
               p.state, p.city, p.zip,
-              o.gla AS comp_gla, a.gla AS subject_gla
+              o.gla AS comp_gla, o.gla_basis AS comp_gla_basis, a.gla AS subject_gla
          FROM property_observations o
          LEFT JOIN properties p ON p.id = o.property_id
          LEFT JOIN appraisals a ON a.id = o.appraisal_id
@@ -869,14 +901,23 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
                WHERE x.observation_id = o.id
                  AND x.line_type IN ('GrossLivingArea', 'GrossBuildingArea')
                  AND x.unit_delta IS NULL
-                 AND o.gla IS NOT NULL AND a.gla IS NOT NULL
-                 -- AND THE SIZES MUST ACTUALLY DIFFER ENOUGH TO YIELD ONE, or the
+                 -- EVERY REFUSAL unitDeltaFor MAKES IS MIRRORED HERE, or the
                  -- observation is re-picked on every boot forever and never
-                 -- changes: a delta under the floor is a PERMANENT null, not a
-                 -- pending one. Measured before this line: the queue stalled at
-                 -- 29 observations that could never drain. The threshold is BOUND
-                 -- from the JS constant rather than written into the SQL, so the
-                 -- two can never drift the way a hand-copied twin does.
+                 -- changes. Greater-than-zero is not the same test as IS NOT
+                 -- NULL: the function refuses a zero or negative size as well as
+                 -- a missing one, and only the missing case was mirrored — so a
+                 -- stored size of 0 armed this arm, wrote no delta, and re-armed
+                 -- it on the next boot, permanently. Neither column carries a
+                 -- CHECK, so nothing but this line prevents it.
+                 -- (NO BACKTICKS IN HERE — this is a template literal, and one
+                 --  inside a SQL comment terminates the whole string.)
+                 AND o.gla > 0 AND a.gla > 0
+                 -- AND THE SIZES MUST ACTUALLY DIFFER ENOUGH TO YIELD ONE: a delta
+                 -- under the floor is a PERMANENT null, not a pending one.
+                 -- Measured before this line: the queue stalled at 29 observations
+                 -- that could never drain. The threshold is BOUND from the JS
+                 -- constant rather than written into the SQL, so the two can never
+                 -- drift the way a hand-copied twin does.
                  AND abs(a.gla - o.gla) >= $2)
           )
         ORDER BY o.observed_on DESC NULLS LAST
@@ -889,7 +930,7 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
           adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
           place: { state: r.state, city: r.city, zip: r.zip },
           on: r.on_date,
-          subjectGla: r.subject_gla, compGla: r.comp_gla,
+          subjectGla: r.subject_gla, compGla: r.comp_gla, compGlaBasis: r.comp_gla_basis,
         });
         // AND IT MUST LEAVE THE QUEUE EITHER WAY. An observation whose lines all
         // lack a `type`, or whose only figure is unstorable, writes nothing — and
@@ -1903,7 +1944,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
         place: pd.place, on: pd.on,
         // The two sizes the size-line rate is derived from. `a.gla` is the
         // SUBJECT of this report; `c.gla` is this comparable's own.
-        subjectGla: a.gla, compGla: c.gla,
+        subjectGla: a.gla, compGla: c.gla, compGlaBasis: c.gla_basis,
       });
     }, (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,

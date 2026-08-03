@@ -923,7 +923,15 @@ router.post('/valuations/:id/comps', async (req, res, next) => {
 async function storeRates(id, derived) {
   const value = derived.rates || (derived.why ? { why: derived.why } : null);
   if (!value) return;
-  await db.query(`UPDATE property_valuations SET market_rates=$2, updated_at=now() WHERE id=$1`,
+  // A REFUSAL NEVER REPLACES A REAL RECORD. Reached by clearing the subject's town
+  // and adding another comparable: the second pass has no market to read, and
+  // writing its `why` over the rates the FIRST pass captured would destroy the
+  // provenance of the suggested lines already sitting on the grid — the exact
+  // loss the `suggest:false` guard exists to prevent, through a different door.
+  // An empty record is not a record, so it is still filled.
+  const guard = derived.rates ? '' : ` AND COALESCE(market_rates, '{}'::jsonb) = '{}'::jsonb`;
+  await db.query(
+    `UPDATE property_valuations SET market_rates=$2, updated_at=now() WHERE id=$1${guard}`,
     [id, JSON.stringify(value)]);
 }
 

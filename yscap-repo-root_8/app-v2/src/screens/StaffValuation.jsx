@@ -370,23 +370,43 @@ function MarketRates({ rates }) {
   );
 }
 
+/**
+ * READ a number, as a number.
+ *
+ * `num` from `lib/research` is a FORMATTER — it returns a STRING, and `'—'` for
+ * a null, so it never returns null and its output cannot be arithmetic'd or fed
+ * back to `money`. `money(num(35250))` is `money('35,250')`, which is
+ * `Number('35,250')`, which is **NaN** — so every one of these rows rendered
+ * "$NaN", and the "no rate" branch below was unreachable because `'—' == null`
+ * is false. The server-side `num` in `lib/research/valuation.js` DOES return
+ * `number|null`, and mixing the two up is what produced it.
+ */
+function readNum(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** One rate as a number a person can check, or a plain "no" — never a blank. */
 function rateValue(rate, kind) {
   if (!rate) return <span style={{ color: MUTED }}>—</span>;
   // A REFUSAL IS A RESULT. `value` and `valuePerSqft` are both absent on a refusal,
   // and `0` is not one — so test for null explicitly rather than truthiness.
-  const v = kind === 'group' ? num(rate.valuePerSqft) : num(rate.value);
+  const v = readNum(kind === 'group' ? rate.valuePerSqft : rate.value);
   if (v == null) return <span style={{ color: MUTED }}>no rate</span>;
-  if (kind === 'time') return <b style={{ color: INK }}>{v > 0 ? '+' : ''}{v}% a month</b>;
+  // A market trend is TENTHS of a percent a month — rounded to whole numbers a
+  // real +0.42%/month (about 5% a year) prints as "0% a month", which reads as a
+  // flat market, and -0.5% prints as "-1%".
+  if (kind === 'time') return <b style={{ color: INK }}>{v > 0 ? '+' : ''}{num(v, 2)}% a month</b>;
   if (kind === 'group') {
     // The dollars on a typical house here is the figure a human can sanity-check;
     // a per-foot rate for a bedroom is nearly impossible to judge by eye.
-    const d = num(rate.approxDollarsOnTypicalHouse);
+    const d = readNum(rate.approxDollarsOnTypicalHouse);
     return d == null
-      ? <b style={{ color: INK }}>${v} a sq ft</b>
-      : <><b style={{ color: INK }}>{money(d)}</b><div style={{ color: MUTED, fontSize: 11 }}>${v} a sq ft</div></>;
+      ? <b style={{ color: INK }}>${num(v, 2)} a sq ft</b>
+      : <><b style={{ color: INK }}>{money(d)}</b><div style={{ color: MUTED, fontSize: 11 }}>${num(v, 2)} a sq ft</div></>;
   }
-  return <b style={{ color: INK }}>${v}</b>;
+  return <b style={{ color: INK }}>${num(v, 2)}</b>;
 }
 
 /* The side-by-side adjustment grid. Comps are COLUMNS, exactly as on the form. */
