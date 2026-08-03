@@ -36,15 +36,20 @@
  * vendor), not a per-minute quota — see docs/research. A strictly sequential
  * walk holds ONE slot whether it is paced or not, so the pause does not reduce
  * our concurrency and would not, on its own, have prevented a 429. What it does
- * is put a CEILING on the request RATE: 350ms between loans caps a sweep at
- * ≈170 requests/minute at concurrency 1 — the exact posture the research
- * recommends and that bulkPullAllLoans already follows (docs/research,
- * "Realistic pacing"). How far that is BELOW the unpaced rate depends on
- * Encompass's own response time, which is not measured here, so no before/after
- * figure is claimed. The thing that would genuinely protect us when a 429 does
- * arrive — honouring Retry-After, backoff with jitter, reading
- * X-Concurrency-Limit-Remaining — is NOT implemented anywhere in the Encompass
- * client, and pacing is not a substitute for it.
+ * is slow the march — 350ms between LOANS, borrowing the constant from
+ * bulkPullAllLoans so there is one convention rather than two.
+ *
+ * DO NOT RESTATE THAT AS A REQUESTS-PER-SECOND FIGURE, which is a mistake this
+ * comment has already made twice. The research's ≈170 req/min (docs/research,
+ * "Realistic pacing") describes bulkPullAllLoans, where the 350ms sits between
+ * REQUESTS because that walk makes one call per loan. Here it sits between
+ * LOANS, and each loan issues 1 + orders-per-loan GETs back to back with no
+ * pause between them — so our request rate is a MULTIPLE of our loan rate, we
+ * are less conservative than the bulk puller rather than equally so, and the
+ * actual rate is not measured anywhere here. The thing that would genuinely
+ * protect us when a 429 does arrive — honouring Retry-After, backoff with
+ * jitter, reading X-Concurrency-Limit-Remaining — is NOT implemented anywhere
+ * in the Encompass client, and pacing is not a substitute for it.
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -703,10 +708,12 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
     // enrichment pass share it, this credential and one module-level token cache.
     // Read this together with the header and do not over-claim it: what Encompass
     // enforces is CONCURRENCY, and a sequential walk holds one slot whether it
-    // pauses or not — so the pause is a rate CEILING, not what prevents the 429.
-    // The bulk puller already paces at 350ms (reader.bulkPullAllLoans); match it
-    // rather than invent a second convention. Skipped before the FIRST loan so a
-    // one-loan sweep costs nothing.
+    // pauses or not — so the pause slows the march, it is not what prevents the
+    // 429. Note WHAT it bounds: the sleep is per LOAN, and the GETs inside a loan
+    // are unpaced, so it bounds loans per minute and not requests per minute. The
+    // 350ms constant is borrowed from reader.bulkPullAllLoans so there is one
+    // convention rather than two — not because the two walks are equally paced.
+    // Skipped before the FIRST loan so a one-loan sweep costs nothing.
     if (!first) await sleep(paceMs);
     first = false;
     out.loans++;
