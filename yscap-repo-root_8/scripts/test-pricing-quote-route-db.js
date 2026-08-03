@@ -11,8 +11,22 @@
  *
  * Runs against a real server on a real Postgres (the pricing settings it applies
  * are read from the DB), through real HTTP.
+ *
+ * SELF-SKIPS WITHOUT A DATABASE, and requires nothing that opens a pool until
+ * after that check — the rule every other *-db.js suite in the chain follows.
+ * The first version of this file broke it (`require('../src/server')` at the
+ * top, no guard) and CI caught it: `npm test` runs in BOTH CI jobs, and the
+ * `test` job has no Postgres service, so the boot sat in its connect-retry loop
+ * against the default database and failed the whole run. Check first, exit 0,
+ * require afterwards.
  */
-const assert = require('assert');
+if (!process.env.DATABASE_URL) { console.log('SKIP test-pricing-quote-route-db (no DATABASE_URL)'); process.exit(0); }
+
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-pricing-quote';
+process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || 'test-ssn-key-for-verification-only-32bytes!!';
+process.env.EMAIL_PROVIDER = 'none';
+process.env.NODE_ENV = 'test';
+
 const http = require('http');
 
 const app = require('../src/server');
