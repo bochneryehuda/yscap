@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* The Archived folder — files that were archived (soft-removed) leave the
    pipeline and the dashboard figures but are kept here and can be restored, or
@@ -16,10 +17,11 @@ export default function StaffArchived() {
   const allowed = can('delete_files');
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
 
-  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
+  // Restoring a file is a ROW action — confirm in the fixed toast, never in a
+  // banner at the top of the list (see FlashToast.jsx).
+  const { flash, toast } = useFlash();
   const load = () => api.staffArchivedApps().then(setRows).catch((e) => { setErr(e.message || 'Could not load'); setRows([]); });
   useEffect(() => { if (allowed) load(); }, [allowed]);
 
@@ -71,7 +73,7 @@ export default function StaffArchived() {
         bring it back, or delete it permanently — a permanent delete removes the file and everything under
         it and cannot be undone.
       </p>
-      {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {rows != null && rows.length > 0 && (
