@@ -136,7 +136,16 @@ async function assembleTapeLoan(appId, db) {
     },
     borrower: { first: app.b_first, last: app.b_last, email: app.b_email, fico: num(app.b_fico), citizenship: app.b_citizenship },
     coBorrower: app.co_borrower_id ? { first: app.cb_first, last: app.cb_last, fico: num(app.cb_fico), citizenship: app.cb_citizenship } : null,
-    vesting: { llc: app.vesting_llc || '', ein: app.vesting_ein || '', state: app.vesting_state || '' },
+    /* `individual` = the file is bought in a personal name, so there IS no
+       entity (db/384). Carried beside the entity fields so a tape column can say
+       so instead of shipping a blank Borrowing Entity, which reads as "nobody
+       filled this in". A linked entity always wins — see lib/vesting-label. */
+    vesting: {
+      llc: app.vesting_llc || '', ein: app.vesting_ein || '', state: app.vesting_state || '',
+      individual: require('../vesting-label').isIndividual({
+        llcName: app.vesting_llc, llcId: app.llc_id, personalNamePurchase: app.personal_name_purchase,
+      }),
+    },
     officer: { name: app.officer_name || app.loan_officer_name || '', nmls: app.officer_nmls || '', email: app.officer_email || '', phone: app.officer_phone || '' },
     registration: reg,
     quote: (reg && reg.quote) || {},
