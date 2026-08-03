@@ -2318,6 +2318,156 @@ function TrackRecordFindings({ appId, onChanged }) {
   );
 }
 
+/* WHAT'S LEFT ON THIS TRACK RECORD (owner-directed 2026-08-03: "after the track
+   record there should be the skew of the stuff that still needs to be done to
+   the track record — stuff that still needs to be reviewed — nicely laid out
+   within the file as well").
+
+   Everything here is WORKED OUT ON THE SERVER (`src/lib/track-record-todo.js`).
+   The 3-year exit window is a frozen rule and the refusals are the sign-off
+   gate's own wording, so nothing on this panel is re-derived in the browser —
+   a screen that judged a line "ready" while the gate refused it is exactly the
+   confusion this replaces.
+
+   Grouped by WHO OWES THE WORK, because that is the question an officer opens
+   this section with. Our own work comes first: it is the only part anyone here
+   can finish today. */
+const TODO_GROUPS = [
+  { key: 'us', title: 'For us to do', tone: '#2F7F86', blurb: 'Nobody outside the office is holding these up.' },
+  { key: 'borrower', title: 'Waiting on the borrower', tone: '#8A6D3B', blurb: 'Asked for, or still to be asked for.' },
+  { key: 'nobody', title: 'Worth knowing', tone: '#4B585C', blurb: 'Nothing to chase — these lines simply cannot count.' },
+];
+
+function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    api.staffTrackRecordTodo(appId, borrowerId)
+      .then((d) => { if (alive) { setData(d && typeof d === 'object' ? d : null); setErr(''); } })
+      .catch((e) => { if (alive) { setData(null); setErr((e && e.message) || 'could not work out what is left'); } });
+    return () => { alive = false; };
+  }, [appId, borrowerId, reloadKey]);
+
+  if (err) return <div className="small" style={{ color: '#8A6D3B', marginTop: 12 }}>{err}</div>;
+  if (!data) return null;
+
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  const findings = Array.isArray(data.findings) ? data.findings : [];
+  const exp = data.experience || null;
+  const s = data.summary || { items: 0, us: 0, borrower: 0, lines: 0 };
+  const expShort = exp && (!exp.registered || (exp.shortfall || []).length);
+
+  // One flat list per group — the property is named on each row, so an officer
+  // reads their own work in one place instead of hunting it across ten cards.
+  const byGroup = {};
+  for (const l of lines) {
+    for (const t of (l.todo || [])) {
+      const k = t.waitingOn || 'nobody';
+      (byGroup[k] = byGroup[k] || []).push({ ...t, line: l });
+    }
+  }
+
+  const headline = data.ok
+    ? 'Nothing left — every deal on this track record has been reviewed.'
+    : [
+      s.items ? `${s.items} ${s.items === 1 ? 'thing' : 'things'} on ${s.lines} ${s.lines === 1 ? 'deal' : 'deals'}` : '',
+      findings.length ? `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'} to settle` : '',
+      expShort ? 'experience short of the registered product' : '',
+    ].filter(Boolean).join(' · ');
+
+  return (
+    <div className="panel" style={{ marginTop: 12, padding: 12 }}>
+      <div className="row" style={{ alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <h4 style={{ margin: 0, color: '#141B22' }}>What&rsquo;s left on this track record</h4>
+        {!data.ok && s.us > 0 && (
+          <span className="pill small" style={{ borderColor: '#2F7F86', color: '#2F7F86' }}>
+            {s.us} on us
+          </span>
+        )}
+        {!data.ok && s.borrower > 0 && (
+          <span className="pill small" style={{ borderColor: '#8A6D3B', color: '#8A6D3B' }}>
+            {s.borrower} with the borrower
+          </span>
+        )}
+      </div>
+      <div className="small" style={{ color: data.ok ? '#2F7F86' : '#4B585C', margin: '4px 0 0' }}>
+        {headline}
+      </div>
+
+      {/* The two other things the sign-off gate refuses on, in ITS order:
+          the findings first, then the experience shortfall. */}
+      {findings.length > 0 && (
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
+          <strong>{findings.length === 1 ? 'One finding' : `${findings.length} findings`} to settle first.</strong>{' '}
+          They are at the top of this section — the experience condition cannot be signed off until each one is
+          settled or dismissed.
+        </div>
+      )}
+      {exp && expShort && (
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#141B22' }}>
+          {!exp.registered ? (
+            <>
+              <strong>No product registered yet.</strong>{' '}
+              Experience is checked against the registered product, so the experience condition can&rsquo;t be
+              signed off until Products &amp; Pricing has been registered.
+            </>
+          ) : (
+            <>
+              <strong>Verified experience is short of the registered product.</strong>{' '}
+              Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
+              {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
+              The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.
+            </>
+          )}
+        </div>
+      )}
+
+      {TODO_GROUPS.map((g) => {
+        const rows = byGroup[g.key] || [];
+        if (!rows.length) return null;
+        return (
+          <div key={g.key} style={{ marginTop: 12 }}>
+            <div className="row" style={{ alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: g.tone }}>
+                {g.title}
+              </span>
+              <span className="muted small">{g.blurb}</span>
+            </div>
+            {rows.map((r, i) => (
+              <div key={`${r.line.id}:${r.code}:${i}`}
+                style={{ display: 'flex', gap: 10, padding: '8px 0', borderTop: '1px solid rgba(127,169,176,.18)' }}>
+                <span aria-hidden="true" style={{ width: 3, borderRadius: 2, background: g.tone, flex: '0 0 3px' }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <strong style={{ color: '#141B22' }}>{r.title}</strong>
+                    <span className="muted small">{r.line.address}</span>
+                    {r.line.selfReported && (
+                      <span className="pill small" title="The borrower typed this deal themselves — it is self-reported until somebody reads the documents behind it">
+                        Self-reported
+                      </span>
+                    )}
+                    {r.line.exitDate && <span className="muted small">exit {r.line.exitDate}</span>}
+                  </div>
+                  <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>{r.how}</div>
+                  {r.code === 'open_request' && (r.line.openRequests || []).map((rq) => (
+                    <div key={rq.id} className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+                      ↳ {rq.label} <span className="pill small">{rq.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function StaffTrackRecordPanel({ app, role }) {
   // On a co-borrower file each borrower has their OWN track record (#80): pick
   // whose you're editing. Every deal you add saves to THAT borrower's profile
@@ -2353,6 +2503,12 @@ function StaffTrackRecordPanel({ app, role }) {
       setTrDocs(docMap);
     }).catch(() => { setTrs([]); setTrDocs({}); });
   }, [borrowerId]);
+  // Anything that CHANGES the record also re-asks the server what is left. The
+  // plain mount path deliberately does NOT bump this — the to-do panel already
+  // fetches once when it mounts, and bumping there would make every open of the
+  // section fetch it twice.
+  const [todoKey, setTodoKey] = useState(0);
+  const reloadAll = useCallback(() => { refreshTrs(); setTodoKey((k) => k + 1); }, [refreshTrs]);
   // Accept / reject a document uploaded against a track-record line item. Reject
   // requires a reason and un-verifies the line item (its evidence no longer stands).
   const reviewTrDoc = useCallback(async (doc, action) => {
@@ -2360,7 +2516,7 @@ function StaffTrackRecordPanel({ app, role }) {
     if (action === 'delete') {
       if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
       setTrBusy(doc.id); setTrMsg('');
-      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); refreshTrs(); }
+      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); reloadAll(); }
       catch (e) { setTrMsg(e.message || 'Could not delete the document'); }
       finally { setTrBusy(''); }
       return;
@@ -2370,10 +2526,10 @@ function StaffTrackRecordPanel({ app, role }) {
       if (reason == null || !reason.trim()) return;
     }
     setTrBusy(doc.id); setTrMsg('');
-    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); refreshTrs(); }
+    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); reloadAll(); }
     catch (e) { setTrMsg(e.message || 'Could not review the document'); }
     finally { setTrBusy(''); }
-  }, [refreshTrs]);
+  }, [reloadAll]);
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
@@ -2396,7 +2552,7 @@ function StaffTrackRecordPanel({ app, role }) {
   useEffect(() => {
     const unsub = subscribeChat((event, data) => {
       if (event !== 'track_record:updated' || !data || data.borrowerId !== borrowerId) return;
-      refreshTrs();
+      reloadAll();
       refreshSnap();
       document.querySelectorAll('iframe').forEach((f) => {
         try { if (f.contentWindow) f.contentWindow.postMessage({ type: 'ys-tr-reload' }, window.location.origin); }
@@ -2404,7 +2560,7 @@ function StaffTrackRecordPanel({ app, role }) {
       });
     });
     return unsub;
-  }, [borrowerId, refreshTrs, refreshSnap]);
+  }, [borrowerId, reloadAll, refreshSnap]);
   async function download() {
     if (!snap) return;
     setDl(true);
@@ -2416,7 +2572,7 @@ function StaffTrackRecordPanel({ app, role }) {
     <div className="panel" style={{ marginTop: 18 }}>
       {/* What is WRONG with this track record comes first — it holds the
           experience condition, so it must not be below the fold. */}
-      <TrackRecordFindings appId={app.id} onChanged={refreshTrs} />
+      <TrackRecordFindings appId={app.id} onChanged={reloadAll} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
@@ -2497,7 +2653,7 @@ function StaffTrackRecordPanel({ app, role }) {
                       const label = window.prompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
                       if (label == null || !label.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not request the document'); }
                       finally { setTrBusy(''); }
                     }}>Request a document</button>
@@ -2507,7 +2663,7 @@ function StaffTrackRecordPanel({ app, role }) {
                       const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
@@ -2543,6 +2699,9 @@ function StaffTrackRecordPanel({ app, role }) {
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={220}
       />
+      {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
+          record, then you read what is still left on it. */}
+      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} />
       {full && (
         <ToolModal
           title="Borrower track record"
