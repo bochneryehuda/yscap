@@ -52,7 +52,7 @@ const { raiseEntityIssue } = require('../lib/raise-issue');
 const uspsVerify = require('../lib/usps-verify');
 const { componentsOf: uspsComponentsOf } = require('../lib/address-usps-verify');
 
-const { can } = require('../lib/permissions');
+const { can, visibleOfficersSql } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
 // draw_coordinator + closer are here so they can reach their OWN personal
@@ -242,17 +242,13 @@ async function audit(req, action, entity_type, entity_id, detail) {
 // assignee EXISTS also covers the primary (backfilled + trigger-synced), so this
 // term is behavior-identical until assistants are actually added. Single-param
 // ($p repeated) — no caller changes. Requires ${alias}.id to be selectable.
-const VISIBLE_OFFICERS_SQL = (alias, p) =>
-  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
-  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
-  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)` +
-  // The Workflow (owner-directed 2026-07-21): a person a file was SUBMITTED to
-  // (an open/in-progress hand-off routed to them) can open + work it — e.g. an
-  // exception sent to a processor/closer who isn't otherwise on the file. Access
-  // ends when they send it back (status leaves open/in_progress).
-  ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
-  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
+// The five-way file-visibility predicate. The DEFINITION now lives in
+// src/lib/permissions.js `visibleOfficersSql` — moved there (byte-identical output,
+// pinned by scripts/test-dashboards-db.js) when the Dashboards build needed the same
+// scope: a lib may not require a route, and a second hand-written copy is precisely how
+// a scope loses a branch. Includes the Workflow hand-off arm (owner-directed 2026-07-21):
+// a person a file was SUBMITTED to can open and work it until they send it back.
+const VISIBLE_OFFICERS_SQL = visibleOfficersSql;
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
@@ -1609,6 +1605,21 @@ router.get('/applications/:id', async (req, res) => {
   fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
   delete fileRow.registered_stale;
   delete fileRow.registered_stale_reason;
+  // Does this file need an estimated monthly rent to be complete? Decided HERE,
+  // with the same two shared helpers `applicationCompleteness` uses, and sent as
+  // a plain boolean (owner-directed 2026-08-03).
+  //
+  // It used to be re-derived in the browser (StaffApplication.jsx `isEmcapBuyer`),
+  // which put a capital partner's name in the one portal bundle every visitor
+  // downloads AND drifted from the server the moment the server was corrected:
+  // the client still compared `=== 'emcap'`, the exact match that 2026-07-30
+  // replaced precisely because the real ClickUp label "EMCAP Financial"
+  // normalizes to `emcapfinancial` and so matched NO live file. The panel was
+  // therefore silently not asking for a rent the submit gate would refuse
+  // without. One definition, on the side that owns it, is the fix for both.
+  fileRow.requires_estimated_rent = conditionRegistry.isEmcapNoteBuyer(fileRow.lender)
+    && conditionRegistry.normStrategy(
+      [fileRow.program, fileRow.loan_type, fileRow.rehab_type].filter(Boolean).join(' ')) === 'fix_hold';
   res.json(fileRow);
 });
 
@@ -10579,8 +10590,11 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
     [appId, internalStatus, external]);
   enqueueClickupPush(appId, ['internal_status']).catch(() => {}); // push the ClickUp task status + the mirror
   await db.query(
-    `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-     VALUES ($1,$2,$3,$4,$5)`, [appId, cur.rows[0].status, external, opts.actorId || null, forced]);
+    // `source` (db/421) says WHICH door moved the file. A NULL means "recorded before
+    // db/421"; a portal move made from here on labels itself, so the ClickUp-driven moves
+    // that used to be invisible are now told apart from these rather than lumped in.
+    `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced, source)
+     VALUES ($1,$2,$3,$4,$5,'portal')`, [appId, cur.rows[0].status, external, opts.actorId || null, forced]);
   if (external === 'funded') {
     try { await seedPostClosing(appId); } catch (_) {}
     // The Workflow, phase two: a freshly-funded file auto-hands off to the draw
@@ -10715,8 +10729,8 @@ router.patch('/applications/:id', async (req, res) => {
     enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // propagate ONLY the status change to ClickUp promptly
     // Record the transition on the file's timeline.
     await db.query(
-      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
+      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced, source)
+       VALUES ($1,$2,$3,$4,$5,'portal')`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
     // Funding seeds the post-closing trailing-doc checklist + auto-hands off to
     // the draw coordinator (best-effort).
     if (status === 'funded') {

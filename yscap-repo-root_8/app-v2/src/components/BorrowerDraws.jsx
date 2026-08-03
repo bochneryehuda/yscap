@@ -388,7 +388,7 @@ function FindingCard({ finding, appId, onChanged }) {
         <span className={'pill ' + badge.cls}>{badge.label}</span>
       </div>
       <div className="dd-sub" style={{ marginTop: -2 }}>
-        Approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
+        The inspector approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
         {finding.status === 'accepted' && !finding.released && finding.wire_due_at ? ` Your release is expected by ${new Date(finding.wire_due_at).toLocaleDateString('en-US')}.` : ''}
         {finding.released ? ' Your funds have been released.' : ''}
       </div>

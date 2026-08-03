@@ -18,6 +18,7 @@ const risk = require('./risk');
 const M = require('./mapper');
 const routing = require('./routing');
 const tpIntake = require('./trustpoint-intake');
+const EV = require('./inspection-evidence');
 
 /**
  * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
@@ -442,12 +443,19 @@ async function reconcileOne(appId) {
           || null;
         await db.query(
           `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, job_item_name, requested_cents, approved_cents, lender_comments, inspector_comments, inspection_count, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,0),now())
            ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments,
+             -- The DRAW-level payload does not carry an inspections array (only GET /requests/:id
+             -- does — the same shape gap that left job_item.name null, fixed 2026-07-22). The old
+             -- code stored Array.isArray(undefined) ? n : 0 — a hard 0 on EVERY poll, which made four
+             -- fully-photographed roof lines flag "no inspection photos attached" forever
+             -- (owner-reported 2026-08-03). A count can only ever be RAISED here: an absent field is
+             -- "we weren't told", never "there are none", and photos on a request never un-happen.
+             inspection_count=GREATEST(COALESCE(EXCLUDED.inspection_count, 0), COALESCE(sitewire_draw_requests.inspection_count, 0)),
              job_item_name=COALESCE(EXCLUDED.job_item_name, sitewire_draw_requests.job_item_name), updated_at=now()`,
           [d.id, r.id, jiId, hydratedName,
            r.requested_cents || 0, r.approved_cents == null ? null : r.approved_cents, r.lender_comments || null, r.inspector_comments || null,
-           Array.isArray(r.inspections) ? r.inspections.length : 0]);
+           Array.isArray(r.inspections) ? r.inspections.length : null]);
       } catch (rowErr) {
         console.warn(`[sitewire] reconcile: skipped a bad request row (draw ${d.id}, request ${r && r.id}): ${db.describeError ? db.describeError(rowErr) : rowErr.message}`);
       }
@@ -462,6 +470,13 @@ async function reconcileOne(appId) {
      try { await require('./orchestrator').park({ appId, dedupe: `drawrow:${d && d.id}`, reason: `sitewire_reconcile_draw_error: could not mirror Sitewire draw ${d && d.id} — ${String(emsg).slice(0, 200)}. It won't appear on the desk until reconciled by hand.` }); } catch (_) {}
    }
   }
+  // Heal every request's photo count from the DURABLE sources — the delivered findings (which are
+  // read through GET /requests/:id and DO carry the inspections) and the photos already archived into
+  // PILOT. GREATEST-only, so it can raise a count the draw payload never sent and can never lower a
+  // real one. This is what makes the desk's "Photos" column and the risk engine agree with the
+  // report, which was reading those same durable rows all along.
+  try { await db.query(EV.HEAL_SQL, [appId, null]); } catch (_) { /* best-effort — risk also reads the durable sources directly */ }
+
   // TrustPoint import-task SWEEP (phase-1 audit #3/#5): on a trustpoint-routed file, any
   // SUBMITTED, non-historical draw whose task never opened (stamp NULL — a failed open
   // rolled back, or the file was cut over to TrustPoint mid-draw so no transition fired)
@@ -712,8 +727,21 @@ async function assessAndStoreRisk(appId) {
       continue;
     }
     const reqs = (await db.query(
-      `SELECT sitewire_job_item_id, requested_cents, approved_cents, inspection_count FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [d.sitewire_draw_id])).rows;
-    const a = risk.assessDraw({ draw: d, requests: reqs, links, rollup, opts });
+      `SELECT sitewire_request_id, sitewire_job_item_id, requested_cents, approved_cents, inspection_count FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [d.sitewire_draw_id])).rows;
+    // "Is this line verified?" is answered by the UNION of every durable record of an inspection —
+    // the mirrored counter, the delivered findings, and the photos archived into PILOT — never by
+    // the mirrored counter alone (see ./inspection-evidence for the root cause).
+    let evidence = null;
+    try {
+      const fl = (await db.query(
+        `SELECT fl.sitewire_request_id, fl.photo_count, fl.video_count
+           FROM draw_finding_lines fl JOIN draw_findings f ON f.id=fl.finding_id
+          WHERE f.application_id=$1 AND f.sitewire_draw_id=$2 AND fl.retired_at IS NULL`, [appId, d.sitewire_draw_id])).rows;
+      const dm = (await db.query(
+        `SELECT sitewire_request_id, kind FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, d.sitewire_draw_id])).rows;
+      evidence = EV.buildEvidence({ requests: reqs, findingLines: fl, media: dm });
+    } catch (_) { /* best-effort — the mirrored counter still answers */ }
+    const a = risk.assessDraw({ draw: d, requests: reqs, links, rollup, opts: { ...opts, evidence } });
     await db.query(`UPDATE sitewire_draws SET risk_level=$2, risk_flags=$3, risk_assessed_at=now() WHERE sitewire_draw_id=$1`,
       [d.sitewire_draw_id, a.level, JSON.stringify(a.flags)]);
     assessed++;
@@ -891,6 +919,14 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
   if (retireIds.length) {
     await db.query(`UPDATE draw_finding_lines SET retired_at=now(), updated_at=now() WHERE id = ANY($1::bigint[])`, [retireIds]);
   }
+  // The findings we just persisted came from GET /requests/:id, which is the ONE Sitewire payload
+  // that carries the inspections — so this is the moment the true photo count is known. Push it back
+  // onto the request mirror (raise-only) so the desk column and the risk engine stop reading the
+  // draw-payload's silent 0. Best-effort: a failure never fails a delivery.
+  try { await db.query(EV.HEAL_SQL, [appId, Number(sitewireDrawId)]); } catch (_) {}
+  // Re-run the advisory risk pass now that the evidence is on file, so a "no inspection photos"
+  // flag raised before the findings landed clears itself instead of sitting on the delivered draw.
+  try { await assessAndStoreRisk(appId); } catch (_) {}
   return { finding_id: finding.id, reply_token: finding.reply_token, lines: detail.lines.length,
     retired_lines: retireIds.length,
     totals: detail.totals, status: promotable ? 'delivered' : priorStatus,

@@ -1054,14 +1054,32 @@
     return "<strong>You're at Tier " + tierNum + "</strong> \u2014 " + count + " " + unit + " project" + (count === 1 ? "" : "s") + " on file. Just " + need + " more completed project" + (need === 1 ? "" : "s") + " reaches Tier " + (tierNum - 1) + ", with more leverage and a lower rate.";
   }
 
-  /* ---- Admin pricing controls (soft, client-side gate; reveals two fields on the same page) ---- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — see note; change = new hash.
-  function cyrb53(str, seed) {
-    seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-    for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  /* ---- Admin pricing controls (password checked SERVER-SIDE; reveals the fields on this page) ----
+     The password used to live right here, as a cyrb53 hash with the plaintext in the
+     comment beside it — in a file anyone can open — and the comparison ran in the
+     visitor's own browser, so it could be skipped from the console entirely. Both
+     halves moved to POST /api/pricing-admin/unlock (src/routes/pricing-admin.js).
+     SAME PASSWORD, and still NO login required: staff working from a shared
+     term-sheet link must be able to open these controls (owner-directed).
+     Unlocking reveals controls this page already has — markup and origination reach
+     the tool through /api/pricing-defaults either way — so pricing math is
+     identical whether or not anyone ever unlocks. */
+  function checkAdminPassword(pw, cb) {
+    var done = false;
+    var finish = function (ok) { if (!done) { done = true; cb(ok); } };
+    try {
+      // Never let a slow/blocked network leave the Unlock button dead.
+      var timer = setTimeout(function () { finish(false); }, 12000);
+      fetch("/api/pricing-admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: String(pw == null ? "" : pw) })
+      }).then(function (r) {
+        return r.ok ? r.json().catch(function () { return null; }) : null;
+      }).then(function (d) {
+        clearTimeout(timer); finish(!!(d && d.ok === true));
+      }).catch(function () { clearTimeout(timer); finish(false); });
+    } catch (e) { finish(false); }
   }
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
@@ -1361,10 +1379,18 @@
         pw = el("tsAdminPw"), go = el("tsAdminGo"), err = el("tsAdminErr"), hide = el("tsAdminHide");
     if (!trig) return;
     function openLock() { if (lock) lock.hidden = false; if (panel) panel.hidden = true; trig.setAttribute("aria-expanded", "true"); if (err) err.hidden = true; if (pw) { pw.value = ""; pw.focus(); } }
+    var checking = false;   // one request at a time (the unlock route is rate-limited)
     function attempt() {
-      if (!pw) return;
-      if (cyrb53(pw.value, 0) === ADMIN_HASH) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
-      else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      if (!pw || checking) return;
+      checking = true;
+      if (go) { go.disabled = true; }
+      if (err) err.hidden = true;
+      checkAdminPassword(pw.value, function (ok) {
+        checking = false;
+        if (go) { go.disabled = false; }
+        if (ok) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
+        else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      });
     }
     function setVal(id, v) { var e = el(id); if (e) e.value = v; }
     function manualVis() {

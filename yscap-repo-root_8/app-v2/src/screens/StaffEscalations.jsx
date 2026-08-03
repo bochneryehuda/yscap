@@ -11,8 +11,9 @@ import { fullNameOf } from '../lib/personName.js';
  * ceilings and the REQUIRED default months of assets/liquidity a manual product
  * must show. A manual product is created when a staffer overrides the deal
  * structure (LTV/LTC/ARV) in the Term Sheet Studio — it prices on the Standard
- * (Fidelis) guidelines but carries the manual leverage and ALWAYS requires the
- * flood certificate.
+ * Program guidelines but carries the manual leverage and ALWAYS requires the
+ * flood certificate. (No capital-partner name here: this file compiles into the
+ * one portal bundle every visitor downloads.)
  *
  * BOTTOM — the escalation box: a registration that needs sign-off lands
  * immediately but waits here to be approved or declined. Three kinds arrive
@@ -237,7 +238,7 @@ export default function StaffEscalations() {
             <span className="ic"><Icon name="info" /></span>
             <div>
               A manual product is created when someone overrides the LTV, LTC or ARV in the studio. It follows the
-              Standard (Fidelis) guidelines for everything else, always requires the flood certificate, and must be
+              Standard Program guidelines for everything else, always requires the flood certificate, and must be
               approved below. Set how many months of assets/liquidity a manual product requires before it can be
               registered — this can be raised per file at registration.
             </div>

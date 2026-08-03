@@ -377,18 +377,12 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
-// EMCAP prices the rental cash flow, so a fix-and-hold loan sold to EMCAP needs an
-// estimated monthly rent for completeness. These mirror the server's
-// normNoteBuyer / normStrategy fix-hold branch (src/lib/conditions/field-registry.js)
-// — keep them in sync so the panel and the submit gate agree.
-const isEmcapBuyer = (app) => String(app.lender || '').toLowerCase().replace(/[^a-z0-9]/g, '') === 'emcap';
-function isFixHoldStrategy(app) {
-  const s = [app.program, app.loan_type, app.rehab_type].filter(Boolean).join(' ').toLowerCase();
-  if (!s) return false;
-  if (/ground|construction(?!\s*&)/.test(s) && /ground|new/.test(s)) return false; // ground_up
-  if (/dscr|rental|stabilized|long[-\s]?term|30[-\s]?year/.test(s)) return false;   // rental_dscr
-  return /hold|brrrr/.test(s);
-}
+// Whether this file needs an estimated monthly rent for completeness is decided
+// by the SERVER and arrives as `app.requires_estimated_rent`
+// (GET /api/staff/applications/:id). It used to be re-derived here, which put a
+// capital partner's name in the bundle every visitor downloads and drifted from
+// the server's own rule — see the note on that line in src/routes/staff.js.
+// Never re-derive a note-buyer rule in the browser: ask the server.
 
 /* COMPLETENESS IS THREE LISTS, NOT ONE (owner-directed 2026-08-02: split it
    three ways — the application, the borrower, the co-borrower).
@@ -471,7 +465,7 @@ const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
   // Estimated monthly rent — required for completeness only on an EMCAP
   // fix-and-hold loan (owner-directed 2026-07-26). Hidden on every other file.
-  ...(isEmcapBuyer(app) && isFixHoldStrategy(app)
+  ...(app.requires_estimated_rent
     ? [{ key: 'estimated_rental_income', label: 'Estimated monthly rent', ok: app.estimated_rental_income != null, type: 'money' }]
     : []),
   // Loan number (applications.ys_loan_number) — part of application completeness
