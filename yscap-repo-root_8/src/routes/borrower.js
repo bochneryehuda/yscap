@@ -643,28 +643,13 @@ router.post('/applications/:id/request-draw', async (req, res) => {
 // A free-typed vesting entity (name only, never picked from the list) still
 // becomes a real profile LLC: match one of the borrower's entities by name,
 // else create it — so the file always links a real entity and the LLC
-// condition never has to re-ask for a name the borrower already gave.
+// condition never has to re-ask for a name the borrower already gave. ONE
+// definition now, shared with every other door that takes a typed entity name
+// (src/lib/vesting.js): it reuses a name the borrower already has, recovers from
+// the unique-index race, and builds a brand-new entity's document slots.
 async function resolveEntityByName(borrowerId, name) {
-  const nm = String(name || '').trim().slice(0, 160);
-  if (!nm) return null;
-  const hit = await db.query(
-    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
-  if (hit.rows[0]) return hit.rows[0].id;
-  try {
-    const ins = await db.query(
-      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
-    try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
-    return ins.rows[0].id;
-  } catch (e) {
-    // Lost a race (or matched a whitespace-variant of an existing name) on the
-    // uq_llcs_borrower_name unique index (db/082) — re-select the winner so the
-    // file still links a real entity instead of silently failing.
-    if (e && e.code === '23505') {
-      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
-      if (again.rows[0]) return again.rows[0].id;
-    }
-    throw e;
-  }
+  const out = await require('../lib/vesting').resolveEntityByName(borrowerId, name);
+  return out ? out.id : null;
 }
 
 router.post('/applications', async (req, res) => {
