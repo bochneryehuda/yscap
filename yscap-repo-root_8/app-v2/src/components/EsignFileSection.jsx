@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
-import { goToSection } from './FileSections.jsx';
+import { goToSection, requestAppDetailTab } from './FileSections.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
@@ -246,7 +246,7 @@ export default function EsignFileSection({ appId, role, onChanged }) {
     }
     if (encBlocks && e.purpose === 'term_sheet_package') {
       if (!isAdmin) {
-        setErr('Encompass doesn’t match this file yet — fix the fields in the Encompass sync section, or ask an admin to make an exception for this send.');
+        setErr('Encompass doesn’t match this file yet — fix the fields on the Encompass sync tab under Application details, or ask an admin to make an exception for this send.');
         return;
       }
       const reason = window.prompt(
@@ -514,7 +514,11 @@ export default function EsignFileSection({ appId, role, onChanged }) {
               lets this one send through anyway. <span className="muted small">(The Heter Iska is not affected.)</span>
             </div>
             <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-              <button className="btn ghost btn-sm" onClick={() => goToSection('sec-encompass')}>
+              {/* Encompass sync is a TAB of Application details, not a section
+                  of its own (owner-directed 2026-08-03) — ask for the tab, then
+                  open the section that holds it. */}
+              <button className="btn ghost btn-sm"
+                onClick={() => { requestAppDetailTab('encompass'); goToSection('sec-application'); }}>
                 See what doesn’t match
               </button>
               {isAdmin && !encOvrOpen ? (

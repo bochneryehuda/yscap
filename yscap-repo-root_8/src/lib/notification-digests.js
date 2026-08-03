@@ -1449,6 +1449,123 @@ async function exceptionExpirySweepOnce() {
   return sent;
 }
 
+/**
+ * THE DAILY BACKUP WATCH — the thing that notices the off-site backup has stopped.
+ *
+ * WHY IT LIVES HERE, in the web service, rather than in either backup job.
+ *
+ * The nightly backup emails only when it FAILS, and a job that never runs never fails. Suspend the
+ * cron, break its image, get the schedule wrong, lapse the billing — and it goes completely silent,
+ * which is indistinguishable from a quiet healthy night. That hole was already known: the WEEKLY
+ * restore drill carries a freshness check (`manifest.freshness`, PR #973) and is the only thing that
+ * reports either way. But weekly is the wrong resolution for a nightly job — a backup that stops on
+ * a Monday is not noticed until the drill runs on Sunday, and those six days are exactly the window
+ * in which somebody believes they are protected and is not.
+ *
+ * Neither cron can close that gap: a job that is not running cannot report its own absence. The web
+ * service can — it is awake every 30 minutes, and `backup_runs` is an ordinary table it already
+ * reads for /api/health. So the check costs one query a day and needs no new service, no new
+ * credential, and nothing in the request path.
+ *
+ * THREE RULES, each of which is the difference between a useful alarm and noise nobody reads:
+ *   · SILENCE IS THE HEALTHY STATE. A protected system sends nothing. The one "all good" worth
+ *     reading is the drill's, because it is the only message that proves a restore actually works.
+ *   · IT ONLY WATCHES A BACKUP THAT HAS EVER WORKED. With no successful run ever recorded, this is
+ *     a deployment where the backup was never turned on (the env vars live on the cron services, not
+ *     here, so configuration cannot be read from this process) — and a daily "you have no backup" to
+ *     someone who never asked for one is the fastest way to train them to ignore the alarm. A
+ *     configured-but-failing job already emails on its own failure; the silent stop is what is
+ *     uncovered, and it can only happen to a backup that once ran.
+ *   · A STALE DRILL IS A SEPARATE, QUIETER MESSAGE. A backup that is being taken but not tested is a
+ *     different problem from no backup at all, with a different urgency and a different action —
+ *     collapsing them into one alarm is how the important one gets diluted. Own gate, own wording,
+ *     and it never fires while the louder one is firing.
+ *
+ * Best-effort throughout: this can never throw into the dispatcher, and never touches a backup.
+ */
+async function backupFreshnessWatchOnce() {
+  const b = require('../config').backup || {};
+  const maxAgeHours = Number(b.watchMaxAgeHours);
+  if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) return 0;   // deliberately switched off
+
+  const report = require('./backup/report');
+  let s;
+  try {
+    s = await report.protectionStatus(db, {
+      staleAfterHours: maxAgeHours,
+      verifyStaleAfterDays: Number(b.watchVerifyStaleDays) || 10,
+    });
+  } catch (e) {
+    // A backstop only. `report.lastSuccess` already swallows its own query errors and returns null,
+    // so an unreadable ledger normally arrives below as `lastBackupAt: null` rather than as a throw.
+    console.error('[digests] backup-watch: could not read the backup ledger:', e && e.message);
+    return 0;
+  }
+
+  // NO SUCCESSFUL BACKUP ON RECORD → SAY NOTHING. This single line carries TWO safety properties,
+  // which is why it must not be "simplified" into the !protected branch below:
+  //   · not configured ≠ broken (rule 2 above), and
+  //   · a ledger we could not READ looks exactly like this, because lastSuccess() catches its own
+  //     errors and returns null. So a database blip degrades to silence instead of announcing that
+  //     the backups have stopped — a false alarm about the one system nobody can afford to
+  //     distrust is worse than a missed day, and the next tick simply tries again.
+  // Both cases are "we have nothing to say", and neither is "you are unprotected".
+  if (!s.lastBackupAt) return 0;
+
+  const ageH = s.lastBackupAgeHours;
+  const ageText = ageH == null ? 'an unknown time'
+    : ageH < 48 ? `${Math.round(ageH)} hours`
+    : `${Math.round(ageH / 24)} days`;
+
+  if (!s.protected) {
+    // One per morning while it stays broken — a daily nudge, not an hourly one.
+    if (!(await _gate('backup_freshness_alert', null, '20 hours'))) return 0;
+    await report.alert({
+      ok: false,
+      subject: `The off-site backup has stopped — the last one was ${ageText} ago`,
+      lines: [
+        `The last successful backup of the database finished ${ageText} ago.`,
+        `A backup is expected every night, so something has stopped it.`,
+        '',
+        `What this means: everything entered since that backup is not in any off-site copy yet.`,
+        `The live system is working normally and no data has been lost — but if something happened`,
+        `to it right now, that work would not come back.`,
+        '',
+        s.lastVerifiedAt
+          ? `The last backup that was actually test-restored was on ${new Date(s.lastVerifiedAt).toDateString()}.`
+          : `No backup has been test-restored yet.`,
+      ],
+      action: 'Open the Render dashboard and check the "ys-capital-backup" job — see whether its last '
+            + 'run failed or whether it stopped running at all. The restore instructions are in '
+            + 'docs/DATABASE-BACKUP-AND-RESTORE.md.',
+    });
+    return 1;
+  }
+
+  // Backups are current. Is anyone still proving they restore?
+  if (!s.verificationFresh) {
+    if (!(await _gate('backup_verify_stale_alert', null, '6 days'))) return 0;
+    await report.alert({
+      ok: false,
+      subject: 'Backups are running, but none has been test-restored recently',
+      lines: [
+        `The nightly backup is working — the last one was ${ageText} ago.`,
+        s.lastVerifiedAt
+          ? `But the weekly test restore has not run since ${new Date(s.lastVerifiedAt).toDateString()}.`
+          : `But no test restore has ever completed.`,
+        '',
+        `What this means: we are still taking copies, and we have not recently proven one of them`,
+        `can actually be restored. This is a lower priority than a stopped backup — but the test is`,
+        `the only thing that proves the copies are usable.`,
+      ],
+      action: 'Check the "ys-capital-backup-verify" job in the Render dashboard.',
+    });
+    return 1;
+  }
+
+  return 0;   // protected and recently proven — say nothing
+}
+
 async function runDue() {
   const { hour, weekday } = nyParts();
   // The un-funded re-read sweep runs on EVERY tick, around the clock: it sends nothing to anyone
@@ -1457,6 +1574,9 @@ async function runDue() {
   // it a no-op once the book is caught up.
   await unfundedRereadSweepOnce().catch((e) => console.error('[digests] reread-sweep', e && e.message));
   if (hour >= 7 && hour < 11) {
+    // First: is the off-site backup still running? A stopped backup is silent by nature, so this
+    // check is the only thing between "it stopped" and "we found out when we needed it".
+    await backupFreshnessWatchOnce().catch((e) => console.error('[digests] backup-watch', e && e.message));
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
@@ -1661,4 +1781,5 @@ module.exports = {
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
+  backupFreshnessWatchOnce,
 };

@@ -13,14 +13,23 @@
  * against ClickUp and the same kind of screen against Encompass were two rooms
  * apart. They are now adjacent, in that order.
  *
+ * ONE DOOR, NOT TWO (owner-reported 2026-08-03: "encompass sync is now
+ * duplicated also in the application details and it's also a separate section in
+ * the deal … it should not be a separate section in the deal"). #23 moved the
+ * panel into the tab but left a shell SECTION behind whose only content was a
+ * button into that tab — so the rail and the page both still showed an
+ * "Encompass sync" room. Section D pins the shell's removal AND the retired
+ * address that keeps every existing link landing on the tab.
+ *
  * Pure — reads the source. No DB, no browser.
  */
-import fs from 'fs';
+import nodeFs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const file = fs.readFileSync(path.join(here, '..', 'app-v2', 'src', 'screens', 'StaffApplication.jsx'), 'utf8');
+const read = (...p) => nodeFs.readFileSync(path.join(here, '..', ...p), 'utf8');
+const file = read('app-v2', 'src', 'screens', 'StaffApplication.jsx');
 
 let fail = 0;
 const ok = (c, m) => { if (c) console.log(`  ok  ${m}`); else { fail++; console.error(`  FAIL ${m}`); } };
@@ -107,19 +116,57 @@ ok(order('pipeline', 'encompass'),
   ok(mounts === 1, `the Encompass panel is mounted exactly once (found ${mounts})`);
 }
 
-console.log('\nD. moving a section out never breaks a link that points at it');
+console.log('\nD. ONE Encompass door — the section is gone, and its address still lands');
 
 {
-  // sec-encompass is named by the room rail, by stations.js and by the tape
-  // screen's "open the Encompass sync" button. Deleting the section would send
-  // every one of those to a section that no longer exists.
-  ok(/id="sec-encompass"/.test(file),
-    'the sec-encompass shell is KEPT, so existing deep links still land');
-  const shell = file.slice(file.indexOf('id="sec-encompass"'), file.indexOf('id="sec-encompass"') + 1400);
-  ok(/setAppDetailTab\('encompass'\)/.test(shell) && /goToSection\('sec-application'\)/.test(shell),
-    '…and it takes you to the tab the panel actually moved to');
-  ok(!/<EncompassSyncPanel/.test(shell),
-    '…without rendering a SECOND copy of the panel there');
+  /* THE DUPLICATE THE OWNER REPORTED (2026-08-03): "encompass sync is now
+     duplicated also in the application details and it's also a separate section
+     in the deal … it should not be a separate section in the deal". The
+     2026-08-02 move left a shell section behind whose only content was a button
+     into the tab — a second Encompass entry in the rail and on the page. It is
+     deleted. The rail must not name it and no Section may render at it. */
+  ok(!/<Section [^>]*id="sec-encompass"/.test(file),
+    'no Encompass SECTION renders — the panel has one home, the Application-details tab');
+  ok(!/\{ id: 'sec-encompass'/.test(file),
+    '…and the room rail no longer lists it as a section');
+  ok(/\{ k: 'encompass', label: 'Encompass sync' \}/.test(file),
+    'the Encompass sync TAB is still there — the one door');
+}
+{
+  /* Deleting a section is only safe because its id is RETIRED, not dropped:
+     `#sec-encompass` is a permanent public address (emails already sent carry
+     it) and must still land on the tab. */
+  // Imported, not regex-matched: the map's SHAPE is what matters, and a source
+  // scan would go green or red on how the object happens to be formatted.
+  const { RETIRED_SECTION, STATIONS } = await import(
+    new URL('../app-v2/src/lib/stations.js', import.meta.url));
+  const enc = RETIRED_SECTION['sec-encompass'];
+  ok(enc && enc.section === 'sec-application' && enc.appTab === 'encompass',
+    'stations.js retires the address to Application details → the Encompass tab');
+  ok(!STATIONS.some((s) => s.sections.includes('sec-encompass')),
+    '…and no room claims it as a section any more');
+  ok(/const moved = resolveSection\(target\);/.test(file),
+    'a #sec-encompass deep link is resolved on landing (classic view registers no resolver)');
+  ok(/if \(t\.appTab\) requestAppDetailTab\(t\.appTab\)/.test(file),
+    '…and the jump carries the tab, so it lands on Encompass rather than Deal & property');
+}
+{
+  // The in-app routes in: the tape gate here, and the e-sign Encompass blocker.
+  // Both ask for the TAB and open the section that holds it — never a dead id.
+  ok(/requestAppDetailTab\('encompass'\); goToSection\('sec-application'\)/.test(file),
+    'the tape export\'s "open the Encompass sync tab" opens the tab, not a retired section');
+  const esign = read('app-v2', 'src', 'components', 'EsignFileSection.jsx');
+  ok(/requestAppDetailTab\('encompass'\); goToSection\('sec-application'\)/.test(esign),
+    'the e-sign "See what doesn\'t match" button does the same');
+  ok(!/goToSection\('sec-encompass'\)/.test(esign) && !/goToSection\('sec-encompass'\)/.test(file),
+    'nothing still jumps at the deleted section id');
+  // The tab bus moved to FileSections so a component outside this screen can ask
+  // for a tab without importing the screen that renders it (a cycle).
+  const sections = read('app-v2', 'src', 'components', 'FileSections.jsx');
+  ok(/export function requestAppDetailTab\(/.test(sections) && /export function subscribeAppDetailTab\(/.test(sections),
+    'the Application-details tab channel is shared from FileSections');
+  ok(!/^const appTabSubs = new Set\(\);$/m.test(file),
+    '…and the screen no longer keeps a private second copy of it');
 }
 {
   // Same for the overview's route into the ClickUp controls, which moved in #22.

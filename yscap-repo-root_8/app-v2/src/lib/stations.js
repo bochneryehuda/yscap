@@ -16,7 +16,10 @@
    you a rail that disagrees with the page. */
 export const STATIONS = [
   { id: 'st-overview', label: 'Overview', sections: ['sec-overview'] },
-  { id: 'st-deal', label: 'The Deal', sections: ['sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions', 'sec-encompass'] },
+  /* Encompass sync is NOT listed here any more — it is a TAB of Application
+     details, not a section of its own (owner-directed 2026-08-03). Its old
+     address still lands: see RETIRED_SECTION below. */
+  { id: 'st-deal', label: 'The Deal', sections: ['sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions'] },
   /* Owner-directed 2026-08-02: conditions, then track record, then appraisal and
      findings, then document review, then documents. */
   { id: 'st-review', label: 'Review & Conditions', sections: ['sec-conditions', 'sec-track', 'sec-appraisal', 'sec-underwriting', 'sec-documents'] },
@@ -50,14 +53,54 @@ export const ANCHOR_SECTION = {
   'conversations': 'sec-messages',
 };
 
+/* RETIRED SECTIONS — a `sec-*` id is a PERMANENT public address. Emails already
+   in people's inboxes carry it, so a section that stops existing still has to
+   land on whatever holds its content now.
+
+   `sec-encompass` was removed from the page 2026-08-03 (owner-directed: the
+   Encompass comparison "is now duplicated also in the application details and
+   it's also a separate section in the deal … it should not be a separate
+   section in the deal"). It had been left behind on 2026-08-02 as a shell whose
+   only job was a button pointing at the tab — which is exactly the duplicate
+   the owner is describing. The section is gone; its ADDRESS still works, and now
+   opens Application details with the Encompass tab already showing.
+
+   ADDITIVE ONLY: deleting a row here is how a link that used to work goes dead.
+   `appTab` names a tab of the OWNING section's sub-hub (the Application-details
+   tab strip today) — null when the target is the whole section. `label`/`where`
+   are what the "Where did everything go?" one-pager says about it. */
+export const RETIRED_SECTION = {
+  'sec-encompass': {
+    section: 'sec-application',
+    appTab: 'encompass',
+    label: 'Encompass sync',
+    where: 'The Deal → Application details → Encompass sync',
+  },
+};
+
 /* sec-* id (or inner anchor id) → owning room id. Built, not hand-typed, so
-   the table can never disagree with STATIONS. */
+   the table can never disagree with STATIONS. A retired id inherits the room of
+   the section that took its content, so `stationOf('sec-encompass')` keeps
+   answering — which is what lets the resolver take the jump over instead of
+   declining it to a default path with nothing to scroll to. */
 export const STATION_OF = (() => {
   const map = {};
   for (const st of STATIONS) for (const sec of st.sections) map[sec] = st.id;
   for (const [anchor, sec] of Object.entries(ANCHOR_SECTION)) map[anchor] = map[sec];
+  for (const [old, to] of Object.entries(RETIRED_SECTION)) map[old] = map[to.section];
   return map;
 })();
+
+/* "Where does this target live NOW?" — every jump runs through this, so a
+   caller never needs a special case for a retired id. A live id (or an id this
+   map has never heard of) comes back unchanged, so the behavior elsewhere is
+   byte-identical. */
+export function resolveSection(target) {
+  const id = String(target || '').replace(/^#/, '');
+  const moved = RETIRED_SECTION[id];
+  if (!moved) return { id, appTab: null, moved: false };
+  return { id: moved.section, appTab: moved.appTab || null, moved: true };
+}
 
 /* Resolve any target — '#sec-pricing', 'sec-pricing', 'ai-findings' — to its
    room id, or null for a target that is not part of the loan file (so the
@@ -75,8 +118,17 @@ export function stationLabel(stationId) {
    one-pager keyed by the old names (consolidation research: publish the map,
    never make people guess). */
 export function whereDidItGo(sectionsList) {
-  return (sectionsList || []).map((s) => ({
+  const live = (sectionsList || []).map((s) => ({
     old: s.label,
     now: stationLabel(STATION_OF[s.id]) || 'Overview',
   }));
+  /* A DELETED section is the thing somebody is most likely to open this list
+     looking for — and it is no longer in `sectionsList`, so it has to come from
+     the retired table or the one question the list exists to answer goes
+     unanswered. Its destination names the TAB, because a room label on its own
+     ("The Deal") would send them hunting the room they are already standing in. */
+  const retired = Object.values(RETIRED_SECTION)
+    .filter((r) => r.label)
+    .map((r) => ({ old: r.label, now: r.where || stationLabel(STATION_OF[r.section]) || 'Overview' }));
+  return [...live, ...retired];
 }
