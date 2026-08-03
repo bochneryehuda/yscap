@@ -86,6 +86,50 @@ const ROLLUP_FACTS = Object.freeze({
   property_rights: 'property_rights', occupancy_status: 'occupancy_status',
   fema_flood_zone: 'fema_flood_zone', sfha: 'sfha',
   unit_mix: 'unit_mix',
+  // db/422 — the facts the reports have always stated that reached NO warehouse
+  // table at all. Property-side only: the tax bill, the cost approach and its
+  // depreciation, the condo PROJECT, the FEMA panel date, the listing history and
+  // the deficiency / zoning notes. The report-side facts added by the same
+  // migration (who ordered it, which form, the narratives, this transaction's
+  // concessions) are deliberately ABSENT from this map — rolling those onto the
+  // property would let the newest appraisal overwrite a durable answer with
+  // something that was only ever true of one report.
+  property_tax_amount: 'property_tax_amount',
+  property_tax_year: 'property_tax_year',
+  site_improvements_value: 'site_improvements_value',
+  dwelling_cost_new: 'dwelling_cost_new',
+  dwelling_sqft: 'dwelling_sqft',
+  dwelling_price_per_sqft: 'dwelling_price_per_sqft',
+  cost_new_total: 'cost_new_total',
+  depreciated_cost_improvements: 'depreciated_cost_improvements',
+  depreciation_physical: 'depreciation_physical',
+  depreciation_functional: 'depreciation_functional',
+  depreciation_external: 'depreciation_external',
+  depreciation_total: 'depreciation_total',
+  cost_data_source: 'cost_data_source',
+  cost_quality_rating: 'cost_quality_rating',
+  listing_history: 'listing_history',
+  building_status: 'building_status',
+  off_site_improvements: 'off_site_improvements',
+  rent_included_utilities: 'rent_included_utilities',
+  physical_deficiency_note: 'physical_deficiency_note',
+  zoning_compliance_note: 'zoning_compliance_note',
+  fema_panel_date: 'fema_panel_date',
+  condo_project_name: 'condo_project_name',
+  condo_project_type: 'condo_project_type',
+  condo_units_planned: 'condo_units_planned',
+  condo_units_completed: 'condo_units_completed',
+  condo_units_sold: 'condo_units_sold',
+  condo_units_rented: 'condo_units_rented',
+  condo_units_for_sale: 'condo_units_for_sale',
+  condo_owner_occupied: 'condo_owner_occupied',
+  condo_total_phases: 'condo_total_phases',
+  condo_parking_spaces: 'condo_parking_spaces',
+  condo_common_elements: 'condo_common_elements',
+  condo_commercial_space: 'condo_commercial_space',
+  condo_management_type: 'condo_management_type',
+  condo_developer_control: 'condo_developer_control',
+  condo_concentrated_ownership: 'condo_concentrated_ownership',
 });
 
 /**
@@ -100,7 +144,11 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-const ROLLUP_VERSION = 2;
+// 3 — db/422 widened the fact set by 36 property columns. The boot sweep
+// (`rerollStaleProperties`) re-rolls every existing property through the one
+// definition of the roll-up; db/421 made its index version-agnostic so this
+// bump does not silently cost it that index.
+const ROLLUP_VERSION = 3;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -810,6 +858,72 @@ async function writeReport(db, { a, comps, link, out }) {
       net_adjustment: null, net_adj_pct: null, gross_adj_pct: null, adjustments: '[]',
       appraised_value: a.appraised_value, as_is_value: a.as_is_value, arv_value: a.arv_value,
       contract_price: a.contract_price, contract_date: dateOnly(a.contract_date),
+      // ---- db/422: every fact the report stated that used to stop at `appraisals` ----
+      // No new parsing — the same values, carried across the last hop. Types are
+      // normalised the way every other column here is: text trimmed to null, a
+      // boolean kept as a real tri-state (null means the report did not say), and
+      // a jsonb value passed through `bindable` because a jsonb column reads back
+      // as a JS object and node-postgres would otherwise serialise an array as a
+      // Postgres array literal (the roll-up wipe of PR #974).
+      cost_data_source: txt(a.cost_data_source),
+      cost_quality_rating: txt(a.cost_quality_rating),
+      listing_history: txt(a.listing_history),
+      building_status: txt(a.building_status),
+      physical_deficiency_note: txt(a.physical_deficiency_note),
+      zoning_compliance_note: txt(a.zoning_compliance_note),
+      condo_project_name: txt(a.condo_project_name),
+      condo_project_type: txt(a.condo_project_type),
+      condo_common_elements: txt(a.condo_common_elements),
+      condo_management_type: txt(a.condo_management_type),
+      form_version: txt(a.form_version),
+      software_vendor: txt(a.software_vendor),
+      appraisal_purpose: txt(a.appraisal_purpose),
+      appraisal_purpose_other: txt(a.appraisal_purpose_other),
+      uspap_report_type: txt(a.uspap_report_type),
+      inspection_type: txt(a.inspection_type),
+      lender_name: txt(a.lender_name),
+      amc_name: txt(a.amc_name),
+      lender_address: txt(a.lender_address),
+      supervisor_license_id: txt(a.supervisor_license_id),
+      supervisor_license_state: txt(a.supervisor_license_state),
+      concession_description: txt(a.concession_description),
+      contract_review_comment: txt(a.contract_review_comment),
+      reconciliation_comment: txt(a.reconciliation_comment),
+      conditions_comment: txt(a.conditions_comment),
+      addendum_text: txt(a.addendum_text),
+      sales_agreement_analysis: txt(a.sales_agreement_analysis),
+      property_tax_amount: a.property_tax_amount,
+      property_tax_year: a.property_tax_year,
+      site_improvements_value: a.site_improvements_value,
+      dwelling_cost_new: a.dwelling_cost_new,
+      dwelling_sqft: a.dwelling_sqft,
+      dwelling_price_per_sqft: a.dwelling_price_per_sqft,
+      cost_new_total: a.cost_new_total,
+      depreciated_cost_improvements: a.depreciated_cost_improvements,
+      depreciation_physical: a.depreciation_physical,
+      depreciation_functional: a.depreciation_functional,
+      depreciation_external: a.depreciation_external,
+      depreciation_total: a.depreciation_total,
+      condo_units_planned: a.condo_units_planned,
+      condo_units_completed: a.condo_units_completed,
+      condo_units_sold: a.condo_units_sold,
+      condo_units_rented: a.condo_units_rented,
+      condo_units_for_sale: a.condo_units_for_sale,
+      condo_owner_occupied: a.condo_owner_occupied,
+      condo_total_phases: a.condo_total_phases,
+      condo_parking_spaces: a.condo_parking_spaces,
+      condo_commercial_space: a.condo_commercial_space == null ? null : !!a.condo_commercial_space,
+      condo_developer_control: a.condo_developer_control == null ? null : !!a.condo_developer_control,
+      condo_concentrated_ownership: a.condo_concentrated_ownership == null ? null : !!a.condo_concentrated_ownership,
+      seller_is_owner: a.seller_is_owner == null ? null : !!a.seller_is_owner,
+      concession_indicator: a.concession_indicator == null ? null : !!a.concession_indicator,
+      contract_reviewed: a.contract_reviewed == null ? null : !!a.contract_reviewed,
+      has_prior_sale: a.has_prior_sale == null ? null : !!a.has_prior_sale,
+      comps_have_prior_sales: a.comps_have_prior_sales == null ? null : !!a.comps_have_prior_sales,
+      fema_panel_date: dateOnly(a.fema_panel_date),
+      supervisor_license_exp: dateOnly(a.supervisor_license_exp),
+      off_site_improvements: bindable(a.off_site_improvements),
+      rent_included_utilities: bindable(a.rent_included_utilities),
       facts: JSON.stringify(subjectFacts(a)),
     });
     subjectObsId = obs.id;

@@ -556,6 +556,48 @@ async function makeAppraisal(appId, o) {
     ok(Number(wide.body.applied_filters.sqft_min) <= 100 && Number(wide.body.applied_filters.sqft_max) >= 100000,
       'a caller-supplied size band is only ever widened, never replaced with a narrower one');
 
+    // (4f) EVERY FACT THE REPORT STATED CROSSES THE LAST HOP (db/422), and lands on
+    // the CORRECT SIDE. A fact about the PROPERTY rolls up so the search can reach
+    // it; a fact about the REPORT stays on the observation, because rolling
+    // `lender_name` onto a property would let the newest appraisal overwrite a
+    // durable answer with something only ever true of one report.
+    const factsAppId = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `9 Fact Way ${sfx}` })])).rows[0].id;
+    const factsA = (await db.query(
+      `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
+         subject_state, subject_zip, property_tax_amount, property_tax_year, cost_new_total,
+         off_site_improvements, condo_project_name, condo_units_planned,
+         lender_name, form_version, addendum_text, seller_is_owner, superseded)
+       VALUES ($1,'FNM1073','2026-05-02',$2,$3,'NJ','08854', 12345.67, 2025, 310000.00,
+         $4, 'Harbor Point', 120, 'Other Lender Bank NA', 'UAD 2.6', 'Corner lot.', true, false)
+       RETURNING id`,
+      [factsAppId, `9 Fact Way ${sfx}`, CITY, JSON.stringify(['Curb', 'Gutter'])])).rows[0].id;
+    await ingest.ingestAppraisal(D, factsA);
+    const fObs = (await db.query(
+      `SELECT * FROM property_observations WHERE appraisal_id=$1 AND role='subject'`, [factsA])).rows[0];
+    const fProp = (await db.query(`SELECT * FROM properties WHERE id=$1`, [fObs.property_id])).rows[0];
+
+    ok(Number(fObs.property_tax_amount) === 12345.67 && fObs.condo_project_name === 'Harbor Point'
+      && fObs.lender_name === 'Other Lender Bank NA' && fObs.addendum_text === 'Corner lot.',
+    'every db/422 fact the report stated reaches the observation — property AND report facts alike');
+    ok(Number(fProp.property_tax_amount) === 12345.67 && fProp.condo_project_name === 'Harbor Point'
+      && Number(fProp.condo_units_planned) === 120,
+    'and the PROPERTY facts roll up onto the property, where the search can reach them');
+    ok(!('lender_name' in fProp) && !('addendum_text' in fProp) && !('form_version' in fProp),
+      'while the REPORT facts have no property column at all — they can never overwrite a durable answer');
+    // A jsonb column reads back as a JS array; binding it raw is what wiped every
+    // fact off every property in PR #974, so prove it survived the round trip.
+    ok(Array.isArray(fProp.off_site_improvements) && fProp.off_site_improvements.includes('Curb'),
+      'a jsonb fact round-trips through the roll-up instead of throwing on the bind');
+    ok(Number(fProp.rollup_version) === 3, 'the property is stamped at the widened roll-up version');
+
+    // …AND THE POINT OF ALL THAT: they are searchable.
+    const taxHit = await S.searchProperties(db, { tax_min: 12000, tax_max: 13000, state: 'NJ' });
+    ok(taxHit.rows.some((r) => r.id === fProp.id), 'a property can be found by its tax bill');
+    const projHit = await S.searchProperties(db, { condo_project: 'harbor point' });
+    ok(projHit.rows.some((r) => r.id === fProp.id), 'and by the name of its condo project, case-insensitively');
+
     // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
     // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
     // forever and the filter underneath silently works inside a truncated set.
@@ -568,7 +610,7 @@ async function makeAppraisal(appId, o) {
 
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, factsAppId]]);
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
     // The warehouse deliberately SURVIVES the files (the observations are SET NULL,
