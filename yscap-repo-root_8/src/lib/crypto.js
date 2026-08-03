@@ -199,9 +199,44 @@ function passwordProblem(pw, hints) {
   return null;
 }
 
+/* WHY did verifyJwt() refuse this token? For the LOG only — the client keeps
+ * getting the same opaque answer, because naming the reason to a caller who
+ * failed to authenticate is free reconnaissance.
+ *
+ * verifyJwt returns a bare null for four situations that call for four
+ * different fixes: no Authorization header reached us at all, the header was
+ * not a JWT, the signature did not match our secret, or the token simply aged
+ * out. `[auth] 401 bad_token` could not tell them apart, and an owner-reported
+ * sign-out cost days of guesswork narrowing that down by hand. Never returns
+ * any token MATERIAL — a reason code and, when expired, how stale it was.
+ */
+function jwtFailureReason(token) {
+  const t = String(token || '');
+  if (!t) return 'absent';                    // no Authorization header, or a bare "Bearer"
+  const parts = t.split('.');
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return 'malformed';
+  let body;
+  try { body = JSON.parse(Buffer.from(parts[1], 'base64url').toString()); }
+  catch { return 'malformed'; }
+  const expected = crypto.createHmac('sha256', cfg.jwtSecret)
+    .update(`${parts[0]}.${parts[1]}`).digest('base64url');
+  const a = Buffer.from(parts[2]), b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return 'bad_signature';
+  const now = Math.floor(Date.now() / 1000);
+  if (body.exp && now > body.exp) {
+    // How long it has been dead, and how long it lived — an ancient token that
+    // arrived on a fresh sign-in is a REPLAY (a cached header, another tab),
+    // not a session that quietly aged out under someone.
+    const staleH = Math.floor((now - body.exp) / 3600);
+    const ageH   = body.iat ? Math.floor((now - body.iat) / 3600) : -1;
+    return `expired(dead_for=${staleH}h,minted=${ageH}h_ago)`;
+  }
+  return 'unknown';   // verified fine here — the caller rejected it for another reason
+}
+
 module.exports = {
   hashPassword, verifyPassword,
-  signJwt, verifyJwt,
+  signJwt, verifyJwt, jwtFailureReason,
   newTotpSecret, verifyTotp, totpUri,
   encryptSSN, decryptSSN, ssnForStorage,
   sha256, randomToken,
