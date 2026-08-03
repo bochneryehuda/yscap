@@ -447,7 +447,25 @@ never attempted. Everything in this phase costs about $10, one time.
   no renovated ones, ahead of the unit band, because a same-kind as-is sale beats
   a renovated sale of the wrong kind of building; an explicitly chosen set is
   never relaxed.
-- [ ] **5.3 THE ADJUSTMENT CORPUS.** Measured 599 adjustment lines against 62
+- [x] **5.3 THE ADJUSTMENT CORPUS.** **DONE** — `src/lib/research/adjustment-corpus.js`
+  (`summarizeRates` / `compareRate` / `rateOf`, pure). The 16,685 stored lines had
+  no consumer at all; they now produce exactly the sentence this item asked for.
+  Measured live: **NJ reads "$50 a square foot median, IQR $40–50, from 59 reports
+  by 17 appraisers, with 47 more that saw the same difference and adjusted
+  nothing."** Every rule holds: a DECLINE is counted and never averaged in as a
+  rate of zero (it is a judgement — 621 of 767 Age lines and 326 of 767
+  BasementArea lines are exactly that); the IQR, never a σ; distinct REPORTS and
+  distinct APPRAISERS rather than rows; no appraiser over 40% of the sample —
+  measured against the sample that RESULTS, thinned at even quantiles of their own
+  rates so their evidence survives while their influence does not; and it REFUSES
+  below 5 rates / 3 reports / 2 appraisers, which is the ordinary answer. A
+  negative rate (the adjustment running against the difference) and one over
+  $500/unit are refused as data errors. `compareRate` never says what the rate
+  SHOULD have been — only where this report sits. `test-adjustment-corpus-pure`
+  (43 assertions) in `npm test`. STILL TO DO: a route and a screen, and the
+  non-per-unit line types (a bathroom, a garage) which need a count rather than a
+  measured delta.
+- [ ] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin
   data, and the arithmetic returns negatives) to *"this report used $18/sqft; the
