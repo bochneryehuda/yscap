@@ -88,7 +88,7 @@ const isLtFile = (abs) => insideAny(abs, LT_ROOTS);
 // can never quietly become a real permission.
 // ---------------------------------------------------------------------------
 function readLedger() {
-  const allow = { import: new Set(), 'rtl-import': new Set(), 'sql-ref': new Set(), 'sql-read': new Set() };
+  const allow = { import: new Set(), 'rtl-import': new Set(), 'sql-ref': new Set(), 'sql-read': new Set(), 'sql-write': new Set() };
   if (!fs.existsSync(LEDGER)) {
     fail(rel(LEDGER), 'The crossing ledger is missing.',
       'Restore docs/LONG-TERM-AUTHORIZED-COPIES.md — it is the only record of what the owner authorized to cross between the two products.');
@@ -104,10 +104,10 @@ function readLedger() {
   for (const raw of block[1].split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
-    const m = line.match(/^(import|rtl-import|sql-ref|sql-read)\s+(\S+)\s*$/);
+    const m = line.match(/^(import|rtl-import|sql-ref|sql-read|sql-write)\s+(\S+)\s*$/);
     if (!m) {
       fail(rel(LEDGER), `Unreadable ledger line: "${line}"`,
-        'Each line must be "import <path>", "rtl-import <path>", "sql-ref <table>" or "sql-read <table>" — see the entry-kinds table in the ledger.');
+        'Each line must be "import <path>", "rtl-import <path>", "sql-ref <table>", "sql-read <table>" or "sql-write <table>" — see the entry-kinds table in the ledger.');
       continue;
     }
     allow[m[1]].add(m[2].replace(/^\.\//, ''));
@@ -288,6 +288,10 @@ const SQL_NON_TABLE = new Set(['lateral', 'only', 'select', 'unnest', 'values', 
   'jsonb_array_elements', 'jsonb_array_elements_text', 'jsonb_each', 'jsonb_each_text', 'jsonb_to_recordset',
   'json_array_elements', 'json_each', 'regexp_split_to_table', 'string_to_table', 'each', 'rows', 'set']);
 
+// Returns [{ name, mode }] where mode is 'read' (FROM / JOIN) or 'write'
+// (INSERT INTO / UPDATE … SET / DELETE FROM). The distinction matters: the owner
+// authorized Long-Term to SHARE the borrower record, which is not the same as
+// authorizing Long-Term to rewrite it.
 function tablesNamedIn(sqlText) {
   const out = [];
   // CTE names are not tables — collect them so they are never reported.
@@ -296,15 +300,33 @@ function tablesNamedIn(sqlText) {
   let c;
   while ((c = CTE.exec(sqlText))) ctes.add(cleanIdent(c[1]).toLowerCase());
 
-  const RE = /\b(?:FROM|JOIN|INTO|UPDATE)\s+("?[A-Za-z_][\w.]*"?)/gi;
-  let m;
-  while ((m = RE.exec(sqlText))) {
-    const raw = m[1];
-    const name = cleanIdent(raw);
+  const keep = (name, at, whole) => {
     const lower = name.toLowerCase();
-    if (SQL_NON_TABLE.has(lower) || ctes.has(lower)) continue;
-    if (sqlText[m.index + m[0].length] === '(') continue;              // a function call, not a table
-    out.push(name);
+    if (SQL_NON_TABLE.has(lower) || ctes.has(lower)) return false;
+    if (sqlText[at + whole.length] === '(') return false;              // a function call, not a table
+    return true;
+  };
+
+  // Writes first, remembering where they matched so the FROM inside "DELETE FROM"
+  // is never counted a second time as a read.
+  const writeSpans = [];
+  for (const re of [/\bINSERT\s+INTO\s+("?[A-Za-z_][\w.]*"?)/gi,
+    /\bUPDATE\s+("?[A-Za-z_][\w.]*"?)\s+SET\b/gi,
+    /\bDELETE\s+FROM\s+("?[A-Za-z_][\w.]*"?)/gi]) {
+    let m;
+    while ((m = re.exec(sqlText))) {
+      writeSpans.push([m.index, m.index + m[0].length]);
+      const name = cleanIdent(m[1]);
+      if (keep(name, m.index, m[0])) out.push({ name, mode: 'write' });
+    }
+  }
+
+  const READ = /\b(?:FROM|JOIN)\s+("?[A-Za-z_][\w.]*"?)/gi;
+  let m;
+  while ((m = READ.exec(sqlText))) {
+    if (writeSpans.some(([s, e]) => m.index >= s && m.index < e)) continue;
+    const name = cleanIdent(m[1]);
+    if (keep(name, m.index, m[0])) out.push({ name, mode: 'read' });
   }
   return out;
 }
@@ -328,14 +350,21 @@ function checkRawSql(allow, files) {
 
     for (const s of scan.strings) {
       if (!looksLikeSql(s.text)) continue;
-      for (const t of tablesNamedIn(s.text)) {
+      for (const { name: t, mode } of tablesNamedIn(s.text)) {
         if (lt && !isLtName(t)) {
-          if (allow['sql-read'].has(t)) continue;
-          fail(from, `Long-Term code reads or writes the RTL table "${t}" directly in SQL.`,
-            `An import is not the only way to cross — this is the same crossing without the require(). Long-Term may only touch lt_* tables. If it genuinely must read an RTL table, get the owner's WRITTEN authorization and add "sql-read ${t}" to docs/LONG-TERM-AUTHORIZED-COPIES.md.`);
+          // A table Long-Term may write, it may certainly read.
+          if (allow['sql-write'].has(t)) continue;
+          if (mode === 'read' && allow['sql-read'].has(t)) continue;
+          if (mode === 'write' && allow['sql-read'].has(t)) {
+            fail(from, `Long-Term code WRITES the RTL table "${t}" — it is only authorized to READ it.`,
+              `Reading a shared record and rewriting it are different permissions. If Long-Term really must change "${t}", get the owner's WRITTEN authorization and add "sql-write ${t}" to docs/LONG-TERM-AUTHORIZED-COPIES.md.`);
+            continue;
+          }
+          fail(from, `Long-Term code ${mode === 'write' ? 'writes' : 'reads'} the RTL table "${t}" directly in SQL.`,
+            `An import is not the only way to cross — this is the same crossing without the require(). Long-Term may only touch lt_* tables. If it genuinely must ${mode === 'write' ? 'change' : 'read'} an RTL table, get the owner's WRITTEN authorization and add "sql-${mode === 'write' ? 'write' : 'read'} ${t}" to docs/LONG-TERM-AUTHORIZED-COPIES.md.`);
         }
         if (!lt && isLtName(t)) {
-          fail(from, `RTL code reads or writes the Long-Term table "${t}" directly in SQL.`,
+          fail(from, `RTL code ${mode === 'write' ? 'writes' : 'reads'} the Long-Term table "${t}" directly in SQL.`,
             'RTL is the live product and must never depend on the Long-Term side build.');
         }
       }

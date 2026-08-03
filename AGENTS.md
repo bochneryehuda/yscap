@@ -22,7 +22,15 @@ Treat them as two different companies' software that happen to share one reposit
 
 1. **Never assume which side a request is for.** If it is not stated or not 100% obvious — **stop and ask**. Never
    guess, never do both, never pick the likelier one.
-2. **Nothing crosses without the owner's explicit written authorization, per item** — no copying, re-using,
+2a. **The ONE shared zone is identity, and LT only READS it** (owner-directed 2026-08-03: *"same login same
+   borrower record, keep it separate everything else"*). Three zones, not two: **shared identity**
+   (`src/auth/index.js`, the `borrowers` person record, the `staff_users` roster), the **RTL product**, and the
+   **LT product**. A borrower sees all their files in one place and an officer sees all of theirs — both products,
+   each stamped — which is why an LT file points at those shared records. LT does not rewrite identity; creating
+   and editing a borrower stays in the one existing flow. Everything else is a brand-new LT build: *"the workflow
+   will be different, the sets will be different, integrations will be different."* The `authorized` block in
+   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list.
+2. **Nothing else crosses without the owner's explicit written authorization, per item** — no copying, re-using,
    importing, extending, generalizing or sharing of code, tables, columns, migrations, conditions, templates,
    endpoints, screens, components, prompts, mappings or integrations, in either direction. Ask → get it in writing →
    record it in `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` → then build.

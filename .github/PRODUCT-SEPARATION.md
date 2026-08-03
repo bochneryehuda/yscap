@@ -19,7 +19,13 @@ eBay — you ask."*
 
 1. **Never assume which side a request is for.** Not stated, or not 100% obvious? **Stop and ask.** Never guess,
    never "do both to be safe," never pick the likelier one.
-2. **Nothing crosses without the owner's explicit written authorization, per item.** No copying, moving, re-using,
+2a. **The one shared zone is identity, and LT only reads it** (owner-directed 2026-08-03: *"same login same borrower
+   record, keep it separate everything else"*). Three zones, not two: **shared identity** (`src/auth/index.js`, the
+   `borrowers` person record, the `staff_users` roster), the **RTL product**, and the **LT product**. A borrower
+   sees all their files in one place, an officer sees all of theirs — both products, each stamped. LT does not
+   rewrite identity. Everything else is a brand-new LT build. The `authorized` block in
+   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list.
+2. **Nothing else crosses without the owner's explicit written authorization, per item.** No copying, moving, re-using,
    importing, extending, generalizing or "sharing" of code, tables, columns, migrations, conditions, templates,
    endpoints, screens, components, prompts, mappings or integrations — in either direction. Wanting to re-use
    something is fine and expected: **ask, get it in writing, record it in

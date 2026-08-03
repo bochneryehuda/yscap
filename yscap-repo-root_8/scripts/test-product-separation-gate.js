@@ -222,17 +222,42 @@ scenario('RTL keeps its dynamic requires (a live idiom there)', (app) => {
 scenario('Long-Term reading an RTL table in raw SQL FAILS', (app) => {
   write(app, 'src/longterm/lib/loan.js',
     "const db = require('pg');\nasync function f(){ return db.query('SELECT id FROM applications WHERE id=$1'); }\n");
-}, 'fail', 'reads or writes the RTL table');
+}, 'fail', 'reads the RTL table');
 
 scenario('Long-Term WRITING an RTL table in raw SQL FAILS', (app) => {
   write(app, 'src/longterm/lib/loan.js',
     "async function f(db){ return db.query('UPDATE applications SET status=$1 WHERE id=$2'); }\n");
-}, 'fail', 'reads or writes the RTL table');
+}, 'fail', 'writes the RTL table');
 
 scenario('…and passes once the owner authorized that table in the ledger', (app) => {
   write(app, 'src/longterm/lib/loan.js',
     "async function f(db){ return db.query('SELECT id FROM applications WHERE id=$1'); }\n");
 }, 'pass', null, { ledger: ['sql-read applications'] });
+
+// The shared-identity decision (2026-08-03): Long-Term READS the borrower record.
+// Reading it is not licence to rewrite it.
+scenario('a READ authorization does NOT let Long-Term write that table', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE borrowers SET cell_phone=$1 WHERE id=$2'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('a WRITE authorization covers writing (and reading)', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ await db.query('UPDATE borrowers SET cell_phone=$1 WHERE id=$2');\n" +
+    "  return db.query('SELECT id FROM borrowers WHERE id=$1'); }\n");
+}, 'pass', null, { ledger: ['sql-write borrowers'] });
+
+scenario('DELETE FROM an RTL table reads as a WRITE, not a read', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('DELETE FROM borrowers WHERE id=$1'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('the authorized shared-identity shape passes: read the borrower, join the roster', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query(`SELECT l.id, b.first_name, s.full_name\n" +
+    "    FROM lt_loans l JOIN borrowers b ON b.id = l.borrower_id\n" +
+    "    LEFT JOIN staff_users s ON s.id = l.loan_officer_id`); }\n");
+}, 'pass', null, { ledger: ['sql-read borrowers', 'sql-read staff_users'] });
 
 scenario('Long-Term SQL against its own tables passes, CTEs and all', (app) => {
   write(app, 'src/longterm/lib/loan.js',
@@ -242,11 +267,11 @@ scenario('Long-Term SQL against its own tables passes, CTEs and all', (app) => {
 scenario('RTL reading a Long-Term table in raw SQL FAILS', (app) => {
   write(app, 'src/routes/staff.js',
     "async function f(db){ return db.query('SELECT id FROM lt_loans'); }\n");
-}, 'fail', 'reads or writes the Long-Term table');
+}, 'fail', 'reads the Long-Term table');
 
 scenario('the raw-SQL exemption is narrow: another script naming an lt_ table still FAILS', (app) => {
   write(app, 'scripts/report-pipeline.js', "async function f(db){ return db.query('SELECT id FROM lt_loans'); }\n");
-}, 'fail', 'reads or writes the Long-Term table');
+}, 'fail', 'reads the Long-Term table');
 
 scenario('RTL back-end code calling /api/lt FAILS', (app) => {
   write(app, 'src/routes/staff.js', "const url = '/api/lt/pipeline';\n");

@@ -195,6 +195,46 @@ otherwise, Long-Term opens its own pool inside `src/longterm/db.js`.** That is t
 needs no authorization, and it is what makes the eventual move to a separate database trivial. (See open
 question 11 if you would rather authorize sharing the pool.)
 
+### 4.1 Three zones, not two — the shared-identity decision (owner-directed 2026-08-03)
+
+The owner settled the two biggest open questions in one sentence:
+
+> *"Same login, same borrower record — keep it separate everything else. All the borrowers should be able to see
+> all their files even if it's long term or short term. And officers should be able to see all of their files even
+> if it's long term or short term. The only thing is the back end of the entire thing will be different, the
+> workflow will be different, the sets will be different, integrations will be different, it will be a brand new
+> build. Don't assume anything that we're building on one thing to build that also on the other thing —
+> it's totally separate."*
+
+So the repository has **three zones**, not two:
+
+| Zone | What is in it | Who may touch it |
+|---|---|---|
+| **Shared identity** | The login (`src/auth/index.js`), the person record (`borrowers`), the staff roster (`staff_users`) | **Both products.** RTL as today; Long-Term **reads** it. |
+| **RTL product** | Everything else built before 2026-08-02 — workflow, statuses, conditions, documents, money, integrations | RTL only |
+| **Long-Term product** | `lt_*`, `src/longterm/**`, `app-v2/src/longterm/**` — brand new | Long-Term only |
+
+**Identity is shared; the two product zones never touch each other.** That is the whole crossing list, and it is
+written into the `authorized` block of `docs/LONG-TERM-AUTHORIZED-COPIES.md`, which the CI gate reads.
+
+**Long-Term reads identity — it does not rewrite it.** The gate distinguishes reading (`FROM`/`JOIN`) from writing
+(`INSERT`/`UPDATE`/`DELETE`), and only reading is authorized. The reason is concrete: the borrower record is
+already written by roughly a dozen RTL modules that heal, enrich and de-duplicate it — Encompass enrichment, the
+ClickUp sync's rename handling, the credit store, name-heal, the merge/dedup flow. One record with one owner stays
+correct; two writers racing on it does not. **Creating and editing a borrower stays in the one existing flow.** If
+Long-Term ever needs to change a borrower, that is a new question for the owner (`sql-write borrowers`).
+
+**What this buys, in the owner's terms**
+
+- **A borrower signs in once and sees every file they have** — long-term and short-term together, each stamped.
+- **An officer signs in once and sees every file they own** — long-term and short-term together, each stamped.
+- Both of those are read-and-display work in the portal, assembled from two independent back ends. Neither
+  requires the two products to share a workflow, a status list, a document set, or a single integration.
+
+**What it explicitly does NOT buy.** Sharing the person record does not carry across anything attached to that
+person on the RTL side: their RTL conditions, documents, track record, LLCs, credit pulls, pricing scenarios,
+ClickUp cards and SharePoint folders stay RTL. Long-Term starts at zero on all of it.
+
 ### What Long-Term does NOT get (2026-08-02)
 
 **Conditions. Document underwriting. Orders.** Explicitly out of scope by the owner's instruction. They are not to
@@ -219,6 +259,18 @@ front-end job.
    product filter is a natural fit: **Both / RTL only / Long-Term only**.
 4. **Every row carries a visible stamp**, and so does every file header — so the product is obvious from the
    outside, exactly as asked, without opening anything.
+
+**The same shape serves all three "see everything" views the owner asked for** — one aggregator, three audiences:
+
+| Who | Sees | Scoped by |
+|---|---|---|
+| **A borrower**, in their portal | *All* their files, long-term and short-term together, each stamped | the shared `borrowers` person record |
+| **An officer** | *All* of their files, both products, each stamped | the shared `staff_users` account each file records as its officer |
+| **Staff on the pipeline** | Everything they are entitled to, filterable Both / RTL only / Long-Term only | existing role scoping on the RTL side; Long-Term's own on its side |
+
+Each product still answers only for its own rows and applies **its own** access rules — the aggregator concatenates
+and stamps, it never decides who may see what. Long-Term's permission rules are part of Long-Term's brand-new
+build, not a copy of RTL's.
 
 **Consequences, stated honestly:** sorting, counting and paging happen **after** the merge, so the combined view
 asks each side for its slice and then sorts. That is fine at Long-Term's expected size (a handful of files, no
@@ -265,12 +317,17 @@ The exact words shown to staff on the stamp and the filter are the owner's call 
 These are the places where a guess would be an assumption, so they are questions instead. Nothing about
 Long-Term gets built until they are answered.
 
-1. **Who logs in to the Long-Term side?** The same staff sign-in as RTL, or its own? Re-using RTL's login is a
-   crossing and needs written authorization. *(Recommendation: same staff sign-in, authorized as one ledger
-   entry, because two passwords for one team is a daily annoyance — but it is your call.)*
-2. **Is a long-term borrower the same person record as an RTL borrower?** Same customer with two loans, or two
-   entirely separate address books? This is the single biggest structural decision. *(No recommendation — this
-   one is genuinely a business decision.)*
+**Answered 2026-08-03 — see §4.1:**
+
+1. ~~**Who logs in to the Long-Term side?**~~ → **The same login.** Recorded as `import src/auth/index.js`.
+2. ~~**Is a long-term borrower the same person record?**~~ → **Yes, the same record**, and Long-Term **reads** it
+   (`sql-ref` + `sql-read borrowers`). A borrower sees all their files in one place, both products. Officers do
+   too, so a Long-Term file records its officer (`sql-ref` + `sql-read staff_users`). Everything else stays a
+   brand-new build — *"the workflow will be different, the sets will be different, integrations will be
+   different."*
+
+**Still open:**
+
 3. **Where do Long-Term deals come from?** Typed in by hand, or read from ClickUp (they are in ClickUp today,
    already excluded from PILOT)? Any sync at all is a mapping, which you said not to build unless asked.
 4. **What does a Long-Term file actually need to hold** — property, borrower, loan amount, rate, term, and what
@@ -286,6 +343,12 @@ Long-Term gets built until they are answered.
 11. **May Long-Term share the database connection (`src/db.js`) with RTL?** Until you say yes, Long-Term opens its
     own — which costs nothing and keeps the door open to moving Long-Term to its own database later. Say the word
     and it becomes one ledger entry. *(Recommendation: leave it separate.)*
+12. **May Long-Term ever CHANGE a borrower** (not just read one)? Today it may only read: creating and editing a
+    borrower stays in the one existing flow, so the person record keeps a single owner. If a long-term file should
+    be able to update a phone number or an address, that is one more ledger line — but it needs your yes.
+    *(Recommendation: keep it read-only; send edits through the existing borrower screen.)*
+13. **Do long-term files count in the RTL numbers?** The pipeline's KPI tiles, counts and dashboards are RTL's
+    today. When the filter is set to "Both", should the tiles count both products, or stay RTL-only?
 
 ---
 
