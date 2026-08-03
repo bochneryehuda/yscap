@@ -390,8 +390,18 @@ never attempted. Everything in this phase costs about $10, one time.
   `scoreComp.parts[]` and `weight` both exist and are unrendered.
 - [ ] **5.5 Confirm-the-facts step, then instant re-value**
 - [ ] **5.6 Bracketing + QC panel** — `compWarnings` exists, scattered
-- [ ] **5.7 Flip finder** — sold twice in 24 months, the spread, both photos.
-  `property_sales` holds it; the search only ever reads `last_sale_*`.
+- [x] **5.7 Flip finder** — sold twice in 24 months, the spread, both photos.
+  `property_sales` holds it; the search only ever reads `last_sale_*`. **BUILT**
+  (`src/lib/research/flips.js`, `GET /api/research/flips`, a section on the
+  market screen). Measured: **56 buy→sell pairs inside two years across 52
+  properties**, averaging a $165,816 spread over 215 days, 41 of them over 15%.
+  Consecutive pairs only (three sales are two deals), closed sales at BOTH ends
+  (an asking price would invent a profit nobody made), and a NOMINAL price is set
+  aside and counted — the corpus holds ten $1 transfers and three $10 ones, and
+  the first run returned *"12 Ward St — bought $10, sold $565,000, spread
+  5,649,900%"*. The renovated marker is the appraiser's own (they put the resale
+  on an after-repair grid), never inferred from the size of the spread. Photos
+  are not in it yet: `property_photos` coverage is the open half.
 - [ ] **5.8 Conflict detection** — two of our own reports disagreeing about one house
 - [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage
 - [ ] **5.10 Defensible time adjustment from contract date + FHFA HPI**

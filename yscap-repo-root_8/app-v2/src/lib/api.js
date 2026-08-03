@@ -1112,6 +1112,7 @@ export const api = {
   // town. Small numbers of reports per month, so the screen shows the count too.
   researchMarket:        (f) => req('GET', '/api/research/market' + qs(f)),
   researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
+  researchFlips:         (f) => req('GET', '/api/research/flips' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
   // Upload appraisal data files straight into the research database. `files` is
   // [{filename, xml}] — the screen sends a big drop in size-bounded batches,

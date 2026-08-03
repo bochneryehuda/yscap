@@ -62,6 +62,7 @@ export default function StaffMarket() {
   const [params, setParams] = useSearchParams();
   const [d, setD] = useState(null);
   const [reports, setReports] = useState(null);
+  const [flips, setFlips] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [showTable, setShowTable] = useState(false);
@@ -78,14 +79,15 @@ export default function StaffMarket() {
   const months = q.months || '24';
 
   const load = useCallback(() => {
-    if (!named) { setD(null); setReports(null); return; }
+    if (!named) { setD(null); setReports(null); setFlips(null); return; }
     setBusy(true); setErr('');
     const where = { city: q.city, state: q.state, zip: q.zip };
     Promise.all([
       api.researchMarket({ ...where, months }),
       api.researchMarketReports(where).catch(() => null),
+      api.researchFlips({ ...where, months: 24, limit: 25 }).catch(() => null),
     ])
-      .then(([series, rep]) => { setD(series); setReports(rep); })
+      .then(([series, rep, fl]) => { setD(series); setReports(rep); setFlips(fl); })
       .catch((e) => { setD(null); setErr(e.message || 'Could not load that market'); })
       .finally(() => setBusy(false));
   }, [q.city, q.state, q.zip, months, named]);
@@ -179,6 +181,8 @@ export default function StaffMarket() {
             </button>
             {showTable && <NumbersTable series={series} />}
           </div>
+
+          {flips && flips.rows && flips.rows.length > 0 && <Flips d={flips} />}
 
           {reports && reports.rows && reports.rows.length > 0 && <BehindIt rows={reports.rows} />}
         </>
@@ -436,6 +440,69 @@ function NumbersTable({ series }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/* BOUGHT AND RESOLD — the completed exits in this town, out of the prior-sale
+   line of appraisals we already paid for. A bridge lender's own question, and
+   until now the warehouse could not answer it: `properties` carries only the
+   LATEST sale, so the purchase a flip started from was invisible.
+
+   IT SAYS WHAT IT IS NOT, every time. Two recorded sales and the time between
+   them is not proof anybody renovated anything, and it is not a rate of return —
+   these are the sales our appraisers happened to describe, a fraction of a town.
+   The renovated marker is the APPRAISER's judgement (they put the resale on an
+   after-repair grid), never inferred from the size of the spread. */
+function Flips({ d }) {
+  const rows = d.rows || [];
+  return (
+    <section style={{ ...S.panel, marginTop: 12 }}>
+      <h3 style={{ margin: '0 0 4px', fontSize: 14, color: INK }}>Bought and resold within two years</h3>
+      <p style={{ margin: '0 0 8px', color: MUTED, fontSize: 12 }}>
+        {d.caveat}
+        {d.setAsideNote ? ` ${d.setAsideNote}.` : ''}
+      </p>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 640 }}>
+          <thead><tr>
+            <th style={S.th}>Property</th><th style={S.th}>Bought</th><th style={S.th}>Resold</th>
+            <th style={S.th}>Held</th><th style={S.th}>Difference</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.property_id}-${i}`}>
+                <td style={S.cell}>
+                  <Link to={`/internal/research/property/${r.property_id}`} style={{ color: INK, fontWeight: 600 }}>
+                    {r.display_address}
+                  </Link>
+                  <div style={{ color: MUTED, fontSize: 11 }}>
+                    {[r.property_type, r.units != null ? `${r.units} unit${Number(r.units) === 1 ? '' : 's'}` : null]
+                      .filter(Boolean).join(' · ') || 'type not stated'}
+                  </div>
+                  {r.resold_as_renovated && (
+                    <div style={{ color: TEAL, fontSize: 11, fontWeight: 600 }}>
+                      resold as a finished house — an appraiser used it on an after-repair grid
+                    </div>
+                  )}
+                  {r.bought_arms_length === false && (
+                    <div style={{ color: GOLD, fontSize: 11 }}>bought {String(r.bought_type).replace(/Sale$/, '').toLowerCase()}</div>
+                  )}
+                </td>
+                <td style={S.cell}>{money(r.bought_for)}<div style={{ color: MUTED, fontSize: 11 }}>{dayLabel(r.bought_on)}</div></td>
+                <td style={S.cell}>{money(r.sold_for)}<div style={{ color: MUTED, fontSize: 11 }}>{dayLabel(r.sold_on)}</div></td>
+                <td style={S.cell}>{r.held_months == null ? '—' : `${r.held_months} mo`}</td>
+                <td style={{ ...S.cell, fontWeight: 700, color: Number(r.spread) < 0 ? '#B4423A' : TEAL }}>
+                  {money(r.spread)}
+                  <div style={{ fontWeight: 400, fontSize: 11 }}>
+                    {r.spread_pct == null ? '' : `${Number(r.spread_pct) > 0 ? '+' : ''}${Number(r.spread_pct)}%`}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

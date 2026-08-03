@@ -39,6 +39,7 @@ const { can } = require('../lib/permissions');
 const { serveDocument } = require('../lib/serve-document');
 const S = require('../lib/research/search');
 const MARKET = require('../lib/research/market');
+const FLIPS = require('../lib/research/flips');
 const V = require('../lib/research/valuation');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
@@ -90,6 +91,26 @@ router.get('/market', async (req, res, next) => {
       months: K.int(req.query.months, { max: 120 }) || 24,
     });
     res.json(out);
+  } catch (e) { next(e); }
+});
+
+/**
+ * PROPERTIES BOUGHT AND RESOLD — the completed exits, out of the prior-sale line
+ * of reports we already paid for. `properties` carries only the LATEST sale, so
+ * until now the purchase a flip started from was invisible to every search.
+ */
+router.get('/flips', async (req, res, next) => {
+  try {
+    const found = await FLIPS.findFlips(db, {
+      state: txt(req.query.state), city: txt(req.query.city), zip: txt(req.query.zip),
+      propertyId: isUuid(req.query.property_id) ? req.query.property_id : null,
+      months: K.int(req.query.months, { max: 120 }),
+      soldWithinMonths: K.int(req.query.sold_within_months, { max: 240 }),
+      minSpreadPct: req.query.min_spread_pct === undefined || req.query.min_spread_pct === ''
+        ? undefined : K.num(req.query.min_spread_pct),
+      limit: K.int(req.query.limit, { max: 200 }),
+    });
+    res.json(found);
   } catch (e) { next(e); }
 });
 
