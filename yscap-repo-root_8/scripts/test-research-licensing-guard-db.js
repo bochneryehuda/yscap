@@ -1,7 +1,7 @@
 /**
  * THE LICENSING CONTROL MUST BE ABLE TO REPORT ITSELF MISSING.
  *
- * db/455 refuses a Google-sourced coordinate in the permanent property warehouse.
+ * db/458 refuses a Google-sourced coordinate in the permanent property warehouse.
  * `migrate-boot.ensureSchema()` never throws, so if that migration cannot apply the
  * app boots happily with the control switched off and nothing says so — which is
  * the whole failure mode: a licensing breach nobody notices for a year.
@@ -98,7 +98,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const r = await G.checkGeoLicensing(client);
       ok(r.ok === false && r.present === false, 'with the constraint gone it reports NOT installed');
       ok(/not installed/i.test(r.why || ''), `and says so in words: ${r.why}`);
-      ok(/db\/455/.test(r.why || ''), 'naming the migration to look at');
+      ok(/db\/458/.test(r.why || ''), 'naming the migration to look at');
       ok(r.offenders === 0, 'and having actually COUNTED, reports nothing in violation yet');
       ok(/not the data/i.test(r.why || ''), 'saying explicitly that the data is not the reason');
     }

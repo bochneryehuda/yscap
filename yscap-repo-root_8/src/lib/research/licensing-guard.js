@@ -2,7 +2,7 @@
 /**
  * IS THE LICENSING CONSTRAINT ACTUALLY THERE?
  *
- * db/455 puts a CHECK constraint on `properties` that refuses a Google-sourced
+ * db/458 puts a CHECK constraint on `properties` that refuses a Google-sourced
  * coordinate, because Google Maps Platform caps a STORED latitude/longitude at 30
  * consecutive days unless the cache is isolated to one end user, and this
  * warehouse is permanent and shared. The full reasoning is in that migration and
@@ -65,7 +65,7 @@ async function checkGeoLicensing(dbc) {
         WHERE c.conrelid = to_regclass($1)::oid
           AND c.conname = $2 AND c.contype = 'c' AND c.convalidated
         LIMIT 1`, [TABLE, CONSTRAINT]);
-    // Both halves of db/455's predicate must still be in it.
+    // Both halves of db/458's predicate must still be in it.
     present = r.rows.length > 0
       && /geo_source/i.test(r.rows[0].def || '')
       && /google/i.test(r.rows[0].def || '');
@@ -90,7 +90,7 @@ async function checkGeoLicensing(dbc) {
 
   /* THREE OUTCOMES, NOT TWO. `offenders` is null when the count itself FAILED —
      a role without SELECT on the table, a statement timeout — and reading that as
-     a falsy zero told somebody "db/455 did not apply, check the migrate log" when
+     a falsy zero told somebody "db/458 did not apply, check the migrate log" when
      the truth is "we could not look". Saying we do not know is the one thing this
      module promises never to get wrong. */
   const head = `the Google-coordinate rule (${CONSTRAINT}) is NOT installed`;
@@ -99,9 +99,9 @@ async function checkGeoLicensing(dbc) {
       + 'still unknown. Check the [migrate] log for its FAILED line.'
     : offenders
       ? `${head}, and ${offenders} propert${offenders === 1 ? 'y' : 'ies'} already `
-        + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate — that is why db/455 cannot `
+        + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate — that is why db/458 cannot `
         + 'apply. Re-source or clear those rows and redeploy.'
-      : `${head} — db/455 did not apply, and nothing is in violation, so it is not the data. Check the `
+      : `${head} — db/458 did not apply, and nothing is in violation, so it is not the data. Check the `
         + '[migrate] log for its FAILED line; until it is on, nothing at the database level stops a '
         + 'Google coordinate being stored permanently in the property warehouse.';
   return { ok: false, checked: true, present: false, offenders, why };
@@ -111,7 +111,7 @@ async function checkGeoLicensing(dbc) {
    never as ok.
 
    THIS USED TO BE THE WHOLE STORY, AND THAT MADE THE CONTROL BLIND TO ITS OWN
-   THREAT MODEL. db/455 exists because the constraint can be removed by a route
+   THREAT MODEL. db/458 exists because the constraint can be removed by a route
    nobody reviews — "a hand-run migration, a psql session, an import script". All
    of those happen while the process is UP. A boot-time snapshot reports the state
    at the last deploy, so somebody dropping the constraint on Monday is invisible

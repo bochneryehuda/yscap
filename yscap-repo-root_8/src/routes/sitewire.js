@@ -2503,6 +2503,148 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
 });
 
 // ===================================================================================
+//  INVESTOR DELIVERY — send the agreed draw to the note buyer who funds it
+//  (owner-directed 2026-08-03). See src/sitewire/investor-delivery.js for the rules.
+// ===================================================================================
+const investorDelivery = require('../sitewire/investor-delivery');
+const investorSend = require('../sitewire/investor-delivery-send');
+
+// ---- POST /files/:id/findings/:findingId/mark-accepted ----
+// The borrower agreed OUTSIDE the portal — verbally, or by email. That is a real acceptance, so it
+// goes through the SAME transition their own Accept button uses; only `accepted_via='staff'` and
+// the recorded note distinguish it. A note is REQUIRED: "who said the borrower agreed, and how?"
+// must be answerable from the file years later.
+router.post('/files/:id/findings/:findingId/mark-accepted', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1 AND application_id=$2`, [req.params.findingId, appId])).rows[0];
+  if (!f) return res.status(404).json({ error: 'those findings were not found on this file' });
+  const note = String((req.body && req.body.note) || '').trim();
+  if (note.length < 8) {
+    return res.status(400).json({ error: 'Record how the borrower gave their approval (at least 8 characters) — for example "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file".' });
+  }
+  if (f.status === 'accepted') return res.json({ ok: true, already: true, wire_due_at: f.wire_due_at });
+  if (f.status !== 'delivered') {
+    return res.status(409).json({ error: f.status === 'disputed'
+      ? 'The borrower pushed back on this draw — decide the disputed lines first.'
+      : 'These findings are not awaiting the borrower’s answer.' });
+  }
+  let hours = 48;
+  try { const r = await db.query(`SELECT value FROM sitewire_settings WHERE key='wire_turnaround_hours'`); const h = Number(r.rows[0] && r.rows[0].value); if (Number.isFinite(h) && h > 0) hours = h; } catch (_) {}
+  const upd = (await db.query(
+    `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='staff',
+            accepted_by_staff_id=$3, accepted_note=$4, wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
+      WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours), req.actor.id, note.slice(0, 1000)])).rows[0];
+  if (!upd) return res.status(409).json({ error: 'someone else just handled these findings' });
+  try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(f.sitewire_draw_id), field: 'borrower_accepted_offline', oldValue: { status: f.status }, newValue: { via: 'staff', note: note.slice(0, 500), actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
+  await notify.notifyAppStaff(appId, { type: 'draw_accepted', title: 'Borrower agreement recorded', inAppOnly: true,
+    body: `A coordinator recorded that the borrower approved this draw (${note.slice(0, 160)}). The release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`,
+    applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+  res.json({ ok: true, wire_due_at: upd.wire_due_at, accepted_via: 'staff' });
+});
+
+// ---- POST /files/:id/draws/:drawId/funding-mode — how this draw is funded ----
+// `scope:'file'` sets the file's default for every future draw; otherwise it is this draw only.
+router.post('/files/:id/draws/:drawId/funding-mode', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const mode = String((req.body && req.body.mode) || '');
+  if (!investorDelivery.MODES.includes(mode)) return res.status(400).json({ error: 'Pick how this draw is funded.' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  if (String((req.body && req.body.scope) || '') === 'file') {
+    await db.query(`UPDATE sitewire_property_links SET investor_funding_mode=$2, updated_at=now() WHERE application_id=$1 AND matched_by='created'`, [appId, mode]);
+  } else {
+    const upd = await db.query(`UPDATE draw_findings SET funding_mode=$3, updated_at=now() WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, drawId, mode]);
+    if (!upd.rowCount) return res.status(409).json({ error: 'Deliver the inspection findings first — the funding choice is recorded against them.' });
+  }
+  res.json({ ok: true, mode });
+});
+
+// ---- GET /files/:id/draws/:drawId/investor-delivery — the preview behind the button ----
+router.get('/files/:id/draws/:drawId/investor-delivery', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  try {
+    const preview = await investorSend.deliveryPreview(appId, drawId);
+    res.json({ ...preview, modes: investorDelivery.MODES.map((m) => ({ mode: m, label: investorDelivery.MODE_LABEL[m], help: investorDelivery.MODE_HELP[m] })) });
+  } catch (e) { console.warn('[sitewire] investor preview:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- POST /files/:id/draws/:drawId/investor-delivery — deliver it ----
+// `confirm` must name the investor the desk showed, so a mis-click (or a note buyer changed in
+// another tab since the preview loaded) can never mail one investor's draw to another.
+router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  try {
+    const confirm = String((req.body && req.body.confirm_note_buyer) || '').trim();
+    const app = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    if (!confirm || investorSend.investorKeyFor(confirm) !== investorSend.investorKeyFor(app.lender)) {
+      return res.status(400).json({ error: `Confirm the investor before sending — this file's note buyer is ${app.lender || '(not set)'}.` });
+    }
+    const who = (await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const out = await investorSend.sendInvestorDelivery(appId, drawId, {
+      staffId: req.actor.id, staffName: who.full_name || null,
+      mode: (req.body && req.body.mode) || null,
+    });
+    try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_delivery', oldValue: null, newValue: { to: out.to, mode: out.funding_mode, total: out.money.investor_total_cents, actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
+    await notify.notifyAppStaff(appId, { type: 'draw', title: 'Draw delivered to the investor', inAppOnly: true,
+      body: `Draw request sent to ${app.lender || 'the investor'} (${out.to.join(', ')}).`,
+      applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message, blockers: e.blockers || undefined });
+    console.warn('[sitewire] investor delivery:', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- Investor delivery CONTACTS (per note buyer) ----
+router.get('/investor-contacts', requirePermission('manage_draws'), async (req, res) => {
+  try { res.json({ contacts: await investorSend.allContacts() }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/investor-contacts', requirePermission('manage_draws'), async (req, res) => {
+  const label = String((req.body && req.body.label) || '').trim();
+  const emailAddr = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!label) return res.status(400).json({ error: 'Name the note buyer these contacts belong to.' });
+  if (!/^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/.test(emailAddr)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  const key = investorSend.investorKeyFor(label);
+  if (!key) return res.status(400).json({ error: 'That note-buyer name could not be read.' });
+  try {
+    const r = (await db.query(
+      `INSERT INTO investor_delivery_contacts (label_norm, label, email, name, role, active, created_by)
+       VALUES ($1,$2,$3,$4,$5,true,$6)
+       ON CONFLICT (label_norm, lower(email))
+         DO UPDATE SET label=EXCLUDED.label, name=EXCLUDED.name, role=EXCLUDED.role, active=true, updated_at=now()
+       RETURNING id, label_norm, label, email, name, role, active`,
+      [key, label, emailAddr,
+        (req.body && req.body.name) ? String(req.body.name).slice(0, 160) : null,
+        (req.body && req.body.role) ? String(req.body.role).slice(0, 160) : null,
+        req.actor.id])).rows[0];
+    res.json({ ok: true, contact: r });
+  } catch (e) { console.warn('[sitewire] investor contact:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/investor-contacts/:contactId', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.contactId)) return res.status(404).json({ error: 'not found' });
+  // Deactivated, never deleted — a delivery record naming this address must stay explainable.
+  const r = await db.query(`UPDATE investor_delivery_contacts SET active=false, updated_at=now() WHERE id=$1 RETURNING id`, [req.params.contactId]);
+  if (!r.rowCount) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+// ===================================================================================
 //  SOW CHANGE REQUESTS / BUDGET REALLOCATION (Workflow A)
 // ===================================================================================
 

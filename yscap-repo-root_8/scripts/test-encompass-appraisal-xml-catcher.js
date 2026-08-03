@@ -15,13 +15,50 @@ const path = require('path');
 const M = require(path.join(__dirname, '..', 'src', 'encompass', 'appraisal-xml-catcher'));
 const {
   validityOf, isAppraisalXml, assertStorageHost, makeTick,
-  decodeHead, looksLikeXml, tsOrNull,
+  decodeHead, looksLikeXml, tsOrNull, envNum,
 } = M._internals;
 
 let pass = 0;
 // Sync assertions only — every async case below is awaited by the caller and its
 // result handed to `t`, so a rejected promise can never be silently swallowed.
 const t = (name, fn) => { try { fn(); pass++; } catch (e) { console.error(`FAIL: ${name}\n  ${e.message}`); process.exitCode = 1; } };
+
+// ── the tuning knobs survive a typo'd env value ─────────────────────────────
+t('a bad tuning value falls back to the default instead of breaking quietly', () => {
+  // NaN is the shape that breaks things silently, and both knobs fail that way:
+  // a NaN pace makes setTimeout fire immediately (the vendor pacing vanishes),
+  // and a NaN window makes new Date(NaN).toISOString() THROW — which the
+  // pipeline catch swallows into one line, so the catcher stops catching
+  // anything at all from a single typo.
+  const KEY = '__TEST_XML_KNOB';
+  const cases = [
+    ['abc', 7], ['', 7], ['   ', 7], ['NaN', 7], ['Infinity', 7],
+    ['0', 1], ['-3', 1], ['999999', 90], ['7', 7], ['14', 14],
+  ];
+  for (const [raw, want] of cases) {
+    process.env[KEY] = raw;
+    try {
+      assert.strictEqual(envNum(KEY, 7, { min: 1, max: 90 }), want,
+        `${JSON.stringify(raw)} should resolve to ${want}`);
+    } finally { delete process.env[KEY]; }
+  }
+  // An unset variable takes the default without touching process.env.
+  assert.strictEqual(envNum('__TEST_XML_UNSET', 350, { min: 0, max: 10000 }), 350);
+});
+
+t('a typo\'d window still produces a VALID date, never an Invalid one', () => {
+  // The failure this guards is specific: Math.max(1, NaN) is NaN, so
+  // `new Date(Date.now() - NaN)` is an Invalid Date and .toISOString() throws.
+  const KEY = '__TEST_XML_DAYS';
+  for (const raw of ['abc', '-3', '0', 'Infinity', '']) {
+    process.env[KEY] = raw;
+    try {
+      const days = envNum(KEY, 7, { min: 1, max: 90 });
+      const since = new Date(Date.now() - Math.max(1, days) * 86400000).toISOString().slice(0, 10);
+      assert.match(since, /^\d{4}-\d{2}-\d{2}$/, `${JSON.stringify(raw)} must yield a real date`);
+    } finally { delete process.env[KEY]; }
+  }
+});
 
 // ── validityOf ──────────────────────────────────────────────────────────────
 // The real stamp from loan 2222984e's XML: base64 of epoch-ms 1784812686028.
@@ -423,6 +460,28 @@ t('a non-url is refused with a plain reason', () => {
     assert.strictEqual(badStamp.expired, 1, 'an unreadable stamp is treated as unknown → not downloaded');
   });
 
+  // ── the pipeline cap is never silent ──────────────────────────────────────
+  let capped, uncapped;
+  enc.configured = () => true;
+  const origSearch2 = enc.pipelineSearch;
+  try {
+    enc.apiGet = async () => [];
+    enc.pipelineSearch = async () => Array.from({ length: 500 }, (_, i) => ({ loanId: `g${i}` }));
+    capped = await M.sweepOnce(db, { paceMs: 0 });
+    enc.pipelineSearch = async () => Array.from({ length: 44 }, (_, i) => ({ loanId: `g${i}` }));
+    uncapped = await M.sweepOnce(db, { paceMs: 0 });
+  } finally { enc.apiGet = origGet; enc.configured = origConfigured; enc.pipelineSearch = origSearch2; }
+
+  t('hitting the pipeline row cap is REPORTED, never silent', () => {
+    // There is no paging and the sort is LastModified DESCENDING, so the cap
+    // drops the STALEST loans — precisely where a delivery that did not bump
+    // LastModified would sit. Losing the tail must never be invisible.
+    assert.ok((capped.errors || []).some((e) => /cap/.test(e)),
+      'a full result set must say the window was truncated');
+    assert.strictEqual((uncapped.errors || []).length, 0,
+      'an ordinary result set must NOT warn');
+  });
+
   t('a resource with no download link raises the ALARM', () => {
     assert.strictEqual(noLink.noLink, 1, 'the missing link must be counted');
     assert.ok((noLink.errors || []).some((e) => /location|authorization/.test(e)),
@@ -465,6 +524,33 @@ t('a non-url is refused with a plain reason', () => {
   t('a tick fired while a sweep is still running is SKIPPED, not stacked', () => {
     assert.strictEqual(overlap.skippedTick, true, 'the overlapping tick must stand down');
     assert.strictEqual(startedDuringOverlap, 1, 'the second tick must not have started a second walk');
+  });
+
+  // ── the sweep PACES itself against the vendor ──────────────────────────────
+  let paceGaps;
+  {
+    const origGet2 = enc.apiGet, origConfigured2 = enc.configured;
+    const at = [];
+    enc.configured = () => true;
+    enc.apiGet = async () => { at.push(Date.now()); return []; };
+    try {
+      await M.sweepOnce(db, {
+        loans: [{ loanId: 'p1' }, { loanId: 'p2' }, { loanId: 'p3' }],
+        paceMs: 40,
+      });
+    } finally { enc.apiGet = origGet2; enc.configured = origConfigured2; }
+    paceGaps = at.slice(1).map((t2, i) => t2 - at[i]);
+  }
+
+  t('the sweep PACES its vendor calls instead of bursting', () => {
+    // `apiGet` has no 429/backoff handling, and three other Encompass workers
+    // share this process, this credential and one token cache — so a burst that
+    // trips ICE's rate limit takes them down too. The bulk puller already paces
+    // at 350ms; this matches it rather than inventing a second convention.
+    assert.strictEqual(paceGaps.length, 2, 'three loans should be three calls');
+    for (const gap of paceGaps) {
+      assert.ok(gap >= 35, `expected a pause between loans, saw ${gap}ms`);
+    }
   });
 
   t('the in-flight flag is RELEASED when the sweep settles', () => {

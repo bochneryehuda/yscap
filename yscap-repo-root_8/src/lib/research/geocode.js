@@ -157,7 +157,7 @@ async function osm(address) {
  * single line and a genuine improvement in every respect except the one that
  * matters. The three: this list; a source-level assertion in
  * `scripts/test-address-position.js`; and a CHECK constraint on the table itself
- * (db/455), which is the only one that catches a write nobody reviewed.
+ * (db/458), which is the only one that catches a write nobody reviewed.
  */
 const FORBIDDEN_SOURCE = /google/i;
 const PROVIDERS = [census, osm];
@@ -214,7 +214,7 @@ async function geocodeProperty(p, { providers = PROVIDERS } = {}) {
       rejected = rejected || { source: hit.source, matched: hit.matched };
       continue;
     }
-    // Belt and braces with db/455: refused HERE it is a named answer a caller can
+    // Belt and braces with db/458: refused HERE it is a named answer a caller can
     // read; refused only by the constraint it is a 500 three layers up, at the
     // moment of a write, on a background sweep nobody is watching.
     if (FORBIDDEN_SOURCE.test(String(hit.source || ''))) {
