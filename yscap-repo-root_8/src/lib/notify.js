@@ -52,6 +52,9 @@ const KICKER_OF = {
   // Data-tape export before Encompass matches (owner-directed 2026-08-02): the
   // request to a super-admin, and the decision sent back to the file's team.
   tape_encompass_exception: 'Data-tape exception', tape_encompass_exception_decided: 'Data-tape exception',
+  // Credit report signed off on a report obtained ELSEWHERE (owner-directed
+  // 2026-08-03): the request for an admin to review.
+  credit_import_exception: 'Credit exception',
   exception_comment: 'Exception comment', exception_request_reply: 'Your exception',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
@@ -519,6 +522,10 @@ const CATEGORY_OF = {
   // the aging/expiry digests), so they email like the guaranty/esign ones.
   pricing_exception: 'conditions', pricing_exception_decided: 'conditions',
   tape_encompass_exception: 'conditions', tape_encompass_exception_decided: 'conditions',
+  // Credit-import waiver (owner-directed 2026-08-03) — an admin review request,
+  // action-bearing, so it emails like the other exception requests. Deliberately
+  // NOT in STAFF_INAPP_TYPES: a condition is waiting on this decision.
+  credit_import_exception: 'conditions',
   exception_comment: 'conditions', exception_request_reply: 'conditions',
   exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
