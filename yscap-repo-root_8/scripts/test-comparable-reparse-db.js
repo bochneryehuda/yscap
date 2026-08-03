@@ -21,6 +21,7 @@ process.env.JWT_SECRET = 'x';
 const db = require('../src/db');
 const storage = require('../src/lib/storage');
 const desk = require('../src/lib/appraisal/desk');
+const { COMP_PARSE_VERSION } = require('../src/lib/appraisal/import');
 const sfx = `${process.pid}${Math.floor(Math.random() * 1e5)}`;
 const R = (r, b, ba) => `<ROOM_ADJUSTMENT TotalRoomCount="${r}" TotalBedroomCount="${b}" TotalBathroomCount="${ba}"/>`;
 const XML = `<?xml version="1.0"?><VALUATION_RESPONSE><REPORT AppraisalFormType="FNM1025"><PROPERTY><SALES_COMPARISON>
@@ -35,9 +36,14 @@ let bid, appId, docId, apprId;
     appId = (await db.query(`INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
       [bid, JSON.stringify({ line1: `9 Reparse Rd ${sfx}` })])).rows[0].id;
     const ref = await storage.save(Buffer.from(XML, 'utf8'), { filename: `a${sfx}.xml`, contentType: 'text/xml' });
+    // A HALF-READ FILE. It still parses `ok` — that is the point.
+    const truncSaved = await storage.save(Buffer.from(XML.slice(0, XML.indexOf('<ROOM_ADJUSTMENT')), 'utf8'),
+      { filename: `t${sfx}.xml`, contentType: 'text/xml' });
+    const truncRef = truncSaved.ref || truncSaved.storage_ref || truncSaved;
     docId = (await db.query(`INSERT INTO documents (application_id, filename, content_type, storage_ref, storage_provider, doc_kind)
       VALUES ($1,$2,'text/xml',$3,$4,'appraisal_xml') RETURNING id`,
     [appId, `a${sfx}.xml`, ref.ref || ref.storage_ref || ref, ref.provider || 'local'])).rows[0].id;
+    const goodRef = ref.ref || ref.storage_ref || ref;
     // The report, stored as the OLD parser would have: comp_parse_version NULL.
     apprId = (await db.query(`INSERT INTO appraisals (application_id, form_type, effective_date, subject_address,
         subject_city, subject_state, subject_zip, source_xml_document_id, superseded, imported_at)
@@ -60,7 +66,43 @@ let bid, appId, docId, apprId;
     const good = after.beds === 7 && after.total_rooms === 14 && after.baths_full === 3
       && after.units === 3 && Array.isArray(after.unit_mix) && after.unit_mix.length === 3
       && Number(after.price_per_gla) === 121.40 && after.price_per_gla_basis === 'gba'
-      && stamp.comp_parse_version === 1;
+      && stamp.comp_parse_version === COMP_PARSE_VERSION;
+    // ── A REPORT THAT WAS SILENT MUST NEVER BLANK A FACT ──────────────────
+    // The sweep used to write all eleven grid columns UNCONDITIONALLY, so a
+    // re-parse that read LESS than the original import destroyed what was there
+    // and then stamped the row so it was never revisited. A truncated stored file
+    // still parses `ok` — the XML reader recovers silently — so this is not a
+    // hypothetical. Measured: beds 7 -> null, rooms 14 -> null, gla 2900 -> null,
+    // leaving a price per foot with no foot.
+    await db.query(`UPDATE appraisals SET comp_parse_version = NULL WHERE id=$1`, [apprId]);
+    await db.query(`UPDATE documents SET storage_ref = $2 WHERE id = $1`, [docId, truncRef]);
+    const before2 = (await db.query(
+      `SELECT beds, total_rooms, gla FROM appraisal_comparables WHERE appraisal_id=$1`, [apprId])).rows[0];
+    await desk.backfillComparableParseOnce(50);
+    const after2 = (await db.query(
+      `SELECT beds, total_rooms, gla FROM appraisal_comparables WHERE appraisal_id=$1`, [apprId])).rows[0];
+    const kept = after2.beds === before2.beds && after2.total_rooms === before2.total_rooms;
+    console.log(kept ? 'PASS a re-parse that reads less LEAVES the stored facts alone'
+      : `FAIL a re-parse blanked stored facts: ${JSON.stringify(before2)} -> ${JSON.stringify(after2)}`);
+
+    // ── ONE ROW PER seq, PINNED BY ID ─────────────────────────────────────
+    // `appraisal_comparables` has no unique index on (appraisal_id, seq), and the
+    // old `UPDATE … WHERE seq = $2` wrote comp 1's grid onto BOTH rows.
+    await db.query(`UPDATE documents SET storage_ref = $2 WHERE id = $1`, [docId, goodRef]);
+    await db.query(
+      `INSERT INTO appraisal_comparables (appraisal_id, seq, is_subject, address, city, state, zip,
+         sale_price, beds, total_rooms, gla, comp_set)
+       VALUES ($1,'1',false,$2,'Newark','NJ','07103',555000, 9, 99, 999, 'as_is')`,
+      [apprId, `9 Reparse Rd ${sfx} (dup)`]);
+    await db.query(`UPDATE appraisals SET comp_parse_version = NULL WHERE id=$1`, [apprId]);
+    await desk.backfillComparableParseOnce(50);
+    const dupRows = (await db.query(
+      `SELECT beds FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY sale_price`, [apprId])).rows;
+    console.log(dupRows.length === 2 && dupRows.every((x) => x.beds === 7)
+      ? 'PASS every row carrying a duplicated seq is written once, to itself'
+      : `FAIL duplicate-seq rows: ${JSON.stringify(dupRows)}`);
+    if (!(kept && dupRows.length === 2 && dupRows.every((x) => x.beds === 7))) process.exitCode = 1;
+
     console.log(good ? '\ntest-comparable-reparse-db: PASS — a stored wrong count was healed from the XML' : '\ntest-comparable-reparse-db: FAIL');
     process.exitCode = good ? 0 : 1;
   } catch (e) { console.log('THREW', e.stack || e); process.exitCode = 1; }

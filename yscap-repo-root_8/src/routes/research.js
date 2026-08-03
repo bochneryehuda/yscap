@@ -367,7 +367,12 @@ async function ratesFor(query) {
   if (type) where.push(`p.property_type = ${P(type)}`);
   const r = await db.query(
     `SELECT o.sale_price, o.gla, o.beds, o.baths_full, o.baths_half, o.condition_uad,
-            o.sale_date, o.sale_status
+            o.sale_date, o.sale_status,
+            -- \`sale_type\` IS WHAT THE DISTRESSED FILTER READS, and it was not
+            -- selected — so \`deriveMarketRates\` saw \`undefined\` on every row and
+            -- set aside nothing, ever, on the ONLY production path that calls it
+            -- (this function backs both GET /rates and the valuation suggester).
+            o.sale_type
        FROM property_observations o JOIN properties p ON p.id = o.property_id
       WHERE ${where.join(' AND ')}
       ORDER BY o.sale_date DESC

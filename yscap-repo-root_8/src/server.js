@@ -634,7 +634,11 @@ if (require.main === module) {
         // which are the ones the parser wrote wrong. Re-parses the source XML and
         // rewrites the grid fields, drained by `comp_parse_version` (db/427).
         require('./lib/appraisal/desk').backfillComparableParseOnce()
-          .then((r) => r && r.rewritten && console.log('[boot] comparable grid re-parse:', JSON.stringify(r)))
+          // ALWAYS LOG WHEN IT LOOKED AT ANYTHING. Gating on `rewritten` printed
+          // NOTHING for a sweep that read fifty reports and repaired none — an
+          // operator sees silence and reads it as "nothing to do", which is the
+          // no-silent-caps rule this codebase already learned once.
+          .then((r) => r && r.scanned && console.log('[boot] comparable grid re-parse:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] comparable grid re-parse failed:', e.message));
         // Previous files (owner-directed 2026-07-30): evaluate the note-buyer appraisal checks
         // (EMCAP) for open EMCAP files that already have an imported appraisal but no note-buyer

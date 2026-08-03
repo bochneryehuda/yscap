@@ -211,5 +211,60 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
     'and an ordinary narrative with no stated condition reads as as-is');
 }
 
+// ---------------------------------------------------------------------------
+// 9. THE SUBJECT'S CONDITION IN THE APPRAISER'S OWN WORDS, and the as-is rating
+//    mined from the narrative (db/429).
+//
+//    THE SPLIT IS BY FORM, NOT BY PROPERTY TYPE: UAD was mandated for exactly
+//    1004, 1073, 1075 and 2055, and the 1025 was explicitly left out — so on the
+//    whole 2-4 book the grid condition is the appraiser's own words, and they
+//    were being dropped by the UAD whitelist with nowhere to land.
+// ---------------------------------------------------------------------------
+{
+  const subj = (cond, qual) => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1025"><PROPERTY/><VALUATION PropertyAppraisedValueAmount="450000"/>
+<SALES_COMPARISON><COMPARABLE_SALE PropertySequenceIdentifier="0">
+ <COMPARISON_DETAIL GSEOverallConditionType="${cond}" GSEQualityOfConstructionRatingType="${qual}"/>
+</COMPARABLE_SALE></SALES_COMPARISON></REPORT></VALUATION_RESPONSE>`;
+  let a = extract(subj('Average', 'Avg-Good'));
+  ok(a.subject.conditionUad === null && a.subject.conditionText === 'Average',
+    'a WORDED subject condition is kept beside the code slot, not discarded');
+  ok(a.subject.qualityUad === null && a.subject.qualityText === 'Avg-Good',
+    'and so is a worded quality rating');
+  a = extract(subj('C4', 'Q3'));
+  ok(a.subject.conditionUad === 'C4' && a.subject.conditionText === null,
+    'a real UAD code still goes in the code slot and leaves the word slot empty — the review checks '
+    + 'compare codes and must never see free text');
+}
+
+// The as-is rating out of the condition narrative — the ONE place it exists on a
+// renovation report, where the grid states the finished house.
+{
+  const narrative = (comment) => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1025">
+<PROPERTY><PROPERTY_ANALYSIS _Type="PropertyCondition" _Comment="${comment}"/></PROPERTY>
+<VALUATION PropertyAppraisedValueAmount="450000"/><_CONDITION_OF_APPRAISAL _Type="SubjectToRepairs"/>
+<SALES_COMPARISON><COMPARABLE_SALE PropertySequenceIdentifier="0">
+ <COMPARISON_DETAIL GSEOverallConditionType="C3"/></COMPARABLE_SALE></SALES_COMPARISON>
+</REPORT></VALUATION_RESPONSE>`;
+  const asIs = (c) => (extract(narrative(c)).enrich || {}).condition_uad_as_is || null;
+  ok(asIs('C4 for as-is value. C3 for As repaired value.') === 'C4',
+    'the as-is code is read from the clause that names the as-is basis');
+  ok(asIs('As is the property rates C4; as repaired C2.') === 'C4',
+    'in either clause order — a fixed character window read past the punctuation and lost this one');
+  ok(asIs('The as-is condition is C4.') === 'C4', 'and from a plain single statement');
+  // …and every way it must REFUSE. A wrong condition grade moves real money: one
+  // grade over 1,500 sq ft at a $12-18/sqft rate is $18,000-27,000 per comp.
+  ok(asIs('C4 or C5 as is depending on the inspection.') === null,
+    'TWO codes in one clause is an appraiser who did not commit, and neither do we');
+  ok(asIs('As is C4. As is C5 after further review.') === null, 'two clauses disagreeing states nothing');
+  ok(asIs('C3 as repaired.') === null, 'the repaired rating alone is never read as the as-is one');
+  ok(asIs('Subject to completion; C2 as complete.') === null, 'nor an as-complete rating');
+  ok(asIs('Property is in average condition throughout.') === null, 'no code means no answer');
+  ok(asIs('') === null, 'and no narrative means no answer');
+  ok((extract(narrative('C4 for as-is value.')).enrich || {}).condition_comment === 'C4 for as-is value.',
+    'the sentence itself is kept as the evidence behind the code');
+}
+
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');
 process.exit(failures ? 1 : 0);

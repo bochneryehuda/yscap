@@ -561,7 +561,7 @@ async function backfillComparableParseOnce(limit = 150) {
   // left exactly as it stands.
   const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
     'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis'];
-  let scanned = 0, rewritten = 0, unrecoverable = 0;
+  let scanned = 0, rewritten = 0, unrecoverable = 0, missing = 0;
   try {
     const rows = (await db.query(
       `SELECT a.id, a.source_xml_document_id
@@ -571,8 +571,16 @@ async function backfillComparableParseOnce(limit = 150) {
           AND (a.comp_parse_version IS NULL OR a.comp_parse_version < $2)
           AND EXISTS (SELECT 1 FROM appraisal_comparables c WHERE c.appraisal_id = a.id AND c.is_subject = false)
         ORDER BY a.imported_at ASC NULLS LAST
-        LIMIT $1`, [limit, COMP_PARSE_VERSION])).rows;
+        LIMIT $1`, [limit * 4, COMP_PARSE_VERSION])).rows;
     for (const r of rows) {
+      // STOP AFTER `limit` REPAIRS, NOT AFTER `limit` LOOKS. A report whose XML
+      // cannot be recovered is deliberately never stamped (so a transient storage
+      // failure retries), and the queue is ordered OLDEST FIRST — and the oldest
+      // files are the likeliest to have lost their bytes. Measured with three
+      // unrecoverable old reports at the head: the same three were re-read on
+      // every boot and the two repairable ones behind them were NEVER reached.
+      // Over-fetching and counting REWRITES is what lets the sweep step past them.
+      if (rewritten >= limit) break;
       scanned++;
       const xml = await xmlForAppraisal(r);
       if (!xml) { unrecoverable++; continue; }
@@ -582,18 +590,69 @@ async function backfillComparableParseOnce(limit = 150) {
       const client = await db.getClient();
       try {
         await client.query('BEGIN');
+        // ONE ROW PER seq, PINNED BY ID. `appraisal_comparables` has NO unique
+        // index on (appraisal_id, seq), and a duplicated seq made
+        // `UPDATE … WHERE seq = $2` write comp 1's grid onto BOTH rows —
+        // measured. Reading the ids first means each row is written once, to
+        // itself.
+        const stored = (await client.query(
+          `SELECT id, seq, ${REPARSED.join(', ')} FROM appraisal_comparables
+            WHERE appraisal_id = $1 AND is_subject = false`, [r.id])).rows;
+        const bySeq = new Map();
+        for (const row of stored) {
+          const k = String(row.seq);
+          if (!bySeq.has(k)) bySeq.set(k, []);
+          bySeq.get(k).push(row);
+        }
         for (const c of A.comparables) {
           if (c.seq == null) continue;
+          const rows = bySeq.get(String(c.seq));
+          if (!rows) { missing++; continue; }
           const full = comparableRowFrom(c);
-          const cols = REPARSED.filter((k) => k in full);
-          if (!cols.length) continue;
-          await client.query(
-            `UPDATE appraisal_comparables SET ${cols.map((k, i) => `${k} = $${i + 3}`).join(', ')}
-              WHERE appraisal_id = $1 AND seq = $2 AND is_subject = false`,
-            [r.id, String(c.seq), ...cols.map((k) => full[k])]);
+          for (const row of rows) {
+            // A REPORT THAT WAS SILENT NEVER BLANKS A FACT — the warehouse's own
+            // first law, and this ignored it. It wrote all eleven columns
+            // unconditionally, so a re-parse that read LESS than the original
+            // import (a truncated stored file still parses `ok` — `xml.js`
+            // recovers silently) DESTROYED six facts and then stamped the row so
+            // it was never revisited. Measured: beds 7 → null, rooms 14 → null,
+            // gla 2900 → null, leaving a price per foot with no foot.
+            const cols = REPARSED.filter((k) => k in full && full[k] != null && full[k] !== '');
+            if (!cols.length) continue;
+            await client.query(
+              `UPDATE appraisal_comparables SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}
+                WHERE id = $1`, [row.id, ...cols.map((k) => full[k])]);
+          }
         }
-        await client.query(`UPDATE appraisals SET comp_parse_version = $2 WHERE id = $1`,
-          [r.id, COMP_PARSE_VERSION]);
+        // THE SUBJECT'S OWN RE-READ FACTS, which this pass already has in hand and
+        // used to throw away. Without them the HYPO fix (a post-rehab refinance
+        // read as after-repair) reached ZERO already-imported files: the report
+        // was drained from BOTH queues still holding `as_is_value = NULL`, an
+        // `arv_value` that is really the as-is, and every comparable stamped
+        // `arv` — which is the exact column ARV mode is built on. Proven
+        // end-to-end before this line existed.
+        //
+        // COALESCE for the same reason as the grid above: a re-parse that reads
+        // less must never blank what the original import stated. `comp_set` and
+        // the split metadata are LEFT ALONE — they have their own backfill and a
+        // human can override them from the desk.
+        const v = (A.values || {});
+        await client.query(
+          `UPDATE appraisals SET
+             as_is_value = COALESCE($2, as_is_value),
+             as_is_confidence = COALESCE($3, as_is_confidence),
+             arv_value = COALESCE($4, arv_value),
+             arv_confidence = COALESCE($5, arv_confidence),
+             condition_text = COALESCE($6, condition_text),
+             quality_text = COALESCE($7, quality_text),
+             condition_comment = COALESCE($8, condition_comment),
+             condition_uad_as_is = COALESCE($9, condition_uad_as_is),
+             comp_parse_version = $10
+           WHERE id = $1`,
+          [r.id, v.asIs ?? null, v.asIsConfidence ?? null, v.arv ?? null, v.arvConfidence ?? null,
+            (A.subject || {}).conditionText || null, (A.subject || {}).qualityText || null,
+            (A.enrich || {}).condition_comment || null, (A.enrich || {}).condition_uad_as_is || null,
+            COMP_PARSE_VERSION]);
         await client.query('COMMIT');
         rewritten++;
         // THE WAREHOUSE HOLDS A COPY OF EVERY ONE OF THOSE NUMBERS, and they just
@@ -605,7 +664,10 @@ async function backfillComparableParseOnce(limit = 150) {
       finally { client.release(); }
     }
   } catch (_) { /* best-effort */ }
-  return { scanned, rewritten, unrecoverable, version: COMP_PARSE_VERSION };
+  // `missing` = a stored comparable the re-parsed XML no longer names. Reported
+  // rather than silent: it keeps its stored values, and a climbing count means
+  // the stored bytes and the stored grid have drifted apart.
+  return { scanned, rewritten, unrecoverable, missing, version: COMP_PARSE_VERSION };
 }
 
 // Previous files (owner-directed 2026-07-30): run the note-buyer appraisal checks (EMCAP)

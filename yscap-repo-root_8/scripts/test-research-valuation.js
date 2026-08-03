@@ -321,8 +321,14 @@ function corpus(n, f) {
   const r = V.deriveMarketRates(bunched, { today: TODAY });
   ok(r.monthlyMarketChangePct.value === null,
     'sales bunched into a single month are NOT a market trend, however many of them there are');
-  ok(/bunched|between the older and newer halves/.test(r.monthlyMarketChangePct.why || ''),
-    'and the refusal explains it is the SPACING, not the count');
+  ok(/cover about/.test(r.monthlyMarketChangePct.why || '')
+    && /about a year of sales/.test(r.monthlyMarketChangePct.why || ''),
+  'and the refusal explains it is the SPACING, not the count');
+  // AND IT NAMES A SPAN THE USER CAN SEE. `monthsApart` is between the two half
+  // MIDPOINTS — roughly half the set's real span — so quoting it told a user who
+  // supplied nine months of sales that they had supplied five.
+  ok(/cover about 1 month/.test(r.monthlyMarketChangePct.why || ''),
+    'quoting the SET\'s span, not the distance between its halves');
 
   // The same readings spread over two years ARE a trend, and a modest one.
   const spread = corpus(16, (i) => ({
@@ -397,7 +403,8 @@ function corpus(n, f) {
   const big = corpus(8, () => ({ sale_price: 480000, gla: 2400, baths_full: 3, baths_half: 0,
     sale_status: 'closed', sale_date: '2025-03-01' }));
   const r = V.deriveMarketRates([...small, ...big], { today: TODAY });
-  ok(r.perBath.value == null, 'a bathroom rate read off groups that differ in SIZE is refused');
+  ok(r.perBath.valuePerSqft == null && r.perBath.value === null,
+    'a bathroom rate read off groups that differ in SIZE is refused — asserted on the SUCCESS\n     shape (`valuePerSqft`), because `.value` is absent from it and `.value == null` would be\n     true whether the rate was refused or published');
   ok(/BIGGER houses/.test(r.perBath.why || '') && /measuring the size/.test(r.perBath.why || ''),
     'and the refusal names the CONFOUND — "get more sales" is the wrong advice for a problem more sales will not fix');
 
@@ -447,6 +454,46 @@ function corpus(n, f) {
   const off = comps.map((c) => (c.sale_status === 'active' ? Object.assign({}, c, { include: false }) : c));
   ok(V.reconcile(subject, off, { today: TODAY }).listingWeightPct === 0,
     'a comparable the user switched OFF carries none of the answer');
+}
+
+// ---- A CONFOUNDED STEP COUNTS AGAINST THE READING ---------------------------
+// The first version of the size guard SKIPPED a confounded step and medianed
+// whatever survived — which turned a CORRECT refusal into a confident wrong
+// answer. On the live NJ segment the discarded step was the strongly negative
+// one that used to trigger the "wrong sign" refusal, and the single surviving
+// step then published $23.54/sqft: $35,250 for one bathroom. The guard built to
+// stop "$86,940 for one bathroom" produced $35,250 on the first real market.
+{
+  const mk = (n, gla, baths, price) => corpus(n, () => ({
+    sale_price: price, gla, baths_full: baths, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  // Two steps: 2→2.5 is size-matched, 2.5→3 is wildly not.
+  const rows = [...mk(8, 1600, 2, 320000), ...mk(8, 1480, 2.5, 310000), ...mk(4, 3152, 3, 700000)];
+  const r = V.deriveMarketRates(rows, { today: TODAY });
+  ok(r.perBath.valuePerSqft == null,
+    'ONE confounded step condemns the whole reading — the rest of the sample is not made trustworthy by dropping it');
+  ok(r.perBath.confoundedSteps >= 1, 'and the refusal reports how many steps were unreadable');
+}
+
+// ---- THE DISTRESSED FILTER MUST MATCH WHAT WE ACTUALLY STORE ----------------
+// `extract.js` whitelists exactly six values and `ingest.js` stores them
+// verbatim: CamelCase, no spaces. A `\b`-anchored pattern could not match
+// `REOSale` at all, so the filter was a no-op on every real row while the test
+// used spellings ("REO", "Arms Length") that nothing in the system writes.
+{
+  for (const stored of ['REOSale', 'EstateSale', 'ShortSale', 'CourtOrderedSale']) {
+    const arms = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+      sale_type: 'ArmsLengthSale', sale_date: `2025-0${(i % 9) + 1}-01` }));
+    const bad = corpus(8, (i) => ({ sale_price: 225000, gla: 1500, sale_status: 'closed',
+      sale_type: stored, sale_date: `2025-0${(i % 9) + 1}-01` }));
+    const r = V.deriveMarketRates([...bad, ...arms], { today: TODAY });
+    ok(r.distressedSetAside === 8, `"${stored}" — the spelling the parser actually stores — is set aside`);
+    ok(r.pricePerSqft.value === 250, `and the rate is the arm's-length market, not a blend (${stored})`);
+  }
+  const clean = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: 'ArmsLengthSale', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  ok(V.deriveMarketRates(clean, { today: TODAY }).distressedSetAside === 0,
+    'and an arm\'s-length sale is never mistaken for a forced one');
 }
 
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);

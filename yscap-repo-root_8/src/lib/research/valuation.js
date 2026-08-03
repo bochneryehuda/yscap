@@ -539,8 +539,19 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
     if (gA > 0 && gB > 0 && Math.abs(gB - gA) / Math.min(gA, gB) > MAX_GLA_SPREAD) { confounded++; continue; }
     deltas.push((ppsfOf(keys[i]) - ppsfOf(keys[i - 1])) / step);
   }
-  if (!deltas.length && confounded) {
-    return { value: null, n, confoundedSteps: confounded,
+  // A DISCARDED STEP IS EVIDENCE OF A CONFOUND, NOT A ROW TO IGNORE. Skipping it
+  // and medianing whatever survived turned a CORRECT refusal into a confident
+  // wrong answer: on the live NJ segment the 2.5→3 bath step (1,480 vs 3,152 sqft)
+  // was the strongly negative delta that used to trigger the "wrong sign"
+  // refusal, and dropping it left one surviving step publishing $23.54/sqft —
+  // **$35,250 for one bathroom**. The guard built to stop "$86,940 for one
+  // bathroom" produced $35,250 on the first real market it saw.
+  //
+  // So a set where ANY step is confounded is a confounded set. It is the same
+  // sample either way; removing the inconvenient half does not make the rest
+  // trustworthy, it just hides why it looked wrong.
+  if (confounded) {
+    return { value: null, n, confoundedSteps: confounded, readableSteps: deltas.length,
       why: `the sales with more ${label}s in this market are also materially BIGGER houses, so the `
         + `difference in price per foot between them is measuring the size, not the ${label} — `
         + `this is not something more sales would fix, and a rate read off it would be wrong by a `
@@ -616,7 +627,15 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
  * ORDINARY sale, deliberately: excluding on a hunch would quietly shrink the
  * sample, and this warehouse's rule is that an unread fact is not a "yes".
  */
-const DISTRESSED_RE = /\b(reo|bank[\s-]*owned|foreclos|short[\s-]*sale|estate|relocation|auction|trustee|sheriff|distress|as[\s-]*is[\s-]*sale)\b/i;
+// NO WORD BOUNDARIES — the vocabulary this system actually stores is CamelCase
+// with no spaces. `extract.js` whitelists exactly `ArmsLengthSale`, `REOSale`,
+// `EstateSale`, `ShortSale`, `Listing`, `CourtOrderedSale` and `ingest.js` stores
+// them verbatim, so `\breo\b` could not match `REOSale` (O→S is not a boundary)
+// and the filter was a no-op on every real row. `compWarnings` 390 lines above
+// has always used the boundary-free form and got this right — the two are now in
+// step, which is the point: one file must not label a comp "bank-owned, sells
+// below market" on screen while the other folds it into the rate.
+const DISTRESSED_RE = /(reo|bank[\s-]*owned|foreclos|short[\s-]*sale|estate|relocation|auction|trustee|sheriff|court[\s-]*ordered|distress)/i;
 function isDistressed(saleType) {
   const s = saleType == null ? '' : String(saleType).trim();
   return s !== '' && DISTRESSED_RE.test(s);
@@ -642,10 +661,16 @@ function timeTrend(rows, today, minSample) {
   const months = monthsBetween(String(midNewer).slice(0, 10), String(midOlder).slice(0, 10));
   if (!mo || !mn || !months || months <= 0) return { value: null, n: dated.length, why: 'the sales are not spread over enough time to read a trend' };
   if (months < MIN_TREND_MONTHS) {
-    return { value: null, n: dated.length, monthsApart: round(months, 0.1),
-      why: `these ${dated.length} sales are bunched into about ${round(months, 0.1)} month${months < 1.5 ? '' : 's'} — `
-        + `dividing a price gap by that little time turns ordinary scatter into a huge monthly rate, `
-        + `so we need at least ${MIN_TREND_MONTHS} months between the older and newer halves before calling anything a trend` };
+    // NAME THE SPAN THE USER CAN SEE. `months` is between the two half-MIDPOINTS,
+    // roughly half the set's actual span — so a user who supplied nine months of
+    // sales was told they supplied five, a number matching nothing on their
+    // screen.
+    const span = monthsBetween(String(dated[dated.length - 1].sale_date).slice(0, 10),
+      String(dated[0].sale_date).slice(0, 10));
+    return { value: null, n: dated.length, monthsApart: round(months, 0.1), spanMonths: round(span, 0.1),
+      why: `these ${dated.length} sales cover about ${round(span, 0.1)} month${span < 1.5 ? '' : 's'} — `
+        + 'dividing a price gap by that little time turns ordinary scatter into a huge monthly rate, '
+        + 'so we need about a year of sales before calling anything a trend' };
   }
   const pct = ((mn - mo) / mo) * 100 / months;
   if (!(Math.abs(pct) <= MAX_MONTHLY_PCT)) {

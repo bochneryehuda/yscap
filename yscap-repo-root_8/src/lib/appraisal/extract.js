@@ -79,9 +79,13 @@ function parseBaths(raw) {
  * worse than no text beside the two numeric columns that are already right.
  */
 function bathsTextOf(full, half) {
-  if (full == null && half == null) return null;
-  const f = full == null ? 0 : full, h = half == null ? 0 : half;
-  return h >= 0 && h <= 9 ? `${f}.${h}` : null;
+  // A MISSING FULL COUNT IS NOT ZERO FULL BATHS. Treating null as 0 produced the
+  // text "0.5" from a half count alone, which `parseBaths` reads straight back as
+  // "no full bathrooms" — the text asserting a fact the columns beside it
+  // deliberately refuse to state, and the text is the fabrication.
+  if (full == null) return null;
+  const h = half == null ? 0 : half;
+  return h >= 0 && h <= 9 ? `${full}.${h}` : null;
 }
 
 // ---- enrichment readers (never-guess; db/158) -------------------------------
@@ -309,6 +313,17 @@ function contractMonth(desc) {
   if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
   return `${yr}-${String(mo).padStart(2, '0')}-01`;
 }
+/** The comp's price per foot, WITH the area measure it is per. One decision, so
+ *  the two can never disagree: a 1025 states it per gross BUILDING area, a 1004
+ *  per gross LIVING area, and $150 of each describes a different property. */
+function pricePerArea(c) {
+  const gla = bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8);
+  const gba = bounded(X.attr(c, 'SalesPricePerGrossBuildingAreaAmount'), 1e8);
+  const value = gla != null ? gla : gba;
+  return { pricePerGla: value == null ? null : value,
+    pricePerGlaBasis: gla != null ? 'gla' : (gba != null ? 'gba' : null) };
+}
+
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
   const out = { gla: null, glaBasis: null, saleDate: null, contractDate: null, conditionUad: null, qualityUad: null,
@@ -326,10 +341,14 @@ function compGrid(c) {
     // foot of LIVING area and $150 a foot of GROSS BUILDING area describe
     // different properties, and comparing them silently is a wrong answer. The
     // living-area spelling wins when a file carries both.
-    pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8)
-      ?? bounded(X.attr(c, 'SalesPricePerGrossBuildingAreaAmount'), 1e8),
-    pricePerGlaBasis: X.attr(c, 'SalesPricePerGrossLivingAreaAmount') != null ? 'gla'
-      : (X.attr(c, 'SalesPricePerGrossBuildingAreaAmount') != null ? 'gba' : null),
+    // THE BASIS FOLLOWS THE VALUE THAT WAS TAKEN, never the presence of an
+    // attribute. `bounded()` rejects '', 'N/A', '--', 0, negatives and absurd
+    // magnitudes — all of which mean "no value stated" — but attribute PRESENCE
+    // does not, so a grid carrying `…GrossLivingArea=""` beside a real
+    // `…GrossBuildingArea` took the building figure and labelled it living area.
+    // Both field maps warn about exactly those placeholder shapes. `gla_basis`
+    // twelve lines below gets this right by setting value and basis together.
+    ...pricePerArea(c),
     adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
@@ -373,10 +392,16 @@ function compGrid(c) {
     rooms: count(X.attr(r, 'TotalRoomCount'), 99),
     beds: count(X.attr(r, 'TotalBedroomCount'), 99),
     baths: parseBaths(X.attr(r, 'TotalBathroomCount')),
+    seq: count(X.attr(r, 'UnitSequenceIdentifier'), 99),
     amount: toNum(X.attr(r, 'RoomAdjustmentAmount')),
-  // A FORM PADS. A vendor emitting four unit rows on a two-unit property leaves
-  // the spares blank, and an empty row must not be counted as a unit.
-  })).filter((r) => r.rooms != null || r.beds != null || r.baths.full != null || r.baths.half != null);
+  // A FORM PADS, AND IT PADS WITH ZEROS AS OFTEN AS WITH BLANKS. a la mode and ACI
+  // emit FIXED-LENGTH placeholder rows — the 1025 field map says so in as many
+  // words, and warns "do not count elements to get unit count". `count()` accepts
+  // 0 as a valid count, so a `TotalRoomCount="0"` row survived a null-only filter
+  // and a DUPLEX was filed as a 4-FAMILY, with the fabricated 4 reaching
+  // `properties.units` through ROLLUP_FACTS. A row that states nothing ABOUT a
+  // dwelling — no rooms, no beds, no baths — is not a dwelling.
+  })).filter((r) => (r.rooms || 0) + (r.beds || 0) + (r.baths.full || 0) + (r.baths.half || 0) > 0);
 
   if (raRows.length) {
     const sum = (k) => {
@@ -414,7 +439,13 @@ function compGrid(c) {
     if (raRows.length > 1) {
       out.units = raRows.length;
       out.unitMix = raRows.map((r, i) => ({
-        unit: i + 1, rooms: r.rooms, beds: r.beds,
+        // THE APPRAISER'S OWN UNIT NUMBER when the grid states one. Position is a
+        // guess, and it is wrong exactly when it matters: a grid stating units
+        // 1, 2 and 4 (unit 3 padded out) labelled the unit-4 dwelling "unit 3",
+        // and a grid emitting rows in the order 3, 1, 2 relabelled all three.
+        // This is the fact the owner asked for by name, so it must not be
+        // silently mislabelled.
+        unit: r.seq != null ? r.seq : i + 1, rooms: r.rooms, beds: r.beds,
         baths_full: r.baths.full, baths_half: r.baths.half, baths: r.baths.text,
       }));
     }
@@ -580,9 +611,23 @@ function subjectPriorSale(root, subject0) {
   return out;
 }
 
-// ---- subject condition/quality from the seq-0 comp (UAD codes only) ---------
+/**
+ * SUBJECT CONDITION/QUALITY from the seq-0 comp.
+ *
+ * A WORDED RATING IS STILL A RATING, AND THE SUBJECT'S WAS BEING THROWN AWAY.
+ * The UAD whitelist is right to keep `condition_uad` clean — the review checks
+ * compare those codes and must never see free text — but a rating that failed it
+ * was DISCARDED rather than kept beside the code. The comparable path has kept
+ * the word since the non-UAD vendor fix; the subject path never did.
+ *
+ * That is not an edge case, it is the whole 2-4 unit book: UAD was mandated for
+ * exactly four forms — 1004, 1073, 1075 and 2055 — and the **1025 was explicitly
+ * left out**, so on a 2-4 family the grid condition is the appraiser's own words
+ * ("Average", "Avg-Good", "Good"). Dropping them left the single most important
+ * fact about a property after its price simply blank.
+ */
 function subjectCQ(subject0) {
-  const out = { conditionUad: null, qualityUad: null, cqNonUad: false };
+  const out = { conditionUad: null, qualityUad: null, conditionText: null, qualityText: null, cqNonUad: false };
   if (!subject0) return out;
   const cd = X.find(subject0, 'COMPARISON_DETAIL');
   let cRaw = cd ? X.attr(cd, 'GSEOverallConditionType') : null;
@@ -594,9 +639,55 @@ function subjectCQ(subject0) {
       if (t === 'Quality' && !qRaw) qRaw = d;
     }
   }
-  if (cRaw && UAD_C.test(cRaw)) out.conditionUad = cRaw; else if (cRaw) out.cqNonUad = true;
-  if (qRaw && UAD_Q.test(qRaw)) out.qualityUad = qRaw; else if (qRaw) out.cqNonUad = true;
+  if (cRaw && UAD_C.test(cRaw)) out.conditionUad = cRaw;
+  else if (cRaw) { out.cqNonUad = true; out.conditionText = clean(cRaw); }
+  if (qRaw && UAD_Q.test(qRaw)) out.qualityUad = qRaw;
+  else if (qRaw) { out.cqNonUad = true; out.qualityText = clean(qRaw); }
   return out;
+}
+
+/**
+ * THE AS-IS CONDITION, OUT OF THE APPRAISER'S OWN SENTENCE.
+ *
+ * On a renovation report the grid's condition describes the FINISHED house, so
+ * the roll-up correctly refuses it (`AS_IS_ONLY`) — and those properties are left
+ * with no current condition at all. But the appraiser very often writes both
+ * ratings down in the condition narrative: *"C4 for as-is value. C3 for As
+ * repaired value."* That sentence is the one place the as-is rating exists, and
+ * nothing was reading it.
+ *
+ * STRICT, because a wrong condition grade moves real money (one grade over
+ * 1,500 sq ft at a $12-18/sqft rate is $18,000-27,000 per comp). A code is
+ * returned ONLY when:
+ *   * it sits within a few words of explicit as-is language, AND
+ *   * exactly ONE distinct code is paired that way — two candidates means the
+ *     sentence is ambiguous and we say nothing.
+ * An after-repair pairing is deliberately NOT read: that value is already on the
+ * grid, and mining it would risk filing the finished house's rating as today's.
+ */
+function asIsConditionFromNarrative(text) {
+  const s = clean(text);
+  if (!s) return null;
+  // BY CLAUSE, NOT BY A CHARACTER WINDOW. A fixed ±20 characters reads straight
+  // past the punctuation into the NEXT statement, so "As is the property rates
+  // C4; as repaired C2" saw the repaired basis sitting next to the as-is code and
+  // threw away a perfectly clear reading. A clause is the unit the appraiser
+  // actually writes one basis in.
+  const found = new Set();
+  for (const clause of s.split(/[.;]/)) {
+    if (!/\bas[\s-]*is\b/i.test(clause)) continue;
+    // A clause naming the repaired/complete basis TOO is not usable evidence
+    // either way — one sentence, two bases, no way to tell which code belongs to
+    // which.
+    if (/\bas[\s-]*(?:repaired|complete)/i.test(clause)) continue;
+    const codes = new Set((clause.match(/\bC[1-6]\b/gi) || []).map((x) => x.toUpperCase()));
+    // TWO CODES IN ONE CLAUSE IS AN APPRAISER WHO DID NOT COMMIT — "C4 or C5 as
+    // is depending on the inspection". Neither do we, and the whole read is
+    // abandoned rather than guessing at the first one.
+    if (codes.size > 1) return null;
+    for (const c of codes) found.add(c);
+  }
+  return found.size === 1 ? [...found][0] : null;
 }
 
 // A node is subject-scoped when no COMPARABLE_SALE sits above it (the same tag repeats under each
@@ -716,6 +807,17 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     const t = X.attr(pa, '_Type');
     if (t === 'PhysicalDeficiency') { o.physical_deficiency = yn(X.attr(pa, '_ExistsIndicator')); o.physical_deficiency_note = capText(X.attr(pa, '_Comment'), 500); }
     else if (t === 'AdverseSiteConditions') o.adverse_site_conditions = yn(X.attr(pa, '_ExistsIndicator'));
+    // THE CONDITION NARRATIVE — present on roughly nine of ten 1025s and read by
+    // nothing until now. It is where an appraiser writes the ratings out in
+    // words, and on a renovation report it is the ONLY place the AS-IS rating
+    // exists at all (the grid states the finished house, which the roll-up
+    // correctly refuses). Kept verbatim as evidence; the strict reader below is
+    // what turns it into a code, and refuses when the sentence is ambiguous.
+    else if (t === 'PropertyCondition') {
+      o.condition_comment = capText(X.attr(pa, '_Comment'), 1000);
+      const asIs = asIsConditionFromNarrative(o.condition_comment);
+      if (asIs) o.condition_uad_as_is = asIs;
+    }
   }
   for (const sf of subjAll(root, 'SITE_FEATURE')) {
     const t = X.attr(sf, '_Type');
@@ -1040,6 +1142,11 @@ function extract(xml) {
     floodZone: clean(X.attr(X.find(root, 'FLOOD_ZONE'), 'NFIPFloodZoneIdentifier')),
     conditionUad: cq.conditionUad,
     qualityUad: cq.qualityUad,
+    // The WORD, when the rating is not a UAD code. Kept beside the code, never
+    // instead of it — a 1025 was never brought into UAD, so on the 2-4 book this
+    // is the only rating there is, and it used to be discarded (db/429).
+    conditionText: cq.conditionText,
+    qualityText: cq.qualityText,
     priorSale: subjectPriorSale(root, subject0),
   };
   // imply units by form when blank (1004/1073 → 1)

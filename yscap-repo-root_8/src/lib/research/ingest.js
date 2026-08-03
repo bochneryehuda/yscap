@@ -539,7 +539,20 @@ async function rollupProperty(db, propertyId) {
   const set = {};
   for (const [obsCol, propCol] of Object.entries(ROLLUP_FACTS)) {
     for (const o of obs) {
-      if (AS_IS_ONLY.has(obsCol) && o.condition_basis === 'as_repaired') continue;
+      const repaired = o.condition_basis === 'as_repaired';
+      if (AS_IS_ONLY.has(obsCol) && repaired) {
+        // ONE NARROW EXCEPTION, and only for the condition CODE. A subject-to
+        // report's grid states the finished house, so its rating is refused —
+        // which left every renovation-only property with NO current condition at
+        // all. When the appraiser wrote the as-is rating into the condition
+        // narrative ("C4 for as-is value. C3 for As repaired value."), that IS a
+        // statement about the house as it stands and may be used. Nothing else on
+        // an after-repair report gets this: the money figures have no such
+        // sentence, and letting them through is the db/424 bug.
+        if (obsCol !== 'condition_uad' || !o.condition_uad_as_is) continue;
+        set[propCol] = o.condition_uad_as_is;
+        break;
+      }
       if (o[obsCol] != null && o[obsCol] !== '') { set[propCol] = o[obsCol]; break; }
     }
     if (!(propCol in set)) set[propCol] = null;
@@ -931,8 +944,31 @@ async function writeReport(db, { a, comps, link, out }) {
       // not be lost — "Detached" answers a different question from "Multi 2-4",
       // and neither substitutes for the other (db/424).
       attachment_type: txt(a.attachment_type),
-      condition_uad: txt(a.condition_uad), condition_text: null,
-      quality_uad: txt(a.quality_uad), quality_text: null,
+      // THE GRID'S CODE, THE APPRAISER'S WORD, AND — ON A RENOVATION REPORT — THE
+      // AS-IS CODE OUT OF THEIR OWN NARRATIVE.
+      //
+      // A subject-to report's grid condition describes the FINISHED house, so the
+      // roll-up refuses it (AS_IS_ONLY) and those properties were left with no
+      // current condition at all. When the appraiser wrote the as-is rating down
+      // in the condition narrative — "C4 for as-is value. C3 for As repaired
+      // value." — that IS a statement about the house as it stands, so it is
+      // filed as an AS-IS observation and the roll-up may use it. Only a code a
+      // strict clause-by-clause reader could PROVE gets here; anything ambiguous
+      // arrives null and the property keeps no condition, which is the honest
+      // answer (db/429).
+      condition_uad: txt(a.condition_uad),
+      condition_text: txt(a.condition_text),
+      quality_uad: txt(a.quality_uad), quality_text: txt(a.quality_text),
+      // THE AS-IS CODE OUT OF THE APPRAISER'S OWN NARRATIVE, in its own column.
+      //
+      // It must NOT be written into `condition_uad`, and the observation's
+      // `condition_basis` must NOT be flipped to 'as_is' to let it through: that
+      // flag gates the WHOLE of AS_IS_ONLY, so flipping it would let this report's
+      // after-repair depreciation and cost figures roll up too — re-opening
+      // exactly the db/424 defect ("condition C5" beside "zero physical
+      // depreciation") one commit after fixing it. The roll-up consults this
+      // column explicitly instead.
+      condition_uad_as_is: txt(a.condition_uad_as_is),
       condition_basis: conditionBasis,
       // ONE COLUMN, TWO VOCABULARIES — the trap. A COMPARABLE's view_rating is a
       // UAD enum (Beneficial/Neutral/Adverse); the SUBJECT's is free text off a

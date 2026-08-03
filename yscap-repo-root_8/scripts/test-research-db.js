@@ -397,9 +397,15 @@ async function makeAppraisal(appId, o) {
     // ---- 6. the back-fill --------------------------------------------------
     const bf = await ingest.backfill(D, { limit: 50 });
     ok(bf.scanned >= 0 && bf.failed === 0, 'the back-fill runs clean over the corpus');
+    // DRAIN FIRST, THEN ASSERT IDEMPOTENCE. The sweep is BOUNDED per pass, so on a
+    // database holding more reports than the bound one pass legitimately leaves
+    // work behind. Asserting "a second pass finds nothing" straight after the
+    // first passed on an empty database and FAILED on any seeded one — which is
+    // every CI run after an INGEST_VERSION bump.
+    for (let i = 0; i < 40; i++) { if ((await ingest.backfill(D, { limit: 200 })).scanned === 0) break; }
     const bf2 = await ingest.backfill(D, { limit: 50 });
     ok(bf2.scanned === 0,
-      'and a second pass has nothing left to do — it self-drains instead of re-reading everything every boot');
+      'and once drained it STAYS drained — it does not re-read the whole corpus every boot');
 
     // ---- 7. search ---------------------------------------------------------
     const q = async (f) => (await S.searchProperties(D, Object.assign({ city: CITY }, f))).rows;
@@ -700,6 +706,11 @@ async function makeAppraisal(appId, o) {
     const drained = await ING.backfill(D, { limit: 50 });
     ok(drained.scanned >= 1, 'and a report stamped at an OLDER ingest version is re-READ by the sweep — '
       + 'which is the only thing that can put a newly-read fact on a report we already hold');
+    // DRAIN BEFORE ASSERTING IDEMPOTENCE. The sweep is BOUNDED per pass, so on a
+    // database holding more reports than the bound, one pass legitimately leaves
+    // work behind — asserting "a second pass finds nothing" straight after the
+    // first made the suite fail on any seeded corpus and pass on an empty one.
+    for (let i = 0; i < 40; i++) { if ((await ING.backfill(D, { limit: 200 })).scanned === 0) break; }
 
     // …AND THE POINT OF ALL THAT: they are searchable, AND the result says what it
     // matched on. A filter whose fact has no result column is half a feature — you

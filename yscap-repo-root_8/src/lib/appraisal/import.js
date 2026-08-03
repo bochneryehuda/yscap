@@ -130,6 +130,14 @@ function appraisalRowFrom(A, { applicationId = null, sourceXmlDocumentId = null,
     // that used to live in this column keeps its own home so the fact is not lost — it is simply
     // never again mistaken for a property type (owner-reported 2026-08-02). db/405.
     property_type: s.propertyType, property_category: s.propertyCategory, attachment_type: s.attachmentType,
+    // The subject's rating AS WORDED, kept beside the code rather than instead of
+    // it — the 1025 was never brought into UAD, so on the 2-4 book the words are
+    // all there is. Plus the condition narrative and the as-is code a strict
+    // reader could prove from it, which on a renovation report is the only place
+    // an as-is rating exists at all (db/429).
+    condition_text: s.conditionText, quality_text: s.qualityText,
+    condition_comment: (A.enrich || {}).condition_comment || null,
+    condition_uad_as_is: (A.enrich || {}).condition_uad_as_is || null,
     units: s.units, year_built: s.yearBuilt, gla: s.gla,
     rooms: s.rooms, beds: s.beds, baths_full: s.bathsFull, baths_half: s.bathsHalf,
     stories: s.stories, design_style: s.design, lot_area: s.lotArea,
@@ -426,7 +434,9 @@ function buildFieldsJson(A) {
 // 1 — the room counts on a 2-4 unit grid (db/426: unit 1's numbers were filed as
 //     the property's), and the price per foot + its basis (db/427: a 1025 states
 //     it under the gross-BUILDING-area attribute, which was never read).
-const COMP_PARSE_VERSION = 1;
+// 2 — db/429: the subject's WORDED condition/quality (dropped entirely before),
+//     the condition narrative, and the as-is code proven from it.
+const COMP_PARSE_VERSION = 2;
 
 module.exports = {
   importAppraisal,
