@@ -132,6 +132,13 @@ function render(p) {
   var progress = (p.progress && p.progress.total > 0) ? p.progress : null;    // {done,total,label}
   var callout  = (p.callout && (p.callout.body || p.callout.title)) ? p.callout : null;  // {title,body,tone}
   var officer  = (p.officer && p.officer.name) ? p.officer : null;            // contact card
+  // A RANKED money block: one number the size of a headline, then the arithmetic behind it,
+  // small. `hero` shows ONE fact and cannot express that a $33,450 release and the $50,000 it
+  // came out of are the same story at two different weights. {primary:{label,value,sub},
+  // secondary:[{label,value,tone}]} — see lib/email/draw-email.js for who fills it in.
+  var figures  = (p.figures && p.figures.primary && p.figures.primary.value) ? p.figures : null;
+  // The facts that belong to THIS event rather than to the file. {rows:[{label,value}], progress}
+  var facts    = (p.facts && ((Array.isArray(p.facts.rows) && p.facts.rows.length) || p.facts.progress)) ? p.facts : null;
 
   /* ---------------- STATUS PILL ---------------- */
   function pill(b) {
@@ -150,6 +157,67 @@ function render(p) {
     if (h.value) out += '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:34px;line-height:1.1;font-weight:700;color:' + BRAND.ink + ';">' + esc(h.value) + '</div>';
     if (h.sub)   out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + t.fg + ';margin:9px 0 0;">' + esc(h.sub) + '</div>';
     out += '</td></tr></table>';
+    return out;
+  }
+
+  /* ---------------- RANKED FIGURE BAND (the money, weighted) ----------------
+     The headline number at 40px, then up to three supporting figures beneath it at 20px in a
+     single table row. The size difference IS the message: the reader learns what happens to
+     the money before they have read a word, and the arithmetic is there when they want it.
+
+     Bulletproof by construction: one outer table, one inner row, fixed percentage widths, no
+     flexbox and no absolute positioning (Outlook's Word renderer supports neither). The
+     supporting row degrades to a vertical stack on a narrow phone only because each cell is a
+     table cell with its own width — never because of a media query, which Gmail strips. */
+  function figureBand(f) {
+    var t = tone(f.primary.tone || 'teal');
+    var secondary = Array.isArray(f.secondary) ? f.secondary.filter(function (s) { return s && s.value; }).slice(0, 3) : [];
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 22px;">' +
+      '<tr><td align="center" style="padding:28px 22px 22px;background:' + t.bg + ';border-radius:14px;">';
+    out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:' + t.fg + ';opacity:.85;margin:0 0 10px;">' + esc(f.primary.label || '') + '</div>';
+    out += '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:40px;line-height:1.05;font-weight:700;color:' + BRAND.ink + ';mso-line-height-rule:exactly;">' + esc(f.primary.value) + '</div>';
+    if (f.primary.sub) out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + t.fg + ';margin:10px 0 0;">' + esc(f.primary.sub) + '</div>';
+    if (secondary.length) {
+      var w = Math.floor(100 / secondary.length);
+      out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0 0;border-top:1px solid ' + BRAND.line + ';">' +
+        '<tr>' + secondary.map(function (s) {
+          var st = s.tone ? tone(s.tone) : null;
+          var valColor = s.tone === 'muted' ? BRAND.soft2 : (st ? st.fg : BRAND.ink);
+          return '<td width="' + w + '%" align="center" valign="top" style="padding:16px 6px 2px;">' +
+            '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;line-height:1.2;font-weight:700;color:' + valColor + ';">' + esc(s.value) + '</div>' +
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.3;color:' + t.fg + ';opacity:.8;margin:5px 0 0;">' + esc(s.label || '') + '</div>' +
+          '</td>';
+        }).join('') + '</tr></table>';
+    }
+    out += '</td></tr></table>';
+    return out;
+  }
+
+  /* ---------------- FACTS BOX (what belongs to THIS event) ----------------
+     A quiet bordered box of label/value pairs, optionally closed by a progress meter. Visually
+     subordinate to the figure band on purpose — these are the details you check, not the
+     answer you came for. */
+  function factsBox(fx) {
+    var rows = Array.isArray(fx.rows) ? fx.rows.filter(function (r) { return r && r.label && r.value != null && r.value !== ''; }) : [];
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
+      '<tr><td style="padding:18px 20px 6px;">';
+    if (fx.title) out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 12px;">' + esc(fx.title) + '</div>';
+    if (rows.length) {
+      out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows.map(function (r, i) {
+        var bt = i === 0 ? '' : 'border-top:1px solid ' + BRAND.line + ';';
+        return '<tr>' +
+          // BRAND.muted, never BRAND.soft — `soft` is the light CHIP SURFACE (#F4F1EA) and
+          // renders as white-on-white here. Same trap as `var(--ink)` on the portal.
+          '<td valign="top" style="' + bt + 'padding:9px 10px 9px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.muted + ';">' + esc(r.label) + '</td>' +
+          '<td valign="top" align="right" style="' + bt + 'padding:9px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:' + BRAND.ink + ';white-space:nowrap;">' + esc(r.value) + '</td>' +
+        '</tr>';
+      }).join('') + '</table>';
+    }
+    out += '</td></tr>';
+    if (fx.progress && fx.progress.total > 0) {
+      out += '<tr><td style="padding:2px 20px 18px;">' + meter(fx.progress) + '</td></tr>';
+    }
+    out += '</table>';
     return out;
   }
 
@@ -390,6 +458,8 @@ function render(p) {
       '</tr></table>'
     : '';
   var heroHtml     = hero ? heroBand(hero) : '';
+  var figuresHtml  = figures ? figureBand(figures) : '';
+  var factsHtml    = facts ? factsBox(facts) : '';
   var sections = Array.isArray(p.sections) ? p.sections.filter(function (s) { return s && (s.title || s.body); }) : [];
   var sectionsHtml = sections.length ? sectionBlocks(sections) : '';
   var stepsHtml    = steps.length ? stepper(steps) : '';
@@ -423,7 +493,9 @@ function render(p) {
           heroHtml +
           '<h1 style="margin:0 0 16px;font-family:Georgia,\'Times New Roman\',serif;font-size:23px;' +
             'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
-          greetHtml + body + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
+          // figures then facts, both ABOVE the generic file meta: the money is the answer, the
+          // draw's own details are the supporting read, and the file identity block is reference.
+          greetHtml + body + figuresHtml + factsHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
@@ -468,6 +540,33 @@ function render(p) {
   if (greeting) t.push(greeting, '');
   if (intro) t.push(intro, '');
   lines.forEach(function (l) { t.push(l, ''); });
+  // The MONEY must survive text/plain. On a draw email the figure band IS the message, so
+  // emitting it in HTML only would leave a plaintext reader with a title and no numbers —
+  // the same defect the callout had, and a more expensive one. `hero` is included for the
+  // identical reason: it is the one big fact of whatever email carries it.
+  if (hero && (hero.label || hero.value)) {
+    t.push(((hero.label ? hero.label + ': ' : '') + (hero.value || '')).trim());
+    if (hero.sub) t.push(hero.sub);
+    t.push('');
+  }
+  if (figures) {
+    t.push(((figures.primary.label ? figures.primary.label + ': ' : '') + figures.primary.value).trim());
+    if (figures.primary.sub) t.push('(' + figures.primary.sub + ')');
+    (Array.isArray(figures.secondary) ? figures.secondary : []).forEach(function (s) {
+      if (s && s.value) t.push('  ' + (s.label || '') + ': ' + s.value);
+    });
+    t.push('');
+  }
+  if (facts) {
+    if (facts.title) t.push(String(facts.title).toUpperCase());
+    (Array.isArray(facts.rows) ? facts.rows : []).forEach(function (r) {
+      if (r && r.label && r.value != null && r.value !== '') t.push(r.label + ': ' + r.value);
+    });
+    if (facts.progress && facts.progress.total > 0 && facts.progress.label) {
+      t.push(facts.progress.label + ': ' + Math.round((facts.progress.done / facts.progress.total) * 100) + '%');
+    }
+    t.push('');
+  }
   sections.forEach(function (s) {
     if (s.title) t.push(String(s.title).toUpperCase());
     (Array.isArray(s.body) ? s.body : (s.body ? [s.body] : [])).forEach(function (b) { t.push(b); });
