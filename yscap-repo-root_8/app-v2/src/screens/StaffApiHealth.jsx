@@ -52,11 +52,17 @@ function EnvChip({ e }) {
   const set = e.set;
   const fg = set ? '#3F7A5B' : (e.required ? '#B4483C' : '#8A939A');
   const bg = set ? 'rgba(63,122,91,.10)' : (e.required ? '#F6E7E4' : '#F1F1EC');
+  // A credential the connector reads under a name we ALSO accept is set — and the
+  // chip says which name carried it, so "it says the key is missing but it plainly
+  // works" can never happen. A NAME, never a value.
+  const setAs = set ? (e.setAs || null) : null;
   return (
-    <span title={set ? 'Set' : (e.required ? 'Required — not set' : 'Optional — not set')}
+    <span title={setAs ? `Set — under the name ${setAs}, which this connector also reads`
+      : (set ? 'Set' : (e.required ? 'Required — not set' : 'Optional — not set'))}
       style={{ fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace', color: fg, background: bg, border: '1px solid rgba(0,0,0,.06)',
         borderRadius: 6, padding: '2px 7px' }}>
       {set ? '✓' : (e.required ? '✕' : '○')} {e.name}
+      {setAs ? <span style={{ opacity: .75 }}> (as {setAs})</span> : null}
     </span>
   );
 }
