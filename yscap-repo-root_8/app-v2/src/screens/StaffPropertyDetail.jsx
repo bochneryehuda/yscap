@@ -434,16 +434,33 @@ function MaybeSameHouse({ propertyId, onMerged }) {
   );
 }
 
+/** How many REPORTS said it — one appraisal can describe a house several times. */
+function reportCount(saidBy) {
+  const ids = new Set();
+  let unattributed = 0;
+  for (const s of (saidBy || [])) {
+    // A row with no appraisal id cannot be proven to share a report with any
+    // other, so it counts as its own.
+    if (s.appraisal_id) ids.add(s.appraisal_id); else unattributed += 1;
+  }
+  return ids.size + unattributed;
+}
+
 function Conflicts({ list }) {
   if (!list || !list.length) return null;
   const TONE = { high: '#B4423A', medium: GOLD, low: MUTED };
   return (
     <section style={{ ...S.panel, marginBottom: 14, borderColor: GOLD }}>
       <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
-        The reports don’t agree on {list.length === 1 ? 'one thing' : `${list.length} things`}
+        {/* The heading must not claim the REPORTS disagree when the only entry is
+            one report disagreeing with itself — that is the exact sentence this
+            panel was corrected for saying. */}
+        {list.every((c) => c.within_report)
+          ? `Something to check on ${list.length === 1 ? 'one thing' : `${list.length} things`}`
+          : `The reports don’t agree on ${list.length === 1 ? 'one thing' : `${list.length} things`}`}
       </h2>
       <p style={{ margin: '0 0 12px', color: MUTED, fontSize: 13 }}>
-        Two or more appraisals describe this property differently. Neither is presumed wrong —
+        Where two appraisals describe this property differently, neither is presumed wrong —
         small differences are already ignored, so what is here is worth a look.
       </p>
       <div style={{ display: 'grid', gap: 10 }}>
@@ -458,15 +475,32 @@ function Conflicts({ list }) {
             <div style={{ marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
               {c.values.map((v, i) => (
                 <div key={i} style={{ minWidth: 120 }}>
-                  <div style={{ fontSize: 18, color: INK, fontWeight: 600 }}>{String(v.value)}</div>
+                  <div style={{ fontSize: 18, color: INK, fontWeight: 600 }}>
+                    {/* A within-report entry states the SEVERAL things that one
+                        report said; a cross-report entry states one value. */}
+                    {v.said ? v.said.join(' and ') : String(v.value)}
+                  </div>
                   <div style={{ color: MUTED, fontSize: 12 }}>
-                    {v.said_by.length} report{v.said_by.length === 1 ? '' : 's'}
+                    {/* REPORTS, NOT ROWS. `said_by` holds one entry per
+                        OBSERVATION, and the whole point of the grouping behind
+                        this panel is that one report contributes several — a
+                        report that listed the house as comp #3 and again as comp
+                        #4 rendered as "2 reports", which is the same over-claim
+                        the grouping exists to kill, moved one layer up. */}
+                    {reportCount(v.said_by)} report{reportCount(v.said_by) === 1 ? '' : 's'}
                     {v.said_by[0] && v.said_by[0].observed_on ? ` · ${day(v.said_by[0].observed_on)}` : ''}
                   </div>
                 </div>
               ))}
             </div>
-            <div style={{ marginTop: 6, color: MUTED, fontSize: 12 }}>{c.why}</div>
+            <div style={{ marginTop: 6, color: MUTED, fontSize: 12 }}>{c.note || c.why}</div>
+            {!c.within_report && c.reports_inconsistent > 0 && (
+              <div style={{ marginTop: 4, color: MUTED, fontSize: 12 }}>
+                {c.reports_inconsistent} other report{c.reports_inconsistent === 1 ? '' : 's'} could not be
+                compared here — {c.reports_inconsistent === 1 ? 'it describes' : 'they each describe'} this
+                property two different ways.
+              </div>
+            )}
           </div>
         ))}
       </div>

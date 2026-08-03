@@ -62,12 +62,19 @@ ok(findConflicts([O(1, { units: 2 })]).length === 0, 'one report cannot disagree
 // subject and again in its own rent schedule. Every case below was taken from
 // the real corpus, where this produced 3 of 21 conflicts, each captioned "Two
 // reports describe this property differently."
-ok(findConflicts([R(1, 'A', { beds: 4 }), R(2, 'A', { beds: 3 })]).length === 0,
+// NOT SILENCE — the right answer is "this is one report, and here is what it
+// said twice", never "two reports disagree". Asserting silence was the first
+// cut's mistake and is checked against below.
+const soleWithin = (rows) => {
+  const c = findConflicts(rows);
+  return c.length === 1 && c[0].within_report === true && !/Two reports/.test(c[0].note);
+};
+ok(soleWithin([R(1, 'A', { beds: 4 }), R(2, 'A', { beds: 3 })]),
   'ONE report listing the same house twice with different bedrooms is not TWO reports disagreeing');
-ok(findConflicts([R(1, 'A', { gla: 2247 }), R(2, 'A', { gla: 2747 })]).length === 0,
+ok(soleWithin([R(1, 'A', { gla: 2247 }), R(2, 'A', { gla: 2747 })]),
   'the sales grid and the rent schedule of ONE report are one opinion, not two');
-ok(findConflicts([{ ...R(1, 'A', { property_type: 'sfr' }), role: 'subject' },
-  { ...R(2, 'A', { property_type: 'Multi 2–4' }), role: 'rental_comparable' }]).length === 0,
+ok(soleWithin([{ ...R(1, 'A', { property_type: 'sfr' }), role: 'subject' },
+  { ...R(2, 'A', { property_type: 'Multi 2–4' }), role: 'rental_comparable' }]),
 'a report describing a house as its subject and again as a rental comp is still one report');
 {
   // …and the disagreement between two GENUINE reports still lands, even when one
@@ -88,6 +95,51 @@ ok(findConflicts([{ ...R(1, 'A', { property_type: 'sfr' }), role: 'subject' },
 }
 ok(findConflicts([R(1, 'A', { units: 2 }), R(2, 'B', { units: 3 })])[0].severity === 'high',
   'two different reports disagreeing on the unit count is untouched by any of this');
+
+// …AND A REPORT THAT SAYS TWO THINGS IS STILL REPORTED — under its own sentence.
+// Excluding it from the comparison was right; going SILENT about it was not, and
+// the first cut did exactly that whenever the exclusion left fewer than two
+// opinions. Both cases below are real corpus properties that the page stopped
+// mentioning at all.
+{
+  const c = findConflicts([R(1, 'A', { year_built: 1950 }), R(2, 'A', { year_built: 1926 })]);
+  ok(c.length === 1 && c[0].within_report === true,
+    'ONE report reading 1950 and 1926 is still surfaced — as a question about that report');
+  ok(!/Two reports/.test(c[0].note) && /One report describes/.test(c[0].note),
+    'and it never claims two reports disagreed');
+  ok(c[0].severity === 'low' && c[0].reports_inconsistent === 1,
+    'it sits one step quieter than a real dispute, and says how many reports are in that state');
+  ok(Array.isArray(c[0].values[0].said) && c[0].values[0].said.length === 2,
+    'it states BOTH things the report said, rather than claiming a pair exists');
+}
+ok(findConflicts([R(1, 'A', { beds: 4 }), R(2, 'A', { beds: 5 }),
+  R(3, 'B', { beds: 4 }), R(4, 'B', { beds: 5 })])[0].reports_inconsistent === 2,
+'two reports each saying two things counts both of them');
+
+// THE ANSWER MUST NOT DEPEND ON ROW ORDER. Two rows of one report can differ and
+// still be inside tolerance, so whichever spoke for the report decided the
+// result — and the query orders only by `observed_on`, which one report's rows
+// routinely share, so the tie-break was arbitrary Postgres row order and the same
+// property could flip between two page loads.
+{
+  const rows = [R(1, 'A', { year_built: 1909 }), R(2, 'A', { year_built: 1911 }), R(3, 'B', { year_built: 1913 })];
+  const fwd = findConflicts(rows).length;
+  const rev = findConflicts([rows[1], rows[0], rows[2]]).length;
+  ok(fwd === rev, 'the same observations in a different order give the same answer');
+}
+
+// A COMPARISON KEY MAY NEVER BREAK THE PAGE. `findConflicts` is pure and its
+// callers do not guard it, so a key that throws would take the property screen
+// down over a review signal.
+{
+  const boom = { units: { label: 'U', kind: 'exact', severity: 'high', why: 'w',
+    compareKey: () => { throw new Error('boom'); } } };
+  let threw = false; let got = [];
+  try { got = findConflicts([R(1, 'A', { units: '2' }), R(2, 'B', { units: '3' })], { compared: boom }); }
+  catch (_) { threw = true; }
+  ok(!threw && got.length === 1,
+    'a compareKey that throws falls back to the plain text instead of taking the page with it');
+}
 ok(findConflicts([O(1, { beds: 4 }), O(2, { beds: 3 })]).length === 0 === false,
   'a row with no report id cannot be proven to share one, so it still stands alone');
 

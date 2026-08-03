@@ -130,8 +130,14 @@ function exactKey(spec, v) {
   const s = txt(v);
   if (s == null) return null;
   if (spec && typeof spec.compareKey === 'function') {
-    const k = spec.compareKey(s);
-    if (k != null && String(k) !== '') return String(k).toLowerCase();
+    // A COMPARISON KEY MAY NEVER BREAK THE PAGE. `findConflicts` is pure and its
+    // callers do not guard it, so a future key that throws on some value would
+    // take the whole property screen down over a review signal. Falling back to
+    // the plain text can only ever report MORE, never hide a disagreement.
+    try {
+      const k = spec.compareKey(s);
+      if (k != null && String(k) !== '') return String(k).toLowerCase();
+    } catch (_) { /* fall through to the text */ }
   }
   return s.toLowerCase();
 }
@@ -157,6 +163,47 @@ function disagrees(spec, a, b) {
     return Math.abs(x - y) / base > (spec.tolerance || 0);
   }
   return false;
+}
+
+/** Who speaks for a report about one fact — the newest row, then the lowest id. */
+function spokesman(rows, field) {
+  return rows.slice().sort((a, b) => {
+    const ad = String(a.observed_on || ''), bd = String(b.observed_on || '');
+    if (ad !== bd) return bd.localeCompare(ad);          // newest first
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  })[0] || rows[0];
+}
+
+/** One report saying two different things — its own finding, in its own words. */
+function selfEntry(field, spec, inconsistent) {
+  const values = inconsistent.map((rows) => ({
+    // Every distinct thing this report said, so the reader sees the pair rather
+    // than a claim that a pair exists.
+    said: [...new Set(rows.map((o) => String(o[field])))],
+    said_by: rows.map((o) => ({
+      observation_id: o.id || null,
+      appraisal_id: o.appraisal_id || null,
+      observed_on: o.observed_on || null,
+      role: o.role || null,
+    })),
+  }));
+  return {
+    field,
+    label: spec.label,
+    // ALWAYS one step quieter than the cross-report finding. One report listing a
+    // house twice with different numbers is usually a grid the appraiser filled
+    // in two places, not a dispute about what the building is.
+    severity: spec.severity === 'high' ? 'medium' : 'low',
+    within_report: true,
+    reports_inconsistent: inconsistent.length,
+    why: spec.why,
+    tolerance: spec.kind === 'exact' ? 'none — any difference is a disagreement'
+      : (spec.kind === 'fraction' ? `${Math.round(spec.tolerance * 100)}%` : `${spec.tolerance}`),
+    values,
+    note: inconsistent.length === 1
+      ? 'One report describes this property two different ways. That is a question for whoever reads the report, not a disagreement between appraisers.'
+      : `${inconsistent.length} reports each describe this property two different ways.`,
+  };
 }
 
 /**
@@ -199,11 +246,11 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
     });
 
     // A report that contradicts ITSELF about this fact has no settled opinion, so
-    // it takes no part in the comparison. It is COUNTED rather than dropped in
-    // silence — but it is deliberately not reported as a conflict, because it is a
-    // different question ("this report is inconsistent") with a different answer,
-    // and answering it here under this module's wording would be a false claim.
-    const opinions = []; let selfDisagreed = 0;
+    // it takes no part in the comparison between the others. It is a DIFFERENT
+    // question — "this one report says two things" — and it gets its own entry
+    // and its own wording below rather than being reported as two reports
+    // disagreeing.
+    const opinions = []; const inconsistent = [];
     for (const rows of byReport.values()) {
       let internal = false;
       for (let i = 0; i < rows.length && !internal; i++) {
@@ -211,16 +258,32 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
           if (disagrees(spec, rows[i][field], rows[j][field])) { internal = true; break; }
         }
       }
-      if (internal) selfDisagreed++; else opinions.push(rows);
+      if (internal) inconsistent.push(rows); else opinions.push(rows);
     }
-    if (opinions.length < 2) continue;
+    // NOT `continue` — that dropped the count entirely whenever the exclusions
+    // left fewer than two opinions, which is exactly when a self-inconsistent
+    // report is the ONLY thing to say. Measured on the real corpus, two
+    // properties are in that state (one report reading year built 1950 AND 1926;
+    // four reports each reading 4 AND 5 bedrooms) and the page went silent about
+    // both — a regression against the version this replaced, which at least
+    // showed them, if under the wrong sentence.
+    if (opinions.length < 2) {
+      if (inconsistent.length) out.push(selfEntry(field, spec, inconsistent));
+      continue;
+    }
 
     const seen = new Map();
     for (const rows of opinions) {
       // Every row of this report agrees about this fact, so any of them speaks
       // for it — but all of them are still listed, so the screen can show every
-      // place the report said it.
-      const lead = rows[0];
+      // place the report said it. WHICH one speaks is chosen deterministically:
+      // taking `rows[0]` let input order decide, and two rows of one report can
+      // differ while staying inside tolerance, so the same property could report
+      // a conflict or not depending on the order Postgres happened to return
+      // (its ORDER BY is `observed_on DESC`, and one report's rows routinely
+      // share that date, so the tie-break was arbitrary and could change between
+      // two loads of the same page).
+      const lead = spokesman(rows, field);
       const key = spec.kind === 'exact' ? exactKey(spec, lead[field]) : String(num(lead[field]));
       if (!seen.has(key)) seen.set(key, { value: lead[field], said_by: [] });
       for (const o of rows) {
@@ -259,7 +322,7 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
       values,
       // Reports that could not take part because they contradicted themselves
       // about this fact. Never silently dropped.
-      reports_inconsistent: selfDisagreed || undefined,
+      reports_inconsistent: inconsistent.length || undefined,
       widest_gap: worst.gap,
       // Said plainly so no screen can turn this into an accusation: two
       // appraisers disagreeing is normal and is a question, not a finding of
