@@ -41,7 +41,15 @@ const PRINT_CSS = `
 @media print {
   @page { margin: 14mm; }
   html, body { background: #fff !important; }
-  .app-sidebar, .app-topbar, .btn, select { display: none !important; }
+  .app-sidebar, .app-topbar, .btn { display: none !important; }
+  /* A SELECT HERE IS CONTENT, NOT A CONTROL — hiding it DELETED two facts from
+     the report. The valuation method (how the indicated value was derived) and
+     the subject's condition are both selects, and condition is the one subject
+     fact that is not an input, so it was the only one to vanish while its
+     neighbours printed. They are flattened the same way the adjustment inputs
+     are: the value, without the box. */
+  select { appearance: none; -webkit-appearance: none; border: 0 !important;
+    padding: 0 !important; background: transparent !important; color: #141B22 !important; }
   /* The scroll containers, opened out so the full grid reaches the paper. */
   [style*="overflow"] { overflow: visible !important; }
   table { width: 100% !important; table-layout: fixed !important; font-size: 9.5px !important; }
@@ -50,6 +58,13 @@ const PRINT_CSS = `
      number, and a box drawn round every cell makes the grid unreadable. */
   input { border: 0 !important; padding: 0 !important; background: transparent !important;
     font-size: 9.5px !important; }
+  /* THE RATE DETAIL REACHES THE PAPER ON EVERY PATH. Making the stylesheet
+     unconditional was done precisely because Ctrl+P and "Save as PDF" never run
+     our button — and the detail was still gated on that same button through
+     React, so those two paths went on printing an adjustment without the rate
+     behind it. It is now always in the DOM and merely hidden on screen, so the
+     print rule can reveal it however the print was started. */
+  .mr-detail { display: block !important; }
   section { break-inside: auto; }
   h1, h2, h3 { break-after: avoid; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
@@ -115,7 +130,12 @@ export default function StaffValuation() {
               {busy === 'suggest' ? 'Working…' : 'Suggest adjustments'}
             </button>
           )}
-          <button className="btn ghost small" onClick={() => { setPrinting(true); setTimeout(() => { window.print(); setPrinting(false); }, 50); }}>
+          <button className="btn ghost small" onClick={() => {
+            setPrinting(true);
+            // `finally`, because a print dialog that throws would otherwise leave
+            // the screen in its printing state for good.
+            setTimeout(() => { try { window.print(); } finally { setPrinting(false); } }, 50);
+          }}>
             Print the report
           </button>
           {!isFinal
@@ -413,7 +433,7 @@ function MarketRates({ rates, forceOpen }) {
         <div style={{ marginTop: 10, color: GOLD, fontSize: 13, lineHeight: 1.5 }}>{r.distressedNote}</div>
       )}
 
-      {isOpen && (
+      <div className="mr-detail" style={{ display: isOpen ? 'block' : 'none' }}>{(
         <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
           <tbody>
             {rows.map(([label, rate, kind]) => (
@@ -429,15 +449,15 @@ function MarketRates({ rates, forceOpen }) {
             ))}
           </tbody>
         </table>
-      )}
+      )}</div>
 
-      {isOpen && (
+      <div className="mr-detail" style={{ display: isOpen ? 'block' : 'none' }}>{(
         <div style={{ color: MUTED, fontSize: 12, marginTop: 8 }}>
           Worked out from {r.sampleSize == null ? 'our' : r.sampleSize} closed
           {r.sampleSize === 1 ? ' sale' : ' sales'} in this market
           {r.minSample ? `, and a rate is refused below ${r.minSample} of them` : ''}.
         </div>
-      )}
+      )}</div>
     </section>
   );
 }

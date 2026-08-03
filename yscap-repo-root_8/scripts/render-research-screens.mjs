@@ -129,6 +129,12 @@ const RATES = {
     ok(/measured from our own reports/i.test(body),
       'valuation: and says the number came from OUR reports, not a rule of thumb');
     ok(/forced sale/i.test(body), 'valuation: the forced sales set aside are stated');
+    // Always in the DOM so print can reveal it, but COLLAPSED on screen until the
+    // reader asks — checked here, before anything is clicked.
+    ok(await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.mr-detail')];
+      return d.length > 0 && d.every((x) => getComputedStyle(x).display === 'none');
+    }), 'valuation: the rate detail is present but collapsed on screen');
     // The collapsed half — the per-bedroom row is where "$NaN" appeared.
     const shown = await page.evaluate(() => {
       const b = [...document.querySelectorAll('button')].find((x) => /Show the rest/i.test(x.textContent));
@@ -162,6 +168,24 @@ const RATES = {
     ok(printed.clipped === 0, 'print: no section still clips its contents — the full grid reaches the paper');
     ok(printed.tableClipped === false, 'print: the adjustment table is not cut off at the right edge');
     ok(printed.colour === 'exact', 'print: colours are kept, so a negative adjustment still reads as negative');
+    // THE SELECTS ARE CONTENT. The valuation METHOD and the subject's CONDITION
+    // are <select>s, and hiding controls wholesale deleted both from the report.
+    // And the rate detail must reach the paper WITHOUT our own button, because
+    // Ctrl+P and "Save as PDF" never run it.
+    const printBody = await page.evaluate(() => {
+      const sels = [...document.querySelectorAll('select')];
+      return {
+        hiddenSelects: sels.filter((s) => getComputedStyle(s).display === 'none').length,
+        selects: sels.length,
+        detailShown: [...document.querySelectorAll('.mr-detail')]
+          .every((d) => getComputedStyle(d).display !== 'none'),
+        detailCount: document.querySelectorAll('.mr-detail').length,
+      };
+    });
+    ok(printBody.selects > 0 && printBody.hiddenSelects === 0,
+      'print: the method and the condition are CONTENT and still print');
+    ok(printBody.detailCount > 0 && printBody.detailShown,
+      'print: the rate detail reaches the paper without our own Print button being used');
     await page.emulateMedia({ media: 'screen' });
 
     // ---- 2. FormatWatch + MapCoverage on the research landing ------------

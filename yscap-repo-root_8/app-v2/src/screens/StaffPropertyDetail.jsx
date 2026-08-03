@@ -383,6 +383,13 @@ function MaybeSameHouse({ propertyId, onMerged }) {
       {err && <div style={{ color: '#B4423A', fontSize: 13, marginBottom: 8 }}>{err}</div>}
       {rows.map((r) => {
         // The OTHER row is whichever side of the pair is not the property we are on.
+        // A PAIR THAT IS NOT ABOUT THIS PROPERTY IS NOT SHOWN. The derivation
+        // below falls through to `a_id`, so a stale or foreign row would bind the
+        // merge buttons to an unrelated property and "keep THIS page" would
+        // DELETE a stranger's row — which nothing undoes. The parent unmounts
+        // this panel before the id changes, so it is not reachable today; the
+        // guard costs one line and removes an unrecoverable failure mode.
+        if (r.a_id !== propertyId && r.b_id !== propertyId) return null;
         const otherId = r.a_id === propertyId ? r.b_id : r.a_id;
         const otherAddr = r.a_id === propertyId ? r.b_address : r.a_address;
         const otherSeen = r.a_id === propertyId ? r.b_observations : r.a_observations;

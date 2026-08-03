@@ -97,8 +97,15 @@ const ASSIGN = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*$
 const offenders = [];
 for (const file of jsxFiles(path.join(ROOT, 'app-v2/src'))) {
   const src = fs.readFileSync(file, 'utf8');
-  // A comment explaining the trap is not the trap.
-  const lines = src.split('\n').map((l) => l.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, ''));
+  // A COMMENT EXPLAINING THE TRAP IS NOT THE TRAP — including a one-line block
+  // comment. Stripping only `//` and a continuation `*` meant that documenting
+  // the bug (`/* money(num(x)) produces "$NaN" */`) tripped the guard written to
+  // catch it, and this runs in `npm test`, so a false positive is a red build.
+  const lines = src.split('\n').map((l) => l
+    .replace(/\/\*[^]*?\*\//g, '')   // a block comment opened and closed on one line
+    .replace(/\/\/.*$/, '')          // a line comment
+    .replace(/^\s*\*.*$/, '')        // a continuation line of a block comment
+    .replace(/^\s*\/\*.*$/, ''));     // the opening line of a multi-line block comment
   const stringVars = new Set();
   for (const code of lines) {
     const m = ASSIGN.exec(code);

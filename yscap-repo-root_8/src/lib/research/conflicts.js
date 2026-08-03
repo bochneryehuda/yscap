@@ -267,10 +267,14 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
     // four reports each reading 4 AND 5 bedrooms) and the page went silent about
     // both — a regression against the version this replaced, which at least
     // showed them, if under the wrong sentence.
-    if (opinions.length < 2) {
-      if (inconsistent.length) out.push(selfEntry(field, spec, inconsistent));
-      continue;
-    }
+    // THE RESCUE HAS TO COVER EVERY WAY OUT, not just this one. There are three
+    // paths that produce no cross-report entry — fewer than two settled opinions,
+    // every opinion agreeing, and every pair inside tolerance — and the first cut
+    // rescued only the first, so a report contradicting itself went silent again
+    // the moment two OTHER reports happened to agree. That is the same silence
+    // this rescue was written for, reached from a different direction.
+    const rescue = () => { if (inconsistent.length) out.push(selfEntry(field, spec, inconsistent)); };
+    if (opinions.length < 2) { rescue(); continue; }
 
     const seen = new Map();
     for (const rows of opinions) {
@@ -297,7 +301,7 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
       }
     }
     const values = [...seen.values()];
-    if (values.length < 2) continue;
+    if (values.length < 2) { rescue(); continue; }
     // Only report when at least one PAIR is outside tolerance. Three readings of
     // 1909 / 1910 / 1911 are three distinct values and zero disagreement.
     let worst = null;
@@ -311,7 +315,7 @@ function findConflicts(observations, { compared = COMPARED } = {}) {
         }
       }
     }
-    if (!worst) continue;
+    if (!worst) { rescue(); continue; }
     out.push({
       field,
       label: spec.label,
