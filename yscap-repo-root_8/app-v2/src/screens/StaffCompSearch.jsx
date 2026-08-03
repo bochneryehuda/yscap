@@ -387,6 +387,24 @@ function CompRow({ r, checked, onToggle }) {
           {r.arv_comp_count > 0 && <> · used as {compSetShort.arv} {r.arv_comp_count}×</>}
           {r.asis_comp_count > 0 && <> · as {compSetShort.as_is} {r.asis_comp_count}×</>}
         </div>
+        {/* WHAT KIND OF BUILDING, AND HOW MANY DOORS — first, before the size and
+            the beds, because they are what decide whether this is a comparable at
+            all. Both were selected by the search and rendered by nothing, so the
+            one screen where an officer picks comps showed a duplex and a house
+            identically. An UNKNOWN says so out loud rather than being left off:
+            a missing unit count that looks like an absent field reads as "one",
+            and picking a 3-family as a comp for a house is the mistake this
+            line exists to prevent. */}
+        <div style={{ fontSize: 12, marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ ...S.tag, borderColor: r.property_type ? GOLD : '#B4423A',
+            color: r.property_type ? INK : '#B4423A', fontWeight: 600 }}>
+            {r.property_type || 'type not stated'}
+          </span>
+          <span style={{ ...S.tag, borderColor: r.units != null ? GOLD : '#B4423A',
+            color: r.units != null ? INK : '#B4423A', fontWeight: 600 }}>
+            {r.units != null ? `${r.units} unit${Number(r.units) === 1 ? '' : 's'}` : 'units not stated'}
+          </span>
+        </div>
         <div style={{ color: MUTED, fontSize: 12, marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <span>{sqft(r.gla)}</span>
           <span>{r.beds ?? '—'} bed / {baths(r)} bath</span>

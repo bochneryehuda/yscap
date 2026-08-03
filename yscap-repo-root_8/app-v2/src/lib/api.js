@@ -1081,6 +1081,11 @@ export const api = {
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
   researchStats:       () => req('GET', '/api/research/stats'),
+  // How many appraisals we had to turn away, and in what format (db/438). UAD 3.6
+  // becomes MANDATORY for Fannie/Freddie appraisals on 2 November 2026 and PILOT
+  // reads UAD 2.6, so this count going above zero is the deadline arriving early
+  // — which is only useful if somebody can see it.
+  appraisalFormats:    (f) => req('GET', '/api/research/appraisal-formats' + qs(f)),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
   researchProperty:    (id) => req('GET', `/api/research/properties/${id}`),
   // A photo is fetched with the Bearer token like every other binary on this

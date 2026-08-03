@@ -135,6 +135,8 @@ export default function StaffPropertyResearch() {
 
       {err && <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A', marginBottom: 12 }}>{err}</div>}
 
+      <FormatWatch />
+
       {/* Feed the database by hand — one report or a whole folder. Re-reads the
           headline counts when it finishes, so the numbers above move with it. */}
       <ResearchImportPanel onDone={() => {
@@ -326,6 +328,57 @@ export default function StaffPropertyResearch() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* THE APPRAISALS WE COULD NOT READ, AND WHY IT IS A DATE ON A CALENDAR.
+
+   PILOT reads UAD 2.6 appraisals. UAD 3.6 becomes MANDATORY for Fannie Mae and
+   Freddie Mac appraisals on 2 November 2026, and we read none of them — from
+   that day a report in the new format brings back no comparables, no value, no
+   findings and nothing into this database.
+
+   db/438 was built so that exposure could be COUNTED instead of assumed, in its
+   own words "the first UAD 3.6 file to arrive is the signal that the reader has
+   to be built, and it should not have to be noticed by accident". Nothing showed
+   the count, so it was going to be noticed by accident. This is where somebody
+   sees it.
+
+   SILENT WHEN THERE IS NOTHING TO SAY. Zero refusals is the ordinary state and
+   does not deserve a panel on a search screen; the two kinds are kept apart
+   because they have different answers — a new-format appraisal means the reader
+   must be built, a wrong attachment means somebody attached the wrong document. */
+function FormatWatch() {
+  const [d, setD] = useState(null);
+  useEffect(() => { api.appraisalFormats({ days: 365 }).then(setD).catch(() => {}); }, []);
+  if (!d) return null;
+  const newFormat = (d.uad36 && d.uad36.n) || 0;
+  const wrongDoc = (d.notAppraisal && d.notAppraisal.n) || 0;
+  const other = (d.unreadable && d.unreadable.n) || 0;
+  if (!newFormat && !wrongDoc && !other) return null;
+  return (
+    <div className="card" style={{ marginBottom: 12, borderColor: newFormat ? '#B4423A' : '#E4DECF' }}>
+      <div style={{ fontWeight: 700, color: newFormat ? '#B4423A' : INK }}>
+        {newFormat > 0
+          ? `${num(newFormat)} appraisal${newFormat === 1 ? '' : 's'} arrived in the new format we cannot read yet`
+          : 'Appraisals we could not read'}
+      </div>
+      <div style={{ color: MUTED, fontSize: 13, marginTop: 4, maxWidth: 780, lineHeight: 1.5 }}>
+        {newFormat > 0 && (
+          <>PILOT reads the older appraisal format. The industry moves to a new one on{' '}
+            <b style={{ color: INK }}>2 November 2026</b>, and these reports are already in it — so nothing
+            from them reached this database. This needs to be built before that date.{' '}
+          </>
+        )}
+        {wrongDoc > 0 && (
+          <>{num(wrongDoc)} file{wrongDoc === 1 ? ' was' : 's were'} not an appraisal at all —
+            somebody attached the wrong document, which no reader would fix.{' '}
+          </>
+        )}
+        {other > 0 && <>{num(other)} could not be read for some other reason.{' '}</>}
+        {newFormat === 0 && <>No new-format appraisals have arrived yet.</>}
+      </div>
     </div>
   );
 }
