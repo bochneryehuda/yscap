@@ -3,6 +3,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import ClosingPrepCard from './ClosingPrepCard.jsx';
+import DocPreview from './DocPreview.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -59,9 +60,18 @@ const CONTACT_ASK = { title: 'title company', insurance: 'insurance agent' };
 
 function when(ts) { return ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : ''; }
 
-/* Inline contact entry — the same POST that fills the title / insurance condition. */
-function ContactForm({ appId, kind, onSaved, onCancel }) {
-  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+/* Inline contact entry — the same POST that fills the title / insurance condition,
+   so entering the vendor HERE clears the file's contact condition at the same time
+   and nobody has to go to the condition and come back (owner-directed 2026-08-03).
+   `existing` (a file-contact link row) turns this into an EDIT of that contact
+   rather than a second directory entry for the same company. */
+function ContactForm({ appId, kind, existing, onSaved, onCancel }) {
+  const [f, setF] = useState({
+    companyName: (existing && existing.company_name) || '',
+    contactName: (existing && existing.contact_name) || '',
+    email: (existing && existing.email) || '',
+    phone: (existing && existing.phone) || '',
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const save = async () => {
@@ -70,7 +80,8 @@ function ContactForm({ appId, kind, onSaved, onCancel }) {
     if (!f.email) { setErr('An email is required to send the order.'); return; }
     setBusy(true);
     try {
-      await api.staffAddFileContact(appId, { contactType: CONTACT_TYPE[kind], ...f });
+      if (existing && existing.link_id) await api.staffEditFileContact(existing.link_id, { contactType: CONTACT_TYPE[kind], ...f });
+      else await api.staffAddFileContact(appId, { contactType: CONTACT_TYPE[kind], ...f });
       onSaved && onSaved();
     } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
     finally { setBusy(false); }
@@ -78,7 +89,8 @@ function ContactForm({ appId, kind, onSaved, onCancel }) {
   return (
     <div className="panel" style={{ background: 'var(--surface-soft, var(--ink-2))', marginTop: 8 }}>
       <div className="muted small" style={{ marginBottom: 6 }}>
-        Add the {CONTACT_ASK[kind]} — this also fills the file's {CONTACT_ASK[kind]} condition.
+        {existing ? 'Edit' : 'Add'} the {CONTACT_ASK[kind]} — this also fills the file's {CONTACT_ASK[kind]} condition,
+        so you don't have to open the condition to enter it.
       </div>
       <div className="grid cols-2" style={{ gap: 8 }}>
         <div><label className="muted small">Company</label><input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
@@ -88,15 +100,77 @@ function ContactForm({ appId, kind, onSaved, onCancel }) {
       </div>
       {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>{err}</div>}
       <div className="row" style={{ gap: 8, marginTop: 10 }}>
-        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save contact'}</button>
+        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : existing ? 'Save changes' : 'Save contact'}</button>
         <button className="btn ghost small" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
 }
 
-/* The loan-number gate — shown when the file has no YS loan number yet. */
-function LoanNumberEntry({ appId, onSaved }) {
+/* THE CONTACT SLOT — always on the order, never only when the order is blocked
+   (owner-directed 2026-08-03: "within the insurance Order section you should have
+   over there the slot and the button to put in the insurance contact information").
+   It shows who the order will go to, and carries the Add / Edit button beside it,
+   so the whole order can be completed without leaving this section. Editing needs
+   the file-contact LINK id, which the orders payload does not carry — so the link
+   list is fetched only when somebody actually opens the editor. */
+function ContactSlot({ appId, kind, vendor, onChanged }) {
+  const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [link, setLink] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const openEditor = async () => {
+    setErr(''); setBusy(true);
+    try {
+      const rows = await api.staffFileContacts(appId);
+      // The order uses the most-recently-used contact of this type, which is the
+      // FIRST row the file-contacts list returns for it — match on the contact id
+      // the orders payload already gave us so the editor can never open a
+      // different company's row.
+      const found = (rows || []).find((r) => String(r.contact_id) === String(vendor && vendor.id))
+        || (rows || []).find((r) => r.contact_type === CONTACT_TYPE[kind]);
+      if (!found) { setErr('Could not find that contact to edit — add it again instead.'); return; }
+      setLink(found); setEditing(true);
+    } catch (e) { setErr((e && e.message) || 'Could not load the contact.'); }
+    finally { setBusy(false); }
+  };
+
+  const done = () => { setEditing(false); setAdding(false); setLink(null); onChanged && onChanged(); };
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span className="muted small" style={{ minWidth: 120 }}>{kind === 'title' ? 'Title company' : 'Insurance agent'}</span>
+        {vendor
+          ? <span className="small" style={{ flex: 1, minWidth: 160, color: 'var(--ivory,#141B22)' }}>
+              <b>{vendor.name || vendor.email}</b>
+              {vendor.contactName && vendor.contactName !== vendor.name ? ` · ${vendor.contactName}` : ''}
+              {vendor.email ? ` · ${vendor.email}` : ''}{vendor.phone ? ` · ${vendor.phone}` : ''}
+            </span>
+          : <span className="small muted" style={{ flex: 1, minWidth: 160 }}>
+              Not on the file yet — the order needs somebody to send it to.
+            </span>}
+        {vendor
+          ? <button className="btn ghost small" disabled={busy} onClick={openEditor}>{busy ? '…' : 'Edit contact'}</button>
+          : <button className="btn primary small" onClick={() => setAdding(true)}>Add {CONTACT_ASK[kind]}</button>}
+        {vendor && !editing && <button className="btn ghost small" onClick={() => setAdding(true)} title="Use a different company for this order">Use a different one</button>}
+      </div>
+      {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+      {(editing || adding) && (
+        <ContactForm appId={appId} kind={kind} existing={editing ? link : null}
+          onSaved={done} onCancel={() => { setEditing(false); setAdding(false); setLink(null); }} />
+      )}
+    </div>
+  );
+}
+
+/* The loan-number gate — shown when the file has no YS loan number yet. `compact`
+   is the copy of it that sits INSIDE an order card (owner-directed 2026-08-03:
+   "you should also be able to enter the loan number right here"), so the blocker
+   list carries the box that clears it instead of pointing at another box. */
+function LoanNumberEntry({ appId, onSaved, compact = false }) {
   const [v, setV] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -108,23 +182,33 @@ function LoanNumberEntry({ appId, onSaved }) {
     catch (e) { setErr((e && e.message) || 'Could not save the loan number.'); }
     finally { setBusy(false); }
   };
+  const box = (
+    <>
+      <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div><label className="muted small">Loan number</label><input className="input" placeholder="YSCAP…" value={v} onChange={e => setV(e.target.value.toUpperCase())} /></div>
+        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save loan number'}</button>
+      </div>
+      {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>{err}</div>}
+    </>
+  );
+  if (compact) return <div style={{ marginTop: 6 }}>{box}</div>;
   return (
     <div className="panel" style={{ background: 'var(--paper,#f6f3ec)', marginBottom: 14 }}>
       <b>Add the loan number to place orders.</b>
       <div className="muted small" style={{ margin: '3px 0 8px' }}>
         The loan number prints in the mortgage clause on every order, so it's required before Title or Insurance can be ordered.
       </div>
-      <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <div><label className="muted small">Loan number</label><input className="input" placeholder="YSCAP…" value={v} onChange={e => setV(e.target.value.toUpperCase())} /></div>
-        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save loan number'}</button>
-      </div>
-      {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>{err}</div>}
+      {box}
     </div>
   );
 }
 
-/* One returned document row — classify (assign a slot), accept/reject + download. */
-function ReturnedDoc({ appId, kind, doc, slots, canAccept, onChanged }) {
+/* One returned document row — PREVIEW, classify (assign a slot), accept/reject +
+   download. Preview is first-class rather than behind a menu (owner-directed
+   2026-08-03: "we need to have a preview button over there to preview the
+   documents"): you cannot say whether a PDF is the binder or the invoice without
+   opening it, and that decision is the whole job on this row. */
+function ReturnedDoc({ appId, kind, doc, slots, conditionSlots, canAccept, onChanged, onPreview }) {
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const classify = async (slot) => {
@@ -164,10 +248,21 @@ function ReturnedDoc({ appId, kind, doc, slots, canAccept, onChanged }) {
         {unassigned ? 'Unassigned' : doc.slot_label}
       </span>
       <span className="pill" style={rsTone}>{rs}</span>
-      <select className="input" style={{ width: 'auto' }} disabled={!!busy} value={doc.slot_label || ''} onChange={e => classify(e.target.value)} title="Assign a document type">
-        <option value="">Unassigned…</option>
-        {slots.map(s => <option key={s} value={s}>{s}</option>)}
+      {/* The condition's OWN slots are listed first and marked, so it is obvious
+          which choices file the document into a named slot on the condition
+          (binder / invoice) and which simply describe it and leave it in the
+          condition's "also in this condition" list. */}
+      <select className="input" style={{ width: 'auto' }} disabled={!!busy}
+        value={slots.includes(doc.slot_label) ? doc.slot_label : ''}
+        onChange={e => classify(e.target.value)} title="Assign a document type">
+        <option value="">Leave unassigned…</option>
+        {slots.map(s => (
+          <option key={s} value={s}>
+            {s}{(conditionSlots || []).includes(s) ? ' — condition slot' : ''}
+          </option>
+        ))}
       </select>
+      {onPreview && <button className="btn ghost small" disabled={!!busy} onClick={() => onPreview(doc)} title="Open it here without downloading">Preview</button>}
       <button className="btn ghost small" disabled={!!busy} onClick={download}>Download</button>
       {rs !== 'accepted' && canAccept && <button className="btn primary small" disabled={!!busy} onClick={() => review('accept')}>Accept</button>}
       {rs !== 'rejected' && <button className="btn ghost small" disabled={!!busy} onClick={() => review('reject')}>Reject</button>}
@@ -175,9 +270,12 @@ function ReturnedDoc({ appId, kind, doc, slots, canAccept, onChanged }) {
   );
 }
 
-/* One order card (Title or Insurance). */
-function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
-  const [addingContact, setAddingContact] = useState(false);
+/* One order card (Title or Insurance). Exported so the SAME card can be opened
+   from the file's title / insurance conditions (see OrderModal) — one definition,
+   so ordering from a condition and ordering from the Orders desk can never
+   behave differently. */
+export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
+  const [previewDoc, setPreviewDoc] = useState(null);
   const [showThread, setShowThread] = useState(false);
   const [showRecipients, setShowRecipients] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
@@ -250,15 +348,29 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         )}
       </div>
 
-      {/* Vendor / contact */}
-      {order.vendor
-        ? <div className="muted small" style={{ marginBottom: 6 }}>
-            To: <b style={{ color: 'var(--ivory,#141B22)' }}>{order.vendor.name || order.vendor.email}</b>{order.vendor.email ? ` · ${order.vendor.email}` : ''}{order.vendor.phone ? ` · ${order.vendor.phone}` : ''}
+      {/* THE CONTACT SLOT — who this order goes to, with its own Add / Edit button,
+          always present rather than only when the order is blocked. Saving here
+          also fills the file's title / insurance CONTACT condition. */}
+      <ContactSlot appId={appId} kind={kind} vendor={order.vendor} onChanged={onChanged} />
+
+      {/* THE LOAN NUMBER, entered here too — it prints in the mortgage clause on
+          every order, so it is part of placing one. */}
+      {!file.hasLoanNumber ? (
+        <div className="panel" style={{ background: 'var(--paper,#f6f3ec)', marginBottom: 8, padding: '8px 10px' }}>
+          <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+            <span className="muted small" style={{ minWidth: 120 }}>Loan number</span>
+            <span className="small muted" style={{ flex: 1, minWidth: 160 }}>
+              Not on the file yet — it prints in the mortgage clause, so the order needs it.
+            </span>
           </div>
-        : <div className="muted small" style={{ marginBottom: 6 }}>
-            No {CONTACT_ASK[kind]} on the file yet — add one below to order.
-          </div>}
-      {addingContact && <ContactForm appId={appId} kind={kind} onSaved={() => { setAddingContact(false); onChanged && onChanged(); }} onCancel={() => setAddingContact(false)} />}
+          <LoanNumberEntry appId={appId} onSaved={onChanged} compact />
+        </div>
+      ) : (
+        <div className="row" style={{ gap: 8, alignItems: 'baseline', marginBottom: 8 }}>
+          <span className="muted small" style={{ minWidth: 120 }}>Loan number</span>
+          <span className="small" style={{ color: 'var(--ivory,#141B22)', fontWeight: 600 }}>{file.loanNumber}</span>
+        </div>
+      )}
 
       {/* Who this order reaches — shown before you send so there are no surprises. */}
       {(recips.to.length > 0 || recips.cc.length > 0) && (
@@ -297,15 +409,8 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         <div className="notice" style={{ marginTop: 6, marginBottom: 2, background: 'var(--surface-soft, #fbf7ee)', borderColor: 'var(--gold,#AE8746)' }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>To send this {kind} order, first:</div>
           <ul style={{ margin: '0 0 2px 18px', padding: 0 }}>
-            {needsContact && (
-              <li style={{ marginBottom: 4 }}>
-                Add the {CONTACT_ASK[kind]} (who to email).{' '}
-                {!addingContact && <button className="btn primary small" onClick={() => setAddingContact(true)}>Add {CONTACT_ASK[kind]}</button>}
-              </li>
-            )}
-            {needsLoan && (
-              <li>Add the file’s loan number — the box at the top of this section (it prints in the mortgage clause).</li>
-            )}
+            {needsContact && <li style={{ marginBottom: 4 }}>Add the {CONTACT_ASK[kind]} (who to email) — the box above.</li>}
+            {needsLoan && <li>Add the file’s loan number — the box above (it prints in the mortgage clause).</li>}
           </ul>
         </div>
       )}
@@ -363,9 +468,18 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       {(order.returnedDocs || []).length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div className="muted small" style={{ marginBottom: 4, fontWeight: 600 }}>Documents returned by the {CONTACT_ASK[kind]}</div>
+          {order.condition && (
+            <div className="muted small" style={{ marginBottom: 4 }}>
+              Every one of these is attached to the <b style={{ color: 'var(--ivory,#141B22)' }}>{order.condition.label}</b> condition
+              and shows there too. Choosing a “condition slot” below files it into that slot; anything else stays in the
+              condition without a slot.
+            </div>
+          )}
           <div style={{ display: 'grid', gap: 6 }}>
             {order.returnedDocs.map(d => (
-              <ReturnedDoc key={d.id} appId={appId} kind={kind} doc={d} slots={order.slots || []} canAccept={canAccept} onChanged={onChanged} />
+              <ReturnedDoc key={d.id} appId={appId} kind={kind} doc={d} slots={order.slots || []}
+                conditionSlots={order.conditionSlots || []} canAccept={canAccept}
+                onChanged={onChanged} onPreview={setPreviewDoc} />
             ))}
           </div>
         </div>
@@ -377,6 +491,69 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           <EmailCenter mode="file" appId={appId} scope={kind} />
         </div>
       )}
+
+      {/* In-place preview — the same authenticated loader the download uses, so a
+          returned PDF opens here instead of landing in the downloads folder. */}
+      {previewDoc && (
+        <DocPreview
+          title={previewDoc.slot_label || `${KIND_LABEL[kind]} order document`}
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={async () => {
+            try { const { blob, filename } = await api.staffDownloadDoc(previewDoc.id); saveBlob(blob, filename || previewDoc.filename); }
+            catch (_) { /* ignore */ }
+          }}
+          onClose={() => setPreviewDoc(null)} />
+      )}
+    </div>
+  );
+}
+
+/* THE ORDER SCREEN, OPENED FROM A CONDITION (owner-directed 2026-08-03: "in the
+   insurance contact condition and the insurance general condition and the title
+   contact condition and the title general condition we should have a small button
+   … which should pop up a screen which should be the order screen to continue and
+   complete the order").
+   It loads the SAME payload the Orders desk loads and renders the SAME card, so
+   the gates, the recipients preview, the borrower-CC choice, the returned
+   documents and the follow-up all behave identically — there is no second
+   ordering implementation to keep in step. */
+export function OrderModal({ appId, kind, canAccept = false, onClose, onChanged }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    setErr('');
+    api.staffOrders(appId).then(setData).catch((e) => setErr((e && e.message) || 'Could not load the order.'));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // A change made in here (a contact, the loan number, a classified document) is
+  // a change to the FILE, so the screen underneath is refreshed too.
+  const changed = async () => { load(); if (onChanged) await onChanged(); };
+
+  return (
+    <div className="cv-modal-back" onClick={onClose}>
+      <div className="cv-modal panel" style={{ maxWidth: 860, width: '96%', maxHeight: '92vh', overflow: 'auto' }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ margin: 0, color: '#141B22' }}>Order {kind}</h3>
+          <button className="btn ghost small" onClick={onClose}>Close ✕</button>
+        </div>
+        {err && <div className="notice err">{err}</div>}
+        {!data && !err && <p className="muted small">Loading the order…</p>}
+        {data && (
+          <OrderCard appId={appId} kind={kind} order={data.orders[kind]} file={data.file}
+            canAccept={canAccept} onChanged={changed} />
+        )}
+      </div>
     </div>
   );
 }

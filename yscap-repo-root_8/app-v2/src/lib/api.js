@@ -520,6 +520,11 @@ export const api = {
   staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
   staffOrderFollowup: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/followup`, body || {}),
   staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
+  // Put a document into one of ITS OWN condition's named slots (binder / invoice),
+  // or back to unassigned — the same act as the Orders desk's classify, done from
+  // the condition. Works for a document that reached the condition without an
+  // order too (a staffer's manual upload, an agent emailing the file address).
+  staffSetDocSlot: (appId, docId, slot) => req('POST', `/api/staff/applications/${appId}/documents/${docId}/slot`, { slot }),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
   staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
   // Attorney closing prep — the third order. Its own routes: the recipients, the
