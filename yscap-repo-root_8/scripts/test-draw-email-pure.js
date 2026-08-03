@@ -1,0 +1,169 @@
+'use strict';
+/**
+ * The draw email's COMPOSER — what it shows, how big, and in what words.
+ *
+ * Every case here reproduces something that was wrong in the email the owner pasted on
+ * 2026-08-03 ("Draw #2 … was approved: $33,450 of $50,000 requested"), or guards a way the fix
+ * could silently regress. Pure — no database, no network.
+ */
+
+const assert = require('assert');
+const de = require('../src/lib/email/draw-email');
+const A = require('../src/sitewire/approval');
+const tpl = require('../src/lib/email/template');
+
+let pass = 0, fail = 0;
+const ok = (cond, msg) => { if (cond) { pass++; console.log('  ok  ' + msg); } else { fail++; console.log('  FAIL ' + msg); } };
+
+// The owner's own draw, at each rung of the ladder.
+const REQ = 5000000, APPR = 3345000, FEE = 29900;
+const money = (over = {}) => A.drawMoney({
+  draw: { total_requested_cents: REQ, status: over.status || 'inspected', total_approved_cents: over.totalApproved || 0 },
+  requests: [{ requested_cents: REQ, approved_cents: APPR }],
+  feeCents: FEE,
+  released: !!over.released,
+  finding: over.finding || null,
+  ...over.money,
+});
+
+console.log('\nA · WHICH NUMBER IS THE HEADLINE — it follows the stage, not the status column');
+
+{
+  // Money moving → the release leads. It is the number that lands in a bank account.
+  const m = money({ status: 'approved', totalApproved: APPR, released: true });
+  const f = de.drawFigures(m, { borrower: true });
+  ok(/Released/.test(f.primary.label), 'a released draw leads with the RELEASE: ' + f.primary.label);
+  ok(f.primary.value === '$33,151', 'and the release is net of the draw fee: ' + f.primary.value);
+}
+{
+  // Inspector proposed, borrower must confirm → leading with a release would announce money
+  // nobody has authorised to move, on an email whose whole purpose is to ask permission.
+  const m = money({ finding: { status: 'delivered' } });
+  const f = de.drawFigures(m, { borrower: true });
+  ok(f.primary.label === 'Approved on this draw', 'an unconfirmed draw leads with the APPROVED amount, not a release');
+  ok(f.primary.value === '$33,450', 'which is the inspector-approved figure: ' + f.primary.value);
+  ok(/would be wired/.test(f.primary.sub || ''), 'and still says what would be wired, as a conditional: ' + f.primary.sub);
+}
+{
+  // Nothing approved yet → a $0 release headline would be a lie by layout.
+  const m = A.drawMoney({ draw: { total_requested_cents: REQ, status: 'submitted' }, requests: [{ requested_cents: REQ }], feeCents: FEE });
+  const f = de.drawFigures(m, { borrower: true });
+  ok(f.primary.label === 'Requested', 'with no inspector amounts the REQUEST leads: ' + f.primary.label);
+  ok(f.primary.value === '$50,000', 'at the requested figure: ' + f.primary.value);
+  ok(!/\$0/.test(f.primary.value), 'and never a $0 headline');
+}
+
+console.log('\nB · THE SUPPORTING FIGURES — the owner\'s order, without repetition or noise');
+
+{
+  const m = money({ status: 'approved', totalApproved: APPR, released: true });
+  const f = de.drawFigures(m, { borrower: true });
+  const labels = f.secondary.map((s) => s.label);
+  assert(labels.length === 3, 'expected three supporting figures, got ' + JSON.stringify(labels));
+  ok(labels[0] === 'Approved' && labels[1] === 'Requested' && /Not approved/.test(labels[2]),
+    'approved → requested → the difference, in that order: ' + labels.join(' / '));
+  ok(f.secondary.map((s) => s.value).join() === '$33,450,$50,000,$16,550', 'the owner\'s four numbers, all present');
+  ok(!f.secondary.some((s) => s.value === f.primary.value), 'the headline is never repeated underneath it');
+}
+{
+  // A fully approved draw has no difference. A "Not approved: $0" row invites a question with
+  // no answer, so it must not render at all.
+  const m = A.drawMoney({ draw: { total_requested_cents: REQ, status: 'approved', total_approved_cents: REQ }, requests: [{ requested_cents: REQ, approved_cents: REQ }], feeCents: FEE, released: true });
+  const f = de.drawFigures(m, { borrower: true });
+  ok(!f.secondary.some((s) => /Not approved|Held back/.test(s.label)), 'a zero difference is omitted, never shown as $0');
+}
+{
+  const m = money({ status: 'approved', totalApproved: APPR, released: true });
+  const bo = de.drawFigures(m, { borrower: true }), st = de.drawFigures(m, { borrower: false });
+  ok(/Not approved this time/.test(bo.secondary[2].label), 'the borrower reads "not approved THIS TIME" — the money stays on the line');
+  ok(st.secondary[2].label === 'Held back', 'the desk reads "held back": ' + st.secondary[2].label);
+}
+
+console.log('\nC · THE FACTS BOX — the draw\'s own details, never the loan\'s');
+
+{
+  const m = money({ status: 'approved', totalApproved: APPR });
+  const facts = de.drawFacts({
+    money: m, draw: { number: 2 },
+    rollup: { project: { budget: 10425000, drawn: 0, committed: APPR, available: 7080000 } },
+    dates: { inspected_at: '2026-07-28', approved_at: '2026-08-01' }, borrower: true,
+  });
+  const byLabel = Object.fromEntries(facts.rows.map((r) => [r.label, r.value]));
+  ok(facts.rows[0].label === 'Draw' && facts.rows[0].value === '#2', 'the draw number leads the box');
+  ok(byLabel['Rehab budget'] === '$104,250', 'the rehab budget is stated: ' + byLabel['Rehab budget']);
+  ok(byLabel['Still available to draw'] === '$70,800', 'and what is LEFT of it — the owner\'s "rest remaining"');
+  ok(/Draw processing fee/.test(Object.keys(byLabel).join()), 'the draw fee is stated');
+  ok(facts.progress && facts.progress.total === 10425000, 'a budget meter rides along');
+  // The word "Approved" already labels a FIGURE. A date row using the same bare word read as a
+  // second, contradictory value for it.
+  ok(!('Approved' in byLabel), 'no bare "Approved" row to collide with the approved FIGURE');
+  ok(byLabel['Approved on'] === 'Aug 1, 2026', 'the date row says "Approved on": ' + byLabel['Approved on']);
+  // The loan's identity is not the draw's business.
+  ok(!/ARV|Purchase price|Loan amount|Program/.test(JSON.stringify(facts.rows)),
+    'no ARV / purchase price / loan amount — the facts are about the DRAW');
+}
+{
+  const facts = de.drawFacts({ money: null, rollup: null, dates: {}, borrower: true });
+  ok(facts.rows.length === 0 && !facts.progress, 'nothing known → an empty box, never a row of dashes');
+}
+{
+  // A date-only value read through `new Date()` is UTC midnight, which renders the PREVIOUS day
+  // west of Greenwich — the repo's standing date rule.
+  ok(de.day('2026-08-01') === 'Aug 1, 2026', 'a YYYY-MM-DD date does not slip a day: ' + de.day('2026-08-01'));
+  ok(de.day(null) === null && de.day('') === null && de.day('nonsense') === null, 'an unreadable date is omitted, never the epoch');
+}
+
+console.log('\nD · THE WORDING — a proposal and a decision are different events');
+
+{
+  const prop = de.stageCopy('inspector_approved', { borrower: true });
+  const done = de.stageCopy('final_approved', { borrower: true });
+  ok(/confirm/i.test(prop.title), 'the inspector\'s proposal ASKS the borrower: ' + prop.title);
+  ok(/on the way|approved/i.test(done.title) && !/confirm/i.test(done.title), 'final approval TELLS them: ' + done.title);
+  ok(prop.title !== done.title, 'the two are never the same sentence');
+  ok(prop.badge === 'Please confirm' && done.badge === 'Approved', 'and their badges differ: ' + prop.badge + ' / ' + done.badge);
+}
+{
+  // The borrower must never learn who the capital partner is.
+  const b = de.stageCopy('with_investor', { borrower: true });
+  const s = de.stageCopy('with_investor', { borrower: false });
+  ok(!/partner|investor|capital/i.test(b.title + b.badge), 'the borrower voice never names the capital-partner step: ' + b.title);
+  ok(/partner/i.test(s.title), 'the desk voice does: ' + s.title);
+}
+{
+  ok(de.stageCopy('nonsense-stage') === null, 'an unknown stage yields no copy rather than a wrong sentence');
+  // Every stage the ladder can produce must have wording, or an email falls back to a generic title.
+  const missing = require('../src/sitewire/approval').STAGE_ORDER
+    .filter((s) => !['drafting', 'with_borrower'].includes(s))
+    .filter((s) => !de.stageCopy(s, { borrower: true }));
+  ok(missing.length === 0, 'every live ladder stage has borrower wording' + (missing.length ? ' — missing: ' + missing.join(',') : ''));
+}
+
+console.log('\nE · THE TEMPLATE — the figures survive HTML *and* text/plain');
+
+{
+  const m = money({ status: 'approved', totalApproved: APPR, released: true });
+  const figures = de.drawFigures(m, { borrower: true });
+  const facts = de.drawFacts({ money: m, draw: { number: 2 }, rollup: { project: { budget: 10425000, drawn: 0, committed: APPR, available: 7080000 } }, dates: {}, borrower: true });
+  const out = tpl.render({ title: 'x', figures, facts });
+  ok(typeof out.html === 'string' && out.html.indexOf('[object Object]') === -1, 'the HTML renders with no [object Object]');
+  ok(out.html.includes('$33,151') && out.html.includes('$33,450') && out.html.includes('$50,000') && out.html.includes('$16,550'),
+    'all four figures reach the HTML');
+  // The figure band IS the message. HTML-only would leave a plaintext reader a title and no
+  // numbers — the defect the callout block already had once.
+  ok(out.text.includes('$33,151') && out.text.includes('$16,550'), 'and all of them reach text/plain');
+  ok(out.text.includes('Rehab budget: $104,250'), 'the facts box reaches text/plain too');
+  // A light surface colour used as text is the documented white-on-white trap.
+  ok(!/color:#F4F1EA|color:#F6F3EC/.test(out.html), 'no light surface colour is used as a text colour');
+}
+{
+  // Back-compat: an email that passes neither block must render exactly as it did before.
+  const before = tpl.render({ title: 'Plain', intro: 'hello' });
+  const after = tpl.render({ title: 'Plain', intro: 'hello', figures: null, facts: null });
+  ok(before.html === after.html && before.text === after.text, 'an email with no figures/facts is byte-identical to before');
+  const empty = tpl.render({ title: 'Plain', intro: 'hello', figures: { primary: {} }, facts: { rows: [] } });
+  ok(empty.html === before.html, 'and an EMPTY figures/facts payload renders nothing rather than an empty box');
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+if (fail) process.exit(1);

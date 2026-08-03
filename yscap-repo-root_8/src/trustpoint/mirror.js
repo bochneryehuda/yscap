@@ -20,6 +20,7 @@ const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocal
 // money-leg amounts keep their cents (a mirrored wire is exact, never floored)
 const usd2 = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const { drawTeamBcc } = require('../lib/draw-recipients');
+const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 
 // " #2" for the borrower's SUBJECT LINE (owner-directed 2026-07-27: "in the subject line write
 // draw 1 draw 2, how many draw it is"). The email subject is built as `title · <file tag>`, so
@@ -445,21 +446,39 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     } catch (_) {}
     const shown = Math.max(0, net - markup);
     if (shown > 0) {
-      await notify.notifyAppBorrowers(appId, {
+      // The released wire is the one moment where the amount that MOVED is the whole message, so
+      // it stays the headline — now with the approval it came out of, and the request behind
+      // that, ranked beneath it. ONE email, the desk and the officer visibly on it.
+      const blocks = await drawEmailBlocks(db, appId, {
+        sitewireDrawId: row.sitewire_draw_id != null ? row.sitewire_draw_id : null,
+        tpDraw: row, borrower: true,
+      });
+      // `shown` is the borrower-facing net AFTER our platform markup — a deduction the rollup does
+      // not model. So the HEADLINE is always `shown` (anything else would promise the borrower
+      // more than actually lands in their account), while the supporting approved / requested /
+      // held-back figures come from the rollup unchanged.
+      let figures = blocks && blocks.figures;
+      if (figures) {
+        figures = { ...figures, primary: { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days' } };
+      }
+      await notify.notifyAppThread(appId, {
         type: 'draw', title: `Your construction draw${drawNo(row)} has been released`,
-        hero: { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+        hero: figures ? null : { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+        figures: figures || null,
+        facts: (blocks && blocks.facts) || null,
         badge: { text: 'Draw released', tone: 'positive' },
         body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
-        lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
+        lines: ['Questions about this draw? Just reply to this email — your whole loan team is on it.'],
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
-        bccExtra: await drawTeamBcc(appId),
+      }).catch(() => {});
+    } else {
+      // No borrower-facing wire (fully absorbed by fees/markup) — the desk still needs to know.
+      await notify.notifyAppStaff(appId, {
+        type: 'draw_inbound', title: 'Draw funds released',
+        body: `Draw #${row.number == null ? '—' : row.number} for ${addr}: ${usd2(net)} net was released by the administrator${feeSum ? ` (fees ${usd2(feeSum)})` : ''}. Recorded in the money ledger automatically.`,
+        badge: { text: 'Released', tone: 'positive' }, applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: true,
       }).catch(() => {});
     }
-    await notify.notifyAppStaff(appId, {
-      type: 'draw_inbound', title: 'Draw funds released',
-      body: `Draw #${row.number == null ? '—' : row.number} for ${addr}: ${usd2(net)} net was released by the administrator${feeSum ? ` (fees ${usd2(feeSum)})` : ''}. Recorded in the money ledger automatically.`,
-      badge: { text: 'Released', tone: 'positive' }, applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: true,
-    }).catch(() => {});
     return { ok: true, net };
   } catch (e) { console.warn('[trustpoint] disbursement mirror failed:', e && e.message); return { error: true }; }
 }
@@ -562,17 +581,28 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     // PRE-approval milestone snapshot — the derivation's "before" picture (phase 3 §6).
     try { await require('./lines').snapshotMilestones(appId, row.tp_project_id, tpDrawId, 'pre'); } catch (_) {}
   } else if (newStatus === 'APPROVED') {
-    await notify.notifyAppStaff(appId, {
-      type: 'draw_inbound', title: 'Draw approved on TrustPoint',
-      body: `Draw #${nLabel} for ${addr} was approved: ${usd(row.approved_cents)} of ${usd(row.requested_cents)} requested${row.to_disburse_cents != null ? ` (net to release ${usd(row.to_disburse_cents)})` : ''}.`,
-      badge: { text: 'Approved', tone: 'positive' }, applicationId: appId, link,
-    }).catch(() => {});
-    // Borrower milestone (single voice — borrower-safe wording, no platform names; the
-    // 'draw' type is registered + BORROWER_MAJOR_EMAIL; notifyBorrower scrubs partners).
-    await notify.notifyAppBorrowers(appId, {
-      type: 'draw', title: `Your draw${drawNo(row)} was approved`,
-      body: `Good news — your draw request for ${addr} was approved: ${usd(row.approved_cents)} of the ${usd(row.requested_cents)} you requested. The release is being processed; we'll confirm the exact amount when the funds are sent.`,
-      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
+    // ONE email, everybody on it — the borrower in To, the draw desk and the loan officer in a
+    // VISIBLE Cc, and no separate staff copy (owner-directed 2026-08-03). This event used to send
+    // two: a staff blast AND a borrower note, so the coordinator received the same sentence twice
+    // in two threads and a reply to either reached nobody else.
+    //
+    // The money is no longer a sentence. `drawEmailBlocks` reads the file's rollup — the same one
+    // behind the desk, the borrower's screen and the PDF — so the ranked figures here and the
+    // report attached later can never disagree.
+    // `row.sitewire_draw_id` — NOT tpDrawId — is the Sitewire key; the row itself is the fallback
+    // for a TrustPoint draw that has no Sitewire counterpart.
+    const blocks = await drawEmailBlocks(db, appId, {
+      sitewireDrawId: row.sitewire_draw_id != null ? row.sitewire_draw_id : null,
+      tpDraw: row, borrower: true,
+    });
+    const copy = (blocks && blocks.copy) || { title: 'Your draw is approved — funds are on the way', badge: 'Approved', tone: 'positive' };
+    await notify.notifyAppThread(appId, {
+      type: 'draw', title: copy.title,
+      badge: { text: copy.badge, tone: copy.tone },
+      body: `Your draw for ${addr} has been approved. Here is exactly what was approved and what reaches you.`,
+      figures: (blocks && blocks.figures) || null,
+      facts: (blocks && blocks.facts) || null,
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
     // Owner-directed 2026-07-27: pull EVERYTHING TrustPoint holds for this draw — the draw

@@ -300,6 +300,12 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
     d.fee_kind = (l && l.fee_kind) || (projected ? projected.fee_kind : null);
     d.approval_stage = m.approval_stage;
     d.approval_label = m.approval_label;
+    // The two ladder FLAGS, so a rollup draw is a complete `drawMoney` object and any consumer
+    // (the desk, the borrower screen, the PDFs, the emails) reads one shape. Without these a
+    // consumer has to infer "is money moving?" from the status string — which is the re-derivation
+    // this whole module exists to prevent.
+    d.is_final_approved = m.is_final_approved;
+    d.is_released = m.is_released;
     d.net_explanation = APPROVAL.netExplanation(m);
     if (l) feesCharged += m.fee_cents; else feesProjected += m.fee_cents;
   }
