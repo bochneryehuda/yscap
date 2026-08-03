@@ -71,12 +71,16 @@ half-open edges so a vertex is counted once, a point on the boundary counts as
 INSIDE, plus area-in-square-miles so a screen can say "you have drawn 200 square
 miles, which is a county"). Still to do:
 
-- [ ] **A4a** Its pure test — the geometry decides which comparables an officer
-  sees, and getting it subtly wrong is invisible.
-- [ ] **A4b** A table and a route to save a named area per market.
-- [ ] **A4c** Drawing on the map (click to add corners, drag to move one).
-- [ ] **A4d** Use it as a comparable-search filter, with a bounding-box
-  pre-filter in SQL and the exact test after it.
+- [x] **A4a** Its pure test — **DONE**, 68 assertions including a 61x61 grid scan
+  against the shape's own definition, and both failure modes proven to fail the
+  suite when reintroduced.
+- [x] **A4b** A table and routes — **DONE** (`db/453`, save / list / archive /
+  what-is-inside). Archived, never deleted: a valuation may rest on a boundary.
+- [x] **A4c** Drawing on the map — **DONE**, verified by CLICKING the map in
+  Chromium and reading the saved shape back out of the database.
+- [ ] **A4d** Use it as a comparable-search filter. The route that answers
+  "what is inside this area" exists and cuts correctly (measured: 19 of the 59
+  its bounding box held); wiring it into the comp search itself is what is left.
 
 **Why this matters more than a radius:** a mile in one direction crosses a river,
 a rail line or a school-district boundary; a mile in another is the same houses
@@ -188,7 +192,16 @@ IS CORRECT: the anchored test proves it to three decimal places, and
 `test-research-geo-box-pure.js` already proves the bounding box contains the
 circle at every latitude. **A different geocoding API would not have fixed this.**
 
-- [ ] **C1a** **A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.**
+- [x] **C1a** **A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.**
+  **DONE.** `buildQuery` now reports `radiusUnusable` and `searchProperties`
+  returns nothing with a stated reason rather than the whole country. Measured
+  after the fix: the same half-mile search went from **955 properties across 9
+  states** to **0 with a reason**, while the anchored search is untouched (9, one
+  state, furthest 0.449 miles). The ladder marks a rung it could not measure so
+  it never reads as "found nothing", and the screen now says what actually
+  happened instead of "distance was not used at all". Guarded by assertions in
+  `test-research-geo-box-pure.js` proven to FAIL when the guard is reverted.
+  ORIGINAL WORDING:
   When a radius is asked for and there is no position, the search must say so
   and return nothing rather than hand back nine states. This is the same rule
   the quick answer and the adjustment corpus already follow, and it is the one

@@ -365,8 +365,15 @@ function Honesty({ d }) {
         <div>
           <strong style={{ color: INK }}>Nothing found — and here is why.</strong>
           {d.subject_located === false && (
+            /* "DISTANCE WAS NOT USED" WAS THE OLD, WRONG BEHAVIOUR — the radius
+               was silently dropped and the search handed back the whole country
+               (measured: 955 properties across nine states for a half-mile
+               search). It now refuses instead, so the wording has to say what
+               actually happened and what to do about it. */
             <div style={{ color: GOLD, fontSize: 13, marginTop: 6 }}>
-              We have not placed this property on the map yet, so distance was not used at all.
+              We have not placed this property on the map, so a distance search cannot be answered
+              from it — a half-mile from an unknown point is not a half-mile. Pick the address from
+              the suggestions so it carries a position, or search by town instead.
             </div>
           )}
           <p style={{ margin: '6px 0 0', color: MUTED, fontSize: 13 }}>
@@ -385,7 +392,7 @@ function Honesty({ d }) {
             <span style={{ color: INK, fontSize: 13 }}>
               <b>Had to look wider.</b>{' '}
               {ladder.filter((s) => s.found === 0).length > 0 && (
-                <>{ladder.filter((s) => s.found === 0).map((s) => s.label).join(', then ')} found nothing — </>
+                <>{ladder.filter((s) => s.found === 0 && !s.unmeasurable).map((s) => s.label).join(', then ')} found nothing — </>
               )}
               these came from {(ladder[ladder.length - 1] || {}).label}.
             </span>

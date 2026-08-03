@@ -718,7 +718,12 @@ router.get('/comps', async (req, res, next) => {
         }
       }
       const got = await S.searchProperties(db, active);
-      ladder.push({ step: rung.id, label: rung.label, found: got.total });
+      /* "FOUND NOTHING" AND "COULD NOT MEASURE" ARE DIFFERENT ANSWERS, and a
+         ladder that reports the second as the first tells an officer the town is
+         thin when the truth is we never placed their subject. A rung whose
+         radius could not run is marked, so the screen can say which happened. */
+      ladder.push({ step: rung.id, label: rung.label, found: got.total,
+        unmeasurable: got.refused === 'radius_without_position' || undefined });
       if (!best || got.total > best.total) {
         best = got; bestRung = rung.id; bestFilters = Object.assign({}, active);
       } else if (got.total === 0 && change) {

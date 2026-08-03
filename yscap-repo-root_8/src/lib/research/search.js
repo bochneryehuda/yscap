@@ -344,6 +344,18 @@ function buildQuery(input = {}) {
   let distanceSelect = 'NULL::numeric AS distance_miles';
   const lat = num(f.lat), lng = num(f.lng), radius = num(f.radius_miles);
   let distanceExpr = null;
+  /* A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.
+     Reported by the owner and reproduced exactly: asking for half a mile from a
+     TYPED address — which carries no coordinates — returned 955 properties
+     across NINE STATES with a null distance, because the radius predicate is
+     built inside this lat/lng guard and was simply never added. Anchored on a
+     real position the same half mile returns 9, all in one state, furthest 0.449
+     miles, so the arithmetic was never the problem.
+     That is the worst shape a bug can take here: the screen looks like it
+     answered. Silently dropping the one filter the user actually cared about and
+     handing back the whole country is not a wider search, it is a wrong one — so
+     the caller is TOLD, and `searchProperties` refuses rather than widening. */
+  const radiusUnusable = radius != null && radius > 0 && (lat == null || lng == null);
   if (lat != null && lng != null) {
     const pLat = P(lat), pLng = P(lng);
     distanceExpr =
@@ -420,6 +432,9 @@ function buildQuery(input = {}) {
   return {
     where: where.length ? 'WHERE ' + where.join('\n  AND ') : '',
     params, distanceSelect, sort: SORTS[sortKey], sortKey, limit, offset: (page - 1) * limit, page,
+    // Named so a caller cannot mistake "we could not apply your distance" for
+    // "there was no distance to apply".
+    radiusUnusable,
   };
 }
 
@@ -480,6 +495,18 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
 /** Run a search. Returns { rows, total, page, limit, pages }. */
 async function searchProperties(db, filters = {}) {
   const b = buildQuery(filters);
+  // See `radiusUnusable` in buildQuery: a distance filter with nothing to
+  // measure from cannot be honoured, and answering with every property we hold
+  // is a wrong answer wearing a right one's clothes.
+  if (b.radiusUnusable) {
+    return {
+      rows: [], total: 0, page: b.page, limit: b.limit, pages: 1, sort: b.sortKey,
+      refused: 'radius_without_position',
+      why: 'A distance search needs a position to measure from, and this subject has none — so this '
+        + 'is not a wider search, it is one that cannot be answered. Pick the address from the '
+        + 'suggestions so it carries a position, or search by town instead.',
+    };
+  }
   const sql =
     `SELECT ${LIST_COLUMNS},
             ${b.distanceSelect},
