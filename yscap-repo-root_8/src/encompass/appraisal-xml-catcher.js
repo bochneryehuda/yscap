@@ -850,8 +850,15 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
                 'It was NOT downloaded. If the XML for this loan was captured, this is most likely a ' +
                 'companion document and is harmless; if the whole tenant reports this and nothing is ' +
                 'being captured, the delivery format has changed and the catcher needs updating.');
+              // NAMES ONLY THE FIRST ONE, and says so. A later resource in the
+              // same sweep — including a genuine ZIP behind a companion PDF — is
+              // reflected only in the `otherFormat` count, which is the accepted
+              // cost of not burning a slot per resource forever. Read this line
+              // WITH `otherFormat` and `captured` on the same summary: a companion
+              // document sits beside a non-zero `captured`, a format change does
+              // not.
               pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
-                `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — ${'see otherFormat for the count'}`);
+                `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — first of this sweep; see otherFormat for the total`);
             }
           }
           continue;
@@ -996,8 +1003,10 @@ function makeTick(db) {
         // `otherFormat` is in the gate as BELT-AND-SUSPENDERS, and it is honestly
         // redundant today: the same branch that increments it also calls pushErr,
         // so `errors.length` is already non-zero and the gate already fires. It is
-        // here so the gate stays correct if that pushErr is ever bounded, dropped,
-        // or crowded out — the counter is the fact, the error line is incidental.
+        // here so the gate stays correct if that pushErr is ever bounded further or
+        // dropped — the counter is the fact, the error line is incidental. NOT
+        // "crowded out": a full budget means errors.length is 50, which fires the
+        // gate harder, so crowding is the one thing that cannot break it.
         // Do not read this term as the thing that makes a ZIP-only sweep visible.
         if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
           console.log('[encompass-xml] sweep:', JSON.stringify({

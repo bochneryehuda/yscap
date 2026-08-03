@@ -719,6 +719,12 @@ t('a non-url is refused with a plain reason', () => {
             id: 'zip-1', name: 'AppraisalReport.zip', mimeType: 'application/zip',
             type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
             location: 'https://skydrive.ellieservices.com/x?validity=zzz', authorization: 'sig',
+          }, {
+            // A SECOND unparsable resource, so the fixture can tell "counted once"
+            // from "counted per resource". Without two of these the error-budget
+            // assertion below is vacuous — errors.length is 1 either way.
+            id: 'zip-2', name: 'Appraiser_License.pdf', mimeType: 'application/pdf',
+            location: 'https://skydrive.ellieservices.com/y?validity=zzz', authorization: 'sig',
           }] } };
         }
         if (/serviceOrders$/.test(String(p))) {
@@ -738,8 +744,24 @@ t('a non-url is refused with a plain reason', () => {
     }
 
     t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
-      assert.strictEqual(zipSweep.otherFormat, 1,
-        `a ZIP appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
+      assert.strictEqual(zipSweep.otherFormat, 2,
+        `every unparsable appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
+    });
+
+    t('but it spends ONE error slot per sweep, not one per resource', () => {
+      // The substantive behaviour change, and it was unpinned: `errors[]` is ONE
+      // shared 50-slot budget whose first three are printed, and nothing is written
+      // to the ledger for these, so the same resources are re-seen every sweep. Per
+      // resource, a companion PDF beside the XML would burn slots forever and crowd
+      // out a real orders/expand/record failure on another loan.
+      //
+      // Two unparsable resources, ONE error line — that is the whole assertion, and
+      // it is why the fixture above carries a second one.
+      const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, 1,
+        `two unparsable resources must produce ONE error line, saw ${mine.length}: ${JSON.stringify(mine)}`);
+      assert.ok(/first of this sweep/.test(mine[0]),
+        'and it must SAY it is only the first, so the count is not mistaken for the whole story');
     });
 
     t('it is never downloaded — the 15-minute window is not spent on it', () => {
@@ -761,7 +783,7 @@ t('a non-url is refused with a plain reason', () => {
       // owns the real gate and the real log call, and assert on what it prints.
       assert.ok(!zipSweepLog.some((l) => /"resources":[1-9]/.test(l)),
         'fixture check: the ZIP sweep must have captured nothing for this to mean anything');
-      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":1/.test(l)),
+      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":2/.test(l)),
         `a sweep whose only finding is an unparsable format must still report it, saw: ${
           JSON.stringify(zipSweepLog).slice(0, 300)}`);
     });
@@ -808,8 +830,14 @@ t('a non-url is refused with a plain reason', () => {
         process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC = 'five minutes';
         timer = M.start(db);
       } finally {
-        // Always disarm: start() arms a real interval. It is unref'd, so it cannot
-        // hold the process open, but leaving it would sweep under a later test.
+        // Disarm what we CAN, and be precise about what that is: start() arms TWO
+        // timers — the 300s interval it returns, and a 15s first-tick setTimeout it
+        // does NOT return, which therefore survives this cleanup. Neither can leak:
+        // both are unref'd (so neither holds the process open) and this suite
+        // finishes in well under a second, ~14s before the first-tick one could
+        // fire. If it ever did, `encompass.configured` is restored by then and is
+        // false here, so the sweep returns `{disabled:true}` immediately — no
+        // network, no db, no output.
         if (timer) clearInterval(timer);
         console.warn = ow; console.log = ol; enc4.configured = oc;
         delete process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC;
