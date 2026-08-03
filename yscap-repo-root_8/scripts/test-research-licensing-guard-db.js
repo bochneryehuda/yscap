@@ -171,11 +171,34 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           'wildcards dropped — so google_places, the value we actually write, would pass'],
         [`CHECK (geo_source IS NOT NULL OR 'google' <> 'x')`,
           'a predicate that is always true, wearing both words'],
+        // THE ONE THAT GOT THROUGH. The constraint case-FOLDS the column, so a
+        // CAPITALISED pattern can never match and the rule is always true — and a
+        // case-insensitive regex read it as installed.
+        [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%GOOGLE%')`,
+          'a CAPITALISED pattern against lower() — always true, and it is not reported as installed'],
+        [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%Google%')`,
+          'nor is a mixed-case one'],
       ];
+      let n = 0;
       for (const [body, why] of IMPOSTORS) {
         await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
         const imp = await G.checkGeoLicensing(client);
         ok(imp.ok === false && imp.present === false, why);
+        /* AND PROVE IT IS REALLY NO PROTECTION, rather than merely that a string
+           did not match a pattern. Asserting only the guard's verdict is exactly
+           how the capitalised case slipped through the previous round: the regex
+           was checked, the DATABASE never was. If this INSERT is refused the
+           constraint genuinely does protect the warehouse and calling it an
+           impostor would be the bug. */
+        const key = `nj|impostor${++n}|${sfx}`;
+        let accepted = true;
+        try {
+          await client.query(
+            `INSERT INTO properties (address_key, display_address, city, state, geo_source)
+             VALUES ($1,'x','y','NJ','google_places')`, [key]);
+        } catch (_) { accepted = false; }
+        ok(accepted, `  …and the database really does accept a Google coordinate under it`);
+        if (accepted) await client.query('DELETE FROM properties WHERE address_key = $1', [key]);
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
       }
       // And the REAL one still reads as installed — an over-strict check that
