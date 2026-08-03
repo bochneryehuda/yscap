@@ -1148,6 +1148,7 @@ export const api = {
   researchMarket:        (f) => req('GET', '/api/research/market' + qs(f)),
   researchAdjustmentRates: (f) => req('GET', '/api/research/adjustment-rates' + qs(f)),
   researchQuick:         (f) => req('GET', '/api/research/quick' + qs(f)),
+  researchVariance:      (f) => req('GET', '/api/research/variance' + qs(f)),
   researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
   researchFlips:         (f) => req('GET', '/api/research/flips' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),

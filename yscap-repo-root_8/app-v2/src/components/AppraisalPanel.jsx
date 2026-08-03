@@ -6,6 +6,7 @@ import { fmtDate } from '../lib/dates.js';
 // escalations screen called something else. See lib/findings-vocab.js.
 import { FINDING_SEVERITY as SEV, severityCount } from '../lib/findings-vocab.js';
 import { uadWords } from '../lib/uadWords.js';
+import VariancePanel from './VariancePanel.jsx';
 
 /* The PILOT property report. Imports the appraisal XML (staff), renders the property profile
    built from it — hero + value story, photo gallery, collateral snapshot, comparable sales — and
@@ -1454,6 +1455,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
               or answered. Staff only: the borrower's read-only property report shows the appraisal,
               not our internal reconciliation against the loan file. */}
           {!readOnly && <DataComparison comparison={data && data.comparison} />}
+          {/* STAFF ONLY, like the data comparison above it. A borrower's property
+              report must never carry our second-guess of the appraiser's value. */}
+          {!readOnly && <VariancePanel appraisalId={data && data.appraisal && data.appraisal.id} />}
 
           {/* ===== PHOTO GALLERY ===== */}
           {photos.length > 0 ? (

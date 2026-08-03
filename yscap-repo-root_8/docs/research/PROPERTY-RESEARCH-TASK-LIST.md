@@ -266,7 +266,7 @@ throw away.
   refuses on any disagreement — a different number of dwellings, a repeated unit
   number, or a unit number on one side missing from the other — because putting
   unit 3's area on unit 2 is worse than leaving it blank.
-- [ ] ~~**2.4 The whole rental-comp grid — the biggest remaining unread block.**~~
+- [x] ~~**2.4 The whole rental-comp grid — the biggest remaining unread block.**~~
   `MULTIFAMILY_RENTALS` / `RENTAL_UNIT` / `RENTAL_FEATURE` are present in **91 of
   149 parsed files** and read for nothing but a count. Measured: **267
   `MULTIFAMILY_RENTAL` entries** (the subject at sequence 0 plus ~3 rental
@@ -340,9 +340,17 @@ never attempted. Everything in this phase costs about $10, one time.
   different street, at `precision:'address'`. A confident wrong pin is worse than
   no pin. Nominatim's road-level answers are refused separately (no house number
   → not a property), so only a rooftop match is ever stored.
-- [ ] **3.1b Confirm the live sweep against the real corpus** — the code is on and
-  correct; nothing here has yet PROVEN it places a real address end to end
-  against the live services from this environment.
+- [x] **3.1b Confirm the live sweep against the real corpus** — **PROVEN**, live
+  from this environment against five real warehouse addresses drawn at random:
+  407 Pond St Syracuse NY, 1062 Hamilton Ave Waterbury CT, 18 Castle Ave Jackson
+  NJ, and two Bronx addresses — **5 of 5 placed, every one `source=census
+  precision=address` (rooftop), 115–255 ms each**. So the free US Census
+  geocoder answers for the ordinary case at real speed, which is what makes the
+  paid fallback (3.2) a nice-to-have rather than a blocker.
+  The same run confirmed the placement figures this build had been overstating:
+  `geocodeStatus` reports **90 trilaterated** (not 91) and `looked_up: 0`, the
+  latter because a derived position is no longer counted as a rooftop lookup —
+  it is still owed one.
 - [ ] **3.2 Geocodio as the backfill fallback** — $1/1,000, true US rooftop,
   permanent storage, and it returns census tract + school district in the same
   call. Nominatim cannot do a bulk backfill under its own policy.
@@ -601,7 +609,7 @@ never attempted. Everything in this phase costs about $10, one time.
   defensible one's clothes; a market that REFUSED still gets a row, or the screen
   would look complete when it is not. Rendered against the real corpus: 27 rows,
   21 with a median, the rest stating their refusal in words.
-- [ ] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
+- [x] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin
   data, and the arithmetic returns negatives) to *"this report used $18/sqft; the
@@ -671,7 +679,7 @@ never attempted. Everything in this phase costs about $10, one time.
   is in `npm test`. A disagreement between two of our own appraisals is
   information, not something to hide, which is the whole premise of the
   provenance-first property page.
-- [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage.
+- [x] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage.
   **The engine and the route are DONE** — `src/lib/research/variance.js` (37
   assertions) and `GET /api/research/variance`, verified end to end against a
   real file (15% above ours, on 3 comparables from 3 reports by 3 appraisers,
@@ -685,8 +693,16 @@ never attempted. Everything in this phase costs about $10, one time.
   with itself perfectly, and agree most closely on exactly the reports where a
   reviewer most needs a second opinion. "Came from this report" means ONLY from
   it: a sale a second appraiser also described is the corroboration we want.
-  STILL TO DO: a screen, and the wording must stay a prompt to go and look —
-  never a verdict, never called an appraisal review or a CDA.
+  **THE SCREEN IS DONE TOO** — `app-v2/src/components/VariancePanel.jsx`, mounted
+  STAFF-ONLY on the appraisal tab beside the data comparison (a borrower's
+  property report must never carry our second-guess of the appraiser's value).
+  It is deliberately the quietest panel there: a REFUSAL renders at the same size
+  as an answer, because a panel that goes quiet exactly when it is being careful
+  reads as broken; an answer always carries its denominator — comparables,
+  reports and appraisers — since a percentage without one is the false accusation
+  this whole module exists to avoid; and the disclaimer travels with it either
+  way. Rendered against a real appraisal, where it correctly REFUSED and said
+  what it was short of.
 - [x] **5.10 Defensible time adjustment from contract date + FHFA HPI** —
   **DONE**: `db/451_hpi_index.sql`, `src/lib/research/hpi-load.js`,
   `src/lib/research/time-adjust.js` (51 assertions), `scripts/load-hpi.js`.
