@@ -278,7 +278,9 @@ function SubjectBlock({ v, isFinal, onSave }) {
         <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'Edit'}</button>
       </div>
       <div style={{ color: MUTED, fontSize: 13, marginTop: 6 }}>
-        {[s.display_address, s.gla && sqft(s.gla), s.beds != null && `${s.beds} bed`,
+        {[s.display_address, s.property_type,
+          s.units != null ? `${s.units} unit${Number(s.units) === 1 ? '' : 's'}` : null,
+          s.gla && sqft(s.gla), s.beds != null && `${s.beds} bed`,
           (s.baths_full != null || s.baths_half != null) && `${baths(s)} bath`,
           s.year_built && `built ${s.year_built}`, s.condition_uad].filter(Boolean).join(' · ') || 'Nothing filled in yet'}
       </div>
@@ -539,6 +541,19 @@ function Grid({ d, isFinal, onChange, onRemove }) {
                 </Link>
                 <div style={{ fontWeight: 400, color: MUTED, marginTop: 2 }}>
                   {money(c.sale_price)} · {saleMonth(c.sale_date)}
+                </div>
+                {/* WHAT KIND OF BUILDING, AND HOW MANY DOORS — on the one screen
+                    where the number is actually made. The comp search shows both
+                    and this did not, so an officer could pick correctly and then
+                    adjust a three-family against a house without either column
+                    saying so. Both facts are already in the frozen snapshot; only
+                    the rendering was missing. An unknown says so rather than
+                    being left off, because a blank reads as "ordinary". */}
+                <div style={{ fontWeight: 600, marginTop: 2,
+                  color: (c.property_type && c.units != null) ? INK : '#B4423A' }}>
+                  {[c.property_type || 'type not stated',
+                    c.units != null ? `${c.units} unit${Number(c.units) === 1 ? '' : 's'}` : 'units not stated',
+                  ].join(' · ')}
                 </div>
                 <div style={{ fontWeight: 400, color: MUTED }}>
                   {[c.gla && sqft(c.gla), c.beds != null && `${c.beds}bd`,

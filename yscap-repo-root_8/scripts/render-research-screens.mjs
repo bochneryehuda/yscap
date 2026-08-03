@@ -88,8 +88,25 @@ const RATES = {
          purpose, effective_date, method, market_rates, created_by)
        VALUES ($1,'Render check','41 Render Row',$2,'as_is',CURRENT_DATE,'weighted',$3,$4)
        RETURNING id`,
-      [propA, JSON.stringify({ display_address: '41 Render Row', city: 'Rendertown', state: 'NJ', gla: 2400 }),
-        JSON.stringify(RATES), staffId])).rows[0].id;
+      [propA, JSON.stringify({ display_address: '41 Render Row', city: 'Rendertown', state: 'NJ',
+        property_type: 'Multi 2–4', units: 3, gla: 2400 }),
+      JSON.stringify(RATES), staffId])).rows[0].id;
+
+    // TWO COMPS IN THE GRID — the screen where the number is actually made.
+    // One states what kind of building it is and how many doors; the other
+    // states neither, which is the branch that has to SAY SO rather than leave
+    // a blank an officer reads as "ordinary". A grid with no comps renders no
+    // columns at all, so without these the new code is never executed.
+    await db.query(
+      `INSERT INTO property_valuation_comps
+         (valuation_id, property_id, comp_order, snapshot, sale_price, sale_date,
+          adjustments, adjusted_price, net_adjustment, gross_adjustment)
+       VALUES ($1,$2,1,$3,525000,'2026-03-04','[]'::jsonb,525000,0,0),
+              ($1,$4,2,$5,410000,'2026-01-15','[]'::jsonb,410000,0,0)`,
+      [valId, propA,
+        JSON.stringify({ display_address: `41 Render Row ${sfx}`, property_type: 'Multi 2–4', units: 3, gla: 2400, beds: 5 }),
+        unplaced,
+        JSON.stringify({ display_address: `3 Unknown Ct ${sfx}`, gla: 1200, beds: 2 })]);
 
     // An appraisal we had to turn away, in the format that matters.
     await db.query(
@@ -153,6 +170,25 @@ const RATES = {
     ok(/\$35,250/.test(body), 'valuation: the per-bedroom figure renders as real dollars');
     ok(/\+0\.42% a month/.test(body), 'valuation: a real +0.42%/month trend is not rounded away to 0%');
     ok(/no rate/.test(body), 'valuation: a REFUSED rate reads "no rate" rather than a blank');
+
+    // THE OWNER'S FIRST REQUIREMENT, ON THE SCREEN WHERE THE NUMBER IS MADE.
+    // The comp search and the property page already showed both facts; the
+    // grid — where comps sit side by side being adjusted — showed size, beds,
+    // baths and condition and neither of these.
+    //
+    // Each assertion is anchored to something only ONE place on the page says,
+    // because the subject line carries the same two facts: a comp column is
+    // reached through its own sale price, and the subject line through its
+    // ` \u00b7 `-joined run (the comp column breaks the line there). The column
+    // headers are upper-cased in CSS and `innerText` reports the TRANSFORMED
+    // text, so these read case-insensitively — matching case here would fail
+    // on styling rather than on the fact being present.
+    ok(/\$525,000[\s\S]{0,60}Multi 2–4 \u00b7 3 units/i.test(body),
+      'valuation grid: the comp says what kind of building it is and how many doors');
+    ok(/\$410,000[\s\S]{0,60}type not stated \u00b7 units not stated/i.test(body),
+      'valuation grid: a comp that states neither SAYS so rather than leaving a blank');
+    ok(/Multi 2–4 \u00b7 3 units \u00b7 2,400 sq ft/i.test(body),
+      'valuation: the subject line names its own type and unit count too');
 
     // ---- 1b. THE PRINTED REPORT IS THE WHOLE REPORT ----------------------
     // Emulating print media is the only way to see what actually reaches paper:
