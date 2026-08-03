@@ -365,11 +365,23 @@ async function main() {
       const dash = await api('POST', '/api/dashboards', { name: `${TAG} drill` }, adminTok);
       const did = dash.body.dashboard.id;
 
+      // SCOPED TO ITS OWN FILES, deliberately. Every drill-through list is capped at 1000 by
+      // the route, so a test that adds up per-bucket lists and compares them to one
+      // whole-card list silently starts failing the moment the database holds more than a
+      // thousand files — which it does when this suite runs at the end of the full chain
+      // rather than alone. That is a fact about the cap, not about the product. A known,
+      // small population makes the count-equals-list rule provable rather than incidental.
+      const DRILL_CITY = TAG + '_drill';
+      for (const st of ['underwriting', 'underwriting', 'processing', 'funded', 'declined', 'withdrawn']) {
+        await mkApp({ status: st, officer: LO, amount: 100000, city: DRILL_CITY });
+      }
+      const onlyDrill = { combinator: 'and', rules: [{ field: 'city', operator: 'eq', value: DRILL_CITY }] };
+
       // (a) A RATIO is measured over its denominator, so that is the cohort listed. Before
       // this, a pull-through card reading "3 of 5" listed every matched file — including
       // files in neither half of the fraction.
       const ratio = await api('POST', `/api/dashboards/${did}/cards`,
-        { title: 'Pull-through', metric_key: 'pull_through', date_field: 'created_at', period: { kind: 'all' } }, adminTok);
+        { title: 'Pull-through', metric_key: 'pull_through', date_field: 'created_at', period: { kind: 'all' }, filter: onlyDrill }, adminTok);
       const rAns = await api('GET', `/api/dashboards/cards/${ratio.body.card.id}/answer`, null, adminTok);
       const rFiles = await api('GET', `/api/dashboards/cards/${ratio.body.card.id}/files?limit=1000`, null, adminTok);
       ok(rAns.body.ok === true && rAns.body.denominator != null, 'a ratio card answers with its denominator');
@@ -379,7 +391,7 @@ async function main() {
       // (b) A CLICKED BAR is part of the question. Every bucket must list its own files, and
       // the buckets must add up to the whole.
       const trend = await api('POST', `/api/dashboards/${did}/cards`,
-        { title: 'By status', metric_key: 'file_count', viz: 'breakdown', group_by: 'status' }, adminTok);
+        { title: 'By status', metric_key: 'file_count', viz: 'breakdown', group_by: 'status', filter: onlyDrill }, adminTok);
       const tAns = await api('GET', `/api/dashboards/cards/${trend.body.card.id}/answer`, null, adminTok);
       ok(Array.isArray(tAns.body.series) && tAns.body.series.length > 1, 'a breakdown answers with several buckets');
       let bucketSum = 0; let everyBucketMatches = true;
@@ -391,6 +403,10 @@ async function main() {
       }
       ok(everyBucketMatches, 'clicking a bucket lists exactly that bucket\'s files, not the whole card');
       const whole = await api('GET', `/api/dashboards/cards/${trend.body.card.id}/files?limit=1000`, null, adminTok);
+      // Guard the guard: if the card's own list ever reached the route's 1000 cap this
+      // comparison would be measuring the cap, not the partition, and would "fail" for a
+      // reason that says nothing about the product.
+      ok(whole.body.files.length < 1000, 'the card is small enough that the 1000-file cap is not in play');
       ok(bucketSum === whole.body.files.length,
         `and the buckets add up to the card (${bucketSum} = ${whole.body.files.length})`);
       const nonsense = await api('GET',
