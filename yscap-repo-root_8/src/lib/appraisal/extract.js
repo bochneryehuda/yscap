@@ -540,7 +540,15 @@ function compGrid(c) {
       }));
     }
     // The dollar line repeats with the rows; the grid reconciles on their sum.
-    const raAmt = raRows.map((r) => r.amount).filter((v) => v != null);
+    // `unitRows`, NOT `raRows` — THE LAST CONSUMER THE SUMMARY-ROW FIX MISSED.
+    // Class Appraisal and OneStop lead the grid with an UNNUMBERED
+    // `ROOM_ADJUSTMENT` carrying the property's TOTALS, so its
+    // `RoomAdjustmentAmount` is the sum of the per-unit rows beneath it — adding
+    // it to them counts the whole adjustment twice. Measured over the 152 real
+    // reports: 158 comparables carry both an unnumbered and a numbered row, 101
+    // of those unnumbered rows state an amount, and on 45 the two sums differ —
+    // e.g. a grid stating 2500 (total), 2500 (unit 1), 0 (unit 2) stored 5000.
+    const raAmt = unitRows.map((r) => r.amount).filter((v) => v != null);
     if (raAmt.length) {
       out.adjustments.push({ type: 'RoomCount', description: null,
         amount: raAmt.reduce((a, b) => a + b, 0) });
@@ -579,6 +587,33 @@ function compGrid(c) {
     const dom = toNum(X.attr(cd, 'GSEDaysOnMarketDescription')); if (dom != null && dom >= 0 && dom < 3000) out.dom = dom;
   }
   return out;
+}
+
+// DAYS ON MARKET, OUT OF THE MLS LINE THE APPRAISER TYPED.
+//
+// `GSEDaysOnMarketDescription` lives on the UAD `COMPARISON_DETAIL` block, and 73
+// of the 152 real reports carry no such block — so on those, days on market was
+// ALWAYS null. It was not missing: those vendors write it into the comparable's
+// own data-source string, which is an MLS reference with the DOM appended
+// ("FLEXMLS# 22526198;DOM 97", "CNYISMLS #S1612499;DOM 6"). 264 comparables
+// gain it, taking the corpus from 397 of 769 to 661.
+//
+// ONLY AN EXPLICIT `DOM` MARKER IS READ. The same string carries an MLS listing
+// number — "#S1612499", "# 22526198" — which is a far larger number sitting
+// right next to it, and a pattern loose enough to take a bare integer would file
+// a listing id as 22,526,198 days on market. The word-boundary before `DOM` also
+// keeps "RANDOM 45" and similar out (there is no boundary inside "RANDOM").
+const DOM_RE = /\bDOM\b[:\s#=]*([0-9]{1,4})\b/i;
+const DOM_WORDS_RE = /\b([0-9]{1,4})\s*days?\s+on\s+(?:the\s+)?market\b/i;
+function domFromText(...parts) {
+  const s = parts.filter(Boolean).join(' ');
+  if (!s) return null;
+  const m = DOM_RE.exec(s) || DOM_WORDS_RE.exec(s);
+  if (!m) return null;
+  const n = toNum(m[1]);
+  // The same ceiling the UAD path uses — a comparable is a SOLD property, so a
+  // four-figure DOM is a typo or a misread, not a listing that sat for a decade.
+  return n != null && n >= 0 && n < 3000 ? n : null;
 }
 // Parse "New Haven, CT 06519" (a comp's PropertyStreetAddress2) → {city,state,zip}. Fallback for
 // the ~1/3 of files that omit the separate PropertyCity/State/PostalCode attrs. Never guessed —
@@ -660,6 +695,18 @@ function comparables(root, effectiveYear) {
       longitude: geo(X.attr(loc, 'LongitudeNumber'), 180),
       saleType: enumOf(X.attr(cd, 'GSESaleType'), ['ArmsLengthSale', 'REOSale', 'EstateSale', 'ShortSale', 'Listing', 'CourtOrderedSale']),
       financingType: clean(X.attr(cd, 'GSEFinancingType')),
+      // THE SELLER'S CONCESSION IS NOT THE APPRAISER'S ADJUSTMENT FOR IT, and the
+      // grid's `SALE_PRICE_ADJUSTMENT` line typed `SalesConcessions` is
+      // deliberately NOT used as a fallback here, even though it is present on 206
+      // comparables where this is null. Measured over the 187 comparables that
+      // state BOTH: they disagree on 12%, and not by rounding — a $15,000
+      // concession beside a ZERO adjustment (the appraiser judged it typical for
+      // the market and adjusted nothing) and a $0 concession beside a −$77,000
+      // adjustment (a concession-typed line carrying something else). Copying the
+      // adjustment across would file "no concession" on a real $15,000 one and
+      // invent a $77,000 one where the report says none — a wrong answer, not a
+      // missing one. Nothing is lost: every adjustment line is already stored
+      // verbatim in `adjustments`.
       compConcession: (() => { const n = toNum(X.attr(cd, 'GSEConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })(),
       priorSaleAmount: psAmt, priorSaleDate: psDate, priorSaleNominal: isNominal(psAmt),
       beds: g.beds, bathsText: g.baths, bathsFull: g.bathsFull, bathsHalf: g.bathsHalf, totalRooms: g.totalRooms,
@@ -698,7 +745,12 @@ function comparables(root, effectiveYear) {
       // The basis travels WITH the number: $150 a foot of LIVING area and $150 a
       // foot of GROSS BUILDING area describe different properties, and a 1025
       // states the second one.
-      dom: g.dom, pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
+      // The UAD figure WINS — it is the structured one. The MLS-line reading is a
+      // fallback for the 73 reports that carry no UAD block at all, never an
+      // override of a value the report stated properly.
+      dom: g.dom != null ? g.dom
+        : domFromText(X.attr(c, 'DataSourceDescription'), X.attr(c, 'DataSourceVerificationDescription')),
+      pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
       pricePerUnit: g.pricePerUnit, monthlyRent: g.monthlyRent, grm: g.grm, ageYears: g.ageYears,
       // THE YEAR THE COMPARABLE WAS BUILT. The MISMO grid has no element for it —
       // the Age adjustment states an AGE IN YEARS ("106", "114 yrs"), which is why

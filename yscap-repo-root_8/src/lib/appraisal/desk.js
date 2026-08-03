@@ -619,7 +619,7 @@ const BASIS_RANK = { grid: 3, style: 2, price: 2, form: 1 };
 
 async function backfillComparableParseOnce(limit = 150) {
   const { COMP_PARSE_VERSION, comparableRowFrom } = require('./import');
-  let scanned = 0, rewritten = 0, unrecoverable = 0, missing = 0;
+  let scanned = 0, rewritten = 0, unrecoverable = 0, missing = 0, rentalRowsFailed = 0;
   try {
     const rows = (await db.query(
       `SELECT a.id, a.source_xml_document_id
@@ -627,7 +627,19 @@ async function backfillComparableParseOnce(limit = 150) {
         WHERE a.superseded = false
           AND a.source_xml_document_id IS NOT NULL
           AND (a.comp_parse_version IS NULL OR a.comp_parse_version < $2)
-          AND EXISTS (SELECT 1 FROM appraisal_comparables c WHERE c.appraisal_id = a.id AND c.is_subject = false)
+          -- THE GATE HAS TO ADMIT A REPORT THIS SWEEP CAN NOW REPAIR. It asked for
+          -- a non-subject SALES comparable, which was the whole job when it was
+          -- written — but since db/435 the sweep also rebuilds the RENT SCHEDULE,
+          -- and a report whose grid is a rent schedule (or whose sales comparables
+          -- were never stored) would be stranded at its old parse version forever
+          -- while carrying exactly the empty schedule this exists to fill. Widened
+          -- to either grid. A report with NEITHER is still skipped — there would be
+          -- nothing to rewrite, and admitting it would re-read its XML on every
+          -- boot for no reason.
+          AND (EXISTS (SELECT 1 FROM appraisal_comparables c
+                        WHERE c.appraisal_id = a.id AND c.is_subject = false)
+            OR EXISTS (SELECT 1 FROM appraisal_rental_comparables rc
+                        WHERE rc.appraisal_id = a.id))
         ORDER BY a.imported_at ASC NULLS LAST
         LIMIT $1`, [limit * 4, COMP_PARSE_VERSION])).rows;
     for (const r of rows) {
@@ -733,33 +745,63 @@ async function backfillComparableParseOnce(limit = 150) {
         // sees the schedule missing. Nothing points at these rows by id (the
         // warehouse keys on the report plus the sequence), so a re-parse that
         // reads a row differently simply corrects it.
+        // THE SAME LAW AS THE SALES GRID ABOVE: A REPORT THAT WENT SILENT NEVER
+        // BLANKS A FACT. The first cut of this block wrote all twenty columns from
+        // EXCLUDED unconditionally, twenty lines below the comment explaining why
+        // that is forbidden. Proven on a real report (134 Butler St) with its
+        // stored bytes truncated to 97% — which `xml.js` recovers from SILENTLY,
+        // so the re-parse still reports `ok`: `year_built` was destroyed on all
+        // four rental rows, and one row lost its units, its age and its entire
+        // unit mix. The report was then stamped and never revisited.
+        //
+        // So the update is built per row from the columns this reading actually
+        // states, exactly as `cols` is for the sales grid.
+        const RENTAL_COLS = ['is_subject', 'address', 'city', 'state', 'zip', 'proximity',
+          'monthly_rent', 'rent_per_gba', 'gba_sqft', 'rent_controlled', 'data_source',
+          'lease_terms', 'utilities_included', 'location_code', 'condition_uad',
+          'condition_text', 'age_years', 'year_built', 'units', 'unit_mix'];
         for (const rc of (A.rentalComps || [])) {
-          await client.query(
-            `INSERT INTO appraisal_rental_comparables
-               (appraisal_id, seq, is_subject, address, city, state, zip, proximity,
-                monthly_rent, rent_per_gba, gba_sqft, rent_controlled, data_source,
-                lease_terms, utilities_included, location_code,
-                condition_uad, condition_text, age_years, year_built, units, unit_mix)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-             ON CONFLICT (appraisal_id, COALESCE(seq, '')) DO UPDATE SET
-               is_subject = EXCLUDED.is_subject, address = EXCLUDED.address,
-               city = EXCLUDED.city, state = EXCLUDED.state, zip = EXCLUDED.zip,
-               proximity = EXCLUDED.proximity, monthly_rent = EXCLUDED.monthly_rent,
-               rent_per_gba = EXCLUDED.rent_per_gba, gba_sqft = EXCLUDED.gba_sqft,
-               rent_controlled = EXCLUDED.rent_controlled, data_source = EXCLUDED.data_source,
-               lease_terms = EXCLUDED.lease_terms, utilities_included = EXCLUDED.utilities_included,
-               location_code = EXCLUDED.location_code, condition_uad = EXCLUDED.condition_uad,
-               condition_text = EXCLUDED.condition_text, age_years = EXCLUDED.age_years,
-               year_built = EXCLUDED.year_built, units = EXCLUDED.units,
-               unit_mix = EXCLUDED.unit_mix`,
-            [r.id, rc.seq, !!rc.isSubject, rc.address, rc.city, rc.state, rc.zip, rc.proximity,
-              rc.monthlyRent, rc.rentPerGba, rc.gba, rc.rentControlled, rc.dataSource,
-              rc.leaseTerms, rc.utilitiesIncluded, rc.locationCode,
-              rc.conditionUad, rc.conditionText, rc.ageYears,
-              Number.isFinite(Number(rc.yearBuilt)) && rc.yearBuilt != null && rc.yearBuilt !== ''
-                ? Math.trunc(Number(rc.yearBuilt)) : null,
-              rc.units,
-              rc.unitMix ? JSON.stringify(rc.unitMix) : null]);
+          const yb = rc.yearBuilt != null && rc.yearBuilt !== '' && Number.isFinite(Number(rc.yearBuilt))
+            ? Math.trunc(Number(rc.yearBuilt)) : null;
+          const val = {
+            // `is_subject` is a BOOLEAN whose false is meaningful — it is the row's
+            // identity, not a fact that can go silent — so it is always written.
+            is_subject: !!rc.isSubject,
+            address: rc.address, city: rc.city, state: rc.state, zip: rc.zip,
+            proximity: rc.proximity, monthly_rent: rc.monthlyRent, rent_per_gba: rc.rentPerGba,
+            gba_sqft: rc.gba, rent_controlled: rc.rentControlled, data_source: rc.dataSource,
+            lease_terms: rc.leaseTerms, utilities_included: rc.utilitiesIncluded,
+            location_code: rc.locationCode, condition_uad: rc.conditionUad,
+            condition_text: rc.conditionText, age_years: rc.ageYears, year_built: yb,
+            units: rc.units, unit_mix: rc.unitMix ? JSON.stringify(rc.unitMix) : null,
+          };
+          // `rent_controlled` is a tri-state (true / false / not stated), so its
+          // FALSE must survive the filter — only null and '' mean "silent".
+          const stated = RENTAL_COLS.filter((k) => val[k] != null && val[k] !== '');
+          const cols = ['appraisal_id', 'seq', ...stated];
+          const args = [r.id, rc.seq, ...stated.map((k) => val[k])];
+          // AND ONE BAD RENTAL ROW MAY NOT DISCARD THE SALES-GRID REPAIR. This
+          // UPSERT sits between BEGIN and COMMIT, and the enclosing catch rolls the
+          // whole transaction back and swallows the reason — so a single unstorable
+          // rental figure threw away the entire re-parse for that report, left it
+          // unstamped, and re-scanned it every boot forever. Reproduced: with the
+          // rental write unable to run, 95 of 149 reports — every one carrying a
+          // rent schedule — reported `rewritten 0, unrecoverable 0, missing 0`,
+          // naming none of it. Each row now gets its own savepoint, the same shape
+          // the warehouse side of this feature already uses.
+          try {
+            await client.query('SAVEPOINT rental_row');
+            await client.query(
+              `INSERT INTO appraisal_rental_comparables (${cols.join(', ')})
+               VALUES (${cols.map((_, i) => `$${i + 1}`).join(',')})
+               ON CONFLICT (appraisal_id, COALESCE(seq, '')) DO UPDATE SET
+                 ${stated.map((k) => `${k} = EXCLUDED.${k}`).join(', ')}`, args);
+            await client.query('RELEASE SAVEPOINT rental_row');
+          } catch (e) {
+            await client.query('ROLLBACK TO SAVEPOINT rental_row').catch(() => {});
+            await client.query('RELEASE SAVEPOINT rental_row').catch(() => {});
+            rentalRowsFailed++;
+          }
         }
 
         const v = (A.values || {});
@@ -793,7 +835,11 @@ async function backfillComparableParseOnce(limit = 150) {
   // `missing` = a stored comparable the re-parsed XML no longer names. Reported
   // rather than silent: it keeps its stored values, and a climbing count means
   // the stored bytes and the stored grid have drifted apart.
-  return { scanned, rewritten, unrecoverable, missing, version: COMP_PARSE_VERSION };
+  // `rentalRowsFailed` is REPORTED, never silent: a row skipped by its own
+  // savepoint leaves the rest of the re-parse intact, which is the point — but a
+  // climbing count means the rent schedule and the column it is written into
+  // have drifted apart, and a silent skip would read as "nothing to repair".
+  return { scanned, rewritten, unrecoverable, missing, rentalRowsFailed, version: COMP_PARSE_VERSION };
 }
 
 // Previous files (owner-directed 2026-07-30): run the note-buyer appraisal checks (EMCAP)

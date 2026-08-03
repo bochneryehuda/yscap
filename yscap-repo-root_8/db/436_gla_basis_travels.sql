@@ -12,13 +12,20 @@
 -- engine derives its per-square-foot adjustment and its ±25% size bracket from
 -- it.
 --
--- Measured inside ONE report — 766 Winchester Ave, New Haven: the sales grid
--- states 2,247 (living) and the rent schedule states 2,747 (building), same
--- appraisal, same date. The rental observation is written last, so on a tie it
--- won and the property rolled up to 2,747 labelled as living area. The class
--- PRE-DATES the rent schedule (51 of 112 winning `gla` observations in a 25-file
--- sample were already a 1025's building area); db/435 widened it, because a rent
--- schedule is ALWAYS building area.
+-- CORRECTION (post-merge audit): the 766 Winchester Ave example this file
+-- originally gave was WRONG, and is recorded here rather than quietly deleted.
+-- That report is a 1025 whose sales grid states `_Type="GrossBuildingArea"`, so
+-- BOTH its numbers are building areas (2,247 on the grid, 2,747 on the rent
+-- schedule) and there was never a living area to prefer — the audit measured the
+-- fix changing 0 properties in the corpus, because only 1 property of 954 holds
+-- both bases at all and its two numbers agree.
+--
+-- The change is still right, and for the reason the rest of this file gives: 391
+-- of 954 properties roll up a BUILDING area into a column the search screen
+-- labels "Gross living area", and until now nothing recorded which one it was.
+-- The preference rule is what makes a future mixed-basis property answer
+-- correctly; the basis column is what makes today's 391 honest. What it is NOT
+-- is a fix that moves a number today, and claiming otherwise was the error.
 --
 -- Two halves, and the second is the one that matters:
 --   · the basis is carried onto the property, so a reader can tell;
@@ -55,8 +62,52 @@ END $$;
 -- same migration got it right one table over (`uq_rental_comps_seq` uses
 -- `COALESCE(seq,'')`). Rebuilt with the COALESCE, and the ON CONFLICT clauses in
 -- `upsertObservation` are written to match.
-DROP INDEX IF EXISTS uq_obs_rental_by_appraisal;
-DROP INDEX IF EXISTS uq_obs_rental_by_import;
+--
+-- TWO THINGS THE FIRST CUT GOT WRONG HERE, both found by audit and both fixed
+-- below:
+--
+-- (a) IT REBUILT BOTH INDEXES ON EVERY BOOT. `DROP INDEX IF EXISTS` followed by
+--     `CREATE UNIQUE INDEX IF NOT EXISTS` never settles — the DROP guarantees the
+--     IF NOT EXISTS is dead — so every deploy took an ACCESS EXCLUSIVE lock and
+--     rebuilt them from scratch (index OIDs changed on every run). The drop now
+--     fires ONLY when an index of that name exists with the OLD definition, i.e.
+--     one that does not COALESCE the sequence.
+--
+-- (b) IT COULD NOT BE APPLIED TO THE DATABASE IT EXISTS TO REPAIR. The duplicates
+--     described above are exactly what a sequence-less rental produced under
+--     db/435's non-COALESCE index — and `CREATE UNIQUE INDEX` over them raises
+--     23505. The whole file is one implicit transaction, so NOTHING in db/436
+--     applied; worse, `migrate-boot` matches /already exists|duplicate/i against
+--     the error text, which a 23505 `... is duplicated.` detail satisfies, so it
+--     logged the failure as "already applied" and recorded it in the ledger. The
+--     duplicates are therefore removed FIRST, keeping the oldest row of each
+--     group (the original; the copies are re-ingest artefacts of the same
+--     reading, so nothing is lost).
+DELETE FROM property_observations a
+ USING property_observations b
+ WHERE a.role = 'rental_comparable' AND b.role = 'rental_comparable'
+   AND a.appraisal_id IS NOT NULL AND a.appraisal_id = b.appraisal_id
+   AND COALESCE(a.comp_seq, '') = COALESCE(b.comp_seq, '')
+   AND (a.created_at, a.id) > (b.created_at, b.id);
+
+DELETE FROM property_observations a
+ USING property_observations b
+ WHERE a.role = 'rental_comparable' AND b.role = 'rental_comparable'
+   AND a.import_id IS NOT NULL AND a.import_id = b.import_id
+   AND COALESCE(a.comp_seq, '') = COALESCE(b.comp_seq, '')
+   AND (a.created_at, a.id) > (b.created_at, b.id);
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uq_obs_rental_by_appraisal'
+               AND indexdef NOT LIKE '%COALESCE%') THEN
+    DROP INDEX uq_obs_rental_by_appraisal;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uq_obs_rental_by_import'
+               AND indexdef NOT LIKE '%COALESCE%') THEN
+    DROP INDEX uq_obs_rental_by_import;
+  END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_obs_rental_by_appraisal
   ON property_observations (appraisal_id, COALESCE(comp_seq, ''))
   WHERE role = 'rental_comparable' AND appraisal_id IS NOT NULL;

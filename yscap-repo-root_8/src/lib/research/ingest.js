@@ -233,7 +233,19 @@ const ROLLUP_FACTS = Object.freeze({
 // 6 — the roll-up's rule for `units` / `property_type` changed: a MEASURED unit
 //     count now outranks an INFERRED one whatever the dates say, so every
 //     property has to be recomputed.
-const ROLLUP_VERSION = 7;
+// 7 — db/436 added `gla_basis` and `rental_comp_count` to the roll-up and changed
+//     how `gla` is chosen. The bump was MISSED, so `rerollStaleProperties` — the
+//     sweep that exists to carry exactly this kind of change onto the back book —
+//     reported "nothing to do" on a database where 848 properties had a `gla` and
+//     no basis and 242 had counts that did not add up. Only reports going back
+//     through the comparable re-parse were repaired, which excludes every report
+//     that reached the warehouse through the upload door.
+// 8 — db/437 added the view type, the basement exit and the below-grade room
+//     breakdown, and corrected two roll-up rules the audit proved wrong: an
+//     UNRECORDED area basis no longer outranks a stated building area, and
+//     `gla_basis` no longer travels without the `gla` it describes (105 property
+//     rows read "we do not know the area, but we know it is a building area").
+const ROLLUP_VERSION = 8;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -646,10 +658,29 @@ async function rollupProperty(db, propertyId) {
   // building; on a tie the rental was written last and won. Nothing is
   // converted — the difference varies per building, so the honest answer is to
   // prefer the one that answers the question and record which it is.
+  // AN UNRECORDED BASIS IS NOT A LIVING AREA. The first cut ranked by
+  // `gla_basis === 'gba' ? 1 : 0`, which demotes only the value that SAYS it is a
+  // building area — so NULL (an observation written before db/427 added the
+  // column, which could equally have been either) scored level with a stated
+  // 'gla' and won on recency. Proven: a 2020 observation with no basis beat a
+  // 2026 one stating `gba`, and the property then recorded NULL for what its own
+  // number means. Ranked explicitly instead — stated living, then unknown, then
+  // stated building — so an unlabelled number can never impersonate a living area
+  // and can never outrank one.
+  const GLA_RANK = { gla: 2, gba: 0 };
   const bestGla = obs
     .filter((o) => o.gla != null && o.gla !== '')
-    .sort((a, b) => (a.gla_basis === 'gba' ? 1 : 0) - (b.gla_basis === 'gba' ? 1 : 0))[0];
+    .sort((a, b) => (GLA_RANK[b.gla_basis] != null ? GLA_RANK[b.gla_basis] : 1)
+      - (GLA_RANK[a.gla_basis] != null ? GLA_RANK[a.gla_basis] : 1))[0];
+  // THE BASIS TRAVELS WITH THE NUMBER, AND ONLY WITH IT. `gla_basis` was also
+  // left in the generic recency loop, which writes each fact independently — so a
+  // rent schedule naming a building but stating no area produced an observation
+  // with `gla_basis='gba', gla=NULL`, and the loop wrote the basis onto the
+  // property on its own. Measured: 105 property rows reading "we do not know the
+  // area, but we know it is a building area." The pair is set here together, and
+  // cleared together when no observation states an area at all.
   if (bestGla) { set.gla = bestGla.gla; set.gla_basis = bestGla.gla_basis || null; }
+  else { set.gla_basis = null; }
 
   const bestUnits = obs
     .filter((o) => o.units != null && o.units !== '')
@@ -1016,7 +1047,15 @@ async function bestEffort(db, name, run, onError) {
     if (held) await db.query(`RELEASE SAVEPOINT ${name}`);
     return r;
   } catch (e) {
-    if (held) { try { await db.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch (__) { /* tx already gone */ } }
+    // ROLLING BACK TO A SAVEPOINT DOES NOT RELEASE IT. The subtransaction stays
+    // open, and a report whose rent schedule fails row after row therefore leaves
+    // one per failure — past 64 open subtransactions Postgres overflows its
+    // per-backend subxid cache and every other session's visibility checks start
+    // hitting disk. Released explicitly, on the SUCCESS path above and here.
+    if (held) {
+      try { await db.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch (__) { /* tx already gone */ }
+      try { await db.query(`RELEASE SAVEPOINT ${name}`); } catch (__) { /* ditto */ }
+    }
     onError(e);
     return null;
   }
@@ -1438,7 +1477,13 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       basement_exit: txt(c.basement_exit),
       basement_sqft: null, basement_finished_pct: null,
       garage_type: fromAdjustments(c.adjustments, 'garage', (v) => txt(v)), garage_spaces: null,
-      price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
+      price_per_gla: c.price_per_gla,
+      // NOT `|| 'gla'`. A comparable row stored before db/427 added the column has
+      // NO recorded basis, and defaulting it to 'gla' ASSERTS it is a living area
+      // — which then outranks a correctly-labelled building area in the roll-up,
+      // whatever the dates. That is the exact fact-dropping this pair exists to
+      // stop. An unrecorded basis stays unrecorded and ranks between the two.
+      gla_basis: txt(c.gla_basis), proximity: txt(c.proximity),
       neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
       zoning_id: null, zoning_desc: null,
       occupancy_status: null, market_rent: null,

@@ -685,7 +685,12 @@ function buildFieldsJson(A) {
 //     bedroom is not a bedroom), the basement's exit type, and the UAD view TYPE
 //     beside the view RATING — a comp facing a cemetery and one facing a park
 //     were both stored as nothing more than one appraiser's verdict.
-const COMP_PARSE_VERSION = 7;
+// 8 — DAYS ON MARKET off the MLS line. It was read from the UAD block alone, and
+//     73 of the 152 real reports carry no such block — those vendors append it to
+//     the comparable's data-source string ("FLEXMLS# 22526198;DOM 97"). 264
+//     comparables gain it, 397 of 769 -> 660. 7 was claimed by the commit
+//     immediately before this one, so a report stamped 7 must be re-read.
+const COMP_PARSE_VERSION = 8;
 
 module.exports = {
   importAppraisal,

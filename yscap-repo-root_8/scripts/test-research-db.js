@@ -829,6 +829,83 @@ async function makeAppraisal(appId, o) {
     // not cascaded) — that is the point of a cross-file database, so clean up by key.
     await db.query(`DELETE FROM market_observations WHERE city = $1`, [CITY]);
     await db.query(`DELETE FROM properties WHERE city = $1`, [CITY]);
+    // -----------------------------------------------------------------
+    // THE AREA'S BASIS — what a stored `gla` is a measure of (db/436 + db/437).
+    //
+    // A gross LIVING area (a 1004 grid) and a gross BUILDING area (a 1025 grid,
+    // and every rent schedule — it includes the stairwells, the shared halls and
+    // the basement) are different measurements of different things, and `gla` is
+    // read blind downstream: the search screen labels it "Gross living area",
+    // sorts on it and divides the sale price by it.
+    //
+    // Two rules, and a post-merge audit proved the first cut of BOTH wrong:
+    //   · an UNRECORDED basis is not a living area. The first comparator demoted
+    //     only the value that SAYS 'gba', so NULL tied with a stated 'gla' and
+    //     won on recency — and the property then recorded NULL for what its own
+    //     number means while outranking a correctly-labelled building area.
+    //   · the basis travels WITH the area or not at all. It was left in the
+    //     generic recency loop, which writes each fact independently, so a rent
+    //     schedule naming a building but stating no area produced 105 property
+    //     rows reading "we do not know the area, but we know it is a building
+    //     area."
+    {
+      const rp = ingest._internals.rollupProperty;
+      const pid = (await db.query(
+        `INSERT INTO properties (address_key, display_address, state)
+         VALUES ('gla-basis-test-' || gen_random_uuid(), '1 Basis Test Rd', 'CT') RETURNING id`)).rows[0].id;
+      const obs = (gla, basis, on) => db.query(
+        `INSERT INTO property_observations (property_id, role, gla, gla_basis, observed_on, adjustments)
+         VALUES ($1,'comparable',$2,$3,$4,'[]'::jsonb)`, [pid, gla, basis, on]);
+      const clear = () => db.query(`DELETE FROM property_observations WHERE property_id=$1`, [pid]);
+      const rolled = async () => (await db.query(
+        `SELECT gla, gla_basis FROM properties WHERE id=$1`, [pid])).rows[0];
+
+      // A LIVING area wins on the merits, whatever the dates say.
+      await obs(5000, 'gba', '2019-01-01'); await obs(6000, 'gla', '2026-01-01');
+      await rp(db, pid);
+      let r = await rolled();
+      ok(Number(r.gla) === 6000 && r.gla_basis === 'gla',
+        `a stated living area wins over a stated building area (${r.gla}/${r.gla_basis})`);
+
+      await clear();
+      await obs(6000, 'gla', '2019-01-01'); await obs(5000, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 6000 && r.gla_basis === 'gla',
+        `…and still wins when the building area is the NEWER reading (${r.gla}/${r.gla_basis})`);
+
+      // An UNRECORDED basis sits between the two: it outranks a stated building
+      // area, and it is recorded as unknown rather than asserted to be living.
+      await clear();
+      await obs(1000, null, '2020-01-01'); await obs(2000, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 1000 && r.gla_basis === null,
+        `an unrecorded basis outranks a stated building area, and stays unrecorded (${r.gla}/${r.gla_basis})`);
+
+      await clear();
+      await obs(3000, 'gla', '2019-01-01'); await obs(4000, null, '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 3000 && r.gla_basis === 'gla',
+        `but it never outranks a stated LIVING area (${r.gla}/${r.gla_basis})`);
+
+      // A basis may never travel without the area it describes.
+      await clear();
+      await obs(null, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(r.gla == null && r.gla_basis == null,
+        `a basis with no area at all is not written on its own (${r.gla}/${r.gla_basis})`);
+
+      const orphans = (await db.query(
+        `SELECT count(*)::int n FROM properties WHERE gla IS NULL AND gla_basis IS NOT NULL`)).rows[0].n;
+      ok(orphans === 0, `and no property anywhere records a basis with no area (${orphans})`);
+
+      await clear();
+      await db.query(`DELETE FROM properties WHERE id=$1`, [pid]);
+    }
+
     await db.query(`DELETE FROM appraisers WHERE identity_key IN ($1,$2)`, [`lic:NJ:${LIC}`, `lic:NJ:RG${LIC.slice(-6)}`]);
     await db.query(`DELETE FROM appraisers WHERE name_key = $1`, [`dana ${SURNAME.replace('Kessler', 'Whitfield')}`.toLowerCase()]);
   } catch (e) {
