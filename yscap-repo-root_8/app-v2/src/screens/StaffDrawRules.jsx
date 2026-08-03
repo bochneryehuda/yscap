@@ -298,31 +298,35 @@ function InvestorContacts() {
         copied; the borrower never is.
       </div>
       {[...byBuyer.entries()].map(([label, list]) => (
-        <div key={label} style={{ marginBottom: 10 }}>
-          <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>{label}</div>
+        <div key={label} className="inv-buyer">
+          <div className="act-label">{label}</div>
           {list.map((c) => (
-            <div key={c.id} className="row between" style={{ gap: 8, alignItems: 'center', padding: '3px 0', flexWrap: 'wrap' }}>
-              <span className="small" style={{ color: c.active ? '#141B22' : '#8a949a', textDecoration: c.active ? 'none' : 'line-through' }}>
-                {c.email}{c.name ? ` · ${c.name}` : ''}{c.role ? ` · ${c.role}` : ''}
+            <div key={c.id} className={'inv-contact' + (c.active ? '' : ' off')}>
+              <span className="inv-contact-who">
+                <b>{c.email}</b>
+                {(c.name || c.role) && <span className="inv-contact-meta">{[c.name, c.role].filter(Boolean).join(' · ')}</span>}
               </span>
               {c.active
-                ? <button className="btn btn-xs ghost" disabled={busy} onClick={() => remove(c.id, c.email)}>Remove</button>
-                : <span className="small" style={{ color: '#8a949a' }}>removed</span>}
+                ? <button className="btn btn-sm soft" disabled={busy} onClick={() => remove(c.id, c.email)}>Remove</button>
+                : <span className="inv-contact-meta">removed</span>}
             </div>
           ))}
         </div>
       ))}
-      {!rows.length && <div className="small" style={{ color: '#4B585C' }}>No investor contacts saved yet.</div>}
+      {!rows.length && <div className="act-card-sub" style={{ marginTop: 0 }}>No investor contacts saved yet.</div>}
 
-      <div className="row" style={{ gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input className="input" style={{ width: 150 }} placeholder="Note buyer (e.g. Fidelis)" value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
-        <input className="input" style={{ width: 230 }} placeholder="email@investor.com" value={draft.email} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))} />
-        <input className="input" style={{ width: 140 }} placeholder="Name (optional)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
-        <input className="input" style={{ width: 140 }} placeholder="Role (optional)" value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))} />
-        <button className="btn btn-sm primary" disabled={busy || !draft.label.trim() || !draft.email.trim()} onClick={add}>Add contact</button>
+      <div className="inv-add">
+        <div className="act-label" style={{ marginBottom: 6 }}>Add a contact</div>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input className="input" style={{ width: 160 }} placeholder="Note buyer (e.g. Fidelis)" value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
+          <input className="input" style={{ width: 240 }} placeholder="email@investor.com" value={draft.email} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))} />
+          <input className="input" style={{ width: 150 }} placeholder="Name (optional)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          <input className="input" style={{ width: 150 }} placeholder="Role (optional)" value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))} />
+          <button className="btn btn-sm primary" disabled={busy || !draft.label.trim() || !draft.email.trim()} onClick={add}>Add contact</button>
+        </div>
       </div>
-      {note ? <div className="small" style={{ color: '#2F7F86', marginTop: 6 }}>{note}</div> : null}
-      {err ? <div className="small" style={{ color: '#B4453C', marginTop: 6 }}>{err}</div> : null}
+      {note ? <div className="act-card-sub" style={{ color: 'var(--primary)' }}>{note}</div> : null}
+      {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
     </div>
   );
 }
