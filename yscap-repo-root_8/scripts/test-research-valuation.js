@@ -597,6 +597,21 @@ function corpus(n, f) {
     'and it says nothing of the sort when the rate DOES match');
   ok(!/BUILDING area and the rate is measured on LIVING area/.test(glaLine(living, livingOnly).note),
     'nor on an ordinary living-area comparable');
+
+  // THE SUBJECT'S FOOT COUNTS TOO. Every peer rate is measured as the SUBJECT's
+  // LIVING area minus the comparable's, so a subject stated in gross building
+  // area matches neither rate. Rare — exactly one of the 132 properties we have
+  // lent on is in that state — but applying a rate to a delta it was not
+  // measured from is the thing this split exists to stop.
+  const gbaSubject = { gla: 2400, gla_basis: 'gba' };
+  const fromGbaSubject = V.suggestAdjustments(gbaSubject, building, both, { today: '2026-08-01' })
+    .find((l) => l.key === 'gla');
+  ok(fromGbaSubject && fromGbaSubject.amount === 18000,
+    'a building-area SUBJECT is not adjusted at the 2-4 unit rate — that rate assumes a living-area subject');
+  ok(/property being valued states gross BUILDING area/.test(fromGbaSubject.note),
+    '…and the note says the feet do not match, naming the subject rather than the sale');
+  ok(!/property being valued states gross BUILDING area/.test(glaLine(building, both).note),
+    'an ordinary living-area subject says nothing of the sort');
 }
 
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);

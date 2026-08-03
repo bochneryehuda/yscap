@@ -770,6 +770,13 @@ router.post('/valuations', async (req, res, next) => {
 function subjectSnapshot(s) {
   const keep = ['id', 'display_address', 'street', 'unit', 'city', 'state', 'zip', 'county', 'apn',
     'latitude', 'longitude', 'property_type', 'property_category', 'units', 'year_built', 'gla',
+    // WHICH FOOT the subject's `gla` is, for the same reason the comparable
+    // carries it. Rare on a subject — of the properties we have actually lent on,
+    // 106 state living area, 25 say nothing and exactly ONE states gross building
+    // area — but the peer rates are measured as the subject's LIVING area minus
+    // the comparable's, so a building-area subject matches neither rate, and the
+    // suggester has to be able to see that rather than quietly using one.
+    'gla_basis',
     'lot_area', 'lot_sqft', 'beds', 'baths_full', 'baths_half', 'baths_text', 'total_rooms',
     'stories', 'design_style', 'condition_uad', 'condition_text', 'quality_uad', 'quality_text',
     'view_rating', 'location_rating', 'basement_sqft', 'below_grade_sqft', 'garage_type',

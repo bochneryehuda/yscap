@@ -753,7 +753,13 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
   // living area, which is what it is on a 1004 and on every row written before
   // db/427.
   const compGba = String((comp && comp.gla_basis) || '').toLowerCase() === 'gba';
-  const matched = compGba && rates && rates.glaAdjustmentPerSqftGba;
+  // THE SUBJECT'S FOOT MATTERS TOO. Every peer rate is measured as the SUBJECT's
+  // living area minus the comparable's, so a subject stated in gross building
+  // area matches neither rate. Rare — of the properties we have lent on, exactly
+  // one of 132 is in that state — but silently applying a rate to a delta it was
+  // not measured from is the thing this whole split exists to stop.
+  const subjectGba = String((subject && subject.gla_basis) || '').toLowerCase() === 'gba';
+  const matched = !subjectGba && compGba && rates && rates.glaAdjustmentPerSqftGba;
   const rate = matched ? rates.glaAdjustmentPerSqftGba : (rates && rates.glaAdjustmentPerSqft) || null;
   const sqftRate = rate ? num(rate.value) : null;
   const sg = num(subject && subject.gla), cg = num(comp && comp.gla);
@@ -764,12 +770,15 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
     // apart, so it is not a regression — but the two rates differ materially
     // ($45 against $28 on our own corpus), and a suggestion carrying somebody
     // else's foot has to say so or it gets believed.
-    const mismatch = compGba && !matched;
+    const mismatch = subjectGba || (compGba && !matched);
     lines.push({ key: 'gla', amount: round((sg - cg) * sqftRate, 50), source: 'suggested',
       note: `${Math.round(sg - cg)} sq ft ${sg > cg ? 'more' : 'less'} than this sale, at about $${sqftRate}/sq ft (${rate.basis})`
         + (mismatch
-          ? ' — NOTE this sale states gross BUILDING area and the rate is measured on LIVING area, '
-            + 'because this market has too few 2-4 unit adjustments to read one; check it before accepting'
+          ? (subjectGba
+            ? ' — NOTE the property being valued states gross BUILDING area while every rate here is '
+              + 'measured from a LIVING area subject, so the two feet do not match; check it before accepting'
+            : ' — NOTE this sale states gross BUILDING area and the rate is measured on LIVING area, '
+              + 'because this market has too few 2-4 unit adjustments to read one; check it before accepting')
           : '') });
   }
   // The URAR grid has ONE "above-grade room count" line covering total rooms,
