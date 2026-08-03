@@ -2007,16 +2007,33 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
           reason: 'clickup_year_out_of_range', clickupValue: p.proposed, portalValue: portalVal });
       }
     }
+    // The file's stage BEFORE this pull. Read here rather than after, because the UPDATE
+    // below is what changes it — and a stage move made in ClickUp had, until db/421,
+    // written no history row at all, so every "how long did this file sit in underwriting"
+    // answer was computed over the portal-driven minority of moves. History not recorded
+    // cannot be reconstructed later, which is why it is captured on the way past.
+    const stageBefore = (await db.query(
+      `SELECT status FROM applications WHERE id=$1`, [targetId]).catch(() => ({ rows: [] }))).rows[0];
     // Restore-on-reflip: if this file had been auto-descoped because its program
     // was previously changed to a non-RTL type, flipping it back to an RTL program
     // brings it back (clear deleted_at). We ONLY un-delete a file that WE descoped
     // (sync_state='descoped') — an admin-archived file (deleted_at set, sync_state
     // still 'linked') is left archived so the pull never resurrects it.
-    await db.query(
+    const statusAfter = await db.query(
       `UPDATE applications SET ${set}, clickup_pipeline_task_id=$${vals.length + 2}, sync_state='linked',
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
-              clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
+              clickup_last_synced_at=now(), updated_at=now() WHERE id=$1
+        RETURNING status`,
       [targetId, ...vals, task.id]);
+    // Compare what the row ACTUALLY holds now against what it held before — not the
+    // computed `external`, because the clear-to-close confirm gate can hold a move back
+    // and recording the held status would put a stage change on the timeline that never
+    // happened. Best-effort: a history write never breaks the pull.
+    if (stageBefore && statusAfter.rows[0] && stageBefore.status !== statusAfter.rows[0].status) {
+      await require('../lib/stage-history').record(
+        targetId, stageBefore.status, statusAfter.rows[0].status, { source: 'clickup' });
+      await db.query(`UPDATE applications SET status_changed_at=now() WHERE id=$1`, [targetId]).catch(() => {});
+    }
     // If ClickUp supplied a NEW loan officer for this file, drop the LO-
     // notification-gate's cached officer pointer so the very next borrower/
     // staff notification routes to the new LO's prefs + drafts (mirrors the

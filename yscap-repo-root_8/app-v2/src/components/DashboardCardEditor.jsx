@@ -1,0 +1,218 @@
+import React from 'react';
+import RuleBuilder, { emptyGroup } from './RuleBuilder.jsx';
+import { api } from '../lib/api.js';
+
+/**
+ * Building or changing one card.
+ *
+ * Four questions, in the order a person actually thinks about them:
+ *   what am I measuring · which files · over what time · how should it look
+ *
+ * The condition builder is the SAME `RuleBuilder` the Condition Center uses. It is fed a
+ * dashboard field catalogue from `GET /api/dashboards/meta`, which is why a field added to
+ * the server registry shows up here with no front-end change — and why this screen can
+ * never offer an operator the server would refuse.
+ *
+ * The preview runs the REAL query through the REAL endpoint before anything is saved, so
+ * "will this work" is answered by the thing that will answer it later, not by a guess.
+ */
+
+const MUTED = '#4B585C';
+const INK = '#141B22';
+
+const PERIODS = [
+  { v: 'all', label: 'All time' },
+  { v: 'mtd', label: 'This month so far' },
+  { v: 'this_month', label: 'This whole month' },
+  { v: 'last_month', label: 'Last month' },
+  { v: 'qtd', label: 'This quarter so far' },
+  { v: 'ytd', label: 'This year so far' },
+  { v: 'last_days', label: 'The last N days' },
+  { v: 'last_months', label: 'The last N months' },
+  { v: 'fixed', label: 'Between two dates' },
+];
+
+const VIZ = [
+  { v: 'number', label: 'A big number' },
+  { v: 'trend', label: 'A trend over time' },
+  { v: 'breakdown', label: 'A breakdown by something' },
+  { v: 'table', label: 'A ranked list' },
+];
+
+export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDelete }) {
+  const [draft, setDraft] = React.useState(() => ({
+    title: '', subtitle: '', viz: 'number', metric_key: 'file_count',
+    filter: null, date_field: '', period: { kind: 'all' }, group_by: '', grain: '',
+    band: 'body', width: 'one', target: null, ...(card || {}),
+  }));
+  const [preview, setPreview] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const seq = React.useRef(0);
+
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
+
+  // Live preview, debounced, last-request-wins.
+  React.useEffect(() => {
+    const mine = ++seq.current;
+    const t = setTimeout(() => {
+      const body = { ...draft };
+      if (!body.date_field) { delete body.date_field; body.period = { kind: 'all' }; }
+      if (!body.group_by) delete body.group_by;
+      if (!body.grain) delete body.grain;
+      api.dashboardPreview(body)
+        .then((r) => { if (seq.current === mine) { setPreview(r); setErr(r && r.ok === false ? r.error : ''); } })
+        .catch((e) => { if (seq.current === mine) { setPreview(null); setErr(e.message || 'Could not try that out'); } });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [draft]);
+
+  const isTrend = draft.viz === 'trend';
+  const isBreakdown = draft.viz === 'breakdown' || draft.viz === 'table';
+
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      const body = { ...draft };
+      if (!body.date_field) { delete body.date_field; body.period = { kind: 'all' }; }
+      if (!body.group_by) body.group_by = null;
+      if (!body.grain) body.grain = null;
+      await onSave(body);
+    } catch (e) {
+      setErr(e.message || 'Could not save that card');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="dsh-editor">
+      <div className="dsh-ed-grid">
+        <label className="field"><span>What should the card be called?</span>
+          <input className="input" value={draft.title} maxLength={120}
+            placeholder="Funded this month" onChange={(e) => set({ title: e.target.value })} /></label>
+        <label className="field"><span>A line underneath (optional)</span>
+          <input className="input" value={draft.subtitle || ''} maxLength={160}
+            placeholder="against last year" onChange={(e) => set({ subtitle: e.target.value })} /></label>
+      </div>
+
+      <h4 style={{ color: MUTED }}>1 · What are we measuring?</h4>
+      <div className="dsh-ed-grid">
+        <label className="field"><span>Measure</span>
+          <select className="input" value={draft.metric_key} onChange={(e) => set({ metric_key: e.target.value })}>
+            {(meta.measures || []).map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select></label>
+        <label className="field"><span>How should it look?</span>
+          <select className="input" value={draft.viz}
+            onChange={(e) => {
+              const viz = e.target.value;
+              set({ viz, grain: viz === 'trend' ? (draft.grain || 'month') : '', group_by: viz === 'trend' ? '' : draft.group_by });
+            }}>
+            {VIZ.map((v) => <option key={v.v} value={v.v}>{v.label}</option>)}
+          </select></label>
+      </div>
+
+      <h4 style={{ color: MUTED }}>2 · Which files should it count?</h4>
+      <RuleBuilder meta={meta} value={draft.filter || emptyGroup(meta.fields)}
+        onChange={(filter) => set({ filter })} />
+      <button type="button" className="btn link small" onClick={() => set({ filter: null })}
+        style={{ marginTop: 6 }}>Count every file (clear the conditions)</button>
+
+      <h4 style={{ color: MUTED }}>3 · Over what time?</h4>
+      <div className="dsh-ed-grid">
+        <label className="field"><span>Which date drives it</span>
+          <select className="input" value={draft.date_field || ''}
+            onChange={(e) => set({ date_field: e.target.value })}>
+            <option value="">No date — count everything</option>
+            {(meta.dateFields || []).map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+          </select></label>
+        <label className="field"><span>Period</span>
+          <select className="input" disabled={!draft.date_field}
+            value={(draft.period && draft.period.kind) || 'all'}
+            onChange={(e) => set({ period: { ...(draft.period || {}), kind: e.target.value } })}>
+            {PERIODS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
+          </select></label>
+        {['last_days', 'last_months'].includes(draft.period && draft.period.kind) && (
+          <label className="field"><span>How many?</span>
+            <input className="input" type="number" min="1" max="120" value={(draft.period && draft.period.n) || 12}
+              onChange={(e) => set({ period: { ...draft.period, n: Number(e.target.value) } })} /></label>
+        )}
+        {draft.period && draft.period.kind === 'fixed' && (
+          <>
+            <label className="field"><span>From</span>
+              <input className="input" type="date" value={(draft.period && draft.period.from) || ''}
+                onChange={(e) => set({ period: { ...draft.period, from: e.target.value } })} /></label>
+            <label className="field"><span>To</span>
+              <input className="input" type="date" value={(draft.period && draft.period.to) || ''}
+                onChange={(e) => set({ period: { ...draft.period, to: e.target.value } })} /></label>
+          </>
+        )}
+        {isTrend && (
+          <label className="field"><span>Group the trend by</span>
+            <select className="input" value={draft.grain || 'month'} onChange={(e) => set({ grain: e.target.value })}>
+              {(meta.timeGrains || []).map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+            </select></label>
+        )}
+        {isBreakdown && (
+          <label className="field"><span>Break it down by</span>
+            <select className="input" value={draft.group_by || ''} onChange={(e) => set({ group_by: e.target.value })}>
+              <option value="">Pick something…</option>
+              {(meta.dimensions || []).map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+            </select></label>
+        )}
+      </div>
+
+      <h4 style={{ color: MUTED }}>4 · Where does it sit, and what is a good number?</h4>
+      <div className="dsh-ed-grid">
+        <label className="field"><span>Position</span>
+          <select className="input" value={draft.band} onChange={(e) => set({ band: e.target.value })}>
+            <option value="hero">Top row (the headline numbers)</option>
+            <option value="body">Below the top row</option>
+          </select></label>
+        <label className="field"><span>Width</span>
+          <select className="input" value={draft.width} onChange={(e) => set({ width: e.target.value })}>
+            <option value="one">Normal</option><option value="two">Double</option><option value="full">Full width</option>
+          </select></label>
+        <label className="field"><span>Good is…</span>
+          <select className="input" value={(draft.target && draft.target.direction) || ''}
+            onChange={(e) => set({ target: e.target.value ? { ...(draft.target || {}), direction: e.target.value } : null })}>
+            <option value="">No red line on this card</option>
+            <option value="higher_is_better">Higher</option>
+            <option value="lower_is_better">Lower</option>
+          </select></label>
+        {draft.target && draft.target.direction && (
+          <>
+            <label className="field"><span>Green up to / from</span>
+              <input className="input" type="number" value={draft.target.good ?? ''}
+                onChange={(e) => set({ target: { ...draft.target, good: Number(e.target.value) } })} /></label>
+            <label className="field"><span>Amber up to / from</span>
+              <input className="input" type="number" value={draft.target.warn ?? ''}
+                onChange={(e) => set({ target: { ...draft.target, warn: Number(e.target.value) } })} /></label>
+          </>
+        )}
+      </div>
+
+      <div className="dsh-ed-preview">
+        <div className="small" style={{ color: MUTED, marginBottom: 6 }}>What it will show, on your real numbers right now:</div>
+        {err && <div className="notice err small">{err}</div>}
+        {!err && preview && preview.ok && (
+          <div style={{ color: INK }}>
+            <b style={{ fontSize: 22 }}>
+              {preview.series ? `${preview.series.length} group${preview.series.length === 1 ? '' : 's'}`
+                : preview.value == null ? '—' : String(preview.value)}
+            </b>
+            <div className="small" style={{ color: MUTED, marginTop: 4 }}>{preview.explain && preview.explain.filter}</div>
+          </div>
+        )}
+        {!err && !preview && <span className="muted small">Working it out…</span>}
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 14 }}>
+        <button className="btn primary" onClick={save} disabled={busy || !draft.title}>
+          {busy ? 'Saving…' : 'Save this card'}
+        </button>
+        <button className="btn ghost" onClick={onCancel}>Cancel</button>
+        <span className="spacer" />
+        {onDelete && <button className="btn ghost small" style={{ color: 'var(--danger)' }} onClick={onDelete}>Remove this card</button>}
+      </div>
+    </div>
+  );
+}
