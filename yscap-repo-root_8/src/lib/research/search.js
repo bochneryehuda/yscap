@@ -342,8 +342,33 @@ function buildQuery(input = {}) {
         )))::numeric`;
     distanceSelect = `${distanceExpr} AS distance_miles`;
     if (radius != null && radius > 0) {
-      const dLat = radius / 69.0546;
-      const dLng = radius / Math.max(1, 69.1710 * Math.cos((lat * Math.PI) / 180));
+      // THE BOX MUST BE A SUPERSET OF THE CIRCLE, AND TWO CONSTANTS MADE IT
+      // SLIGHTLY SMALLER THAN ONE. Being generous costs a few extra rows for the
+      // haversine to reject; being short silently drops real comparables off the
+      // east-west and north-south edges of every radius search, and nothing
+      // anywhere would say so.
+      //   · THE BOX AND THE HAVERSINE MUST USE THE SAME EARTH. The refine measures
+      //     on a SPHERE of radius 3958.7613 miles, where a degree is 69.0932 miles
+      //     — while the box was sized with 69.0546 (a mid-latitude ellipsoid
+      //     average) and 69.1710 (the ellipsoid's equatorial longitude degree,
+      //     off a radius 4.4 miles larger). Both are correct numbers about a
+      //     different planet from the one the distance is measured on, and both
+      //     err the same way: the box comes out smaller than the circle. So the
+      //     constant is DERIVED from the same radius rather than typed, and the
+      //     two can never drift apart again.
+      //   · A degree of LONGITUDE shrinks as you leave the equator, so the box has
+      //     to be sized on the edge FURTHEST from it, not on the centre: at 40.7°N
+      //     with a 10-mile radius, cos(centre) over-states the far edge by 0.24%
+      //     — about 125 feet of missing coverage at the corners.
+      // Plus 0.1% for floating-point slack. `test-research-geo-box-pure.js` proves
+      // containment by walking 360 bearings at a battery of latitudes and radii.
+      const MI_PER_DEG = (2 * Math.PI * 3958.7613) / 360;   // the haversine's own sphere
+      const dLat = (radius / MI_PER_DEG) * 1.001;
+      const worstLat = Math.min(89.9, Math.abs(lat) + dLat);
+      const cosWorst = Math.cos((worstLat * Math.PI) / 180);
+      const dLng = cosWorst <= 0
+        ? 180                              // at the pole every meridian is in range
+        : Math.min(180, (radius / (MI_PER_DEG * cosWorst)) * 1.001);
       where.push(`p.eff_latitude BETWEEN ${P(lat - dLat)} AND ${P(lat + dLat)}`);
       where.push(`p.eff_longitude BETWEEN ${P(lng - dLng)} AND ${P(lng + dLng)}`);
       // THE EXACT CIRCLE IS CUT IN SQL, not in JS afterwards. Filtering the page

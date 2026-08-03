@@ -154,23 +154,40 @@ throw away.
   repairs were completed in 2024"* flips an **explicit `AsIs`** report to ARV:
   the as-is value is dropped and every comp is stamped `arv`. Split the pattern;
   let only the hypothetical arm override an explicit AsIs.
-- [ ] **1.4 A subject's worded condition is unrecoverable.** The UAD whitelist
+- [x] **1.4 A subject's worded condition is unrecoverable.** The UAD whitelist
   drops "Good"/"Avg-Good" and `appraisals` has no `condition_text` column, so
   every non-UAD subject rating is lost — and the 1025 was never brought into
   UAD, so that is the whole 2–4 book. Recoverable for free: 73 of 137
   observations carry a `Condition` adjustment line whose description IS the
   rating.
-- [ ] **1.5 The condition NARRATIVE is never read.**
+- [x] **1.5 The condition NARRATIVE is never read.** — READ, and the rest
+  MEASURED AND DELIBERATELY NOT BUILT.
   `PROPERTY_ANALYSIS[_Type="PropertyCondition"]/@_Comment` is present on ~9 of 10
   1025s and routinely says *"C4 as-is, C3 as repaired"* — the one place the AS-IS
   rating on a renovation file is written down, which is exactly what `AS_IS_ONLY`
   currently leaves those properties without.
+
+  The element IS now parsed (`condition_comment`, present on **143 of 150** real
+  reports) and `asIsConditionFromNarrative` reads an explicit as-is code out of
+  it. Mining a RATING out of the rest of the prose was then measured and refused:
+  exactly **one** of 150 narratives mentions "as is" at all, and of the 5 subjects
+  carrying no rating in any field, **zero** have a narrative — so the recovery is
+  nil. The risk is not nil: the corpus contains *"Upon completion, the subject is
+  assumed to be in overall good condition"*, and a prose reader would file that
+  after-repair sentence as the property's condition today, which is the exact
+  thing `AS_IS_ONLY` exists to prevent. Nothing to gain, a real way to be wrong.
+  Reopen only if a corpus turns up where subjects genuinely lack a grid rating.
 - [x] **1.6 A subject that cannot be keyed is dropped SILENTLY.** `writeReport`
   wraps it in `if (subjectId)` with no `else`, while a comparable is counted with
   a reason. That defeats the ledger's stated purpose.
-- [ ] **1.7 `appraisal_comparables.property_type` is written by nothing** (0 of
+- [x] **1.7 `appraisal_comparables.property_type` is written by nothing** (0 of
   83). Either fill it from a stated fact or drop the column — a column nothing
   writes reads as "the report didn't say" when the truth is "we never looked".
+  **FILLED** by db/430-432: 769 of 769 real comparables now carry a property
+  type, 768 a unit count and 769 an `identity_basis` saying how it was
+  established. The appraisal tab renders both (and an audit caught the first
+  attempt DISCARDING them in favour of a warehouse lookup — the row's own answer
+  is now the seed and a later source may only ever improve on it).
 - [x] **1.8 The geocoder accepts a match that changed the street.** Census
   returns `26 10TH ST` for `26 S 10th St` — directional dropped, `precision:
   'address'`, and it is the identical coordinate it returns for a different
@@ -300,9 +317,19 @@ never attempted. Everything in this phase costs about $10, one time.
   — 42 of 77 comps carry "0.35 miles NE"
 - [ ] **3.4 `distance_basis` provenance** — `eff_*` silently COALESCEs in a
   coordinate db/412 itself calls "frequently the centre of the ZIP"
-- [ ] **3.5 The bounding box is not a superset of the circle** (short 5.9 ft at 1
+- [x] **3.5 The bounding box is not a superset of the circle** (short 5.9 ft at 1
   mile, 59 ft at 10) — `1.001 · r / (69.0932 · cos φ)`. The `cos(lat)` scaling
-  itself is correct; verified across seven latitudes.
+  itself is correct; verified across seven latitudes. **FIXED**, and the root was
+  worse than the arithmetic: the box was sized on the ELLIPSOID (69.0546 and
+  69.1710) while the haversine refine measures on a SPHERE of radius 3958.7613,
+  where a degree is 69.0932 — correct numbers about a different planet from the
+  one the distance is measured on, both erring the same way. The constant is now
+  DERIVED from that same radius so the two cannot drift again, and `cos` is taken
+  at the box edge furthest from the equator rather than at the centre (a further
+  0.24% at 40.7°N and a 10-mile radius, ~125 ft at the corners).
+  `test-research-geo-box-pure.js` walks 360 bearings across 10 latitudes and 7
+  radii — 25,200 points, all inside — and fails on the old formula, which came
+  out 0.11% NARROWER than the circle east-west at every latitude.
 - [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — free, and it is
   the second identity signal item 1.9 needs
 - [ ] **3.7 THE MAP.** Subject pin, numbered comp pins, radius rings,
@@ -369,21 +396,22 @@ condo on a 1073 carries `C3` exactly like a house; the same 2–4 family used as
 comparable *on a 1004* carries `C3` too. So one building can be `C4` on one
 report and "Average" on another, and both are correct.
 
-- [ ] **6.1 One pure module `condition-scale.js`** returning `{code, rank,
+- [x] **6.1 One pure module `condition-scale.js`** returning `{code, rank,
   rankLow, rankHigh, basis, source, original, confidence, why}`. `code` set ONLY
   from a literal code; `rank` the only thing anything filters or adjusts on;
   spanned words keep their span; `original` always displayed.
-- [ ] **6.2 The mapping table** — `Good` → 3 (2–3), `Average` → 4 (3–4), `Fair` →
+- [x] **6.2 The mapping table** — `Good` → 3 (2–3), `Average` → 4 (3–4), `Fair` →
   5 (4–5), `Avg-Good` → 3 (3–4), and the rest.
-- [ ] **6.3 What must stay NULL, and this is most of the list:** every RELATIVE
+- [x] **6.3 What must stay NULL, and this is most of the list:** every RELATIVE
   word — `Similar`, `Superior`, `Inferior`, `Same`, `+`, `-` — which is the *most
   common* thing in a non-UAD grid and is about that report's subject, not the
   property; `Updated`/`Renovated` (that is work, not condition — a cosmetic flip
   over a failing roof is still C4); and every material in the quality slot —
   **`BRICK` is a real value in our corpus, which is why there can be no default.**
-- [ ] **6.4 Search and facets can see a worded rating** — 2 properties are
-  invisible to every condition filter today
-- [ ] **6.5 The UI shows the appraiser's word PLUS the reading** — `Average
+- [x] **6.4 Search and facets can see a worded rating** — 2 properties are
+  invisible to every condition filter today — **the real number was 234 of 955
+  properties, and the reading recovers 194 of them**
+- [x] **6.5 The UI shows the appraiser's word PLUS the reading** — `Average
   (reads as C3–C4)`, never a code we did not receive, always the basis (`C3
   (after repairs)`), and a filter says what it cannot see.
 
