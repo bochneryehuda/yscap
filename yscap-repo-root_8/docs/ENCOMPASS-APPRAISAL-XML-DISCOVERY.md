@@ -147,6 +147,21 @@ exactly one PDF and no XML.
 
 So the download *mechanism* is proven; only the *fresh-URL-for-media* half is missing.
 
+**That omission is BY DESIGN, not a permission gate.** ICE's published response schema for
+`/response/resources` contains exactly two element shapes — `urn:elli:encompass:attachment` and
+`urn:elli:encompass:document` — with the inline note that `name` and `mimeType` are *"Inherited
+from eFolder export."* The endpoint is built on the eFolder export pipeline, so an object that
+was never in the eFolder has no path through it. The same doc page's `view=complete` example
+*does* show a `urn:elli:media:loans` element, so ICE knows both types exist and deliberately
+lists only two here. Nothing we configure changes that.
+
+**And there is no documented loan-media API to fall back on.** An enumeration of all ~670
+Developer Connect API reference pages across 59 categories finds no Media / Loan Media / Loan
+Folder Attachment endpoint of any kind. ICE's own sentence — non-viewable files *"can be accessed
+… via the Developer Connect APIs"* — is unbacked by any named endpoint. (Beware a false friend:
+`/encompass/v3/settings/loan/folders` is **pipeline** folders — My Pipeline / Archive — and has
+nothing to do with a "loan folder attachment".)
+
 ### Ways to reach the XML that were tried and did NOT work
 
 | Attempt | Result |
@@ -203,16 +218,47 @@ This is the whole feature. The window is generous for a webhook-driven fetch; a 
 can be retried only until the URL expires, so the handler must fetch immediately rather than
 enqueue for a slow worker.
 
+**Two things to build around, both real:**
+
+- **The webhook payload does NOT carry the file.** ICE documents the ServiceOrder extra payload
+  as exactly three fields — `productListingName`, `productId`, `partnerId`. It is a *trigger*
+  only; step 2 above (the `?view=complete` call) is what actually yields the URL. Do not design
+  as though the hook delivers the resource.
+- **`location` and `authorization` are UNDOCUMENTED.** ICE's published `view=complete` resource
+  schema is only `{id, name, mimeType, uploadedEntity{id,type}}`, and the same page states
+  plainly: *"complete view includes request and response resources — **no resource URL generation
+  supported** though."* The two fields we are relying on are undocumented residue that happens to
+  be populated. They work today (that is measured, not assumed), but ICE is free to remove them
+  in any release without it counting as a breaking change. **Anything built on this needs a loud
+  alarm when the fields go missing**, and §6d below is the durable answer.
+
+### 6d. The durable fix — have the AMC deliver the XML to us directly
+
+EPC's eFolder-vs-loan-folder routing is automatic by file type and **the lender cannot override
+it** — `.xml` will never be an eFolder attachment, no matter how Document Mapping is configured.
+So every route through Encompass is fighting the platform.
+
+The AMC (**Class Valuations**) is the origin of every one of these XMLs and already holds them.
+Asking them to deliver the MISMO 2.6 XML to us directly — their portal, SFTP, or their own API —
+removes Encompass from the path entirely, fixes the historical backfill and the go-forward flow
+in one move, and does not depend on an undocumented field continuing to exist. **This is the
+recommendation to put to the owner first.** The webhook route in §6a is the right thing to build
+if we want it working without waiting on anyone else.
+
 ### 6b. The 298 historical XMLs — two options, in preference order
 
 1. **Ask Class Valuations directly.** They are the source of every one of these XMLs, they retain
    them (EPC keeps transaction resources for 7 years), and the index carries the loan number,
    property address, XML filename and order id for each. This is the faster route and does not
    depend on ICE. **Recommended first move.**
-2. **Ask ICE to enable the loan-media read endpoints on the API app** (§8). If a media-download
-   URL endpoint becomes reachable, all 298 backfill cleanly with the same code. Note this is now
-   the *only* remaining in-Encompass lever — persona and the legacy transaction API are both
-   ruled out (§5).
+2. **Raise it with ICE** (§8). Note this is now the *only* remaining in-Encompass lever, and it
+   is a weak one: persona and the legacy transaction API are both ruled out (§5), and no loan-media
+   endpoint appears anywhere in ICE's ~670 published API reference pages — so this is an ICE
+   support ticket asking for something undocumented, not a configuration change we can look up.
+   `POST /efolder/v1/exportjobs` is also ruled out: its documented body is
+   `{fileName, annotationSettings, source{entityId,entityType}, entities{entityId,entityType}}`
+   with `entityType` limited to `loan`/`attachment`/`document`/`condition` — no media type — and
+   its output is a **merged PDF**, so it structurally cannot return raw XML.
 
 Do **not** count on recovering them from Encompass as things stand — the stored links are dead.
 
