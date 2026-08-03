@@ -447,7 +447,13 @@ function loanClosed(input) {
 // Google key is configured. The INSERT is a single atomic `WHERE NOT EXISTS` on
 // the canonical key so two Encompass passes can't both insert the same address.
 async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
-  const encKey = normAddr(addr);
+  /* The SHARED dedupe key (lib/track-record-key). This used to be enrich's own
+     `normAddr`, which produced a different string from the ClickUp writer's for
+     the same house — so a property PILOT already knew about came back as a
+     second line (owner-reported 2026-08-02). normAddr stays for its other uses
+     in this module; only the track-record keying moved. */
+  const TRK = require('../lib/track-record-key');
+  const encKey = TRK.trackRecordKey(addr);
   if (!encKey) return { added: false, reason: 'no_address' };
   const encStr = addrString(addr);
 
@@ -455,10 +461,12 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
     `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1`, [borrowerId])).rows;
   let canon = null;
   try { const cfg = require('../config'); if (cfg && cfg.googlePlacesKey) canon = require('../lib/address-canon'); } catch (_) { /* optional */ }
+  // Key OR stored-address match — a row whose key was written by an older
+  // normalizer is still recognised, because the confirmation reads the ADDRESS.
+  const already = TRK.matchTrackRecord(existing, addr);
+  if (already) return { added: false, id: already.id, reason: 'already_present' };
   for (const row of existing) {
-    if (row.address_key && row.address_key === encKey) return { added: false, id: row.id, reason: 'already_present' };
     const exStr = addrString(row.property_address || {});
-    if (exStr && normAddr(exStr) === encKey) return { added: false, id: row.id, reason: 'already_present' };
     if (canon && exStr && encStr) {
       try { if ((await canon.samePlace(encStr, exStr)) === true) return { added: false, id: row.id, reason: 'already_present' }; } catch (_) { /* best-effort */ }
     }

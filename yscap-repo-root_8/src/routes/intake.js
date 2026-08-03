@@ -222,9 +222,10 @@ async function siteIntake(p, opts = {}) {
           rehab_type,sqft_pre,sqft_post,requested_ir_months,requested_ir_amount,
           requested_exp_flips,requested_exp_holds,requested_exp_ground,
           payoff_amount,original_purchase_price,acquisition_date,payoff_lender,payoff_loan_number,
+          personal_name_purchase,
           source,raw_intake,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-               $28,$29,$30,$31,$32,$26,$27,'new',now()) RETURNING id`,
+               $28,$29,$30,$31,$32,$33,$26,$27,'new',now()) RETURNING id`,
       [borrowerId, officerId, officerName, p.program || p.dealType || null, loanTypeIn,   // #95: public form can't persist a program as a loan type
        /* jsonbText, not JSON.stringify — a NUL byte anywhere in a PUBLIC form post is
           refused by Postgres and would strand the lead with a 500, the same failure
@@ -250,7 +251,14 @@ async function siteIntake(p, opts = {}) {
        // original_purchase_price, acquisition_date, payoff_lender,
        // payoff_loan_number, source, raw_intake. (The borrower door learned this
        // the hard way — see its own note about a shifted bind list.)
-       payoffAmount, origPurchase, acqDate, payoffLender, payoffLoanNo]);
+       payoffAmount, origPurchase, acqDate, payoffLender, payoffLoanNo,
+       /* $33 — HOW IS IT VESTED. The public form asks it now (owner-directed
+          2026-08-02: "'Individual — no entity' on all three application doors").
+          Same shared reading as the other two doors, and it defaults to an
+          ENTITY, so a garbled answer on a public form can never silently drop
+          the LLC condition off the file. Appended LAST and slotted before $26 in
+          the VALUES list above — keep the two in step (see the note there). */
+       F.vestsIndividually(p)]);
     appId = a.rows[0].id;
     await client.query('COMMIT');
   } catch (e) {

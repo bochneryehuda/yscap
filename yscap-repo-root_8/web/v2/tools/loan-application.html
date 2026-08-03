@@ -2032,6 +2032,15 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       program: val("dealType"), loanType: purpose(),
       propertyAddress: { line1: (val("pStreet") + (val("pUnit") ? " " + val("pUnit") : "")).trim(), city: val("pCity"), state: val("pState"), zip: val("pZip") },
       propertyType: val("propType"), units: unitsVal(),
+      /* HOW THE BORROWER WILL HOLD TITLE. This form has ASKED since it shipped
+         (step 2, "Vesting & ownership") and even prints the answer on the review
+         summary — but it never SENT it, so every application arrived as though
+         an entity were being used and a staffer had to waive it inside the file
+         afterwards. The same collected-then-discarded class as the refinance
+         fields. `vestsIndividually` on the server reads these two together and
+         lets a named entity win, so the two can never contradict each other. */
+      vesting: el("vestEntity").checked ? "entity" : "individual",
+      llcName: el("vestEntity").checked ? val("eName") : "",
       purchasePrice: isRefi() ? null : val("price"),
       asIsValue: val("asIs"), arv: val("arv"), rehabBudget: val("rehab"),
       /* THE REFINANCE ANSWERS THIS FORM ALREADY ASKS FOR (owner-directed
