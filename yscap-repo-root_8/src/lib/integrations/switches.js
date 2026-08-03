@@ -36,6 +36,14 @@ const SWITCHES = [
   // gate (checked first), so it is always safe to leave on while verifying.
   { key: 'ENCOMPASS_FLOOD_DRYRUN', integration: 'encompass', label: 'Flood orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.encompassFlood && cfg.encompassFlood.dryrun) },
   { key: 'ENCOMPASS_FLOOD_OUTBOUND_ENABLED', integration: 'encompass', label: 'Place flood orders in Encompass (write)', dangerous: true, envDefault: () => cfg.encompassFloodOutboundEnabled },
+  // The appraisal-XML catcher. READ-ONLY, but it is a poller that talks to a
+  // vendor API on a timer, so it needs an off switch a human can reach WITHOUT a
+  // Render restart. The env var ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED=1 still
+  // wins on its own (it is checked first, so it can stop the catcher even if the
+  // switches table is unreachable).
+  // `resume: false` — the catcher re-reads this switch on EVERY tick, so turning
+  // it back on resumes by itself with no restart.
+  { key: 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED', integration: 'encompass', label: 'Catch appraisal XML out of Encompass (read-only poller)', dangerous: false, resume: false, envDefault: () => process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED !== '1' },
   // Xactus "Flood ReportX" — the ACTIVE flood-cert provider (owner-directed
   // 2026-07-30). This master switch turns the button's Xactus ordering on/off — the
   // ONE control here. There is deliberately NO "TEST MODE" toggle: test mode was

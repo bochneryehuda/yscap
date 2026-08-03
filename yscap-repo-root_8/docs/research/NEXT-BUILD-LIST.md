@@ -74,7 +74,7 @@ miles, which is a county"). Still to do:
 - [x] **A4a** Its pure test — **DONE**, 68 assertions including a 61x61 grid scan
   against the shape's own definition, and both failure modes proven to fail the
   suite when reintroduced.
-- [x] **A4b** A table and routes — **DONE** (`db/453`, save / list / archive /
+- [x] **A4b** A table and routes — **DONE** (`db/454`, save / list / archive /
   what-is-inside). Archived, never deleted: a valuation may rest on a boundary.
 - [x] **A4c** Drawing on the map — **DONE**, verified by CLICKING the map in
   Chromium and reading the saved shape back out of the database.
