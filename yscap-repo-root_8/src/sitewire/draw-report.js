@@ -147,11 +147,18 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   }
 
   /**
-   * THE MONEY ANSWER, FIRST (owner-directed 2026-07-27). The report used to open with the
-   * property/loan header and bury "how much was approved" partway down the second band — so the
-   * one question the borrower opens this PDF to answer was the hardest thing on the page to find.
-   * A per-draw report now leads with a single panel: what was approved, of what was requested,
-   * how much was not, and what it means. Everything else follows underneath, unchanged.
+   * THE MONEY ANSWER, FIRST (owner-directed 2026-07-27), AND IT IS TWO NUMBERS (owner-directed
+   * 2026-08-03: "enhance our own report and the borrower's report to include and pick a number for a
+   * released amount — how much is going to be released after this draw, which includes the fees
+   * netted out").
+   *
+   * The panel used to lead with ONE figure, what was approved, and the release was a sentence
+   * underneath and a row further down. But "approved" and "what actually moves" are two different
+   * questions and the second one is the one everybody opens the PDF to answer — the borrower wants
+   * to know what lands in their account, and the desk wants to know what to wire. So the hero now
+   * carries BOTH, side by side: the approval on the left, THE RELEASE on the right, each a headline
+   * number in its own right, with the deduction named underneath the release so the gap between the
+   * two is never a mystery.
    */
   function moneyHero(s) {
     const req = Number(s.requested_cents || 0);
@@ -166,22 +173,69 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     const heroLabel = finalDone
       ? (s.released ? 'RELEASED' : 'FINAL APPROVED FOR RELEASE')
       : 'APPROVED BY THE INSPECTOR';
-    const H0 = 96;
+
+    // ---- the release side ----
+    const fee = Number(s.fee_cents || 0);
+    const retain = Number(s.retainage_held_cents || 0);
+    const net = s.net_release_cents != null ? Number(s.net_release_cents) : null;
+    const showRelease = net != null;
+    const relLabel = s.released
+      ? (borrower ? 'RELEASED TO YOU' : 'RELEASED')
+      : (borrower ? 'TO BE RELEASED TO YOU' : 'TO BE RELEASED AFTER THIS DRAW');
+    // Name the deduction that produced the gap. With nothing deducted, say so rather than leave the
+    // reader wondering why two identical numbers are printed twice.
+    const deductions = [];
+    if (fee > 0) deductions.push(usd(fee) + ' draw fee');
+    if (retain > 0) deductions.push(usd(retain) + ' retainage held');
+    const relSub = deductions.length
+      ? 'after the ' + deductions.join(' and ')
+      : 'nothing is deducted from this draw';
+
+    const stageLine = finalDone
+      ? (s.released ? 'This draw has been released.' : 'Final approved — ready to release.')
+      : (borrower
+        ? 'This is what the inspector approved. Accept it and your loan team releases the draw.'
+        : 'This is the INSPECTOR\u2019S approval. It still needs the borrower\u2019s acceptance, the capital partner\u2019s review and our final approval before the money is released.');
+    const meaning = [
+      stageLine,
+      notAppr > 0
+        ? (borrower
+          ? 'Anything not approved stays in your budget for a future draw once that work is complete.'
+          : 'Not approved this inspection: ' + usd(notAppr) + ' — it stays in the budget for a future draw.')
+        : '',
+      borrower ? '' : 'Status: ' + (s.approval_label || STATUS_LABEL(s.status, false)) + '.',
+    ].filter(Boolean).join(' ');
+
+    // Size the panel to its own content — the meaning wraps, and a fixed height used to let a long
+    // one spill past the panel's own background.
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8);
+    const mLines = doc.splitTextToSize(pdfSafe(meaning), W - 2 * M - 36);
+    const H0 = 86 + mLines.length * 10.5;
     brk(H0 + 10);
     doc.setFillColor(246, 243, 236); doc.roundedRect(M, y, W - 2 * M, H0, 4, 4, 'F');
     doc.setFillColor.apply(doc, full ? TEAL : GOLD); doc.roundedRect(M, y, 4.5, H0, 2, 2, 'F');
 
+    // LEFT — the approval
     doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
     doc.text(pdfSafe(heroLabel), M + 18, y + 20);
-    // the headline number, as large as the panel allows
-    doc.setFont('times', 'bold'); doc.setFontSize(34); doc.setTextColor.apply(doc, full ? TEAL : DARK);
-    doc.text(pdfSafe(usd(appr)), M + 18, y + 52);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor.apply(doc, GRAY);
-    doc.text(pdfSafe('of ' + usd(req) + ' requested'), M + 18, y + 70);
+    doc.setFont('times', 'bold'); doc.setFontSize(showRelease ? 27 : 34); doc.setTextColor.apply(doc, full ? TEAL : DARK);
+    doc.text(pdfSafe(usd(appr)), M + 18, y + 50);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY);
+    doc.text(pdfSafe('of ' + usd(req) + ' requested'), M + 18, y + 66);
 
-    // the right-hand rail: what was held back, and the plain-language meaning
+    // RIGHT — THE RELEASE, picked out as its own headline number
     const rx = W - M - 18;
-    if (notAppr > 0) {
+    if (showRelease) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe(relLabel), rx, y + 20, { align: 'right' });
+      doc.setFont('times', 'bold'); doc.setFontSize(27); doc.setTextColor.apply(doc, TEAL);
+      doc.text(pdfSafe(usd(net)), rx, y + 50, { align: 'right' });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe(relSub), rx, y + 66, { align: 'right' });
+      if (!s.released && fee > 0 && s.fee_projected) {
+        doc.setFontSize(7); doc.text(pdfSafe('(standard draw fee for this file)'), rx, y + 77, { align: 'right' });
+      }
+    } else if (notAppr > 0) {
       doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
       doc.text(pdfSafe('NOT APPROVED THIS INSPECTION'), rx, y + 20, { align: 'right' });
       doc.setFont('times', 'bold'); doc.setFontSize(18); doc.setTextColor.apply(doc, BAD);
@@ -190,34 +244,34 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, TEAL);
       doc.text(pdfSafe('Everything requested was approved'), rx, y + 30, { align: 'right' });
     }
-    // The plain-language meaning under the headline. It states (a) whose approval this is and what
-    // happens next, and (b) exactly what is netted out of it — the owner's ask that the report say
-    // clearly why money is being netted and what.
-    const stageLine = finalDone
-      ? (s.released ? 'This draw has been released.' : 'Final approved — ready to release.')
-      : (borrower
-        ? 'This is what the inspector approved. Accept it and your loan team releases the draw.'
-        : 'This is the INSPECTOR\u2019S approval. It still needs the borrower\u2019s acceptance, the capital partner\u2019s review and our final approval before the money is released.');
-    const netLine = borrower ? '' : (s.net_release_cents != null
-      ? ' Net release ' + usd(s.net_release_cents) + ' = ' + usd(appr) + ' approved, less the ' + usd(s.fee_cents || 0) + ' draw fee'
-        + (Number(s.retainage_held_cents) > 0 ? ' and ' + usd(s.retainage_held_cents) + ' retainage' : '')
-        + (s.fee_projected ? ' (standard fee for this file \u2014 final once the release is recorded).' : '.')
-      : '');
-    // The borrower's netting sentence comes from the ONE definition in ./approval so their report and
-    // ours can never describe the same deduction differently.
-    const borrowerNet = APPROVAL.netExplanation({
-      approved_cents: appr, fee_cents: s.fee_cents, retainage_held_cents: s.retainage_held_cents,
-      net_release_cents: s.net_release_cents, fee_projected: s.fee_projected,
-    }, { borrower: true });
-    const meaning = borrower
-      ? [stageLine,
-        borrowerNet || '',
-        notAppr > 0 ? 'Anything not approved stays in your budget for a future draw once that work is complete.' : '',
-      ].filter(Boolean).join('\n')
-      : (stageLine + netLine + ' Status: ' + (s.approval_label || STATUS_LABEL(s.status, false)) + '.');
+
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8); doc.setTextColor.apply(doc, [70, 78, 82]);
-    doc.text(pdfSafe(meaning), M + 18, y + 84, { maxWidth: W - 2 * M - 36 });
+    doc.text(mLines, M + 18, y + (showRelease && !s.released && fee > 0 && s.fee_projected ? 92 : 84));
     y += H0 + 14;
+  }
+
+  /**
+   * A WHOLE-PROJECT report has no single draw for a hero to be about, but the same question still
+   * needs an answer at the project level: how much has actually reached the borrower, and how much
+   * is still coming once the open draws are released (owner-directed 2026-08-03).
+   */
+  function releaseSummary() {
+    const n = (v) => Number(v || 0) || 0;
+    let releasedC = 0, pendingC = 0, feesC = 0;
+    for (const s of sections) {
+      const net = s.net_release_cents != null ? n(s.net_release_cents) : null;
+      if (net == null) continue;
+      if (s.released) releasedC += net; else pendingC += net;
+      feesC += n(s.fee_cents);
+    }
+    if (releasedC <= 0 && pendingC <= 0) return;
+    band('Money released');
+    kv('Released to the borrower so far', usd(releasedC), { accent: true });
+    if (pendingC > 0) kv('Still to be released on the open draw(s)', usd(pendingC));
+    if (!borrower && feesC > 0) kv('Draw fees netted out of those releases', '-' + usd(feesC));
+    para(borrower
+      ? 'These are the amounts paid out to you after the draw fee on each draw. Anything approved but not yet released is waiting on the final approval.'
+      : 'Release figures are net of the draw processing fee (and any retainage). A draw with no recorded release shows its projected net.', 7.6, GRAY);
   }
 
   header();
@@ -379,6 +433,9 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       p.pct_committed != null ? p.pct_committed : p.pct_complete,
       withDraw ? { req: totReq, appr: totAppr } : null));
   }
+
+  // ---- MONEY RELEASED (whole-project reports only — a per-draw report answers it in the hero) ----
+  if (scope === 'project') releaseSummary();
 
   // ---- OUR FEES ON THIS PROJECT, kept separately from the borrower's money ----
   // Owner-directed 2026-08-03: "it should keep track separately of our fees for this project."

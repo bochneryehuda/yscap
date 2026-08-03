@@ -2296,7 +2296,26 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       const photos = flines.reduce((s, l) => s + (Number(l.photo_count) || 0), 0);
       const videos = flines.reduce((s, l) => s + (Number(l.video_count) || 0), 0);
       const CAP = 14; // keep the email readable — a huge draw links out to the full page for the rest
+      // WHAT ACTUALLY LANDS IN THEIR ACCOUNT (owner-directed 2026-08-03). This email is the first
+      // thing the borrower reads and it used to lead with the GROSS approval labelled "Approved for
+      // release" — while the report attached to the same email says $24,701 after the draw fee. Both
+      // numbers now come from the SAME rollup the report is built from, so the email and its own
+      // attachment can never quote different figures. Best-effort: an unreadable rollup simply
+      // omits the release line rather than delaying the borrower's results.
+      let releaseLine = null;
+      try {
+        const rl = await rollupMod.loadRollup(db, appId);
+        const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
+        if (d && d.net_release_cents != null) {
+          const deductions = [];
+          if (Number(d.fee_cents) > 0) deductions.push(`${usd(d.fee_cents)} draw fee`);
+          if (Number(d.retainage_held_cents) > 0) deductions.push(`${usd(d.retainage_held_cents)} retainage held`);
+          releaseLine = { label: d.released ? 'Released to you' : 'To be released to you',
+            value: `${usd(d.net_release_cents)}${deductions.length ? ` (after the ${deductions.join(' and ')})` : ''}` };
+        }
+      } catch (_) { /* best-effort — the results email never waits on the money rollup */ }
       const meta = [{ label: 'Property', value: addr }];
+      if (releaseLine) meta.push(releaseLine);
       for (const l of flines.slice(0, CAP)) {
         meta.push({ label: scrub(l.name) || 'Line item',
           value: Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
@@ -2309,10 +2328,10 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       await notify.notifyAppBorrowers(appId, {
         type: 'draw_findings', title: 'Your draw inspection results are ready',
         badge: { text: 'Action needed', tone: 'action' },
-        hero: { label: 'Approved for release', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
+        hero: { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
         body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, accept to release your draw — or push back on any line you disagree with.`,
         meta,
-        callout: { title: 'What happens when you accept', body: 'Accepting releases your draw — your funds are typically wired within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).', tone: 'action' },
+        callout: { title: 'What happens when you accept', body: `Accepting releases your draw${releaseLine ? ` — ${releaseLine.value.split(' (')[0]} is wired to you` : ''} — funds are typically sent within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).`, tone: 'action' },
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,
