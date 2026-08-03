@@ -42,9 +42,24 @@
    size identically off their own caps.
    Exposes window.SVP (browser) and module.exports (Node, for tests).
    ===================================================================== */
+/* WHY THE BROWSER DOES NOT GET `constants` (2026-08-03).
+   The api object carries a `constants` block (markup, origination, and — on the
+   Standard engine — the whole leverage MATRIX and the RA rate build-up; on Silver
+   the entire RATE_BLOCKS grid). Exposed on the global, one line in a browser
+   console dumped the firm's whole guideline book as tidy JSON:  SVP.constants.MATRIX
+   The SERVER still needs it — src/lib/pricing.js reads constants.ORIG_PCT, and the
+   Silver band/matrix/fixture test scripts read the grid — and all of those run in
+   Node, so Node keeps the FULL api unchanged. Only the browser global is narrowed.
+   `browserView` is a shallow copy: every method is the SAME function object, closing
+   over the SAME module state, so setMarkup()/evaluate() behave identically. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./standard-program.js"));
-  else root.SVP = factory(root.YSP);
+  else root.SVP = browserView(factory(root.YSP));
+  function browserView(a) {
+    var out = {}, k;
+    for (k in a) if (Object.prototype.hasOwnProperty.call(a, k) && k !== "constants") out[k] = a[k];
+    return out;
+  }
 }(typeof self !== "undefined" ? self : this, function (YSP) {
   "use strict";
 
