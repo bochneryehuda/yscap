@@ -201,7 +201,14 @@ async function syncForBorrower(borrowerId, { applicationId = null, subjectAddres
          ON CONFLICT (borrower_id, dedupe_key) WHERE status='open'
          DO UPDATE SET title=EXCLUDED.title, detail=EXCLUDED.detail
          RETURNING (xmax = 0) AS inserted`,
-        [borrowerId, f.applicationId || applicationId || null, f.code,
+        /* application_id COMES FROM THE FINDING, never from whichever file
+           happened to trigger this run. A duplicate line is wrong on every file
+           the borrower has, so it is borrower-level (NULL) — stamping it with
+           the triggering file would hide it from their other files, and
+           `openForFile` filters on exactly this column, so the gate on those
+           files would let the experience condition through with an open
+           duplicate standing. Only subject_property_on_record sets it. */
+        [borrowerId, f.applicationId || null, f.code,
           (FINDINGS[f.code] && FINDINGS[f.code].severity) || 'warning',
           f.title, f.detail, f.trackRecordId || null, f.otherId || null, f.dedupeKey]);
       if (ins.rows[0] && ins.rows[0].inserted) out.raised += 1;
@@ -209,11 +216,29 @@ async function syncForBorrower(borrowerId, { applicationId = null, subjectAddres
 
     /* AN OPEN FINDING WHOSE PROBLEM WENT AWAY MUST CLOSE ITSELF, or it blocks the
        experience condition with nothing left to click — the reviewer merged the
-       lines somewhere else, or the subject property was taken off the record. */
+       lines somewhere else, or the subject property was taken off the record.
+
+       BUT A RUN MAY ONLY RETIRE WHAT IT ACTUALLY LOOKED FOR. This function is
+       called two ways: from a FILE (which knows a subject property) and from the
+       boot pass (which does not, and passes neither id nor address). Closing
+       everything absent from `found` would mean the boot pass silently resolved
+       every subject_property_on_record finding in the book, on every deploy,
+       because it never evaluated that code at all. The same trap one level down:
+       a borrower with two files would have file A's sync retire file B's
+       subject-property finding, since B's key is not in A's result. So a row is
+       only ever retired when THIS run evaluated its code, and — for a code that
+       is about one deal — when the row belongs to the deal being synced. */
+    const evaluated = new Set(['duplicate_line']);
+    const didSubject = !!(applicationId && subjectAddress);
+    if (didSubject) evaluated.add('subject_property_on_record');
+
     const live = new Set(found.map((f) => f.dedupeKey));
     const stale = (await q.query(
-      `SELECT id, dedupe_key FROM track_record_findings WHERE borrower_id=$1 AND status='open'`, [borrowerId]))
-      .rows.filter((r) => !live.has(r.dedupe_key));
+      `SELECT id, dedupe_key, code, application_id FROM track_record_findings
+        WHERE borrower_id=$1 AND status='open'`, [borrowerId]))
+      .rows.filter((r) => evaluated.has(r.code)
+        && (r.code !== 'subject_property_on_record' || String(r.application_id) === String(applicationId))
+        && !live.has(r.dedupe_key));
     for (const s of stale) {
       await q.query(
         `UPDATE track_record_findings

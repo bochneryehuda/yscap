@@ -183,7 +183,52 @@ async function line(borrowerId, oneLine, extra = {}) {
   ok((await openFor(b5)).length === 0,
     'once the duplicate is gone the finding closes itself — it can never strand the experience condition');
 
-  for (const b of [b1, b2, b3, b4, b5]) {
+  console.log('\nI. A RUN ONLY RETIRES WHAT IT ACTUALLY LOOKED FOR (pre-merge audit)');
+  /* Two ways this went wrong, each found by reading rather than by a failure —
+     both silent, and both would have let the experience condition through. */
+  const b6 = await borrower('Scope');
+  const subj6 = { oneLine: '3 Willow Rd, Monsey, NY 10952' };
+  const app6 = (await db.query(
+    `INSERT INTO applications (borrower_id, property_address, status)
+     VALUES ($1,$2::jsonb,'underwriting') RETURNING id`, [b6, JSON.stringify(subj6)])).rows[0].id;
+  await line(b6, '3 Willow Road, Monsey, NY 10952, USA');       // the subject property
+  await line(b6, '41 Cedar St, Lakewood, NJ 08701');
+  await line(b6, '41 Cedar Street, Lakewood, NJ 08701, USA');   // a genuine duplicate
+  await TRF.syncForFile(app6);
+  const before6 = await openFor(b6);
+  ok(before6.length === 2, 'the file raises both a duplicate and a subject-property finding');
+  ok(before6.filter((f) => f.code === 'duplicate_line')[0].application_id === null,
+    'the DUPLICATE is borrower-level (no file stamped on it) — it is wrong on every file they have');
+  ok(before6.filter((f) => f.code === 'subject_property_on_record')[0].application_id === app6,
+    '…while the subject-property finding belongs to the deal it is about');
+
+  // (1) The BOOT PASS knows no subject property. It must not retire that finding.
+  await TRF.syncForBorrower(b6);
+  const afterBoot = await openFor(b6);
+  ok(afterBoot.length === 2,
+    'the boot pass, which never looks for a subject property, does NOT resolve that finding');
+  ok(afterBoot.some((f) => f.code === 'subject_property_on_record'),
+    '…it is still open and still holding the experience condition');
+
+  // (2) A SECOND FILE for the same borrower must not retire the first file's.
+  const app6b = (await db.query(
+    `INSERT INTO applications (borrower_id, property_address, status)
+     VALUES ($1,$2::jsonb,'underwriting') RETURNING id`,
+    [b6, JSON.stringify({ oneLine: '900 Route 9, Lakewood, NJ 08701' })])).rows[0].id;
+  await TRF.syncForFile(app6b);
+  ok((await openFor(b6)).some((f) => f.code === 'subject_property_on_record' && f.application_id === app6),
+    'syncing the borrower’s OTHER file does not retire this file’s subject-property finding');
+  ok(!!(await TRF.experienceBlockReason(app6)), 'so the first file is still correctly held');
+
+  // (3) The borrower-level duplicate is visible from BOTH files, so neither can
+  //     be signed off around it.
+  const seenOnB = (await TRF.openForFile(app6b)).map((f) => f.code);
+  ok(seenOnB.includes('duplicate_line'),
+    'the duplicate shows on the other file too — a borrower-level problem is not hidden by which file you opened');
+  ok(!seenOnB.includes('subject_property_on_record'),
+    '…while the other file’s subject-property finding correctly does NOT appear here');
+
+  for (const b of [b1, b2, b3, b4, b5, b6]) {
     await db.query('DELETE FROM track_record_findings WHERE borrower_id=$1', [b]).catch(() => {});
     await db.query('DELETE FROM applications WHERE borrower_id=$1', [b]).catch(() => {});
     await db.query('DELETE FROM track_records WHERE borrower_id=$1', [b]).catch(() => {});
