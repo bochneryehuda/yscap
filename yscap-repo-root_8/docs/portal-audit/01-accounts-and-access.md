@@ -58,7 +58,7 @@ Each one is written the same simple way:
 
 **🐞 The Bug.** There's a secret "admin unlock" password that lets whoever knows
 it change the *staff-only* pricing on a loan — our profit margin, the points, and
-the fees. That password is written directly into our code as `Yscg@12345`. If we
+the fees. That password is written directly into our code as `REDACTED`. If we
 haven't overridden it on the live server, then **every borrower effectively has
 that password**, and a borrower could lower the margin and fees on their **own**
 loan and lock those cheaper terms in as the official ones.
@@ -69,13 +69,13 @@ the request carries an `adminKey` that matches the server's key, the system also
 accepts staff-grade changes — markup %, origination points, lender/credit/
 appraisal/title fees. The server's key comes from a setting called
 `ADMIN_PRICING_KEY`, and **if that setting is empty, the code falls back to the
-word `Yscg@12345`, which is sitting right there in the repository.** Worse, the
+word `REDACTED`, which is sitting right there in the repository.** Worse, the
 "register" step — the one that makes the terms *official* — only throws away
 fake experience numbers; it keeps the margin and fee changes. So a borrower who
 sends that key could register a loan at a margin we never agreed to.
 
 **🔧 The Fix.**
-1. Delete the built-in `Yscg@12345` fallback so the feature simply **turns off**
+1. Delete the built-in `REDACTED` fallback so the feature simply **turns off**
    unless we set a real, private key on the server.
 2. Set a fresh `ADMIN_PRICING_KEY` on the live server and confirm it's set.
 3. Better still: **never accept margin/fee changes from a borrower's session at
