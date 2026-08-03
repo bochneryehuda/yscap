@@ -853,10 +853,19 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
               // NAMES ONLY THE FIRST ONE, and says so. A later resource in the
               // same sweep — including a genuine ZIP behind a companion PDF — is
               // reflected only in the `otherFormat` count, which is the accepted
-              // cost of not burning a slot per resource forever. Read this line
-              // WITH `otherFormat` and `captured` on the same summary: a companion
-              // document sits beside a non-zero `captured`, a format change does
-              // not.
+              // cost of not burning a slot per resource forever.
+              //
+              // Read this line WITH `otherFormat` and `resources` on the same
+              // summary — `resources`, NOT `captured`. A companion document sits
+              // beside a non-zero `resources`: we saw a parsable XML on that order,
+              // whether we captured it just now, SKIPPED it as already ours, or
+              // wrote it off as expired. A format change shows `resources: 0`.
+              //
+              // `captured` is the wrong discriminator and this comment said it
+              // twice: an XML we already hold takes `out.skipped++` at the sighting
+              // check below, so a healthy loan reports `captured: 0` for the whole
+              // week it sits in the window — and the entire historical back book is
+              // legitimately expired. Both would have read as a format change.
               pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
                 `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — first of this sweep; see otherFormat for the total`);
             }
