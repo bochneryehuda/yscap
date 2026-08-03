@@ -196,9 +196,13 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
   // (download, replace, reject, delete…).
   return (
     <div className="cond-act-row">
+      {/* `step.action` is what the ladder decided this viewer's move is — Accept
+          for a completer, Reject for everyone else (a loan officer used to see no
+          action at all on a document row). Never hard-code 'accept' here again:
+          that is what made the officer's Reject reachable only from More. */}
       {step && (
-        <button className="btn primary small" title={step.title}
-          onClick={() => onReviewDoc(doc, 'accept')}>{step.label}</button>
+        <button className={`btn ${step.tone === 'primary' ? 'primary' : 'ghost'} small`} title={step.title}
+          onClick={() => onReviewDoc(doc, step.action || 'accept')}>{step.label}</button>
       )}
       {fullscreen && onPreview && (
         <button className="btn ghost small" title="Preview without downloading"
@@ -218,7 +222,8 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
               title="Accept this document but keep the condition open and ask the borrower for one more"
               onClick={() => onReviewDoc(doc, 'accept_more')}>Accept, and ask for one more</button>
           )}
-          {rs !== 'rejected' && <button className="btn ghost small"
+          {/* …unless Reject is already the visible action on the row above. */}
+          {rs !== 'rejected' && !(step && step.action === 'reject') && <button className="btn ghost small"
             onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
           {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: '#A32A2A' }}
             title="Permanently delete — for a mistake upload (never synced to SharePoint)"

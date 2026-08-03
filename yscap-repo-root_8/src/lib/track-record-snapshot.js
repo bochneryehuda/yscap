@@ -60,9 +60,11 @@ async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, upload
   }
 
   const r = await db.query(
+    // BORN ACCEPTED — an autosaved snapshot PILOT wrote of the borrower's own
+    // track-record tool. Nobody reviews it (owner-directed 2026-08-03).
     `INSERT INTO documents (borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,source_type,visibility)
-     VALUES ($1,$2,'text/html',$3,$4,$5,$6,$7,$8,'system','borrower') RETURNING id, created_at`,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,source_type,visibility,review_status,reviewed_at)
+     VALUES ($1,$2,'text/html',$3,$4,$5,$6,$7,$8,'system','borrower','accepted',now()) RETURNING id, created_at`,
     [borrowerId, name, buf.length, provider, ref, uploadedByKind, uploadedById, DOC_KIND]);
   // one current copy per borrower — the previous snapshot is superseded
   await db.query(
