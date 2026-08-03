@@ -1355,18 +1355,18 @@ router.post('/applications', async (req, res) => {
     // goes through the vesting chokepoint — never a raw UPDATE. Best-effort: a
     // vesting hiccup never fails the already-created file.
     try {
+      const vesting = require('../lib/vesting');
       let vestLlcId = null;
       if (b.llcId) {
         const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, borrowerId]);
         if (o.rows[0]) vestLlcId = b.llcId;
       }
-      if (!vestLlcId && b.entityName && String(b.entityName).trim()) {
-        const nm = String(b.entityName).trim();
-        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
-        vestLlcId = ex.rows[0] ? ex.rows[0].id
-          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm])).rows[0].id;
-      }
-      if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+      // A typed name goes through the ONE resolve-or-create chokepoint
+      // (vesting.setVestingLlcByName) — it reuses a name this borrower already
+      // has and builds the entity's document slots, which the hand-rolled INSERT
+      // this replaces did neither of.
+      if (vestLlcId) await vesting.setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor });
+      else if (b.entityName) await vesting.setVestingLlcByName(appId, b.entityName, { source: 'staff', actor: req.actor });
     } catch (e) { console.error('[staff-origination] vesting failed:', db.describeError(e)); }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
@@ -2058,28 +2058,54 @@ router.get('/applications/:id/verify-llcs', async (req, res) => {
 // document checklist, and LLC condition in step (same follow-through as
 // borrower.js link-llc). Used by the in-file entity section when staff stand up
 // / pick the vesting entity for a file that has none.
+// A TYPED NAME IS ACCEPTED HERE TOO (owner-directed 2026-08-03) — `entityName`
+// instead of `llcId` resolves-or-creates that entity on the file's BORROWER and
+// links it, which is what lets the completeness panel fill the subject-property
+// LLC inline instead of sending the officer off to another section. One door,
+// one set of guards: same freeze, same wiring, same audit either way.
 router.post('/applications/:id/vesting-llc', async (req, res) => {
   try {
     const b = req.body || {};
-    if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
+    const vesting = require('../lib/vesting');
+    const typedName = vesting.cleanEntityName(b.entityName);
+    if (!b.llcId && !typedName) return res.status(400).json({ error: 'Enter the name of the LLC taking title.' });
     const app = (await db.query(
       `SELECT id, llc_id, status, borrower_id, co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`,
       [req.params.id])).rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
     if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
       return res.status(409).json({ error: 'This file is Clear to Close — the vesting entity is locked. Move it back to an earlier status to change it.' });
-    const own = (await db.query(
-      `SELECT id FROM llcs WHERE id=$1 AND borrower_id = ANY($2::uuid[])`,
-      [b.llcId, [app.borrower_id, app.co_borrower_id].filter(Boolean)])).rows[0];
-    if (!own) return res.status(404).json({ error: 'entity not found for this borrower' });
     const previous = app.llc_id;
     // Single authority (src/lib/vesting.js): set llc_id + the full wiring (owner
     // links, LLC doc checklist, LLC condition, rule re-eval) AND enqueue the
     // outbound ClickUp push so the portal-set vesting entity propagates back to the
     // task — previously the vesting change was never pushed to ClickUp.
-    try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true }); } catch (_) {}
-    await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
-    res.json({ ok: true });
+    //
+    // A FAILURE IS REPORTED, NOT SWALLOWED: this used to answer {ok:true} with the
+    // vesting entity unchanged — the repo's "returned 200 but didn't save" class,
+    // and here it would leave the completeness pill still asking for a name the
+    // officer had just typed.
+    let llcId = b.llcId, entityName = null, existed;
+    try {
+      if (b.llcId) {
+        const own = (await db.query(
+          `SELECT id, llc_name FROM llcs WHERE id=$1 AND borrower_id = ANY($2::uuid[])`,
+          [b.llcId, [app.borrower_id, app.co_borrower_id].filter(Boolean)])).rows[0];
+        if (!own) return res.status(404).json({ error: 'entity not found for this borrower' });
+        entityName = own.llc_name;
+        existed = true;
+        await vesting.setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true });
+      } else {
+        const out = await vesting.setVestingLlcByName(req.params.id, typedName, { source: 'staff', actor: req.actor, force: true });
+        if (!out.llcId) return res.status(409).json({ error: 'Could not link that entity to this file. Refresh and try again.' });
+        llcId = out.llcId; entityName = out.entityName; existed = out.existed;
+      }
+    } catch (e) {
+      console.warn('[staff] vesting link failed:', db.describeError(e));
+      return res.status(500).json({ error: 'Could not save the vesting entity. Nothing was changed.' });
+    }
+    await audit(req, 'link_llc', 'application', req.params.id, { llcId, previous, typedName: typedName || undefined, created: existed === false || undefined });
+    res.json({ ok: true, llcId, entityName, existed: !!existed });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2831,11 +2857,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const typed = String((b.overrides && b.overrides.entityName) || b.entityName || '').trim();
       if (typed && !f.app.llc_id) {
-        const borrowerId = f.app.borrower_id;
-        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, typed]);
-        const vestLlcId = ex.rows[0] ? ex.rows[0].id
-          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, typed])).rows[0].id;
-        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+        await require('../lib/vesting').setVestingLlcByName(appId, typed, { source: 'staff', actor: req.actor });
       }
     } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
     finally { if (!released) client.release(); }

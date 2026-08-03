@@ -407,21 +407,38 @@ function isFixHoldStrategy(app) {
    somewhere else" (the address picker, the secure SSN flow) so we only hint. */
 const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
-  // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
-  // for application completeness. Filled from the Vesting entity (LLC) section
-  // above OR from the Term Sheet Studio's entity-name field on register.
-  /* VESTING — satisfied by an entity OR by the file being in an individual's
-     name (owner-directed 2026-08-02). It used to check only for an LLC, so a
+  /* Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
+     for application completeness.
+
+     SATISFIED BY AN ENTITY OR BY THE FILE BEING IN AN INDIVIDUAL'S NAME
+     (owner-directed 2026-08-02). It used to check only for an LLC, so a
      personal-name purchase carried a "Subject-property LLC" pill that could
      NEVER be filled: there is no entity to link, by definition. The file could
      therefore never read complete. Answering it with the individual choice is
      correct — the question is "what does this vest in?", and "an individual" is
      a real answer, which the non-owner-occupied affidavit condition then
-     documents (db/408). */
+     documents (db/408).
+
+     AND IT IS FILLED IN RIGHT HERE, like every other pill (owner-directed
+     2026-08-03: "this missing stuff doesn't have the plus button like everywhere
+     else … you can't fill in the vesting LLC over there"). It was the ONE pill
+     with no `+` — a dead grey chip naming another section — even though the LLC
+     name is the single most ordinary thing an officer types. Typing it
+     resolves-or-creates that entity on the borrower's PROFILE (a name they
+     already have is reused) and routes through the vesting chokepoint, so the
+     LLC condition and its three document slots open on the file straight away.
+     It saves through the file's one vesting door rather than complete-fields:
+     `applications.llc_id` is a LINK to the borrower's entity, never a text
+     column, and a name written into a column would be a name with no documents
+     behind it. Individual vesting still lives in the Vesting entity section —
+     it is a sign-off (it waives the LLC condition), not a field to type. */
   { key: 'entity_name',
     label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
     ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
-    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or mark the file as vesting in an individual\'s name.' },
+    type: 'entity', placeholder: 'Acme Holdings LLC',
+    postEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting-llc'),
+    postBody: (v) => ({ entityName: v }),
+    hint: 'The LLC taking title — type the name. Individual vesting is set in the Vesting entity section.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -533,6 +550,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [note, setNote] = useState('');
   const fields = fieldsProp || [...APP_COMPLETENESS_FIELDS(app), ...BORROWER_COMPLETENESS_FIELDS(app, borrower)];
   // Note-buyer picker: load every note buyer available in ClickUp (+ known + on
   // file) so a 'notebuyer' field renders a datalist. Only fetched when the panel
@@ -546,20 +564,49 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
     api.get('/api/staff/note-buyers').then((r) => { if (live) setNbOpts((r && r.noteBuyers) || []); }).catch(() => {});
     return () => { live = false; };
   }, [hasNoteBuyer]);
+  /* Vesting-entity picker: the borrower's OWN entities, offered as a datalist so
+     the LLC they already have is reused rather than re-typed slightly
+     differently and created twice. The server matches by name either way — this
+     is the convenience, not the guard. Fetched only when the pill is genuinely
+     missing, so a complete file makes no extra call. */
+  const [entOpts, setEntOpts] = useState([]);
+  const entListId = useMemo(() => 'ent-dl-' + Math.random().toString(36).slice(2), []);
+  const needsEntity = fields.some((f) => f.type === 'entity' && !f.ok);
+  const entBorrowerId = (app && app.borrower_id) || null;
+  useEffect(() => {
+    if (!needsEntity || !entBorrowerId) return;
+    let live = true;
+    api.staffBorrowerLlcs(entBorrowerId)
+      .then((r) => { if (live) setEntOpts((Array.isArray(r) ? r : []).map((l) => l && l.llc_name).filter(Boolean)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [needsEntity, entBorrowerId]);
   const done = fields.filter((x) => x.ok).length;
   const missing = fields.filter((x) => !x.ok);
-  const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
+  const start = (f) => { setEditing(f.key); setVal(''); setErr(''); setNote(''); };
   async function save(f) {
     if (val === '' || val == null) return;
     // #90: a FICO must be a real 3-digit score in range — never save junk.
     if (f.type === 'fico' && !ficoValid(val)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setNote('');
     // A field may post to its OWN endpoint/body (e.g. the loan number goes to the
-    // dedicated /loan-number entry that enforces format + cross-file uniqueness).
+    // dedicated /loan-number entry that enforces format + cross-file uniqueness,
+    // and the vesting LLC to the file's one vesting door).
     const ep = f.postEndpoint ? f.postEndpoint(endpoint) : endpoint;
     const body = f.postBody ? f.postBody(val) : { [f.key]: val };
-    try { await api.post(ep, body); setEditing(null); setVal(''); await onSaved(); }
-    catch (e) { setErr(e.message || 'Could not save'); }
+    try {
+      const r = await api.post(ep, body);
+      setEditing(null); setVal('');
+      // Say what actually happened to the borrower's profile — a name that
+      // already existed there was LINKED, not created, and the two are different
+      // things to anyone chasing that entity's documents.
+      if (f.type === 'entity' && r && r.entityName) {
+        setNote(r.existed
+          ? `Linked ${r.entityName} — the entity the borrower already had, with its documents.`
+          : `${r.entityName} saved to the borrower’s profile and linked — its document slots are ready.`);
+      }
+      await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
   return (
@@ -570,6 +617,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
         <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{fields.length} complete</span>
       </div>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      {note && <div className="notice ok" style={{ marginBottom: 8 }}>{note}</div>}
       {missing.length === 0
         ? <p className="muted small">Everything the application asks for has been provided.</p>
         : (
@@ -584,6 +632,11 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                   : f.type === 'notebuyer'
                   ? <input className="input" style={{ maxWidth: 200 }} autoFocus list={nbListId}
                       type="text" placeholder="Pick or type a note buyer…" value={val}
+                      onChange={(e) => setVal(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && save(f)} />
+                  : f.type === 'entity'
+                  ? <input className="input" style={{ maxWidth: 260 }} autoFocus list={entListId}
+                      type="text" maxLength={160} placeholder={f.placeholder || 'LLC name…'} value={val}
                       onChange={(e) => setVal(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />
                   : <input className="input" style={{ maxWidth: 170 }} autoFocus
@@ -609,13 +662,18 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
               )
             ) : (
               <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
-                onClick={() => start(f)} title="Click to enter it now">+ {f.label}</button>
+                onClick={() => start(f)} title={f.hint || 'Click to enter it now'}>+ {f.label}</button>
             ))}
           </div>
         )}
       {hasNoteBuyer && (
         <datalist id={nbListId}>
           {nbOpts.map((o) => <option key={o.value || o.label} value={o.label} />)}
+        </datalist>
+      )}
+      {needsEntity && (
+        <datalist id={entListId}>
+          {entOpts.map((n) => <option key={n} value={n} />)}
         </datalist>
       )}
     </div>
