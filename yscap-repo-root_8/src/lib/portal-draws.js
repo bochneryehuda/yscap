@@ -45,11 +45,16 @@ async function composerLines(appId) {
       });
     }
   }
-  // remaining per JOB ITEM = budgeted − approved-to-date on that item (mirror-side sums)
+  // Remaining per JOB ITEM = budgeted − everything already COMMITTED on that item. Committed means
+  // approved by ANYONE on ANY live draw, not only on a finally-approved one: an inspector-approved
+  // draw still in flight has spoken for that money (owner-directed 2026-08-03 — treat a draw that is
+  // not fully approved as if it were; if it is amended or declined the money frees itself again,
+  // because these are live sums, not a stored balance). The old `d.status='approved'` filter let the
+  // borrower compose a second request against money a draw in flight had already claimed.
   const appr = (await db.query(
     `SELECT r.sitewire_job_item_id AS jid, COALESCE(SUM(COALESCE(r.approved_cents,0)),0)::bigint AS appr
        FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
-      WHERE d.application_id=$1 AND d.status='approved'
+      WHERE d.application_id=$1
       GROUP BY r.sitewire_job_item_id`, [appId])).rows;
   const apprBy = new Map(appr.map((a) => [Number(a.jid), Number(a.appr)]));
   for (const l of lines) l.remaining_cents = Math.max(0, l.budgeted_cents - (apprBy.get(l.sitewire_job_item_id) || 0));

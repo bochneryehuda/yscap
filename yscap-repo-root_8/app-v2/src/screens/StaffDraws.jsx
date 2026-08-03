@@ -189,7 +189,10 @@ export default function StaffDraws() {
                         <td>#{d.number ?? '—'}</td>
                         <td><span className={'pill ' + s.cls}>{s.label}</span>{(d.lifecycle_state || 'active') !== 'active' && <span className="pill sw-draft" style={{ marginLeft: 6 }}>{d.lifecycle_state === 'paid_off' ? 'Paid off' : 'Finished'}</span>}</td>
                         <td className="num">{usd(d.total_requested_cents)}</td>
-                        <td className="num">{usd(d.total_approved_cents)}</td>
+                        {/* The INSPECTOR-approved amount. Sitewire's total_approved_cents is the
+                            FINAL-approval field and reads $0 for the whole inspector → borrower →
+                            capital-partner stretch (owner-reported 2026-08-03). */}
+                        <td className="num">{usd(d.inspector_approved_cents != null ? d.inspector_approved_cents : d.total_approved_cents)}</td>
                         <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.updated_at)}</td>
                         <td><Link className="btn btn-sm ghost" to={`/internal/app/${d.application_id}/draws`}>Open draws</Link></td>
                       </tr>
