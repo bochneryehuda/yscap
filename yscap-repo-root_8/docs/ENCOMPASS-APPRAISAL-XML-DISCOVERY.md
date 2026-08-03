@@ -34,8 +34,7 @@ The owner's instinct was exactly right on both halves: *"I don't believe it supp
 | Loans carrying ≥1 service order | 426 |
 | Appraisal-category service orders | **580** |
 | eFolder attachments scanned | **29,564** |
-| eFolder attachments that are XML | **0** |
-| Appraisal-bucket attachments content-type-checked | 3,845 → 3,844 PDF, 1 JPEG, **0 XML** |
+| **Attachments whose real content type was checked (EVERY one in the tenant)** | **29,562 → 29,550 `application/pdf`, 6 Word `.docx`, 6 JPEG, ZERO XML** |
 | **MISMO 2.6 appraisal XMLs found in service-order resources** | **298, across 136 loans** |
 
 The per-loan index (loan number, address, XML filename, resource id, order id, received date)
@@ -78,6 +77,15 @@ eFolder** (`nan_*.pdf` — report, compliance certificate, SSR, appraiser licenc
 One loan even has a human-named bucket `"Apppraisal report,xml,air,ssr,license,eo"` — but every
 file in it is a PDF. **There is no API-reachable XML on this path.** If NAN sends an XML at all,
 Encompass consumes it for field mapping and retains no addressable copy.
+
+**PROVEN EXHAUSTIVELY, not inferred.** Every attachment in the tenant — all **29,562** of them
+across 571 loans — was asked for its real declared content type (not its filename): **29,550
+`application/pdf`, 6 Word `.docx`, 6 JPEG. Zero XML of any kind.** So the answer is the same on
+BOTH paths, and it is not a question of looking in a different folder: the eFolder holds no XML
+because ICE's eFolder cannot hold one. Do not re-run this scan; the result is recorded here.
+
+*(Careful with a naive `/xml/i` filter over content types — `application/vnd.openxmlformats-…`
+contains the substring "xml". Those six hits are Word documents, not appraisal XML.)*
 
 **Consequence:** the two paths cannot share one implementation. Path A gets the XML; Path B can
 only ever give us the PDF plus the parsed field data (§7).
@@ -261,6 +269,32 @@ if we want it working without waiting on anyone else.
    its output is a **merged PDF**, so it structurally cannot return raw XML.
 
 Do **not** count on recovering them from Encompass as things stand — the stored links are dead.
+
+### 6e. Once we HAVE the XMLs, the import already exists — do not build a new one
+
+The owner's goal is these reports feeding the **property research database** (`docs/PROPERTY-COMP-DATABASE-RESEARCH.md`),
+so the warehouse's comps, sales and appraisers are built off every appraisal Encompass ever
+received, not only the ones that came through a PILOT loan file.
+
+**`src/lib/research/xml-import.js` (`importXml` / `importMany`) is exactly that door, and it is
+already built and wired.** Route `POST /api/research/imports` (any staff user, up to 100 files a
+call; history at `GET /api/research/imports`). It is the right entry point and NOT
+`appraisal/import.js`, which requires an `applicationId` — `appraisals.application_id` is
+`NOT NULL` by design, and a loan-file appraisal row drives the appraisal desk, its findings and
+its conditions, so a row with no file would be picked up by half a dozen sweeps that assume one.
+
+What the XML door does instead: the SAME parser (`appraisal/extract.js`), then
+`ingest.writeReport(client, { a, comps, link: { importId } })` — the one shared writer both doors
+use — so the XMLs land as `properties` / `property_observations` / `property_sales` / appraiser
+registry rows exactly as a loan-file appraisal does. It creates **no** application, appraisal row,
+condition, finding or notification. De-duplication is already handled three ways: `research_imports.sha256`
+(the same file twice), the report fingerprint (subject property + effective date + appraiser — so a
+report we ALREADY hold from a loan file wins and the upload stands down, `existingFileCopy` /
+`retireDuplicateImports`), and the row-level upsert pivots. Photos are not linked on this path
+(there are no stored bytes) — everything else is identical.
+
+**So the only missing ingredient is the XML bytes.** When they arrive from the AMC: drop them
+through `POST /api/research/imports` in batches of 100. No new code.
 
 ### 6c. Reproducing the index
 
