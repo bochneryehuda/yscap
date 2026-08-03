@@ -157,6 +157,21 @@ So the download *mechanism* is proven; only the *fresh-URL-for-media* half is mi
 | `/media`, `/loanMedia`, `/mediaFiles`, `/loanFolderAttachments`, `/files`, `/media/v1/...` | 403 |
 | `GET .../serviceOrders/{id}/response/resources/{resourceId}` | 403 |
 | `POST /encompass/v3/loans/{id}/mediaDownloadUrl` and variants | 403 |
+| `GET /services/v1/partners/{partnerId}/transactions/{transactionId}?generateFileUrls=true` — the legacy path ICE documents as the one that exposes **native** formats — tried against all 44 partner ids in the tenant directory | HTTP 500 (`A null value was returned…`) for every partner id. The transaction is an **EPC2** transaction; the legacy EVP transaction store does not contain it. Class Valuations is not in the legacy partner directory at all (its only appraisal entries are DART and Mercury Network). Avenue closed. |
+
+**Two hypotheses ruled OUT, so nobody re-tries them:**
+
+1. **It is not a persona problem.** ICE documents that native (non-viewable) file formats require
+   "loan access **and** an admin/super admin persona". `GET /encompass/v1/users/admin` reports
+   `"title": "Super Administrator"`, `"isAdministrator": true`, `"isSuperAdministrator": true`,
+   `"accessMode": "ReadWrite"`, `"isTopLevelUser": true`. The user already has the highest persona
+   there is, and `/response/resources` *still* omits the media XML. Escalating the user will not
+   fix this.
+2. **The legacy `generateFileUrls=true` route does not apply**, per the table row above — it is an
+   EVP-era mechanism and these are EPC2 transactions.
+
+That leaves the API application's endpoint entitlements (§8) as the remaining lever inside
+Encompass, and the AMC as the lever outside it.
 
 **Important caveat on those 403s:** this API application returns `403` with an empty body for
 *deliberately nonsense paths too*, so 403 does **not** prove a path is absent. It is the
@@ -190,10 +205,14 @@ enqueue for a slow worker.
 
 ### 6b. The 298 historical XMLs — two options, in preference order
 
-1. **Ask ICE to enable the loan-media read endpoints on the API app** (§8). If a media-download
-   URL endpoint becomes reachable, all 298 backfill cleanly with the same code.
-2. **Ask Class Valuations directly.** They are the source of every one of these XMLs and their
-   order ids are in the index. This is likely the faster route and does not depend on ICE.
+1. **Ask Class Valuations directly.** They are the source of every one of these XMLs, they retain
+   them (EPC keeps transaction resources for 7 years), and the index carries the loan number,
+   property address, XML filename and order id for each. This is the faster route and does not
+   depend on ICE. **Recommended first move.**
+2. **Ask ICE to enable the loan-media read endpoints on the API app** (§8). If a media-download
+   URL endpoint becomes reachable, all 298 backfill cleanly with the same code. Note this is now
+   the *only* remaining in-Encompass lever — persona and the legacy transaction API are both
+   ruled out (§5).
 
 Do **not** count on recovering them from Encompass as things stand — the stored links are dead.
 
