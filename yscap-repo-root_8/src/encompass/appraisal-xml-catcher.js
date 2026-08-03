@@ -630,10 +630,12 @@ async function capture(db, res, meta) {
 // Encompass's own response time, well inside a 300s interval. (The pacing half
 // is arithmetic; the response time is not measured here, so treat the margin as
 // wide rather than as a number.) That buys a 3.5x window over the 2 days first
-// shipped for a few extra seconds of sweeping, which is the trade.
-// `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
+// shipped for ~11s more pacing (~32 more loans) plus their response time — still
+// far inside the interval. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
 // 1..90 days: below 1 the window is empty, and past ~90 the sweep stops fitting
-// inside its own interval on any real tenant.
+// inside its own interval on any real tenant — that bound is the PACING
+// arithmetic alone (the 500-row cap x 350ms is 175s of a 300s interval, before
+// any response time), which is why it is stated as a limit and not as a duration.
 // The pipeline search is capped and NOT paged; see the alarm at the call site.
 const PIPELINE_LIMIT = 500;
 

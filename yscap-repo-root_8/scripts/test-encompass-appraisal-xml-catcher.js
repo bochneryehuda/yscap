@@ -633,11 +633,19 @@ t('a non-url is refused with a plain reason', () => {
     const sweeps = [];
     try {
       // BY_KEY present but WITHOUT our key — the exact shape a rename or a
-      // deleted registry entry would leave behind. `on()` answers true, so if the
-      // guard were removed the catcher would still run and this test would pass
-      // for the wrong reason; the warn count is what actually pins the guard.
+      // deleted registry entry would leave behind.
+      //
+      // `on: () => false` is REAL, not arbitrary: switches.on() reads BY_KEY and
+      // returns false for a key it does not know. That is the whole reason the
+      // guard exists — `!switches.on(key)` on an unknown key reads as "disabled",
+      // which would stop the catcher forever in silence. Stubbing `true` here
+      // would model a state the real module cannot produce AND would make the
+      // fail-open assertion below vacuous: with the guard deleted the catcher
+      // would keep sweeping anyway, so the test could never catch its removal.
+      // With `false`, deleting the guard turns the catcher off and that assertion
+      // goes red — which is what its name promises.
       require.cache[swPath] = {
-        id: swPath, filename: swPath, loaded: true, exports: { BY_KEY: {}, on: () => true },
+        id: swPath, filename: swPath, loaded: true, exports: { BY_KEY: {}, on: () => false },
       };
       console.warn = (...a) => { warns.push(a.join(' ')); };
       enc2.configured = () => true;
