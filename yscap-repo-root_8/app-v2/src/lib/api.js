@@ -1090,6 +1090,10 @@ export const api = {
   // here is ever merged without a person saying so" — which needs a door for the
   // person to say it through. There was none, so the pairs were found and then
   // nobody could answer them either way.
+  // How much of the warehouse is placed on the map. A property with no
+  // coordinates is INVISIBLE to a "within N miles" search, silently — so the
+  // count is a disclosure, not plumbing.
+  researchGeocodeStatus: () => req('GET', '/api/research/geocode/status'),
   researchDuplicates:  (f) => req('GET', '/api/research/duplicates' + qs(f)),
   researchMergeProps:  (b) => req('POST', '/api/research/duplicates/merge', b),
   researchNotDup:      (b) => req('POST', '/api/research/duplicates/not-duplicate', b),

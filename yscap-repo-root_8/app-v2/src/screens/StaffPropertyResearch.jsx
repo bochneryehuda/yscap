@@ -129,6 +129,7 @@ export default function StaffPropertyResearch() {
                 {num(stats.pending)} still being read in — the numbers grow as it works through them.
               </span>
             )}
+            <MapCoverage />
           </div>
         )}
       </header>
@@ -329,6 +330,28 @@ export default function StaffPropertyResearch() {
         </div>
       )}
     </div>
+  );
+}
+
+/* HOW MUCH OF THIS IS ON THE MAP.
+
+   A property with no coordinates is INVISIBLE to a "within N miles" search — not
+   excluded with a reason, just absent — so a distance search over a warehouse
+   that is 60% placed silently answers about 60% of it. That is a disclosure, not
+   plumbing, and it belongs beside the other counts rather than on an admin page
+   nobody opens.
+
+   SILENT WHEN EVERYTHING IS PLACED, because "100% placed" is noise. */
+function MapCoverage() {
+  const [g, setG] = useState(null);
+  useEffect(() => { api.researchGeocodeStatus().then(setG).catch(() => {}); }, []);
+  if (!g || !g.properties) return null;
+  const missing = Number(g.properties) - Number(g.placed || 0);
+  if (!(missing > 0)) return null;
+  return (
+    <span style={{ color: GOLD }} title="A search by distance can only see properties that have been placed on the map.">
+      {num(g.placed)} of {num(g.properties)} placed on the map — a search by distance cannot see the other {num(missing)}
+    </span>
   );
 }
 
