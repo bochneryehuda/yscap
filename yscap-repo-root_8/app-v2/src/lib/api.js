@@ -567,6 +567,8 @@ export const api = {
   staffAssignOrder:   (appId, kind, staffId) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/assign`, { staffId: staffId || null }),
   staffOrderDue:      (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/due`, body || {}),
   staffOrderNote:     (appId, kind, note) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/note`, { note }),
+  // The only way an order whose condition is never signed off can ever end.
+  staffOrderComplete: (appId, kind, reason) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/complete`, { reason }),
   staffOrderEvents:   (appId, kind) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/events`),
   // How this vendor has actually performed — shown where the choice is made.
   staffOrderVendorScore: (appId, kind) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/vendor-scorecard`),

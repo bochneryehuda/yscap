@@ -44,11 +44,12 @@ function addrLine(pa) {
   return [street, tail].filter(Boolean).join(', ') || '—';
 }
 
-function OrderCell({ o, appId, kind, onChased }) {
+function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   if (!o) return <span className="muted small">—</span>;
 
+  const onHold = String(fileStatus || '') === 'on_hold';
   const tone = o.overdue ? { color: '#B3261E', borderColor: '#B3261E' }
     : o.status === 'completed' ? { color: 'var(--ok)', borderColor: 'var(--ok)' }
     : (o.status === 'documents_in' || o.status === 'ordered') ? { color: 'var(--teal,#2F7F86)', borderColor: 'var(--teal,#2F7F86)' }
@@ -106,7 +107,13 @@ function OrderCell({ o, appId, kind, onChased }) {
       {o.unassignedDocs > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)' }}>{o.unassignedDocs} to assign</span>}
       {o.unassignedDocs === 0 && o.returnedDocs > 0 && <span className="muted small">{o.returnedDocs} doc{o.returnedDocs === 1 ? '' : 's'} back</span>}
       {o.notes && <span className="small" style={{ color: '#4B585C', fontStyle: 'italic' }}>“{String(o.notes).slice(0, 80)}”</span>}
-      {o.status === 'ordered' && o.pendingOn === 'vendor' && (
+      {/* A HELD FILE IS SHOWN BUT NOT CHASED. The desk lists it so its returned
+          documents still appear in "Needs classifying" and so an order placed on a
+          held file does not vanish the moment it is sent — but the overdue sweep
+          deliberately will not chase a paused file, and a one-click Chase here
+          would have the desk doing what the system has decided not to do. */}
+      {onHold && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>file on hold — not being chased</span>}
+      {!onHold && o.status === 'ordered' && o.pendingOn === 'vendor' && (
         kind === 'attorney'
           ? <Link className="btn ghost small" to={`/internal/app/${appId}#sec-order-closing`}>Chase on the chain</Link>
           : <button className="btn ghost small" disabled={busy} onClick={chase} style={{ alignSelf: 'flex-start' }}>
@@ -237,7 +244,7 @@ export default function StaffOrders() {
                     </td>
                     {KINDS.map(k => (
                       <td key={k.key}>
-                        <OrderCell o={f[k.key]} appId={f.applicationId} kind={k.key} onChased={load} />
+                        <OrderCell o={f[k.key]} appId={f.applicationId} kind={k.key} onChased={load} fileStatus={f.fileStatus} />
                       </td>
                     ))}
                     <td style={{ textAlign: 'right' }}>

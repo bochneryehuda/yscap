@@ -210,13 +210,10 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
   let done = 0;
   try {
     const r = await db.query(
-      `SELECT o.id, o.application_id, o.order_type,
-              a.status AS file_status,
-              (SELECT bool_or(ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL)
-                 FROM checklist_items ci
-                 JOIN checklist_templates t ON t.id = ci.template_id
-                WHERE ci.application_id = o.application_id
-                  AND t.code = CASE o.order_type WHEN 'title' THEN $1 ELSE $2 END) AS condition_done
+      // Only what the loop needs. `file_status` and a second copy of the condition
+      // subquery were still being selected after the funding arm was removed —
+      // nothing read either, and the subquery was being executed twice per row.
+      `SELECT o.id, o.application_id, o.order_type
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id
         WHERE o.order_type IN ('title','insurance')

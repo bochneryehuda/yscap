@@ -930,7 +930,12 @@ async function orderOverdueOnce() {
     rows = (await db.query(
       `SELECT o.id, o.application_id, o.order_type, o.status, o.ordered_at, o.due_on, o.sla_days,
               o.assigned_to, o.vendor_name,
-              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name
+              -- Falls back to the EMAIL exactly as the desk does. Keying on
+              -- full_name alone meant an active staffer with a blank name (one
+              -- of the two account-creation doors does not require one) read as
+              -- 'inactive' to the ladder — the nudge skipped them and blasted
+              -- the file team, stamping assigneeInactive on a live account.
+              COALESCE(NULLIF(btrim(COALESCE(su.full_name,'')),''), su.email) AS assigned_name
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id
           AND a.deleted_at IS NULL
@@ -938,9 +943,10 @@ async function orderOverdueOnce() {
           -- recorded mortgage after the loan funds, which is why the follow-up and
           -- reply doors stay open past funding and why the desk keeps those rows.
           -- Excluding them here made the nudge disagree with the desk about the
-          -- same order: it was listed as outstanding and never chased. The retire
-          -- sweep only completes a funded file's order once the vendor has
-          -- actually answered, so what survives to here is genuinely still owed.
+          -- same order: it was listed as outstanding and never chased. An order
+          -- that reaches here on a funded file is one whose condition was never
+          -- signed off — genuinely unfinished — and a human can end it from the
+          -- card with "Mark finished" when the work really is done.
           AND a.status NOT IN ('withdrawn','declined','on_hold')
          LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
         WHERE o.status IN ('ordered','documents_in')
@@ -1037,10 +1043,20 @@ async function orderOverdueOnce() {
       if (assignee) { await notify.notifyStaff(assignee, { ...payload }); told.push(String(assignee)); delivered++; }
       if (tier === 'team' || tier === 'admins' || !assignee) {
         const team = await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: assignee || null, exceptStaffIds: told });
-        if (Array.isArray(team)) told.push(...team.map(String));
-        delivered++;
+        // COUNTED BY WHO WAS ACTUALLY REACHED, not by "the call returned".
+        // `delivered++` unconditionally meant a fan-out over a file with NO active
+        // assignees counted as a delivery — so a later rung throwing kept the
+        // throttle and the file was silenced for two days having told nobody at
+        // all, which is precisely what the release exists to prevent.
+        if (Array.isArray(team) && team.length) { told.push(...team.map(String)); delivered += team.length; }
       }
-      if (tier === 'admins') { await notify.notifyAdmins({ ...payload, exceptStaffIds: told }); delivered++; }
+      /* NOBODY TO TELL → THE ADMINS, which is what every other fan-out in this
+         repo already does (`if (!sent || !sent.length) await notify.notifyAdmins`
+         — esign/dead-letter, three places in esign/webhook). 188 of the files on
+         this database have no active assignee; without this, a late order on one
+         of them told literally nobody at every tier below `admins` while stamping
+         the audit row as though the nudge had gone out. */
+      if (tier === 'admins' || !delivered) { await notify.notifyAdmins({ ...payload, exceptStaffIds: told }); delivered++; }
       await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
         orderType: r.order_type, daysLate: days, tier, pendingOn: st.pendingOn,
         toldAssignee: !!assignee,

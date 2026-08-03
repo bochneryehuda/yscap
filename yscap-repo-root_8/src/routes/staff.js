@@ -5720,6 +5720,37 @@ router.post('/applications/:id/orders/:kind/note', async (req, res) => {
 });
 
 /**
+ * MARK AN ORDER FINISHED, by hand.
+ *
+ * The sweep retires an order when its condition is signed off, and that is the
+ * right automatic rule — but it is the ONLY one, so an order whose condition is
+ * never signed off (a funded file where somebody cleared the work another way, a
+ * file whose condition item does not exist at all) had no way to end. It sat on
+ * the desk forever with a live "Chase now" button aimed at a title company on a
+ * loan that closed months ago, and the overdue nudge re-fired at the administrator
+ * tier every two days, permanently. There was no manual completion anywhere in the
+ * system — `completeOrder` takes an actor and nothing ever passed one.
+ *
+ * DELIBERATELY NOT 'cancelled': that is an explicit stand-down which closes the
+ * follow-up and reply doors, and after funding a vendor may still owe the final
+ * policy. 'completed' leaves both doors open.
+ */
+router.post('/applications/:id/orders/:kind/complete', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reason = require('../lib/fields').textColumn(req.body && req.body.reason, 'file_orders_notes', 500)
+      || 'marked finished by hand';
+    const ok = await orderTracking.completeOrder(appId, kind, { actorId: req.actor.id, reason });
+    if (!ok) return res.status(409).json({ error: 'This order is not open, so there is nothing to finish.', code: 'not_open' });
+    await audit(req, 'order_completed_manually', 'application', appId, { orderType: kind, reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
  * HOW THIS VENDOR HAS ACTUALLY PERFORMED — shown where the choice is made.
  *
  * File-scoped on purpose: it hangs off the order card, and the numbers are about
@@ -6378,18 +6409,21 @@ router.get('/orders', async (req, res) => {
         --   one here put a one-click "chase the vendor" button on a dead deal — while
         --   the overdue sweep already refused to touch it, so the desk and the nudge
         --   disagreed about the same order.
-        -- · AN ON-HOLD file is the same disagreement one status further on. A held
-        --   file is deliberately paused everywhere else in PILOT (it is in
-        --   INACTIVE_FILE_STATUSES, so it is out of the KPIs, the task lists and every
-        --   reminder) and the overdue sweep already refuses to chase one — so leaving
-        --   it here offered a "Chase now" button for work the system has decided not
-        --   to pursue, and the vendor scorecard went on counting the order against
-        --   that company for as long as the hold lasted. All three now agree.
-        --   FUNDED files stay: the final policy and the recorded mortgage arrive
-        --   after funding, and that is genuinely outstanding work.
+        -- · AN ON-HOLD file STAYS, and that is deliberate after two passes at it.
+        --   Excluding it here looked consistent (the nudge skips a held file, the
+        --   scorecard no longer counts one) but this desk answers a DIFFERENT
+        --   question from those two. The nudge asks "what should we chase?" and a
+        --   paused file is not that. The scorecard asks "is this vendor slow?" and
+        --   a wait WE chose is not their fault. The desk asks "what is there?" —
+        --   and hiding a held file also hid its returned documents from the "Needs
+        --   classifying" count, which is not paused work at all, and made an order
+        --   vanish the instant it was placed (the place gate allows a held file).
+        --   It is shown, flagged as held, and the Chase button is withheld.
+        --   FUNDED files stay too: the final policy and the recorded mortgage
+        --   arrive after funding, and that is genuinely outstanding work.
         WHERE o.status NOT IN ('cancelled','not_ordered')
           AND (o.status <> 'completed' OR COALESCE(dc.unassigned, 0) > 0)
-          AND a.status NOT IN ('declined','withdrawn','on_hold')
+          AND a.status NOT IN ('declined','withdrawn')
           ${scopeSql}
         -- OLDEST FIRST, and the LATENESS ordering is applied below rather than
         -- here: "late" is a BUSINESS-day question against a per-order SLA, which

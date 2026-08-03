@@ -171,8 +171,19 @@ BEGIN
     -- So this REPAIRS: it re-opens anything the earlier rules wrongly completed
     -- (only where nothing else has since happened to the order), and it gives every
     -- genuinely completed order the timeline line it is missing.
+    -- BACK TO THE STATE IT WAS IN, which is NOT always 'ordered'.
+    -- `first_response_at` is written by order-inbox in the same block that sets
+    -- status='documents_in', so essentially every row an earlier rule completed
+    -- was at 'documents_in' when it was closed. Re-opening all of them as
+    -- 'ordered' would make `order-sla.pendingOn` answer "the vendor owes us", and
+    -- the overdue nudge would email the team "we asked Acme Title 40 days ago and
+    -- nothing has come back" about an order whose commitment is sitting on the
+    -- file — the desk-versus-nudge disagreement this whole feature exists to
+    -- remove, reinstated by the repair itself. The documents are the evidence:
+    -- if the vendor answered, it goes back to 'documents_in'.
     UPDATE file_orders o
-       SET status = 'ordered', completed_at = NULL, updated_at = now()
+       SET status = CASE WHEN o.first_response_at IS NOT NULL THEN 'documents_in' ELSE 'ordered' END,
+           completed_at = NULL, updated_at = now()
       FROM applications a
      WHERE a.id = o.application_id
        AND o.order_type IN ('title','insurance')
@@ -194,12 +205,22 @@ BEGIN
 
     -- Any timeline line the earlier rules left behind on a row just re-opened is
     -- now a statement about something that did not happen.
+    --
+    -- SCOPED TO THE ROWS THIS BLOCK RE-OPENED, not to "any order that is not
+    -- completed". Without the order_type and file-status predicates it also
+    -- deleted real history: an attorney order on a DECLINED file, legitimately
+    -- retired by closing-prep and then legitimately re-opened by a human through
+    -- the reopen button, lost its completed line and was left showing a 'reopened'
+    -- event with nothing before it.
     DELETE FROM file_order_events e
      USING file_orders o
+      JOIN applications a ON a.id = o.application_id
      WHERE e.order_id = o.id
        AND e.kind = 'completed'
        AND e.actor_id IS NULL
        AND COALESCE(e.detail->>'backfilled','') = 'true'
+       AND o.order_type IN ('title','insurance')
+       AND a.status = 'funded'
        AND o.status <> 'completed';
 
     -- Every order that IS finished gets its line, with a reason read from the file
@@ -208,8 +229,11 @@ BEGIN
     INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
     SELECT o.id, o.application_id, o.order_type, 'completed', NULL,
            jsonb_build_object('backfilled', true, 'reason',
-             CASE WHEN a.status IN ('funded','declined','withdrawn') THEN 'the file was ' || a.status
-                  ELSE 'this order was already finished when its history began' END)
+             -- Never "the loan funded": funding is exactly what no longer finishes
+             -- an order, and a timeline line saying it did would contradict the
+             -- rule this migration exists to establish. What is honestly known is
+             -- that the order was already closed before it had a history.
+             'this order was already finished when its history began')
       FROM file_orders o
       JOIN applications a ON a.id = o.application_id
      WHERE o.status = 'completed'

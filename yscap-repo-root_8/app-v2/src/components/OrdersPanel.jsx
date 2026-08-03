@@ -378,6 +378,22 @@ function OrderTracking({ appId, kind, tracking, onChanged }) {
           onClick={() => { setEditing('note'); setNoteDraft(t.notes || ''); setErr(''); }}>
           {t.notes ? 'Edit the note' : 'Add a note'}
         </button>
+        <span className="small" style={{ color: '#4B585C' }}>·</span>
+        {/* THE ONLY WAY SOME ORDERS CAN EVER END. An order retires by itself when
+            its condition is signed off, and that is the only automatic rule — so
+            one whose condition is never signed off (a funded file worked another
+            way, a file with no such condition at all) stayed on the desk forever
+            with a live Chase button pointed at a vendor on a closed loan, and the
+            overdue nudge re-fired at the administrators every two days, permanently.
+            Deliberately NOT "Cancel": that is a stand-down and it shuts the
+            follow-up and reply doors, which must stay open after funding. */}
+        <button className="btn link small" style={{ padding: 0 }} disabled={busy === 'done'}
+          onClick={() => {
+            if (!window.confirm('Mark this order finished?\n\nIt leaves the Orders desk and stops being chased. You can still write to the vendor and file anything else they send.')) return;
+            save('done', () => api.staffOrderComplete(appId, kind, 'marked finished on the file'));
+          }}>
+          {busy === 'done' ? 'Finishing…' : 'Mark finished'}
+        </button>
       </div>
 
       {t.notes && editing !== 'note' && (
