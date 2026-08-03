@@ -1318,7 +1318,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                 ))}
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-                    showAdmin={staffAdmin} onState={onStudioState}
+                    showAdmin={staffAdmin} adminCapable={isStaff} onState={onStudioState}
                     issueHold={(data && data.termSheetHold) || null}
                     provenance={data && data.termSheetFinal ? 'file_final' : 'file'}
                     officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)

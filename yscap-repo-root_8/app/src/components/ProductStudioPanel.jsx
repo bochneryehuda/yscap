@@ -546,7 +546,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               </p>
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-                    showAdmin={isStaff} onState={onStudioState} />
+                    showAdmin={isStaff} adminCapable={isStaff} onState={onStudioState} />
                 : <p className="muted small">Loading your scenario…</p>}
               <div className="toolsheet-actions">
                 <button className="btn primary" disabled={busy} onClick={register}>
