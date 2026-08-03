@@ -51,6 +51,8 @@ import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 // The research desk: the property / comparable / appraiser database (db/409) and
 // the build-your-own valuation grid (db/410).
+import StaffDashboards from './screens/StaffDashboards.jsx';
+import StaffDashboard from './screens/StaffDashboard.jsx';
 import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
 import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';
@@ -219,7 +221,9 @@ export default function App() {
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<RedirectWithQuery to="/internal/approvals" tab="sync" />} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />
-          <Route path="/internal/notifications" element={<StaffPrivate><StaffNotificationCenter /></StaffPrivate>} />
+          <Route path="/internal/dashboards" element={<StaffPrivate><StaffDashboards /></StaffPrivate>} />
+        <Route path="/internal/dashboards/:id" element={<StaffPrivate><StaffDashboard /></StaffPrivate>} />
+        <Route path="/internal/notifications" element={<StaffPrivate><StaffNotificationCenter /></StaffPrivate>} />
 
           {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
           <Route path="/staff" element={<LegacyStaffRedirect />} />

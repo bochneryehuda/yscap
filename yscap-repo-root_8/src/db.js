@@ -79,5 +79,9 @@ module.exports = {
   query: (text, params) => pool.query(text, params),
   getClient: () => pool.connect(),
   pool,
+  // Exported so a second pool (the dashboards read pool) connects on exactly the same
+  // terms as this one. A hand-rolled "is it localhost" heuristic over there would drift
+  // from PGSSLMODE and from the production rule the moment either changes.
+  sslConfig,
   describeError,
 };
