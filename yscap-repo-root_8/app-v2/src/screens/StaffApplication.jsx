@@ -2469,7 +2469,8 @@ function StaffTrackRecordPanel({ app, role }) {
                 border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
                 <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
                 Nothing counts toward this file&rsquo;s experience until it is verified — read the closing
-                statement, deed or lease on each one, then set its status to Verified below.
+                statement, deed or lease on each one, then set its status to Verified below.{' '}
+                <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
               </div>
             );
           })()}

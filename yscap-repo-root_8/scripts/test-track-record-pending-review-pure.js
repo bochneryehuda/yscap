@@ -119,12 +119,51 @@ console.log('\nD. the processing queue — what is waiting on us');
   const q = staff.slice(staff.indexOf("router.get('/track-record-reviews'"));
   ok(q.length > 0, 'the review queue exists');
   const body = q.slice(0, 2500);
-  ok(/entered_by_kind = 'borrower'/.test(body), 'it lists what a BORROWER typed');
-  ok(/is_verified = false/.test(body), '…that nobody has verified');
+  // The question itself lives in ONE constant that both the list and the badge
+  // interpolate — asserted where it is DEFINED, not where it is used.
+  const where = staff.match(/const TR_REVIEW_WHERE = "([^"]+)"/);
+  ok(!!where, 'the queue has ONE definition of what is waiting');
+  ok(/entered_by_kind = 'borrower'/.test(where ? where[1] : ''), 'it lists what a BORROWER typed');
+  ok(/is_verified = false/.test(where ? where[1] : ''), '…that nobody has verified');
   ok(/VISIBLE_BORROWER_SQL\('b'/.test(body),
     'scoped the BORROWER way — a track record hangs on a person, not a loan file');
   ok(/seesAllBorrowers\(req\)/.test(body), '…with the whole desk for admins / underwriters / processors');
   ok(/doc_count/.test(body), 'each line says whether documentation has arrived — the thing being reviewed');
+  // The reviewer opens the documents and acts from the queue, so the rows must
+  // carry the documents themselves AND a live file (a document request becomes a
+  // condition ON a file — with none there is nowhere to put it).
+  ok(/AS docs/.test(body), '…and the documents themselves, so they can be opened from the queue');
+  ok(/AS files/.test(body), '…and a live loan file, so a document can actually be requested');
+
+  // The badge and the list must answer the SAME question — two definitions is
+  // how a tab reading "3" opens onto an empty screen.
+  const c = staff.slice(staff.indexOf("router.get('/track-record-reviews/count'"));
+  ok(c.length > 0, 'the badge count endpoint exists');
+  ok(/TR_REVIEW_WHERE/.test(c.slice(0, 1200)) && /TR_REVIEW_WHERE/.test(body),
+    'both read ONE definition of what is waiting');
+  ok(/res\.json\(\{ pending: 0 \}\)/.test(c.slice(0, 1200)),
+    'the count never errors out to the caller — a badge must not break the hub\'s poll');
+}
+
+console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a decision');
+
+{
+  const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordReviews.jsx');
+  const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
+  const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
+  ok(/staffTrackRecordReviews\(\)/.test(screen), 'the screen reads the queue');
+  ok(/staffVerifyTrackRecord\(/.test(screen), '…and sets a verdict through the ONE audited verify route');
+  ok(/staffRequestTrackRecordDoc\(/.test(screen), '…and can ask for the documentation that is missing');
+  // The refusals here are real underwriting rules (no exit, a stale exit, not a
+  // processor) and each names the way forward — summarising them loses that.
+  ok(/e && e\.message/.test(screen), '…and shows the server\'s own refusal wording, never a summary');
+  ok(/mayVerify/.test(screen) && /sign_off_conditions/.test(screen),
+    'verifying is offered only to a processor — the same rule the route enforces');
+  ok(/StaffTrackRecordReviews/.test(hub) && /'track-record'/.test(hub),
+    'it is a TAB of the Approvals hub, not another top-level nav link');
+  ok(/staffTrackRecordReviewsCount/.test(hub) && /staffTrackRecordReviewsCount/.test(layout),
+    'both the tab badge and the one Approvals nav badge count it');
+  ok(/\+ trReviewCount/.test(layout), '…so the nav badge total includes what is waiting here');
 }
 
 console.log('\nE. the borrower is never told a self-reported deal went through');

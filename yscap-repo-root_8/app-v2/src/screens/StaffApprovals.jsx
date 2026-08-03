@@ -7,6 +7,7 @@ import StaffExceptions from './StaffExceptions.jsx';
 import StaffFindingEscalations from './StaffFindingEscalations.jsx';
 import SyncReviews from './SyncReviews.jsx';
 import StaffMyExceptions from './StaffMyExceptions.jsx';
+import StaffTrackRecordReviews from './StaffTrackRecordReviews.jsx';
 
 /**
  * Approvals — ONE place for everything waiting on a human decision (owner-directed
@@ -25,6 +26,13 @@ const TABS = [
   { key: 'exceptions', label: 'Exceptions', blurb: 'Every request to deviate from a loan policy — guaranty waivers, early sends, pricing exceptions, overrides.', min: 'pricing', Comp: StaffExceptions },
   { key: 'findings', label: 'Findings to review', blurb: 'Findings a teammate could not decide and sent up for a second opinion.', min: 'all', Comp: StaffFindingEscalations },
   { key: 'sync', label: 'Sync reviews', blurb: 'PILOT ⇄ ClickUp disagreements waiting for a human to pick a side.', min: 'all', Comp: SyncReviews },
+  /* A deal a BORROWER typed onto their track record is self-reported until
+     somebody reads the closing statement behind it (owner-directed 2026-08-03).
+     It belongs here rather than in a nav link of its own: it is a queue waiting
+     on a human decision, which is what this hub is. Open to every staff role —
+     anyone can ask for a document or mark a line documentation-required; only a
+     processor can VERIFY one, and the server enforces that, not the tab. */
+  { key: 'track-record', label: 'Track record', blurb: 'Deals a borrower entered themselves, waiting for someone to verify them against the documents.', min: 'all', Comp: StaffTrackRecordReviews },
   { key: 'mine', label: 'My requests', blurb: 'Exception requests you raised — withdraw or track them here.', min: 'all', Comp: StaffMyExceptions },
 ];
 
@@ -55,6 +63,7 @@ export default function StaffApprovals() {
       api.findingEscalationsCount().then((r) => put('findings', (r && r.pendingCount) || 0)).catch(() => {});
       api.get('/api/staff/sync-reviews/count').then((r) => put('sync', (r && r.open) || 0)).catch(() => {});
       api.myExceptionsCount().then((r) => put('mine', (r && r.openCount) || 0)).catch(() => {});
+      api.staffTrackRecordReviewsCount().then((r) => put('track-record', (r && r.pending) || 0)).catch(() => {});
     };
     poll();
     const t = setInterval(poll, 120000);

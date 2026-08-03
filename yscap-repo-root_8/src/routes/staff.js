@@ -9286,6 +9286,11 @@ router.delete('/borrowers/:id/notes/:nid', async (req, res) => {
    would bury the handful of deals somebody is actually waiting on. A pre-db/458
    row has a NULL kind — nobody recorded who typed it — and is likewise left out
    rather than guessed into somebody's work list. */
+// The queue's ONE definition of what is waiting: a line a BORROWER typed that
+// nobody has verified. Both the list and the badge count read it, so the number
+// on the tab and the number of rows behind it can never disagree.
+const TR_REVIEW_WHERE = "t.entered_by_kind = 'borrower' AND t.is_verified = false";
+
 router.get('/track-record-reviews', async (req, res) => {
   try {
     const params = [];
@@ -9293,13 +9298,34 @@ router.get('/track-record-reviews', async (req, res) => {
     if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_BORROWER_SQL('b', '$1')}`; }
     const r = await db.query(
       `SELECT t.id, t.borrower_id, t.property_address, t.deal_type, t.verification_status,
-              t.entered_at, t.purchase_price, t.sale_price, t.sale_date, t.rent_date, t.refi_date,
+              t.entered_at, t.created_at, t.purchase_price, t.sale_price, t.rehab_amount,
+              t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
+              t.docs_status, t.owned_personally,
+              COALESCE(t.entity_name, l.llc_name) AS entity_name,
               NULLIF(TRIM(b.full_name),'') AS borrower_name,
-              (SELECT count(*)::int FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS doc_count
+              (SELECT count(*)::int FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS doc_count,
+              -- The documents themselves, so a reviewer can OPEN the closing
+              -- statement / deed / lease from the queue instead of navigating to
+              -- the borrower's profile to find out whether one exists at all.
+              (SELECT COALESCE(json_agg(json_build_object(
+                      'id', d.id, 'filename', d.filename, 'slot_label', d.slot_label,
+                      'review_status', d.review_status) ORDER BY d.created_at), '[]'::json)
+                 FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS docs,
+              -- A LIVE file of this borrower's, for the two actions that need one:
+              -- asking for a document and raising an issue both become a condition
+              -- ON a file. Newest first; null when they have no open file, and the
+              -- screen then says so rather than offering a button that would 400.
+              (SELECT json_agg(x) FROM (
+                 SELECT a.id, a.ys_loan_number, a.property_address
+                   FROM applications a
+                  WHERE (a.borrower_id = t.borrower_id OR a.co_borrower_id = t.borrower_id)
+                    AND a.deleted_at IS NULL
+                    AND a.status NOT IN ('funded','declined','withdrawn','cancelled')
+                  ORDER BY a.created_at DESC LIMIT 5) x) AS files
          FROM track_records t
          JOIN borrowers b ON b.id = t.borrower_id
-        WHERE t.entered_by_kind = 'borrower'
-          AND t.is_verified = false
+         LEFT JOIN llcs l ON l.id = t.llc_id
+        WHERE ${TR_REVIEW_WHERE}
           ${scope}
         ORDER BY t.entered_at DESC NULLS LAST, t.created_at DESC
         LIMIT 200`, params);
@@ -9307,6 +9333,26 @@ router.get('/track-record-reviews', async (req, res) => {
   } catch (e) {
     console.warn('[staff] track-record review queue failed:', db.describeError(e));
     res.status(500).json({ error: 'could not load the track-record review queue' });
+  }
+});
+
+/* The badge count — the same question, counted (the `…/count` shape every other
+   Approvals queue uses, polled on the hub's 2-minute cadence). It NEVER errors
+   out to the caller: a badge that 500s would break the whole hub's poll, and a
+   count is the least important thing on the screen. */
+router.get('/track-record-reviews/count', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_BORROWER_SQL('b', '$1')}`; }
+    const r = await db.query(
+      `SELECT count(*)::int AS n
+         FROM track_records t JOIN borrowers b ON b.id = t.borrower_id
+        WHERE ${TR_REVIEW_WHERE} ${scope}`, params);
+    res.json({ pending: (r.rows[0] && r.rows[0].n) || 0 });
+  } catch (e) {
+    console.warn('[staff] track-record review count failed:', db.describeError(e));
+    res.json({ pending: 0 });
   }
 });
 
