@@ -62,6 +62,10 @@ export const CODE_SUBJECT = {
   rtl_llc_formation: 'entity', rtl_llc_ein: 'entity', rtl_llc_opagmt: 'entity',
   rtl_llc_goodstanding: 'entity', llc_docs: 'entity', operating_agmt: 'entity',
   rtl_p1_llc: 'entity', draw_cond_operating_agreement: 'entity',
+  /* Vesting in an INDIVIDUAL's name (db/408) — the affidavit that stands in for
+     the entity file when there is no entity, so it belongs with the vesting
+     subject rather than with the borrower's personal documents. */
+  cond_noo_affidavit_individual: 'entity',
   // db/400 — the documents for an OUTSIDE entity whose bank funds the borrower is using. It is
   // raised by the assets review, but what it asks for is a company's formation papers, so it reads
   // with the other entity documents, which is where anyone looking for them would look.

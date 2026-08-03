@@ -6,7 +6,7 @@ import { fmtDay } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
-import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
+import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 
@@ -202,6 +202,9 @@ function Overview({ b, onChanged }) {
         <Row k="Marital status" v={b.marital_status} />
         <Row k="Contact type" v={b.contact_type} />
         <Row k="Primary officer" v={b.primary_officer_name} />
+        {/* The SAME portal-standing row the loan file shows (lib/portal-invite
+            decides the wording once, so the two screens can never disagree). */}
+        <PortalAccessRow b={b} onChanged={onChanged} />
         {/* ADDITIONAL contact info accumulated across the borrower's files
             (owner-directed 2026-07-15 night): extra emails/phones ADD here —
             the primary above never gets replaced by another file's contact. */}

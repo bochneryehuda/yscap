@@ -529,4 +529,38 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, moneyTextProblem, textColumn, TEXT_COLUMN_MAX, jsonbText, stripNulDeep, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+/**
+ * HOW WILL THE PROPERTY BE VESTED? — the ONE reading of that answer, shared by
+ * every door that can create a file (owner-directed 2026-08-02: "'Individual —
+ * no entity' on all three application doors").
+ *
+ * Until now the only way a file could vest in a person's name was a staff waiver
+ * INSIDE an already-created file, so every applicant had to claim an entity they
+ * might not have and a staffer undid it afterwards. These doors now ask the
+ * question up front, and they all have to read the answer identically or the
+ * public form, the borrower portal and the staff form would disagree about the
+ * same deal.
+ *
+ * THE DEFAULT IS AN ENTITY, and that is deliberate: an LLC purchase is both the
+ * common case and the SAFE one to assume, because the LLC condition then stands
+ * and a human has to actively waive it. Reading a missing/garbled answer as
+ * "individual" would silently drop that condition off the file.
+ *
+ * AN ENTITY NAME WINS. If the applicant also names an entity, they are not
+ * buying in their own name whatever the radio said — the same precedence
+ * `vesting-program-rule.vestsInIndividual` applies (llc_id wins), so the two can
+ * never disagree about one file.
+ */
+function vestsIndividually(b) {
+  b = b || {};
+  const named = String(b.llcName || b.entityName || '').trim();
+  if (named) return false;                       // an entity was named — not individual
+  const v = b.personalNamePurchase !== undefined ? b.personalNamePurchase
+    : (b.vesting !== undefined ? b.vesting : b.vestingType);
+  if (v === true) return true;
+  if (v === false || v == null) return false;
+  return /^(individual|personal|personal_name|individual_name|no_entity|none)$/i
+    .test(String(v).trim().replace(/[\s-]+/g, '_'));
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, moneyTextProblem, textColumn, TEXT_COLUMN_MAX, jsonbText, stripNulDeep, assignmentFields, vestsIndividually, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

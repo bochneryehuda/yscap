@@ -100,7 +100,22 @@ export default function DealSnapshot({ app, gating }) {
           <div className="snap-cluster-h">Parties</div>
           {row('Borrower', fullNameOf(app) || '—', { strong: true })}
           {row('Co-borrower', coName)}
-          {row('Entity', app.entity_name || '—')}
+          {/* The entity WITH its verification state (owner-directed 2026-08-02:
+              entity belongs in this first block, and the old "Entity, team &
+              assignment" panel it came from is now team-only). Whether the entity
+              is verified is the part anyone actually acts on, so it travelled with
+              the row rather than being left behind. On an individual-vested file
+              this says so plainly instead of reading as a missing entity. */}
+          {app.personal_name_purchase && !app.llc_id
+            ? row('Vesting', <span>Individual&rsquo;s name <span className="ts-badge" style={{ marginLeft: 6 }}>no entity</span></span>)
+            : row('Entity', (
+              <span>
+                {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
+                {app.llc_id && (app.entity_verified
+                  ? <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>
+                  : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
+              </span>
+            ))}
           {row('FICO', app.fico || '—')}
           {/* The note buyer at a glance (owner-directed 2026-07-27) — it used to be
               readable only inside the ClickUp panel, so an officer couldn't tell who is
@@ -143,6 +158,13 @@ export default function DealSnapshot({ app, gating }) {
               deal with no rehab (bridge), where there is no scope to show. */}
           {row('Rehab type', app.rehab_type || (Number(app.rehab_budget) > 0 ? '—' : null))}
           {row('Liquidity required', quote && quote.liquidity != null ? money2(quote.liquidity) : null)}
+          {/* ASSIGNMENT DETAILS (owner-directed 2026-08-02) — moved out of the old
+              "Entity, team & assignment" panel into the block that already owns the
+              deal's economics. Only on an assignment; an ordinary purchase renders
+              nothing extra. The REAL total the borrower pays is what "Purchase"
+              above shows; these are the two parts it is made of. */}
+          {app.is_assignment && row('Underlying price', money(app.underlying_contract_price))}
+          {app.is_assignment && row('Assignment fee', money(app.assignment_fee))}
         </div>
 
         <div className="snap-cluster">
