@@ -310,6 +310,76 @@ scenario('the front end MAY call /api/lt (one screen, both products)', (app) => 
   write(app, 'app-v2/src/screens/StaffQueue.jsx', "const url = '/api/lt/pipeline';\n");
 }, 'pass');
 
+// ---- post-merge audit findings: each defect gets a test so it cannot return ----
+scenario("Long-Term's own DB test may name lt_ tables in SQL — that is its job", (app) => {
+  write(app, 'scripts/test-lt-loans-db.js',
+    "async function f(db){ await db.query('DELETE FROM lt_loans');\n" +
+    "  await db.query('INSERT INTO lt_loans (id) VALUES ($1)');\n" +
+    "  return db.query('SELECT id FROM lt_loans'); }\n");
+}, 'pass');
+
+scenario('an ALIASED update of an RTL table is still a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE borrowers AS b SET cell_phone=$1 WHERE b.id=$2'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('an alias with no AS is still a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE borrowers b SET cell_phone=$1 WHERE b.id=$2'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('UPDATE ONLY is still a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE ONLY borrowers SET cell_phone=$1'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('TRUNCATE of an RTL table is a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('TRUNCATE TABLE applications;'); }\n");
+}, 'fail', 'writes the RTL table');
+
+scenario('…but ordinary prose about truncating is not SQL', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    'const note = "we truncate the description before display";\nmodule.exports = { note };\n');
+}, 'pass');
+
+scenario('an old-style comma join reaches the second table too', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT 1 FROM lt_loans l, applications a WHERE a.id = l.app_id'); }\n");
+}, 'fail', 'reads the RTL table');
+
+scenario('an INSERT column list is not a list of tables', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('INSERT INTO lt_loans (borrower_id, staff_id, source) VALUES ($1,$2,$3)'); }\n");
+}, 'pass');
+
+scenario('a SELECT list is not a list of tables', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT l.id, l.amount, l.rate FROM lt_loans l'); }\n");
+}, 'pass');
+
+scenario('WITH RECURSIVE names a CTE, not an RTL table', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('WITH RECURSIVE chain AS (SELECT id FROM lt_loans) SELECT * FROM chain'); }\n");
+}, 'pass');
+
+scenario('a comma-separated CTE list with no space is still CTEs', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('WITH a AS (SELECT 1 FROM lt_loans),b AS (SELECT 2 FROM lt_loans) SELECT * FROM a JOIN b ON true'); }\n");
+}, 'pass');
+
+scenario('a Long-Term migration that touches ONLY RTL tables FAILS', (app) => {
+  write(app, 'db/520_lt_borrower_link.sql',
+    'ALTER TABLE borrowers ADD COLUMN IF NOT EXISTS preferred_channel text;\n' +
+    "UPDATE borrowers SET preferred_channel='email' WHERE preferred_channel IS NULL;\n");
+}, 'fail', 'every table it touches is RTL');
+
+scenario('an RTL migration whose name merely contains _lt_ is NOT a Long-Term migration', (app) => {
+  write(app, 'db/521_default_lt_value.sql',
+    'CREATE TABLE IF NOT EXISTS loan_defaults (id uuid PRIMARY KEY);\n' +
+    'CREATE OR REPLACE FUNCTION pilot_reopen_pricing() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;\n');
+}, 'pass');
+
 // ---- 3. foreign keys across the line ---------------------------------------
 scenario('an lt_ table with a foreign key to an RTL table FAILS', (app) => {
   write(app, 'db/500_lt_loans.sql',
