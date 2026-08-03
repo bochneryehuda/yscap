@@ -50,6 +50,64 @@ coverage, not about the user's filters.
 - [x] `AS_IS_ONLY` corrected in **both** directions — three facts joined it, two provably wrong entries left it
 - [x] db/426 — a 2–4 unit comparable's rooms/beds/baths, and the per-unit breakdown
 - [x] The time-trend rate + dollar ceilings
+- [x] db/430/431/432 — **every comparable knows what it is and how many doors it
+  has**, verified against a corpus of **262 real production appraisal XMLs pulled
+  out of SharePoint** (149 parsed, **769 comparables**). This is the owner's own
+  stated priority — *"there shouldn't be a possibility that you should see a
+  comparable in your system that doesn't have how many units the property is,
+  what property type it is."*
+
+  | | before | after |
+  |---|---|---|
+  | comparables with a unit count | 0 of 769 | **768 (99.9%)** |
+  | comparables with a property type | 0 of 769 | **769 (100%)** |
+  | comparables with a year built | **0 (0%)** | **760 (98.8%)** |
+  | comparables with a lot size | 717 | 717 (93.2%) |
+
+  Four things the real corpus proved that no synthetic test could have:
+  - **A 1004D was being read as a 1004.** The Appraisal Update / Completion
+    Report attaches to a 1004, a **1025**, a 1073 or a 2055 and proves nothing
+    about the unit count — so the 1004D on 1400-1402 Stratford (plainly a
+    two-family; the address is a two-number range) stored its subject and all
+    three comparables as `units 1 / SFR (1 unit)` while the appraiser's own grid
+    read "2 Family" on every line. A confident wrong answer, not a missing one.
+  - **Year built could never have been populated.** The warehouse mined it out of
+    the Age adjustment row with a 4-digit-year regex, but that row states an AGE
+    IN YEARS — the corpus writes "106", "114 yrs", "76". Silently 0% for every
+    comparable ever imported. Now derived from the report's own effective date.
+  - **The form was overruling the grid on the label**, producing rows that
+    contradict themselves: 18 comparables stored as `units 5 / Multi 2–4`, and a
+    grid-stated 2-unit on a 1004 stored as `units 2 / SFR (1 unit)`.
+  - **A vendor total row was being counted as a dwelling, and the damage was
+    real.** Class Appraisal and OneStop emit an UNNUMBERED leading
+    `ROOM_ADJUSTMENT` carrying the property's totals, ahead of rows that DO carry
+    `UnitSequenceIdentifier` — so counting rows made every one of their
+    comparables ONE UNIT TOO MANY. Scored against the appraiser's own
+    `SalesPricePerUnitAmount`, an independent witness the parser never consults
+    for a grid-stated count: **133 of 350 multi-unit comparables carried a wrong
+    unit count; after the fix, 350 of 350 agree.** It was not cosmetic — a
+    conforming 4-unit comparable was labelled `Multi 5+` (ineligible), the price
+    per door was divided by the wrong denominator, and 57 Lincoln St appeared in
+    two reports as a 3-unit and a 4-unit building. The discriminator is
+    STRUCTURAL — *does this grid number its units at all?* — which is why it is
+    safe where an earlier value-based draft was not: that one compared counts and
+    could not tell a total row from a duplex of two identical units.
+  - **A padded grid column is not a comparable.** Every comparable that could not
+    establish a unit count was an empty trailing slot with no address, no price
+    and no area. Dropping them took price/condition/age/proximity coverage to
+    100% and left exactly ONE genuine unknown in 769.
+
+  Plus a fourth identity source ranked above arithmetic because it is STATED
+  rather than derived — the appraiser's own design-style words ("2 Family",
+  "3 FAMILY", "4-PLEX"). It refuses far more than it accepts: "1/2 Duplex"
+  (9 comps, all on 1004s) is ONE SIDE of a two-unit building, and "DOUBLE BLOCK"
+  is used both ways, so both are left unanswered rather than doubled.
+- [x] An **iLAD loan-application export is no longer reported as an unreadable
+  appraisal**. Three files in the corpus were refused with "UAD 3.6 — a 3.6
+  reader is required"; they are Encompass loan-application exports carrying no
+  comparable grid at all, so that message was wrong twice over — a reader would
+  not import them, and the real problem (the wrong document was attached) went
+  unsaid.
 
 ---
 
@@ -121,11 +179,29 @@ throw away.
 
 ## PHASE 2 — READ EVERYTHING THE XML ALREADY CONTAINS
 
-- [ ] **2.1 Per-unit data for the SUBJECT reaches the warehouse** (it is read but
-  `unit_mix` is on 5 of 126 observations); per-unit square footage for both sides
-- [ ] **2.2 `SalesPricePerUnitAmount`**, and the comp's monthly rent + GRM
-- [ ] **2.3 The stated AGE in years** — store what the grid says, stop computing a year from it
-- [ ] **2.4 The whole rental-comp grid** — `extract()` emits only a count today
+- [x] **2.1 Per-unit data for the SUBJECT** — measured on the corpus: all 64
+  form-1025 files produce a subject unit roll, and **every one of the 167 unit
+  rows carries rooms, beds, baths, square footage AND rent**. That is the
+  owner's *"each and every unit how many bedrooms how many bathrooms each and
+  every unit how many square footage"*, complete, for the subject.
+- [x] **2.2 `SalesPricePerUnitAmount`**, and the comp's monthly rent + GRM (db/430)
+- [x] **2.3 The stated AGE in years** — stored as `age_years`; the year built is
+  now derived from it plus the report's effective date instead of being mined out
+  of it with a regex that could never match (db/432)
+- [ ] **2.4 The whole rental-comp grid — the biggest remaining unread block.**
+  `MULTIFAMILY_RENTALS` / `RENTAL_UNIT` / `RENTAL_FEATURE` are present in **91 of
+  149 parsed files** and read for nothing but a count. Measured: **267
+  `MULTIFAMILY_RENTAL` entries** (the subject at sequence 0 plus ~3 rental
+  comparables each) carrying **1,002 `RENTAL_UNIT` rows, 634 of them with square
+  footage** — each rental comparable has its own address, `MonthlyRentAmount`,
+  gross building area, rent per foot, rent-control status and a per-unit
+  breakdown. That is roughly 200 additional real properties with real in-place
+  rents, sitting in files we already hold. For a 2–4 unit lender this is the
+  single richest thing left in the XML.
+- [ ] **2.4b Per-unit SQUARE FOOTAGE for a COMPARABLE.** The subject has it; a
+  comparable's `unit_mix` comes from `ROOM_ADJUSTMENT`, which states rooms, beds
+  and baths but no area. `RENTAL_UNIT` has the area — joining the two would
+  complete the owner's per-unit ask on both sides of the grid.
 - [ ] **2.5 ACI's `COMPARABLE_LISTING`** — absent from the parser entirely
 - [ ] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback
 - [ ] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them

@@ -559,11 +559,32 @@ async function backfillComparableParseOnce(limit = 150) {
   // The fields the comparable-grid parser owns and may have changed its mind
   // about. Everything else on the row (comp_set, the human-facing overrides) is
   // left exactly as it stands.
+  // EVERY COLUMN THIS PARSER OWNS MUST BE LISTED HERE, OR THE BACK BOOK NEVER
+  // GETS IT. The pass stamps `comp_parse_version` and then never revisits the
+  // report, so a column added to `comparableRowFrom` and forgotten here is
+  // drained out of the repair permanently and needs a FURTHER version bump to
+  // recover. db/430's four facts and db/431's `identity_basis` were added to the
+  // writer and not to this list — the version was bumped to 4, so every stored
+  // report would have been stamped "re-parsed at 4" with all five still NULL,
+  // and `units`/`property_type` would have been rewritten with no record of
+  // WHERE they came from, which is the one thing `identity_basis` exists to say.
   const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
     'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis',
     // The comparable's own property type, derived ONLY from its stated unit count
     // (db/409 §7's column, written by nothing until now).
-    'property_type'];
+    'property_type',
+    // db/431 — WHERE the unit count came from. Must travel with `units` and
+    // `property_type` on every write, never behind them.
+    'identity_basis',
+    // db/430 — the 2-4 family facts: price per door, the comparable's own rent,
+    // the multiplier the appraiser derived from it, and the age the grid stated.
+    'price_per_unit', 'monthly_rent', 'grm', 'age_years',
+    // db/432 — the year the comparable was built, derived from the age the grid
+    // states plus the report's own effective date, and the appraiser's own words.
+    'year_built', 'design_style'];
+  // HOW SURE EACH SOURCE IS. A re-parse may raise a row's confidence or hold it
+  // level; it may NEVER lower it. See the write guard below.
+  const BASIS_RANK = { grid: 3, style: 2, price: 2, form: 1 };
   let scanned = 0, rewritten = 0, unrecoverable = 0, missing = 0;
   try {
     const rows = (await db.query(
@@ -620,7 +641,21 @@ async function backfillComparableParseOnce(limit = 150) {
             // recovers silently) DESTROYED six facts and then stamped the row so
             // it was never revisited. Measured: beds 7 → null, rooms 14 → null,
             // gla 2900 → null, leaving a price per foot with no foot.
-            const cols = REPARSED.filter((k) => k in full && full[k] != null && full[k] !== '');
+            let cols = REPARSED.filter((k) => k in full && full[k] != null && full[k] !== '');
+            // A GUESS MAY NOT OVERWRITE A MEASUREMENT. The "never blanks a fact"
+            // guard above was written when a silent report produced a NULL — but
+            // `compIdentity` now MANUFACTURES a non-null answer from the form
+            // alone, so on a truncated stored file (which still parses `ok`) a
+            // comparable holding a grid-stated `3 / Multi 2–4` would be rewritten
+            // to `1 / SFR (1 unit)` and stamped, never to be revisited. That is
+            // worse than blanking it: the row keeps its authority while stating
+            // the wrong thing. So the identity trio is written only when the new
+            // reading is at least as well-sourced as the stored one.
+            const wasRank = BASIS_RANK[row.identity_basis] || 0;
+            const nowRank = BASIS_RANK[full.identity_basis] || 0;
+            if (row.units != null && nowRank < wasRank) {
+              cols = cols.filter((k) => k !== 'units' && k !== 'property_type' && k !== 'identity_basis');
+            }
             if (!cols.length) continue;
             await client.query(
               `UPDATE appraisal_comparables SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}

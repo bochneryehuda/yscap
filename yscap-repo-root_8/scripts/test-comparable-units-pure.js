@@ -293,5 +293,129 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
     'in the portal\'s own vocabulary, not a private spelling');
 }
 
+// ---------------------------------------------------------------------------
+// 11. THE FORM IS ALWAYS PASSED IN PRODUCTION, so every claim about identity has
+//     to be tested WITH one. Section 10 above calls `comparableRowFrom(comp)`
+//     with no form — a shape that exists at no call site (import.js, desk.js and
+//     xml-import.js all pass `A.formType`), so it proved nothing about what the
+//     database actually stores. Measured against 769 comparables read out of the
+//     real SharePoint corpus: 768 state a unit count and 769 a property type.
+// ---------------------------------------------------------------------------
+{
+  const { comparableRowFrom } = require('../src/lib/appraisal/import');
+  const { LABEL_OF } = require('../src/lib/property-type');
+  const id = (c, form) => { const r = comparableRowFrom(c, form); return `${r.units}/${r.property_type}/${r.identity_basis}`; };
+  const styled = (text, extra) => Object.assign({ adjustments: [{ type: 'DesignStyle', description: text }] }, extra || {});
+
+  // --- the form, when nothing measured the comparable ---
+  ok(id({}, 'FNM1004') === '1/SFR (1 unit)/form', 'a 1004 comparable is one dwelling by definition');
+  ok(id({}, 'FNM1073') === '1/Condo/form', 'a 1073 comparable is a condo');
+  ok(id({}, 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+    'a 1025 gives the 2-4 band and NOT a door count — the exact count needs a real source');
+  ok(id({}, null) === 'null/null/null', 'no form and no grid states nothing at all');
+
+  // --- A 1004D IS NOT A 1004 (measured: 1400-1402 Stratford, a two-family) ---
+  ok(id({}, 'FNM1004D') === 'null/null/null',
+    'a 1004D is the Appraisal UPDATE form — it attaches to a 1004, a 1025 or a 1073 and proves nothing');
+  ok(id(styled('DT2.5;2 Family'), 'FNM1004D') === `2/${LABEL_OF.multi_2_4}/style`,
+    'so the appraiser\'s own words decide it, and a two-family stops being stored as a house');
+
+  // --- the design style, and everything it refuses ---
+  ok(id(styled('3 FAMILY'), 'FNM1025') === `3/${LABEL_OF.multi_2_4}/style`, '"3 FAMILY" is three doors');
+  ok(id(styled('4-PLEX'), 'FNM1025') === `4/${LABEL_OF.multi_2_4}/style`, '"4-PLEX" is four');
+  ok(id(styled('Duplex'), 'FNM1025') === `2/${LABEL_OF.multi_2_4}/style`, 'a duplex is two');
+  ok(id(styled('SD2;1/2 Duplex'), 'FNM1004') === '1/SFR (1 unit)/form',
+    'but "1/2 Duplex" is ONE SIDE of a two-unit building — 9 comparables in the corpus, every one a '
+    + 'single-family house that a bare /duplex/ match would have doubled');
+  ok(id(styled('DOUBLE BLOCK'), 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+    '"DOUBLE BLOCK" means the whole pair to some appraisers and one side to others, so it is left unanswered');
+  ok(id(styled('DT2;Colonial'), 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`, 'a style word is not a count');
+  ok(id(styled('2 Family'), 'FNM1073') === '1/Condo/form',
+    'and a style outside the form\'s own band is refused, never allowed to contradict it');
+
+  // --- the grid outranks everything, and NAMES THE TYPE ---
+  ok(id({ units: 2 }, 'FNM1004') === `2/${LABEL_OF.multi_2_4}/grid`,
+    'a grid-stated 2 beats the form: it used to store "units 2 / SFR (1 unit)", a row contradicting itself');
+  ok(id({ units: 5 }, 'FNM1025') === `5/${LABEL_OF.multi_5_plus}/grid`,
+    'and a grid-stated 5 is Multi 5+, not the form\'s "Multi 2-4" — 18 such rows in the real corpus');
+  ok(id(Object.assign(styled('4-PLEX'), { units: 3 }), 'FNM1025') === `3/${LABEL_OF.multi_2_4}/grid`,
+    'the grid outranks the appraiser\'s style word');
+
+  // --- the arithmetic, and the two ways it used to invent a number ---
+  ok(id({ salePrice: 600000, pricePerUnit: 200000 }, 'FNM1025') === `3/${LABEL_OF.multi_2_4}/price`,
+    '600k over 200k a door is three doors');
+  ok(id({ salePrice: 600000, pricePerUnit: 202000 }, 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+    'a ratio of 2.97 proves nothing — per-unit figures are rounded');
+  ok(id({ salePrice: 600000, pricePerUnit: 75000 }, 'URAR') === 'null/null/null',
+    'an UNRECOGNISED form constrains nothing, so it may not license a guess: this used to store EIGHT units / "Multi 5+"');
+  ok(id({ salePrice: 8, pricePerUnit: 1 }, 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+    'and a sub-dollar price satisfies a $1 tolerance for EVERY divisor, so the arithmetic is refused below a real price');
+  ok(id({ salePrice: 600000, pricePerUnit: 200 }, 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+    'a price per FOOT mistaken for a price per door divides to 3000, far outside any band');
+  for (const bad of [0, -1, NaN, null, undefined]) {
+    ok(id({ salePrice: 600000, pricePerUnit: bad }, 'FNM1025') === `null/${LABEL_OF.multi_2_4}/form`,
+      `a per-unit figure of ${String(bad)} proves nothing`);
+  }
+
+  // --- the year built the grid never states ---
+  const { _internals } = require('../src/lib/appraisal/extract');
+  ok(comparableRowFrom({ ageYears: 106, yearBuilt: '1920' }, 'FNM1004').year_built === 1920,
+    'the year built rides the comparable row (db/432)');
+  ok(comparableRowFrom({ ageYears: 106 }, 'FNM1004').year_built == null,
+    'and stays null when the report gave no effective date to subtract the age from');
+  void _internals;
+}
+
+// ---------------------------------------------------------------------------
+// 12. THE VENDOR THAT WRITES A TOTAL ROW HAS NOW BEEN SEEN — and counting rows
+//     made every one of its comparables ONE UNIT TOO MANY.
+//
+//     Class Appraisal and OneStop emit an UNNUMBERED leading row carrying the
+//     property's totals, ahead of rows that DO carry `UnitSequenceIdentifier`.
+//     Measured over 149 real reports, scored against the appraiser's OWN
+//     `SalesPricePerUnitAmount` — an independent witness the parser never
+//     consults for a grid-stated count: 133 of 350 multi-unit comparables
+//     carried a WRONG unit count. After the fix, 350 of 350 agree.
+//
+//     The discriminator is STRUCTURAL, which is why it is safe where the removed
+//     draft (section 3) was not: that one compared COUNTS and could not tell a
+//     total row from a duplex of two identical units. This asks whether the grid
+//     numbers its units at all — and when no row is numbered, nothing is dropped.
+// ---------------------------------------------------------------------------
+{
+  const N = (seq, r, b, ba) => `<ROOM_ADJUSTMENT UnitSequenceIdentifier="${seq}" TotalRoomCount="${r}"`
+    + ` TotalBedroomCount="${b}" TotalBathroomCount="${ba}"/>`;
+
+  // The real Class Appraisal shape: an unnumbered total, three numbered units,
+  // and a trailing empty slot.
+  const cls = comp(R(4, 2, '1.0') + N(1, 4, 2, '1.0') + N(2, 4, 2, '1.0') + N(3, 2, 1, '1.0')
+    + '<ROOM_ADJUSTMENT UnitSequenceIdentifier="4"/>');
+  ok(cls.units === 3, 'the unnumbered total row is not a dwelling — three numbered units is three units, not four');
+  ok(cls.unitMix.length === 3 && cls.unitMix.map((u) => u.unit).join(',') === '1,2,3',
+    'and the mix carries each unit ONCE, under the appraiser\'s own number — it used to open with unit 1 twice');
+  ok(cls.beds === 5 && cls.totalRooms === 10,
+    'the totals are summed over the UNITS only, so the summary row is not double-counted');
+
+  // A grid that numbers nothing is untouched — the shape every other vendor emits.
+  const plain = comp(R(5, 3, '1.0') + R(5, 2, '1.0'));
+  ok(plain.units === 2 && plain.beds === 5, 'a grid that numbers nothing behaves exactly as before');
+
+  // THE CASE THE REMOVED DRAFT FAILED: a duplex of two identical units. No row is
+  // numbered, so nothing is dropped and it is still two units — not "a total of 5".
+  const duplex = comp(R(5, 2, '1.0') + R(5, 2, '1.0'));
+  ok(duplex.units === 2 && duplex.beds === 4,
+    'a duplex with two identical units is still two units — the trap that killed the value-based draft');
+
+  // A numbered grid with NO summary row loses nothing.
+  const numbered = comp(N(1, 5, 3, '1.0') + N(2, 5, 2, '1.0'));
+  ok(numbered.units === 2, 'a fully-numbered grid with no summary row is unchanged');
+
+  // The appraiser's own arithmetic is the witness this was scored against.
+  const { comparableRowFrom } = require('../src/lib/appraisal/import');
+  const row = comparableRowFrom(Object.assign({}, cls, { salePrice: 600000, pricePerUnit: 200000 }), 'FNM1025');
+  ok(row.units === 3 && Math.round(600000 / 200000) === row.units,
+    'and the count now agrees with the price per unit the appraiser stated beside it');
+}
+
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');
 process.exit(failures ? 1 : 0);

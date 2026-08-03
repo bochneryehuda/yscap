@@ -173,15 +173,29 @@ function propertyTypeProblem(v) {
  * These three mappings are the forms' own definitions (mirrored in
  * src/lib/appraisal/extract.js and docs/appraisal-xml/field-validation-rules.md):
  *   1004 URAR                        → single family, 1 unit
+ *   1004C Manufactured Home          → single family, 1 unit (one dwelling)
  *   1025 Small Residential Income    → 2–4 unit
  *   1073 Individual Condominium      → condo
  * Any other form number is NOT mapped (a 2055/216/1007 says nothing definite
  * about the category), so it stays unrepaired rather than guessed.
+ *
+ * **A 1004D IS NOT A 1004, AND READING IT AS ONE MANUFACTURES A WRONG FACT.**
+ * The 1004D is the *Appraisal Update and/or Completion Report* — a follow-up
+ * form attached to whatever the ORIGINAL appraisal was: a 1004, a **1025**, a
+ * 1073 or a 2055. It states nothing about the property's category or its unit
+ * count. Measured on the real corpus: the 1004D on 1400-1402 Stratford (a
+ * two-family — the address is a two-number range) was read as a 1004, so the
+ * subject and all three comparables were stored as `units=1, SFR (1 unit)`
+ * while the appraiser's own grid said "2 Family" on every line. A confident
+ * wrong answer is worse than an absent one, so `1004d` is deliberately absent
+ * from this map and the callers fall through to a source that actually knows
+ * (the grid's stated units, then the appraiser's own design-style words).
  */
 function guessFromFormCode(raw) {
   if (!isAppraisalFormCode(raw)) return null;
   const s = String(raw).trim().toLowerCase().replace(/[\s._\-/]+/g, '');
-  if (/1004[cd]?$/.test(s)) return 'sfr';
+  if (/1004d$/.test(s)) return null;
+  if (/1004c?$/.test(s)) return 'sfr';
   if (/1025$|(^|[a-z])72$/.test(s)) return 'multi_2_4';
   if (/1073a?$|(^|[a-z])465$/.test(s)) return 'condo';
   return null;
@@ -219,11 +233,60 @@ function appraisalFormExpectation(raw) {
   return u ? { propertyKey: key, label: LABEL_OF[key] || key, minUnits: u.minUnits, maxUnits: u.maxUnits } : null;
 }
 
+/**
+ * HOW MANY DWELLINGS THE APPRAISER'S OWN DESIGN-STYLE WORDS STATE — or null.
+ *
+ * The MISMO 2.6 comparable grid carries no per-comp unit element, but the
+ * `DesignStyle` / `DesignAppeal` adjustment ROW carries the appraiser's own
+ * description of that comparable, and on a small-income property it names the
+ * count outright. Measured across the real corpus: "2 Family", "3 FAMILY",
+ * "3-PLEX", "4-PLEX", "Duplex", "DT2.5;2 Family". That is a STATED fact about
+ * that comparable, not an inference, which is why it outranks dividing the sale
+ * price by the price per unit.
+ *
+ * IT REFUSES FAR MORE THAN IT ACCEPTS, ON PURPOSE. Two shapes in the corpus
+ * would each turn a single-family comparable into a two-unit one:
+ *   · **"1/2 Duplex"** (9 comps, all on 1004s) — appraiser shorthand for ONE
+ *     SIDE of a two-unit building, i.e. a one-dwelling semi-detached house. A
+ *     bare /duplex/ match would have doubled every one of them.
+ *   · **"DOUBLE BLOCK"** — north-eastern Pennsylvania for a semi-detached pair,
+ *     used by different appraisers to mean the whole building OR one side. It
+ *     is left unanswered rather than guessed; on a 1025 the form still proves
+ *     the property is 2–4, so the category survives and only the exact count
+ *     stays blank. An honest blank beats a confident wrong number.
+ * Everything decorative — Colonial, Ranch, Townhouse, Row, Garden Apt, Cape —
+ * says nothing about a count and returns null.
+ */
+const STYLE_HALF = /(?:\b1\s*\/\s*2|½|\bhalf(?:\s+of)?)\s*(?:a\s+)?(?:duplex|double)/i;
+const STYLE_WORD_N = Object.freeze({ two: 2, three: 3, four: 4, duplex: 2, triplex: 3, tri: 3, fourplex: 4, quadplex: 4, quad: 4 });
+function unitsFromDesignStyle(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return null;
+  // A half-duplex is one dwelling; refuse the whole string rather than risk the
+  // "duplex" inside it being read as two.
+  if (STYLE_HALF.test(s)) return null;
+  // "2 Family" / "3-FAMILY" / "4 Fam" — a digit immediately qualifying "family".
+  let m = /(\d)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
+  if (m) return band(+m[1]);
+  // "3-PLEX" / "4 PLEX" / "6PLEX"
+  m = /(\d)\s*[-\s]?\s*plex\b/i.exec(s);
+  if (m) return band(+m[1]);
+  // "Two Family" / "Three-Family"
+  m = /\b(two|three|four)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
+  if (m) return band(STYLE_WORD_N[m[1].toLowerCase()]);
+  // Bare "Duplex" / "Triplex" / "Fourplex" — the half-duplex guard above already ran.
+  m = /\b(duplex|triplex|fourplex|quadplex)\b/i.exec(s);
+  if (m) return band(STYLE_WORD_N[m[1].toLowerCase()]);
+  return null;
+}
+function band(n) { return Number.isInteger(n) && n >= 2 && n <= 8 ? n : null; }
+
 module.exports = {
   PROPERTY_TYPES,
   LABEL_OF,
   isAppraisalFormCode,
   appraisalFormExpectation,
+  unitsFromDesignStyle,
   propertyTypeKey,
   propertyTypeCompareKey,
   propertyTypesEquivalent,

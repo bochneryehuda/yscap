@@ -415,9 +415,36 @@ function compGrid(c) {
   // dwelling — no rooms, no beds, no baths — is not a dwelling.
   })).filter((r) => (r.rooms || 0) + (r.beds || 0) + (r.baths.full || 0) + (r.baths.half || 0) > 0);
 
+  // THE VENDOR THAT WRITES A TOTAL ROW HAS NOW BEEN SEEN — TWICE. The comment
+  // below says a summary row would have to be observed before it was handled,
+  // and reading 149 real reports out of SharePoint observed it: Class Appraisal
+  // and OneStop emit an UNNUMBERED leading row (the property's totals) and a
+  // trailing empty one, ahead of rows that DO carry `UnitSequenceIdentifier`:
+  //
+  //     <ROOM_ADJUSTMENT TotalRoomCount="4" TotalBedroomCount="2" .../>      <- no seq: the total
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="1" TotalRoomCount="4" .../>
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="2" TotalRoomCount="4" .../>
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="3" TotalRoomCount="2" .../>
+  //
+  // Counting rows made every one of those comparables ONE UNIT TOO MANY, and the
+  // damage was not cosmetic: a conforming 4-unit comparable was labelled
+  // `Multi 5+` — ineligible — and `price_per_unit` was divided by the wrong
+  // denominator. 57 Lincoln St appeared in two reports with two different unit
+  // counts, 3 and 4, for the same physical building.
+  //
+  // The discriminator is STRUCTURAL, not a value heuristic — which is why it is
+  // safe where the removed draft was not. That draft compared COUNTS ("one row
+  // equals the sum of the others") and could not tell a total from a duplex of
+  // two identical units. This asks a different question: does the grid number
+  // its units at all? When ANY row carries a sequence identifier, the appraiser
+  // is numbering the dwellings, and a row WITHOUT one is not a dwelling. When NO
+  // row carries one, nothing is dropped and the old behaviour stands exactly.
+  const numbered = raRows.filter((r) => r.seq != null);
+  const unitRows = numbered.length ? numbered : raRows;
+
   if (raRows.length) {
     const sum = (k) => {
-      const vals = raRows.map((r) => r[k]).filter((v) => v != null);
+      const vals = unitRows.map((r) => r[k]).filter((v) => v != null);
       return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
     };
     // EVERY ROW IS A UNIT. There is deliberately NO "is one of these a summary
@@ -434,23 +461,23 @@ function compGrid(c) {
     // it is handled; guessing at one here trades a bug nobody has for a bug
     // everybody with a duplex would have.
     const sumBaths = (k) => {
-      const v = raRows.map((r) => r.baths[k]).filter((x) => x != null);
+      const v = unitRows.map((r) => r.baths[k]).filter((x) => x != null);
       return v.length ? v.reduce((a, b) => a + b, 0) : null;
     };
-    const one = raRows.length === 1;
-    out.totalRooms = one ? raRows[0].rooms : sum('rooms');
-    out.beds = one ? raRows[0].beds : sum('beds');
-    out.bathsFull = one ? raRows[0].baths.full : sumBaths('full');
-    out.bathsHalf = one ? raRows[0].baths.half : sumBaths('half');
+    const one = unitRows.length === 1;
+    out.totalRooms = one ? unitRows[0].rooms : sum('rooms');
+    out.beds = one ? unitRows[0].beds : sum('beds');
+    out.bathsFull = one ? unitRows[0].baths.full : sumBaths('full');
+    out.bathsHalf = one ? unitRows[0].baths.half : sumBaths('half');
     // A single row keeps the grid's OWN text; a summed one has to be composed,
     // and it speaks the same UAD full.half notation rather than a decimal.
-    out.baths = one ? raRows[0].baths.text : bathsTextOf(out.bathsFull, out.bathsHalf);
+    out.baths = one ? unitRows[0].baths.text : bathsTextOf(out.bathsFull, out.bathsHalf);
     // THE UNIT COUNT IS STATED, NOT INFERRED — but only by a grid that actually
     // wrote a row per unit. One row proves nothing about how many units there are
     // (a 1004 has exactly one), so it stays NULL rather than claiming "1".
-    if (raRows.length > 1) {
-      out.units = raRows.length;
-      out.unitMix = raRows.map((r, i) => ({
+    if (unitRows.length > 1) {
+      out.units = unitRows.length;
+      out.unitMix = unitRows.map((r, i) => ({
         // THE APPRAISER'S OWN UNIT NUMBER when the grid states one. Position is a
         // guess, and it is wrong exactly when it matters: a grid stating units
         // 1, 2 and 4 (unit 3 padded out) labelled the unit-4 dwelling "unit 3",
@@ -531,7 +558,19 @@ function saleStatus(c) {
   return 'closed';
 }
 
-function comparables(root) {
+/**
+ * A comparable's year built = the report's effective year minus the age the grid
+ * states. Bounded exactly the way the subject's own year built is bounded, so an
+ * absurd age can never produce an absurd year; either half missing yields null.
+ */
+function builtYearFrom(ageYears, effectiveYear) {
+  const a = Number(ageYears), y = Number(effectiveYear);
+  if (!Number.isFinite(a) || !Number.isFinite(y)) return null;
+  if (a < 0 || a > 400) return null;
+  return year(String(Math.round(y - a)));
+}
+
+function comparables(root, effectiveYear) {
   const all = X.findAll(root, 'COMPARABLE_SALE');
   const subject0 = all.find((c) => X.attr(c, 'PropertySequenceIdentifier') === '0') || null;
   const comps = [];
@@ -604,6 +643,13 @@ function comparables(root) {
       // states the second one.
       dom: g.dom, pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
       pricePerUnit: g.pricePerUnit, monthlyRent: g.monthlyRent, grm: g.grm, ageYears: g.ageYears,
+      // THE YEAR THE COMPARABLE WAS BUILT. The MISMO grid has no element for it —
+      // the Age adjustment states an AGE IN YEARS ("106", "114 yrs"), which is why
+      // mining that row for a 4-digit year came back NULL on every comparable in
+      // the real corpus. The report's own effective date supplies the other half,
+      // so the year is arithmetic, not a guess, and it is left null the moment
+      // either half is missing.
+      yearBuilt: builtYearFrom(g.ageYears, effectiveYear),
       adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
@@ -615,7 +661,18 @@ function comparables(root) {
       compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
     });
   }
-  return { comps, subject0 };
+  // A PADDED GRID COLUMN IS NOT A COMPARABLE. Several vendors emit the form's
+  // unused trailing slots as empty `COMPARABLE_SALE` elements — measured across
+  // the real corpus, every comparable that could not establish a unit count was
+  // one of these, with no address, no price and no area. Kept, each became a
+  // warehouse observation of nothing and an entry in the comp counts, and made
+  // the coverage numbers look worse than the parser actually is. A row is
+  // dropped only when it states NONE of the three facts that make a comparable a
+  // comparable — anything that names a property, a price or a size is kept.
+  return {
+    comps: comps.filter((c) => c.address || c.salePrice != null || c.gla != null),
+    subject0,
+  };
 }
 
 // Subject prior sale (for flip / recent-sale detection) — the structured PRIOR_SALES under the
@@ -1081,7 +1138,15 @@ function detectMismo(xml) {
     || /<(?:[A-Za-z_][\w.-]*:)?MESSAGE[\s>]/.test(s)
     || /mismo\.org\/residential\/2009/i.test(s);
   const uad36 = /\bUAD\s*3\.?6\b/i.test(s) || (isV3 && /uniform\s+residential\s+appraisal\s+report/i.test(s));
-  return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36 };
+  // IS THERE AN APPRAISAL IN HERE AT ALL? A MISMO 3.x envelope is not evidence of
+  // one. Measured on the real corpus: three files rejected as "UAD 3.6 — a 3.6
+  // reader is required" were Encompass **iLAD** loan-application exports carrying
+  // no SALES_COMPARISON and no COMPARABLE element anywhere. Telling somebody a
+  // reader would fix that is wrong twice — the reader would not import it, and
+  // the honest problem (they attached the wrong document) goes unsaid.
+  const isIlad = /\bILAD\b/i.test(s) || /datamodelextension\.org\/Schema\/ILAD/i.test(s);
+  const hasGrid = /<(?:[A-Za-z_][\w.-]*:)?(?:SALES_COMPARISON|COMPARABLE_SALE|SALES_COMPARISON_APPROACH)[\s>/]/i.test(s);
+  return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36, isIlad, hasGrid };
 }
 
 function extract(xml) {
@@ -1091,6 +1156,12 @@ function extract(xml) {
     // Give the officer the real reason. A UAD 3.6 / MISMO 3.x file is a KNOWN, named format we
     // don't yet read — say so, rather than a generic "not a REPORT".
     const d = detectMismo(xml);
+    if (!d.hasGrid && (d.isIlad || d.model === '3.x')) {
+      return { ok: false, format: { model: d.model, notAnAppraisal: true, ilad: d.isIlad, ref: d.ref },
+        error: d.isIlad
+          ? 'This file is a loan-application data export (iLAD), not an appraisal report — it contains no comparable sales grid. Please upload the appraisal XML the appraiser delivered.'
+          : 'This file contains no comparable sales grid, so it is not an appraisal report. Please upload the appraisal XML the appraiser delivered.' };
+    }
     if (d.model === '3.x' || d.uad36) {
       return { ok: false, format: { model: '3.x', uad36: true, ref: d.ref },
         error: `This appraisal is in the UAD 3.6 / MISMO 3.x format${d.ref ? ` (reference model ${d.ref})` : ''}. PILOT currently reads UAD 2.6 (MISMO 2.6) appraisals — a 3.6 reader is required, so this file was not imported. Please provide the UAD 2.6 export, or import the PDF.` };
@@ -1117,7 +1188,7 @@ function extract(xml) {
   };
   const site = X.find(root, 'SITE');
   const val = valuation(root);
-  const { comps, subject0 } = comparables(root);
+  const { comps, subject0 } = comparables(root, year((val.effectiveDate || '').slice(0, 4)));
   // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
   // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
   // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else

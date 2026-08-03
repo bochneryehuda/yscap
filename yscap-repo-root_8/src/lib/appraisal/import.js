@@ -366,20 +366,26 @@ async function fillFileFacts(db, applicationId, A) {
  *
  * "There shouldn't be a possibility that you should see a comparable in your
  * system that doesn't have how many units the property is, what property type it
- * is" — owner-directed, 2026-08-03. Three sources, strongest first, and each
+ * is" — owner-directed, 2026-08-03. Four sources, strongest first, and each
  * records WHERE it came from so a screen never presents an inference as a
  * measurement:
  *
  *  1. THE GRID SAID IT. The appraiser wrote a room line per unit, so the count is
  *     stated. `basis: 'grid'`.
  *
- *  2. THE ARITHMETIC PROVES IT. `SalesPricePerUnitAmount` and the sale price are
+ *  2. THE APPRAISER NAMED IT. The design-style line on this comparable's own grid
+ *     column spells the count out — "2 Family", "3 FAMILY", "4-PLEX", "Duplex".
+ *     Measured on the real corpus, that is how a small-income comparable usually
+ *     describes itself, and it is a STATED fact rather than an inference, so it
+ *     outranks dividing one number by another. `basis: 'style'`.
+ *
+ *  3. THE ARITHMETIC PROVES IT. `SalesPricePerUnitAmount` and the sale price are
  *     both stated, and the price divides by the per-unit figure into a whole
  *     number inside the form's own band. Accepted ONLY when it divides cleanly
- *     (within a rounding cent) — the field maps warn that per-unit figures are
+ *     (within a rounding dollar) — the field maps warn that per-unit figures are
  *     rounded, so a ratio of 2.97 proves nothing and is refused. `basis: 'price'`.
  *
- *  3. THE FORM REQUIRES IT. This is the owner's own reasoning — "if it's a single
+ *  4. THE FORM REQUIRES IT. This is the owner's own reasoning — "if it's a single
  *     family residence obviously all the comparables are single families, and if
  *     it's a 2 to 4 then all the comparables are two to 4" — and it is not a
  *     guess: the sales-comparison approach REQUIRES comparables of the same
@@ -396,7 +402,7 @@ async function fillFileFacts(db, applicationId, A) {
  * authority of a stated one.
  */
 function compIdentity(c, formType) {
-  const { LABEL_OF, appraisalFormExpectation } = require('../property-type');
+  const { LABEL_OF, appraisalFormExpectation, unitsFromDesignStyle } = require('../property-type');
   const exp = appraisalFormExpectation(formType);
   const out = { units: null, propertyType: null, basis: null };
 
@@ -406,35 +412,84 @@ function compIdentity(c, formType) {
     out.units = stated; out.basis = 'grid';
   }
 
-  // 2 — the price divides cleanly by the stated price per unit.
+  // 2 — the appraiser's own design-style words for THIS comparable.
+  if (out.units == null) {
+    const n = unitsFromDesignStyle(designStyleOf(c));
+    if (n != null && inFormBand(n, exp)) { out.units = n; out.basis = 'style'; }
+  }
+
+  // 3 — the price divides cleanly by the stated price per unit.
   if (out.units == null) {
     const price = Number(c && c.salePrice), per = Number(c && c.pricePerUnit);
-    if (Number.isFinite(price) && Number.isFinite(per) && per > 0 && price > 0) {
+    // A $1 total tolerance is only meaningful on a real price. Both figures come
+    // from `bounded()`, but a sub-dollar pair would satisfy `|price − n·per| < 1`
+    // for EVERY n, so the arithmetic is refused below a price a dwelling could
+    // plausibly carry rather than left to produce an arbitrary door count.
+    if (Number.isFinite(price) && Number.isFinite(per) && per >= 1000 && price >= 1000) {
       const ratio = price / per;
       const n = Math.round(ratio);
-      // Within a cent per unit of exact, and inside the band the form allows.
-      const clean = n >= 1 && n <= 8 && Math.abs(ratio - n) * per < 1;
-      const inBand = !exp || (n >= (exp.minUnits || 1) && n <= (exp.maxUnits || 99));
+      // Within a rounding dollar of exact, and inside the band the form allows.
+      const clean = n >= 1 && n <= 8 && Math.abs(price - (n * per)) < 1;
+      // AN UNRECOGNISED FORM CONSTRAINS NOTHING, SO IT MAY NOT LICENSE A GUESS.
+      // This used to read `!exp || …`, which short-circuits TRUE — so a blank or
+      // decorated AppraisalFormType ("URAR", "FNMA 1025 URAR", a 2055) let the
+      // division run unbounded and a $600k sale with a $75k per-unit figure was
+      // stored as an EIGHT-unit "Multi 5+". A 5+ building is not a small-income
+      // comparable, and that label flows into the warehouse roll-up, the search
+      // facets and the valuation comp scorer. With no form to bound it, accept
+      // only the 2-4 band the small-income grid is actually written for.
+      const inBand = exp ? inFormBand(n, exp) : (n >= 2 && n <= 4);
       if (clean && inBand && n >= 2) { out.units = n; out.basis = 'price'; }
     }
   }
 
-  // 3 — the form itself.
+  // 4 — the form itself.
   if (exp) {
-    out.propertyType = exp.label || null;
     // A 1004 and a 1073 are ONE dwelling by definition, so the form states the
     // count as surely as it states the type. A 1025 gives a 2-4 band only.
     if (out.units == null && exp.minUnits === 1 && exp.maxUnits === 1) {
-      out.units = 1; out.basis = out.basis || 'form';
+      out.units = 1; out.basis = 'form';
     }
     if (!out.basis) out.basis = 'form';
   }
-  // A stated count still names the type when the form did not (an unknown form
-  // code, a vendor we have not seen).
-  if (!out.propertyType && out.units != null && out.units >= 2) {
-    out.propertyType = out.units >= 5 ? (LABEL_OF.multi_5_plus || null) : (LABEL_OF.multi_2_4 || null);
+
+  // THE COUNT NAMES THE TYPE WHENEVER THE COUNT IS KNOWN — the form only fills in
+  // when nothing measured it. Deriving the label from the form unconditionally
+  // (which is what this did) let the WEAKEST source overrule the strongest and
+  // produced rows that contradict themselves: a grid-stated 2-unit comparable on
+  // a 1004 stored as `units 2 / SFR (1 unit)`, and a grid-stated 5-unit on a 1025
+  // stored as `units 5 / Multi 2–4`. It also made `identity_basis:'grid'` a lie,
+  // because the label it described had come from the form.
+  if (out.units != null) {
+    out.propertyType = out.units >= 5 ? (LABEL_OF.multi_5_plus || null)
+      : out.units >= 2 ? (LABEL_OF.multi_2_4 || null)
+        : (exp ? exp.label : null) || null;
+  } else if (exp) {
+    out.propertyType = exp.label || null;
   }
   return out;
+}
+
+/** The design-style text the appraiser wrote on this comparable's grid line. */
+function designStyleOf(c) {
+  const adj = c && c.adjustments;
+  if (!Array.isArray(adj)) return null;
+  // DesignStyle is the standard row; DesignAppeal is the same line under the
+  // older spelling some vendors still emit. Take the first that carries text.
+  for (const want of ['designstyle', 'designappeal']) {
+    for (const line of adj) {
+      if (!line) continue;
+      if (String(line.type || '').toLowerCase().replace(/[^a-z]/g, '') !== want) continue;
+      const d = String(line.description == null ? '' : line.description).trim();
+      if (d) return d;
+    }
+  }
+  return null;
+}
+
+function inFormBand(n, exp) {
+  if (!exp) return true;
+  return n >= (exp.minUnits || 1) && n <= (exp.maxUnits || 99);
 }
 
 function comparableRowFrom(c, formType = null) {
@@ -485,6 +540,16 @@ function comparableRowFrom(c, formType = null) {
     // multiplier the appraiser derived from it, and the age they stated in YEARS.
     price_per_unit: c.pricePerUnit, monthly_rent: c.monthlyRent, grm: c.grm,
     age_years: c.ageYears,
+    // db/432 — the year built, derived from that age plus the report's effective
+    // date. The grid never states a year, so mining the Age row for one produced
+    // NULL on every comparable in the corpus.
+    // `year()` returns a STRING (it is the subject's own convention); the column
+    // is an integer, so coerce here rather than leaning on Postgres to cast.
+    year_built: Number.isFinite(Number(c.yearBuilt)) && c.yearBuilt !== null && c.yearBuilt !== ''
+      ? Math.trunc(Number(c.yearBuilt)) : null,
+    // db/432 — the appraiser's own words for this comparable, and the evidence
+    // behind identity_basis = 'style'.
+    design_style: designStyleOf(c),
   };
 }
 

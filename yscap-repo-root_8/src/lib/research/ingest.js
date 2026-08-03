@@ -523,6 +523,18 @@ function bindable(v) {
 }
 
 /**
+ * HOW WELL-SOURCED AN OBSERVATION'S UNIT COUNT IS. Mirrors `compIdentity`'s own
+ * ordering (grid > style > price > form). A SUBJECT observation has no
+ * `identity_basis` at all and ranks highest on purpose — the appraiser inspected
+ * the building and counted the doors; nothing on a comparable grid beats that.
+ */
+function identityRank(o) {
+  if (!o) return -1;
+  if (o.role === 'subject') return 4;
+  return { grid: 3, style: 2, price: 2, form: 1 }[o.identity_basis] || 0;
+}
+
+/**
  * Recompute a property's roll-up from its observations.
  *
  * For each fact column the winner is the most recent observation that STATED it
@@ -556,6 +568,27 @@ async function rollupProperty(db, propertyId) {
       if (o[obsCol] != null && o[obsCol] !== '') { set[propCol] = o[obsCol]; break; }
     }
     if (!(propCol in set)) set[propCol] = null;
+  }
+  // A MEASUREMENT OUTRANKS AN INFERENCE, WHATEVER THE DATES SAY.
+  //
+  // `units` and `property_type` are the two facts a comparable can now carry
+  // WITHOUT anyone having measured them: on a 1004 the form alone proves one
+  // dwelling, and that is recorded as `identity_basis = 'form'`. Recency alone
+  // would then let the weakest reading win — a house that appeared as the
+  // SUBJECT of a 1025 with `LivingUnitCount 3` (genuinely counted), and later as
+  // a COMPARABLE on a newer 1004, would roll up to `1 / SFR (1 unit)` and the
+  // triplex would vanish from the warehouse. So among the observations that
+  // stated a unit count, the best-sourced one wins, and recency only breaks a
+  // tie. A subject observation carries no `identity_basis` and is treated as
+  // measured, because that is what it is: the appraiser stood in the building.
+  const bestUnits = obs
+    .filter((o) => o.units != null && o.units !== '')
+    .sort((a, b) => identityRank(b) - identityRank(a))[0];
+  if (bestUnits) {
+    set.units = bestUnits.units;
+    if (bestUnits.property_type != null && bestUnits.property_type !== '') {
+      set.property_type = bestUnits.property_type;
+    }
   }
   const comps = obs.filter((o) => o.role === 'comparable');
   const counts = {
@@ -1198,11 +1231,27 @@ async function writeReport(db, { a, comps, link, out }) {
       // elements — but the appraiser's ADJUSTMENT LINES name them ("Age", "Site",
       // "Design (Style)") with the comp's own figure in the description, so they
       // are mined from there. Only a value the line actually states is taken.
-      year_built: fromAdjustments(c.adjustments, 'age', K.yearBuilt),
+      // THE AGE LINE STATES AN AGE, NOT A YEAR — so mining it for a 4-digit year
+      // returned NULL on every comparable in the 602-comp corpus ("106",
+      // "114 yrs", "76"). The parser now derives the year from that age plus the
+      // report's effective date (db/432) and stores it on the comparable itself;
+      // the mine is kept behind it for the rare vendor that really does write a
+      // year on that line.
+      year_built: K.int(c.year_built, { min: 1700, max: 2100 })
+        ?? fromAdjustments(c.adjustments, 'age', K.yearBuilt),
       lot_area: fromAdjustments(c.adjustments, 'site', (v) => txt(v)),
       lot_sqft: fromAdjustments(c.adjustments, 'site', K.lotSqft),
       units: K.int(c.units, { min: 1, max: 100 }),
-      stories: null, design_style: fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
+      // WHERE THAT UNIT COUNT CAME FROM, carried into the warehouse so the
+      // roll-up can prefer a measurement over an inference (db/431 added the
+      // column; nothing wrote it, so every observation looked equally sure).
+      identity_basis: txt(c.identity_basis),
+      // The 2-4 family transaction facts (db/430): the price per door and the
+      // rent multiplier are facts about THIS SALE, so they live on the
+      // observation and are deliberately never rolled up onto the property.
+      price_per_unit: c.price_per_unit, monthly_rent: c.monthly_rent, grm: c.grm,
+      stories: null,
+      design_style: txt(c.design_style) || fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
       // Written at last (db/409 §7): the comparable's own type, proved from how
       // many unit rows its grid carried — never inherited from the subject.
       property_type: txt(c.property_type), property_category: null,
