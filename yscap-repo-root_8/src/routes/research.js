@@ -928,8 +928,15 @@ async function storeRates(id, derived) {
   // writing its `why` over the rates the FIRST pass captured would destroy the
   // provenance of the suggested lines already sitting on the grid — the exact
   // loss the `suggest:false` guard exists to prevent, through a different door.
-  // An empty record is not a record, so it is still filled.
-  const guard = derived.rates ? '' : ` AND COALESCE(market_rates, '{}'::jsonb) = '{}'::jsonb`;
+  // An empty record is not a record, so it is still filled — and "empty" has THREE
+  // shapes here, not one. `COALESCE(x,'{}') = '{}'` catches a SQL NULL and an empty
+  // object but NOT a jsonb `null`, which is a real stored value rather than an
+  // absent one. Rows hold it: the previous version of this function ran
+  // `JSON.stringify(rates)` unconditionally, and `JSON.stringify(null)` is the
+  // string "null", which jsonb parses as a null VALUE. Keyed on the type instead,
+  // so anything that is not a populated object counts as no record.
+  const guard = derived.rates ? '' : ` AND (market_rates IS NULL
+       OR jsonb_typeof(market_rates) <> 'object' OR market_rates = '{}'::jsonb)`;
   await db.query(
     `UPDATE property_valuations SET market_rates=$2, updated_at=now() WHERE id=$1${guard}`,
     [id, JSON.stringify(value)]);

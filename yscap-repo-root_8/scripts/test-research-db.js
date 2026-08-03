@@ -527,6 +527,18 @@ async function makeAppraisal(appId, o) {
       { property_ids: [maple3[0].id] });
     ok(noMarket.status === 200 && (noMarket.body.valuation.market_rates || {}).pricePerSqft !== undefined,
       'a later pass with no market to read never overwrites the rates an earlier pass captured');
+    // …BUT AN EMPTY RECORD IS STILL FILLED, in all three shapes it can take. A
+    // jsonb `null` is a real stored VALUE rather than an absent one, so
+    // `COALESCE(x,'{}') = '{}'` does not catch it — and rows hold it, because the
+    // previous writer ran JSON.stringify on a null rates object and
+    // `JSON.stringify(null)` is the string "null". Without the type test that row
+    // could never be filled by anything again.
+    await db.query(`UPDATE property_valuations SET market_rates = 'null'::jsonb WHERE id = $1`, [vid]);
+    const refill = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id] });
+    ok(refill.status === 200 && (refill.body.valuation.market_rates || {}).why != null,
+      'a legacy row holding a jsonb null counts as EMPTY and can still be filled');
+
     // Put the market back, so nothing downstream is working on a subject this
     // check quietly emptied.
     await call(server, 'PATCH', `/api/research/valuations/${vid}`, token,
