@@ -19,9 +19,19 @@
  *   F. the filter engine refuses what it should and binds what it accepts
  *   G. the stage-history fix records a ClickUp-driven move
  *
- * Run: node scripts/test-dashboards-db.js
+ * Run: DATABASE_URL=postgres://yscap:yscap@127.0.0.1:5432/yscap_test node scripts/test-dashboards-db.js
+ *
+ * SELF-SKIPS WITHOUT A DATABASE, and must never default DATABASE_URL to do it. This suite
+ * runs inside `npm test`, which the CI `test` job runs with NO Postgres service (only the
+ * `test-db` job has one) — so defaulting the URL to localhost and THEN testing it makes the
+ * skip unreachable, and the suite spends 75s retrying a connection that will never come up
+ * and fails the whole run. Sibling suites like test-dashboard-kpi-parity.js DO default it,
+ * legitimately: they are NOT in the `npm test` chain and are only ever run by hand against a
+ * local database. In the chain, the rule is the one every other *-db.js suite follows —
+ * check DATABASE_URL first, exit 0, and require nothing that opens a pool.
  */
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
+if (!process.env.DATABASE_URL) { console.log('SKIP test-dashboards-db (no DATABASE_URL)'); process.exit(0); }
+
 process.env.JWT_SECRET = 'test-secret-dashboards';
 process.env.SSN_ENCRYPTION_KEY = 'test-ssn-key-for-verification-only-32bytes!!';
 process.env.EMAIL_PROVIDER = 'none';
@@ -30,8 +40,6 @@ process.env.NODE_ENV = 'test';
 const http = require('http');
 const crypto = require('crypto');
 const REPO = __dirname + '/..';
-
-if (!process.env.DATABASE_URL) { console.log('dashboards-db: no DATABASE_URL — skipped'); process.exit(0); }
 
 const db = require(REPO + '/src/db');
 const C = require(REPO + '/src/lib/crypto.js');
