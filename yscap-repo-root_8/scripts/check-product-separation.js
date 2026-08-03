@@ -34,6 +34,14 @@
  *
  * Everything is checked from the filesystem — no database, no network, no deps.
  *
+ * WHAT THIS GATE CANNOT SEE — a green run is not proof that nothing crossed:
+ *   • RTL code COPIED BY VALUE into a Long-Term folder (there is no import to find)
+ *   • a table named in SQL by interpolation, concatenation or a query builder
+ *   • a plainly-named new column added to an RTL table for Long-Term's benefit, a new
+ *     ClickUp/Encompass mapping, or a new checklist template
+ *   • anything under web/ (built bundles plus a handful of frozen static tools)
+ * Those rest on the person doing the work and on the PR checklist.
+ *
  * DO NOT weaken, baseline, or "temporarily" disable this gate. If it blocks you the
  * answer is to fix the crossing, or to get the owner's written authorization and add
  * it to the ledger — never to edit this file.
@@ -53,14 +61,15 @@ const LEDGER = path.join(ROOT, 'docs', 'LONG-TERM-AUTHORIZED-COPIES.md');
 const LT_ROOTS = [
   path.join(ROOT, 'src', 'longterm'),
   path.join(ROOT, 'app-v2', 'src', 'longterm'),
-  path.join(ROOT, 'app', 'src', 'longterm'),
-];
+];   // V1 `app/` is frozen — Long-Term never lands there
+
 // Where we look for code at all (built bundles under web/ are generated, never scanned).
 const CODE_ROOTS = [
   path.join(ROOT, 'src'),
   path.join(ROOT, 'app-v2', 'src'),
   path.join(ROOT, 'app', 'src'),
   path.join(ROOT, 'scripts'),
+  path.join(ROOT, 'db'),          // migrate.js / create-admin.js live here
 ];
 // The single permitted back-end seam: server.js must be able to mount the LT router.
 const MOUNT_SEAM = 'src/server.js';
@@ -191,7 +200,7 @@ function scanJs(src) {
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === 'node_modules' || e.name === '.git' || e.name === 'fixtures') continue;
+    if (e.name === 'node_modules' || e.name === '.git') continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, out);
     else if (/\.(js|mjs|cjs|jsx|ts|tsx)$/.test(e.name)) out.push(p);
@@ -296,7 +305,7 @@ function tablesNamedIn(sqlText) {
   const out = [];
   // CTE names are not tables — collect them so they are never reported.
   const ctes = new Set();
-  const CTE = /(?:\bWITH\b|,)\s+("?[A-Za-z_][\w]*"?)\s+AS\s*\(/gi;
+  const CTE = /(?:\bWITH\b(?:\s+RECURSIVE\b)?|,)\s*("?[A-Za-z_][\w]*"?)\s+AS\s*\(/gi;
   let c;
   while ((c = CTE.exec(sqlText))) ctes.add(cleanIdent(c[1]).toLowerCase());
 
@@ -311,8 +320,12 @@ function tablesNamedIn(sqlText) {
   // is never counted a second time as a read.
   const writeSpans = [];
   for (const re of [/\bINSERT\s+INTO\s+("?[A-Za-z_][\w.]*"?)/gi,
-    /\bUPDATE\s+("?[A-Za-z_][\w.]*"?)\s+SET\b/gi,
-    /\bDELETE\s+FROM\s+("?[A-Za-z_][\w.]*"?)/gi]) {
+    // `UPDATE t SET`, `UPDATE ONLY t SET`, `UPDATE t AS x SET`, `UPDATE t x SET` — an
+    // alias is the cheapest way to hide the one write the owner refused.
+    /\bUPDATE\s+(?:ONLY\s+)?("?[A-Za-z_][\w.]*"?)(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s+SET\b/gi,
+    /\bDELETE\s+FROM\s+("?[A-Za-z_][\w.]*"?)/gi,
+    /\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?("?[A-Za-z_][\w.]*"?)/gi,
+    /\bMERGE\s+INTO\s+("?[A-Za-z_][\w.]*"?)/gi]) {
     let m;
     while ((m = re.exec(sqlText))) {
       writeSpans.push([m.index, m.index + m[0].length]);
@@ -327,12 +340,30 @@ function tablesNamedIn(sqlText) {
     if (writeSpans.some(([s, e]) => m.index >= s && m.index < e)) continue;
     const name = cleanIdent(m[1]);
     if (keep(name, m.index, m[0])) out.push({ name, mode: 'read' });
+    // The old-style comma join — `FROM lt_loans l, applications a`. Walked only
+    // from a real FROM clause, so a SELECT list or an INSERT column list
+    // (`INSERT INTO t (borrower_id, staff_id)`) is never mistaken for tables.
+    let at = m.index + m[0].length;
+    const MORE = /^(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s*,\s*("?[A-Za-z_][\w.]*"?)/i;
+    for (;;) {
+      const tail = sqlText.slice(at);
+      const more = tail.match(MORE);
+      if (!more) break;
+      const nm = cleanIdent(more[1]);
+      if (keep(nm, at + more[0].length - more[1].length, more[1])) out.push({ name: nm, mode: 'read' });
+      at += more[0].length;
+    }
   }
   return out;
 }
 
 function looksLikeSql(text) {
-  return /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WITH)\b/i.test(text) && /\b(FROM|INTO|SET|JOIN)\b/i.test(text);
+  if (/\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WITH)\b/i.test(text) && /\b(FROM|INTO|SET|JOIN)\b/i.test(text)) return true;
+  // TRUNCATE / MERGE carry no FROM or SET, so they need their own shape — tight
+  // enough that ordinary prose ("truncate the string") is not read as SQL.
+  if (/\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?[A-Za-z_][\w.]*\s*(?:;|$|CASCADE|RESTART)/i.test(text)) return true;
+  if (/\bMERGE\s+INTO\s+[A-Za-z_][\w.]*\s+USING\b/i.test(text)) return true;
+  return false;
 }
 
 // The enforcement machinery itself has to contain both products' shapes as fixture
@@ -363,7 +394,7 @@ function checkRawSql(allow, files) {
           fail(from, `Long-Term code ${mode === 'write' ? 'writes' : 'reads'} the RTL table "${t}" directly in SQL.`,
             `An import is not the only way to cross — this is the same crossing without the require(). Long-Term may only touch lt_* tables. If it genuinely must ${mode === 'write' ? 'change' : 'read'} an RTL table, get the owner's WRITTEN authorization and add "sql-${mode === 'write' ? 'write' : 'read'} ${t}" to docs/LONG-TERM-AUTHORIZED-COPIES.md.`);
         }
-        if (!lt && isLtName(t)) {
+        if (!lt && !isLtTest(from) && isLtName(t)) {
           fail(from, `RTL code ${mode === 'write' ? 'writes' : 'reads'} the Long-Term table "${t}" directly in SQL.`,
             'RTL is the live product and must never depend on the Long-Term side build.');
         }
@@ -406,7 +437,7 @@ function checkSql(allow) {
   for (const name of files) {
     const where = 'db/' + name;
     const sql = stripSqlComments(fs.readFileSync(path.join(DB_DIR, name), 'utf8'));
-    const declaredLtMigration = /_lt_/.test(name);
+    const declaredLtMigration = /^\d+_lt_/.test(name);   // db/NNN_lt_*.sql — anchored, so db/430_default_lt_value.sql is NOT one
 
     const ltTouched = new Set();
     const rtlTouched = new Set();
@@ -525,6 +556,11 @@ function checkSql(allow) {
     if (ltTouched.size && rtlTouched.size) {
       fail(where, `This migration touches BOTH products — Long-Term (${[...ltTouched].join(', ')}) and RTL (${[...rtlTouched].join(', ')}).`,
         'Split it into two migrations: a Long-Term one that only touches lt_* tables, and (only if the owner asked for it) a separate RTL one. A mixed migration is how the two products quietly grow into one.');
+    } else if (declaredLtMigration && rtlTouched.size) {
+      // A file named db/NNN_lt_*.sql that touches ONLY RTL tables would have slipped
+      // past the both-sides rule above, which needs a table from each side.
+      fail(where, `This is a Long-Term migration, but every table it touches is RTL (${[...rtlTouched].join(', ')}).`,
+        'A Long-Term migration may only touch lt_* tables. If the owner asked for a change to an RTL table, it belongs in its own migration that is not named _lt_.');
     }
   }
   notes.push(`migrations scanned: ${files.length} (${ltFileCount} long-term)`);
