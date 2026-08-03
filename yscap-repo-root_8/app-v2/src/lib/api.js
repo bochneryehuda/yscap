@@ -1086,6 +1086,13 @@ export const api = {
   // reads UAD 2.6, so this count going above zero is the deadline arriving early
   // — which is only useful if somebody can see it.
   appraisalFormats:    (f) => req('GET', '/api/research/appraisal-formats' + qs(f)),
+  // TWO ROWS, ONE HOUSE (db/419). The detection is ADVISORY by design — "nothing
+  // here is ever merged without a person saying so" — which needs a door for the
+  // person to say it through. There was none, so the pairs were found and then
+  // nobody could answer them either way.
+  researchDuplicates:  (f) => req('GET', '/api/research/duplicates' + qs(f)),
+  researchMergeProps:  (b) => req('POST', '/api/research/duplicates/merge', b),
+  researchNotDup:      (b) => req('POST', '/api/research/duplicates/not-duplicate', b),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
   researchProperty:    (id) => req('GET', `/api/research/properties/${id}`),
   // A photo is fetched with the Bearer token like every other binary on this

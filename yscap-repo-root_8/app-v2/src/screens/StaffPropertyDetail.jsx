@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import {
@@ -24,7 +24,11 @@ export default function StaffPropertyDetail() {
   const [busy, setBusy] = useState(false);
   const [shot, setShot] = useState(null);   // the enlarged photo
 
-  useEffect(() => {
+  // A NAMED LOADER, not an anonymous effect body, so anything that changes this
+  // property (a merge folds another row's observations into it) can ask for the
+  // page to be re-read rather than leaving the facts on screen describing the
+  // state before the change.
+  const load = useCallback(() => {
     setData(null); setErr('');
     api.researchProperty(id).then(setData).catch((e) => {
       // THIS PROPERTY WAS MERGED INTO ANOTHER ROW. The server deliberately answers
@@ -39,6 +43,7 @@ export default function StaffPropertyDetail() {
       setErr(e.message || 'Could not load that property');
     });
   }, [id, nav]);
+  useEffect(() => { load(); }, [load]);
 
   async function valueThis() {
     setBusy(true);
@@ -113,6 +118,9 @@ export default function StaffPropertyDetail() {
 
       {/* ---- where the reports disagree about this house ---- */}
       <Conflicts list={data.conflicts || []} />
+
+      {/* ---- another row that may be this same house ---- */}
+      <MaybeSameHouse propertyId={id} onMerged={load} />
 
       {/* ---- what we know about the property ---- */}
       <section style={{ ...S.panel, marginBottom: 14 }}>
@@ -322,6 +330,110 @@ export default function StaffPropertyDetail() {
    are set so that rounding never appears here: a year built one apart is
    silence, twenty is a card. Nothing here resolves anything — a person decides,
    or decides both readings are fine. */
+/* TWO ROWS, ONE HOUSE — and the door a person answers it through.
+
+   The address key already folds two SPELLINGS of one address; this covers only
+   what the key cannot reach on its own — a report that named the town against
+   one that gave only a ZIP, an address with a unit number against one without,
+   two rows the geocoder put on the same point.
+
+   IT IS ADVISORY BY DESIGN: "nothing here is ever merged without a person saying
+   so", because folding two DIFFERENT houses corrupts every price-per-foot
+   reading in the warehouse and no re-ingest undoes it. The detection, the merge
+   and the "these really are two different houses" record were all built and
+   wired to three endpoints — and no screen ever called them, so the pairs were
+   found and then nobody could answer them either way.
+
+   THE MERGE IS THE MOST DESTRUCTIVE ACTION IN HERE — it deletes a row — so the
+   panel never picks a side for you: it shows what each row holds, asks which one
+   stays, and confirms. "Not the same house" is offered just as prominently,
+   because on the unit-number pairs it is usually the right answer. */
+function MaybeSameHouse({ propertyId, onMerged }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    api.researchDuplicates({ property_id: propertyId })
+      .then((d) => setRows(d.rows || [])).catch(() => setRows([]));
+  }, [propertyId]);
+  useEffect(() => { load(); }, [load]);
+
+  // `platform_setup` gates both actions server-side; a staffer without it gets a
+  // plain refusal rather than a silent failure.
+  async function act(key, fn, after) {
+    setBusy(key); setErr('');
+    try { await fn(); after(); }
+    catch (e) { setErr(e.message || 'That did not work'); }
+    finally { setBusy(''); }
+  }
+
+  if (!rows || !rows.length) return null;
+  return (
+    <section style={{ ...S.panel, marginBottom: 14, borderColor: GOLD }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
+        {rows.length === 1 ? 'Another row may be this same house' : `${rows.length} other rows may be this same house`}
+      </h2>
+      <p style={{ margin: '0 0 12px', color: MUTED, fontSize: 13, maxWidth: 760, lineHeight: 1.5 }}>
+        Nothing is joined up until somebody says so. Joining two rows that are really different
+        houses would put one house&rsquo;s sales onto another and cannot be undone, so read both
+        before choosing — and if they are genuinely different, say that instead and the pair stops
+        coming back.
+      </p>
+      {err && <div style={{ color: '#B4423A', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+      {rows.map((r) => {
+        // The OTHER row is whichever side of the pair is not the property we are on.
+        const otherId = r.a_id === propertyId ? r.b_id : r.a_id;
+        const otherAddr = r.a_id === propertyId ? r.b_address : r.a_address;
+        const otherSeen = r.a_id === propertyId ? r.b_observations : r.a_observations;
+        const mineSeen = r.a_id === propertyId ? r.a_observations : r.b_observations;
+        const key = otherId;
+        return (
+          <div key={key} style={{ borderTop: '1px solid #EEE9DD', paddingTop: 10, marginTop: 10 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Link to={`/internal/research/property/${otherId}`}
+                style={{ color: INK, fontWeight: 600, textDecoration: 'none' }}>{otherAddr}</Link>
+              <span style={{ ...S.tag, borderColor: r.confidence === 'high' ? GOLD : '#B4423A',
+                color: r.confidence === 'high' ? INK : '#B4423A' }}>{r.confidence}</span>
+            </div>
+            <div style={{ color: MUTED, fontSize: 13, marginTop: 3 }}>{r.why}</div>
+            <div style={{ color: MUTED, fontSize: 12, marginTop: 3 }}>
+              this page: {num(mineSeen)} report{Number(mineSeen) === 1 ? '' : 's'} ·
+              {' '}that one: {num(otherSeen)} report{Number(otherSeen) === 1 ? '' : 's'}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <button className="btn ghost small" disabled={!!busy}
+                title="Everything the other row knows moves onto this page, and that row is removed."
+                onClick={() => {
+                  if (!window.confirm(`Join these into ONE house, keeping this page?\n\n${otherAddr}\nwill be removed and everything it knows moves here. This cannot be undone.`)) return;
+                  act(`m${key}`, () => api.researchMergeProps(
+                    { survivor_id: propertyId, merged_id: otherId, cause: r.cause }), onMerged);
+                }}>
+                {busy === `m${key}` ? 'Joining…' : 'Same house — keep THIS page'}
+              </button>
+              <button className="btn ghost small" disabled={!!busy}
+                title="Everything this page knows moves onto the other row, and this page is removed."
+                onClick={() => {
+                  if (!window.confirm(`Join these into ONE house, keeping the other row?\n\nThis page will be removed and everything it knows moves to ${otherAddr}. This cannot be undone.`)) return;
+                  act(`o${key}`, () => api.researchMergeProps(
+                    { survivor_id: otherId, merged_id: propertyId, cause: r.cause }), onMerged);
+                }}>
+                {busy === `o${key}` ? 'Joining…' : 'Same house — keep the OTHER one'}
+              </button>
+              <button className="btn ghost small" disabled={!!busy}
+                title="Records that you checked and they are different houses, so this pair stops being raised."
+                onClick={() => act(`n${key}`, () => api.researchNotDup(
+                  { property_id: propertyId, other_property_id: otherId }), load)}>
+                {busy === `n${key}` ? 'Saving…' : 'Not the same house'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function Conflicts({ list }) {
   if (!list || !list.length) return null;
   const TONE = { high: '#B4423A', medium: GOLD, low: MUTED };
