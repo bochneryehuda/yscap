@@ -2005,6 +2005,95 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    scrollbar): the SAME static builder the marketing site serves, bridged to
    this borrower's live record. Every staff edit saves to the server and
    refreshes the saved static HTML copy, which downloads right here. */
+/* WHAT'S WRONG WITH THIS TRACK RECORD, AND WHAT TO DO ABOUT IT (owner-directed
+   2026-08-02: "we should have findings ON the track record of stuff that was not
+   done correctly … and you should not be able to sign off the experience
+   condition till you clear those findings … give a few options over there what
+   to do").
+
+   The options come from the SERVER (`f.actions`), never from a list re-typed
+   here — the same discipline the sync-review screen follows, so a finding type
+   added later gets its buttons for free and the two can never disagree about
+   what is on offer. Text is explicit dark ink: `var(--ink*)` is a LIGHT token in
+   this palette and would render white-on-white. */
+const TRK_ACTION_LABEL = {
+  merge: 'Yes — same property, merge them',
+  keep_both: 'They are two different properties',
+  remove_line: 'Take this line off the track record',
+  not_our_property: 'The borrower really did own this before',
+  dismiss: 'Dismiss',
+};
+const TRK_ACTION_TITLE = {
+  merge: 'Fold the two lines into one. Details only the second line had are kept, and any documents on it move across. This removes the duplicate line.',
+  keep_both: 'Record that these really are two different properties. Both lines stay and you will not be asked about this pair again.',
+  remove_line: 'Remove this line from the borrower’s track record. Any documents on it are kept — they are just no longer attached to a deal.',
+  not_our_property: 'Record that the borrower genuinely owned and exited this property before. The line stays and counts as experience.',
+  dismiss: 'Set this aside without changing anything.',
+};
+
+function TrackRecordFindings({ appId, onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    api.staffTrackRecordFindings(appId)
+      .then((r) => setRows(Array.isArray(r && r.findings) ? r.findings : []))
+      .catch(() => setRows([]));
+  }, [appId]);
+  useEffect(load, [load]);
+
+  async function act(f, action) {
+    setBusy(f.id + action); setErr(''); setMsg('');
+    try {
+      const r = await api.staffResolveTrackRecordFinding(appId, f.id, action, null);
+      setRows(Array.isArray(r && r.findings) ? r.findings : []);
+      setMsg(r && r.outcome ? r.outcome : 'Done.');
+      if (onChanged) onChanged();
+    } catch (e) {
+      setErr((e && e.message) || 'That did not go through.');
+    } finally { setBusy(''); }
+  }
+
+  if (!rows) return null;
+  if (!rows.length) {
+    return (
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        Nothing to review on this track record.
+      </p>
+    );
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 16, borderLeft: '4px solid #AE8746' }}>
+      <h3 style={{ color: '#141B22', marginTop: 0 }}>
+        Track record — {rows.length} thing{rows.length === 1 ? '' : 's'} to review
+      </h3>
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        The experience condition cannot be signed off until each of these is settled.
+      </p>
+      {err ? <p className="small" style={{ color: '#B3261E' }}>{err}</p> : null}
+      {msg ? <p className="small" style={{ color: '#2F7F86' }}>{msg}</p> : null}
+      {rows.map((f) => (
+        <div key={f.id} style={{ borderTop: '1px solid #EAE4D7', paddingTop: 12, marginTop: 12 }}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>{f.title}</div>
+          <p className="small" style={{ color: '#4B585C', margin: '4px 0 10px' }}>{f.detail}</p>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            {(f.actions || []).map((a) => (
+              <button key={a} type="button" className="btn secondary small"
+                title={TRK_ACTION_TITLE[a] || ''}
+                disabled={!!busy}
+                onClick={() => act(f, a)}>
+                {busy === f.id + a ? 'Working…' : (TRK_ACTION_LABEL[a] || a)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StaffTrackRecordPanel({ app, role }) {
   // On a co-borrower file each borrower has their OWN track record (#80): pick
   // whose you're editing. Every deal you add saves to THAT borrower's profile
@@ -2101,6 +2190,9 @@ function StaffTrackRecordPanel({ app, role }) {
   }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
+      {/* What is WRONG with this track record comes first — it holds the
+          experience condition, so it must not be below the fold. */}
+      <TrackRecordFindings appId={app.id} onChanged={refreshTrs} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />

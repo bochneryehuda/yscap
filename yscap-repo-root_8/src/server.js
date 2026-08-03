@@ -667,13 +667,14 @@ if (require.main === module) {
         // the same address"). Four writers each invented their own dedupe key, so the
         // same property arriving from two sources became two lines. The CAUSE is fixed
         // at the shared chokepoint (lib/track-record-key); this re-keys every existing
-        // row from that one function and folds the duplicates it can PROVE are
-        // untouched into the line carrying the work. Runs AFTER the address repair on
-        // purpose — that pass rewrites the addresses this one reads. Bounded,
-        // resumable, idempotent; never blocks boot.
+        // row from that one function and RAISES A REVIEW CARD for each duplicate it
+        // finds. It merges NOTHING on its own — owner-directed 2026-08-02, "never
+        // before human review" — the merge runs only when a reviewer approves the
+        // card. Runs AFTER the address repair on purpose: that pass rewrites the
+        // addresses this one reads. Bounded, resumable, idempotent; never blocks boot.
         require('./lib/track-record-heal').healOnce()
-          .then((r) => r && (r.rekeyed || r.merged)
-            && console.log('[boot] track-record dedupe:', JSON.stringify({ ...r, left: r.left.length })))
+          .then((r) => r && (r.rekeyed || r.proposed)
+            && console.log('[boot] track-record duplicates for review:', JSON.stringify({ ...r, left: r.left.length })))
           .catch((e) => console.error('[boot] track-record dedupe failed:', e.message));
         // Previous files (owner-reported 2026-08-02: the borrower's own deals with
         // US were the ones missing from their track record). Both funded doors now

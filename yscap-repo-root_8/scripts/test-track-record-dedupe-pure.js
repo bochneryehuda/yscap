@@ -10,9 +10,8 @@
  * Each was a different string to the four old normalizers.
  */
 
-const assert = require('assert');
 const TRK = require('../src/lib/track-record-key');
-const HEAL = require('../src/lib/track-record-heal')._internals;
+const TRF = require('../src/lib/track-record-findings');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log(`  ok  ${m}`); } else { fail++; console.error(`  FAIL ${m}`); } };
@@ -83,108 +82,91 @@ const rows = [{ id: 'r1', property_address: '26 South 10th Street, Brooklyn, NY 
 const hit = TRK.matchTrackRecord(rows, '26 S 10th St, Brooklyn, NY 11249');
 ok(hit && hit.id === 'r1', 'a row carrying an OLD ClickUp-style key still matches the same house');
 
-console.log('\n6. what may be folded away, and what may never be');
-/* Both sides carry the SAME address on purpose: these cases are about the other
-   guards, and `refuseReason` now refuses outright when the two rows are not the
-   same property (section 6b). So the fixtures state the precondition the real
-   flow guarantees, rather than leaving it to chance. */
-const KEEPER_ADDR = '26 S 10th St, Brooklyn, NY 11249';
-const keeper = { id: 'k', is_verified: true, origin: 'portal', purchase_price: 400000, sale_price: null, property_address: KEEPER_ADDR };
-const refuse = (row) => HEAL.refuseReason(
-  Object.assign({ property_address: KEEPER_ADDR }, row), keeper);
-ok(refuse({ id: 'a', is_verified: true, origin: 'clickup_backfill' }) === 'verified',
-  'a VERIFIED line is locked evidence — never folded away');
-ok(refuse({ id: 'b', origin: 'portal' }) === 'human_authored',
-  'a line a HUMAN typed is theirs — never folded away');
-ok(refuse({ id: 'c', origin: 'clickup_backfill', has_documents: true }) === 'has_documents',
-  'a line holding closing documents is never folded away');
-ok(refuse({ id: 'd', origin: 'clickup_backfill', has_conditions: true }) === 'has_conditions',
-  'a line a condition points at is never folded away');
-ok(refuse({ id: 'e', origin: 'encompass', notes: 'Seller financed — check with Yidi' }) === 'has_note',
-  'a line somebody wrote a real note on is never folded away');
-ok(refuse({ id: 'f', origin: 'clickup_backfill', purchase_price: 425000 }) === 'conflict:purchase_price',
-  'a line that DISAGREES on a figure is left for a human');
-ok(refuse({ id: 'g', origin: 'clickup_backfill', notes: 'Auto-derived from ClickUp; unverified' }) === null,
-  'a machine-written line with the machine\'s own note IS safe to fold away');
-ok(refuse({ id: 'h', origin: 'clickup_backfill', purchase_price: 400000 }) === null,
-  '…and one that AGREES on a figure is safe too');
-ok(refuse({ id: 'i', inferred: true, origin: 'something_new', sale_price: 500000 }) === null,
-  'an INFERRED line adding a figure the keeper lacks is safe (it will be carried over)');
-
-console.log('\n6b. GROUPING IS TRANSITIVE AND sameAddress IS NOT — the loser must match the KEEPER');
-/* Two documented rules make `sameAddress` non-transitive, and both occur in real
-   data. A bare row (no unit) matches EVERY unit in the building, and a
-   house-number RANGE matches every number it spans — so one bare row can chain
-   two genuinely different properties into a single group. Membership of a group
-   is therefore not proof, and without this guard the second unit is DELETED as a
-   duplicate of the first: real evidence destroyed, silently. */
+console.log('\n6. WHAT THE TRACK-RECORD DESK FINDS — detection lives in ONE place now');
+/* Detection moved out of the boot pass and into track-record-findings
+   (owner-directed 2026-08-02: "we should NOT send it to the regular manual
+   review queue … we should have findings ON the track record"). The boot pass
+   only re-keys and delegates, so these are the tests that matter. */
+const D = TRF._internals;
 const at = (line1) => ({ line1, city: 'Lakewood', state: 'NJ', zip: '08701' });
-const mkRow = (id, line1, extra) => Object.assign(
-  { id, property_address: at(line1), origin: 'clickup_backfill', is_verified: false }, extra || {});
+const row = (id, line1, extra) => Object.assign({ id, property_address: at(line1) }, extra || {});
 
+ok(D.duplicateFindings([]).length === 0, 'no lines → nothing found');
+ok(D.duplicateFindings([row('a', '5 Main St')]).length === 0, 'one line alone is never a duplicate');
 {
-  const bare = mkRow('bare', '5 Main St');
-  const unit1 = mkRow('unit1', '5 Main St Apt 1', { purchase_price: 500000 });
-  const unit2 = mkRow('unit2', '5 Main St Apt 2');
-  // The premise: all three land in ONE group, because the bare row bridges them.
-  const grp = HEAL.groupByProperty([bare, unit1, unit2]);
-  ok(grp.length === 1 && grp[0].length === 3,
-    'a bare row really does chain two different units into one group (the premise)');
-  ok(TRK.sameProperty(unit1.property_address, unit2.property_address) === false,
-    '…yet Apt 1 and Apt 2 are NOT the same property');
-  ok(HEAL.refuseReason(unit2, unit1) === 'not_same_property',
-    'so folding Apt 2 into Apt 1 is REFUSED — a distinct condo unit is never deleted');
-  ok(HEAL.refuseReason(bare, unit1) === null,
-    '…while the bare row, which IS this property, still folds away');
+  const f = D.duplicateFindings([
+    { id: 'x', property_address: '26 South 10th Street, Brooklyn, NY 11249, USA' },
+    { id: 'y', property_address: '26 S 10th St, Brooklyn, NY 11249' },
+  ]);
+  ok(f.length === 1, 'the same house spelled two ways IS found');
+  ok(f[0].code === 'duplicate_line', '…as a duplicate_line finding');
+  ok(/26 S(outh)? 10th/.test(f[0].detail), '…quoting the addresses so a person can judge');
+}
+ok(D.duplicateFindings([
+  { id: 'a', property_address: '5 Main St, Lakewood, NJ 08701' },
+  { id: 'b', property_address: '99 Elm St, Monsey, NY 10952' },
+]).length === 0, 'two different houses are never paired');
+ok(D.duplicateFindings([
+  { id: 'a', property_address: 'PO Box 42' }, { id: 'b', property_address: 'PO Box 42' },
+]).length === 0, 'an address nothing can read is NEVER called a duplicate — silence is the safe answer');
+
+console.log('\n6b. sameAddress IS NOT TRANSITIVE — so every pair is confirmed on its own');
+/* A bare row matches EVERY unit in a building and a house-number RANGE matches
+   every number it spans, so a group of three can hold two genuinely different
+   properties. The desk reports PAIRS it directly confirmed, which is what makes
+   that impossible to get wrong — the two addresses on the card are always the
+   two the action will act on. */
+{
+  const three = [row('bare', '5 Main St'), row('u1', '5 Main St Apt 1'), row('u2', '5 Main St Apt 2')];
+  const pairs = D.duplicateFindings(three).map((f) => [f.trackRecordId, f.otherId].sort().join('|')).sort();
+  ok(!pairs.includes('u1|u2'), 'Apt 1 and Apt 2 are never offered as a pair');
+  ok(pairs.length === 2, 'only the two pairs the address check actually confirmed');
 }
 {
-  const span = mkRow('span', '27-29 Oak Ave');
-  const n27 = mkRow('n27', '27 Oak Ave', { purchase_price: 400000 });
-  const n29 = mkRow('n29', '29 Oak Ave');
-  ok(HEAL.groupByProperty([span, n27, n29])[0].length === 3,
-    'a house-number RANGE chains 27 and 29 into one group (the premise)');
-  ok(HEAL.refuseReason(n29, n27) === 'not_same_property',
-    'so folding 29 into 27 is REFUSED — two different houses are never merged');
-  ok(HEAL.refuseReason(span, n27) === null,
-    '…while the range row, which covers 27, still folds away');
+  const three = [row('span', '27-29 Oak Ave'), row('n27', '27 Oak Ave'), row('n29', '29 Oak Ave')];
+  const pairs = D.duplicateFindings(three).map((f) => [f.trackRecordId, f.otherId].sort().join('|')).sort();
+  ok(!pairs.includes('n27|n29'), '27 and 29 are never offered as a pair, though a range covers both');
 }
-ok(HEAL.refuseReason(
-  { id: 'x', property_address: '26 South 10th Street, Brooklyn, NY 11249, USA', origin: 'clickup_backfill' },
-  { id: 'y', property_address: '26 S 10th St, Brooklyn, NY 11249', origin: 'portal' }) === null,
-  'and the whole point still works: the same house spelled two ways DOES merge');
-ok(HEAL.refuseReason(
-  { id: 'x', property_address: null, origin: 'clickup_backfill' },
-  { id: 'y', property_address: '26 S 10th St, Brooklyn, NY 11249', origin: 'portal' }) === 'not_same_property',
-  'an unreadable address is never assumed to be the keeper — it fails CLOSED');
+ok(D.pairKey('a', 'b') === D.pairKey('b', 'a'),
+  'a pair has ONE identity whichever way round — a dismissal can never be bypassed by re-ordering');
 
-console.log('\n7. the line that survives is the one carrying the most');
-const pick = (rows2) => HEAL.pickKeeper(rows2).id;
-ok(pick([
-  { id: 'plain', origin: 'clickup_backfill', created_at: '2026-01-01' },
-  { id: 'verified', origin: 'clickup_backfill', is_verified: true, created_at: '2026-02-01' },
-]) === 'verified', 'verified beats unverified');
-ok(pick([
-  { id: 'plain', origin: 'clickup_backfill', created_at: '2026-01-01' },
-  { id: 'withdocs', origin: 'clickup_backfill', has_documents: true, created_at: '2026-02-01' },
-]) === 'withdocs', 'a line with documents beats a bare one');
-ok(pick([
-  { id: 'machine', origin: 'clickup_backfill', created_at: '2026-01-01' },
-  { id: 'human', origin: 'portal', created_at: '2026-02-01' },
-]) === 'human', "a human's line beats a machine's");
-ok(pick([
-  { id: 'first', origin: 'clickup_backfill', created_at: '2026-01-01' },
-  { id: 'second', origin: 'clickup_backfill', created_at: '2026-02-01' },
-]) === 'first', 'all else equal, the ORIGINAL survives');
+console.log('\n7. the line the merge would KEEP is the one carrying the most');
+const better = (a, b) => (D.rank(a) >= D.rank(b));
+ok(better({ is_verified: true }, { purchase_price: 1 }), 'verified outranks a figure');
+ok(better({ has_documents: true }, { purchase_price: 1, sale_price: 1 }), 'documents outrank figures');
+ok(better({ purchase_price: 1, sale_price: 1 }, { purchase_price: 1 }), 'more figures outrank fewer');
+{
+  const f = D.duplicateFindings([row('bare', '5 Main St'), row('rich', '5 Main Street', { purchase_price: 1, has_documents: true })]);
+  ok(f[0].trackRecordId === 'rich' && f[0].otherId === 'bare',
+    'so the card names the richer line as the keeper — the card reads the way the action behaves');
+}
 
-console.log('\n8. grouping is by property, and a single line is never a "group"');
-const g = HEAL.groupByProperty([
-  { id: '1', property_address: '26 S 10th St, Brooklyn, NY 11249' },
-  { id: '2', property_address: '26 South 10th Street, Brooklyn, NY 11249, USA' },
-  { id: '3', property_address: '99 Elm St, Lakewood, NJ 08701' },
-]);
-ok(g.length === 1 && g[0].length === 2, 'the two spellings group; the unrelated house does not');
-ok(HEAL.groupByProperty([{ id: '1', property_address: '99 Elm St, Lakewood, NJ 08701' }]).length === 0,
-  'one line alone is never offered for merging');
+console.log('\n8. THE FILE\u2019S OWN SUBJECT PROPERTY on the track record');
+const subj = '12 Churchill Lane, Lakewood, NJ 08701';
+{
+  const f = D.subjectPropertyFindings(
+    [{ id: 'l1', property_address: '12 Churchill Ln, Lakewood, NJ 08701, USA' },
+     { id: 'l2', property_address: '99 Elm St, Monsey, NY 10952' }], subj, 'app1');
+  ok(f.length === 1 && f[0].trackRecordId === 'l1', 'the line that IS this deal is found, and only it');
+  ok(f[0].code === 'subject_property_on_record', '…as its own kind of finding');
+  ok(f[0].applicationId === 'app1', '…tied to the deal it is about');
+}
+ok(D.subjectPropertyFindings([{ id: 'l1', property_address: subj }], null, 'app1').length === 0,
+  'a file with no subject property raises nothing');
+ok(D.subjectPropertyFindings([{ id: 'l1', property_address: subj }], 'PO Box 3', 'app1').length === 0,
+  'an unreadable subject property raises nothing — never a guess');
+ok(D.subjectPropertyFindings([{ id: 'l1', property_address: subj }], subj, null).length === 0,
+  'and without the file id there is nothing to raise it against');
 
-console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  track-record dedupe: one key, one verdict, and a merge that can only ever fold away an untouched machine-written copy');
+console.log('\n9. every finding offers a few options, and dismiss is always one');
+ok(TRF.actionsFor('duplicate_line').join(',') === 'merge,keep_both,dismiss',
+  'a duplicate: merge, keep both, or dismiss');
+ok(TRF.actionsFor('subject_property_on_record').join(',') === 'remove_line,not_our_property,dismiss',
+  'the subject property: take it off, say they really owned it, or dismiss');
+ok(TRF.isActionAllowed('duplicate_line', 'remove_line') === false,
+  'an option belonging to another finding is refused');
+ok(TRF.actionsFor('something_new').join(',') === 'dismiss',
+  'an unknown code degrades to dismiss rather than offering something dangerous');
+
+console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  track-record: one key, one verdict, and every duplicate goes to a person as a finding');
 process.exit(fail ? 1 : 0);

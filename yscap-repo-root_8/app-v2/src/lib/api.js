@@ -464,6 +464,11 @@ export const api = {
   staffSetBorrowerSsn: (id, ssn, opts = {}) => req('POST', `/api/staff/borrowers/${id}/ssn`, { ssn, ...opts }),
   staffAddBorrowerContact:     (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts`, b),
   staffSetPrimaryContact:      (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts/primary`, b),
+  // Track-record findings (owner-directed 2026-08-02). Reading also re-runs the
+  // detector server-side, so opening the section keeps the list current.
+  staffTrackRecordFindings: (appId) => req('GET', `/api/staff/applications/${appId}/track-record-findings`),
+  staffResolveTrackRecordFinding: (appId, findingId, action, note) =>
+    req('POST', `/api/staff/applications/${appId}/track-record-findings/${findingId}`, { action, note }),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),

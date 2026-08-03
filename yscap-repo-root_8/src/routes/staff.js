@@ -1610,6 +1610,45 @@ router.get('/applications/:id', async (req, res) => {
 // USPS ADDRESS VERIFICATION — staff-only, file-scoped by the middleware above.
 // A check stages USPS's answer beside the working address. Only the separate
 // import action adopts it and clears the enforced condition.
+/* ── TRACK-RECORD FINDINGS (owner-directed 2026-08-02) ──────────────────────
+   "We should have findings ON the track record of stuff that was not done
+   correctly … and you should not be able to clear and sign off on the
+   experience condition till you clear those findings … give a few options over
+   there what to do."
+
+   Both doors are file-scoped by the `/applications/:id` middleware, so a staffer
+   only ever sees the findings of a file they can already open. Reading also
+   RE-RUNS the detector, so opening the Track record section is what keeps the
+   list current — the same self-syncing shape the underwriting desk uses. */
+router.get('/applications/:id/track-record-findings', async (req, res) => {
+  try {
+    const TRF = require('../lib/track-record-findings');
+    await TRF.syncForFile(req.params.id);          // best-effort; never throws
+    res.json({ findings: await TRF.openForFile(req.params.id) });
+  } catch (e) {
+    console.error('[track-record] findings load failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load the track-record findings' });
+  }
+});
+
+router.post('/applications/:id/track-record-findings/:findingId', async (req, res) => {
+  try {
+    const TRF = require('../lib/track-record-findings');
+    const out = await TRF.resolveFinding({
+      findingId: req.params.findingId,
+      action: String((req.body && req.body.action) || ''),
+      note: (req.body && req.body.note) || null,
+      actorId: req.actor.id,
+      appId: req.params.id,
+    });
+    res.json({ ...out, findings: await TRF.openForFile(req.params.id) });
+  } catch (e) {
+    if (e && e.expose && e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[track-record] finding resolve failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not record that decision' });
+  }
+});
+
 router.get('/applications/:id/usps-verification', async (req, res) => {
   try {
     const row = (await db.query(
@@ -6447,6 +6486,16 @@ async function signOffGate(itemId, actor) {
     }
     return null;
   }
+  /* THE TRACK RECORD MUST BE CLEAN FIRST (owner-directed 2026-08-02: "you should
+     not be able to clear and sign off on the experience condition till you clear
+     those findings … you can't sign off the experience condition before you sign
+     off all the findings or dismiss all the findings").
+     This runs BEFORE the claimed-experience check on purpose: a duplicated line
+     or the file's own subject property sitting on the record is wrong whether or
+     not this particular deal is priced on experience, and it is the same list of
+     evidence either way. It FAILS OPEN on a read error — see the module. */
+  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(app.id);
+  if (trkBlock) return trkBlock;
   // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
   // the file (nothing to verify for the chosen structure), it may be signed off
   // freely; it only becomes gated once experience is claimed on the application /
