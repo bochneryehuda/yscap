@@ -159,8 +159,18 @@ So the split, which the codebase already made deliberately and must keep:
 Mixing these would put us out of compliance quietly, and nothing would break to
 tell us.
 
-- [ ] **B2** A guard in the codebase that says so, so a future change cannot
-  quietly start storing a Google coordinate.
+- [x] **B2** **DONE** — and it is a DATABASE CONSTRAINT, not only a code rule
+  (`db/455`, `properties_no_google_geo_ck`). Every other guard on this is one
+  somebody has to remember: a comment, a provider list, a source-level assertion.
+  Each catches the change written the way we expect. The change that will actually
+  break this is the one nobody reviewed — an import script, a hand-run migration,
+  a module written next year by someone reading only the column names — and a
+  CHECK constraint catches it however it is phrased, loudly, at the moment of the
+  write. `geocodeProperty` also refuses a forbidden source first, so it reads as a
+  named answer rather than as a 500 three layers up on a background sweep. Proven
+  by `scripts/test-no-google-coordinate-db.js` (16, in `npm test`): 8 of its
+  assertions fail with the constraint removed, and every source we DO use is still
+  storable — a guard that breaks the warehouse it protects is worse than none.
 
 ### B3. The build
 
@@ -310,8 +320,7 @@ API* + *Maps JavaScript API*, restrict it to our domain):
   OpenStreetMap tiles when no key is present — the map must never go blank
   because a bill lapsed.
 - [ ] **C4b** Satellite toggle and Street View for the subject and each comp.
-- [ ] **C4c** A guard so a Google coordinate can never be written into
-  `properties` — the 30-day rule breaks silently, with nothing to warn us.
+- [x] **C4c** **DONE** — same guard as B2 above (`db/455`).
 
 ---
 

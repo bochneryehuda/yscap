@@ -143,6 +143,23 @@ async function osm(address) {
   return { lat, lng, source: 'osm', precision: 'address', matched: txt(m.display_name) };
 }
 
+/* THE PROVIDERS, AND THE ONE THAT MAY NEVER JOIN THEM.
+ *
+ * Google Maps Platform caps a STORED latitude/longitude at 30 consecutive days
+ * unless the cache is isolated to a single end user, and this warehouse is
+ * permanent and shared by the whole company. So Google may SUGGEST an address
+ * (the autocomplete uses it when a key is set) and may DRAW a map; it may never
+ * place a property here.
+ *
+ * That rule is enforced in three independent places on purpose, because it is the
+ * one a well-meaning future change is most likely to break — once a Places key is
+ * configured, "we already have the place_id, just ask for the geometry" is a
+ * single line and a genuine improvement in every respect except the one that
+ * matters. The three: this list; a source-level assertion in
+ * `scripts/test-address-position.js`; and a CHECK constraint on the table itself
+ * (db/455), which is the only one that catches a write nobody reviewed.
+ */
+const FORBIDDEN_SOURCE = /google/i;
 const PROVIDERS = [census, osm];
 
 /** The one-line address the services are asked about. */
@@ -196,6 +213,14 @@ async function geocodeProperty(p, { providers = PROVIDERS } = {}) {
     if (hit.matched && !ADDR.geocodeRewriteIsSafe(line, hit.matched)) {
       rejected = rejected || { source: hit.source, matched: hit.matched };
       continue;
+    }
+    // Belt and braces with db/455: refused HERE it is a named answer a caller can
+    // read; refused only by the constraint it is a 500 three layers up, at the
+    // moment of a write, on a background sweep nobody is watching.
+    if (FORBIDDEN_SOURCE.test(String(hit.source || ''))) {
+      return { ok: false, query: line, forbiddenSource: hit.source,
+        why: `a ${hit.source} coordinate may not be stored in the property warehouse — that vendor's `
+          + 'terms cap a stored position at 30 days, and this warehouse is permanent' };
     }
     return { ok: true, ...hit, query: line };
   }
@@ -331,5 +356,5 @@ async function geocodeStatus(db) {
 
 module.exports = {
   geocodeProperty, backfillGeocodes, geocodeStatus,
-  _internals: { addressLine, census, osm, inUS, MAX_ATTEMPTS },
+  _internals: { addressLine, census, osm, inUS, MAX_ATTEMPTS, FORBIDDEN_SOURCE },
 };
