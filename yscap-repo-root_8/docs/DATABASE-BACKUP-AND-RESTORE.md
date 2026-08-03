@@ -146,6 +146,15 @@ rules set once on the bucket, in Cloudflare. Same guarantee, configured somewher
 - If they *do* fight, nothing breaks: `pruneVault` in `scripts/backup-run.js` records a refused
   delete as a reported failure and the backup still succeeds. A lock is never able to fail a run.
 
+**Confirmed live 2026-08-02, and worth knowing before it alarms someone:** at the end of every
+drill the verifier tries to stamp the verification result onto the backup's own manifest. On R2 the
+bucket lock **refuses that overwrite** with HTTP 409 `ObjectLockedByBucketPolicy`, and the drill logs
+*"could not stamp the manifest with the result — the ledger below still records it"* and carries on
+successfully. **This is not a fault, and it will happen on every run** — it is the lock doing
+precisely its job, and it is the best proof we have that the immutability is real. (On AWS the same
+write would land as a new object *version* instead, which is why it was written as best-effort.) The
+verification result lives in the `backup_runs` ledger; the manifest just never carries it here.
+
 `vault.probe()` reads the bucket's lock configuration where the store exposes one; on R2 it reports
 `unknown` rather than an error, because R2 answers that question through its own API and not S3's.
 **"unknown" means "check it in the Cloudflare dashboard", not "unprotected".**
