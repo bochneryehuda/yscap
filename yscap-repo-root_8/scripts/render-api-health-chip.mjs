@@ -105,6 +105,19 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
      *
      * The probe is blocked here the same way maintenance would block it: an
      * unrelated CHECK its row happens to violate. Dropped in the finally. */
+    /* THE BLOCKER IS COMMITTED ON A SHARED DATABASE, so it needs more than an
+       inner `finally`. A SIGINT/SIGTERM/kill anywhere in the ~25s window (two
+       reloads plus two 11s waits) would leave the licensing write probe
+       PERMANENTLY blocked here — the admin card stuck amber and the authoritative
+       half of the control off — with nothing to undo it. So: a defensive
+       pre-drop, signal handlers, and the outer finally drops it too. The sibling
+       DB suite avoids all of this by working inside a transaction; a browser test
+       cannot, because the server reads through its own pool. */
+    const dropBlocker = () => db.query(
+      `ALTER TABLE properties DROP CONSTRAINT IF EXISTS lic_render_blocker`).catch(() => {});
+    const bail = (sig) => { dropBlocker().finally(() => process.exit(sig === 'SIGINT' ? 130 : 143)); };
+    process.once('SIGINT', bail); process.once('SIGTERM', bail);
+    await dropBlocker();
     await db.query(
       `ALTER TABLE properties ADD CONSTRAINT lic_render_blocker CHECK (city <> 'Licensing Probe')`);
     try {
@@ -137,6 +150,9 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   } finally {
     if (browser) await browser.close();
     if (server) server.close();
+    // Belt and braces: the inner finally already drops it, but a throw before
+    // that block is entered would not have.
+    await db.query(`ALTER TABLE properties DROP CONSTRAINT IF EXISTS lic_render_blocker`).catch(() => {});
     if (staffId) await db.query('DELETE FROM staff_users WHERE id=$1', [staffId]).catch(() => {});
     await db.pool.end().catch(() => {});
     console.log(failures ? `\n${failures} FAILED` : '\nall passed');

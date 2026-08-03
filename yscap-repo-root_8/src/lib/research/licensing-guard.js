@@ -197,7 +197,15 @@ async function checkGeoLicensing(dbc, opts) {
        adds a second one. Overwriting in both directions is what let three
        coordinate- and city-keyed exemptions read as installed while a real Google
        write succeeded. */
-    if (present && opts && opts.verifyWrite) {
+    /* RUN IT WHENEVER THE CONSTRAINT EXISTS, not only when the text already
+       matched. Gating on `present` meant a constraint whose NAME is right but
+       whose text is not byte-canonical was never asked about at all — and the
+       message below then ASSERTED that it refuses nothing. Four rules that
+       genuinely DO refuse a real Google write were confidently reported as no
+       protection: `!~*`, `position(... ) = 0`, `NOT ILIKE`, and the "legitimate
+       narrowing" this file's own docstring names. It can still only DOWNGRADE:
+       `present` is already false on that path, and nothing below sets it true. */
+    if (named && opts && opts.verifyWrite) {
       probe = await verifyRefusesGoogle(db);
       if (probe.tested && !probe.refused) { present = false; neutered = true; }
     }
@@ -257,13 +265,55 @@ async function checkGeoLicensing(dbc, opts) {
      (`… OR true`, wildcards dropped, `CHECK (true)`) fell through to exactly the
      advice the paragraph above says must never be given. Only the shadowed-lower
      case — where the text is canonical — still set `neutered`. */
+  /* THREE DIFFERENT THINGS, AND ONLY ONE OF THEM IS A BREACH. Collapsing them
+     into a single sentence made the guard assert a database behaviour it had
+     never tested, about constraints that genuinely refuse. */
   if (neutered || named) {
+    // What db/459 cannot do about it, said accurately. Re-running that migration
+    // is `DROP IF EXISTS` + `ADD`, and the ADD fails on rows already in violation
+    // — as ONE implicit transaction under migrate-boot the whole file rolls back
+    // and the bad constraint SURVIVES, while a human running the two statements
+    // by hand is left with NO constraint at all. So the rows come first.
+    const rows = offenders == null
+      ? ' The rows in violation could not be counted.'
+      : offenders
+        ? ` ${offenders} propert${offenders === 1 ? 'y' : 'ies'} already `
+          + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate, so db/459 cannot be `
+          + 're-applied until those rows are re-sourced or cleared — re-running it before then '
+          + 'leaves the wrong constraint in place, or none at all.'
+        : ' Nothing is currently in violation, so re-running db/459 will restore it.';
+
+    if (neutered) {
+      // PROVEN: we stored a Google coordinate under it.
+      return { ok: false, checked: true, present: false, offenders,
+        probeTested: true, probeBlockedBy: null,
+        why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does NOT refuse a `
+          + 'Google-sourced coordinate — the database accepted one when asked. It has been altered '
+          + `since db/459 installed it.${rows} Until it is restored, nothing at the database level `
+          + 'stops a Google coordinate being stored permanently in the property warehouse.' };
+    }
+    if (probe && probe.tested && probe.refused) {
+      /* The text is not the one db/459 installs, but the database DID refuse when
+         asked. That is a rule somebody rewrote — `NOT ILIKE`, a regex, a narrowing
+         to rows that carry a coordinate — not a breach, and it must not be
+         reported as one. Still worth flagging: it is no longer the reviewed text,
+         and db/459 will overwrite it on the next boot. */
+      return { ok: false, checked: true, present: false, offenders,
+        probeTested: true, probeBlockedBy: null,
+        why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its `
+          + 'text has been rewritten. The database DID refuse a Google-sourced coordinate when '
+          + 'asked, so the warehouse is protected right now, but this is no longer the reviewed '
+          + 'rule and db/459 will replace it on the next deploy. Check who changed it.' };
+    }
+    // Named, text not canonical, and we could not test the behaviour. Say exactly
+    // that — never that it refuses nothing.
     return { ok: false, checked: true, present: false, offenders,
-      why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does not refuse a `
-        + `Google-sourced coordinate${neutered ? ' — the database accepted one when asked' : ''}. `
-        + 'The constraint has been altered since db/459 installed it. Restore it (re-run db/459) '
-        + 'and check who changed it; until then nothing at the database level stops a Google '
-        + 'coordinate being stored permanently in the property warehouse.' };
+      probeTested: probe ? probe.tested : null,
+      probeBlockedBy: probe ? probe.by : null,
+      why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its text `
+        + 'has been rewritten — and the write probe could NOT run'
+        + `${probe && probe.by ? ` (the probe row was refused by ${probe.by})` : ''}, so whether it `
+        + `still refuses a Google-sourced coordinate is UNKNOWN.${rows} Check who changed it.` };
   }
 
   const head = `the Google-coordinate rule (${CONSTRAINT}) is NOT installed`;
@@ -342,9 +392,13 @@ async function probeBounded() {
  * after it would never run. Postgres enforcing the limit is what bounds it.
  * Going through the same path also means boot gets the behavioural probe.
  */
-async function assertGeoLicensing(dbc) {
+async function assertGeoLicensing(dbc, opts) {
   let res;
-  try { res = dbc ? await checkGeoLicensing(dbc) : await probeBounded(); }
+  // `opts` is passed straight through so a caller holding a client already inside
+  // a transaction can ask for the write probe — which is the only way the boot
+  // log's qualified-yes branch is reachable from a test, since probeBounded takes
+  // its OWN pooled connection and cannot see an uncommitted blocker.
+  try { res = dbc ? await checkGeoLicensing(dbc, opts) : await probeBounded(); }
   catch (e) { res = { ok: false, checked: false, present: null, offenders: null, why: e.message }; }
   /* Bump the epoch as we publish, so a `health()` probe that was already in flight
      cannot land afterwards and overwrite this answer with an older verdict wearing

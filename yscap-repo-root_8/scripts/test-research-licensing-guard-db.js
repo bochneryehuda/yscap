@@ -291,7 +291,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       ok((await G.checkGeoLicensing(client)).ok === true,
         '  …and the text check alone therefore calls it installed');
       const caught = await G.checkGeoLicensing(client, { verifyWrite: true });
-      ok(caught.ok === false && /EXISTS but does not refuse/.test(caught.why || ''),
+      ok(caught.ok === false && /EXISTS but does NOT refuse/.test(caught.why || ''),
         `  …while asking the database catches it (${(caught.why || '').slice(0, 60)})`);
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
       await client.query(`SET LOCAL search_path = public, pg_catalog`);
@@ -372,6 +372,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
          blocked. `qualified = ok && why` therefore needs no extra field. */
       ok(blocked.ok === true && !!blocked.why,
         '  …and a blocked probe is a QUALIFIED yes — ok:true carrying a why');
+      /* AND THE BOOT LOG SAYS SO. This is the third surface, and it had no
+         coverage at all: reverting `assertGeoLicensing` back to the plain
+         `console.log('… rule installed')` left the whole suite green. That is
+         exactly the defect this round was fixing — the value was right and
+         nothing showed it — so the log line is now pinned like the others. */
+      {
+        const warns = [];
+        const realWarn = console.warn, realLog = console.log;
+        const logs = [];
+        console.warn = (...a) => warns.push(a.join(' '));
+        console.log = (...a) => logs.push(a.join(' '));
+        try { await G.assertGeoLicensing(client, { verifyWrite: true }); }
+        finally { console.warn = realWarn; console.log = realLog; }
+        ok(warns.some((w) => /could NOT run/.test(w)),
+          `boot WARNS that the write probe could not run (${JSON.stringify(warns).slice(0, 90)})`);
+        ok(!logs.some((l) => /rule installed/.test(l)),
+          '  …and never prints the plain "rule installed" line over a qualified yes');
+      }
+
       // Drop the blocker FIRST — the contrast is only meaningful once the probe
       // can actually run again.
       await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_probe_blocker`);
@@ -394,16 +413,71 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE 'google')`, 'wildcards dropped'],
       ]) {
         await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
+        // WITHOUT the probe we cannot know whether it still refuses, so the
+        // message must say that rather than assert either way — but it must never
+        // send somebody to a migrate log about a migration that plainly ran.
         const w = (await G.checkGeoLicensing(client)).why || '';
-        ok(/EXISTS but does not refuse/.test(w) && !/FAILED line/.test(w),
+        ok(/rewritten/.test(w) && !/FAILED line/.test(w),
           `${label} is diagnosed as ALTERED, not as a migration that never applied`);
-        ok(/re-run db\/459/.test(w), `  …telling somebody what to actually do about ${label}`);
+        ok(/UNKNOWN/.test(w), `  …and says plainly that its behaviour is untested (${label})`);
+        // WITH the probe it is proven, and only then is the flat claim allowed.
+        const wp = (await G.checkGeoLicensing(client, { verifyWrite: true })).why || '';
+        ok(/EXISTS but does NOT refuse/.test(wp),
+          `  …and once actually asked, ${label} is proven to refuse nothing`);
+        ok(/re-run(ning)? db\/459/.test(wp), `  …telling somebody what to do about ${label}`);
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
       }
       // …while a genuinely ABSENT constraint still points at the migrate log.
       const absent = (await G.checkGeoLicensing(client)).why || '';
       ok(/NOT installed/.test(absent) && /FAILED line/.test(absent),
         'and a genuinely missing constraint still points at the [migrate] log');
+
+      /* (h) A REWRITTEN RULE THAT STILL REFUSES IS NOT A BREACH, and must never be
+         reported as one. Keying the "does not refuse" wording on the constraint
+         merely EXISTING made the guard assert a database behaviour it had never
+         tested — proven against four rules that genuinely DO refuse a real Google
+         write. That is the mirror of a false all-clear and just as wrong: it sends
+         somebody to fix a control that is working. */
+      for (const [body, label] of [
+        [`CHECK (geo_source IS NULL OR geo_source !~* 'google')`, 'a case-insensitive regex'],
+        [`CHECK (geo_source IS NULL OR position('google' in lower(geo_source)) = 0)`, 'a position() test'],
+        [`CHECK (geo_source IS NULL OR geo_source NOT ILIKE '%google%')`, 'NOT ILIKE'],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR geo_latitude IS NULL)`,
+          'the legitimate narrowing to rows carrying a coordinate'],
+      ]) {
+        await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
+        // First prove the premise: this rule really does refuse a real write.
+        const v = await G._internals.verifyRefusesGoogle(client);
+        ok(v.tested === true && v.refused === true,
+          `${label} genuinely REFUSES a Google-sourced coordinate`);
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(!/does NOT refuse/.test(r.why || ''),
+          `  …so the guard must NOT claim it does not refuse (${(r.why || '').slice(0, 55)})`);
+        ok(/protected right now/.test(r.why || '') && /rewritten/.test(r.why || ''),
+          '  …it says the text was rewritten but the database still refuses');
+        await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      }
+
+      /* (i) THE OFFENDER COUNT IS THE ONLY NUMBER ANYBODY CAN ACT ON, and the
+         short-circuit had dropped it from the altered-constraint message. Also:
+         "re-run db/459" is wrong while rows are in violation — under migrate-boot
+         the whole file is one implicit transaction, so the ADD fails, everything
+         rolls back and the BAD constraint survives; run by hand it leaves NO
+         constraint at all. The rows have to be cleared first, and the message
+         now says so. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} CHECK (true)`);
+      await client.query(
+        `INSERT INTO properties (address_key, display_address, city, state, geo_source, geo_latitude, geo_longitude)
+         VALUES ($1,'x','y','NJ','google_places',40.1,-74.1)`, [`nj|offender|${sfx}`]);
+      {
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(r.offenders >= 1 && /already carr/i.test(r.why || ''),
+          `an altered constraint still NAMES the rows in violation (${r.offenders})`);
+        ok(/cannot be re-applied until those rows/.test(r.why || ''),
+          '  …and says db/459 cannot simply be re-run while they are there');
+      }
+      await client.query(`DELETE FROM properties WHERE address_key = $1`, [`nj|offender|${sfx}`]);
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
     }
 
     // ---- G. RESTORED, and the constraint itself still bites --------------
@@ -477,8 +551,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           `probeBounded() RETURNS behind an ACCESS EXCLUSIVE lock rather than hanging (${elapsed}ms)`);
         ok(!held.__timedOut && held.ok === false && held.checked === false,
           `and reports UNCONFIRMED, never ok (${(held.why || '').slice(0, 50)})`);
-        ok(elapsed < DEADLINE,
-          `giving up in bounded time (${elapsed}ms, bound ${G._internals.PROBE_TIMEOUT_MS}ms)`);
+        /* INDEPENDENT of the race above, which only proves it beat the same 25s
+           timer. Hard-coding statement_timeout to 22s passes the race and fails
+           THIS — the bound that actually matters is Postgres's own. */
+        ok(elapsed < G._internals.PROBE_TIMEOUT_MS * 2,
+          `giving up close to the bound, not merely inside the deadline (${elapsed}ms, bound ${G._internals.PROBE_TIMEOUT_MS}ms)`);
       } finally {
         await locker.query('ROLLBACK').catch(() => {});
         locker.release();
