@@ -785,7 +785,11 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
          (application_id, borrower_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
           source_type, visibility, is_current, review_status)
-       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
+       -- BORN ACCEPTED — a report PILOT generated from data it already holds, not
+       -- a human upload waiting on review (owner-directed 2026-08-03; see
+       -- lib/document-acceptance.js, and the same treatment given to the
+       -- Trustpoint inspection reports and the tool exports).
+       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'accepted')
        RETURNING id`,
       [appId, borrowerId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility]);
     // Supersede ONLY prior versions of the SAME report identity (same scope + mode + draw + loan) — never

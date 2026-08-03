@@ -18,6 +18,7 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
+const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -2181,9 +2182,16 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       const filename = safeFilename(b.filename);
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
+        // BORN ACCEPTED, only through THIS door (2026-08-03; see
+        // lib/document-acceptance.js): the staffer is filing this affidavit as the
+        // evidence for the declaration they make in the SAME request, which the
+        // route signs the LLC condition off on right below — so they ARE the
+        // reviewer, and `reviewed_by` records who. Every other staff upload path
+        // still files 'pending' and waits for one.
         `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
-                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type,
+                                review_status,reviewed_by,reviewed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload','accepted',$9,now()) RETURNING id`,
         [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
          provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
       uploadedDocId = r.rows[0].id;
@@ -3744,10 +3752,14 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
+      // BORN ACCEPTED — the tool's own generated output, never a human upload
+      // awaiting review (owner-directed 2026-08-03; mirrors the borrower-side
+      // tool-submit path in routes/borrower.js). See lib/document-acceptance.js.
       `INSERT INTO documents
          (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
-          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower',$10) RETURNING id`,
+          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind,
+          review_status,reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower',$10,'accepted',now()) RETURNING id`,
       [req.params.itemId, req.params.id, it.rows[0].borrower_id, a.filename, a.contentType, buf.length,
        provider, ref, req.actor.id, toolKey + '_export']);
     out.push({ id: r.rows[0].id, filename: a.filename });
@@ -4088,8 +4100,15 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
-    const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
-    await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
+    const { zip, filename, includedCount, heldBack } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    // The held-back count is on the AUDIT ROW as well as the preview: a ZIP is a
+    // stream of bytes with nowhere to put a note, so this is the only durable
+    // record of "the package went out one document short, and here is why".
+    await audit(req, 'export_tpr', 'application', req.params.id, {
+      bytes: zip.length, includedCount,
+      heldBackForReview: (heldBack || []).length,
+      heldBackFiles: (heldBack || []).slice(0, 25).map((d) => d.filename),
+    });
     // Owner-directed (2026-07-13): every export is also kept on the file and
     // mirrored into SharePoint ("YS portal syncing/TPR Exports", versioned on
     // re-export). Best-effort — a save failure never blocks the download.
@@ -4118,7 +4137,23 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
       [req.params.id])).rows.map(r => r.id);
     const trackDocs = (await tpr.selectTrackRecordDocs(trIds)).length;
     const missing = await tpr.selectTprMissing(req.params.id);
-    res.json({ includedCount: included, trackDocs, missing });
+    // NO SILENT DROPS (owner-directed 2026-08-03). The export now carries only
+    // ACCEPTED documents, so the preview must say out loud what is being held
+    // back and where it is — otherwise the only way to notice a package is one
+    // document short is for the investor to ask. Named, not just counted.
+    const pending = [
+      ...(await tpr.selectTprPending(req.params.id)).map((d) => ({
+        id: d.id, filename: d.filename, requirement: d.item_label || d.slot_label || null,
+      })),
+      ...(await tpr.selectTrackRecordPending(trIds)).map((d) => ({
+        id: d.id, filename: d.filename, requirement: 'REO / track record',
+      })),
+    ];
+    res.json({
+      includedCount: included, trackDocs, missing,
+      pending, pendingCount: pending.length,
+      pendingNote: require('../lib/document-acceptance').heldBackNote(pending.length),
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5455,6 +5490,12 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         })),
         counts: pkg.counts,
         missing: pkg.missing,
+        // Held back because nobody has accepted them yet (owner-directed
+        // 2026-08-03). NOT attached, and named here so the sender sees it BEFORE
+        // they send — the alternative is an attorney one document short and a
+        // "Not yet on file" line about a document that is sitting on the file.
+        awaiting: pkg.awaiting || [],
+        awaitingNote: docAccept.heldBackNote((pkg.awaiting || []).length),
         termSheetExecuted: pkg.termSheetExecuted,
         insurance: closingPrep.insuranceSlots(pkg.groups.insurance),
         // What ONE email can carry, so the card can say BEFORE the send how many
@@ -6196,7 +6237,47 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //   rtl_p3_reo      — verified track-record experience must meet the registered
 //                     product's claimed experience (re-register with less, or
 //                     verify more, until they agree).
+/**
+ * NO CONDITION IS SIGNED OFF OVER A DOCUMENT NOBODY HAS DECIDED ON
+ * (owner-directed 2026-08-03, second half of the acceptance rule: "when you sign
+ * off the condition, we should make sure that there are no pending documents.
+ * Every document needs to be either rejected, deleted, or accepted").
+ *
+ * This runs BEFORE every per-condition rule below, because it is true of every
+ * condition regardless of what that condition asks for — including an OPTIONAL
+ * one. Signing off is an attestation that the condition is finished; a document
+ * sitting on it that nobody has looked at is the opposite of finished, and (until
+ * this change) it also rode into the investor package on the strength of that
+ * sign-off. `rejected` / `superseded` are DECIDED, and a deleted document is gone,
+ * so only `pending` blocks — exactly the owner's three ways out.
+ *
+ * The super-admin override (db/344) is still the recorded way through, as on
+ * every other gate: it does not skip this check, it records what it stepped over.
+ *
+ * Fails OPEN on a read error — a database hiccup must never make a condition
+ * permanently unsignable, and the same reasoning is already applied to the
+ * appraisal-findings count and the flood gate.
+ */
+async function pendingDocumentsBlock(itemId) {
+  try {
+    // COUNT and the sample come from ONE query on purpose: taking the count from
+    // a LIMITed row set would report "25 documents" on a condition carrying
+    // thirty, and a refusal that miscounts what it is refusing over is worse
+    // than one that stays vague.
+    const r = await db.query(
+      `SELECT count(*)::int AS n,
+              (array_agg(filename ORDER BY created_at))[1:5] AS names
+         FROM documents
+        WHERE checklist_item_id=$1 AND is_current=true AND ${docAccept.AWAITING_SQL('')}`, [itemId]);
+    const row = r.rows[0] || {};
+    if (!row.n) return null;
+    return docAccept.pendingDocsMsg(row.n, (row.names || []).filter(Boolean));
+  } catch (_) { return null; }
+}
+
 async function signOffGate(itemId, actor) {
+  const pendingBlock = await pendingDocumentsBlock(itemId);
+  if (pendingBlock) return pendingBlock;
   const it = await db.query(
     `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
@@ -6329,9 +6410,14 @@ async function signOffGate(itemId, actor) {
 
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
+    // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
+    // test was satisfied by a document nobody had ever opened, which is how a
+    // condition got signed off on a previous policy's paperwork. The pending
+    // check above has already run, so reaching here with documents on the item
+    // means every one of them was rejected — i.e. there is nothing to stand on.
     const has = await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-         AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
+         AND ${docAccept.ACCEPTED_SQL('')} LIMIT 1`, [itemId]);
     if (!has.rows.length) {
       // Government-ID REUSE exception: the photo ID is collected ONCE on the
       // borrower profile and reused across every file (borrower.js). On files
@@ -6342,13 +6428,15 @@ async function signOffGate(itemId, actor) {
       // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
       // reuse rule, which keys off the file's borrower's photo_id_document_id).
       if (code === 'rtl_p1_id' || code === 'gov_id') {
-        // The on-file photo ID must itself be a CURRENT, non-rejected document —
-        // a rejected/superseded ID pointer is not fulfillment (the pointer is only
-        // cleared by FK-on-delete, so reject alone leaves it dangling).
+        // The on-file photo ID must itself be a CURRENT, ACCEPTED document — a
+        // rejected/superseded ID pointer is not fulfillment (the pointer is only
+        // cleared by FK-on-delete, so reject alone leaves it dangling), and
+        // neither is one nobody has reviewed: it is the same document that would
+        // ride into the investor package under the ID folder.
         const pid = await db.query(
           `SELECT 1 FROM borrowers b
              JOIN documents d ON d.id = b.photo_id_document_id
-            WHERE d.is_current AND COALESCE(d.review_status,'') <> 'rejected'
+            WHERE d.is_current AND ${docAccept.ACCEPTED_SQL('d')}
               AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
@@ -6380,22 +6468,39 @@ async function signOffGate(itemId, actor) {
         } catch (_) { /* unreadable → fall through to the document requirement */ }
         return 'Attach the borrower’s Social Security card or a completed SSA-89 before signing this off — or import a credit report whose Social Security number matches the one on file for every borrower, which verifies it on its own.';
       }
+      // "Nothing uploaded" and "everything on it was sent back" are different
+      // problems with different next steps, and telling somebody to upload a
+      // document that is already sitting on the condition is the kind of advice
+      // nobody can act on. (A PENDING document can't be the reason we are here —
+      // the pending check at the top of the gate already refused — so a current
+      // document at this point was rejected.)
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
     }
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
-  // are present on the item (current, non-rejected versions). slot_label carries
-  // the slot key/label, so a case-insensitive substring identifies each slot.
+  // are present on the item AND ACCEPTED. slot_label carries the slot key/label,
+  // so a case-insensitive substring identifies each slot.
+  //
+  // ACCEPTED is the 2026-08-03 fix and this is the exact condition it was
+  // reported on: an insurance condition already carried a PREVIOUS policy's
+  // binder — never accepted, never rejected — so `<> 'rejected'` found a "binder"
+  // slot, the gate passed, the condition was signed off, and every one of those
+  // documents shipped in the TPR export and to the closing attorney. A slot is
+  // filled when somebody has accepted what is in it, not when a file is sitting
+  // in it.
   if (isInsurance || isTitle || isFraud || isAppraisalDocs) {
     const docs = await db.query(
       `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
-        WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [itemId]);
+        WHERE checklist_item_id=$1 AND is_current AND ${docAccept.ACCEPTED_SQL('')}`, [itemId]);
     const slots = docs.rows.map((r) => r.slot);
     const hasSlot = (needle) => slots.some((s) => s.includes(needle));
     if (isInsurance) {
       if (!hasSlot('binder') || !hasSlot('invoice'))
-        return 'Upload BOTH the insurance binder and the insurance invoice before signing off — this condition cannot be completed without both documents.';
+        return 'Upload BOTH the insurance binder and the insurance invoice, and accept each one, before signing off — this condition cannot be completed until both documents are on the file and accepted.';
       return null;
     }
     if (isAppraisalDocs) {
@@ -12912,9 +13017,21 @@ router.post('/applications/:id/documents', async (req, res) => {
   if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
+    // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
+    // Sheet Studio at registration (that is the ONLY thing that sets this kind
+    // at this door — a human uploading a document never passes docKind). So it
+    // is born ACCEPTED: nobody reviews a sheet the system just drew, and left
+    // pending the acceptance rule would drop it from the TPR export's Term Sheet
+    // folder AND make `closing-prep.blockers` refuse every order on the file for
+    // want of a term sheet. Every other upload through this door stays pending
+    // and waits for a reviewer. Owner-directed 2026-08-03; see
+    // lib/document-acceptance.js.
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15) RETURNING id`,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final,
+                            review_status,reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15,
+             CASE WHEN $12='term_sheet' THEN 'accepted' ELSE 'pending' END,
+             CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,

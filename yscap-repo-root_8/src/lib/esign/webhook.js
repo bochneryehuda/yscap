@@ -69,7 +69,14 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
          (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
           source_type, visibility, is_current, review_status)
-       VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',NULL,$8,'system',$9,true,'pending')
+       -- BORN ACCEPTED (owner-directed 2026-08-03). A document is only 'pending'
+       -- when a human still has to look at it, and nobody reviews a package that
+       -- came back fully executed through DocuSign — it IS the authoritative copy.
+       -- Left pending it would have been held out of the TPR export and the
+       -- closing-prep package by the acceptance rule, which is the opposite of
+       -- what an executed term sheet is for. Same treatment db/186 and db/189
+       -- already gave appraisal photos and appraisal source documents.
+       VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',NULL,$8,'system',$9,true,'accepted')
        RETURNING id`,
       [applicationId, borrowerId || null, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
     // Supersede any PRIOR current copy of the same signed kind on this file. A

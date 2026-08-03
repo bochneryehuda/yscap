@@ -143,13 +143,20 @@ function groupOf(d) {
  * Reach comes from `tpr-export.selectTprDocuments` — the repo's ONE chokepoint for
  * "every current document connected to this file". Reusing it is not laziness, it
  * is how this package inherits, for free: the recursive owning-entity walk, the
- * borrower AND co-borrower profile documents, the current/non-rejected/non-chat
+ * borrower AND co-borrower profile documents, the current/accepted/non-chat
  * filters, the regenerated-artifact exclusions, the expired-good-standing rule, and
  * the Heter Iska freeze. A private query here would drift from all of it.
+ *
+ * That inheritance is also how this package picked up the 2026-08-03 acceptance
+ * rule with no work: a document nobody has accepted is not attached to an email to
+ * an outside law firm. It is REPORTED instead — `awaiting` below is what the card
+ * shows the sender BEFORE they send, in the same place it already tells them what
+ * is missing and what is too big to email.
  */
 async function gatherPackage(applicationId) {
   const tprExport = require('./tpr-export');
   let rows = [];
+  let pendingRows = [];
   // Fail CLOSED (never attach a half-read package) but never fail SILENTLY. An empty
   // result read as "this file has no term sheet", which the card printed as
   // "Generate the term sheet, then send the closing-prep request" — advice nobody
@@ -162,12 +169,30 @@ async function gatherPackage(applicationId) {
     unavailable = true;
     console.error('[closing-prep] could not read the file documents:', (e && e.message) || e);
   }
+  // Held back for review. Its own try/catch: this is a REPORT, and failing to
+  // read it must never turn a sendable package into an unreadable one.
+  try {
+    pendingRows = await tprExport.selectTprPending(applicationId);
+  } catch (e) {
+    console.error('[closing-prep] could not read the pending documents:', (e && e.message) || e);
+  }
 
   const groups = {};
   for (const k of GROUP_KEYS) groups[k] = [];
   for (const d of rows) {
     const key = groupOf(d);
     if (key) groups[key].push(d);
+  }
+
+  // Only the pending documents that WOULD have been in this package — a pending
+  // bank statement is not this email's business and naming it here would read as
+  // "the attorney is waiting on it".
+  const awaiting = [];
+  for (const d of pendingRows) {
+    const key = groupOf(d);
+    if (!key) continue;
+    const g = GROUPS.find((x) => x.key === key);
+    awaiting.push({ id: d.id, filename: d.filename, group: key, groupLabel: g ? g.label : key });
   }
 
   // The term sheet is the one group with an internal preference: the EXECUTED copy
@@ -185,11 +210,24 @@ async function gatherPackage(applicationId) {
     groups,
     ordered,
     unavailable,
+    // Documents on this file's closing-prep groups that nobody has accepted yet.
+    // They are NOT attached (owner-directed 2026-08-03); the card says so, and a
+    // group that is empty ONLY because of them says that too, rather than reading
+    // as "the borrower never sent it".
+    awaiting,
     counts: Object.fromEntries(GROUP_KEYS.map((k) => [k, groups[k].length])),
     // Which of the owner's named document sets are EMPTY. Never a blocker — a
     // straight (non-assignment) purchase legitimately has no assignment — but the
     // sender is told before they send, and the email says so too.
-    missing: GROUPS.filter((g) => !groups[g.key].length).map((g) => ({ key: g.key, label: g.label })),
+    // `awaitingCount` separates the two very different reasons a group is empty:
+    // nobody ever sent it, or it is sitting on the file waiting to be accepted.
+    // The email says the same thing either way ("we will send it on this chain as
+    // soon as we have it" is true both times); the CARD must not, or the sender
+    // goes chasing a borrower for a document that is already in the building.
+    missing: GROUPS.filter((g) => !groups[g.key].length).map((g) => ({
+      key: g.key, label: g.label,
+      awaitingCount: awaiting.filter((a) => a.group === g.key).length,
+    })),
     // Whether the term sheet we hold is the fully executed one.
     termSheetExecuted: groups.term_sheet.some((d) => d.doc_kind === 'term_sheet_signed'),
   };
