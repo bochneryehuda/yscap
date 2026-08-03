@@ -230,9 +230,11 @@ router.post('/:id/reorder', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Who a dashboard is shared WITH is the owner's business, not every viewer's — a person who
+// can merely see a company dashboard has no reason to read a roster of colleagues off it. So
+// this is gated like its sibling write routes, not like a read.
 router.get('/:id/shares', async (req, res) => {
-  if (!UUID_RE.test(req.params.id)) return bad(res, 'not a dashboard id');
-  if (!await store.canSee(req.actor, req.params.id)) return bad(res, 'not yours', 403);
+  if (!await mustEdit(req, res, req.params.id)) return;
   res.json({ shares: await store.shares(req.params.id) });
 });
 

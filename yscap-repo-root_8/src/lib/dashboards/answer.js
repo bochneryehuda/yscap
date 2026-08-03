@@ -69,11 +69,18 @@ const COMPARE_LABEL = { prior_period: 'the period before', prior_year: 'a year a
  *   · BEST-EFFORT: the comparison is the garnish, never the number. If the second query
  *     fails or times out, the card still shows today's figure.
  */
-async function comparisonFor(card, scope, actor, value, dateApplied) {
+function comparisonPossible(card, dateApplied) {
   const kind = card.compare && card.compare.kind;
-  if (!kind || !COMPARE_LABEL[kind]) return null;
-  if (!dateApplied) return null;
-  if (((card.period && card.period.kind) || 'all') === 'all') return null;
+  if (!kind || !COMPARE_LABEL[kind]) return false;
+  if (!dateApplied) return false;                                   // no clock, no "last year"
+  if (((card.period && card.period.kind) || 'all') === 'all') return false;  // all time cannot be shifted
+  if (card.grain || card.group_by) return false;                    // a broken-up card compares per bucket, which we do not draw
+  return true;
+}
+
+async function comparisonFor(card, scope, actor, value, dateApplied) {
+  if (!comparisonPossible(card, dateApplied)) return null;
+  const kind = card.compare.kind;
   try {
     const seed = [];
     const s2 = scopeFor(actor, seed);
@@ -142,6 +149,13 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
         : card.group_by ? (registry.DIMENSIONS[card.group_by] || {}).label : null,
       scoped: !!scope.sql,
       cohort: !!measure.cohort,
+      // Same contract as the period above: say what actually happened. A card that stores a
+      // comparison it cannot compute (no date, all time, or broken up into buckets) reports
+      // the comparison as OFF rather than leaving the reader to wonder why the subtitle
+      // mentions last year and the card does not.
+      compared: comparisonPossible(card, dateApplied)
+        ? COMPARE_LABEL[card.compare.kind]
+        : null,
       sql: includeSql ? q.text : undefined,
     };
 
@@ -167,10 +181,21 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
     }
 
     const dim = card.group_by ? registry.DIMENSIONS[card.group_by] : null;
-    let series = r.rows.map((row) => ({
+    // We asked for one bucket more than we draw, so "exactly the cap" and "more than the cap"
+    // are distinguishable. A cap nobody is told about reads as the whole truth — the card
+    // says so instead.
+    const cap = q.limit || r.rows.length;
+    const truncated = r.rows.length > cap;
+    let series = r.rows.slice(0, cap).map((row) => ({
       key: row.bucket_label == null ? '—' : String(row.bucket_label),
       value: row.value == null ? null : Number(row.value),
-      matched: Number(row.rows_matched || 0),
+      // For a RATIO the drill lists the denominator cohort, so the bucket's file count must
+      // be that same denominator — `rows_matched` counts every row the bucket touched,
+      // including the ones in neither half of the fraction, and a tooltip saying "4 files"
+      // over a list of 3 is the very mismatch #145 forbids.
+      matched: measure.kind === 'ratio' && row.denominator != null
+        ? Number(row.denominator)
+        : Number(row.rows_matched || 0),
     }));
     // A dimension with a natural order (aging buckets, maturity buckets) is presented in
     // that order, not by size — "past maturity" belongs on the left whatever its count.
@@ -179,7 +204,7 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
       series = series.sort((x, y) => (pos.has(x.key) ? pos.get(x.key) : 999) - (pos.has(y.key) ? pos.get(y.key) : 999));
     }
     return {
-      ...base, ok: true, format: measure.format, series,
+      ...base, ok: true, format: measure.format, series, truncated,
       total: series.reduce((s, x) => s + (x.value || 0), 0),
       // Only an additive measure may be totalled. You cannot sum an average or a rate:
       // twelve monthly averages added together is not the year's average, and the wrong

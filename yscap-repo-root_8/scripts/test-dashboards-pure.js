@@ -151,8 +151,12 @@ console.log('\n9. grouped queries are bounded');
 {
   const q = compile.buildAggregate(card({ group_by: 'city' }), NO_SCOPE);
   ok(/LIMIT \d+/.test(q.text), 'a breakdown always carries a LIMIT');
+  // The query asks for ONE more bucket than it will draw, purely so the answer can tell
+  // "exactly the cap" from "more than the cap" and say so on the card. What is CAPPED is
+  // what a person sees, and that stays 200 however large a number is asked for.
   const huge = compile.buildAggregate(card({ group_by: 'city', limit: 99999 }), NO_SCOPE);
-  ok(/LIMIT 200\b/.test(huge.text), 'and the cap cannot be raised past 200 by asking');
+  ok(huge.limit === 200, 'and the cap cannot be raised past 200 by asking');
+  ok(/LIMIT 201\b/.test(huge.text), '…while one extra row is fetched, so truncation is detectable');
   const list = compile.buildDrillList(card({}), NO_SCOPE, { limit: 999999 });
   ok(/LIMIT 1000\b/.test(list.text), 'a drill-through list is capped at 1000');
 }

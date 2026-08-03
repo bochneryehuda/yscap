@@ -92,8 +92,13 @@ export default function StaffDashboard() {
   async function openFiles(answer, pick) {
     const bucket = (pick && pick.key) || null;
     try {
-      const r = await api.dashboardCardFiles(answer.id, { limit: 200, ...(bucket ? { bucket } : {}) });
-      setDrill({ title: answer.title, bucket, files: (r && r.files) || [] });
+      // Ask for one more than we show, so "this is all of them" and "there are more" are
+      // told apart. Saying "exactly the files this number was worked out from" over a
+      // silently-cut list is the same lie in a smaller font.
+      const CAP = 500;
+      const r = await api.dashboardCardFiles(answer.id, { limit: CAP + 1, ...(bucket ? { bucket } : {}) });
+      const all = (r && r.files) || [];
+      setDrill({ title: answer.title, bucket, files: all.slice(0, CAP), more: all.length > CAP, cap: CAP });
     } catch (e) { setErr(e.message || 'Could not list those files'); }
   }
 
@@ -194,8 +199,9 @@ export default function StaffDashboard() {
               <button className="btn ghost small" onClick={() => setDrill(null)}>Close</button>
             </div>
             <p className="small" style={{ color: MUTED }}>
-              {drill.files.length} file{drill.files.length === 1 ? '' : 's'} — exactly the files this
-              number was worked out from.
+              {drill.more
+                ? `The first ${drill.cap} files — there are more than this number counted. Narrow the card to see them all.`
+                : `${drill.files.length} file${drill.files.length === 1 ? '' : 's'} — exactly the files this number was worked out from.`}
             </p>
             <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
               <table className="table" style={{ minWidth: 720 }}>

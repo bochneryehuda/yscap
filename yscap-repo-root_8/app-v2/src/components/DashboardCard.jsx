@@ -137,7 +137,17 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
   const body = () => {
     if (answer.series) {
       const Chart = answer.viz === 'trend' ? Bars : Rows;
-      return <Chart series={answer.series} format={answer.format} onPick={onDrill ? (s) => onDrill(s) : undefined} />;
+      return (
+        <>
+          <Chart series={answer.series} format={answer.format} onPick={onDrill ? (s) => onDrill(s) : undefined} />
+          {answer.truncated && (
+            // A chart that quietly stops at its cap reads as the whole picture.
+            <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
+              Showing the biggest {answer.series.length} only — there are more.
+            </p>
+          )}
+        </>
+      );
     }
     return (
       <button type="button" onClick={onDrill ? () => onDrill(null) : undefined}

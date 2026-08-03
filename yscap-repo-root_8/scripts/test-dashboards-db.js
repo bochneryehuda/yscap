@@ -431,6 +431,72 @@ async function main() {
       ok(sAns.body.ok === true && (sAns.body.value == null || Number(sAns.body.value) >= 0),
         `a file submitted on its own closing day is never negative days to fund (got ${sAns.body.value})`);
     }
+
+    // ---------------------------------------------------------------------
+    console.log('\nL. a breakdown shows every file, including the ones with nothing recorded');
+    // ---------------------------------------------------------------------
+    {
+      // Most of these columns are sparsely filled on the real book, and excluding blanks
+      // hid nearly half the pipeline's value from a by-state chart with nothing on the card
+      // to say so — while the card's own drill listed the files it had not counted.
+      const CITY = TAG + '_blank';
+      await mkApp({ status: 'underwriting', officer: LO, amount: 100000, state: 'NY', city: CITY });
+      await mkApp({ status: 'underwriting', officer: LO, amount: 300000, state: null, city: CITY });
+      await mkApp({ status: 'underwriting', officer: LO, amount: 500000, state: null, city: CITY });
+      const dash = await api('POST', '/api/dashboards', { name: `${TAG} blanks` }, adminTok);
+      const onlyThese = { combinator: 'and', rules: [{ field: 'city', operator: 'eq', value: CITY }] };
+      const flat = await api('POST', `/api/dashboards/${dash.body.dashboard.id}/cards`,
+        { title: 'flat', metric_key: 'loan_volume', filter: onlyThese }, adminTok);
+      const byState = await api('POST', `/api/dashboards/${dash.body.dashboard.id}/cards`,
+        { title: 'by state', metric_key: 'loan_volume', viz: 'breakdown', group_by: 'state', filter: onlyThese }, adminTok);
+      const fAns = await api('GET', `/api/dashboards/cards/${flat.body.card.id}/answer`, null, adminTok);
+      const bAns = await api('GET', `/api/dashboards/cards/${byState.body.card.id}/answer`, null, adminTok);
+      const charted = bAns.body.series.reduce((s, x) => s + Number(x.value || 0), 0);
+      ok(Number(fAns.body.value) === 900000, 'the flat card counts all three files');
+      ok(charted === Number(fAns.body.value),
+        `the chart adds up to the same money as the flat card (${charted} = ${fAns.body.value})`);
+      const blank = bAns.body.series.find((s) => s.key === '(not recorded)');
+      ok(blank && Number(blank.value) === 800000, 'the files with no state get their own visible bucket');
+      const blankFiles = await api('GET',
+        `/api/dashboards/cards/${byState.body.card.id}/files?bucket=${encodeURIComponent('(not recorded)')}`, null, adminTok);
+      ok(blankFiles.body.files.length === 2, 'and that bucket drills through like any other');
+    }
+
+    // ---------------------------------------------------------------------
+    console.log('\nM. a card can always be saved, and a comparison can always be removed');
+    // ---------------------------------------------------------------------
+    {
+      const all = await api('GET', '/api/dashboards', null, loTok);
+      const sys = all.body.dashboards.find((d) => d.is_system);
+      const forked = await api('POST', `/api/dashboards/${sys.id}/fork`, {}, loTok);
+      const mine = await api('GET', `/api/dashboards/${forked.body.dashboard.id}`, null, loTok);
+      const withCompare = (mine.body.dashboard.cards || []).find((c) => c.compare && c.compare.kind);
+      ok(!!withCompare, 'a forked company dashboard carries a card with a comparison on it');
+
+      // Exactly what the editor sends when a card has no date field. Refusing this made the
+      // only journey that can edit a company dashboard a dead end.
+      const saved = await api('PATCH', `/api/dashboards/${forked.body.dashboard.id}/cards/${withCompare.id}`,
+        { ...withCompare, date_field: null, period: { kind: 'all' } }, loTok);
+      ok(saved.status === 200, 'saving it without a date is allowed, not refused');
+      const ans = await api('GET', `/api/dashboards/cards/${withCompare.id}/answer`, null, loTok);
+      ok(ans.body.ok === true && !ans.body.compare, 'the comparison simply does not apply');
+      ok(ans.body.explain && ans.body.explain.compared === null,
+        '…and the card says so rather than leaving it a mystery');
+      const cleared = await api('PATCH', `/api/dashboards/${forked.body.dashboard.id}/cards/${withCompare.id}`,
+        { compare: null }, loTok);
+      ok(cleared.status === 200 && !cleared.body.card.compare, 'and it can be taken off entirely');
+      const junk = await api('PATCH', `/api/dashboards/${forked.body.dashboard.id}/cards/${withCompare.id}`,
+        { compare: { kind: 'last_tuesday' } }, loTok);
+      ok(junk.status === 400, 'while a comparison we do not understand is still refused');
+
+      // A period that saves and can never answer is worse than one refused on the spot.
+      const frac = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
+        { title: 'frac', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'last_days', n: 1.5 } }, loTok);
+      ok(frac.status === 400, 'a fractional "how many" is refused at save time');
+      const noDates = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
+        { title: 'nodates', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'fixed' } }, loTok);
+      ok(noDates.status === 400, 'as is a "between two dates" with no dates');
+    }
   } finally {
     await db.query(`DELETE FROM applications WHERE source=$1`, [TAG]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE email LIKE $1`, [TAG + '%']).catch(() => {});

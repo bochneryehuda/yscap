@@ -209,7 +209,12 @@ function periodSql(dateFieldKey, period, p, { shift = null } = {}) {
   // `shift` moves the whole window back for a comparison: 'prior_period' or 'prior_year'.
   const back = shift === 'prior_year' ? " - interval '1 year'" : '';
 
-  const n = Math.max(1, Math.min(3650, Number(period && period.n) || 30));
+  // FLOORED, not merely clamped. `n` is interpolated into `interval '<n> months'` and
+  // `CURRENT_DATE - <n>`, and a fractional value makes Postgres refuse the whole statement
+  // ("operator does not exist: date - numeric") — so a card saved with n:1.5 would never
+  // answer again. Not an injection (anything non-numeric falls back to 30), but a card that
+  // is permanently broken by a number a person typed is our bug, not theirs.
+  const n = Math.max(1, Math.min(3650, Math.floor(Number(period && period.n)) || 30));
 
   switch (kind) {
     case 'mtd': {
@@ -362,12 +367,29 @@ function groupingFor(card) {
     return {
       expr: `date_trunc('${g.trunc}', ${col}::timestamp)`,
       label: `to_char(date_trunc('${g.trunc}', ${col}::timestamp), '${g.fmt}')`,
+      // A file with no date in this field has no place on a timeline — there is no honest
+      // bucket to draw it in — so a time breakdown genuinely does drop it. It is still
+      // counted by the same card without a grain, and `matched` reports the difference.
+      dropsBlanks: true,
     };
   }
   if (card.group_by) {
     if (!registry.has(registry.DIMENSIONS, card.group_by)) throw new Error(`unknown breakdown "${card.group_by}"`);
     const sql = registry.DIMENSIONS[card.group_by].sql;
-    return { expr: sql, label: sql };
+    // A BLANK IS A BUCKET, NOT A REASON TO DISAPPEAR. Most of these columns are sparsely
+    // filled on the real book — the majority of files carry no state, no note buyer and no
+    // officer — so excluding NULL silently hid nearly half the pipeline's value from a
+    // by-state chart with nothing on the card to say so. That is exactly the confidently
+    // wrong number this whole surface is written against, and it also broke the count-equals-
+    // list rule: the chart totalled 3 while its own drill listed 7.
+    //
+    // "(not recorded)" is a real bucket you can see, click and drill into, and because the
+    // drill matches on this same LABEL the two halves cannot disagree.
+    return {
+      expr: `COALESCE((${sql})::text, '(not recorded)')`,
+      label: `COALESCE((${sql})::text, '(not recorded)')`,
+      dropsBlanks: false,
+    };
   }
   return null;
 }
@@ -405,19 +427,24 @@ function buildAggregate(card, scope, { seed = [], shift = null } = {}) {
 
   // A grouped card is bounded. Deliberately generous (a year of months, 51 states) but
   // never unbounded — an accidental group-by on a free-text column must not stream
-  // 40,000 rows into a browser.
+  // 40,000 rows into a browser. We ask for ONE more than we will draw, purely so the caller
+  // can tell "there were exactly 60" from "there were more than 60 and you are seeing some
+  // of them" — a cap nobody is told about reads as the whole truth.
   const limit = Math.max(1, Math.min(200, Number(card.limit) || 60));
   const orderBy = card.grain ? 'bucket ASC' : 'value DESC NULLS LAST';
+  // Only a TIME breakdown drops blanks; a dimension now buckets them as "(not recorded)".
+  const having = grouping.dropsBlanks ? `HAVING ${groupExpr} IS NOT NULL` : '';
   return {
     text: `SELECT ${groupLabel} AS bucket_label, ${groupExpr} AS bucket, ${selects.join(', ')}
              ${registry.FROM_SQL}
             WHERE ${where}
             GROUP BY 1, 2
-            HAVING ${groupExpr} IS NOT NULL
+            ${having}
             ORDER BY ${orderBy}
-            LIMIT ${limit}`,
+            LIMIT ${limit + 1}`,
     values: p.values,
     grouped: true,
+    limit,
   };
 }
 

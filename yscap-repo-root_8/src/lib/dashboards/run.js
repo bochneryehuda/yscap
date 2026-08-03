@@ -36,17 +36,31 @@ const { describeError, sslConfig } = require('../../db');
 // dependency instead of relying on load order.
 types.setTypeParser(1082, (v) => v);
 
-const POOL_MAX = Math.max(1, Math.min(8, parseInt(process.env.DASHBOARD_POOL_MAX || '4', 10) || 4));
+const POOL_MAX = Math.max(1, Math.min(16, parseInt(process.env.DASHBOARD_POOL_MAX || '6', 10) || 6));
 const BUDGET_MS = Math.max(1000, Math.min(30000, parseInt(process.env.DASHBOARD_TIMEOUT_MS || '8000', 10) || 8000));
+
 /**
- * MUST STAY ABOVE THE PER-REQUEST WORKER COUNT in routes/dashboards.js (3). Set equal to it,
- * one dashboard load consumes the person's entire allowance, so anything overlapping — a
- * second tab, the card editor's 400 ms live preview, the reload that follows a save — is
- * refused and paints "Too many dashboard cards loading at once" on cards that are perfectly
- * fine. The cap is here to stop ONE person occupying the small pool, not to serialise their
- * own page. If the worker count ever rises, raise this with it.
+ * How many of ONE person's cards may be in the database at once.
+ *
+ * THIS NUMBER LIVES BETWEEN TWO OTHERS AND MUST STAY BETWEEN THEM.
+ *   · Below the per-request worker count (3, in routes/dashboards.js) and one dashboard load
+ *     eats the person's whole allowance, so a second tab — or the editor's 400 ms live
+ *     preview, or the reload after a save — is refused and paints "too many cards loading"
+ *     over cards that are perfectly fine.
+ *   · Above POOL_MAX and it stops being a limit at all: one person occupies every connection
+ *     and queues more behind it, and the surplus waits on `connectionTimeoutMillis` rather
+ *     than on the statement budget. That failure does not even look like a limit — pg throws
+ *     "timeout exceeded when trying to connect", which carries no `status`, so the card
+ *     renders that raw driver sentence instead of a plain-English "give it a moment".
+ * So it is CLAMPED to the pool rather than merely defaulted, and it can never be configured
+ * out of that range.
  */
-const MAX_PER_USER = Math.max(1, parseInt(process.env.DASHBOARD_MAX_CONCURRENT || '8', 10) || 8);
+const MAX_PER_USER = Math.min(POOL_MAX,
+  Math.max(1, parseInt(process.env.DASHBOARD_MAX_CONCURRENT || '4', 10) || 4));
+
+// The pool's own wait must not give up sooner than a query is allowed to take, or a busy
+// moment surfaces as a connection error rather than as the slow-card timeout it really is.
+const CONNECT_MS = Math.max(5000, BUDGET_MS + 2000);
 
 let pool = null;
 function getPool() {
@@ -57,7 +71,7 @@ function getPool() {
     ssl: sslConfig(),
     max: POOL_MAX,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: CONNECT_MS,
     // Shows up in pg_stat_activity, so "what is hammering the database" is answerable
     // without guessing.
     application_name: 'pilot-dashboards',
@@ -70,16 +84,46 @@ function getPool() {
 // Per-person concurrency
 // ---------------------------------------------------------------------------
 const inflight = new Map();
+const waiting = new Map();
 
+// How long a card is willing to WAIT for one of its own person's slots before giving up.
+const QUEUE_MS = Math.max(1000, Math.min(20000, parseInt(process.env.DASHBOARD_QUEUE_MS || '10000', 10) || 10000));
+// And how many may be waiting at once, so a runaway client cannot pile up work forever.
+const MAX_QUEUED = Math.max(1, MAX_PER_USER * 4);
+
+/**
+ * QUEUE, DON'T REFUSE. Being over your own limit for a moment is not an error — it is a
+ * dashboard with more cards than slots, which is the normal case. Throwing immediately turned
+ * that into a red "Too many dashboard cards loading at once" on cards that were fine, and the
+ * person had no way to retry but to reload the page. Waiting for a slot is invisible and
+ * correct; only a wait that never ends is worth reporting, and that still gets the plain
+ * 429 wording (never a driver message).
+ */
 async function withSlot(staffId, fn) {
   const key = String(staffId || 'anon');
-  const n = inflight.get(key) || 0;
-  if (n >= MAX_PER_USER) {
-    const e = new Error('Too many dashboard cards loading at once — give it a moment.');
-    e.status = 429;
-    throw e;
+  if ((inflight.get(key) || 0) >= MAX_PER_USER) {
+    if ((waiting.get(key) || 0) >= MAX_QUEUED) {
+      const e = new Error('Too many dashboard cards loading at once — give it a moment.');
+      e.status = 429;
+      throw e;
+    }
+    waiting.set(key, (waiting.get(key) || 0) + 1);
+    try {
+      const started = Date.now();
+      while ((inflight.get(key) || 0) >= MAX_PER_USER) {
+        if (Date.now() - started > QUEUE_MS) {
+          const e = new Error('Too many dashboard cards loading at once — give it a moment.');
+          e.status = 429;
+          throw e;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    } finally {
+      const w = (waiting.get(key) || 1) - 1;
+      if (w <= 0) waiting.delete(key); else waiting.set(key, w);
+    }
   }
-  inflight.set(key, n + 1);
+  inflight.set(key, (inflight.get(key) || 0) + 1);
   try {
     return await fn();
   } finally {
@@ -94,7 +138,19 @@ async function withSlot(staffId, fn) {
  */
 async function run({ text, values }, { staffId, budgetMs = BUDGET_MS } = {}) {
   return withSlot(staffId, async () => {
-    const client = await getPool().connect();
+    // The connect is INSIDE a mapper: pg throws a plain Error with no `code` and no `status`
+    // when the pool is saturated ("timeout exceeded when trying to connect"), so left
+    // unmapped it is shaped as a 500 and that raw driver sentence is what a person reads on
+    // the card. It is a busy moment, not a broken card, and it says so.
+    let client;
+    try {
+      client = await getPool().connect();
+    } catch (e) {
+      const t = new Error('The dashboard is busy right now — give it a moment and try again.');
+      t.status = 429; t.code = 'dashboard_busy';
+      console.warn('[dashboards] could not get a connection:', describeError(e));
+      throw t;
+    }
     try {
       await client.query('BEGIN READ ONLY');
       const ms = Math.max(500, Math.min(30000, Number(budgetMs) || BUDGET_MS));
@@ -130,4 +186,4 @@ async function close() {
   if (pool) { const p = pool; pool = null; try { await p.end(); } catch (_) { /* shutting down */ } }
 }
 
-module.exports = { run, close, getPool, POOL_MAX, BUDGET_MS, MAX_PER_USER, _inflight: inflight };
+module.exports = { run, close, getPool, POOL_MAX, BUDGET_MS, MAX_PER_USER, QUEUE_MS, _inflight: inflight };

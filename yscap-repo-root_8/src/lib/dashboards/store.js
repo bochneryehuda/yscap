@@ -63,15 +63,35 @@ function validateCard(card) {
   if (card.period && card.period.kind && card.period.kind !== 'all' && !card.date_field) {
     p.push('a card with a date range needs a date to apply it to');
   }
-  // A comparison is a real second query, so it is checked like everything else — an unknown
-  // kind is refused here rather than silently ignored at answer time, which is how a card
-  // ends up subtitled "against last year" with nothing behind it.
-  if (card.compare && card.compare.kind) {
-    if (!COMPARE_KINDS.includes(card.compare.kind)) {
-      p.push(`"${card.compare.kind}" is not a comparison we understand`);
-    } else if (!card.date_field || ((card.period && card.period.kind) || 'all') === 'all') {
-      p.push('a comparison needs a date and a period — there is no "last year" for all time');
+  // The period's OWN numbers are checked here, not only its kind — a card that saves happily
+  // and then can never answer is worse than one that is refused while you are looking at it.
+  if (card.period && ['last_days', 'last_months'].includes(card.period.kind)) {
+    const n = Number(card.period.n);
+    if (!Number.isInteger(n) || n < 1 || n > 3650) {
+      p.push('“how many” must be a whole number between 1 and 3650');
     }
+  }
+  if (card.period && card.period.kind === 'fixed') {
+    const DAY = /^\d{4}-\d{2}-\d{2}$/;
+    if (!DAY.test(String(card.period.from || '')) || !DAY.test(String(card.period.to || ''))) {
+      p.push('a card between two dates needs both dates');
+    } else if (String(card.period.from) > String(card.period.to)) {
+      p.push('the “from” date is after the “to” date');
+    }
+  }
+  // A comparison we do not recognise is refused, because it can only be a mistake. A
+  // comparison that merely CANNOT BE COMPUTED for this card is not — it is left inert and
+  // reported in the explain panel instead.
+  //
+  // The stricter rule was tried and was wrong in a way that mattered: both shipped hero
+  // cards carry compare:{prior_year}, and the editor sends `period:{kind:'all'}` whenever a
+  // card has no date field — so the moment somebody forked a company dashboard and saved a
+  // card, they were refused with "there is no last year for all time" and had no control
+  // anywhere to clear the comparison. That is the ONE journey that can edit a company
+  // dashboard, and validation should never be the thing that makes it a dead end.
+  if (card.compare && card.compare.kind && card.compare.kind !== 'none'
+      && !COMPARE_KINDS.includes(card.compare.kind)) {
+    p.push(`"${card.compare.kind}" is not a comparison we understand`);
   }
   p.push(...compile.validateFilter(card.filter));
   return p;

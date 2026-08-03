@@ -145,6 +145,19 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
                 onChange={(e) => set({ period: { ...draft.period, to: e.target.value } })} /></label>
           </>
         )}
+        {/* A comparison is only drawn on a single number over a real period, so the control
+            appears exactly when it can do something — and it can always be turned back OFF,
+            which the shipped company cards need (they arrive with one already set). */}
+        {!isTrend && !isBreakdown && draft.date_field
+          && ((draft.period && draft.period.kind) || 'all') !== 'all' && (
+          <label className="field"><span>Compare against</span>
+            <select className="input" value={(draft.compare && draft.compare.kind) || ''}
+              onChange={(e) => set({ compare: e.target.value ? { kind: e.target.value } : null })}>
+              <option value="">Don&apos;t compare</option>
+              <option value="prior_period">The period before</option>
+              <option value="prior_year">The same period a year ago</option>
+            </select></label>
+        )}
         {isTrend && (
           <label className="field"><span>Group the trend by</span>
             <select className="input" value={draft.grain || 'month'} onChange={(e) => set({ grain: e.target.value })}>
