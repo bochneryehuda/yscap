@@ -35,6 +35,11 @@ const PERIODS = [
 // The two periods that carry a "how many", and the number both the box and the draft use.
 const NEEDS_N = ['last_days', 'last_months'];
 const DEFAULT_N = 12;
+// The SAME rule the server validates against (store.validateCard), so "will this save?" and
+// "should I seed a default?" can never disagree. Note it deliberately rejects null, '' and 0
+// — all three are values a naive Number.isInteger check would wave through.
+const nOk = (n) => Number.isInteger(Number(n)) && n !== null && n !== ''
+  && Number(n) >= 1 && Number(n) <= 3650;
 
 const VIZ = [
   { v: 'number', label: 'A big number' },
@@ -44,11 +49,22 @@ const VIZ = [
 ];
 
 export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDelete }) {
-  const [draft, setDraft] = React.useState(() => ({
-    title: '', subtitle: '', viz: 'number', metric_key: 'file_count',
-    filter: null, date_field: '', period: { kind: 'all' }, group_by: '', grain: '',
-    band: 'body', width: 'one', target: null, ...(card || {}),
-  }));
+  const [draft, setDraft] = React.useState(() => {
+    const d = {
+      title: '', subtitle: '', viz: 'number', metric_key: 'file_count',
+      filter: null, date_field: '', period: { kind: 'all' }, group_by: '', grain: '',
+      band: 'body', width: 'one', target: null, ...(card || {}),
+    };
+    // SEED ON OPEN, for the same reason the dropdown seeds on change: the "How many?" box
+    // is about to DISPLAY a number, so the draft has to carry it. A card stored with no
+    // "how many" is a legal state (the server defaults it to 30), and such cards already
+    // exist — opening one showed 12 in the box over a query that used 30, which is the
+    // screen-and-card disagreement this editor was just fixed to stop.
+    if (NEEDS_N.includes(d.period && d.period.kind) && !nOk(d.period.n)) {
+      d.period = { ...d.period, n: DEFAULT_N };
+    }
+    return d;
+  });
   const [preview, setPreview] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState('');
@@ -107,8 +123,20 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
         <label className="field"><span>How should it look?</span>
           <select className="input" value={draft.viz}
             onChange={(e) => {
+              // CHANGING THE SHAPE CLEARS WHAT THE NEW SHAPE CANNOT USE. Leaving those
+              // settings behind is how a card ends up in a state its own editor can no
+              // longer reach: switching back to "A big number" kept a group_by, so a card
+              // saved as a big number rendered as a ranked list; and switching to a
+              // breakdown kept a comparison while hiding the control that could remove it.
               const viz = e.target.value;
-              set({ viz, grain: viz === 'trend' ? (draft.grain || 'month') : '', group_by: viz === 'trend' ? '' : draft.group_by });
+              const isTimeline = viz === 'trend';
+              const isBuckets = ['trend', 'breakdown', 'table'].includes(viz);
+              set({
+                viz,
+                grain: isTimeline ? (draft.grain || 'month') : '',
+                group_by: isTimeline || !isBuckets ? '' : draft.group_by,
+                compare: isBuckets ? null : draft.compare,
+              });
             }}>
             {VIZ.map((v) => <option key={v.v} value={v.v}>{v.label}</option>)}
           </select></label>
@@ -147,8 +175,12 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
           <label className="field"><span>How many?</span>
             {/* An emptied box falls back to the same number it then shows, so clearing it
                 can never leave the card in a state the screen does not reflect. */}
+            {/* NOT `|| DEFAULT_N` — 0 is falsy, so typing a zero left the draft holding 0
+                while the box painted 12, and the save was then refused over a number the
+                person could not see. Show what the draft actually holds. */}
             <input className="input" type="number" min="1" max="3650"
-              value={(draft.period && draft.period.n) || DEFAULT_N}
+              value={draft.period && draft.period.n != null && draft.period.n !== ''
+                ? draft.period.n : DEFAULT_N}
               onChange={(e) => set({
                 period: { ...draft.period, n: e.target.value === '' ? DEFAULT_N : Number(e.target.value) },
               })} /></label>

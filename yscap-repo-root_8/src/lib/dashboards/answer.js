@@ -80,6 +80,22 @@ function comparisonPossible(card, dateApplied) {
   return true;
 }
 
+/**
+ * WHY no comparison ran, in the reader's words.
+ *
+ * MUST STAY IN STEP WITH comparisonPossible — same branches, same order. The client used to
+ * carry one hard-coded sentence naming two of the three reasons, so a card broken into
+ * buckets was told "a comparison needs a date and a period that is not all time" while the
+ * two rows directly above it in the same panel showed a date and a real period. A panel
+ * whose only job is to say what happened must not be the thing contradicting itself.
+ */
+function comparisonBlockedBy(card, dateApplied) {
+  if (!dateApplied) return 'nothing — a comparison needs a date to compare over';
+  if (((card.period && card.period.kind) || 'all') === 'all') return 'nothing — “all time” has no period before it';
+  if (card.grain || card.group_by) return 'nothing — a card broken into buckets would be compared bucket by bucket, which this card does not draw';
+  return 'nothing';
+}
+
 async function comparisonFor(card, scope, actor, value, dateApplied) {
   if (!comparisonPossible(card, dateApplied)) return null;
   const kind = card.compare.kind;
@@ -113,6 +129,11 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
     title: card.title,
     subtitle: card.subtitle,
     viz: card.viz,
+    // The client's truncation note has to describe how the buckets were ORDERED, and the
+    // compiler orders on `grain` (time ascending) vs anything else (value descending) — not
+    // on `viz`. Those two can disagree, so the client is given the thing that actually
+    // decides rather than the thing that usually matches it.
+    grain: card.grain || null,
     band: card.band,
     width: card.width,
     target: card.target || null,
@@ -163,6 +184,8 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
       // exactly the state worth explaining (the shipped hero cards are subtitled "against
       // last year", so a silent card contradicts its own subtitle).
       comparisonStored: !!(card.compare && card.compare.kind && card.compare.kind !== 'none'),
+      comparisonBlocked: (card.compare && card.compare.kind && card.compare.kind !== 'none'
+        && !comparisonPossible(card, dateApplied)) ? comparisonBlockedBy(card, dateApplied) : null,
       sql: includeSql ? q.text : undefined,
     };
 

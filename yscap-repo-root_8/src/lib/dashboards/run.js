@@ -95,6 +95,12 @@ const waiting = new Map();
  * refused with "too many dashboard cards loading at once", which blames them for a queue
  * they did not cause, while their own four go on to succeed seconds later. Waiting the full
  * hold time means the refusal only ever fires when the person really is the one saturating.
+ *
+ * NOTE the floor is applied OUTSIDE the 30s ceiling, deliberately: raising
+ * DASHBOARD_TIMEOUT_MS raises the longest a slot can be held, and the wait has to follow it
+ * or the premature refusal comes straight back. So at the maximum configurable budget (30s)
+ * this resolves to 62s rather than 30s. That is the intended trade, not an oversight —
+ * a longer spinner beats a wrong error.
  */
 const QUEUE_MS = Math.max(CONNECT_MS + BUDGET_MS,
   Math.min(30000, parseInt(process.env.DASHBOARD_QUEUE_MS || '10000', 10) || 10000));

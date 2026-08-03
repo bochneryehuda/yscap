@@ -149,13 +149,26 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
               (ORDER BY bucket ASC) — so "showing the biggest 20" over 12 rows of oldest
               months was wrong twice over. The note also has to appear when the list is
               merely longer than the 12 it draws, cap or no cap. */}
-          {(answer.truncated || (answer.viz !== 'trend' && answer.series.length > ROWS_DRAWN)) && (
-            <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
-              {answer.viz === 'trend'
-                ? `Showing the first ${answer.series.length} periods${answer.truncated ? ' — there are more' : ''}.`
-                : `Showing the top ${Math.min(ROWS_DRAWN, answer.series.length)} of ${answer.series.length}${answer.truncated ? '+' : ''}.`}
-            </p>
-          )}
+          {/* TWO different things decide this sentence, and they do not always travel
+              together, so they are read separately:
+                · HOW MANY ARE DRAWN is decided by the chart — Bars draws every bucket,
+                  Rows draws ROWS_DRAWN of them.
+                · HOW THEY WERE CHOSEN is decided by `grain` — the compiler orders time
+                  buckets ascending and everything else by size.
+              Keying the whole sentence on `viz` called a by-city chart "the first N
+              periods"; keying it all on `grain` would have miscounted the rows drawn. */}
+          {(() => {
+            const drawn = answer.viz === 'trend' ? answer.series.length
+              : Math.min(ROWS_DRAWN, answer.series.length);
+            if (!answer.truncated && drawn >= answer.series.length) return null;
+            return (
+              <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
+                {answer.grain
+                  ? `Showing the first ${drawn} periods${answer.truncated ? ' — there are more' : ''}.`
+                  : `Showing the top ${drawn} of ${answer.series.length}${answer.truncated ? '+' : ''}.`}
+              </p>
+            );
+          })()}
         </>
       );
     }
@@ -231,9 +244,10 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
           <div><span className="dsh-k">Period</span><span>{answer.explain.period}</span></div>
           {answer.explain.groupedBy && <div><span className="dsh-k">Broken down by</span><span>{answer.explain.groupedBy}</span></div>}
           {answer.explain.comparisonStored && (
+            // The reason comes from the server, which owns the branches — a sentence written
+            // here could only ever be one of them, and would contradict the rows above it.
             <div><span className="dsh-k">Compared with</span>
-              <span>{answer.explain.compared
-                || 'nothing — a comparison needs a date and a period that is not “all time”'}</span></div>
+              <span>{answer.explain.compared || answer.explain.comparisonBlocked || 'nothing'}</span></div>
           )}
           <div><span className="dsh-k">Whose files</span>
             <span>{answer.explain.scoped ? 'only the files you can see' : 'every file in the company'}</span></div>

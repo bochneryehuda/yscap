@@ -533,6 +533,27 @@ async function main() {
       const la = await api('GET', `/api/dashboards/cards/${legacy.body.card.id}/answer`, null, loTok);
       ok(la.body.ok === true && la.body.explain.period === 'the last 1 days',
         `a card stored with 1.5 answers, and the panel says the 1 day it used (${la.body.explain && la.body.explain.period})`);
+
+      // When a comparison cannot run, the panel must name the reason that ACTUALLY applied.
+      // One hard-coded sentence covering two of the three cases told a bucketed card it had
+      // no date and no period while the rows above it showed both.
+      const reasons = [
+        [{ title: 'no date', metric_key: 'file_count', compare: { kind: 'prior_year' } }, /needs a date to compare over/],
+        [{ title: 'all time', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'all' }, compare: { kind: 'prior_year' } }, /has no period before it/],
+        [{ title: 'bucketed', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'ytd' }, viz: 'breakdown', group_by: 'status', compare: { kind: 'prior_year' } }, /bucket by bucket/],
+      ];
+      for (const [body, want] of reasons) {
+        const c = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`, body, loTok);
+        const a = await api('GET', `/api/dashboards/cards/${c.body.card.id}/answer`, null, loTok);
+        ok(a.body.ok === true && want.test(a.body.explain.comparisonBlocked || ''),
+          `"${body.title}" is told the real reason: ${a.body.explain && a.body.explain.comparisonBlocked}`);
+      }
+      // …and a comparison that DOES run reports itself, never a blocked reason.
+      const live = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
+        { title: 'live cmp', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'ytd' }, compare: { kind: 'prior_year' } }, loTok);
+      const lc = await api('GET', `/api/dashboards/cards/${live.body.card.id}/answer`, null, loTok);
+      ok(lc.body.explain.compared === 'a year ago' && lc.body.explain.comparisonBlocked === null,
+        'a comparison that runs is never reported as blocked');
     }
   } finally {
     await db.query(`DELETE FROM applications WHERE source=$1`, [TAG]).catch(() => {});
