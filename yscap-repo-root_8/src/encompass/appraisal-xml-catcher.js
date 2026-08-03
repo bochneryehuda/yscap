@@ -526,7 +526,24 @@ async function capture(db, res, meta) {
  *
  * Returns a summary. NEVER throws.
  */
-async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log = false,
+// HOW FAR BACK EACH SWEEP LOOKS. The whole design rests on one assumption — that
+// an AMC's delivery is reflected in `Loan.LastModified`, or a delivery on an
+// otherwise-quiet loan never enters the window and is never even looked at.
+//
+// MEASURED on the live tenant rather than assumed: across 45 real XML deliveries,
+// `Loan.LastModified` was at or after the delivery EVERY time — zero
+// counterexamples. That is the reassuring direction, but it is not proof: the
+// tightest gap was 10 hours, so on these (busy) loans the bump cannot be
+// attributed to the delivery itself rather than to the next thing that touched
+// the file.
+//
+// So the window is sized for the case we could NOT rule out. Also measured: the
+// tenant modifies ~6 loans a day, so 7 days is ~44 loans ≈ 45s of paced sweeping
+// inside a 300s interval — a 3.5x safety margin over the 2 days first shipped,
+// for about thirty seconds. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
+const DEFAULT_SINCE_DAYS = Number(process.env.ENCOMPASS_APPRAISAL_XML_SINCE_DAYS || 7);
+
+async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, skewMs = 60000, log = false,
   paceMs = Number(process.env.ENCOMPASS_APPRAISAL_XML_PACE_MS || 350) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
