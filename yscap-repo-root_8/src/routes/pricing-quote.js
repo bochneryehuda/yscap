@@ -36,6 +36,17 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; 
 const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 const str = (v) => (v == null ? '' : String(v).slice(0, 200));
 
+/* A CEILING ON EVERY MONEY INPUT (audit 2026-08-03). `Math.max(0, …)` alone
+   accepts 1e308 — it is finite, so it passes the `Number.isFinite` check — and
+   the engine then multiplies it into a `costBasis` of Infinity, which
+   `JSON.stringify` writes as `null`. The door answered 200 with a MANUAL status,
+   a $2,500,000 loan and a malformed breakdown. A refusal-shaped answer is fine;
+   a confident answer with a hole in it is not.
+   $1e10 is deliberately far above any real deal: every program maximum in the
+   book is at or under $3.5M, so nothing legitimate is near this. */
+const MAX_MONEY = 1e10;
+const money = (v) => Math.max(0, Math.min(MAX_MONEY, num(v) || 0));
+
 /* Exactly the keys the browser's own gather() builds, and NOTHING else.
    Anything not on this list is dropped rather than passed through — an
    unauthenticated caller must not be able to reach an engine input just because
@@ -56,10 +67,10 @@ function sanitizeDeal(body) {
     expFlips: Math.max(0, Math.min(999, num(b.expFlips) || 0)),
     expHolds: Math.max(0, Math.min(999, num(b.expHolds) || 0)),
     expGround: Math.max(0, Math.min(999, num(b.expGround) || 0)),
-    purchasePrice: Math.max(0, num(b.purchasePrice) || 0),
-    asIsValue: Math.max(0, num(b.asIsValue) || 0),
-    arv: Math.max(0, num(b.arv) || 0),
-    rehabBudget: Math.max(0, num(b.rehabBudget) || 0),
+    purchasePrice: money(b.purchasePrice),
+    asIsValue: money(b.asIsValue),
+    arv: money(b.arv),
+    rehabBudget: money(b.rehabBudget),
     term: Math.max(1, Math.min(36, num(b.term) || 12)),
     irMonths: Math.max(0, Math.min(24, num(b.irMonths) || 0)),
     // The studio's LEVERAGE SLIDER, and it belongs here: all three engines
@@ -76,7 +87,7 @@ function sanitizeDeal(body) {
     sqftAddition: bool(b.sqftAddition),
     heavyRehab: bool(b.heavyRehab),
     isAssignment: bool(b.isAssignment),
-    sellerPrice: Math.max(0, num(b.sellerPrice) || 0),
+    sellerPrice: money(b.sellerPrice),
   };
   // A refinance never carries a purchase price (deal-basis rule, 2026-08-02):
   // the engine sizes it on the as-is value, and the studio already sends it that
@@ -153,6 +164,41 @@ const WITHHELD_EVALUATE_FIELDS = new Set([
   'rateKey',    // the RATE_BLOCKS cell index; the page reads it zero times
 ]);
 
+/* THE SAME RULE, AT THE OTHER TWO LEVELS (audit 2026-08-03, second pass).
+   The allowlist above was fail-CLOSED for `evaluate` and fail-OPEN for
+   everything wrapped around it: `publicBlock` did `{...b}` and the handler did
+   `{...out}`, so the per-program block and the top level passed EVERY key
+   through, and the CI guard only ever swept `evaluate` keys. A field added
+   tomorrow to priceLadder's rows, to caps(), to YSTitle.estimate() or as a new
+   sibling in programBlock/studioQuote would have reached anonymous callers with
+   nothing failing — which is the exact class this file was written to close,
+   fixed in one place and left armed in two.
+
+   All three levels are now allowlisted and all three are swept by the guard. */
+const PUBLIC_BLOCK_FIELDS = new Set([
+  'program', 'available', 'evaluate', 'ladder', 'caps',
+]);
+const WITHHELD_BLOCK_FIELDS = new Set([
+  // A raw engine exception message — `String(err.message)` from a frozen
+  // engine, e.g. "Cannot read properties of undefined (reading 'MATRIX')".
+  // The handler's own catch below says an engine's internals must never leave
+  // through an error string; a throw caught INSIDE programBlock was taking the
+  // other road out. The caller is still told, as a boolean (`engineFailed`).
+  'evaluateError', 'ladderError', 'capsError',
+  // `programBlock`'s "engine not loaded" text — an operational detail.
+  'reason',
+]);
+
+const PUBLIC_TOP_FIELDS = new Set([
+  'available', 'standard', 'gold', 'silver', 'title', 'titleFor', 'derived', 'deal',
+]);
+const WITHHELD_TOP_FIELDS = new Set([
+  // studioQuote's unavailable reason concatenates the `require` failure, which
+  // carries a filesystem path. The handler already answers a generic 503 on
+  // that branch; this is the belt under it.
+  'reason',
+]);
+
 function publicEvaluate(e) {
   if (!e || typeof e !== 'object') return e;
   const out = {};
@@ -162,9 +208,30 @@ function publicEvaluate(e) {
 
 function publicBlock(b) {
   if (!b || typeof b !== 'object') return b;
-  const out = { ...b };
-  if (b.evaluate) out.evaluate = publicEvaluate(b.evaluate);
+  const out = {};
+  for (const k of Object.keys(b)) if (PUBLIC_BLOCK_FIELDS.has(k)) out[k] = b[k];
+  if (out.evaluate) out.evaluate = publicEvaluate(out.evaluate);
+  // The engine failed at some step. Say THAT, never what it said.
+  if (b.evaluateError || b.ladderError || b.capsError) out.engineFailed = true;
+  /* NEVER A CAPS ROW FOR A DEAL WE REFUSED TO PRICE. standard-program.js
+     returns `caps: null` on an INELIGIBLE deal with the comment "never price an
+     ineligible deal", and pricing-studio then re-derives the row and attaches
+     it anyway — so the door was handing back the leverage matrix row for deals
+     the engine had just declined. Withheld HERE rather than in the shared
+     library, so the library stays faithful and the 4.1M-field parity proof
+     keeps comparing like for like. */
+  if (!out.evaluate || out.evaluate.status === 'INELIGIBLE') out.caps = null;
   return out;
+}
+
+function publicTop(out, deal) {
+  const res = {};
+  for (const k of Object.keys(out)) if (PUBLIC_TOP_FIELDS.has(k)) res[k] = out[k];
+  res.standard = publicBlock(out.standard);
+  res.gold = publicBlock(out.gold);
+  res.silver = publicBlock(out.silver);
+  res.deal = deal;
+  return res;
 }
 
 router.post('/studio', (req, res) => {
@@ -178,13 +245,7 @@ router.post('/studio', (req, res) => {
     }
     // Echo the deal the server actually priced. The page needs it to tell a
     // stale answer from a current one when the visitor keeps typing.
-    return res.json({
-      ...out,
-      standard: publicBlock(out.standard),
-      gold: publicBlock(out.gold),
-      silver: publicBlock(out.silver),
-      deal,
-    });
+    return res.json(publicTop(out, deal));
   } catch (e) {
     // Never leak an engine's internals through an error string on a public door.
     return res.status(500).json({ available: false, reason: 'pricing error' });
@@ -196,4 +257,9 @@ module.exports = router;
 // key the engines actually produce must be in one set or the other. A new
 // engine field lands in neither and fails CI, which is the point — it is how a
 // future `overlays` gets noticed before it ships rather than after.
-module.exports._internals = { PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS, publicEvaluate, sanitizeDeal };
+module.exports._internals = {
+  PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS,
+  PUBLIC_BLOCK_FIELDS, WITHHELD_BLOCK_FIELDS,
+  PUBLIC_TOP_FIELDS, WITHHELD_TOP_FIELDS,
+  publicEvaluate, publicBlock, publicTop, sanitizeDeal, MAX_MONEY,
+};

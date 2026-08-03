@@ -92,8 +92,31 @@ function programBlock(program, deal, markupPct) {
       } catch (err) { out.ladder = { eligible: false, rows: [] }; out.ladderError = String(err && err.message || err); }
     }
 
-    // The caps row is keyed on what evaluate() just decided, so it can only be
-    // asked for once there IS an evaluation.
+    /* The caps row is keyed on what evaluate() just decided, so it can only be
+       asked for once there IS an evaluation.
+
+       KNOWN, MEASURED, NOT FIXED HERE (audit 2026-08-03) — `out.caps` is
+       ALWAYS null on SILVER. This call uses Standard's 4-argument signature
+       `caps(regime, loanType, strategyCode, tier)`; Silver's is
+       `caps(prodTok, loanType, tier)` (silver-program.js), and a Silver
+       evaluation has no `regime` at all (it has `market`), so the lookup misses
+       and returns undefined — silently, with no throw for the catch to notice.
+       It is harmless today: Silver's own `evaluate()` already returns the same
+       `progMax` row as `evaluate.caps`, which IS shipped, and nothing consumes
+       the block-level `silver.caps` (the browser seam that would is off unless
+       a page is opened with ?engine=server).
+
+       It is left alone ON PURPOSE rather than fixed in passing, for two
+       reasons. (1) scripts/test-pricing-studio-parity.js makes the IDENTICAL
+       4-argument call on the browser side, so both sides get null and 4.1M
+       fields agree — the proof copies the bug instead of catching it, and
+       correcting one side without the other would fail parity for a change
+       that moves no guideline number. (2) The same audit measured that the
+       block-level `caps` row IS the leverage matrix row verbatim, so making
+       Silver's populate would ADD guideline exposure on a public door while
+       that exposure is still an open question (see the header). Settle both
+       together — before phase 4 deletes the engines from the web root and this
+       door becomes the only channel. */
     if (typeof e.caps === 'function' && out.evaluate) {
       try {
         const ev = out.evaluate;

@@ -111,9 +111,19 @@ const DEAL = {
        engine tomorrow lands in neither set and fails HERE, so a future
        `overlays` is caught before it ships rather than by the next audit. */
     console.log('\n== B3. every engine field is classified — new ones fail here ==');
-    const { PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS } = require('../src/routes/pricing-quote')._internals;
+    const _int = require('../src/routes/pricing-quote')._internals;
+    const {
+      PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS,
+      PUBLIC_BLOCK_FIELDS, WITHHELD_BLOCK_FIELDS,
+      PUBLIC_TOP_FIELDS, WITHHELD_TOP_FIELDS,
+    } = _int;
     const studioLib = require('../src/lib/pricing-studio');
     const seen = new Set();
+    // The block and the top level are swept by the SAME battery — the first
+    // pass of this test only ever looked at `evaluate`, so the allowlist was
+    // fail-closed in one place and fail-open in the two wrapped around it.
+    const seenBlock = new Set();
+    const seenTop = new Set();
     for (const strategy of ['Fix & Flip', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental']) {
       for (const state of ['NJ', 'NY', 'FL', 'TX']) {
         for (const loanType of ['Purchase', 'Refinance']) {
@@ -125,20 +135,94 @@ const DEAL = {
                 sellerPrice: isAssignment ? 350000 : 0,
               }, { standard: 0.005, gold: 0.005, silver: 0.005 });
             } catch (_) { continue; }
+            if (q) for (const k of Object.keys(q)) seenTop.add(k);
             for (const p of ['standard', 'gold', 'silver']) {
-              const e = q && q[p] && q[p].evaluate;
+              const blk = q && q[p];
+              if (blk && typeof blk === 'object') for (const k of Object.keys(blk)) seenBlock.add(k);
+              const e = blk && blk.evaluate;
               if (e) for (const k of Object.keys(e)) seen.add(k);
             }
           }
         }
       }
     }
+    /* The three error siblings only appear when an engine actually throws, and
+       none did across the battery above — but they are real keys programBlock
+       can attach, and an unswept key is exactly how `overlays` shipped. Add them
+       by hand so the classification covers them whether or not this run
+       happened to make an engine fall over. */
+    for (const k of ['evaluateError', 'ladderError', 'capsError', 'reason']) seenBlock.add(k);
+    seenTop.add('reason');
+
     const unclassified = [...seen].filter((k) => !PUBLIC_EVALUATE_FIELDS.has(k) && !WITHHELD_EVALUATE_FIELDS.has(k));
     ok(seen.size > 30, `the sweep actually exercised the engines (${seen.size} distinct fields)`);
     ok(
       unclassified.length === 0,
       `every engine field is either shipped or deliberately withheld${unclassified.length ? ` — UNCLASSIFIED: ${unclassified.join(', ')}. Add each to PUBLIC_EVALUATE_FIELDS or WITHHELD_EVALUATE_FIELDS in src/routes/pricing-quote.js, with a reason.` : ''}`,
     );
+
+    const unclassifiedBlock = [...seenBlock].filter((k) => !PUBLIC_BLOCK_FIELDS.has(k) && !WITHHELD_BLOCK_FIELDS.has(k));
+    ok(seenBlock.size >= 5, `the block level was swept too (${seenBlock.size} distinct keys)`);
+    ok(
+      unclassifiedBlock.length === 0,
+      `every per-program key is classified${unclassifiedBlock.length ? ` — UNCLASSIFIED: ${unclassifiedBlock.join(', ')}. Add each to PUBLIC_BLOCK_FIELDS or WITHHELD_BLOCK_FIELDS.` : ''}`,
+    );
+
+    const unclassifiedTop = [...seenTop].filter((k) => !PUBLIC_TOP_FIELDS.has(k) && !WITHHELD_TOP_FIELDS.has(k));
+    ok(seenTop.size >= 5, `the top level was swept too (${seenTop.size} distinct keys)`);
+    ok(
+      unclassifiedTop.length === 0,
+      `every top-level key is classified${unclassifiedTop.length ? ` — UNCLASSIFIED: ${unclassifiedTop.join(', ')}. Add each to PUBLIC_TOP_FIELDS or WITHHELD_TOP_FIELDS.` : ''}`,
+    );
+
+    /* AND THE PROJECTIONS ACTUALLY DROP THEM. The classification above says what
+       we DECIDED; this says what the code DOES. Both are needed — the sets can
+       be right while the projection still spreads the object through, which is
+       what shipped. */
+    console.log('\n== B3b. the block and the top level really are projected ==');
+    {
+      const rich = {
+        program: 'standard', available: true, reason: 'engine not loaded',
+        evaluate: { status: 'ELIGIBLE', overlays: ['x'], noteRate: 0.12 },
+        evaluateError: "Cannot read properties of undefined (reading 'MATRIX')",
+        ladder: { eligible: true, rows: [] }, ladderError: 'threw at RATE_BLOCKS[3]',
+        caps: { maxLTC: 0.9 }, capsError: 'caps threw',
+        somethingNew: 'invented tomorrow',
+      };
+      const proj = _int.publicBlock(rich);
+      for (const k of ['evaluateError', 'ladderError', 'capsError', 'reason', 'somethingNew']) {
+        ok(!(k in proj), `a block does not ship "${k}"`);
+      }
+      ok(proj.engineFailed === true, 'but the caller IS told the engine failed');
+      ok(!('overlays' in proj.evaluate), 'and the evaluate allowlist still applies underneath');
+
+      // A refused deal must not carry a leverage-matrix row.
+      const refused = _int.publicBlock({ program: 'standard', available: true, evaluate: { status: 'INELIGIBLE', reasons: [] }, caps: { maxLoan: 2500000, minFico: 600, maxAcqLTV: 0.9 } });
+      eq(refused.caps, null, 'a deal the engine REFUSED to price carries no caps row');
+      const priced = _int.publicBlock({ program: 'standard', available: true, evaluate: { status: 'ELIGIBLE' }, caps: { maxLTC: 0.9 } });
+      ok(priced.caps && priced.caps.maxLTC === 0.9, 'a priced deal still carries the caps the sheet prints');
+
+      const top = _int.publicTop({ available: true, standard: null, gold: null, silver: null, title: {}, derived: {}, titleFor: {}, reason: 'pricing engines unavailable: /srv/app/web/tools/x.js not found', futureKey: 1 }, { state: 'NJ' });
+      ok(!('reason' in top), 'the top level does not ship studioQuote\'s reason (it can carry a filesystem path)');
+      ok(!('futureKey' in top), 'nor a key nobody has classified');
+      ok(top.deal && top.deal.state === 'NJ', 'and the priced deal is still echoed');
+    }
+
+    /* A MONEY INPUT HAS A CEILING. 1e308 is finite, so it passed every guard and
+       the engine turned it into an Infinity cost basis, which JSON writes as
+       null — a confident 200 with a hole in the breakdown. */
+    console.log('\n== B3c. an absurd number is clamped, not priced ==');
+    {
+      const huge = _int.sanitizeDeal({ ...DEAL, purchasePrice: 1e308, asIsValue: 1e308, arv: 1e308, rehabBudget: 1e308, sellerPrice: 1e308 });
+      for (const k of ['purchasePrice', 'asIsValue', 'arv', 'rehabBudget']) {
+        ok(huge[k] === _int.MAX_MONEY, `${k} is clamped to the ceiling (${huge[k]})`);
+      }
+      const r = await call(server, { ...DEAL, purchasePrice: 1e308, asIsValue: 1e308, arv: 1e308, rehabBudget: 1e308 });
+      ok(r.status === 200, `the door still answers (${r.status})`);
+      const sizing = r.body.standard && r.body.standard.evaluate && r.body.standard.evaluate.sizing;
+      const holes = sizing ? Object.entries(sizing).filter(([, v]) => v === null).map(([k]) => k) : [];
+      ok(holes.length === 0, `and the breakdown has no holes in it${holes.length ? ` — null: ${holes.join(', ')}` : ''}`);
+    }
 
     console.log('\n== B4. the leverage slider actually moves the loan ==');
     /* `targetLTC` is the studio's leverage slider. It was missing from the
@@ -235,6 +319,77 @@ const DEAL = {
     const rate1 = a1.body.standard.evaluate.noteRate != null ? a1.body.standard.evaluate.noteRate : a1.body.standard.evaluate.maxNoteRate;
     const rate2 = a2.body.standard.evaluate.noteRate != null ? a2.body.standard.evaluate.noteRate : a2.body.standard.evaluate.maxNoteRate;
     eq(rate2, rate1, 'the rate is identical before and after a hostile request');
+
+    /* == J. EVERY TITLE FIGURE SAYS WHAT IT WAS COMPUTED FOR ==
+       Added after a break-it sweep (2026-08-03) deleted `out.titleFor` from
+       src/lib/pricing-studio.js outright and every test in the repo still
+       passed. The page asks for title through a GLOBAL — YSTitle.estimate(state,
+       loan, txnType) — which says nothing about WHICH PROGRAM is asking, so a
+       client reading these answers back has to identify the right figure
+       itself, and the only honest way is to match on everything the estimate
+       depends on. Without titleFor there is nothing to match on, and the seam
+       falls back to guessing by loan amount alone — the exact defect a live
+       browser audit measured at $3,600 against $3,615, and a cash-to-close
+       $2,520 short on an ineligible deal.
+
+       So: for every program that priced, the figure must be labelled, and the
+       label must agree with the loan it was quoted for. */
+    console.log('\n== J. every title figure says which loan, state and txn type it is for ==');
+    {
+      const t = await call(server, DEAL);
+      const title = t.body.title || {};
+      const titleFor = t.body.titleFor || {};
+      let labelled = 0;
+      for (const p of ['standard', 'gold', 'silver']) {
+        const sized = t.body[p] && t.body[p].evaluate && t.body[p].evaluate.sizing;
+        const loan = sized ? Math.floor(Number(sized.totalLoan) || 0) : 0;
+        if (!loan) { ok(titleFor[p] == null, `${p} priced nothing, so it carries no title label`); continue; }
+        labelled++;
+        ok(title[p] && Number(title[p].total) > 0, `${p} has a title figure`);
+        ok(!!titleFor[p], `${p} title is LABELLED with what it was computed for`);
+        eq(Math.floor(Number((titleFor[p] || {}).loan) || 0), loan, `  ${p} label names the loan it was quoted for`);
+        eq((titleFor[p] || {}).state, DEAL.state, `  ${p} label names the state`);
+        eq((titleFor[p] || {}).loanType, DEAL.loanType, `  ${p} label names the transaction type`);
+      }
+      ok(labelled >= 2, `at least two programs priced, so the check means something (${labelled})`);
+      // The label must be a SIBLING, never folded into the engine's own return
+      // value — the parity proof compares title[p] field for field against the
+      // browser's, and an extra key there would make it compare unlike things.
+      for (const p of ['standard', 'gold', 'silver']) {
+        if (title[p]) ok(!('loan' in title[p]) && !('forLoan' in title[p]), `${p} title itself is untouched by the labelling`);
+      }
+    }
+
+    /* == K. AN ADMIN-FORCED PRICE STILL TURNS A REFUSAL INTO A REVIEW ==
+       Also from the sweep: the forcePrice rule could be deleted from
+       pricing-studio and nothing failed. It cannot be reached through THIS door
+       (section D proves an anonymous caller's admin knobs are dropped), so it
+       is asserted where it actually lives — a direct studioQuote call, the way
+       the staff paths use it. It mirrors pricing.js quoteProgram: an admin
+       forcing a price gets a MANUAL review, not a flat refusal. */
+    console.log('\n== K. forcePrice turns an INELIGIBLE into a MANUAL review ==');
+    {
+      const inelDeal = { ...DEAL, state: 'IN' };
+      const plain = studioLib.studioQuote(inelDeal, {});
+      eq(plain.standard.evaluate.status, 'INELIGIBLE', 'without forcePrice the deal is refused');
+      const forced = studioLib.studioQuote({ ...inelDeal, forcePrice: true }, {});
+      eq(forced.standard.evaluate.status, 'MANUAL', 'with forcePrice it becomes a manual review');
+      /* NOT ASSERTED, deliberately: the second half of that rule
+         (`exitShortfall = 0`) cannot be observed. Measured over 1,920 INELIGIBLE
+         deals across 6 states x 5 FICOs x 4 experience levels x every ARV/rehab/
+         price combination, the engine reports `exitShortfall: undefined` on
+         EVERY ineligible deal — it returns before the exit gate runs — and on a
+         FORCED deal it already reports 0 itself. A deal with a real gap is
+         MANUAL, not INELIGIBLE, so this branch never sees one. The line stays
+         because it mirrors pricing.js quoteProgram exactly, which is the whole
+         point of it; a test that asserted `=== 0` would pass whether or not the
+         line existed, which is the same weaker-question trap this section was
+         added to close. Say so rather than bank a green check on nothing. */
+      // A deal that was never ineligible must be untouched by the flag.
+      const okDeal = studioLib.studioQuote({ ...DEAL, forcePrice: true }, {});
+      ok(okDeal.standard.evaluate.status !== 'MANUAL' || DEAL.state === 'IN',
+        'forcePrice does not downgrade a deal that priced cleanly');
+    }
 
     console.log(`\n${fails.length ? 'FAILED' : 'ALL PASS'} — ${pass} assertions, ${fails.length} failure(s)`);
     fails.forEach((f) => console.log('  - ' + f));

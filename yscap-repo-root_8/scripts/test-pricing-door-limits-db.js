@@ -38,7 +38,7 @@ function post(server, path, payload, headers) {
       headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, headers || {}),
     }, (res) => {
       let d = ''; res.on('data', (c) => { d += c; });
-      res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) { /* not json */ } resolve({ status: res.statusCode, body: j, raw: d }); });
+      res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) { /* not json */ } resolve({ status: res.statusCode, body: j, raw: d, headers: res.headers }); });
     });
     req.on('error', () => resolve({ status: 0, body: null, raw: '' }));
     req.end(body);
@@ -123,6 +123,44 @@ const DEAL = {
     // (4) Malformed JSON is still a client error, not a 500.
     const bad = await post(server, '/api/pricing/studio', '{not json');
     ok(bad.status >= 400 && bad.status < 500, `malformed JSON is a client error (${bad.status})`);
+
+    /* == E. THE LIMIT IS REAL, AND IT REFUSES ==
+       Added after a break-it sweep (2026-08-03) deleted this door's rate limit
+       outright and then set it to nine million, and every test in the repo
+       still passed. The limit is the ONLY thing bounding how fast an anonymous
+       visitor can walk the guideline space one priced deal at a time, and how
+       much engine CPU they can burn in a single-process product — so an
+       untested limit is the same as no limit.
+
+       This section runs LAST on purpose: the bucket is keyed on (bucket, IP)
+       and every request above came from 127.0.0.1, so the burst below spends
+       the same counter everything else was using. */
+    console.log('\n== E. the rate limit is mounted, configured, and refuses ==');
+    // The limiter stamps its own configuration on every answer it lets through,
+    // so ONE ordinary request proves it is mounted on THIS path with THIS max —
+    // no hammering needed, and it fails if the mount is removed or re-tuned.
+    const stamped = await post(server, '/api/pricing/studio', DEAL);
+    ok(stamped.headers && stamped.headers['ratelimit-limit'] === '240',
+      `the public door answers with its own limit (RateLimit-Limit: ${stamped.headers && stamped.headers['ratelimit-limit']})`);
+    ok(stamped.headers && Number(stamped.headers['ratelimit-remaining']) < 240,
+      'and the counter is actually counting this caller');
+
+    /* And it genuinely REFUSES, which the header alone does not prove. The burst
+       goes to a path under the same mount that does NOT exist: the limiter runs
+       before routing, so a 404 costs no engine work — 250 real quotes would be
+       750 engine evaluations for an assertion about counting. */
+    let limited = null; let sent = 0;
+    for (let i = 0; i < 300 && !limited; i++) {
+      sent++;
+      const r = await post(server, '/api/pricing/__ratelimit_probe', { x: 1 });
+      if (r.status === 429) limited = r;
+    }
+    ok(!!limited, `a burst is eventually refused with 429 (gave up after ${sent})`);
+    ok(sent <= 260, `and refused at about the configured limit, not far past it (${sent} requests)`);
+    ok(!!(limited && limited.headers && limited.headers['retry-after']),
+      `the refusal tells the caller when to come back (Retry-After: ${limited && limited.headers && limited.headers['retry-after']})`);
+    ok(!!(limited && limited.body && /too many/i.test(String(limited.body.error || ''))),
+      'and says so in plain words');
 
     console.log(`\n${fails.length ? 'FAILED' : 'ALL PASS'} — ${pass} assertions, ${fails.length} failure(s)`);
     fails.forEach((f) => console.log('  - ' + f));
