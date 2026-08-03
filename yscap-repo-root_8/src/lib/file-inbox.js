@@ -799,7 +799,7 @@ async function processReceivedEvent(event) {
                     body: `${onFile} of ${full.attachments.length} document(s) from the ${what} order were filed. ${humanMustAsk} could not be — ask the ${what === 'title' ? 'title company' : 'insurance agent'} to send ${humanMustAsk === 1 ? 'it' : 'them'} again, as a reply on the same email.`
                       + (res.failedTransient ? ` (A further ${res.failedTransient} hit a temporary problem on our side; the system is retrying ${res.failedTransient === 1 ? 'that one' : 'those'} on its own.)` : '') + sigNote,
                     applicationId: ref.applicationId,
-                    link: `/internal/app/${ref.applicationId}#sec-order-${ref.orderType}`,
+                    link: `/internal/app/${ref.applicationId}${ref.orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
                     ctaLabel: 'Open the loan file',
                     inAppOnly: false,
                   } : {
@@ -808,7 +808,7 @@ async function processReceivedEvent(event) {
                     title: `${res.failedTransient} ${what} document${res.failedTransient === 1 ? '' : 's'} did not save yet`,
                     body: `${onFile} of ${full.attachments.length} document(s) from the ${what} order were filed. ${res.failedTransient} hit a temporary problem on our side and ${res.failedTransient === 1 ? 'is' : 'are'} being retried automatically — no need to chase the vendor unless ${res.failedTransient === 1 ? 'it' : 'they'} still ${res.failedTransient === 1 ? 'does' : 'do'} not appear.` + sigNote,
                     applicationId: ref.applicationId,
-                    link: `/internal/app/${ref.applicationId}#sec-order-${ref.orderType}`,
+                    link: `/internal/app/${ref.applicationId}${ref.orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
                     ctaLabel: 'Open the loan file',
                     inAppOnly: true,
                   });

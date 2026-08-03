@@ -296,7 +296,12 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         applicationId,
         subjectTag: ctx ? ctx.subjectTag : '',
         // Straight to the order that has work waiting, not the top of the file.
-        link: `/internal/app/${applicationId}#sec-order-${orderType}`,
+        // A LITERAL anchor per type, never `#sec-order-${orderType}`: the link
+        // contract test (test-file-stations-pure) scans this file for the anchors it
+        // emits and checks each one resolves to a room, and a COMPUTED anchor is
+        // unverifiable by that scan — which is precisely how two dead deep links
+        // survived a green suite once already.
+        link: `/internal/app/${applicationId}${orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
         ctaLabel: 'Open the loan file',
       });
     } catch (_) { /* best-effort */ }
