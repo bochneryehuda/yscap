@@ -135,6 +135,12 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
     const sc = fileScope(req, 'a', 1);
     const rows = (await db.query(
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
+              -- What the INSPECTOR approved. total_approved_cents is Sitewire's FINAL-approval
+              -- field and stays 0 from the inspection until we press Final approve, so the desk list
+              -- showed $0 on fully-inspected draws (owner-reported 2026-08-03). Same precedence as
+              -- sitewire/approval.js: the live request mirror first, the draw total as the fallback.
+              COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id),
+                       d.total_approved_cents) AS inspector_approved_cents,
               d.submitted_at, d.approved_at, d.updated_at, d.pdf_src,
               a.ys_loan_number, ${addrExpr('a')} AS address,
               COALESCE(pl.lifecycle_state, 'active') AS lifecycle_state,
@@ -1959,50 +1965,9 @@ async function buildDrawActivity(appId) {
   return ev;
 }
 
-// Assemble a per-draw PACKET (Built/Rabbet "draw packaging"): cover + schedule of values with
-// % complete + this draw's per-line requested/approved + inspection findings + lien waivers, as
-// one Excel workbook. Read-only, assembled from persisted data (no live Sitewire call needed).
-async function buildDrawPacket(appId, drawId) {
-  const c = (x) => Math.round(Number(x || 0)) / 100;
-  const a = (await db.query(`SELECT ys_loan_number, property_address->>'oneLine' AS address FROM applications WHERE id=$1`, [appId])).rows[0] || {};
-  const draw = (await db.query(`SELECT number, status, submitted_at, approved_at, total_requested_cents, total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId])).rows[0] || {};
-  const rollup = await rollupMod.loadRollup(db, appId);
-  // this draw's requests keyed to their SOW line (via the crosswalk)
-  const reqRows = (await db.query(
-    `SELECT r.requested_cents, r.approved_cents, r.inspection_count, ji.sow_line_key, ji.name
-       FROM sitewire_draw_requests r LEFT JOIN sitewire_job_item_links ji ON ji.sitewire_job_item_id=r.sitewire_job_item_id AND ji.application_id=$2
-      WHERE r.sitewire_draw_id=$1`, [drawId, appId])).rows;
-  const reqByLine = {};
-  for (const r of reqRows) { const k = r.sow_line_key || r.name; const x = reqByLine[k] || { req: 0, appr: 0 }; x.req += Number(r.requested_cents) || 0; x.appr += Number(r.approved_cents) || 0; reqByLine[k] = x; }
-  const findings = (await db.query(
-    `SELECT fl.name, fl.requested_cents, fl.approved_cents, fl.not_approved_cents, fl.photo_count, fl.video_count, fl.inspector_comments
-       FROM draw_finding_lines fl JOIN draw_findings f ON f.id=fl.finding_id WHERE f.sitewire_draw_id=$1 ORDER BY fl.id`, [drawId])).rows;
-  const waivers = (await db.query(`SELECT tier, party_name, kind, scope, amount_cents, status FROM draw_lien_waivers WHERE sitewire_draw_id=$1 ORDER BY id`, [drawId])).rows;
-
-  const rows = [];
-  rows.push(['DRAW PACKET']);
-  rows.push(['Loan', a.ys_loan_number || '', 'Property', a.address || '']);
-  rows.push(['Draw #', draw.number ?? '', 'Status', draw.status || '', 'Submitted', draw.submitted_at ? String(draw.submitted_at).slice(0, 10) : '', 'Approved', draw.approved_at ? String(draw.approved_at).slice(0, 10) : '']);
-  rows.push([]);
-  rows.push(['SCHEDULE OF VALUES']);
-  rows.push(['Line item', 'Budget', 'Drawn to date', 'This draw requested', 'This draw approved', 'Remaining', '% complete']);
-  for (const l of rollup.lines.filter((x) => x.kind === 'line' || x.kind === 'contingency' || x.kind === 'gc')) {
-    const q = reqByLine[l.sow_line_key] || { req: 0, appr: 0 };
-    rows.push([l.label, c(l.budgeted), c(l.drawn), c(q.req), c(q.appr), c(l.remaining), l.pct_complete]);
-  }
-  rows.push(['TOTAL', c(rollup.project.budget), c(rollup.project.drawn), c(draw.total_requested_cents), c(draw.total_approved_cents), c(rollup.project.remaining), rollup.project.pct_complete]);
-  if (findings.length) {
-    rows.push([]); rows.push(['INSPECTION FINDINGS']);
-    rows.push(['Line item', 'Requested', 'Approved', 'Not approved', 'Photos', 'Videos', 'Inspector note']);
-    for (const f of findings) rows.push([f.name || '', c(f.requested_cents), c(f.approved_cents), c(f.not_approved_cents), Number(f.photo_count) || 0, Number(f.video_count) || 0, f.inspector_comments || '']);
-  }
-  if (waivers.length) {
-    rows.push([]); rows.push(['LIEN WAIVERS']);
-    rows.push(['Tier', 'Party', 'Type', 'Scope', 'Amount', 'Status']);
-    for (const w of waivers) rows.push([w.tier, w.party_name || '', w.kind, w.scope, c(w.amount_cents), w.status]);
-  }
-  return rows;
-}
+// The draw packet's numbers live in src/sitewire/draw-packet.js so they can be tested directly
+// against a database (see scripts/test-draw-packet-db.js).
+const { buildDrawPacket } = require('../sitewire/draw-packet');
 
 // ---- GET /files/:id/draws/:drawId/packet — the draw packet as an Excel workbook ----
 router.get('/files/:id/draws/:drawId/packet', requirePermission('manage_draws'), async (req, res) => {

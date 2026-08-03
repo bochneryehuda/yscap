@@ -194,10 +194,14 @@ export default function DrawsPanel({ appId }) {
                 </div>
                 <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
                 <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+                  {/* "Remaining" used to be budget − RELEASED, so a draw the inspector had fully
+                      approved left the entire budget showing as still available. It now counts a
+                      not-yet-final draw as spent — the owner's rule: treat it as approved, and if it
+                      is amended or declined it all goes back to available. */}
                   <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
-                  <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
-                  <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
-                  <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
+                  <KpiTile label="Released" value={usd(rollup.project.drawn)} sub={`${pct}% released`} tone="teal" />
+                  <KpiTile label="Approved, not yet released" value={usd(Math.max(0, (rollup.project.committed ?? rollup.project.drawn) - rollup.project.drawn))} sub="counts against the budget" />
+                  <KpiTile label="Still available" value={usd(rollup.project.available ?? rollup.project.remaining)} tone="gold" />
                 </div>
               </div>
               {writesOff && (
@@ -239,7 +243,7 @@ export default function DrawsPanel({ appId }) {
 
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
-              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} onSaved={load} act={act} busy={busy} />
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -1796,6 +1800,27 @@ function SitewireDocumentPush({ appId, writesOff }) {
   );
 }
 
+/* The draw transitions PILOT can drive in Sitewire, by whether the draw is still open.
+   `amend` and `reopen` are the post-decision actions — an approved draw is exactly when they are
+   needed — and both require a written reason, which is journaled on the file. */
+const DRAW_ACTIONS = (isOpen) => (isOpen ? [
+  { key: 'approve', label: 'Final approve', done: 'Draw finally approved.', needsNote: false,
+    hint: 'Records OUR final approval in Sitewire — the last step before the money is released.' },
+  { key: 'amend', label: 'Amend', needsNote: true, done: 'Draw amended — the borrower can revise it.',
+    prompt: 'Why are you amending this draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Send the draw back for changes to the amounts or the work claimed.' },
+  { key: 'reopen', label: 'Reopen', needsNote: true, done: 'Draw reopened.',
+    prompt: 'Why are you reopening this draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Put the draw back into the inspection stage.' },
+] : [
+  { key: 'amend', label: 'Amend this draw', needsNote: true, done: 'Draw amended — it is back open for changes.',
+    prompt: 'Why are you amending this approved draw? (at least a few words — it goes on the audit trail)',
+    hint: 'The draw is already finally approved. Amending reopens it for changes, and the money goes back to available until it is approved again.' },
+  { key: 'reopen', label: 'Reopen', needsNote: true, done: 'Draw reopened.',
+    prompt: 'Why are you reopening this approved draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Put an approved draw back into the inspection stage.' },
+]);
+
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
@@ -1822,11 +1847,25 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
-          <span className="pill sw-insp">{STATUS[draw.status] || 'In progress'}</span>
+          <span className="pill sw-insp">{draw.approval_label || STATUS[draw.status] || 'In progress'}</span>
           {risk && flags.length > 0 && <span className={'pill ' + risk.cls}>{risk.label} · {flags.length}</span>}
         </div>
-        <div className="muted small">Requested {usd2(draw.requested_cents)} · Approved {usd2(draw.approved_cents)} · Net {usd2(draw.net_release_cents)}</div>
+        {/* "Approved" here is the INSPECTOR's approval until we press Final approve — Sitewire's own
+            total_approved_cents stays 0 for that whole stretch, which is what printed $0 across the
+            desk and the reports on a fully-inspected draw (owner-reported 2026-08-03). */}
+        <div className="muted small">
+          Requested {usd2(draw.requested_cents)} · {draw.final_approved_cents > 0 ? 'Final approved' : 'Inspector approved'} {usd2(draw.approved_cents)}
+          {draw.fee_cents > 0 ? <> · Less fee {usd2(draw.fee_cents)}{draw.fee_projected ? '*' : ''}</> : null}
+          {' '}· Net {usd2(draw.net_release_cents)}
+        </div>
       </div>
+
+      {draw.net_explanation && (
+        <div className="dd-sub" style={{ marginTop: 4 }}>
+          {draw.net_explanation}
+          {draw.final_approved_cents > 0 ? '' : ' This is what the inspector approved — it still needs the borrower’s acceptance, the capital partner’s review and our final approval.'}
+        </div>
+      )}
 
       {/* Sitewire pipeline status — the same status control Sitewire's own desk has, per draw */}
       {Array.isArray(quickStatuses) && quickStatuses.length > 0 && (
@@ -1854,7 +1893,9 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       {requests.length > 0 && (
         <div style={{ overflowX: 'auto', marginTop: 8 }}>
           <table className="table" style={{ width: '100%', minWidth: 560 }}>
-            <thead><tr><th>Line</th><th style={{ textAlign: 'right' }}>Requested</th><th style={{ textAlign: 'right' }}>Approved</th><th>Photos</th>{isOpen && <th>Set approved</th>}</tr></thead>
+            <thead><tr><th>Line</th><th style={{ textAlign: 'right' }}>Requested</th>
+              <th style={{ textAlign: 'right' }} title="What the inspector approved on this line. It becomes the final approved amount when we press Final approve.">{isOpen ? 'Approved by inspector' : 'Approved'}</th>
+              <th title="Inspection photos and videos on file for this line — counted from the inspector's findings and the copies archived in PILOT, not just from the live Sitewire feed.">Photos</th>{isOpen && <th>Set approved</th>}</tr></thead>
             <tbody>
               {requests.map((r) => (
                 <tr key={r.sitewire_request_id}>
@@ -1888,10 +1929,30 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       )}
 
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-        {isOpen && ['approve', 'amend', 'reopen'].map((a) => (
-          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} title={offTip} disabled={writesOff || busy === a + draw.sitewire_draw_id}
-            onClick={() => act(a + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a}`, {}); return { msg: `Draw ${a}d.` }; })}>
-            {a[0].toUpperCase() + a.slice(1)}
+        {/* AMEND AND REOPEN MUST SURVIVE THE FINAL APPROVAL (owner-reported 2026-08-03: "we're
+            missing the amend button, which is available in Sitewire after the final approval").
+            These two actions only make sense on a draw somebody already decided — that is what
+            "amend" means — yet the whole row was hidden the moment the draw reached `approved`, so
+            the one state they exist for was the one state they could not be reached in. The backend
+            route has always accepted them (client.DRAW_TRANSITIONS). Both also REQUIRE a note of at
+            least 8 characters (audit B-10) which the old button never asked for, so every click
+            answered 400 — the button was broken on open draws too. */}
+        {DRAW_ACTIONS(isOpen).map((a) => (
+          <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
+            title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
+            onClick={() => {
+              let note = null;
+              if (a.needsNote) {
+                note = window.prompt(a.prompt, '');
+                if (note == null) return;                       // cancelled
+                if (String(note).trim().length < 8) { window.alert('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
+              }
+              act(a.key + draw.sitewire_draw_id, async () => {
+                await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a.key}`, note ? { note: String(note).trim() } : {});
+                return { msg: a.done };
+              });
+            }}>
+            {a.label}
           </button>
         ))}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
@@ -2095,7 +2156,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, oop = null, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
@@ -2158,7 +2219,13 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, onSaved, act
       {/* summary tiles */}
       <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
         <KpiTile label="Approved to date" value={usd(totApproved)} />
-        <KpiTile label="Our fees" value={usd(totFee)} tone="gold" />
+        {/* OUR fee income on this project, kept separate from the borrower's money (owner-directed
+            2026-08-03). `charged` is what recorded releases actually took; `projected` is the file's
+            standard fee on draws that have not been released yet. */}
+        <KpiTile label="Our fees" value={usd(totFee)} tone="gold"
+          sub={fees && Number(fees.projected_cents) > 0
+            ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
+            : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined)} />
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
         {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}

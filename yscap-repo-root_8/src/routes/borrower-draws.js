@@ -96,6 +96,10 @@ router.get('/draws', async (req, res) => {
   try {
     const rows = (await db.query(
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
+              -- The borrower's list must show what the INSPECTOR approved, not Sitewire's
+              -- final-approval field (0 until our last click) — see sitewire/approval.js.
+              COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id),
+                       d.total_approved_cents) AS inspector_approved_cents,
               d.submitted_at, d.approved_at, a.property_address->>'oneLine' AS address,
               (SELECT status FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS findings_status,
               (SELECT id FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS finding_id
@@ -120,10 +124,16 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     // be visible in the network payload). The borrower keeps requested/approved/status/number.
     if (Array.isArray(rollup.draws)) {
       rollup.draws = rollup.draws.map((d) => {
-        const { fee_cents, fee_kind, net_release_cents, released, release_date, ...safe } = d;
+        // `fee_projected` / `retainage_held_cents` / `net_explanation` arrived with the 2026-08-03
+        // approval-ladder work and carry the same secret as the fee itself — net_explanation spells
+        // the fee out in a sentence. Strip everything that describes OUR cut, not just the number.
+        const { fee_cents, fee_kind, fee_projected, net_release_cents, retainage_held_cents,
+          net_explanation, released, release_date, ...safe } = d;
         return safe;
       });
     }
+    // Our fee income on this project is never borrower-facing.
+    delete rollup.fees;
     res.json({ rollup });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
@@ -140,7 +150,13 @@ router.get('/draws/:appId/eligibility', async (req, res) => {
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
     const proj = (rollup && rollup.project) || {};
     const budget = Number(proj.budget) || 0;
-    const remaining = Number.isFinite(Number(proj.remaining)) ? Number(proj.remaining) : Math.max(0, budget - (Number(proj.drawn) || 0));
+    // What the borrower may still request = budget minus RELEASED minus what is already approved and
+    // waiting to be released. Reading the released-only `remaining` here would let them ask for money
+    // an inspector has already committed on a draw in flight (owner-directed 2026-08-03: treat a
+    // not-yet-final draw as approved — if it is amended or declined it goes back to available).
+    const remaining = Number.isFinite(Number(proj.available))
+      ? Number(proj.available)
+      : (Number.isFinite(Number(proj.remaining)) ? Number(proj.remaining) : Math.max(0, budget - (Number(proj.drawn) || 0)));
     // project lifecycle: a finished / paid-off project accepts no new draws (Sitewire is deactivated on close).
     const link = (await db.query(
       `SELECT COALESCE(lifecycle_state,'active') AS lifecycle_state FROM sitewire_property_links WHERE application_id=$1 AND matched_by='created' LIMIT 1`, [appId])).rows[0];
