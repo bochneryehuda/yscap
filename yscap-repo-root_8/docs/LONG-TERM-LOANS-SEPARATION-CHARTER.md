@@ -235,6 +235,35 @@ Long-Term ever needs to change a borrower, that is a new question for the owner 
 person on the RTL side: their RTL conditions, documents, track record, LLCs, credit pulls, pricing scenarios,
 ClickUp cards and SharePoint folders stay RTL. Long-Term starts at zero on all of it.
 
+#### 4.1.1 How an officer edits a borrower from a long-term file
+
+The owner, 2026-08-03: *"keep borrower read only. And yes, officers should be able to change the borrower profile
+on long term files."* Those two sit together exactly one way:
+
+- **The human can edit.** A long-term file mounts **the same `BorrowerProfilePanel`** that every RTL file already
+  mounts — one shared editor keyed on a borrower id — and it saves through the existing borrower endpoint
+  (`PATCH /api/staff/borrowers/:id`). Long-Term does not get a second borrower editor, a second set of fields, or
+  a second idea of what a person is.
+- **Long-Term's code still never writes `borrowers`.** The write happens in the shared identity flow, where it
+  always has. One record, one writer.
+
+**The trap this walks into, found while writing this down.** An officer who is not an admin may only open a
+borrower profile they have a *recorded relationship* to — and `VISIBLE_BORROWER_SQL` in `src/routes/staff.js`
+resolves that relationship through **`applications`, an RTL table**. An officer whose only connection to a person
+is a **long-term** file would be refused by the very rule that protects borrower privacy. The instruction would
+look implemented and silently fail for exactly the officers it was meant for.
+
+**The fix does not touch RTL.** The identity zone already has a link table for this, and its own comment describes
+this case: `borrower_officers` (db/327) exists for *"the client who has only ever done non-RTL business with them,
+so there is no file to match on"* — the neighbouring code even names a DSCR-only client. So **when a long-term
+file records its officer, Long-Term also records the officer↔person link in `borrower_officers`**, and the
+existing shared visibility rule then admits that officer with no change to RTL, no RTL table learning about
+`lt_*`, and no weakening of the gate.
+
+*Build note:* `borrower_officers.source` is free text and explicitly informational (*"access does not depend on
+it"*), so a long-term row can carry `source='longterm'` without any schema change. If you would rather it reuse an
+existing value, say so — it changes nothing about access.
+
 ### What Long-Term does NOT get (2026-08-02)
 
 **Conditions. Document underwriting. Orders.** Explicitly out of scope by the owner's instruction. They are not to

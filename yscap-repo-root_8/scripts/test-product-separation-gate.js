@@ -252,6 +252,35 @@ scenario('DELETE FROM an RTL table reads as a WRITE, not a read', (app) => {
     "async function f(db){ return db.query('DELETE FROM borrowers WHERE id=$1'); }\n");
 }, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
 
+// The exact ledger this repo ships with (2026-08-03), proved end to end: Long-Term
+// may record the officer↔person link, and still may not rewrite the person.
+const SHIPPED_IDENTITY_LEDGER = [
+  'import src/auth/index.js',
+  'sql-ref borrowers', 'sql-read borrowers',
+  'sql-ref staff_users', 'sql-read staff_users',
+  'import app-v2/src/components/BorrowerProfilePanel.jsx',
+  'sql-ref borrower_officers', 'sql-write borrower_officers',
+];
+
+scenario('under the shipped ledger, Long-Term may record the officer↔person link', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('INSERT INTO borrower_officers (borrower_id, staff_id, source) VALUES ($1,$2,$3)'); }\n");
+}, 'pass', null, { ledger: SHIPPED_IDENTITY_LEDGER });
+
+scenario('under the shipped ledger, Long-Term still may NOT rewrite the person record', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE borrowers SET cell_phone=$1 WHERE id=$2'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: SHIPPED_IDENTITY_LEDGER });
+
+scenario('under the shipped ledger, a long-term screen may mount the ONE shared borrower editor', (app) => {
+  write(app, 'app-v2/src/components/BorrowerProfilePanel.jsx', 'export default () => null;\n');
+  write(app, 'app-v2/src/longterm/LtFile.jsx', "import Panel from '../components/BorrowerProfilePanel.jsx';\n");
+}, 'pass', null, { ledger: SHIPPED_IDENTITY_LEDGER });
+
+scenario('…but not any OTHER RTL component that happens to sit beside it', (app) => {
+  write(app, 'app-v2/src/longterm/LtFile.jsx', "import { Brand } from '../components/Layout.jsx';\n");
+}, 'fail', 'imports RTL code', { ledger: SHIPPED_IDENTITY_LEDGER });
+
 scenario('the authorized shared-identity shape passes: read the borrower, join the roster', (app) => {
   write(app, 'src/longterm/lib/loan.js',
     "async function f(db){ return db.query(`SELECT l.id, b.first_name, s.full_name\n" +

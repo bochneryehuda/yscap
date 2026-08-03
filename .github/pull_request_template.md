@@ -21,8 +21,10 @@
 - [ ] Nothing was copied, moved, re-used, imported, or generalized **from one product to the other**. If anything
       was, the owner's **written authorization** is recorded in `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md`
       and linked here.
-- [ ] The only shared zone is **identity** — the login, the `borrowers` person record, the `staff_users` roster —
-      and LT **reads** it rather than rewriting it. Nothing else about the two products is shared.
+- [ ] The only shared zone is **identity** — the login, the `borrowers` person record, the `staff_users` roster,
+      and the officer↔person link — and LT **reads** the person record rather than rewriting it. A borrower profile
+      edited from a Long-Term file goes through the ONE shared editor and the existing borrower endpoint.
+      Nothing else about the two products is shared.
 - [ ] **LT changes stay inside** `src/longterm/**` (back end), `app-v2/src/longterm/**` (front end), `/api/lt/*`,
       `lt_*` tables and trigger functions, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`.
 - [ ] Nothing was **copied by value** from one product to the other (CI cannot see a copy — only a human can).

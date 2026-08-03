@@ -60,6 +60,20 @@ sql-read borrowers
 # can be true across both products. Same staff accounts as the login above.
 sql-ref  staff_users
 sql-read staff_users
+
+# "Officers should be able to change the borrower profile on long term files"
+# (owner, 2026-08-03). The officer edits through the ONE shared borrower editor
+# that already exists — Long-Term does not get a second one, and Long-Term code
+# still never writes `borrowers` itself.
+import   app-v2/src/components/BorrowerProfilePanel.jsx
+
+# …and for that editor to open, the officer must be allowed to see the person.
+# That permission is the identity zone's own link table — built for exactly this
+# case: "the client who has only ever done non-RTL business with them, so there
+# is no file to match on" (db/327). Long-Term records the officer↔person link
+# there when a long-term file gets an officer.
+sql-ref   borrower_officers
+sql-write borrower_officers
 ```
 
 ## Log of authorizations
@@ -69,6 +83,9 @@ sql-read staff_users
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
 | 2026-08-03 | `sql-ref borrowers` + `sql-read borrowers` — one person record, read by Long-Term | RTL → LT | *"same borrower record … all the borrowers should be able to see all their files even if its long term or short term"* | #975 |
 | 2026-08-03 | `sql-ref staff_users` + `sql-read staff_users` — a Long-Term file knows its officer | RTL → LT | *"officers should be able to see all of their files even if it's long term or short term"* (an officer can only see their Long-Term files if a Long-Term file records its officer, and officers are the same accounts as the shared login) | #975 |
+
+| 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
+| 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 
 **That is the whole list.** The owner's same sentence closed everything else: *"keep it separate everything else …
 the back end of the entire thing will be different, the workflow will be different, the sets will be different,
@@ -85,5 +102,5 @@ stops a "no" quietly turning into a "yes" months later.
 | 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now" |
 | 2026-08-02 | New columns / new field mappings anywhere for Long-Term | **No** — "don't add any columns don't add any mapping unless we specifically ask you to" |
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
-| 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **Not authorized.** The owner authorized the *same borrower record*, which Long-Term reads. Creating and editing a borrower stays in the one existing flow, so the person record keeps a single owner — a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). Ask before Long-Term changes a borrower. |
+| 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
 | 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* |
