@@ -476,10 +476,33 @@ function deriveMarketRates(obs, opts = {}) {
   // of the same house is worth a fraction of the average foot (the land, the
   // kitchen and the systems are already paid for); the trade convention is a
   // quarter to a half. We publish the range and use the midpoint, and we SAY so.
-  out.glaAdjustmentPerSqft = out.pricePerSqft.value == null ? { value: null, why: out.pricePerSqft.why }
-    : { value: round(out.pricePerSqft.value * 0.4, 1),
+  //
+  // AND A MEASURED PEER RATE BEATS THE CONVENTION. `opts.peerGlaRate` is what
+  // appraisers in THIS market actually wrote on their grids — each size
+  // adjustment divided by the size difference it was made for (db/441, from the
+  // adjustment corpus). The 40% figure above is a rule of thumb about a national
+  // trade habit; this is evidence from the reports we paid for. Measured over the
+  // 152 real reports: 468 usable rates, ZERO negative, median $40/sq ft.
+  //
+  // It is PASSED IN rather than queried here, because this function is pure and
+  // its purity is what makes every rate in it testable without a database.
+  //
+  // The convention remains the fallback, and the two are never blended: they are
+  // different KINDS of claim — one is what local appraisers did, the other is a
+  // national habit — and averaging them would produce a number that is neither,
+  // with a `basis` that could not honestly describe it. Whichever is used says so.
+  const peer = opts.peerGlaRate;
+  const peerUsable = peer && peer.ok && num(peer.median) > 0 && num(peer.n) >= minSample;
+  out.glaAdjustmentPerSqft = peerUsable
+    ? { value: round(num(peer.median), 1),
+        low: peer.q1 == null ? null : round(num(peer.q1), 1),
+        high: peer.q3 == null ? null : round(num(peer.q3), 1),
+        n: peer.n, source: 'peer',
+        basis: `what appraisers in this market actually adjusted, across ${peer.n} size adjustments on reports we paid for` }
+    : out.pricePerSqft.value == null ? { value: null, source: 'none', why: out.pricePerSqft.why }
+      : { value: round(out.pricePerSqft.value * 0.4, 1),
         low: round(out.pricePerSqft.value * 0.25, 1), high: round(out.pricePerSqft.value * 0.5, 1),
-        n: withGla.length,
+        n: withGla.length, source: 'convention',
         basis: 'about 40% of the average price per foot — an extra foot of the same house is worth less than the average foot, and the trade convention is a quarter to a half' };
 
   out.perBedroom = groupDelta(withGla, (o) => num(o.beds), minSample, 'bedroom');

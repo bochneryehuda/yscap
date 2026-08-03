@@ -496,5 +496,50 @@ function corpus(n, f) {
     'and an arm\'s-length sale is never mistaken for a forced one');
 }
 
+
+// ---------------------------------------------------------------------------
+// A MEASURED PEER RATE BEATS THE TRADE CONVENTION (db/441).
+//
+// The GLA adjustment rate was 40% of the average price per foot — a rule of
+// thumb about a national trade habit. `peerGlaRate` is what appraisers in THIS
+// market actually wrote on their grids: each size adjustment divided by the size
+// difference it was made for. Measured over the 152 real reports: 468 usable,
+// ZERO negative, median $40/sq ft.
+//
+// The two are NEVER blended. They are different kinds of claim — what local
+// appraisers did, against a national habit — and an average of them would be
+// neither, with a `basis` that could not honestly describe it.
+// ---------------------------------------------------------------------------
+{
+  const obs = [];
+  for (let i = 0; i < 12; i++) {
+    obs.push({ sale_price: 400000 + i * 1000, gla: 1500 + i * 10, beds: 3, baths_full: 2,
+      baths_half: 0, sale_status: 'closed', sale_type: 'ArmsLengthSale', sale_date: '2026-01-01' });
+  }
+  const rate = (peerGlaRate) => V.deriveMarketRates(obs, { peerGlaRate }).glaAdjustmentPerSqft;
+
+  ok(rate(undefined).source === 'convention',
+    'with no peer rate the trade convention is used, exactly as before');
+  const peer = rate({ ok: true, n: 40, median: 52, q1: 38, q3: 65 });
+  ok(peer.source === 'peer' && peer.value === 52, `a measured peer rate WINS ($${peer.value}/sq ft)`);
+  ok(/actually adjusted/.test(peer.basis),
+    'and its basis says it is what appraisers here actually did, not a rule of thumb');
+  ok(peer.low === 38 && peer.high === 65,
+    'and it carries the real observed spread rather than a fabricated band');
+
+  ok(rate({ ok: false, reason: 'too few' }).source === 'convention',
+    'a REFUSED peer rate falls back to the convention');
+  ok(rate({ ok: true, n: 3, median: 52 }).source === 'convention',
+    'a peer rate under the sample floor does not win — three adjustments is a coincidence');
+  ok(rate({ ok: true, n: 40, median: -10 }).source === 'convention',
+    'a NEGATIVE peer rate is refused: the adjustment pointed the wrong way, which is a misread');
+  ok(rate(null).source === 'convention' && rate({}).source === 'convention',
+    'null and an empty object are both safe');
+
+  const noSales = V.deriveMarketRates([], { peerGlaRate: { ok: true, n: 40, median: 52, q1: 38, q3: 65 } });
+  ok(noSales.glaAdjustmentPerSqft.source === 'peer',
+    'and with no closed sales at all it still stands on its own evidence');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

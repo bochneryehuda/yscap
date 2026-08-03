@@ -388,7 +388,16 @@ async function ratesFor(query) {
       WHERE ${where.join(' AND ')}
       ORDER BY o.sale_date DESC
       LIMIT 4000`, params);
-  return { rows: r.rows, rates: V.deriveMarketRates(r.rows, { today: todayNY() }) };
+  // WHAT APPRAISERS IN THIS MARKET ACTUALLY PAID PER FOOT (db/441) — evidence
+  // from the grids of reports we paid for, which beats the national rule of
+  // thumb the derivation falls back to. Best-effort by construction: it refuses
+  // below its own sample floor and the convention takes over, so a thin market
+  // degrades to exactly what it did before.
+  const peerGlaRate = await ingest.adjustmentRate(db, {
+    basis: 'sqft', state, city, zip,
+    months: Number.isFinite(months) && months > 0 ? months : 36,
+  });
+  return { rows: r.rows, rates: V.deriveMarketRates(r.rows, { today: todayNY(), peerGlaRate }) };
 }
 
 router.get('/rates', async (req, res, next) => {
