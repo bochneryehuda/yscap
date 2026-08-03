@@ -60,6 +60,7 @@ const DIGEST_ACTION = Object.freeze({
   DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
   TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
   DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  ORDER_OVERDUE: 'order_overdue_nudge',
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
   DIRECT_SOURCE_FILE: 'direct_source_file_verified',
@@ -887,6 +888,105 @@ async function drawReleaseOverdueOnce() {
   return sent;
 }
 
+/**
+ * AN ORDER THAT IS LATE GETS CHASED — the clock the Orders desk never had
+ * (owner-directed 2026-08-03).
+ *
+ * Orders is the one place PILOT waits on somebody OUTSIDE the company, and until
+ * now it was also the only place with no clock, no owner and no nudge: we emailed
+ * a title company and a human had to remember. Vendor turnaround is the
+ * operational problem lenders name most often, so this is the sweep that makes
+ * "which orders are late?" a question the system answers instead of a person.
+ *
+ * TWO DIFFERENT JOBS, deliberately worded differently (order-sla.pendingOn):
+ *   · status 'ordered'      → the VENDOR owes us. Chase them.
+ *   · status 'documents_in' → they answered; the work came back to US, and the job
+ *     is classifying and accepting what arrived. Telling somebody to "chase the
+ *     title company" when the title company already replied is exactly how a desk
+ *     teaches people to ignore it.
+ *
+ * WHO IS TOLD escalates rather than repeating (order-sla.chaseTier): the assignee
+ * first, then the whole file team, then the administrators. A nudge that always
+ * lands in the same inbox stops being read, which is the failure this exists to
+ * prevent.
+ *
+ * The SQL pre-filter is deliberately COARSE — `ordered_at` older than the SLA in
+ * CALENDAR days, which is a strict superset of "N business days have passed", so
+ * it can over-select but never under-select. The precise business-day test then
+ * runs in JS through the SAME `orderState` the card and the desk use, so a row can
+ * never be late on one screen and on time on another. The throttle appears in the
+ * WHERE as well as the gate (a per-file digest must, or an already-nudged file
+ * keeps taking a slot — see notThrottled).
+ */
+async function orderOverdueOnce() {
+  const orderSla = require('./order-sla');
+  const { hour } = nyParts();
+  // Business hours only: an order nudge at 3am helps nobody and trains people to
+  // filter the sender.
+  if (hour < 8 || hour > 18) return 0;
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT o.id, o.application_id, o.order_type, o.status, o.ordered_at, o.due_on, o.sla_days,
+              o.assigned_to, o.vendor_name,
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id
+          AND a.deleted_at IS NULL
+          AND a.status NOT IN ('withdrawn','declined','on_hold','funded')
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
+        WHERE o.status IN ('ordered','documents_in')
+          AND o.ordered_at IS NOT NULL
+          -- Coarse superset of "past due": N business days is always at least N
+          -- calendar days, so nothing genuinely late is filtered out here.
+          AND o.ordered_at < now() - ((COALESCE(o.sla_days, 2))::text || ' days')::interval
+          AND ${notThrottled('o.application_id', DIGEST_ACTION.ORDER_OVERDUE, "interval '2 days'")}
+        -- Deterministic, oldest first, so the cap can never hide the same order
+        -- forever. The id LAST makes it a TOTAL order: without a unique final term
+        -- two orders placed in the same instant tie and the cap returns them in
+        -- whatever order the plan felt like, which is how one of them starves.
+        ORDER BY o.ordered_at ASC, o.order_type, o.id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] order-overdue query', e && e.message); return 0; }
+
+  const now = new Date();
+  for (const r of rows) {
+    try {
+      const st = orderSla.orderState(r, now);
+      if (!st.overdue) continue;   // the coarse filter over-selected — correct, and cheap
+      // The throttle is keyed on the FILE (matching notThrottled above, which has
+      // to be — audit_log's per-file index is what makes it fast). Two late orders
+      // on one file therefore share a slot; the body names the one that is worst,
+      // which is the one somebody should pick up first anyway.
+      if (!(await _gate(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, '2 days'))) continue;
+      const label = orderSla.ORDER_LABEL[r.order_type] || r.order_type;
+      const vendorWord = orderSla.VENDOR_LABEL[r.order_type] || 'the vendor';
+      const ours = st.pendingOn === 'us';
+      const days = st.daysLate;
+      const who = r.assigned_name ? `${r.assigned_name} has it` : 'Nobody is assigned to it';
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'order_overdue',
+        title: ours
+          ? `${label}: ${days} day${days === 1 ? '' : 's'} of documents waiting to be filed`
+          : `${label} order is ${days} day${days === 1 ? '' : 's'} late`,
+        badge: { text: days > 5 ? 'Very late' : 'Late', tone: 'action' },
+        body: ours
+          ? `${r.vendor_name ? `${r.vendor_name} has` : `${vendorWord.replace(/^the /, 'The ')} has`} sent documents back on the ${label.toLowerCase()} order and they are still waiting to be classified and accepted — ${days} business day${days === 1 ? '' : 's'} past when we expected this order to be finished. ${who}.`
+          : `We asked ${r.vendor_name || vendorWord} for the ${label.toLowerCase()} on ${st.daysOut != null ? `${st.daysOut} day${st.daysOut === 1 ? '' : 's'} ago` : 'this file'} and nothing has come back. It is ${days} business day${days === 1 ? '' : 's'} past the date we expected an answer. ${who} — please chase ${r.vendor_name ? 'them' : vendorWord}.`,
+        applicationId: r.application_id,
+        link: `/internal/app/${r.application_id}${r.order_type === 'title' ? '#sec-order-title' : r.order_type === 'insurance' ? '#sec-order-insurance' : '#sec-order-closing'}`,
+        ctaLabel: 'Open the order',
+      });
+      await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
+        orderType: r.order_type, daysLate: days, tier: st.chase, pendingOn: st.pendingOn,
+      });
+      sent++;
+    } catch (e) { console.error('[digest] order-overdue', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
 /* THE WORKFLOW, phase two: nudge anyone whose personal Workflow has OVERDUE
    hand-offs (past their SLA due date), once/day per person. Keeps files moving
    without a manager having to chase — mirrors the draw-overdue self-gate. */
@@ -1614,6 +1714,15 @@ async function runDue() {
     // dead deal, and retiring first would make the ordering look load-bearing when
     // it is not.
     await require('./closing-prep').retireClosedOrdersOnce().catch((e) => console.error('[digests] closing-orders-retire', e && e.message));
+    // The title/insurance half of the same hygiene: an order whose condition has
+    // been signed off, or whose loan has funded, is finished. Nothing ever wrote
+    // 'completed' for those two, so every deal we have ever closed sat on the desk
+    // looking like outstanding work — which is how a queue stops being read.
+    await require('./order-tracking').retireSatisfiedOrdersOnce().catch((e) => console.error('[digests] order-retire', e && e.message));
+    // …and THEN chase what is genuinely still out. Ordered after the retires on
+    // purpose: nudging somebody about an order the same tick is about to retire is
+    // the noise this desk exists to remove.
+    await orderOverdueOnce().catch((e) => console.error('[digests] order-overdue', e && e.message));
   }
 }
 
@@ -1778,6 +1887,7 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,

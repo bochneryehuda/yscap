@@ -274,6 +274,20 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
           WHERE application_id=$1 AND order_type=$2 AND status IN ('ordered','documents_in')`,
         [applicationId, orderType]);
     } catch (_) { /* best-effort */ }
+    // STOP THE CLOCK ON THE VENDOR, and start it on us. `first_response_at` is
+    // fill-only (the FIRST reply is the responsiveness fact a scorecard wants —
+    // a later one says nothing new), and the event line is what makes the order's
+    // own timeline answer "when did they finally come back?". Both best-effort:
+    // the documents are filed either way, and a history one row short is a far
+    // smaller problem than a webhook that failed.
+    try {
+      const tracking = require('./order-tracking');
+      await tracking.noteFirstResponse(applicationId, orderType);
+      await tracking.recordEvent({
+        applicationId, orderType, kind: 'documents_in',
+        detail: { saved, from: fromEmail || null, suspect: suspect || 0 },
+      });
+    } catch (_) { /* best-effort */ }
     // Nudge the linked document condition to 'received' so it reflects that
     // documents arrived — but NEVER reopen one already satisfied/waived.
     if (itemId) {

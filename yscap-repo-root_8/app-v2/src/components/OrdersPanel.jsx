@@ -4,6 +4,11 @@ import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import ClosingPrepCard from './ClosingPrepCard.jsx';
 import DocPreview from './DocPreview.jsx';
+// A due date is a calendar 'YYYY-MM-DD' STRING end-to-end, so it is rendered
+// through the shared formatter — `new Date('2026-08-07')` parses as UTC midnight
+// and prints the day BEFORE for anybody west of Greenwich, which is the exact
+// class of bug the repo's date rule exists to stop.
+import { fmtDay } from '../lib/dates.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -31,17 +36,11 @@ const STATUS_TONE = {
 };
 const KIND_LABEL = { title: 'Title', insurance: 'Insurance' };
 
-/* Has this order actually been placed? Mirrors the server's own live-order test
-   (routes/orders + closing-prep.orderIsLive): anything other than "not ordered"
-   or "cancelled" means it is out. Exported so the file's rail badges read the
-   status the SAME way the panel does — a second hand-typed status list is how a
-   badge ends up disagreeing with the card right beside it. An unreadable value
-   reads as not placed, the safe direction: an un-placed order is the one with
-   work to do. */
-export function isPlaced(order) {
-  const s = order && order.status;
-  return !!s && s !== 'not_ordered' && s !== 'cancelled';
-}
+/* "Is this order out?" deliberately has NO local definition any more. The server
+   answers it once (order-sla.orderState → `open`) and hands the answer down with
+   the rest of the order's state, because the same question is also asked by the
+   cross-file desk and by the aging sweep — and a second, hand-typed status list
+   in the browser is how a badge ends up disagreeing with the card beside it. */
 
 /* THE THREE ORDERS ARE THREE REAL SECTIONS OF THE FILE NOW (owner-directed
    2026-08-03: "once we click on orders by the left side we should also have the
@@ -274,6 +273,142 @@ function ReturnedDoc({ appId, kind, doc, slots, conditionSlots, canAccept, onCha
    from the file's title / insurance conditions (see OrderModal) — one definition,
    so ordering from a condition and ordering from the Orders desk can never
    behave differently. */
+/* ════════════════════════════════════════════════════════════════════════════
+   THE CLOCK AND THE OWNER — what makes an order a tracked thing rather than an
+   email somebody has to remember (owner-directed 2026-08-03).
+
+   Every figure here is computed on the SERVER (order-sla.orderState) and handed
+   down whole. Nothing is re-derived in the browser on purpose: the same order
+   also appears on the cross-file desk and drives the aging nudge, and a card that
+   worked out "late" for itself is how one screen ends up disagreeing with
+   another about the same order.
+   ════════════════════════════════════════════════════════════════════════════ */
+function OrderTracking({ appId, kind, tracking, onChanged }) {
+  const [team, setTeam] = useState(null);
+  const [editing, setEditing] = useState('');
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [dueDraft, setDueDraft] = useState('');
+  const [noteDraft, setNoteDraft] = useState('');
+
+  // The roster is only fetched when somebody actually opens the picker — an order
+  // card is on screen for every file, and the whole team list is not.
+  const openAssign = () => {
+    setEditing('assign'); setErr('');
+    if (!team) api.staffTeam().then(setTeam).catch(() => setTeam([]));
+  };
+
+  if (!tracking || !tracking.open) return null;
+  const t = tracking;
+
+  const save = async (what, fn) => {
+    setBusy(what); setErr('');
+    try { await fn(); setEditing(''); onChanged && onChanged(); }
+    catch (e) { setErr((e && e.message) || 'Could not save that.'); }
+    finally { setBusy(''); }
+  };
+
+  const tone = t.overdue
+    ? { background: '#FBEAEA', border: '1px solid #E3B7B7' }
+    : { background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line,#e6e0d4)' };
+
+  return (
+    <div className="panel" style={{ ...tone, marginBottom: 8, padding: '8px 10px' }}>
+      <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span className="small" style={{ color: '#141B22', fontWeight: 700 }}>
+          {t.overdue
+            ? `${t.daysLate} business day${t.daysLate === 1 ? '' : 's'} late`
+            : t.dueOn ? 'On time' : 'Waiting'}
+        </span>
+        {t.daysOut != null && (
+          <span className="small" style={{ color: '#4B585C' }}>
+            · out {t.daysOut} day{t.daysOut === 1 ? '' : 's'}
+          </span>
+        )}
+        {t.dueOn && (
+          <span className="small" style={{ color: '#4B585C' }}>
+            · expected back {fmtDay(t.dueOn)}{t.dueOnIsOverride ? ' (set by hand)' : ''}
+          </span>
+        )}
+        {/* WHOSE MOVE IS IT. A vendor who has already replied must never be
+            described as owing us something — that is how a desk teaches people
+            to stop reading it. */}
+        {t.pendingOn === 'us' && (
+          <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>· their documents are here, waiting on us</span>
+        )}
+      </div>
+
+      <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap', marginTop: 4 }}>
+        <span className="small" style={{ color: '#4B585C' }}>
+          Chased by: <b style={{ color: '#141B22' }}>{t.assignedName || 'nobody yet'}</b>
+        </span>
+        <button className="btn link small" style={{ padding: 0 }} onClick={openAssign}>Change</button>
+        <span className="small" style={{ color: '#4B585C' }}>·</span>
+        <button className="btn link small" style={{ padding: 0 }}
+          onClick={() => { setEditing('due'); setDueDraft(t.dueOnIsOverride ? t.dueOn : ''); setErr(''); }}>
+          Set the date it is expected
+        </button>
+        <span className="small" style={{ color: '#4B585C' }}>·</span>
+        <button className="btn link small" style={{ padding: 0 }}
+          onClick={() => { setEditing('note'); setNoteDraft(t.notes || ''); setErr(''); }}>
+          {t.notes ? 'Edit the note' : 'Add a note'}
+        </button>
+      </div>
+
+      {t.notes && editing !== 'note' && (
+        <div className="small" style={{ color: '#141B22', marginTop: 4, whiteSpace: 'pre-wrap' }}>{t.notes}</div>
+      )}
+      {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+
+      {editing === 'assign' && (
+        <div className="row" style={{ gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+          <select className="small" defaultValue={t.assignedTo || ''} disabled={busy === 'assign'}
+            onChange={(e) => save('assign', () => api.staffAssignOrder(appId, kind, e.target.value || null))}>
+            <option value="">Nobody — back to the team</option>
+            {(team || []).map((p) => (
+              <option key={p.id} value={p.id}>{p.full_name || p.email}{p.title ? ` — ${p.title}` : ''}</option>
+            ))}
+          </select>
+          {!team && <span className="muted small">Loading the team…</span>}
+          <button className="btn ghost small" onClick={() => setEditing('')}>Cancel</button>
+        </div>
+      )}
+
+      {editing === 'due' && (
+        <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input type="date" className="small" value={dueDraft} onChange={(e) => setDueDraft(e.target.value)} />
+          <button className="btn small" disabled={busy === 'due'}
+            onClick={() => save('due', () => api.staffOrderDue(appId, kind, { dueOn: dueDraft || null }))}>
+            {busy === 'due' ? 'Saving…' : 'Save'}
+          </button>
+          {t.dueOnIsOverride && (
+            <button className="btn ghost small" disabled={busy === 'due'}
+              onClick={() => save('due', () => api.staffOrderDue(appId, kind, { dueOn: null }))}>
+              Back to the usual {t.slaDays} business days
+            </button>
+          )}
+          <button className="btn ghost small" onClick={() => setEditing('')}>Cancel</button>
+        </div>
+      )}
+
+      {editing === 'note' && (
+        <div style={{ marginTop: 6 }}>
+          <textarea className="small" rows={2} style={{ width: '100%' }} value={noteDraft}
+            placeholder="e.g. they said Thursday; wrong parcel, re-sent"
+            onChange={(e) => setNoteDraft(e.target.value)} />
+          <div className="row" style={{ gap: 8, marginTop: 4 }}>
+            <button className="btn small" disabled={busy === 'note'}
+              onClick={() => save('note', () => api.staffOrderNote(appId, kind, noteDraft))}>
+              {busy === 'note' ? 'Saving…' : 'Save the note'}
+            </button>
+            <button className="btn ghost small" onClick={() => setEditing('')}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const [previewDoc, setPreviewDoc] = useState(null);
   const [showThread, setShowThread] = useState(false);
@@ -317,7 +452,14 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       const body = force ? { force: true } : {};
       if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
       const r = await api.staffPlaceOrder(appId, kind, body);
-      setMsg({ tone: 'ok', text: `${KIND_LABEL[kind]} order sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''}.` });
+      // AN UNCONFIRMED SEND IS NOT A GREEN TICK. The server distinguishes a send
+      // the provider ACCEPTED from one it stopped responding to mid-flight
+      // (orders.isAmbiguousSendFailure) precisely so a human is told to check
+      // before re-sending — and that sentence has to reach a screen, or the
+      // distinction may as well not exist and the vendor gets the order twice.
+      setMsg(r.unconfirmed
+        ? { tone: 'warn', text: r.warning || 'The order may or may not have gone out — check the Email Center before re-sending.' }
+        : { tone: 'ok', text: `${KIND_LABEL[kind]} order sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''}.` });
       onChanged && onChanged();
     } catch (e) {
       if (e && e.status === 409) setMsg({ tone: 'warn', text: `${KIND_LABEL[kind]} was already ordered. Use Follow-up, or force a re-send below.`, canForce: true });
@@ -328,7 +470,9 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
     setBusy('follow'); setMsg(null);
     try {
       const r = await api.staffOrderFollowup(appId, kind, { message: followMsg });
-      setMsg({ tone: 'ok', text: `Follow-up sent to ${(r.sent_to || []).join(', ')}.` });
+      setMsg(r.unconfirmed
+        ? { tone: 'warn', text: r.warning || 'The follow-up may or may not have gone out — check the Email Center before sending it again.' }
+        : { tone: 'ok', text: `Follow-up sent to ${(r.sent_to || []).join(', ')}.` });
       setFollowMsg(''); setFollowOpen(false); onChanged && onChanged();
     } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the follow-up.' }); }
     finally { setBusy(''); }
@@ -347,6 +491,11 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           <span className="muted small">{(order.returnedDocs || []).length} doc{(order.returnedDocs || []).length === 1 ? '' : 's'} back{unassignedCount ? ` · ${unassignedCount} to assign` : ''}</span>
         )}
       </div>
+
+      {/* THE CLOCK AND THE OWNER — first, because "is this late and who has it?"
+          is the question somebody opening a placed order came to answer. Renders
+          nothing until the order is actually out. */}
+      <OrderTracking appId={appId} kind={kind} tracking={order.tracking} onChanged={onChanged} />
 
       {/* THE CONTACT SLOT — who this order goes to, with its own Add / Edit button,
           always present rather than only when the order is blocked. Saving here
@@ -535,9 +684,12 @@ export function OrderModal({ appId, kind, canAccept = false, onClose, onChanged 
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // A change made in here (a contact, the loan number, a classified document) is
-  // a change to the FILE, so the screen underneath is refreshed too.
-  const changed = async () => { load(); if (onChanged) await onChanged(); };
+  // A change made in here (a contact, the loan number, a classified document, the
+  // order itself) is a change to the FILE, so the screen underneath is refreshed
+  // too — INCLUDING the three order sections, which hold their own copy of this
+  // exact payload. Without `refreshOrders`, placing an order from a condition's
+  // pop-up left every order section on the page still reading "not ordered".
+  const changed = async () => { load(); refreshOrders(appId); if (onChanged) await onChanged(); };
 
   return (
     <div className="cv-modal-back" onClick={onClose}>
@@ -572,28 +724,49 @@ export function OrderModal({ appId, kind, canAccept = false, onClose, onChanged 
    for a file unmounts, so switching files never serves a stale payload. */
 const orderSubs = new Map();     // appId -> Set<forceRender>
 const orderCache = new Map();    // appId -> { data, err, loading }
-const orderInflight = new Set(); // appId currently being fetched
+const orderGen = new Map();      // appId -> the generation the newest request belongs to
 
 function emitOrders(appId) {
   const subs = orderSubs.get(appId);
   if (subs) subs.forEach((fn) => { try { fn(); } catch (_) { /* a dead subscriber must not stop the rest */ } });
 }
 
+/**
+ * A GENERATION TOKEN, not an in-flight flag — and the difference is two real bugs.
+ *
+ * With a plain `inflight` Set, a forced reload racing the mount request had the
+ * OLDER response clear the flag (so a third card started a redundant request) and,
+ * if it landed second, overwrite the fresh payload with the pre-action state — the
+ * exact "showing a file that had already moved on" this store exists to remove.
+ *
+ * Worse: the cache is deleted when the last card unmounts, and an in-flight
+ * response then RE-CREATED it with nobody subscribed. The mount guard is
+ * `cache.has(appId)`, so coming back to that file minutes later found a populated
+ * entry, made no request, and rendered a stale payload for the rest of the tab
+ * session. Bumping the generation on unmount is what makes a late response
+ * recognise that it belongs to a panel nobody is looking at, and drop itself.
+ */
 function loadOrders(appId, { force = false } = {}) {
   if (!appId) return;
+  const cur = orderCache.get(appId);
   // A second card mounting in the same tick joins the request already in flight
   // rather than starting its own. An explicit refresh (force) always re-asks.
-  if (orderInflight.has(appId) && !force) return;
-  orderInflight.add(appId);
-  const prev = orderCache.get(appId) || {};
+  if (cur && cur.loading && !force) return;
+  const gen = (orderGen.get(appId) || 0) + 1;
+  orderGen.set(appId, gen);
+  const prev = cur || {};
   orderCache.set(appId, { ...prev, loading: true });
   emitOrders(appId);
+  // A response is only allowed to write if it is still the NEWEST request for a
+  // file somebody is still looking at.
+  const stillOurs = () => orderGen.get(appId) === gen && orderSubs.has(appId);
   api.staffOrders(appId)
-    .then((data) => { orderCache.set(appId, { data, err: '', loading: false }); })
+    .then((data) => { if (stillOurs()) orderCache.set(appId, { data, err: '', loading: false }); })
     // Keep the last good payload on a failed refresh: blanking three cards
-    // because one refresh hiccupped loses work in progress for no gain.
-    .catch((e) => { orderCache.set(appId, { data: prev.data || null, err: (e && e.message) || 'Could not load orders.', loading: false }); })
-    .then(() => { orderInflight.delete(appId); emitOrders(appId); });
+    // because one refresh hiccupped loses work in progress for no gain. The
+    // error is still surfaced — quietly, beside the data (see the panel).
+    .catch((e) => { if (stillOurs()) orderCache.set(appId, { data: prev.data || null, err: (e && e.message) || 'Could not load orders.', loading: false }); })
+    .then(() => { if (stillOurs()) emitOrders(appId); });
 }
 
 function useOrders(appId) {
@@ -607,7 +780,14 @@ function useOrders(appId) {
     if (!orderCache.has(appId)) loadOrders(appId);
     return () => {
       subs.delete(rerender);
-      if (!subs.size) { orderSubs.delete(appId); orderCache.delete(appId); }
+      if (!subs.size) {
+        orderSubs.delete(appId);
+        orderCache.delete(appId);
+        // Retire the generation too, so a request still in flight cannot
+        // re-create the entry it just cleared — which would make the next mount
+        // skip its fetch and render a payload that is minutes old.
+        orderGen.set(appId, (orderGen.get(appId) || 0) + 1);
+      }
     };
   }, [appId, rerender]);
   const st = orderCache.get(appId) || { data: null, err: '', loading: true };
@@ -629,11 +809,27 @@ export function refreshOrders(appId) { loadOrders(appId, { force: true }); }
 export default function OrdersPanel({ appId, canAccept = false, only = null }) {
   const { data, err, reload } = useOrders(appId);
 
+  // THE CLOSING CARD DOES NOT READ THIS PAYLOAD. Making it wait for one meant the
+  // attorney section showed "Loading orders…" behind a request it never uses —
+  // and showed the ORDERS error in place of the closing card when that request
+  // failed. It fetches its own data and is rendered straight away.
+  if (only === 'closing') return <ClosingPrepCard appId={appId} onChanged={reload} />;
+
   if (err && !data) return <div className="notice err">{err}</div>;
   if (!data) return <p className="muted small">Loading orders…</p>;
 
+  // A refresh that failed AFTER we already had a payload keeps the payload (losing
+  // work in progress helps nobody) but must still SAY so — silence here reads as
+  // "your change saved", which is exactly what it may not have done.
+  const staleWarning = err ? (
+    <div className="notice warn" style={{ marginBottom: 8 }}>
+      Showing the last version we loaded — the refresh did not go through ({err}). Reload the page to be sure.
+    </div>
+  ) : null;
+
   const vendorOrder = (kind) => (
     <>
+      {staleWarning}
       {/* The loan number prints in the mortgage clause, so it is THIS order's
           blocker — shown in the section that is blocked by it, not once at the
           top of a page the reader may never scroll to. */}
@@ -645,13 +841,10 @@ export default function OrdersPanel({ appId, canAccept = false, only = null }) {
 
   if (only === 'title') return vendorOrder('title');
   if (only === 'insurance') return vendorOrder('insurance');
-  // The attorney closing-prep order. Its own card + its own routes — the
-  // recipients, the document package and the closing email chain share nothing
-  // with a title/insurance vendor order.
-  if (only === 'closing') return <ClosingPrepCard appId={appId} onChanged={reload} />;
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
+      {staleWarning}
       {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={reload} />}
       <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Title</h3>
         <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={reload} /></div>

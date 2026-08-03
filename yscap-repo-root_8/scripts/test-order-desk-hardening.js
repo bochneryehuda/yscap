@@ -227,8 +227,36 @@ const otherPdf = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/X 2>>endobj\ntrai
     const r = await call('POST', `/api/staff/applications/${appId}/orders/title/place`, {});
     assert(r.status === 502 && r.body && r.body.code === 'email_disabled',
       `a send the provider never accepted is refused, with the reason (got ${r.status} ${r.body && r.body.code})`);
-    const row = (await db.query(`SELECT status FROM file_orders WHERE application_id=$1 AND order_type='title'`, [appId])).rows[0];
-    assert(!row, 'and NOTHING is recorded — the claim is rolled back, so the desk does not show an order nobody received');
+    const row = (await db.query(
+      `SELECT status, ordered_at, send_count FROM file_orders WHERE application_id=$1 AND order_type='title'`, [appId])).rows[0];
+    assert(row && row.status === 'not_ordered',
+      'the claim is RELEASED — the desk does not show an order nobody received');
+    assert(row && row.ordered_at === null && Number(row.send_count) === 0,
+      'and it carries no send date, so nothing downstream can age or score a send that never happened');
+
+    // A FAILED RE-SEND MUST NOT RESET THE CLOCK. This is the case a rule-based
+    // revert gets wrong: the claim overwrote ordered_at with now(), so decrementing
+    // back to 'ordered' would leave a three-week-old order looking freshly placed
+    // and silence its overdue nudge.
+    const email = require('../src/lib/email');
+    const realSend = email.sendMail;
+    email.sendMail = async () => ({ ok: true, id: 'test' });
+    try { await call('POST', `/api/staff/applications/${appId}/orders/title/place`, {}); }
+    finally { email.sendMail = realSend; }
+    await db.query(
+      `UPDATE file_orders SET ordered_at = now() - interval '21 days' WHERE application_id=$1 AND order_type='title'`, [appId]);
+    const before = (await db.query(
+      `SELECT status, ordered_at, send_count FROM file_orders WHERE application_id=$1 AND order_type='title'`, [appId])).rows[0];
+    // Now force a re-send with the provider off again.
+    const failed = await call('POST', `/api/staff/applications/${appId}/orders/title/place`, { force: true });
+    assert(failed.status === 502, 'the forced re-send is refused too');
+    const after = (await db.query(
+      `SELECT status, ordered_at, send_count FROM file_orders WHERE application_id=$1 AND order_type='title'`, [appId])).rows[0];
+    assert(after.status === 'ordered', 'the order is still placed — the earlier, real send stands');
+    assert(new Date(after.ordered_at).getTime() === new Date(before.ordered_at).getTime(),
+      'and it keeps its ORIGINAL send date — a failed re-send never resets the aging clock');
+    assert(Number(after.send_count) === Number(before.send_count),
+      'and the send count is unchanged');
   }
 
   /* ── F. two clicks send ONE order ─────────────────────────────────────────── */

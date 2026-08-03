@@ -73,6 +73,8 @@ const KICKER_OF = {
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
   order_docs_in: 'Order documents',
+  // An order is past the date we expected an answer (owner-directed 2026-08-03).
+  order_overdue: 'Order overdue',
   // The closing email chain (owner-directed 2026-07-28): documents arrived on the
   // chain the closing attorney is running.
   closing_docs_in: 'Closing documents',
@@ -499,6 +501,11 @@ const CATEGORY_OF = {
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
+  // An order past the date we expected an answer. Deliberately NOT in
+  // STAFF_INAPP_TYPES: somebody has to pick up the phone to a title company, which
+  // is an ACTION, and the whole point of the aging sweep is that an in-app badge
+  // nobody opened is what let orders sit for weeks.
+  order_overdue: 'reminders',
   // The closing chain — documents arrived on it. Passed inAppOnly:true by its one
   // caller (closing-inbox), because the chain email ITSELF already forwards to every
   // assignee: emailing again about the same message would be double-notifying.

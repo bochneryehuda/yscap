@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -151,13 +151,26 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
      dropped entirely, so a long email is simply as tall as it is. */
   const [settled, setSettled] = useState(false);
   useEffect(() => {
-    if (!expanded) { setSettled(false); return undefined; }
+    if (!expanded) {
+      // COLLAPSING NEEDS A NUMBER TO ANIMATE FROM. Going straight from 'none' to 0
+      // is a jump CSS cannot interpolate, so an open email SNAPPED shut. Put the
+      // numeric ceiling back for one frame, then let the transition run.
+      if (settled) {
+        // Off `window` rather than the bare globals: an undeclared identifier
+        // compiles cleanly and only fails at render, which is the trap this repo
+        // has been caught by before.
+        const raf = window.requestAnimationFrame;
+        const id = raf ? raf(() => setSettled(false)) : setTimeout(() => setSettled(false), 0);
+        return () => { if (raf && window.cancelAnimationFrame) window.cancelAnimationFrame(id); else clearTimeout(id); };
+      }
+      return undefined;
+    }
     // A timer rather than onTransitionEnd: that event does not fire at all when
     // the reader prefers reduced motion, or when a re-render interrupts the
     // animation — and either would leave the email clipped for good.
     const t = setTimeout(() => setSettled(true), 400);
     return () => clearTimeout(t);
-  }, [expanded]);
+  }, [expanded, settled]);
   const frameRef = useRef(null);
   const wrapRef = useRef(null);
   const loadedFor = useRef(null);
@@ -289,8 +302,27 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   );
 }
 
+/**
+ * A SCOPED THREAD DOES NOT GO TO THE FILE — it goes to ONE outside party.
+ *
+ * The composer used to name the file's own people on every thread, because that
+ * is who the default fan-out reaches. On a title, insurance or closing thread the
+ * server sends to the VENDOR instead (staff.js /emails/reply), so the operator was
+ * shown the borrower as a recipient while the title company got the mail. It is
+ * also why the typed subject is dropped there: the message has to land inside the
+ * vendor's existing conversation, so the thread's own subject is used.
+ *
+ * `null` for a scope that behaves normally, so nothing else changes.
+ */
+const SCOPED_THREAD = {
+  title: { who: 'the title company on this order', verb: 'Reply to the title company', fixedSubject: true },
+  insurance: { who: 'the insurance agent on this order', verb: 'Reply to the insurance agent', fixedSubject: true },
+  closing: { who: 'everyone on the closing chain — the attorney, title, the settlement agent', verb: 'Reply on the closing chain', fixedSubject: true },
+};
+
 /* ---- reply / compose composer (shows who it reaches) ---- */
 function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
+  const scoped = SCOPED_THREAD[scope] || null;
   const [open, setOpen] = useState(!!isNew);
   const [body, setBody] = useState('');
   const [subj, setSubj] = useState(isNew ? '' : (subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`));
@@ -299,15 +331,19 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   const [recips, setRecips] = useState(null);
   useEffect(() => { if (!isNew) setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject, isNew]);
   useEffect(() => {
-    if (!open) return;
+    // On a scoped thread the file's own recipient list is simply the wrong list —
+    // fetching it would only give us people to display who will not receive this.
+    if (!open || scoped) return;
     api.staffAppReplyRecipients(appId).then((r) => setRecips(Array.isArray(r) ? r : [])).catch(() => setRecips([]));
-  }, [open, appId]);
+  }, [open, appId, scoped]);
   const send = async () => {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
     try {
       const r = await api.staffAppEmailReply(appId, { body, subject: subj, scope: scope || undefined });
-      setMsg(`Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
+      setMsg(r.unconfirmed
+        ? (r.warning || 'This may or may not have gone out — check the thread before sending it again.')
+        : `Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
       setBody(''); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
     } catch (e) { setMsg(e.message || 'Could not send.'); }
@@ -317,7 +353,7 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   if (!open) {
     return (
       <div className="ec-reply-bar">
-        <button className="btn primary small" onClick={() => setOpen(true)}>↩ Reply to the file</button>
+        <button className="btn primary small" onClick={() => setOpen(true)}>↩ {scoped ? scoped.verb : 'Reply to the file'}</button>
         {msg ? <span className="muted small" style={{ marginLeft: 10 }}>{msg}</span> : null}
       </div>
     );
@@ -326,12 +362,19 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
     <div className="ec-reply">
       <div className="ec-reply-to">
         <span className="ec-metalabel">To</span>
-        {recips === null ? <span className="muted small">loading…</span>
+        {scoped ? <span className="small" style={{ color: '#141B22' }}>{scoped.who}</span>
+          : recips === null ? <span className="muted small">loading…</span>
           : recips.length ? recips.map((r, i) => (
               <span className="ec-chip" key={i}><Avatar name={r.name} email={r.email} size={20} inbound={r.kind === 'borrower'} />{r.name || r.email}</span>))
             : <span className="muted small">the borrower and everyone assigned to this file</span>}
       </div>
-      <input className="ec-reply-subject" value={subj} onChange={(e) => setSubj(e.target.value)} placeholder="Subject" />
+      {scoped ? (
+        <div className="muted small" style={{ marginBottom: 6 }}>
+          This stays on the existing conversation, so it keeps that thread’s subject.
+        </div>
+      ) : (
+        <input className="ec-reply-subject" value={subj} onChange={(e) => setSubj(e.target.value)} placeholder="Subject" />
+      )}
       <textarea className="ec-reply-text" rows={5} placeholder="Type your message…  (⌘/Ctrl + Enter to send)" value={body}
         onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} autoFocus />
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
@@ -373,7 +416,10 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
      already owns a ResizeObserver — so it measures. */
   const wrapRef = useRef(null);
   const [narrow, setNarrow] = useState(false);
-  useEffect(() => {
+  // useLayoutEffect, not useEffect: an effect runs AFTER paint, so the first frame
+  // was the two-pane grid squeezed into a narrow box before the measurement
+  // corrected it. Measuring before the browser paints removes that flash.
+  useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return undefined;
     const measure = () => setNarrow((el.clientWidth || 0) < EC_TWO_PANE_MIN);
@@ -540,7 +586,14 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
 
       {composing && !globalMode ? (
         <div className="ec-compose-panel">
-          <div className="ec-compose-head">{scope === 'draw' ? 'New draw message to this file' : 'New email to this file'}</div>
+          {/* Say WHO this reaches. On a scoped thread it is one outside party, not
+              the file's own people, and a heading that says otherwise is how a
+              message meant for the title company gets written to the borrower. */}
+          <div className="ec-compose-head">
+            {SCOPED_THREAD[scope] ? `New message to ${SCOPED_THREAD[scope].who}`
+              : scope === 'draw' ? 'New draw message to this file'
+              : 'New email to this file'}
+          </div>
           <Composer appId={appId} subject="" isNew onSent={() => load(false)} onClose={() => setComposing(false)} scope={scope} />
         </div>
       ) : null}

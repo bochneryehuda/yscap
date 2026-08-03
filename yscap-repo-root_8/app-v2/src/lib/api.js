@@ -561,6 +561,13 @@ export const api = {
   // order too (a staffer's manual upload, an agent emailing the file address).
   staffSetDocSlot: (appId, docId, slot) => req('POST', `/api/staff/applications/${appId}/documents/${docId}/slot`, { slot }),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
+  // AN ORDER IS A TRACKED THING (2026-08-03): who is chasing it, when the answer
+  // is expected, what is known about it, and what has happened to it. `staffId`
+  // null unassigns; `dueOn` null drops back to the derived date.
+  staffAssignOrder:   (appId, kind, staffId) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/assign`, { staffId: staffId || null }),
+  staffOrderDue:      (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/due`, body || {}),
+  staffOrderNote:     (appId, kind, note) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/note`, { note }),
+  staffOrderEvents:   (appId, kind) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/events`),
   staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
   // Attorney closing prep — the third order. Its own routes: the recipients, the
   // document package and the closing email chain have nothing in common with a

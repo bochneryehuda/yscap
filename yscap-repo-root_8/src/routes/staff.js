@@ -4882,7 +4882,10 @@ router.post('/applications/:id/emails/:msgId/resend', async (req, res) => {
 router.post('/applications/:id/emails/reply', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  const bodyText = String((req.body && req.body.body) || '').trim();
+  // Capped like the follow-up door (which slices to 4000): an uncapped body was
+  // bounded only by the JSON parser's own limit, and it rides straight into an
+  // email template.
+  const bodyText = String((req.body && req.body.body) || '').trim().slice(0, 4000);
   if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
@@ -4981,6 +4984,10 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       await db.query(
         `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
           WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+        detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
+      });
       try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
       if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc });
       return res.json({ ok: true, sent_to: to, cc });
@@ -5067,6 +5074,8 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
    documents for the team to classify. Uses the orders lib for all email building.
    ═══════════════════════════════════════════════════════════════════════════ */
 const orders = require('../lib/orders');
+const orderTracking = require('../lib/order-tracking');
+const orderSla = require('../lib/order-sla');
 const orderSlots = require('../lib/order-slots');
 const { orderReplyTo } = require('../lib/file-address');
 const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
@@ -5108,9 +5117,13 @@ router.get('/applications/:id/orders', async (req, res) => {
     const data = await orders.getOrderData(req.params.id);
     if (!data) return res.status(404).json({ error: 'not found' });
     const rows = (await db.query(
-      `SELECT order_type, status, vendor_name, vendor_email, ordered_at, last_followup_at,
-              followup_count, send_count, meta
-         FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
+      `SELECT o.order_type, o.status, o.vendor_name, o.vendor_email, o.ordered_at, o.last_followup_at,
+              o.followup_count, o.send_count, o.meta,
+              o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.completed_at, o.notes,
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email
+         FROM file_orders o
+         LEFT JOIN staff_users su ON su.id = o.assigned_to
+        WHERE o.application_id=$1`, [req.params.id])).rows;
     const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
     // Whether the borrower is CC'd on each order (owner-directed 2026-07-31:
     // title defaults OFF; the file's LO's own setting can default it on; a
@@ -5180,6 +5193,18 @@ router.get('/applications/:id/orders', async (req, res) => {
         conditionSlots: slotSets[k].conditionSlots,
         condition: cond ? { itemId: cond.id, code: cond.code, label: cond.label, status: cond.status } : null,
         returnedDocs: docsFor(k),
+        // THE CLOCK AND THE OWNER (2026-08-03). Computed on the SERVER, once, so
+        // the card, the section badge, the cross-file desk and the aging sweep can
+        // never disagree about whether the same order is late — the discipline the
+        // escalations queue already follows for its own per-row flags.
+        tracking: row ? {
+          ...orderSla.orderState(row, new Date()),
+          assignedTo: row.assigned_to || null,
+          assignedName: row.assigned_name || row.assigned_email || null,
+          firstResponseAt: row.first_response_at || null,
+          completedAt: row.completed_at || null,
+          notes: row.notes || null,
+        } : null,
       };
     };
     // Who an order will reach, so the panel can show it before sending.
@@ -5219,7 +5244,11 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     // The address must be the USPS-verified, imported one before it leaves the building.
     if (blk.includes('usps')) return res.status(422).json({ error: `Import the USPS-verified property address before ordering ${kind === 'title' ? 'title' : 'insurance'}. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — an order sent with an unverified address can go out with the wrong ZIP or unit.`, code: 'usps' });
 
-    const existing = (await db.query(`SELECT status, send_count, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    // `ordered_at` / `ordered_by` are read too so a failed send can put the row
+    // back EXACTLY as it was — see the release below.
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type=$2`,
+      [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     // A pre-check, kept so the common case answers fast and with the right wording.
     // It is NOT the guard — the CLAIM below is (see the transaction), because this
@@ -5255,11 +5284,18 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     //   · a send the provider never accepted was still recorded as 'ordered'.
     // With the claim first, a failed send ROLLS IT BACK, so nothing is recorded that
     // did not happen and nothing that happened goes unrecorded.
-    const client = await db.getClient();
+    // THE CLAIM COMMITS BEFORE THE SEND — and is UNWOUND if the send does not
+    // happen. This is the closing chain's claim → act → settle/release shape
+    // (closing-thread.js), and the send is deliberately OUTSIDE the transaction:
+    // `email.sendMail` captures into the Email Center on a SECOND pool client, so
+    // holding one across the network call means every concurrent place needs two
+    // connections at once — a handful of them starve a pool of ten, the capture
+    // times out, and the order goes out but vanishes from the very screen the
+    // "check before re-sending" advice points at.
+    let claimed = null;
     let sendRes = null;
     try {
-      await client.query('BEGIN');
-      const claim = await client.query(
+      const claim = await db.query(
         `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
          VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
          ON CONFLICT (application_id, order_type)
@@ -5267,43 +5303,77 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
                        vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
                        ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
                        meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
-           -- The real guard. A re-send is a deliberate, explicit act (force), so it
-           -- is the only way past an order that is already live.
-           WHERE file_orders.status IN ('not_ordered','cancelled') OR $9::boolean
-         RETURNING id`,
+           -- THE REAL GUARD, and it is atomic: a second concurrent click blocks on
+           -- this row, re-reads 'ordered' and matches nothing, so it answers 409
+           -- instead of sending the vendor a second copy.
+           --
+           -- A FORCED re-send is a deliberate act and is allowed past — but only
+           -- once every 10 seconds, so a double-click on "force a re-send" is one
+           -- order rather than two. A genuine re-send minutes later is unaffected.
+           WHERE file_orders.status IN ('not_ordered','cancelled')
+              OR ($9::boolean AND COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds')
+         -- ::text, NOT the timestamp itself. Postgres now() is MICROSECOND
+         -- precision and a JS Date is only milliseconds, so a claim token
+         -- round-tripped through one comes back a fraction early and matches
+         -- nothing — the release below then silently did nothing, leaving an order
+         -- recorded as sent that never was.
+         RETURNING id, status, ordered_at::text AS claim_token`,
         [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
          (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower, !!force]);
       if (!claim.rows[0]) {
-        await client.query('ROLLBACK');
-        client.release();
         return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
       }
+      claimed = claim.rows[0];
       sendRes = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
         type: `${kind}_order`,
       });
       if (!sendRes.ok && !sendRes.ambiguous) {
-        // Nothing reached the vendor: unwind the claim so the order reads
-        // "not ordered" — which is the truth — and the next attempt can claim it.
-        await client.query('ROLLBACK');
-        client.release();
+        // NOTHING REACHED THE VENDOR — put the row back EXACTLY as it was, so the
+        // order reads the truth and the next attempt can claim it.
+        //
+        // The PREVIOUS SNAPSHOT, not a rule. Setting `status='not_ordered'` and
+        // decrementing would be wrong on a re-send: the claim overwrote
+        // `ordered_at` with now(), so a failed re-send would leave the order
+        // looking freshly placed — the aging clock reset by a send that never
+        // happened, and the overdue nudge silenced for another three days.
+        //
+        // A COMPARE-AND-SWAP, not a blind revert: it only unwinds the row it can
+        // prove is still exactly the one just claimed (same id, same ordered_at,
+        // still 'ordered'). Anything else means something moved it in between, and
+        // stamping over that would erase real work.
+        await db.query(
+          `UPDATE file_orders
+              SET status = $3, ordered_at = $4, ordered_by = $5, send_count = $6, updated_at = now()
+            WHERE id = $1 AND status = 'ordered' AND ordered_at = $2::timestamptz`,
+          [claimed.id, claimed.claim_token,
+           (existing && existing.status) || 'not_ordered',
+           (existing && existing.ordered_at) || null,
+           (existing && existing.ordered_by) || null,
+           Number((existing && existing.send_count) || 0)])
+          .catch(() => { /* best-effort — the refusal is what matters */ });
         return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
       }
-      // An AMBIGUOUS send is committed on purpose: the provider may well have
-      // delivered it, and reverting would invite the re-send that double-orders.
-      await client.query('COMMIT');
-      client.release();
+      // The order now has an owner and a history. AFTER the send, because a
+      // failure above releases the claim and these would describe an order that
+      // never went out. An AMBIGUOUS send keeps the claim on purpose: the provider
+      // may well have delivered it, and releasing would invite the re-send that
+      // double-orders.
+      await orderTracking.ensureAssignee(appId, kind);
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: kind, kind: existing && existing.send_count ? 'resent' : 'placed',
+        actorId: req.actor.id, orderId: claimed.id,
+        detail: { vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null, to: to.length, cc: cc.length, force: !!force, unconfirmed: !!sendRes.ambiguous },
+      });
     } catch (e) {
-      try { await client.query('ROLLBACK'); } catch (_) { /* the release is what matters */ }
-      try { client.release(); } catch (_) { /* already released */ }
-      // The email either never went (the claim threw first) or its outcome is
-      // reported by sendRes — sendOrderMail never throws, so reaching here with a
-      // successful send means the COMMIT itself failed. Say so honestly rather than
-      // "could not send", which is what makes somebody re-send.
+      // `sendOrderMail` and `recordEvent` never throw, so reaching here after a
+      // successful send means the BOOKKEEPING failed — which must never be reported
+      // as "could not send", because that is exactly what makes somebody re-send an
+      // order the vendor already has.
       if (sendRes && (sendRes.ok || sendRes.ambiguous)) {
         return res.status(500).json({
-          error: 'The order was sent to the vendor, but we could not record it on the file. Do NOT re-send — check the Email Center, and tell an administrator.',
+          error: 'The order was sent to the vendor, but part of recording it on the file failed. Do NOT re-send — check the Email Center, and tell an administrator.',
           code: 'recorded_failed', sent_to: to, cc,
         });
       }
@@ -5364,6 +5434,10 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     await db.query(
       `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
         WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+      detail: { to: to.length, note: note ? note.slice(0, 200) : null, unconfirmed: !!sendRes.ambiguous },
+    });
     try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* sent either way */ }
     if (sendRes.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc });
     res.json({ ok: true, sent_to: to, cc });
@@ -5398,6 +5472,129 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
     await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
     res.json({ ok: true, slot });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * WHO IS CHASING THIS ORDER. The default is the file's processor, but ANY active
+ * staff member may be assigned (owner-directed 2026-08-03: "and also any staff
+ * members") — an order nobody owns is exactly the order nobody chases.
+ *
+ * Deliberately NOT gated on a capability beyond file access: the person best
+ * placed to say "I'll take this one" is whoever is looking at the file, and a
+ * permission wall here would leave orders on the person who happened to place
+ * them. Every change is a recorded event, so the answer to "who moved this, and
+ * when?" is on the order itself.
+ */
+router.post('/applications/:id/orders/:kind/assign', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const raw = req.body && req.body.staffId;
+    // An explicit null/'' UNASSIGNS — a real action, not a mistake: an order can
+    // legitimately go back to the team when the person who had it hands it off.
+    const staffId = raw == null || raw === '' ? null : String(raw);
+    if (staffId && !UUID_RE.test(staffId)) return res.status(400).json({ error: 'Pick somebody from the list.' });
+    let who = null;
+    if (staffId) {
+      who = (await db.query(
+        `SELECT id, full_name, email FROM staff_users WHERE id=$1 AND is_active=true`, [staffId])).rows[0];
+      // A deactivated staffer is indistinguishable from nobody, except that it
+      // LOOKS covered — which is worse than an unassigned order.
+      if (!who) return res.status(400).json({ error: 'That person is not an active staff member.' });
+    }
+    const upd = await db.query(
+      `UPDATE file_orders
+          SET assigned_to=$3, assigned_at=CASE WHEN $3::uuid IS NULL THEN NULL ELSE now() END,
+              assigned_by=$4, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2
+      RETURNING id`, [appId, kind, staffId, req.actor.id]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'assigned', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { to: who ? (who.full_name || who.email) : null },
+    });
+    await audit(req, 'order_assigned', 'application', appId, { kind, staffId });
+    res.json({ ok: true, assignedTo: staffId, assignedName: who ? (who.full_name || who.email) : null });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * WHEN THE ANSWER IS EXPECTED. Normally derived (ordered_at + the type's SLA in
+ * business days — order-sla.effectiveDueOn), so nothing had to be back-filled and
+ * the date can never drift out of step with the SLA. This is the OVERRIDE, for
+ * the case the derivation cannot know: the vendor told us Thursday.
+ *
+ * Sending `dueOn: null` drops back to the derived date; `slaDays` moves the whole
+ * clock for this one order instead of pinning a single date.
+ */
+router.post('/applications/:id/orders/:kind/due', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const b = req.body || {};
+    // A date is a 'YYYY-MM-DD' calendar STRING end-to-end (the repo's date rule),
+    // resolved through the shared normalizer so a typed 2-digit year lands as the
+    // real year rather than as literal 0026.
+    let dueOn = null;
+    if (b.dueOn != null && b.dueOn !== '') {
+      dueOn = require('../lib/fields').normalizeTypedDate(b.dueOn);
+      if (!dueOn) return res.status(400).json({ error: 'That date could not be read. Use the date picker.' });
+    }
+    let slaDays = null;
+    if (b.slaDays != null && b.slaDays !== '') {
+      const n = Number(b.slaDays);
+      if (!Number.isFinite(n) || n < 0 || n > 260) return res.status(400).json({ error: 'Give the number of business days to wait, from 0 to 260.' });
+      slaDays = Math.floor(n);
+    }
+    const upd = await db.query(
+      `UPDATE file_orders SET due_on=$3, sla_days=COALESCE($4::int, sla_days), updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING id, ordered_at, due_on, sla_days, order_type, status`,
+      [appId, kind, dueOn, slaDays]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'due_changed', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { dueOn, slaDays },
+    });
+    await audit(req, 'order_due_changed', 'application', appId, { kind, dueOn, slaDays });
+    res.json({ ok: true, state: orderSla.orderState(upd.rows[0], new Date()) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/** A free note about THIS order ("they said Thursday", "wrong parcel, re-sent").
+    Kept on the order rather than in the file's chat: it is about the vendor
+    relationship, and the next person to open this order is who needs it. */
+router.post('/applications/:id/orders/:kind/note', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    // `textColumn` trims, strips a NUL byte (Postgres refuses one in ANY text
+    // column) and caps at the column's own limit — the repo's one door for a
+    // free-text write. The explicit max is this column's, not a guess.
+    const note = require('../lib/fields').textColumn(req.body && req.body.note, 'file_orders_notes', 4000);
+    const upd = await db.query(
+      `UPDATE file_orders SET notes=$3, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING id`, [appId, kind, note]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'note', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { note: note ? String(note).slice(0, 200) : null },
+    });
+    res.json({ ok: true, notes: note });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/** The order's own timeline — placed, chased, replied, assigned, finished. */
+router.get('/applications/:id/orders/:kind/events', async (req, res) => {
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  res.json(await orderTracking.listEvents(req.params.id, kind));
 });
 
 /**
@@ -5454,6 +5651,9 @@ router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
       `UPDATE file_orders SET status=$3, updated_at=now()
         WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
     if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: reopen ? 'reopened' : 'cancelled', actorId: req.actor.id,
+    });
     await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
