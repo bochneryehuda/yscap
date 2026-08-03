@@ -116,7 +116,7 @@ for (const f of files) {
 // Postgres allows 1600 per table, so it is a countdown to that table dying with
 // "tables can have at most 1600 columns" — and nothing warns you on the way.
 //
-// MEASURED before this check existed: db/422 added 11 columns db/424 removed, and
+// MEASURED before this check existed: db/448 added 11 columns db/424 removed, and
 // a database this branch had been booted against carried 1,476 dropped attributes
 // on `properties` and 328 on `property_observations` — exactly 9 and 2 per boot
 // over 164 boots — with `properties` sitting at attnum 1600, permanently dead.

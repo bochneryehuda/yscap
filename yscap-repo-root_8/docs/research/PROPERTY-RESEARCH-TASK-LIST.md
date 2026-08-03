@@ -132,7 +132,7 @@ coverage, not about the user's filters.
 ## PHASE 1 — STOP BEING WRONG
 
 **11 of 14 done.** Also fixed on the way, and not on the original list: a
-migration pair (db/422 + db/424) that undid each other on every boot, burning a
+migration pair (db/448 + db/424) that undid each other on every boot, burning a
 permanent Postgres column slot each time — measured at 1,476 burnt slots with
 `properties` sitting exactly at the 1,600 hard limit, i.e. one boot from a table
 that could never be altered again. `check-migrations` now refuses that shape.

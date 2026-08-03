@@ -61,7 +61,7 @@ const REFS = Object.freeze({
   'property_observations.property_id': { how: 'move' },
   'property_valuations.property_id': { how: 'move' },
   'research_imports.subject_property_id': { how: 'move' },
-  // db/423 — the 1004MC market read a report filed while describing this property.
+  // db/449 — the 1004MC market read a report filed while describing this property.
   // MOVE: the two rows are the same house, so the market read belongs to the
   // survivor; nothing stops several reports pointing at one property, so there is
   // no collision to fold. (`market_periods` hangs off the observation, not off

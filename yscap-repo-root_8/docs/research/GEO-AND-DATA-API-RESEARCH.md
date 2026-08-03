@@ -662,7 +662,7 @@ city"* — and the answer is not only distance, it is **boundaries**.
 | **School attendance zone** (not district) | The *actual* zone a house feeds into — finer than a district | **Partially.** NCES **SABS** exists but is **experimental and stale** (2013-14 and 2015-16 only) | SABS free but old; current attendance zones are a paid product (ATTOM/CoreLogic/Precisely) | **★★☆☆☆** — the stale free version is worse than nothing; do not buy it for a bridge lender |
 | **ZIP code** | The mail unit — **not a polygon**, and not a market | Approximately, via **Census ZCTA** (a tabulation *approximation* of a ZIP) | TIGER ZCTA free; **HUD-USPS ZIP↔tract crosswalk** free (quarterly, download or API) | **★★★☆☆** — already in the key and the filters. Useful; never confuse a ZIP with a market |
 | **County** | Recording office, transfer tax, foreclosure timeline, APN namespace | **YES — TIGER `COUNTY`** | Free; the Census geocoder returns the county FIPS with the tract | **★★★★☆** — required anyway for an APN to be unique |
-| **Subdivision / condo project** | Fannie says comps *"from within the same… subdivision or project… must be used in certain instances"* | **No single free national source.** Regrid parcels carry subdivision on much of the country | Already partially solved: `properties.condo_project_name` is populated from the appraisal (db/422) and is a search filter | **★★★★☆ for condos, already built.** Subdivision for SFR needs a parcel vendor |
+| **Subdivision / condo project** | Fannie says comps *"from within the same… subdivision or project… must be used in certain instances"* | **No single free national source.** Regrid parcels carry subdivision on much of the country | Already partially solved: `properties.condo_project_name` is populated from the appraisal (db/448) and is a search filter | **★★★★☆ for condos, already built.** Subdivision for SFR needs a parcel vendor |
 | **MLS area** | How agents actually segment a market | **No — MLS data is licensed per-MLS**, and a hard-money lender is rarely a member | Would require MLS membership or a licensed aggregator | **★☆☆☆☆ — skip.** Expensive, fragmented, and census tract + municipality gets 80 % of the benefit |
 | **Flood zone (SFHA)** | Insurance requirement; a real value discontinuity across the line | **YES — FEMA NFHL, free, no signup** | **ALREADY BUILT** — `src/lib/appraisal/flood.js` queries FEMA NFHL MapServer layer 28 from a Census-geocoded point, and `properties.sfha` / `fema_flood_zone` are already searchable | **★★★★★ and already done** |
 | **"The wrong side of the tracks"** | The real question | **Not directly available from any vendor** | The tractable proxy is **tract + municipality + school district agreement**, plus the appraiser's own `location_rating` / `nbhd_location_type`, both already parsed | **★★★★☆** — see below |
@@ -706,7 +706,7 @@ act on and a note buyer can review.
 
 ### 6.1 What is genuinely missing
 
-The appraisal is rich (see `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md` — db/422 and db/424 pulled
+The appraisal is rich (see `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md` — db/448 and db/424 pulled
 nearly every stated fact through to the warehouse). What it **structurally cannot** give us:
 
 | Missing fact | Why the XML cannot supply it | Who needs it |
@@ -714,7 +714,7 @@ nearly every stated fact through to the warehouse). What it **structurally canno
 | **A comparable's property type and unit count** | Genuinely absent from most MISMO 2.6 grids | The warehouse answers it only if that address later appears as some other report's *subject* |
 | **A comparable's APN, census tract, flood zone, zoning** | Never stated per comp — `ingest.js` writes `null` for all of them | Everything in §5 |
 | **Recorded deeds / full sale history** | The grid states one prior sale, sometimes | Chain of title, seasoning, flip-detection, the existing `deal-basis.seasoningMonths` |
-| **Current tax assessment & tax bill** | Subject only, and only when the appraiser filled it in (`property_tax_amount`, db/422) | Carrying cost, exit math |
+| **Current tax assessment & tax bill** | Subject only, and only when the appraiser filled it in (`property_tax_amount`, db/448) | Carrying cost, exit math |
 | **Ownership of record / entity** | Subject only (`owner_of_record`) | The seller-chain and chain-of-title desks |
 | **Open permits, violations, liens** | Never | Rehab feasibility, a real hard-money risk |
 | **Lot size / year built for a comp** | Mined heuristically from the appraiser's adjustment lines today | Comp scoring |
@@ -842,4 +842,4 @@ Restated so a future change can be checked against them:
 - [CoreLogic on Datarade](https://datarade.ai/data-providers/corelogic/profile) · [DataTree (First American) on Datarade](https://datarade.ai/data-providers/datatree-by-first-american/profile) · [CoreLogic pricing from actual buyers](https://www.pricelevel.com/vendors/corelogic/pricing) **[2nd]**
 - [NCES EDGE — School District Boundaries](https://nces.ed.gov/programs/edge/Geographic/DistrictBoundaries) · [NCES EDGE — SABS](https://nces.ed.gov/programs/edge/sabs) · [SABS technical documentation](https://nces.ed.gov/programs/edge/docs/EDGE_SABS_2015_2016_TECHDOC.pdf)
 - [HUD-USPS ZIP Code Crosswalk files](https://www.huduser.gov/portal/datasets/usps_crosswalk.html) · [HUD crosswalk API](https://www.huduser.gov/portal/dataset/uspszip-api.html)
-- Internal: `docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md`, `docs/research/RESEARCH-WAREHOUSE-HANDOFF.md`, `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md`, `docs/PROPERTY-COMP-DATABASE-RESEARCH.md`, `db/409`, `db/412`, `db/413`, `db/415`, `db/419`, `db/422`, `db/424`
+- Internal: `docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md`, `docs/research/RESEARCH-WAREHOUSE-HANDOFF.md`, `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md`, `docs/PROPERTY-COMP-DATABASE-RESEARCH.md`, `db/409`, `db/412`, `db/413`, `db/415`, `db/419`, `db/448`, `db/424`

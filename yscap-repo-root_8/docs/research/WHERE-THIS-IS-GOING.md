@@ -214,7 +214,7 @@ set, capped both as a rate and as a share of the sale price, and it refuses when
 either half is too small. That is honest but crude — it reads a trend off a
 handful of comps.
 
-The obvious upgrade is the **1004MC market grid**, which db/423 turned into real
+The obvious upgrade is the **1004MC market grid**, which db/449 turned into real
 dated windows for every report. It looked like the clear next step: a
 purpose-built statement of how a market is moving, from data we already paid for,
 needing no new external feed and no owner authorisation. So before building it,

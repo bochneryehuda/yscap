@@ -1,6 +1,6 @@
--- 424 — PUTTING db/422'S FACTS WHERE THEY BELONG
+-- 424 — PUTTING db/448'S FACTS WHERE THEY BELONG
 --
--- db/422 carried 59 previously-dropped facts into the warehouse. A pre-merge
+-- db/448 carried 59 previously-dropped facts into the warehouse. A pre-merge
 -- audit, run against a real database with real reports, proved that FIVE of the
 -- placements were wrong and TWO of the columns can never hold anything. Every
 -- defect below was REPRODUCED, not reasoned about. Nothing here re-litigates the
@@ -26,7 +26,7 @@
 --
 -- for the same building, with a `condo_project` search returning both, disagreeing.
 --
--- That is word for word the reason db/422 gave for DEFERRING the market grid:
+-- That is word for word the reason db/448 gave for DEFERRING the market grid:
 -- "filing them on a property row would make every house in a town carry its own
 -- private copy of the town's statistics, disagreeing with its neighbours by
 -- whichever report happened to be newest." The same argument applies at building
@@ -43,7 +43,7 @@
 -- ─── 2. A LISTING NOTE CROSSED OVER WITHOUT ITS DATE ─────────────────────────
 --
 -- `listed_within_year` is deliberately observation-only, because "within the
--- previous year" is relative to the report's own date. db/422 rolled up its
+-- previous year" is relative to the report's own date. db/448 rolled up its
 -- DESCRIPTION and left the indicator behind. Proven: a 2019 report stating
 -- "Listed 3/2018 at $310,000, expired 9/2018" put that note on the property, and
 -- a 2026 report explicitly stating NOT listed in the past year could not displace
@@ -56,19 +56,19 @@
 -- `cost_data_source` is COST_ANALYSIS/DataSourceDescription — which cost service
 -- the appraiser consulted ("Marshall & Swift 2024"). It is the exact analogue of
 -- `contract_data_source`, which this warehouse already keeps observation-only,
--- and it sits inside db/422's own report-side definition. `cost_quality_rating`
+-- and it sits inside db/448's own report-side definition. `cost_quality_rating`
 -- STAYS on the property: that one grades the DWELLING's construction, which is a
 -- fact about the house (and it joins AS_IS_ONLY in ingest.js, so an after-repair
 -- report can no longer state it).
 --
 -- ─── 4. TWO COLUMNS THAT CAN ONLY EVER BE NULL ──────────────────────────────
 --
--- db/422 claimed "every one of these was already parsed out of the XML". True of
+-- db/448 claimed "every one of these was already parsed out of the XML". True of
 -- 57; NOT true of `form_version` and `software_vendor`. The parser never assigns
 -- either, `appraisalRowFrom` hard-codes `software_vendor: null` and omits
 -- `form_version` from its column list, and nothing else in the repo updates them.
 -- So both `appraisals` columns are always NULL and the two observation columns
--- are dead. The db/422 test only passed because it hand-INSERTs `form_version`
+-- are dead. The db/448 test only passed because it hand-INSERTs `form_version`
 -- straight into `appraisals`, which no real import path does — it proved the
 -- plumbing, not that any report will ever fill it. Dropped rather than shipped
 -- as two permanently-empty columns implying we know something we do not. If a
@@ -80,13 +80,13 @@
 -- db/405 evicted Attached/Detached/SemiDetached out of `property_type`
 -- SPECIFICALLY so the fact would not be lost — a building touching its neighbour
 -- is a real, durable, searchable property fact, it simply is not a CATEGORY. It
--- then reached no warehouse table at all, and db/422's own accounting missed it.
+-- then reached no warehouse table at all, and db/448's own accounting missed it.
 -- It is added here, to both tables, as the property fact it always was.
 --
 -- ─── 6. THE APPRAISER'S OWN MARKET RESEARCH WAS STORED AS "[object Object]" ──
 --
 -- `appraisals.comp_research` is JSONB (the RESEARCH block's sales and listing
--- counts and price brackets). db/423 declared the market_observations column
+-- counts and price brackets). db/449 declared the market_observations column
 -- `text` and wrote it through a string helper, so every row stored the literal
 -- "[object Object]". Retyped to jsonb and re-bound properly. The column is
 -- dropped and re-added rather than cast: every value it has ever held is that
@@ -131,7 +131,7 @@ COMMENT ON COLUMN properties.attachment_type IS
 
 -- ---------------------------------------------------------------------------
 -- 6. THE APPRAISER'S OWN MARKET RESEARCH, AS THE JSON IT ACTUALLY IS.
---    Every value ever written here is the string "[object Object]" (db/423 typed
+--    Every value ever written here is the string "[object Object]" (db/449 typed
 --    it text and bound it through a string helper), so a cast would preserve
 --    nothing. `writeMarket` is idempotent per report and refills it on re-ingest.
 -- ---------------------------------------------------------------------------

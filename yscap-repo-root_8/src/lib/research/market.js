@@ -1,6 +1,6 @@
 'use strict';
 /**
- * THE MARKET SIDE OF THE WAREHOUSE (db/423).
+ * THE MARKET SIDE OF THE WAREHOUSE (db/449).
  *
  * Fannie Mae Form 1004MC is the appraiser's own read of a market area THEY drew
  * the boundary of, over three windows the form states RELATIVELY — "Prior 7–12
@@ -37,7 +37,7 @@ const METRIC_COLUMN = Object.freeze({
   MedianSalesToListRatio: 'median_sale_to_list_pct',
 });
 const METRIC_COLUMNS = Object.freeze(Object.values(METRIC_COLUMN));
-/** The `integer` columns of db/423 — a fractional value has to be rounded to fit. */
+/** The `integer` columns of db/449 — a fractional value has to be rounded to fit. */
 const INT_COLUMNS = new Set(['total_sales', 'total_listings', 'median_sale_dom', 'median_list_dom']);
 
 /**
@@ -131,7 +131,7 @@ function gridToPeriods(marketTrends) {
 
 /**
  * Record one report's market read. Idempotent per report (the unique indexes in
- * db/423 are per appraisal / per import), so a re-ingest refreshes rather than
+ * db/449 are per appraisal / per import), so a re-ingest refreshes rather than
  * duplicates — the same contract `upsertObservation` follows.
  *
  * Returns {written:false} when the report carried NO market data at all, which is

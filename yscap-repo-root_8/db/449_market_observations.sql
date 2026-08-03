@@ -1,6 +1,6 @@
--- 423 — WHAT OUR APPRAISERS HAVE SAID ABOUT THE MARKETS WE LEND IN
+-- 449 — WHAT OUR APPRAISERS HAVE SAID ABOUT THE MARKETS WE LEND IN
 --
--- db/422 carried 59 facts across the last hop and deliberately left the 1004MC
+-- db/448 carried 59 facts across the last hop and deliberately left the 1004MC
 -- market grid and the neighbourhood block behind, with a written reason: they
 -- describe a MARKET OVER A PERIOD, not a property. Filing them on a property row
 -- would give every house in a town its own private copy of the town's statistics,

@@ -61,14 +61,14 @@ const ID = require('./identity');
  * db/424 hit exactly that: `attachment_type` was added to both sides, and after
  * a full re-roll 4 of the 5 appraisals carrying an attachment style still had
  * NULL on their property, because the value had never reached an observation.
- * The same was true of every db/422 fact — 3 of 125 observations carried a tax
+ * The same was true of every db/448 fact — 3 of 125 observations carried a tax
  * amount. `backfill()` keys on `l.ingest_version < INGEST_VERSION`, is bounded
  * per boot, runs oldest-report-first and self-drains, and `ingestStatus()`
  * reports how much is left.
  *
  * BUMP THIS whenever the ingest starts reading a fact it did not read before.
  */
-// 2 — db/422's 59 facts and db/424's `attachment_type` are read off the report,
+// 2 — db/448's 59 facts and db/424's `attachment_type` are read off the report,
 //     so the reports have to be re-read for the corpus we already hold.
 // 3 — db/426: a 2-4 unit comparable's rooms/beds/baths were read off the FIRST
 //     `ROOM_ADJUSTMENT` row, which is UNIT 1, not the property. Every such comp
@@ -153,7 +153,7 @@ const ROLLUP_FACTS = Object.freeze({
   // move. Both are facts about the BUILDING, so they roll up; the per-unit
   // rent inside `unit_mix` travels with the mix.
   actual_monthly_rent: 'actual_monthly_rent', rent_controlled: 'rent_controlled',
-  // db/422 — the facts the reports have always stated that reached NO warehouse
+  // db/448 — the facts the reports have always stated that reached NO warehouse
   // table at all. Property-side only: the tax bill, the cost approach and its
   // depreciation, the condo PROJECT, the FEMA panel date, the listing history and
   // the deficiency / zoning notes. The report-side facts added by the same
@@ -220,7 +220,7 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-// 5 — db/422 widened the fact set by 36 property columns; db/424 corrected five
+// 5 — db/448 widened the fact set by 36 property columns; db/424 corrected five
 // of those placements, added the attachment style, and — the reason this bump
 // MATTERS rather than merely tidying — put the cost approach and its depreciation
 // under AS_IS_ONLY. A property already rolled at 3 is carrying after-repair
@@ -231,7 +231,7 @@ const ROLLUP_FACTS = Object.freeze({
 // `site_improvements_value`), so a row rolled at 4 is carrying an after-repair
 // effective age AND is missing a build status it is entitled to. The boot sweep
 // (`rerollStaleProperties`) drains it through the one definition of the roll-up;
-// db/421 made its index version-agnostic so this bump does not silently cost it
+// db/447 made its index version-agnostic so this bump does not silently cost it
 // that index (verified by EXPLAIN at both 4 and 5).
 // 7 — db/435 adds two rolled-up facts (the actual rent and rent control).
 // 6 — the roll-up's rule for `units` / `property_type` changed: a MEASURED unit
@@ -265,7 +265,7 @@ const ROLLUP_VERSION = 9;
  * 'as_repaired' is skipped for these columns only; everything else it stated
  * (the size, the year built, the address) is a fact either way and still counts.
  *
- * db/424 EXTENDED THIS SET, because db/422 added the numeric analogue of
+ * db/424 EXTENDED THIS SET, because db/448 added the numeric analogue of
  * `condition_uad` and left it unprotected. Proven on a real database: a 2019
  * as-is report said C5 with $72,000 of depreciation, a 2026 renovation report
  * (correctly stamped `as_repaired`) said C2 with ZERO physical depreciation and
@@ -1725,7 +1725,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       net_adjustment: null, net_adj_pct: null, gross_adj_pct: null, adjustments: '[]',
       appraised_value: a.appraised_value, as_is_value: a.as_is_value, arv_value: a.arv_value,
       contract_price: a.contract_price, contract_date: dateOnly(a.contract_date),
-      // ---- db/422: every fact the report stated that used to stop at `appraisals` ----
+      // ---- db/448: every fact the report stated that used to stop at `appraisals` ----
       // No new parsing — the same values, carried across the last hop. Types are
       // normalised the way every other column here is: text trimmed to null, a
       // boolean kept as a real tri-state (null means the report did not say), and
@@ -1742,11 +1742,11 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       condo_project_type: txt(a.condo_project_type),
       condo_common_elements: txt(a.condo_common_elements),
       condo_management_type: txt(a.condo_management_type),
-      // `form_version` and `software_vendor` were written here by db/422 and are
+      // `form_version` and `software_vendor` were written here by db/448 and are
       // GONE (db/424): the parser never assigns either, `appraisalRowFrom`
       // hard-codes software_vendor null and omits form_version entirely, so both
       // source columns are always NULL and both observation columns were dead.
-      // db/422's own test only passed because it INSERTed a value straight into
+      // db/448's own test only passed because it INSERTed a value straight into
       // `appraisals`, which no real import path does. If a vendor's XML turns out
       // to carry them, they come back WITH a parser that reads them.
       appraisal_purpose: txt(a.appraisal_purpose),
@@ -1829,10 +1829,10 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
           + 'against — everything else on it (its market read, its comparables) is still kept' });
   }
 
-  // ---- what the report said about the MARKET (db/423) ---------------------
+  // ---- what the report said about the MARKET (db/449) ---------------------
   // The 1004MC grid and the page-1 neighbourhood read describe an AREA over a
   // PERIOD, not this house, so they go to their own table rather than onto the
-  // property — see db/423's header for why that distinction is load-bearing.
+  // property — see db/449's header for why that distinction is load-bearing.
   // Deliberately OUTSIDE the `if (subjectId)` branch above: a report whose
   // address we could not key still told us about its market, and that is worth
   // keeping. Best-effort — a market read is never worth failing a whole report

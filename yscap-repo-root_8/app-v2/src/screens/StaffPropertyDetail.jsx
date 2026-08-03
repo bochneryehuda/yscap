@@ -207,7 +207,7 @@ export default function StaffPropertyDetail() {
           <Fact k="Market rent" v={p.market_rent ? money(p.market_rent) + ' / month' : null} />
           <Fact k="Owner of record" v={p.owner_of_record} />
           <Fact k="HOA fee" v={p.hoa_fee_amount ? `${money(p.hoa_fee_amount)}${p.hoa_fee_period ? ' / ' + String(p.hoa_fee_period).toLowerCase() : ''}` : null} />
-          {/* db/422 + db/424. A fact you can FILTER on but never SEE is half a
+          {/* db/448 + db/424. A fact you can FILTER on but never SEE is half a
               feature — the tax search shipped without a tax column, so a search
               on the tax bill returned rows that never said what the tax bill was. */}
           <Fact k="Attached / detached" v={p.attachment_type} />

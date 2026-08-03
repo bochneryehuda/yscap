@@ -531,7 +531,7 @@ not invent a frequency. **P** = property fact (add to `ROLLUP_FACTS`, bump `ROLL
   count is a genuine statement; this is a calculation.
 - **Anything inherited from the subject.** Rank 1 gives a comparable a *stated* unit count. Nothing
   below that threshold should fill `units` or `property_type`.
-- **The 1004MC market grid**, for the property tables. `db/422`'s header already ruled on this and it
+- **The 1004MC market grid**, for the property tables. `db/448`'s header already ruled on this and it
   is right: a market statistic on a property row gives every house its own private copy of the town's
   numbers. It needs a geography-and-period table, which `src/lib/research/market.js` has begun.
 

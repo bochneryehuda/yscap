@@ -1,4 +1,4 @@
--- 422 — THE FACTS THE REPORTS ALREADY STATED AND THE WAREHOUSE THREW AWAY
+-- 448 — THE FACTS THE REPORTS ALREADY STATED AND THE WAREHOUSE THREW AWAY
 --
 -- An audit of the appraisal → warehouse pipeline counted SEVENTY-TWO columns on
 -- `appraisals` that reached no warehouse table at all — not as a column, not even
@@ -160,7 +160,7 @@ CREATE INDEX IF NOT EXISTS idx_properties_condo_project
 -- FIX, not tidying.
 --
 -- `migrate-boot` runs every numbered file's FULL TEXT on EVERY boot. So an ADD
--- here and a DROP in db/424 do not settle: db/422 re-adds what db/424 removed,
+-- here and a DROP in db/424 do not settle: db/448 re-adds what db/424 removed,
 -- db/424 removes it again, and the pair CHURNS ELEVEN COLUMNS PER BOOT. A dropped
 -- column keeps its `pg_attribute` slot forever, and Postgres allows 1600 per
 -- table — so the loop is a countdown. MEASURED on a database this branch had been

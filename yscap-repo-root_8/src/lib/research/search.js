@@ -183,7 +183,7 @@ function buildQuery(input = {}) {
     ['year_built', 'p.year_built', f.year_min, f.year_max],
     ['total_rooms', 'p.total_rooms', f.rooms_min, f.rooms_max],
     ['last_sale_price', 'p.last_sale_price', f.price_min, f.price_max],
-    // db/422 — the annual property tax the appraisal stated. Indexed
+    // db/448 — the annual property tax the appraisal stated. Indexed
     // (idx_properties_tax_amount, partial on NOT NULL) because it is the most
     // asked-for of the facts that used to stop at `appraisals`.
     ['property_tax_amount', 'p.property_tax_amount', f.tax_min, f.tax_max],
@@ -198,7 +198,7 @@ function buildQuery(input = {}) {
   const bathsMin = num(f.baths_min), bathsMax = num(f.baths_max);
   if (bathsMin != null) where.push(`p.baths_total >= ${P(bathsMin)}`);
   if (bathsMax != null) where.push(`p.baths_total <= ${P(bathsMax)}`);
-  // The condo PROJECT by name (db/422). Matched case-insensitively against the
+  // The condo PROJECT by name (db/448). Matched case-insensitively against the
   // same expression `idx_properties_condo_project` indexes, so it stays indexed.
   if (str(f.condo_project)) where.push(`lower(p.condo_project_name) = lower(${P(str(f.condo_project))})`);
   // "only ones we know the tax bill for" — a distinct question from a range.

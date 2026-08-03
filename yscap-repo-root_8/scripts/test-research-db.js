@@ -311,7 +311,7 @@ async function makeAppraisal(appId, o) {
       'everything that is true either way (size, year built) still rolls up from the same report');
 
     // (4b) DEPRECIATION IS CONDITION IN DOLLARS, AND MUST OBEY THE SAME RULE.
-    // db/422 added the cost approach without this protection, which produced a
+    // db/448 added the cost approach without this protection, which produced a
     // property row reading "condition C5" and "zero physical depreciation,
     // replacement cost as-if-new" AT THE SAME TIME — not a conservative answer or
     // an optimistic one, a self-contradicting one. Reproduced here exactly: an
@@ -919,7 +919,7 @@ async function makeAppraisal(appId, o) {
     ok(Number(wide.body.applied_filters.sqft_min) <= 100 && Number(wide.body.applied_filters.sqft_max) >= 100000,
       'a caller-supplied size band is only ever widened, never replaced with a narrower one');
 
-    // (4f) EVERY FACT THE REPORT STATED CROSSES THE LAST HOP (db/422), and lands on
+    // (4f) EVERY FACT THE REPORT STATED CROSSES THE LAST HOP (db/448), and lands on
     // the CORRECT SIDE. A fact about the PROPERTY rolls up so the search can reach
     // it; a fact about the REPORT stays on the observation, because rolling
     // `lender_name` onto a property would let the newest appraisal overwrite a
@@ -946,7 +946,7 @@ async function makeAppraisal(appId, o) {
 
     ok(Number(fObs.property_tax_amount) === 12345.67 && fObs.condo_project_name === 'Harbor Point'
       && fObs.lender_name === 'Other Lender Bank NA' && fObs.addendum_text === 'Corner lot.',
-    'every db/422 fact the report stated reaches the observation — property AND report facts alike');
+    'every db/448 fact the report stated reaches the observation — property AND report facts alike');
     ok(Number(fProp.property_tax_amount) === 12345.67 && fProp.condo_project_name === 'Harbor Point'
       && Number(fProp.condo_units_planned) === 120,
     'and the PROPERTY facts roll up onto the property, where the search can reach them');
@@ -1019,7 +1019,7 @@ async function makeAppraisal(appId, o) {
         `has_tax=${JSON.stringify(spelling)} filters rather than matching everything`);
     }
 
-    // (4g) THE MARKET GRID (db/423). The 1004MC states its windows RELATIVELY
+    // (4g) THE MARKET GRID (db/449). The 1004MC states its windows RELATIVELY
     // ("last 3 months"), which two reports written months apart cannot share an
     // axis on. Each window is resolved against that report's own effective date
     // into real dates — that is what turns a pile of reports into a time series.

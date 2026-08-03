@@ -65,7 +65,7 @@ Read this before §5, or half the recommendations will look like things we have.
 | Confidence **label** with reasons (never a fake percentage) | `confidenceOf` |
 | Review warnings (15% net / 25% gross / 10% line / 12mo / 1mi / 25% GLA / 3-comp floor), worded as **our** opinion | `THRESHOLDS`, `compWarnings` |
 | Geocoding, keyless (US Census → OSM Nominatim), stored `geo_*` + generated `eff_*` | `geocode.js`, `db/412` |
-| 1004MC market series, with the form's **relative** windows resolved to real dates | `market.js`, `db/423` |
+| 1004MC market series, with the form's **relative** windows resolved to real dates | `market.js`, `db/449` |
 | Duplicate detection + human-confirmed merge | `property-merge.js`, `db/419` |
 | Standalone XML upload door (no loan file needed) | `xml-import.js`, `db/411` |
 | A comp's **contract date** (UAD `c MM/YY`), going forward | `db/425` |

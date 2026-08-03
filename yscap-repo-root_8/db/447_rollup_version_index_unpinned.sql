@@ -1,4 +1,4 @@
--- 421 — THE RE-ROLL SWEEP'S INDEX MUST NOT BE PINNED TO ONE VERSION NUMBER
+-- 447 — THE RE-ROLL SWEEP'S INDEX MUST NOT BE PINNED TO ONE VERSION NUMBER
 --
 -- db/414 created the index the boot re-roll sweep drains through:
 --
