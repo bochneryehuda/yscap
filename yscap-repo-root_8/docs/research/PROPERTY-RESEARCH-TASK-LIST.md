@@ -687,7 +687,42 @@ never attempted. Everything in this phase costs about $10, one time.
   it: a sale a second appraiser also described is the corroboration we want.
   STILL TO DO: a screen, and the wording must stay a prompt to go and look —
   never a verdict, never called an appraisal review or a CDA.
-- [ ] **5.10 Defensible time adjustment from contract date + FHFA HPI**
+- [x] **5.10 Defensible time adjustment from contract date + FHFA HPI** —
+  **DONE**: `db/451_hpi_index.sql`, `src/lib/research/hpi-load.js`,
+  `src/lib/research/time-adjust.js` (51 assertions), `scripts/load-hpi.js`.
+  **This replaces the single most dangerous wrong answer in the build.** The
+  trend was measured on OUR OWN sales, and sales bunched into one month produced
+  **3.95% a month**, pre-filling **+$190,750 on a $400,000 comparable**. Fifty
+  properties in one town cannot measure a market; the FHFA's purchase-only state
+  index can, because it is built from every conforming repeat sale in the state —
+  and it is the source a real appraiser cites, so a reviewer can check our figure
+  against a press release. Loaded live and measured: **NJ rose 4.48% over 18
+  months**, against the old engine's 3.95% per month.
+  **AND THE MARKET DATE IS THE CONTRACT DATE.** A sale that CLOSED in June was
+  agreed in March; the price evidences March's market and June is when the
+  paperwork finished. Adjusting from settlement credits the sale with three
+  months of movement it never saw. UAD states both and `db/425` already reads the
+  contract month, so this is a correction on data we hold. Measured on the real
+  index: the same sale gives 4.11% from its contract date against 4.48% from
+  settlement, and the sentence always names WHICH it used — "adjusted 17 months"
+  and "adjusted 18 months" are different claims about one sale.
+  **WHAT IT REFUSES:** no index for that market (never a national figure standing
+  in for a state); a sale older than the series; a sale NEWER than the last
+  published quarter — the index lags about two months, and inventing a value for
+  the gap is exactly the confident guess this replaces; and any reading over 60%
+  total or 3% a month, which means OUR reading is wrong rather than the market
+  being extraordinary. Under 0.5% it returns a true zero WITH a reason, because
+  "the market barely moved" and "nobody has worked this line" are different
+  things. The recent end is allowed to be short and SAYS how many months are
+  unpublished.
+  **NO NEW DEPENDENCY.** The FHFA download is named `.csv` and is in fact an
+  `.xlsx`; `hpi-load` reads the workbook with Node's own `zlib` rather than
+  adding a spreadsheet library to a backend whose entire dependency list is
+  `express` and `pg` — chosen so Render builds with no native code. It validates
+  the WHOLE file before writing a row (a moved header is refused, not read by
+  position) because a half-loaded index answers confidently for the states that
+  made it in, and it UPSERTS so a quarterly refresh is idempotent and a revised
+  quarter overwrites rather than leaving two rows nobody can choose between.
 - [ ] **5.11 Draw and save a market-area polygon**
 
 ## PHASE 6 — CONDITION, PROPERLY
