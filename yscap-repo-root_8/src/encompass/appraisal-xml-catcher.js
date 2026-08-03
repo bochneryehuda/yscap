@@ -24,10 +24,12 @@
  * concurrency 10. THIS walk is strictly sequential and paced (350ms between
  * loans, matching reader.bulkPullAllLoans), because a burst risks a vendor rate
  * limit that would hit the three other Encompass workers sharing this process
- * and credential. In steady state the `sinceDays:2` window keeps the list small,
- * so a tick is seconds. A large backlog costs minutes, and if a sweep outruns the
- * interval the in-flight guard skips the next tick and SAYS SO — the cadence
- * degrades loudly, never silently. Watch for "previous sweep still running".
+ * and credential. In steady state the 7-day window keeps the list small — this
+ * tenant modifies ~6 loans a day, so a tick is ~44 loans, about 45 seconds
+ * inside a 300-second interval. A large backlog costs minutes, and if a sweep
+ * outruns the interval the in-flight guard skips the next tick and SAYS SO — the
+ * cadence degrades loudly, never silently. Watch for "previous sweep still
+ * running": that line means the window or the pace needs tuning for this tenant.
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -91,6 +93,33 @@ const MAX_TIME_MS = 8.64e15;
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A tuning knob read from the environment, clamped to something usable. PURE.
+ *
+ * `Number('abc')` is NaN, and NaN is the shape that breaks things QUIETLY — this
+ * repo has already been bitten by it once (a typo'd megabyte budget became NaN,
+ * and `total > NaN` is always false, so the cap turned OFF rather than falling
+ * back). Both knobs here fail that way and both failures are invisible:
+ *   · a NaN pace makes `setTimeout(fn, NaN)` fire immediately, so the vendor
+ *     pacing silently disappears — the exact protection it was added for;
+ *   · a NaN window makes `new Date(NaN).toISOString()` THROW, which the pipeline
+ *     try/catch swallows into one error line, so the catcher stops catching
+ *     ANYTHING from a single typo.
+ * So a bad value falls back to the default and SAYS SO, rather than degrading.
+ */
+function envNum(name, dflt, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return dflt;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(`[encompass-xml] ${name}="${raw}" is not a number — using ${dflt}`);
+    return dflt;
+  }
+  const clamped = Math.min(max, Math.max(min, n));
+  if (clamped !== n) console.warn(`[encompass-xml] ${name}=${n} out of range — using ${clamped}`);
+  return clamped;
+}
 
 /**
  * Is the catcher switched off? Two ways, deliberately.
@@ -541,10 +570,12 @@ async function capture(db, res, meta) {
 // tenant modifies ~6 loans a day, so 7 days is ~44 loans ≈ 45s of paced sweeping
 // inside a 300s interval — a 3.5x safety margin over the 2 days first shipped,
 // for about thirty seconds. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
-const DEFAULT_SINCE_DAYS = Number(process.env.ENCOMPASS_APPRAISAL_XML_SINCE_DAYS || 7);
+// 1..90 days: below 1 the window is empty, and past ~90 the sweep stops fitting
+// inside its own interval on any real tenant.
+const DEFAULT_SINCE_DAYS = envNum('ENCOMPASS_APPRAISAL_XML_SINCE_DAYS', 7, { min: 1, max: 90 });
 
 async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, skewMs = 60000, log = false,
-  paceMs = Number(process.env.ENCOMPASS_APPRAISAL_XML_PACE_MS || 350) } = {}) {
+  paceMs = envNum('ENCOMPASS_APPRAISAL_XML_PACE_MS', 350, { min: 0, max: 10000 }) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
     skipped: 0, noLink: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
@@ -830,6 +861,6 @@ module.exports = {
   // exported for tests
   _internals: {
     validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE, makeTick,
-    decodeHead, looksLikeXml, tsOrNull, recordSighting,
+    decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };

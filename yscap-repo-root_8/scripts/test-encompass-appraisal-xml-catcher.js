@@ -15,13 +15,50 @@ const path = require('path');
 const M = require(path.join(__dirname, '..', 'src', 'encompass', 'appraisal-xml-catcher'));
 const {
   validityOf, isAppraisalXml, assertStorageHost, makeTick,
-  decodeHead, looksLikeXml, tsOrNull,
+  decodeHead, looksLikeXml, tsOrNull, envNum,
 } = M._internals;
 
 let pass = 0;
 // Sync assertions only — every async case below is awaited by the caller and its
 // result handed to `t`, so a rejected promise can never be silently swallowed.
 const t = (name, fn) => { try { fn(); pass++; } catch (e) { console.error(`FAIL: ${name}\n  ${e.message}`); process.exitCode = 1; } };
+
+// ── the tuning knobs survive a typo'd env value ─────────────────────────────
+t('a bad tuning value falls back to the default instead of breaking quietly', () => {
+  // NaN is the shape that breaks things silently, and both knobs fail that way:
+  // a NaN pace makes setTimeout fire immediately (the vendor pacing vanishes),
+  // and a NaN window makes new Date(NaN).toISOString() THROW — which the
+  // pipeline catch swallows into one line, so the catcher stops catching
+  // anything at all from a single typo.
+  const KEY = '__TEST_XML_KNOB';
+  const cases = [
+    ['abc', 7], ['', 7], ['   ', 7], ['NaN', 7], ['Infinity', 7],
+    ['0', 1], ['-3', 1], ['999999', 90], ['7', 7], ['14', 14],
+  ];
+  for (const [raw, want] of cases) {
+    process.env[KEY] = raw;
+    try {
+      assert.strictEqual(envNum(KEY, 7, { min: 1, max: 90 }), want,
+        `${JSON.stringify(raw)} should resolve to ${want}`);
+    } finally { delete process.env[KEY]; }
+  }
+  // An unset variable takes the default without touching process.env.
+  assert.strictEqual(envNum('__TEST_XML_UNSET', 350, { min: 0, max: 10000 }), 350);
+});
+
+t('a typo\'d window still produces a VALID date, never an Invalid one', () => {
+  // The failure this guards is specific: Math.max(1, NaN) is NaN, so
+  // `new Date(Date.now() - NaN)` is an Invalid Date and .toISOString() throws.
+  const KEY = '__TEST_XML_DAYS';
+  for (const raw of ['abc', '-3', '0', 'Infinity', '']) {
+    process.env[KEY] = raw;
+    try {
+      const days = envNum(KEY, 7, { min: 1, max: 90 });
+      const since = new Date(Date.now() - Math.max(1, days) * 86400000).toISOString().slice(0, 10);
+      assert.match(since, /^\d{4}-\d{2}-\d{2}$/, `${JSON.stringify(raw)} must yield a real date`);
+    } finally { delete process.env[KEY]; }
+  }
+});
 
 // ── validityOf ──────────────────────────────────────────────────────────────
 // The real stamp from loan 2222984e's XML: base64 of epoch-ms 1784812686028.
