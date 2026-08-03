@@ -22,14 +22,26 @@
  * ON THE TIMING MARGIN — the honest version. The "~20 seconds for the whole
  * tenant" figure from the research came from a probe script running at
  * concurrency 10. THIS walk is strictly sequential and paced (350ms between
- * loans, matching reader.bulkPullAllLoans), because a burst risks a vendor rate
- * limit that would hit the three other Encompass workers sharing this process
- * and credential. In steady state the 7-day window keeps the list small — this
- * tenant modifies ~6 loans a day, so a tick is ~44 loans, about 45 seconds
- * inside a 300-second interval. A large backlog costs minutes, and if a sweep
- * outruns the interval the in-flight guard skips the next tick and SAYS SO — the
- * cadence degrades loudly, never silently. Watch for "previous sweep still
- * running": that line means the window or the pace needs tuning for this tenant.
+ * loans, matching reader.bulkPullAllLoans). In steady state the 7-day window
+ * keeps the list small — this tenant modifies ~6 loans a day, so a tick is ~44
+ * loans, about 45 seconds inside a 300-second interval. A large backlog costs
+ * minutes, and if a sweep outruns the interval the in-flight guard skips the
+ * next tick and SAYS SO — the cadence degrades loudly, never silently. Watch for
+ * "previous sweep still running": that line means the window or the pace needs
+ * tuning for this tenant.
+ *
+ * WHAT THE PACING ACTUALLY BUYS — stated precisely, because the obvious claim is
+ * too strong. Encompass's binding limit is CONCURRENCY (30 simultaneous calls
+ * per lender environment, shared with the desktop clients and every other
+ * vendor), not a per-minute quota — see docs/research. A strictly sequential
+ * walk holds ONE slot whether it is paced or not, so the pause does not reduce
+ * our concurrency and would not, on its own, have prevented a 429. What it does
+ * reduce is the request RATE and the duty cycle inside a sweep (~2.9 -> ~1.4
+ * req/s here), which is cheap insurance and matches the posture the research
+ * recommends and that bulkPullAllLoans already follows. The thing that would
+ * genuinely protect us when a 429 does arrive — honouring Retry-After, backoff
+ * with jitter, reading X-Concurrency-Limit-Remaining — is NOT implemented
+ * anywhere in the Encompass client, and pacing is not a substitute for it.
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -108,16 +120,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *     ANYTHING from a single typo.
  * So a bad value falls back to the default and SAYS SO, rather than degrading.
  */
+// Said ONCE per bad value, not once per read. `paceMs` is a parameter default,
+// so it is re-read on every sweep — an unbounded warning there is 288 identical
+// lines a day, which is how a log stops being read at all. Keyed on name+value
+// so a corrected setting warns again if it is broken a second time.
+const _warnedEnv = new Set();
+function warnOnce(key, msg) {
+  if (_warnedEnv.has(key)) return;
+  _warnedEnv.add(key);
+  console.warn(msg);
+}
+
 function envNum(name, dflt, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const raw = process.env[name];
   if (raw == null || String(raw).trim() === '') return dflt;
   const n = Number(raw);
   if (!Number.isFinite(n)) {
-    console.warn(`[encompass-xml] ${name}="${raw}" is not a number — using ${dflt}`);
+    warnOnce(`${name}=${raw}`, `[encompass-xml] ${name}="${raw}" is not a number — using ${dflt}`);
     return dflt;
   }
   const clamped = Math.min(max, Math.max(min, n));
-  if (clamped !== n) console.warn(`[encompass-xml] ${name}=${n} out of range — using ${clamped}`);
+  if (clamped !== n) {
+    warnOnce(`${name}=${n}`, `[encompass-xml] ${name}=${n} out of range — using ${clamped}`);
+  }
   return clamped;
 }
 
@@ -559,12 +584,19 @@ async function capture(db, res, meta) {
 // an AMC's delivery is reflected in `Loan.LastModified`, or a delivery on an
 // otherwise-quiet loan never enters the window and is never even looked at.
 //
-// MEASURED on the live tenant rather than assumed: across 45 real XML deliveries,
-// `Loan.LastModified` was at or after the delivery EVERY time — zero
-// counterexamples. That is the reassuring direction, but it is not proof: the
-// tightest gap was 10 hours, so on these (busy) loans the bump cannot be
-// attributed to the delivery itself rather than to the next thing that touched
-// the file.
+// MEASURED on the live tenant rather than assumed: across 45 real XML
+// deliveries, `Loan.LastModified` was at or after the delivery every time — no
+// counterexample.
+//
+// BE PRECISE ABOUT WHAT THAT IS WORTH, because it is easy to over-read. The
+// failure mode only shows on a QUIET loan — one where the delivery is the last
+// thing that happened. The sample contained none: the tightest gap measured was
+// 10 hours, so every one of the 45 had been re-touched within half a day. A
+// sample with no quiet loans has NO POWER to detect a failure that only appears
+// on quiet loans, so the absence of that signature is not evidence against it.
+// What the measurement does establish is narrower and still worth having: no
+// delivery was ever recorded AFTER its loan's stamp, which is where a
+// contradiction would have surfaced first.
 //
 // So the window is sized for the case we could NOT rule out. Also measured: the
 // tenant modifies ~6 loans a day, so 7 days is ~44 loans ≈ 45s of paced sweeping
@@ -609,9 +641,15 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
       // the wrong place. There is no pagination, and the sort is LastModified
       // DESCENDING — so hitting the cap drops the STALEST loans, which is
       // precisely where a delivery that did not bump `Loan.LastModified` would
-      // be sitting. On this tenant it cannot bite (~44 loans in 7 days needs
-      // ~11x growth to reach 500), but a growing tenant would lose the tail with
-      // nothing anywhere to read.
+      // be sitting.
+      //
+      // In STEADY STATE this tenant is nowhere near it (~44 loans in 7 days
+      // against a 500 cap) — but that "~6 loans a day" is a MEAN, and the cap
+      // turns on the MAXIMUM in any rolling 7-day window. One bulk event (a
+      // tenant-wide field update, a servicing import, a mass folder move) can
+      // modify hundreds of loans in a day with no growth in the business at all,
+      // so "it cannot happen here" would be the same mistake as reading an
+      // average as a guarantee. Hence an alarm rather than an assumption.
       if (Array.isArray(rows) && rows.length >= PIPELINE_LIMIT) {
         pushErr(out, `pipeline returned the full ${PIPELINE_LIMIT}-row cap — older loans in the window were NOT swept; shorten ENCOMPASS_APPRAISAL_XML_SINCE_DAYS or add paging`);
         console.error(`[encompass-xml] ALARM: the pipeline search hit its ${PIPELINE_LIMIT}-row cap. ` +
