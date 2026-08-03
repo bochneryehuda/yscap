@@ -50,6 +50,9 @@ const { formatRefusalCounts } = require('../lib/appraisal/import');
 const { findConflicts } = require('../lib/research/conflicts');
 const VAR = require('../lib/research/variance');
 const ADJ = require('../lib/research/adjustment-corpus');
+// The most adjustment lines one market answer will read. Above this the answer
+// says so rather than letting an arbitrary slice set the median.
+const ROW_CAP = 20000;
 
 router.use(requireAuth, requireStaff);
 
@@ -831,7 +834,7 @@ router.get('/adjustment-rates', async (req, res, next) => {
     // search's relaxation ladder already applies.
     const fetchFor = async (scope) => {
       const params = [];
-      const where = ['a.unit_delta IS NOT NULL'];
+      const where = ['a.amount IS NOT NULL'];
       const P = (v) => { params.push(v); return '$' + params.length; };
       if (scope.state) where.push(`a.state = ${P(String(scope.state).toUpperCase())}`);
       if (scope.city) where.push(`lower(a.city) = ${P(String(scope.city).toLowerCase())}`);
@@ -841,16 +844,36 @@ router.get('/adjustment-rates', async (req, res, next) => {
            FROM property_adjustments a
            JOIN property_observations o ON o.id = a.observation_id
           WHERE ${where.join(' AND ')}
-          LIMIT 5000`, params)).rows;
+          LIMIT ${ROW_CAP + 1}`, params)).rows;
     };
 
+    // NO SILENT CAP. A truncated sample is a biased median — and the rows come
+    // back in no particular order, so the bias is arbitrary rather than merely
+    // conservative. One extra row is fetched so the truncation can be DETECTED,
+    // and it is reported rather than quietly shaping the answer. NJ, the busiest
+    // state in the corpus, holds ~5,700 lines, so this is a real boundary.
     const rungs = [];
     if (useCity) rungs.push({ state: useState, city: useCity, label: useState ? `${useCity}, ${useState}` : useCity });
     if (useState) rungs.push({ state: useState, city: null, label: `all of ${useState}` });
 
+    // TWO KINDS OF EVIDENCE, ANSWERED SEPARATELY AND NEVER MIXED.
+    //
+    //  · PER-UNIT — a line with a measured delta, so `amount / delta` is a rate in
+    //    dollars a square foot, grouped by BASIS (living area and gross building
+    //    area are different measures and pooling them describes nothing).
+    //  · FLAT — a garage, a porch, a finished basement, a condition grade. Most of
+    //    the grid, and most of the evidence: 323 paid RoomCount lines against 358
+    //    square-foot ones. No countable delta exists, so no rate can be formed;
+    //    the claim is one step less precise and equally defensible.
+    //
+    // The difference that matters is what a ZERO means. With a delta, $0 provably
+    // means the appraiser looked and declined. Without one it might equally mean
+    // there was nothing to adjust for, and `summarizeAmounts` says so rather than
+    // claiming a judgement nobody made.
     const summarize = (lines) => {
+      const perUnit = lines.filter((l) => l.unit_delta != null);
       const byBasis = new Map();
-      for (const r of lines) {
+      for (const r of perUnit) {
         const k = r.unit_delta_basis || 'unknown';
         if (!byBasis.has(k)) byBasis.set(k, []);
         byBasis.get(k).push(r);
@@ -868,16 +891,45 @@ router.get('/adjustment-rates', async (req, res, next) => {
             .sort((x, y) => x - y);
           if (mine.length) thisReport = ADJ.compareRate(mine[Math.floor((mine.length - 1) / 2)], summary);
         }
-        return { basis, line_types: [...new Set(rowsOf.map((l) => l.line_type).filter(Boolean))],
+        return { kind: 'per_unit', basis,
+          line_types: [...new Set(rowsOf.map((l) => l.line_type).filter(Boolean))],
           summary, thisReport };
+      }).sort((a, b) => (b.summary.n || 0) - (a.summary.n || 0));
+    };
+
+    /** The flat lines, one market per line type. */
+    const summarizeFlat = (lines) => {
+      const byType = new Map();
+      for (const r of lines) {
+        if (r.unit_delta != null) continue;
+        const k = r.line_type || 'Other';
+        if (!byType.has(k)) byType.set(k, []);
+        byType.get(k).push(r);
+      }
+      return [...byType].map(([lineType, rowsOf]) => {
+        const summary = ADJ.summarizeAmounts(rowsOf);
+        let thisReport = null;
+        if (scopeAppraisal && summary.available) {
+          const mine = rowsOf
+            .filter((l) => String(l.appraisal_id) === String(scopeAppraisal.id))
+            .map((l) => Math.abs(Number(l.amount)))
+            .filter((n) => Number.isFinite(n) && n > 0)
+            .sort((x, y) => x - y);
+          if (mine.length) thisReport = ADJ.compareRate(mine[Math.floor((mine.length - 1) / 2)], summary);
+        }
+        return { kind: 'flat', line_type: lineType, summary, thisReport };
       }).sort((a, b) => (b.summary.n || 0) - (a.summary.n || 0));
     };
 
     const tried = [];
     let markets = [];
     let answeredAt = null;
+    let truncated = false;
     for (const rung of rungs) {
-      const m = summarize(await fetchFor(rung));
+      const fetched = await fetchFor(rung);
+      if (fetched.length > ROW_CAP) truncated = true;
+      const lines = fetched.slice(0, ROW_CAP);
+      const m = summarize(lines).concat(summarizeFlat(lines));
       tried.push({ scope: rung.label, answered: m.some((x) => x.summary.available) });
       if (m.some((x) => x.summary.available)) { markets = m; answeredAt = rung.label; break; }
       // Keep the narrowest attempt's refusals, so an unanswered request still
@@ -889,7 +941,7 @@ router.get('/adjustment-rates', async (req, res, next) => {
       appraisal_id: scopeAppraisal ? scopeAppraisal.id : null,
       // WHICH market actually answered, and every rung that was tried — a
       // state-wide habit reported as a local one is the failure this prevents.
-      scope: answeredAt, tried, markets });
+      scope: answeredAt, tried, truncated, markets });
   } catch (e) { next(e); }
 });
 

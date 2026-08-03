@@ -179,6 +179,69 @@ for (const rows of [[], spread([40, 45, 50]),
     + 'with living area on a 1004');
 }
 
+// ---------------------------------------------------------------------------
+// THE LINES WITH NO MEASURABLE UNIT — a garage, a porch, a finished basement
+// ---------------------------------------------------------------------------
+// Most of the grid is not per-square-foot: `RoomCount`, `CarStorage`,
+// `BasementFinish` and `Condition` carry a flat figure and free text ("2 Car
+// Garage", "Pool") with no countable delta, so no rate can be formed. Measured on
+// the real corpus that is MOST of the evidence — 323 paid RoomCount lines against
+// 358 square-foot ones.
+const flat = (amount, report, appraiser) => ({ amount, appraisal_id: report, appraiser_id: appraiser });
+const flatSpread = (amounts) => amounts.map((a, i) => flat(a, `f r${i}`, `f a${i}`));
+{
+  const s = AC.summarizeAmounts(flatSpread([3000, 4000, 5000, 6000, 7000, 8000]));
+  ok(s.available && s.median === 5500, `flat amounts summarize the same way (${s.median})`);
+  ok(s.q1 != null && s.q3 != null, 'with the same quartiles, never a σ');
+}
+{
+  // THE SIGN IS DIRECTION, NOT SIZE. A comparable with the better garage is
+  // adjusted DOWN and one with the worse is adjusted UP — the same claim about
+  // the same feature, so the magnitudes belong together.
+  const s = AC.summarizeAmounts(flatSpread([3000, -4000, 5000, -6000, 7000, -8000]));
+  ok(s.available && s.median === 5500,
+    'a negative adjustment is the same size claim as a positive one — the sign says which '
+    + 'way round the two houses were, not what the feature costs');
+}
+{
+  // THE RULE THAT CHANGES, AND IT IS THE IMPORTANT ONE. With a measured delta a
+  // $0 provably means "looked and chose not to". With no delta it might equally
+  // mean there was nothing to adjust FOR — the comparable had the same garage.
+  // The two are indistinguishable here, so claiming a decline would be exactly
+  // the fabrication the per-unit side exists to prevent.
+  const s = AC.summarizeAmounts(flatSpread([3000, 4000, 5000, 6000, 7000, 8000])
+    .concat([flat(0, 'z1', 'za1'), flat(0, 'z2', 'za2')]));
+  ok(s.zeros === 2, 'a zero on a flat line is counted');
+  ok(s.declines === 0, '…and is NEVER called a decline — this data cannot tell the two apart');
+  ok(/may mean they saw no difference or chose not to adjust/.test(s.sentence || ''),
+    'and the sentence says so outright, rather than implying a judgement nobody made');
+  ok(s.median === AC.summarizeAmounts(flatSpread([3000, 4000, 5000, 6000, 7000, 8000])).median,
+    'and a zero never moves the median either way');
+}
+{
+  const s = AC.summarizeAmounts(flatSpread([5000, 6000, 7000, 8000, 9000, 250000]));
+  ok(s.n === 5, 'a six-figure line is a mis-parse or a whole-property adjustment wearing a '
+    + 'feature\'s name — not what our appraisers charge for a garage');
+}
+{
+  ok(AC.summarizeAmounts([]).available === false, 'nothing is a refusal');
+  ok(AC.summarizeAmounts(null).available === false && AC.summarizeAmounts(undefined).available === false,
+    'and junk is refused without throwing');
+  const allZero = AC.summarizeAmounts([flat(0, 'r1', 'a1'), flat(0, 'r2', 'a2'), flat(0, 'r3', 'a3')]);
+  ok(!allZero.available && allZero.zeros === 3,
+    'a line every report wrote $0 against has no amount to report — and the zeros are still counted');
+}
+{
+  // THE GATES ARE THE SAME ONES, from the same definition — the two sides must
+  // never disagree about what "enough evidence" means on the same grid.
+  ok(AC.summarizeAmounts(flatSpread([3000, 4000, 5000])).gate === 'too_few_rates',
+    'too few is too few, on either side');
+  ok(AC.summarizeAmounts([5000, 6000, 7000, 8000, 9000, 10000].map((a, i) => flat(a, 'one', `a${i}`)))
+    .gate === 'too_few_reports', 'and one report is one report');
+  ok(AC.summarizeAmounts([5000, 6000, 7000, 8000, 9000, 10000].map((a, i) => flat(a, `r${i}`, 'same')))
+    .gate === 'one_appraiser', 'and one appraiser is one habit');
+}
+
 console.log(fail
   ? `\ntest-adjustment-corpus-pure: ${pass} passed, ${fail} FAILED`
   : `\ntest-adjustment-corpus-pure: ${pass} passed`);

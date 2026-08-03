@@ -473,8 +473,19 @@ never attempted. Everything in this phase costs about $10, one time.
   at city level, fell back to all of NJ, and reads *"This report used $40 a square
   foot. 42 of our reports (16 appraisers) used a median of $50; half of them
   between $40 and $50. 43 more saw the same difference and adjusted nothing."*
-  STILL TO DO: a screen, and the non-per-unit line types (a bathroom, a garage)
-  which need a count rather than a measured delta.
+  **The non-per-unit lines are done too** (`summarizeAmounts`) — a garage, a porch,
+  a finished basement, a condition grade. That is MOST of the evidence: 323 paid
+  RoomCount lines against 358 square-foot ones. ONE RULE CHANGES and it is the
+  important one: a zero here is NOT a decline. With a measured delta, `$0 against
+  a 200-foot gap` provably means the appraiser looked and chose not to; with no
+  delta it might equally mean there was nothing to adjust FOR, and the two are
+  indistinguishable in this data — so they are reported as `zeros` and the wording
+  says outright that the grid does not tell us which. Everything after "what is
+  this row worth" (the gates, the 40% cap, the quartiles) is ONE shared definition
+  so the two sides can never disagree about what "enough evidence" means on the
+  same grid. Live on NJ, 21 usable markets: porch $3,000, garage $6,000, finished
+  basement $10,000, condition $25,000 — and Age REFUSES on 4 rates against 300
+  zeros, which is itself the finding. STILL TO DO: a screen.
 - [ ] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin

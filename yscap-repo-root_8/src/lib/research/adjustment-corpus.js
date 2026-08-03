@@ -65,6 +65,9 @@ const RULES = Object.freeze({
   // mis-parsed line or a mis-stated area, and one of them drags a median further
   // than ten good rows pull it back.
   MAX_RATE: 500,
+  // A six-figure line item is a mis-parse or a whole-property adjustment wearing
+  // a feature's name — either way it is not what our appraisers charge for a garage.
+  MAX_AMOUNT: 100000,
 });
 
 const num = (v) => {
@@ -133,6 +136,29 @@ function summarizeRates(rows, opts = {}) {
     });
   }
 
+  const out = summarizeSample(kept, { declines });
+  if (!out.available) return out;
+  const unit = out.basis === 'sqft_gba' ? 'a square foot of building'
+    : (out.basis === 'sqft' ? 'a square foot' : 'a unit');
+  out.sentence = `${out.reports} of our reports (${out.appraisers} appraisers) adjusted for this, at a `
+    + `median of $${round2(out.median)} ${unit}; half of them were between $${round2(out.q1)} and `
+    + `$${round2(out.q3)}`
+    + (declines ? `. ${declines} more saw the same difference and adjusted nothing` : '')
+    + (out.capped ? '. One appraiser wrote more than their share, so they count once here' : '');
+  return out;
+}
+
+/**
+ * THE GATES, THE CAP AND THE QUARTILES — one definition, used by both sides.
+ *
+ * `summarizeRates` (per-unit) and `summarizeAmounts` (flat) differ only in how a
+ * row becomes a number and in what a zero MEANS. Everything after that — how much
+ * evidence is enough, how one appraiser's influence is limited, and which spread
+ * is published — must be identical, or the two would disagree about what "enough"
+ * means on the same grid.
+ */
+function summarizeSample(kept, opts = {}) {
+  const declines = opts.declines || 0;
   // RULE 4 — no one appraiser is the market. Over the cap, that appraiser is
   // reduced to ONE row carrying the median of their own rates: they still count,
   // once, as the one opinion they are.
@@ -204,18 +230,8 @@ function summarizeRates(rows, opts = {}) {
   const median = quantile(rates, 0.5);
   const q1 = quantile(rates, 0.25);
   const q3 = quantile(rates, 0.75);
-  const unit = basis === 'sqft_gba' ? 'a square foot of building' : (basis === 'sqft' ? 'a square foot' : 'a unit');
-  return Object.assign({}, base, {
-    available: true, gate: null, why: null,
-    median: round2(median), q1: round2(q1), q3: round2(q3),
-    // ALWAYS THE FULL SENTENCE. Every count that qualifies the number travels
-    // with it — a median with no n, no report count and no decline count is the
-    // indefensible version of this claim.
-    sentence: `${reports} of our reports (${appraisers} appraisers) adjusted for this, at a median of `
-      + `$${round2(median)} ${unit}; half of them were between $${round2(q1)} and $${round2(q3)}`
-      + (declines ? `. ${declines} more saw the same difference and adjusted nothing` : '')
-      + (capped ? '. One appraiser wrote more than their share, so they count once here' : ''),
-  });
+  return Object.assign({}, base, { available: true, gate: null, why: null,
+    median: round2(median), q1: round2(q1), q3: round2(q3) });
 }
 
 /**
@@ -240,3 +256,68 @@ function compareRate(thisRate, summary) {
 }
 
 module.exports = { summarizeRates, compareRate, rateOf, RULES, _internals: { quantile } };
+
+/**
+ * WHAT OUR APPRAISERS PAY FOR A LINE THAT HAS NO MEASURABLE UNIT — a garage, a
+ * finished basement, a porch, a condition grade.
+ *
+ * Most of the grid is not per-square-foot. `RoomCount`, `CarStorage`,
+ * `BasementFinish` and `Condition` carry a flat dollar figure and a free-text
+ * description ("2 Car Garage", "Pool", "Updated Bath"), with no countable delta
+ * anywhere — so `amount / delta` cannot be formed and `summarizeRates` correctly
+ * says nothing about them. Measured on the real corpus that is most of the
+ * evidence: 323 paid RoomCount lines, 197 BasementFinish, 163 CarStorage.
+ *
+ * The same claim is still available, one step less precise and equally
+ * defensible: not "a garage is worth $5,000" but "our reports adjust a median of
+ * $5,000 for a garage line, and here is the spread and who said it".
+ *
+ * ONE RULE CHANGES, AND IT IS THE IMPORTANT ONE. A zero here is NOT a decline.
+ * With a measured delta, `$0 against a 200-foot gap` provably means the appraiser
+ * looked and chose not to adjust. Without one, `$0` might equally mean there was
+ * nothing to adjust FOR — the comparable had the same garage. The two are
+ * indistinguishable in this data, so they are reported as `zeros` and never as
+ * declines, and the wording says we cannot tell them apart. Claiming otherwise
+ * would be exactly the fabrication the per-unit side exists to avoid.
+ *
+ * THE SIGN IS DIRECTION, NOT SIZE. A comparable with the better garage is
+ * adjusted DOWN and one with the worse is adjusted UP; the magnitude is the same
+ * claim about the same feature, so amounts are summarized in absolute value.
+ */
+function summarizeAmounts(rows) {
+  const all = Array.isArray(rows) ? rows : [];
+  const kept = [];
+  let zeros = 0;
+  for (const r of all) {
+    const amount = num(r && r.amount);
+    if (amount == null) continue;
+    if (amount === 0) { zeros++; continue; }
+    const size = Math.abs(amount);
+    // A six-figure line item on a grid is a mis-parse or a whole-property
+    // adjustment wearing a feature's name; either way it is not what our
+    // appraisers charge for a garage.
+    if (size > RULES.MAX_AMOUNT) continue;
+    kept.push({
+      rate: size,
+      report: r.appraisal_id == null ? null : String(r.appraisal_id),
+      appraiser: r.appraiser_id == null ? null : String(r.appraiser_id),
+      basis: null,
+    });
+  }
+  // The gates, the cap and the quartiles are IDENTICAL to the per-unit side, so
+  // the two can never drift about what "enough evidence" means.
+  const out = summarizeSample(kept, { declines: 0 });
+  out.zeros = zeros;
+  if (out.available) {
+    out.sentence = `${out.reports} of our reports (${out.appraisers} appraisers) adjusted for this, at a `
+      + `median of $${round2(out.median)}; half of them were between $${round2(out.q1)} and `
+      + `$${round2(out.q3)}`
+      + (zeros ? `. ${zeros} more wrote $0, which may mean they saw no difference or chose not to `
+        + 'adjust — the grid does not say which' : '')
+      + (out.capped ? '. One appraiser wrote more than their share, so they count once here' : '');
+  }
+  return out;
+}
+
+module.exports.summarizeAmounts = summarizeAmounts;
+
