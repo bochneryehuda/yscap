@@ -106,8 +106,15 @@ router.get('/flips', async (req, res, next) => {
       propertyId: isUuid(req.query.property_id) ? req.query.property_id : null,
       months: K.int(req.query.months, { max: 120 }),
       soldWithinMonths: K.int(req.query.sold_within_months, { max: 240 }),
-      minSpreadPct: req.query.min_spread_pct === undefined || req.query.min_spread_pct === ''
-        ? undefined : K.num(req.query.min_spread_pct),
+      // AN UNREADABLE NUMBER IS NOT A FILTER. `K.num('xyz')` answers null, not
+      // undefined, and `Number(null)` is 0 — so a stray character in the URL
+      // quietly applied "spread >= 0%" and deleted every loss-making flip from
+      // the answer. Measured on the real corpus: 50 rows became 44 and all six
+      // losses vanished, with a 200 and no hint anything had happened.
+      minSpreadPct: (() => {
+        const v = K.num(req.query.min_spread_pct);
+        return v == null ? undefined : v;
+      })(),
       limit: K.int(req.query.limit, { max: 200 }),
     });
     res.json(found);
@@ -706,6 +713,16 @@ router.get('/comps', async (req, res, next) => {
       ladder.push({ step: rung.id, label: rung.label, found: got.total });
       if (!best || got.total > best.total) {
         best = got; bestRung = rung.id; bestFilters = Object.assign({}, active);
+      } else if (got.total === 0 && change) {
+        // A RUNG THAT FOUND NOTHING PUTS BACK WHAT IT RELAXED. `active` is
+        // mutated in place, so a fruitless "any kind of sale" left `comp_set`
+        // deleted while the NEXT rung ran — and the answer was then reported
+        // under one rung's name while two relaxations were in force. The comp
+        // picker shows no ladder at all, so an officer would have been handed
+        // as-is sales of a different kind of building with nothing saying so.
+        for (const [k, v] of Object.entries(change)) {
+          if (v === undefined) { if (k in filters) active[k] = filters[k]; } else delete active[k];
+        }
       }
       if (best.total >= want) break;
     }

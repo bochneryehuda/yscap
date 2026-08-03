@@ -607,8 +607,18 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
  ${rows}
 </COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`).comparables[0] || {});
 
-  ok(grid(row('View', 'Avg/BsyRd')).viewType === 'Avg/BsyRd',
-    'a report with no UAD block gets its view from the grid row — 360 comparables');
+  // THE GRID ROW IS READ, NOT COPIED. This used to assert the raw string came
+  // through verbatim, which is exactly the defect the UAD reader was added for:
+  // `Avg/BsyRd` is a rating AND a factor, and stored whole it reached a screen as
+  // the property's "View". Now the rating goes to the rating column and the
+  // factor is expanded, so the adverse one — the one an underwriter is looking
+  // for — is finally findable.
+  {
+    const v = grid(row('View', 'Avg/BsyRd'));
+    ok(v.viewType === 'BusyRoad' && v.viewRating === 'Neutral',
+      'a report with no UAD block gets its view from the grid row — 360 comparables — and it is '
+      + 'READ, so the rating and the thing itself land in their own columns');
+  }
   ok(grid(row('Location', 'Traffic exposure')).locationType === 'Traffic exposure',
     'and its location the same way');
   ok(grid(row('FinancingConcessions', 'Conventional')).financingType === 'Conventional',

@@ -89,6 +89,10 @@ export default function StaffCompSearch() {
   // it was explicitly asked for, so the ladder's most useful rungs would never
   // fire. A control the user actually touches lands in the URL and drops off
   // this list, and from then on it is honoured exactly as typed.
+  // `comp_set` is NOT in here on purpose: it is off by default, so when it IS set
+  // the officer set it and the server must honour it exactly. That is why the
+  // ladder's "sales of any kind" rung is unreachable from this screen, and why
+  // the empty state below has to say so rather than promise a fallback.
   const DEFAULTS = { radius_miles: '1', sold_within_months: '18', want: '6' };
   const effective = useMemo(() => {
     const e = Object.assign({}, DEFAULTS, q);
@@ -212,9 +216,11 @@ export default function StaffCompSearch() {
               properties have been used on an after-repair grid, 144 of them with
               a recorded sale, and only 6 appear on both — the two sets really are
               different sales.
-              Left OFF by default: it is a real narrowing, the officer should
-              choose it, and the ladder falls back with a labelled rung rather
-              than leaving an empty screen if a town holds none. */}
+              Left OFF by default: it is a real narrowing and the officer should
+              choose it. Once chosen it is HONOURED — the ladder never widens
+              what someone asked for explicitly — so an empty answer here means
+              this town holds no renovated sales, which the coverage panel below
+              says in words. */}
           <select style={{ ...S.input, width: 'auto' }} value={effective.comp_set || ''}
             onChange={(e) => apply({ comp_set: e.target.value })}
             aria-label="Which kind of sale">

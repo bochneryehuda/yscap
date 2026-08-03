@@ -28,8 +28,35 @@ const XML = `<?xml version="1.0"?><VALUATION_RESPONSE><REPORT AppraisalFormType=
 <COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="600000" SalesPricePerGrossBuildingAreaAmount="121.40">
  <LOCATION PropertyStreetAddress="9 Reparse Rd ${sfx}" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
  ${R(5,3,'1.0')}${R(5,2,'1.0')}${R(4,2,'1.0')}
+ <SALE_PRICE_ADJUSTMENT _Type="View" _Description="N;Res;" _Amount="0"/>
+ <SALE_PRICE_ADJUSTMENT _Type="Location" _Description="A;BsySt;" _Amount="-5000"/>
 </COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`;
 let bid, appId, docId, apprId;
+
+// ── THE LIST THAT DRIVES THE SWEEP MUST HAVE NO DUPLICATE ─────────────────────
+// `REPARSED` is mapped straight into `SET ${k} = $n`, so one name listed twice
+// produces `view_rating = $2 … view_rating = $15`; Postgres refuses the whole
+// statement ("multiple assignments to same column") and the pass's own catch
+// swallows it. The report is then never stamped, so it is re-read from storage on
+// EVERY boot and repaired on NONE — the entire back book, silently. It shipped
+// exactly that way once, and CI stayed green because this fixture's grid happened
+// to carry no View or Location row, so all four duplicated columns were null.
+// Both halves of that hole are closed: the fixture now states them, and this
+// assertion needs no fixture at all.
+const reparsedNames = require('fs')
+  .readFileSync(require('path').join(__dirname, '../src/lib/appraisal/desk.js'), 'utf8')
+  .match(/const REPARSED = \[([\s\S]*?)\];/)[1]
+  .match(/'[a-z0-9_]+'/g).map((x) => x.slice(1, -1));
+const dupNames = reparsedNames.filter((n, i) => reparsedNames.indexOf(n) !== i);
+let structuralOk = true;
+if (dupNames.length) {
+  structuralOk = false;
+  console.log(`FAIL REPARSED lists ${[...new Set(dupNames)].join(', ')} twice — every re-parse `
+    + 'UPDATE will be refused by Postgres and swallowed, so the sweep repairs nothing');
+} else {
+  console.log(`PASS REPARSED is duplicate-free (${reparsedNames.length} columns)`);
+}
+
 (async () => {
   try {
     bid = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Re','Parse',$1) RETURNING id`, [`rp${sfx}@t.test`])).rows[0].id;
@@ -101,10 +128,27 @@ let bid, appId, docId, apprId;
     console.log(dupRows.length === 2 && dupRows.every((x) => x.beds === 7)
       ? 'PASS every row carrying a duplicated seq is written once, to itself'
       : `FAIL duplicate-seq rows: ${JSON.stringify(dupRows)}`);
-    if (!(kept && dupRows.length === 2 && dupRows.every((x) => x.beds === 7))) process.exitCode = 1;
 
-    console.log(good ? '\ntest-comparable-reparse-db: PASS — a stored wrong count was healed from the XML' : '\ntest-comparable-reparse-db: FAIL');
-    process.exitCode = good ? 0 : 1;
+    // ── AND THE VIEW / LOCATION CELLS REACH THE ROW ───────────────────────
+    // Not a value check for its own sake: these are the four columns the
+    // duplicate was in, so this is what proves the UPDATE was accepted at all.
+    const vl = (await db.query(
+      `SELECT view_rating, location_rating, view_type, location_type
+         FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY sale_price DESC LIMIT 1`,
+      [apprId])).rows[0] || {};
+    const vlOk = vl.view_rating === 'Neutral' && vl.location_rating === 'Adverse'
+      && vl.view_type === 'Residential' && vl.location_type === 'BusyRoad';
+    console.log(vlOk
+      ? 'PASS the view and location cells are read off the grid and reach the row'
+      : `FAIL view/location did not land: ${JSON.stringify(vl)}`);
+
+    const allOk = good && kept && vlOk && structuralOk
+      && dupRows.length === 2 && dupRows.every((x) => x.beds === 7);
+    console.log(allOk ? '\ntest-comparable-reparse-db: PASS — a stored wrong count was healed from the XML' : '\ntest-comparable-reparse-db: FAIL');
+    // EVERY check, not just the last one. This line used to be a bare
+    // `good ? 0 : 1`, which overwrote the failures the two checks above had
+    // already recorded — so a real regression in either of them exited 0.
+    process.exitCode = allOk ? 0 : 1;
   } catch (e) { console.log('THREW', e.stack || e); process.exitCode = 1; }
   finally {
     // The warehouse ingest is fire-and-forget; let it settle before the teardown

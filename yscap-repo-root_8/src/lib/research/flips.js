@@ -8,9 +8,9 @@
  * has held both all along, because an appraiser records each comparable's PRIOR
  * sale on the grid, and the ingest files that as its own transaction.
  *
- * Measured on the real 152-report corpus: 56 buy→sell pairs inside two years
- * across 52 properties, averaging a $165,816 spread over 215 days, 41 of them
- * over 15%. That is real completed-exit evidence in the towns we lend in, and no
+ * Measured on the real 152-report corpus, by the query this file actually runs:
+ * 50 buy→sell pairs inside two years across 48 properties, averaging a $126,895
+ * spread over 203 days, 34 of them over 15% and 6 of them at a loss. That is real completed-exit evidence in the towns we lend in, and no
  * data vendor sells it in this shape — it comes from the prior-sale line of
  * reports we paid for.
  *
@@ -76,14 +76,17 @@ const NOT_ARMS_LENGTH = new Set(['REOSale', 'ShortSale', 'EstateSale', 'CourtOrd
 async function findFlips(db, opts = {}) {
   const params = [];
   const P = (v) => { params.push(v); return '$' + params.length; };
-  const where = [
-    // Both ends must be settled sales with a real price. `sale_status` is NULL
-    // for a closed sale (db/157), so the COALESCE is load-bearing.
-    "COALESCE(s1.sale_status,'closed') = 'closed'",
-    "COALESCE(s2.sale_status,'closed') = 'closed'",
-    's1.sale_price > 0', 's2.sale_price > 0',
-    's1.sale_date IS NOT NULL', 's2.sale_date IS NOT NULL',
-  ];
+  // Both ends must be settled sales with a REAL price — see `REAL` below.
+  // `sale_status` is NULL for a closed sale (db/157), so the COALESCE is
+  // load-bearing.
+  const where = [];
+  // A HOLD OF ZERO DAYS IS NOT A FLIP. Two closed sales recorded on ONE date are
+  // either two records of the same transaction or a simultaneous double close —
+  // never a purchase and a separate exit. Allowing it (an attempt at handling the
+  // same-day sibling) immediately produced a "$3,000 gain in 0 days" out of the
+  // two records at 98 Thompson St. The sibling problem is solved by the total
+  // ordering in the join instead, which makes one of the two the resale and the
+  // other a mid — so one purchase yields one deal, not two.
   const holdDays = Math.round((Number(opts.months) > 0 ? Number(opts.months) : DEFAULT_WINDOW_MONTHS) * 30.4375);
   where.push(`(s2.sale_date - s1.sale_date) BETWEEN 1 AND ${P(holdDays)}`);
 
@@ -101,14 +104,44 @@ async function findFlips(db, opts = {}) {
   }
   const limit = Math.min(MAX_LIMIT, Math.max(1, Number(opts.limit) > 0 ? Math.floor(Number(opts.limit)) : 50));
 
-  // CONSECUTIVE ONLY. `NOT EXISTS` a closed sale strictly between the two, so a
-  // property with three sales yields the two real deals and not a third pair
-  // spanning both of them.
+  // A NOMINAL PRICE IS EXCLUDED FROM THE PAIRING, NOT FROM THE RESULTS.
+  // Setting it aside AFTERWARDS was worse than not doing it: a rehabber deeding
+  // a property into an LLC mid-project — the exact case `NOMINAL_PRICE`
+  // documents — put a $1 row between the purchase and the exit, so the
+  // consecutive rule split ONE genuine flip into two nominal pairs and both were
+  // then discarded. The real $200,000 → $450,000 exit vanished and the note
+  // claimed two non-purchases had been removed. Six properties in the corpus
+  // already sit in that shape. So a nominal row is not a sale here at all: it
+  // cannot be an end of a pair AND it cannot block one, and the ones excluded
+  // are counted separately below.
+  const REAL = `(COALESCE(%s.sale_status,'closed') = 'closed' AND %s.sale_price >= ${P(NOMINAL_PRICE)}
+                 AND %s.sale_date IS NOT NULL)`;
+  const real = (a) => REAL.split('%s').join(a);
+
+  where.push(real('s1'), real('s2'));
+
+  // CONSECUTIVE ONLY, AND A SAME-DAY SIBLING IS NOT A SECOND DEAL. `NOT EXISTS`
+  // a real sale between the two — and the tie-break `(date, price, id)` makes the
+  // ordering total, so two closed sales recorded on the SAME DAY (the corpus
+  // holds a pair at 98 Thompson St) produce one pair rather than counting one
+  // purchase twice.
   const rows = (await db.query(
     `SELECT s1.property_id,
             p.display_address, p.city, p.state, p.zip,
             p.property_type, p.units, p.gla, p.beds, p.year_built,
             p.arv_comp_count, p.asis_comp_count, p.photo_count,
+            -- WAS THE RESALE ITSELF ON AN AFTER-REPAIR GRID? The property's
+            -- arv_comp_count rolls up EVERY after-repair observation, whenever
+            -- NOTE: no backticks in a SQL comment inside a template literal —
+            -- one of them ends the string and the error is nowhere near it.
+            -- it happened, so stamping it on a pair claimed a renovation the
+            -- appraiser graded years later: two real comparables resold in 5 and
+            -- 11 days with no gain were both marked "resold as a finished house".
+            -- The observation's own sale date is what ties the grading to the sale.
+            EXISTS (SELECT 1 FROM property_observations ao
+                     WHERE ao.property_id = s1.property_id
+                       AND ao.comp_set = 'arv'
+                       AND ao.sale_date = s2.sale_date) AS resale_on_arv_grid,
             s1.sale_date  AS bought_on,  s1.sale_price AS bought_for,  s1.sale_type AS bought_type,
             s2.sale_date  AS sold_on,    s2.sale_price AS sold_for,    s2.sale_type AS sold_type,
             (s2.sale_date - s1.sale_date)::int AS held_days,
@@ -116,39 +149,63 @@ async function findFlips(db, opts = {}) {
             round((s2.sale_price - s1.sale_price) / s1.sale_price * 100, 1) AS spread_pct
        FROM property_sales s1
        JOIN property_sales s2
-         ON s2.property_id = s1.property_id AND s2.sale_date > s1.sale_date
+         ON s2.property_id = s1.property_id
+        AND (s2.sale_date, s2.sale_price, s2.id) > (s1.sale_date, s1.sale_price, s1.id)
        JOIN properties p ON p.id = s1.property_id
       WHERE ${where.join(' AND ')}
         AND NOT EXISTS (
           SELECT 1 FROM property_sales mid
            WHERE mid.property_id = s1.property_id
-             AND COALESCE(mid.sale_status,'closed') = 'closed'
-             AND mid.sale_date > s1.sale_date AND mid.sale_date < s2.sale_date)
+             AND ${real('mid')}
+             AND (mid.sale_date, mid.sale_price, mid.id) > (s1.sale_date, s1.sale_price, s1.id)
+             AND (mid.sale_date, mid.sale_price, mid.id) < (s2.sale_date, s2.sale_price, s2.id))
       ORDER BY s2.sale_date DESC, s1.property_id
       LIMIT ${limit}`, params)).rows;
 
-  // SET ASIDE IN JS, NOT IN SQL, so the count is of what was actually found
-  // rather than of what a second query happened to see, and so the reason can be
-  // stated per row if a caller ever wants it.
-  const nominal = rows.filter((r) => Number(r.bought_for) < NOMINAL_PRICE
-    || Number(r.sold_for) < NOMINAL_PRICE);
-  const real = rows.filter((r) => !nominal.includes(r));
+  // HOW MANY NOMINAL TRANSFERS WERE PASSED OVER, counted where they actually
+  // are rather than inferred from the pairs — the pairing no longer produces one,
+  // so counting the result set would always answer zero and the note would
+  // silently stop appearing.
+  let setAside = 0;
+  try {
+    // ITS OWN PARAMETERS. Re-using the pair query's accumulator binds every value
+    // it never references, and Postgres refuses the statement outright — which
+    // the catch below would have turned into a permanent silent zero.
+    const q = [];
+    const Q = (v) => { q.push(v); return '$' + q.length; };
+    const scope = [
+      `s.sale_price IS NOT NULL AND s.sale_price < ${Q(NOMINAL_PRICE)}`,
+      "COALESCE(s.sale_status,'closed') = 'closed'",
+      's.sale_date IS NOT NULL',
+    ];
+    if (opts.propertyId) scope.push(`s.property_id = ${Q(opts.propertyId)}`);
+    if (opts.state) scope.push(`p.state = ${Q(String(opts.state).toUpperCase())}`);
+    if (opts.city) scope.push(`lower(p.city) = ${Q(String(opts.city).toLowerCase())}`);
+    if (opts.zip) scope.push(`p.zip = ${Q(String(opts.zip))}`);
+    setAside = Number((await db.query(
+      `SELECT count(*)::int AS n FROM property_sales s
+         JOIN properties p ON p.id = s.property_id
+        WHERE ${scope.join(' AND ')}`, q)).rows[0].n) || 0;
+  } catch (e) { setAside = 0; }
 
-  const out = real.map((r) => Object.assign({}, r, {
+  const out = rows.map((r) => Object.assign({}, r, {
     // SAID PLAINLY, so nothing has to be inferred from two enum values.
     bought_arms_length: r.bought_type ? !NOT_ARMS_LENGTH.has(r.bought_type) : null,
     sold_arms_length: r.sold_type ? !NOT_ARMS_LENGTH.has(r.sold_type) : null,
     held_months: r.held_days == null ? null : Math.round((r.held_days / 30.4375) * 10) / 10,
-    // The appraiser's own signal that the resale was of a FINISHED house. Never
-    // asserted from the spread — a big number is not evidence of a renovation.
-    resold_as_renovated: Number(r.arv_comp_count) > 0,
+    // The appraiser's own signal that THIS SALE was of a FINISHED house — the
+    // observation that graded it on an after-repair grid carries the same sale
+    // date. Never asserted from the spread (a big number is not evidence of a
+    // renovation) and never from the property's lifetime roll-up.
+    resold_as_renovated: r.resale_on_arv_grid === true,
   }));
   return {
     rows: out,
-    setAside: nominal.length,
-    setAsideNote: nominal.length
-      ? `${nominal.length} pair${nominal.length === 1 ? '' : 's'} left out because one end was recorded `
-        + 'at a nominal amount — a deed transfer between related parties or out of an estate, not a purchase'
+    setAside,
+    setAsideNote: setAside
+      ? `${setAside} transfer${setAside === 1 ? ' was' : 's were'} passed over because the price recorded `
+        + 'was nominal — a deed between related parties or out of an estate, not a purchase. '
+        + 'A flip either side of one is still counted.'
       : null,
     caveat: FLIPS_CAVEAT,
   };

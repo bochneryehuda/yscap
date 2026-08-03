@@ -323,12 +323,18 @@ function buildQuery(input = {}) {
 
   // ---- radius (no PostGIS) ------------------------------------------------
   // A bounding box on the indexed lat/lng columns does the cutting; the haversine
-  // refine only ever runs on what the box already narrowed to. One degree of
-  // latitude is 69.05 miles everywhere; a degree of LONGITUDE is 69.17 × cos(lat),
-  // which at New Jersey's latitude is only about 52 — so the longitude box has to
-  // be about a third WIDER in degrees than the latitude box to cover the same
-  // miles. Using one delta for both (the usual version of this bug) silently
-  // clips the east-west edges off every radius search.
+  // refine only ever runs on what the box already narrowed to. A degree of
+  // LONGITUDE shrinks by cos(lat) — at New Jersey's latitude it is only about 52
+  // miles against latitude's 69 — so the longitude box has to be about a third
+  // WIDER in degrees than the latitude box to cover the same miles. Using one
+  // delta for both (the usual version of this bug) silently clips the east-west
+  // edges off every radius search.
+  //
+  // BOTH DELTAS ARE DERIVED FROM THE HAVERSINE'S OWN SPHERE, never typed as
+  // ellipsoid constants, and the longitude one is sized on the edge of the box
+  // FURTHEST from the equator rather than on its centre. Both of those are
+  // load-bearing and the reasoning is at the arithmetic below — do not
+  // reintroduce a literal `69.05` / `69.1710` here.
   //
   // IT READS `eff_latitude` / `eff_longitude`, NEVER `latitude` (db/412). Those are
   // the appraiser's own figures, which only some comparables carry and no subject

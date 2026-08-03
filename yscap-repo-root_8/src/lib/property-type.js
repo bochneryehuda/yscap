@@ -234,6 +234,42 @@ function appraisalFormExpectation(raw) {
 }
 
 /**
+ * HOW MANY DWELLINGS A PROPERTY TYPE IMPLIES — or null when it implies nothing.
+ *
+ * Derived from THIS file's vocabulary rather than restated somewhere else,
+ * because the two facts are shown side by side on every comparable row and a
+ * disagreement between them is the one thing a reader cannot recover from:
+ * "Multi 2–4 · 1 unit" is not a partial answer, it is a confident wrong one, and
+ * the owner's requirement is that every comparable state both.
+ *
+ * `mixed_use` is deliberately absent — a mixed-use building has whatever count
+ * it has, and claiming a band for it would manufacture a contradiction rather
+ * than catch one. `multi_5_plus` has no ceiling.
+ */
+const UNIT_BAND = Object.freeze({
+  sfr: { minUnits: 1, maxUnits: 1 },
+  condo: { minUnits: 1, maxUnits: 1 },
+  townhouse: { minUnits: 1, maxUnits: 1 },
+  pud: { minUnits: 1, maxUnits: 1 },
+  multi_2_4: { minUnits: 2, maxUnits: 4 },
+  multi_5_plus: { minUnits: 5, maxUnits: Infinity },
+});
+function unitBandFor(raw) {
+  const key = propertyTypeKey(raw);
+  return (key && UNIT_BAND[key]) || null;
+}
+/**
+ * Do a property type and a unit count CONTRADICT each other? Only ever true when
+ * both are known AND the type carries a band — an unknown is never a conflict.
+ */
+function unitsContradictType(type, units) {
+  const band = unitBandFor(type);
+  const n = Number(units);
+  if (!band || !Number.isFinite(n) || n <= 0) return false;
+  return n < band.minUnits || n > band.maxUnits;
+}
+
+/**
  * HOW MANY DWELLINGS THE APPRAISER'S OWN DESIGN-STYLE WORDS STATE — or null.
  *
  * The MISMO 2.6 comparable grid carries no per-comp unit element, but the
@@ -309,6 +345,8 @@ module.exports = {
   isAppraisalFormCode,
   appraisalFormExpectation,
   unitsFromDesignStyle,
+  unitBandFor,
+  unitsContradictType,
   propertyTypeKey,
   propertyTypeCompareKey,
   propertyTypesEquivalent,

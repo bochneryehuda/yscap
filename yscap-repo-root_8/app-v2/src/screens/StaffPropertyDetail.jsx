@@ -182,13 +182,20 @@ export default function StaffPropertyDetail() {
             : p.basement_exit === 'WalkUp' ? 'Walk-up'
               : p.basement_exit === 'InteriorOnly' ? 'Inside only' : p.basement_exit} />
           <Fact k="Below-grade area" v={p.below_grade_sqft ? sqft(p.below_grade_sqft) : null} />
-          {/* The view RATING beside it is one appraiser's verdict; this is the
-              thing itself, and every factor they listed, not just the first. */}
-          <Fact k="View" v={p.view_type} />
+          {/* THE THING AND THE VERDICT ON IT ARE TWO DIFFERENT FACTS, and this
+              screen used to render only the first — so once the UAD reader
+              started filing `Average` where it belongs (the RATING column, since
+              "Average" judges a location rather than naming one), 98 comparables
+              went from showing a word here to showing nothing. The fact never
+              left; the screen was only ever reading half of it. `similar` and
+              `INFERIOR` are gone for good and should be: they say how this
+              compared with THAT report's subject, which is not a location. */}
+          <Fact k="View" v={[p.view_type, p.view_rating].filter(Boolean).join(' · ') || null} />
           {/* The price-relevant half of the same fix — "Residential; BusyRoad".
               24 corpus comparables gain a second location factor against 10 on
-              the view side, and it reached no screen at all. */}
-          <Fact k="Location" v={p.location_type} />
+              the view side, and it reached no screen at all. `Adverse` is the
+              one an underwriter needs and it was the most invisible of all. */}
+          <Fact k="Location" v={[p.location_type, p.location_rating].filter(Boolean).join(' · ') || null} />
           {/* db/439 — the appraiser's own words for whether the layout works. */}
           <Fact k="Functional utility" v={p.functional_utility} />
           <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />

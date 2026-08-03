@@ -713,6 +713,21 @@ if (require.main === module) {
           { limit: Number(process.env.RESEARCH_REROLL_BOOT || 500) })
           .then((r) => r && r.rerolled && console.log('[boot] research roll-up refresh:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research roll-up refresh failed:', e.message));
+        // PLACE THE PROPERTIES WE LENT ON. Every subject in the warehouse is
+        // unplaced — appraisers give coordinates for their COMPARABLES, not for
+        // the subject — so the property the loan is secured against is the one
+        // no radius search or map can find. Three comparables with coordinates
+        // and a stated distance fix it; measured on the real corpus, 98 of 102
+        // reports resolve to within a median of 17 feet. Fill-only, stamped
+        // `geo_source='comp_trilateration'` so nothing mistakes an estimate for
+        // a measurement, bounded and self-draining. Off with
+        // RESEARCH_PLACE_SUBJECTS_BOOT=0.
+        (() => {
+          const ps = require('./lib/research/place-subjects');
+          return ps.placeSubjectsOnce(require('./db'),
+            { limit: Number(process.env.RESEARCH_PLACE_SUBJECTS_BOOT || 200) })
+            .then((r) => { const s = ps.describePass(r); if (s) console.log('[boot] subject placement:', s); });
+        })().catch((e) => console.error('[boot] subject placement failed:', e.message));
         // db/440 — the adjustment lines as rows, for observations already stored.
         // Reads the jsonb each observation already carries, so it needs no
         // re-parse; bounded and self-draining (an observation with rows is never

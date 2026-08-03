@@ -41,9 +41,16 @@
 // The UAD rating letters, in the order the form lists them.
 const RATING_CODE = { N: 'Neutral', B: 'Beneficial', A: 'Adverse' };
 // Spelled out, and the ordinary words appraisers use in the same cell.
+// `avg` is here because the corpus writes it in the RATING position (`Avg`,
+// `Avg/Corner`, `Avg/BsyRd`) and without it the abbreviation was stored as the
+// PLACE — a screen reading "Location: Avg", which is this module's whole reason
+// for existing. `condition-scale.js` already reads `\bavg\b` as the same word, so
+// leaving it out also made the two readers disagree about one abbreviation.
+// NOT here: `superior view`, which was dead code — `RELATIVE` matches `superior`
+// first and returns before this list is ever consulted.
 const RATING_WORD = [
-  [/^(neutral|average|typical|ordinary|standard)$/i, 'Neutral'],
-  [/^(beneficial|good|favou?rable|superior view)$/i, 'Beneficial'],
+  [/^(neutral|average|avg|typical|ordinary|standard)$/i, 'Neutral'],
+  [/^(beneficial|good|favou?rable)$/i, 'Beneficial'],
   [/^(adverse|negative|unfavou?rable|poor)$/i, 'Adverse'],
 ];
 // The UAD factor abbreviations. Anything not on this list is passed through as
@@ -55,13 +62,56 @@ const FACTOR_CODE = {
   ctystr: 'CityStreet', ctyvw: 'CityView', prkvw: 'ParkView', pstrl: 'PastoralView',
   wtr: 'WaterView', woods: 'Woods', park: 'Park', athlt: 'AthleticField',
   cmtry: 'Cemetery', ntrl: 'Neutral', bsy: 'BusyRoad',
+  // THE SPELLED-OUT FORMS OF CODES ALREADY ABOVE. A vendor that writes
+  // `N;Residential` or `A;Cemetery;` means exactly what `N;Res;` and `A;Cmtry;`
+  // mean, and without these the same fact reached a screen under two different
+  // words — so one property read "Residential" and its neighbour "RESIDENTIAL"
+  // while a third read the code. Counted in the corpus: Residential 3,
+  // CityStreet 3, Cemetery 2, BusyRd 2.
+  residential: 'Residential', commercial: 'Commercial', industrial: 'Industrial',
+  citystreet: 'CityStreet', cemetery: 'Cemetery', waterfront: 'Waterfront',
+  busyrd: 'BusyRoad', busyst: 'BusyRoad', busyroad: 'BusyRoad', busystreet: 'BusyRoad',
+  powerlines: 'PowerLines', golfcourse: 'GolfCourse', landfill: 'Landfill',
 };
 // A RELATIVE WORD IS ABOUT THAT REPORT'S SUBJECT, NOT ABOUT THIS PROPERTY.
 const RELATIVE = /^(similar|same|equal|superior|inferior|comparable)\b/i;
 // A trailing (or leading) adjustment amount written into the same cell.
-const ADJUSTMENT = /[+-]?\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*%?\s*$/;
+//
+// THIS REGEX RAN IN CUBIC TIME AND THE INPUT IS AN UPLOADED FILE. The first cut
+// was `/[+-]?\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*%?\s*$/`, which has two ambiguous
+// whitespace runs — `\s*\$?\s*` and `\s*%?\s*$` — so on a cell ending in a long
+// space run the engine tries every way of splitting it, at every start offset.
+// Measured on the real `extract()` path with one `_Description="N;Res;<spaces>x"`:
+// 1,000 spaces took 0.45 s, 2,000 took 2.8 s, 3,000 took 9.9 s, and the bare
+// regex at 8,000 took 86 SECONDS. It is applied up to 3× per call and called 4×
+// per comparable, and Node is single-threaded — so one appraisal XML, which any
+// borrower or officer can upload, stalls the entire server.
+//
+// Two independent fixes, and neither is decoration:
+//   · EVERY WHITESPACE RUN IS `\s?`, NOT `\s*`. One optional space can be
+//     consumed exactly one way, so there is nothing to backtrack over and the
+//     match is linear at any input size — including for anything that reaches
+//     the exported regex directly rather than through this module.
+//   · THE PARSER NEVER SEES A RUN LONGER THAN ONE ANYWAY. `collapse()` reduces
+//     every whitespace run to a single space before any matching, which is what
+//     makes `\s?` exactly right rather than merely stricter: after collapsing,
+//     `N;Res;   2.5%` and `N;Res; 2.5%` are the same string.
+// `test-uad-rating-pure.js` pins the timing, so a rewrite that reintroduces the
+// blowup fails rather than merely being slow.
+//
+// AN AMOUNT MUST CARRY ITS MARKER — a `$` or a `%`. Stripping any trailing number
+// ate the numbered roads that live in exactly this cell: `I-95` read as the factor
+// "I", `Route 9` as "Route", `US 1` as "US", and `N;Res;Route 9` as
+// "Residential; Route". Every one of the 86 distinct View/Location descriptions in
+// the real corpus writes its amount with a marker (`2.5%`, `-4%`, `-$5,000`) and
+// NOT ONE ends in a bare digit, so requiring the marker loses nothing real and
+// keeps a highway number attached to its highway.
+const ADJUSTMENT = /[+-]?\s?(?:\$\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?%)\s?$/;
 
 const clean = (v) => String(v == null ? '' : v).trim();
+// The appraiser's own text is kept VERBATIM as `original`; this is the copy the
+// parser reads, so collapsing runs here changes nothing anybody is shown.
+const collapse = (v) => v.replace(/\s+/g, ' ');
 
 /**
  * Read one View or Location cell.
@@ -73,10 +123,17 @@ function readUadRating(text) {
 
   // Strip an adjustment amount the appraiser typed into the same cell BEFORE
   // anything is read, so `N;Res;2.5%` is a code and not an unknown string.
-  let body = raw.replace(ADJUSTMENT, '').trim().replace(/[;,]\s*$/, '');
-  if (!body) body = raw;
+  // Read from the COLLAPSED copy — `raw` stays the appraiser's own text and is
+  // what `original` returns.
+  let body = collapse(raw).replace(ADJUSTMENT, '').trim().replace(/[;,]\s*$/, '');
+  if (!body) body = collapse(raw);
 
-  const parts = body.split(/[;|]/).map((s) => s.trim()).filter(Boolean);
+  // A SLASH SEPARATES, like a semicolon. Every slash cell in the real corpus is a
+  // genuine list — `Avg/Corner` and `Avg/BsyRd` (a rating then a factor),
+  // `COMM/APART`, `Pond/Residential`, `Suburban/Busy` (two factors) — and without
+  // this the whole string was one unrecognised token, so `Avg/Corner` was filed
+  // as the place rather than as a neutral rating on a corner lot.
+  const parts = body.split(/[;|/]/).map((s) => s.trim()).filter(Boolean);
   const first = parts[0] || '';
 
   if (RELATIVE.test(first)) {

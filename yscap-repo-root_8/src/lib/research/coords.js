@@ -28,6 +28,16 @@
  * the corpus sit inside the US bounding box, so there is nothing to catch, and a
  * geographic whitelist would refuse the first legitimate market outside it.
  *
+ * ZERO IS THE ONE VALUE TREATED AS ABSENT, and that is a statement about the
+ * FIELD, not about the place: a numeric column that was never filled in arrives
+ * as 0 far more often in this data than a property genuinely on the equator or
+ * the prime meridian. Note the deliberate asymmetry with `db/445`, which sweeps
+ * stored half pairs with the SQL rule `(lat IS NULL) <> (lng IS NULL)` and
+ * therefore cannot see a zero — so a stored `lat=0, lng=-74` survives the
+ * migration and is blanked here on the next re-parse. The two agree on the end
+ * state; the migration is simply a one-time sweep that cannot express this half.
+ * The corpus holds no zeros either way.
+ *
  * Pure.
  */
 'use strict';
@@ -47,7 +57,11 @@ function coordPair(lat, lng) {
     : { latitude: null, longitude: null };
 }
 
-/** True when the two together are a usable position. */
+/**
+ * True when the two together are a usable position — the read-side companion to
+ * `coordPair`, and the thing to reach for INSTEAD of `latitude IS NOT NULL`,
+ * which is precisely the check a half pair defeats.
+ */
 const placed = (row) => !!(row && ok(row.latitude) != null && ok(row.longitude) != null);
 
 module.exports = { coordPair, placed };

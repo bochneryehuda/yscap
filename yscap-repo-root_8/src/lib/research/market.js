@@ -22,6 +22,7 @@
  * repo's standing rule) — a JS Date would read a date-only value as UTC midnight
  * and can shift the month in a western timezone.
  */
+const { coordPair } = require('./coords');
 
 /** MISMO 1004MC metric name → our column. Anything not listed is ignored, not guessed. */
 const METRIC_COLUMN = Object.freeze({
@@ -155,8 +156,14 @@ async function writeMarket(db, a, ctx = {}) {
     // Filled only if a caller genuinely knows them; the ingest does not (see the
     // note at its call site), and the subject's position is reachable through
     // `property_id` once the geocoder has placed that property.
-    latitude: ctx.latitude == null ? null : ctx.latitude,
-    longitude: ctx.longitude == null ? null : ctx.longitude,
+    //
+    // THROUGH `coordPair`, LIKE EVERY OTHER COORDINATE HERE. This was the one
+    // real pair in the research warehouse that db/445 and `coords.js` both
+    // missed, and it was written straight from `ctx` — so a caller passing a
+    // latitude and no longitude stored a half pair that reads as a position to
+    // any `IS NOT NULL` check. Nothing writes one today; the guard is what stops
+    // the first caller that does.
+    ...coordPair(ctx.latitude, ctx.longitude),
     effective_date: dayString(a.effective_date),
     form_type: txt(a.form_type),
     // The appraiser's own per-metric conclusion, plus the flattened headline the

@@ -262,6 +262,57 @@ async function property(street, opts = {}) {
     ok(!('property_id' in bc) && !('identity_observations' in bc),
       'but not our warehouse id, and not how many of our reports describe that address');
 
+    // ── THE PAIR NEVER CONTRADICTS ITSELF, AND THE SOURCE NEVER OVER-CLAIMS ──
+    // Ranking-first is what stops a form inference deleting a counted triplex,
+    // but it also means the two facts can arrive from two DIFFERENT candidates.
+    // Two holes that opened with it, neither reachable on today's corpus and both
+    // reachable the moment one report counts a building another form-infers:
+    //   · a subject observation stating `units=1` landing beside a grid
+    //     statement of `Multi 2–4` → the row reads "Multi 2–4 · 1 unit", which is
+    //     not a partial answer but a confident wrong one;
+    //   · `identity_source` stamped from whichever candidate won, claiming the
+    //     grid stated a TYPE it never mentioned — the same over-claim
+    //     `units_basis` exists to prevent.
+    {
+      const stub = (obsRow) => ({ query: async (sql) => (/property_observations/.test(sql)
+        ? { rows: [obsRow] } : { rows: [] }) });
+      const seed = [{ id: 'c1', is_subject: false, property_type: 'Multi 2–4', units: 3,
+        identity_basis: 'grid', sale_price: 1 }];
+
+      // A better-sourced count that CONTRADICTS the seeded type.
+      const clash = (await CI.attachCompIdentity(seed, { db: stub({ comparable_id: 'c1',
+        property_id: null, role: 'subject', identity_basis: 'subject',
+        obs_type: null, obs_units: 1, roll_type: null, roll_units: null,
+        roll_basis: null, observation_count: 1 }) }))[0];
+      ok(!(clash.property_type === 'Multi 2–4' && Number(clash.units) === 1),
+        'a 2-4 family is never shown as having ONE unit — a self-contradicting pair is worse '
+        + 'than either fact on its own');
+      ok(Number(clash.units) === 1 && clash.property_type === null,
+        'the better-sourced fact stands (a measured count beats an inferred category) and the '
+        + 'one it contradicts is dropped, not quietly kept');
+
+      // A better-sourced count that AGREES: both facts survive, and the stamp
+      // says both places rather than crediting one with the other's work.
+      const mixed = (await CI.attachCompIdentity(seed, { db: stub({ comparable_id: 'c1',
+        property_id: null, role: 'subject', identity_basis: 'subject',
+        obs_type: null, obs_units: 4, roll_type: null, roll_units: null,
+        roll_basis: null, observation_count: 1 }) }))[0];
+      ok(mixed.property_type === 'Multi 2–4' && Number(mixed.units) === 4,
+        'a better-sourced count that fits the type upgrades the count and keeps the type');
+      ok(/grid/.test(mixed.identity_source || '') && /subject/.test(mixed.identity_source || ''),
+        'and the source names BOTH places — stamping one of them claims the grid stated a type '
+        + 'it never mentioned');
+
+      // The ordinary case is unchanged: one candidate states both, one source.
+      const whole = (await CI.attachCompIdentity(seed, { db: stub({ comparable_id: 'c1',
+        property_id: null, role: 'subject', identity_basis: 'subject',
+        obs_type: 'Multi 5+', obs_units: 6, roll_type: null, roll_units: null,
+        roll_basis: null, observation_count: 1 }) }))[0];
+      ok(whole.property_type === 'Multi 5+' && Number(whole.units) === 6
+        && whole.identity_source === 'subject',
+      'when one candidate states both, the pair moves together under one source');
+    }
+
     out = { pass, fail };
   } catch (e) {
     console.log('FAIL threw: ' + (e && e.stack || e));

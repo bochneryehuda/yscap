@@ -182,8 +182,6 @@ export default function StaffMarket() {
             {showTable && <NumbersTable series={series} />}
           </div>
 
-          {flips && flips.rows && flips.rows.length > 0 && <Flips d={flips} />}
-
           {reports && reports.rows && reports.rows.length > 0 && <BehindIt rows={reports.rows} />}
         </>
       )}
@@ -194,6 +192,14 @@ export default function StaffMarket() {
           ZIPs carry a single market read, while Trenton alone holds 71 size
           adjustments. Gating this on the charts would hide the adjustment evidence
           in precisely the towns where the market grid is thinnest. */}
+      {/* NOT GATED ON THE CHARTS, for the reason the block below already gives:
+          what appraisers SAID about a market and what actually TRADED in it are
+          two different corpora, and a town can be rich in one and empty in the
+          other. Measured: 3 of 22 towns holding flips have no 24-month market
+          series at all, so gating this hid the transaction evidence in exactly
+          the towns where the market grid is thinnest. */}
+      {flips && flips.rows && flips.rows.length > 0 && <Flips d={flips} />}
+
       {named && <WhatAppraisersAdjust where={{ city: q.city, state: q.state, zip: q.zip, months }} />}
     </div>
   );

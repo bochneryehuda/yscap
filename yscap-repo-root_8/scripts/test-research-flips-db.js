@@ -5,8 +5,8 @@
  * started from was invisible to every search. `property_sales` has held both all
  * along: an appraiser records each comparable's PRIOR sale on the grid and the
  * ingest files it as its own transaction. Measured on the real 152-report
- * corpus: 56 buy→sell pairs inside two years across 52 properties, 5 of which
- * turned out not to be purchases at all.
+ * corpus: 50 buy→sell pairs inside two years across 48 properties, with 14
+ * nominal transfers passed over.
  *
  * What this pins:
  *   1. A PAIR IS TWO CLOSED SALES. A listing's asking price is stored in the same
@@ -146,6 +146,42 @@ async function sale(pid, date, price, opts = {}) {
     ok(/not proof that anyone renovated/.test(d.caveat || ''),
       'and the caveat travels with the answer rather than living in one screen');
 
+    // A NOMINAL TRANSFER IN THE MIDDLE MUST NOT ERASE THE FLIP EITHER SIDE OF IT.
+    // A rehabber deeding the property into an LLC mid-project is the exact case
+    // NOMINAL_PRICE documents, and setting the pair aside AFTERWARDS split one
+    // genuine exit into two nominal pairs and discarded both — the $200,000 →
+    // $450,000 exit vanished and the note claimed two non-purchases had gone.
+    const midDeed = await prop('8 Flip Way');
+    await sale(midDeed, '2025-04-01', 200000);
+    await sale(midDeed, '2025-07-01', 1);
+    await sale(midDeed, '2025-12-01', 450000);
+    const withDeed = await FLIPS.findFlips(db, { city: TOWN, state: 'NJ', months: 24, limit: 50 });
+    const deedPairs = withDeed.rows.filter((r) => r.property_id === midDeed);
+    ok(deedPairs.length === 1 && Number(deedPairs[0].spread) === 250000,
+      'a nominal transfer between the purchase and the exit is passed over, not treated as either end');
+    ok(withDeed.setAside >= 2,
+      'and the transfers it passed over are still counted and explained');
+
+    // TWO SALES ON THE SAME DAY ARE ONE RESALE, NOT TWO. The corpus already holds
+    // a pair recorded on one date at two prices.
+    const sameDay = await prop('9 Flip Way');
+    await sale(sameDay, '2025-01-10', 200000);
+    await sale(sameDay, '2025-09-01', 465000);
+    await sale(sameDay, '2025-09-01', 468000);
+    const sd = await FLIPS.findFlips(db, { city: TOWN, state: 'NJ', months: 24, limit: 50 });
+    ok(sd.rows.filter((r) => r.property_id === sameDay).length === 1,
+      'one purchase with two same-day resales is ONE deal, not the same purchase counted twice');
+
+    // A PRICELESS ROW IN THE MIDDLE IS NOT A SALE AND MUST NOT BLOCK ONE.
+    const blank = await prop('10 Flip Way');
+    await sale(blank, '2025-03-01', 250000);
+    await db.query(`INSERT INTO property_sales (property_id, sale_date, sale_price, source)
+                    VALUES ($1,'2025-06-01',NULL,'test')`, [blank]);
+    await sale(blank, '2025-11-01', 400000);
+    const bl = await FLIPS.findFlips(db, { city: TOWN, state: 'NJ', months: 24, limit: 50 });
+    ok(bl.rows.some((r) => r.property_id === blank),
+      'a row with no price is not a sale, so it cannot break the pair around it');
+
     // ---- THE ROUTE ----
     const staffId = (await db.query(
       `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
@@ -158,15 +194,21 @@ async function sale(pid, date, price, opts = {}) {
     const res = await call(server, `/api/research/flips?city=${encodeURIComponent(TOWN)}&state=NJ&months=24`, token);
     ok(res.status === 200 && (res.body.rows || []).some((r) => r.property_id === flip),
       'the route answers for any staff member — the warehouse is not per-file scoped');
-    ok(res.body.setAside === 1 && res.body.caveat,
+    ok(res.body.setAside >= 1 && res.body.caveat,
       'and carries the set-aside count and the caveat, so a screen cannot present it without them');
     const anon = await call(server, `/api/research/flips?city=${encodeURIComponent(TOWN)}&state=NJ`, null);
     ok(anon.status === 401 || anon.status === 403, 'and it is staff-only');
 
     // A GARBAGE FILTER MUST NOT BECOME A WILD ANSWER.
+    // AN UNREADABLE NUMBER IS NOT A FILTER, and asserting only "200 and an array"
+    // is what let this through: `K.num('xyz')` answers null, `Number(null)` is 0,
+    // and the filter "spread >= 0%" quietly deleted every loss-making flip. On
+    // the real corpus 50 rows became 44 and all six losses vanished.
     const junk = await call(server, `/api/research/flips?city=${encodeURIComponent(TOWN)}&state=NJ&months=abc&min_spread_pct=xyz&limit=0`, token);
     ok(junk.status === 200 && Array.isArray(junk.body.rows),
       'unreadable numbers fall back to the defaults rather than throwing');
+    ok((junk.body.rows || []).some((r) => r.property_id === loss),
+      '…and an unreadable minimum spread does NOT silently delete the loss-making flips');
   } catch (e) {
     console.log('FAIL threw: ' + (e && e.stack || e));
     fail++;

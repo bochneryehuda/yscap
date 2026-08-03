@@ -566,11 +566,20 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
 // report would have been stamped "re-parsed at 4" with all five still NULL,
 // and `units`/`property_type` would have been rewritten with no record of
 // WHERE they came from, which is the one thing `identity_basis` exists to say.
-// db/446 — the view and location cells: the RATING the grid states in UAD short
-// form when the structured block is absent (360 of 769 comparables carried
-// none), and the FACTOR expanded out of the code instead of stored raw (136
-// showed `N;Res;` to a human).
-const REPARSED = ['view_rating', 'location_rating', 'view_type', 'location_type',
+// The view and location cells (the RATING the grid states in UAD short form when
+// the structured block is absent — 360 of 769 comparables carried none — and the
+// FACTOR expanded out of the code instead of stored raw, 136 showed `N;Res;` to a
+// human) are covered by the four entries already in THE REST OF THE GRID below.
+// They were briefly listed HERE as well, which is worth recording because of what
+// a duplicate does: `cols` is mapped straight into `SET ${k} = $n`, so the
+// statement came out as `view_rating = $2 … view_rating = $15`, Postgres refused
+// it ("multiple assignments to same column"), and the refusal was swallowed by
+// the pass's own catch. The report was then never stamped, so it was re-read from
+// storage on EVERY boot and repaired on none — and since 769 of 769 comparables
+// state at least one of those four, that was the ENTIRE back book, silently, for
+// every correction this sweep carries. `test-comparable-reparse-db.js` now
+// asserts the list is duplicate-free, because no comment can prevent this.
+const REPARSED = [
   'beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
   'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis',
   // The comparable's own property type, derived ONLY from its stated unit count

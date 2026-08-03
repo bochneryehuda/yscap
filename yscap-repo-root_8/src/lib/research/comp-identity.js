@@ -193,9 +193,40 @@ async function attachCompIdentity(rows, opts = {}) {
 
     // NEVER LESS THAN THE ROW ALREADY SAID. A pick that states one fact upgrades
     // that fact and leaves the other as it was seeded.
-    if (has(pick.type)) r.property_type = label(pick.type);
-    if (has(pick.units)) r.units = Number(pick.units);
-    if (has(pick.type) || has(pick.units)) r.identity_source = pick.source;
+    //
+    // …BUT THE PAIR MUST NEVER CONTRADICT ITSELF. Ranking first (which is what
+    // stops a form inference deleting a counted triplex) means the two facts can
+    // now arrive from two different candidates — so a subject observation stating
+    // `units=1` could land beside a grid statement of `Multi 2–4` and the row
+    // would read "Multi 2–4 · 1 unit". That is not a partial answer, it is a
+    // confident wrong one, and it is worse than either fact alone. When they
+    // disagree, the BETTER-SOURCED fact stands and the other is dropped.
+    const nextType = has(pick.type) ? label(pick.type) : r.property_type;
+    const nextUnits = has(pick.units) ? Number(pick.units) : r.units;
+    // Where each fact would be coming from, which is what makes the honesty
+    // check below possible at all.
+    const typeFrom = has(pick.type) ? pick.source : r.identity_source;
+    const unitsFrom = has(pick.units) ? pick.source : r.identity_source;
+    const typeRank = has(pick.type) ? pick.rank : rankOfBasis(r.identity_basis);
+    const unitsRank = has(pick.units) ? pick.rank : rankOfBasis(r.identity_basis);
+
+    if (PT.unitsContradictType(nextType, nextUnits)) {
+      // The better-sourced one survives; a tie keeps the COUNT, because a count
+      // is a measurement and a category is a reading of one.
+      if (typeRank > unitsRank) { r.property_type = nextType; r.units = null; r.identity_source = typeFrom; }
+      else { r.units = nextUnits; r.property_type = null; r.identity_source = unitsFrom; }
+      continue;
+    }
+
+    r.property_type = nextType;
+    r.units = nextUnits;
+    // THE SOURCE MUST DESCRIBE WHAT IT ACTUALLY SOURCED. Stamping `pick.source`
+    // for the whole row claimed the grid had stated a type the grid never
+    // mentioned, whenever the pick supplied only the count — the same class of
+    // over-claim that `units_basis` exists to prevent.
+    if (has(pick.type) || has(pick.units)) {
+      r.identity_source = typeFrom === unitsFrom ? typeFrom : `${typeFrom} + ${unitsFrom}`;
+    }
   }
   return out;
 }

@@ -18,7 +18,7 @@
  * Pure. Run: node scripts/test-uad-rating-pure.js
  */
 'use strict';
-const { readUadRating } = require('../src/lib/appraisal/uad-rating');
+const { readUadRating, _internals } = require('../src/lib/appraisal/uad-rating');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); } };
@@ -93,6 +93,97 @@ ok(R('N;Res;').original === 'N;Res;' && R('similar').original === 'similar',
 ok(R('Adjacent to park').rating !== 'Adverse',
   '"Adjacent to park" is not an ADVERSE rating — a letter is a code only on its own');
 ok(R('Busy').rating === null, 'and an unrecognised single word is a factor, never a guess at a rating');
+
+// ---------------------------------------------------------------------------
+// A NUMBERED ROAD KEEPS ITS NUMBER
+// ---------------------------------------------------------------------------
+// Stripping ANY trailing number ate the roads that live in exactly this cell:
+// `I-95` read as the factor "I", `Route 9` as "Route". An amount must carry its
+// marker — every one of the 86 distinct View/Location descriptions in the real
+// corpus writes one (`2.5%`, `-4%`, `-$5,000`) and NOT ONE ends in a bare digit.
+for (const [t, factor] of [['I-95', 'I-95'], ['Route 9', 'Route 9'], ['Rt 9', 'Rt 9'],
+  ['US 1', 'US 1'], ['Interstate 80', 'Interstate 80']]) {
+  ok(R(t).factor === factor, `"${t}" keeps its number — a road is not an adjustment amount`);
+}
+ok(R('N;Res;Route 9').factor === 'Residential; Route 9',
+  'and beside a code too — the truncated "Residential; Route" named a road nobody can find');
+// …while the real amounts, all of which carry a marker, still come off.
+for (const t of ['N;Res;2.5%', 'A;Adj.toHighway;2.5%', 'A;ThruSt;2.5%', 'AVERAGE-4%', 'N;Res;-$5,000']) {
+  ok(!/[$%]/.test(R(t).factor || ''), `"${t}" still has its amount stripped`);
+}
+
+// ---------------------------------------------------------------------------
+// THE ABBREVIATIONS THE CORPUS ACTUALLY USES
+// ---------------------------------------------------------------------------
+// `Avg` was being stored as the PLACE — a screen reading "Location: Avg" — which
+// is the exact class this module exists to end. `condition-scale.js` already
+// reads `avg` as the same word, so it also made the two readers disagree.
+for (const t of ['Avg', 'AVG', 'avg']) {
+  ok(R(t).rating === 'Neutral' && R(t).factor === null,
+    `"${t}" is the rating, not the place`);
+}
+// A SLASH SEPARATES. Every slash cell in the corpus is a genuine list.
+for (const [t, rating, factor] of [
+  ['Avg/Corner', 'Neutral', 'Corner'],
+  ['Avg/BsyRd', 'Neutral', 'BusyRoad'],
+  ['COMM/APART', null, 'Commercial; APART'],
+  ['Pond/Residential', null, 'Pond; Residential'],
+  ['Suburban/Busy', null, 'Suburban; Busy'],
+]) {
+  const r = R(t);
+  ok(r.rating === rating && r.factor === factor,
+    `"${t}" reads as ${rating || 'no rating'} / ${factor}`);
+}
+// THE SPELLED-OUT FORM OF A CODE MEANS THE CODE. Without these the same fact
+// reached a screen under two different words.
+for (const [t, factor] of [['N;Residential', 'Residential'], ['A;Cemetery;', 'Cemetery'],
+  ['N;CityStreet;', 'CityStreet'], ['A;BusyRd;', 'BusyRoad'], ['A;Commercial;', 'Commercial']]) {
+  ok(R(t).factor === factor, `"${t}" expands to ${factor}, the same as its short code`);
+}
+// `superior view` was unreachable — RELATIVE matches `superior` first — so it was
+// removed rather than left looking like a rule.
+ok(R('superior view').rating === null && R('superior').rating === null,
+  '"superior view" is a comparison first and last — it never yielded Beneficial');
+
+// ---------------------------------------------------------------------------
+// IT READS AN UPLOADED FILE, SO IT MUST NOT BE ATTACKABLE BY ONE
+// ---------------------------------------------------------------------------
+// The first cut of the adjustment-stripping regex had two ambiguous whitespace
+// runs, which made it CUBIC: on `N;Res;<N spaces>x` the engine tries every way of
+// splitting the run, at every start offset. Measured through the real `extract()`
+// path: 1,000 spaces 0.45 s, 2,000 2.8 s, 3,000 9.9 s — and the bare regex at
+// 8,000 spaces took 86 SECONDS. It is applied up to 3× per call and called 4× per
+// comparable, and Node is single-threaded, so ONE appraisal XML — which any
+// borrower or officer can upload — stalled the whole server.
+//
+// A timing assertion is a blunt instrument, so the threshold is deliberately
+// enormous: linear is microseconds and the bug was minutes, and nothing between
+// them is a near miss. It runs on the function AND on the exported regex, because
+// the regex being safe on its own is what protects any future caller.
+{
+  const PAD = ' '.repeat(20000);
+  const took = (fn) => { const t = process.hrtime.bigint(); fn(); return Number(process.hrtime.bigint() - t) / 1e6; };
+  // Both worst cases: a run that ends in an adjustment amount (so the strip
+  // actually fires) and one that ends in a non-match (so it fails at every
+  // offset, which is what the cubic version choked on).
+  const AMOUNT = `N;Res;${PAD}2.5%`;
+  const NOMATCH = `N;Res;${PAD}x`;
+  const fnMs = Math.max(took(() => R(AMOUNT)), took(() => R(NOMATCH)));
+  const reMs = Math.max(took(() => _internals.ADJUSTMENT.test(AMOUNT)),
+    took(() => _internals.ADJUSTMENT.test(NOMATCH)));
+  ok(fnMs < 250, `20,000 characters of padding is read in ${fnMs.toFixed(1)} ms — a cell from an `
+    + 'uploaded file can never hang the server');
+  ok(reMs < 250, `and the regex ITSELF is linear (${reMs.toFixed(1)} ms), so a future caller that `
+    + 'reaches for it directly is safe too');
+  ok(R(AMOUNT).rating === 'Neutral' && R(AMOUNT).factor === 'Residential',
+    '…and it still reads correctly — the fix is the regex, not a length cap that gives up');
+  // The whitespace run is COLLAPSED for parsing, so an absurd cell reads exactly
+  // as the ordinary one does — and the appraiser's own text is still returned.
+  ok(R(NOMATCH).rating === 'Neutral' && R(NOMATCH).factor === 'Residential; x',
+    'an unrecognised trailing word is still passed through as the appraiser wrote it');
+  ok(R(AMOUNT).original === AMOUNT,
+    'and `original` is still the appraiser\'s own text, untouched by the collapse');
+}
 
 console.log(fail
   ? `\ntest-uad-rating-pure: ${pass} passed, ${fail} FAILED`

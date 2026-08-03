@@ -661,6 +661,8 @@ function CompPicker({ valuationId, subject, purpose, onClose, onAdded }) {
   const [sel, setSel] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [relaxedTo, setRelaxedTo] = useState(null);
+  const [relaxedLabel, setRelaxedLabel] = useState(null);
   // AN AFTER-REPAIR VALUE HAS TO REST ON SALES OF FINISHED HOUSES, and we do not
   // have to guess which those are: the appraiser put each comparable on either
   // the as-is grid or the after-repair grid, and the warehouse kept which. Every
@@ -675,9 +677,24 @@ function CompPicker({ valuationId, subject, purpose, onClose, onAdded }) {
   const search = useCallback(() => {
     setRows(null); setErr('');
     const f = { ...q };
+    // THE LADDER MAY ONLY RELAX WHAT WE SAY IS OURS. `relaxable` names the values
+    // this screen supplied as its own defaults; anything else the server treats
+    // as a deliberate instruction and never widens. Without it the "sales of any
+    // kind" rung was unreachable from here — measured, 37 of 73 towns hold no
+    // after-repair-grid sale at all and 54 of our own lent-on properties sit in
+    // one, so an ARV valuation's picker opened EMPTY and advised widening the
+    // town or the dates, neither of which is what emptied it.
+    const mine = ['sold_within_months'];
+    if (purpose === 'arv' && q.comp_set === 'arv') mine.push('comp_set');
+    f.relaxable = mine.join(',');
     if (subject.id) f.property_id = subject.id;
     else { f.gla = subject.gla; f.beds = subject.beds; f.condition_uad = subject.condition_uad; }
-    api.researchComps(f).then((d) => setRows(d.rows || [])).catch((e) => { setRows([]); setErr(e.message || 'Search failed'); });
+    api.researchComps(f).then((d) => {
+      setRows(d.rows || []);
+      setRelaxedTo(d.relaxed_to || null);
+      const last = (d.ladder || [])[(d.ladder || []).length - 1];
+      setRelaxedLabel(last ? last.label : null);
+    }).catch((e) => { setRows([]); setErr(e.message || 'Search failed'); });
   }, [q, subject]);
   useEffect(() => { search(); }, [search]);
 
@@ -726,6 +743,16 @@ function CompPicker({ valuationId, subject, purpose, onClose, onAdded }) {
         {err && <div style={{ color: '#B4423A', fontSize: 13, marginBottom: 8 }}>{err}</div>}
         {rows == null && <div style={{ color: MUTED }}>Looking…</div>}
         {rows && rows.length === 0 && <div style={{ color: MUTED }}>Nothing close by. Try widening the town or the date range.</div>}
+        {/* AND WHEN THE LADDER HAD TO LEAVE WHAT WAS ASKED FOR, IT SAYS SO. This
+            screen shows no ladder, so without this an officer building an
+            after-repair value would be handed as-is sales — or a different kind
+            of building — with nothing on the screen saying which. */}
+        {relaxedTo && relaxedTo !== 'as_asked' && (
+          <div style={{ padding: '8px 10px', borderRadius: 8, background: '#FBF6EA',
+            border: `1px solid ${GOLD}`, color: INK, fontSize: 12.5, marginBottom: 8 }}>
+            Nothing matched as asked. These came from <b>{relaxedLabel || relaxedTo}</b> — each row says what it is.
+          </div>
+        )}
         <div style={{ display: 'grid', gap: 6 }}>
           {(rows || []).map((r) => (
             <label key={r.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 10,
