@@ -141,6 +141,14 @@ function start() {
     setTimeout(() => { enrichPassOnce(); }, 60000); // one-shot warm, well after the pulls
     setInterval(enrichPassOnce, ENRICH_INTERVAL_MS);
   }
+
+  // Part 3 — catch the appraisal XML inside its ~15-minute download window.
+  // READ-ONLY (GETs through the frozen client). It has its OWN timer rather than
+  // riding the pull loop because the deadline is the AMC's delivery clock, not
+  // ours: the poll interval is a correctness constraint, and coupling it to the
+  // hourly file pull would miss essentially every file.
+  try { require('../encompass/appraisal-xml-catcher').start(db); }
+  catch (e) { console.error('[encompass-xml] failed to start (non-fatal):', e && e.message); }
 }
 
 // ── Flood-order poll worker ──────────────────────────────────────────────────
