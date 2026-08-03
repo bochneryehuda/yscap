@@ -348,9 +348,26 @@ API* + *Maps JavaScript API*, restrict it to our domain):
 | The map | **Google Maps JavaScript API** + Street View | The real map, satellite, and seeing the actual house |
 | The coordinates we STORE | **the free US Census geocoder — unchanged** | Not cost, LAW: Google's terms cap storing a lat/lng at 30 days while a place_id may be kept forever, and this warehouse is permanent |
 
-- [ ] **C4a** Google base map in `CompMap`, falling back to the current
-  OpenStreetMap tiles when no key is present — the map must never go blank
-  because a bill lapsed.
+- [x] **C4a — ANSWERED, AND THE ANSWER IS NO (see B3a).** A Google BASE MAP is
+  the one third of this that cannot be built the way it was imagined, and the
+  reason is licensing rather than effort: Google's terms require their imagery to
+  be displayed through the Google Maps JavaScript API, and pulling their raster
+  tiles into a third-party renderer is a breach. `app-v2/src/lib/tilemap.js` IS a
+  third-party renderer — 256px Web Mercator tiles, 56 assertions — so swapping the
+  tile URL is not a one-line upgrade, it is a terms violation that would look like
+  a working map.
+
+  Doing it properly means the Google Maps JavaScript API: the key goes into the
+  browser (referrer-restricted), and our renderer is replaced wholesale, along with
+  the pins, the distance rings, the drawing tool and the "this property has never
+  been placed" honesty rules built on top of it. That is a real project and worth
+  deciding on its own merits, not slipping in under "add a key".
+
+  **What the owner actually asked for is already shipped without it**: the aerial
+  view (USGS National Map — public domain, keyless, recent high-resolution
+  orthoimagery of exactly the country we lend in) and Street View on the property
+  itself. `test-tilemap-pure.mjs` asserts that NO layer is served by Google,
+  because the swap looks trivial and would pass every other check in the suite.
 - [x] **C4b / B3b** **DONE, and dormant until a key exists.** The satellite half
   shipped with B3a above (USGS imagery — public domain, keyless). Street View is
   the FALLBACK on a property with no appraisal photograph, served through our own
