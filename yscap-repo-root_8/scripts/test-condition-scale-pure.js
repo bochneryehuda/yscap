@@ -78,6 +78,34 @@ ok(W('Average-').rank === 4 && W('Average-').rankLow === 4 && W('Average-').rank
 ok(W('AVERAGE+').confidence === 'weak' && W('Average').confidence === 'likely',
   'a modified reading is offered with LESS confidence — we know the direction, not the size');
 
+// TWO CODES ARE A SPAN THE APPRAISER DID NOT RESOLVE. `C3/C4` and `C4-C5` are in
+// the real corpus, and reading the first as DEFINITE filed 622 Winchester Ave as
+// a C3 — the flattering end — so a "C3 or better" search returned it and the
+// screen printed a grade nobody chose. This is the one shape where a real span
+// exists, and collapsing it is the opposite of what the words get.
+for (const [t, lo, hi] of [['C3/C4', 3, 4], ['C4-C5', 4, 5], ['C2 to C4', 2, 4]]) {
+  const r = W(t);
+  ok(r.rankLow === lo && r.rankHigh === hi && r.code === null && r.source === 'code_span',
+    `"${t}" keeps its span and states no single code`);
+  ok(r.rank === hi, `and leans the WORSE end — we do not take the flattering reading of "${t}"`);
+  ok(CS.describe(r) === t, `and it is shown exactly as the appraiser wrote it, not as one end`);
+}
+ok(W('C4 / average').code === 'C4' && W('C4 / average').source === 'code',
+  'one code beside a word is still ONE code — a span needs two codes, not a code and a synonym');
+
+// A SIGN ATTACHED TO A NUMBER IS AN ADJUSTMENT, NOT A GRADE. The corpus fills
+// this very slot with "Inferior 5%" and "Superior 10%", so a percentage next to
+// a rating is ordinary — and reading its sign made "+5%" a better building and
+// "-5%" a worse one, off the same string.
+ok(W('Average +5%').rank === 4 && W('Average -5%').rank === 4,
+  'an appended percentage never moves the grade, in either direction');
+ok(W('Average +5%').confidence === 'likely',
+  'and it is not even treated as a modified reading — there was no modifier');
+// …and the two signs are detected SYMMETRICALLY. `+` used to match anywhere and
+// `-` only at the end, so "+Average" was a plus and "-Average" was nothing.
+ok(W('+Average').rank === 3 && W('-Average').rank === 4,
+  'a leading sign reads the same way a trailing one does');
+
 // ---------------------------------------------------------------------------
 // WHAT MUST STAY NULL — most of the corpus
 // ---------------------------------------------------------------------------

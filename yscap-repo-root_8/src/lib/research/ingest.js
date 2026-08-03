@@ -1189,7 +1189,15 @@ async function rollupProperty(db, propertyId) {
     // warehouse's — had no way to tell a measurement from a form inference. A
     // subject observation carries no `identity_basis` because it IS the
     // measurement, so it is recorded by name.
-    set.units_basis = bestUnits.role === 'subject' ? 'subject' : (bestUnits.identity_basis || null);
+    // 'subject' MEANS AN APPRAISER STOOD IN THE BUILDING, which is what db/444's
+    // own comment promises and what `comp-identity` ranks it as. But a subject
+    // observation on a 1004 or 1073 with a blank `LivingUnitCount` has its count
+    // IMPLIED BY THE FORM, and `identityRank` deliberately scores that BELOW a
+    // grid statement. Measured: 19 real properties would have asserted a
+    // measurement they never had.
+    set.units_basis = bestUnits.role === 'subject'
+      ? (bestUnits.identity_basis === 'form' ? 'form' : 'subject')
+      : (bestUnits.identity_basis || null);
   } else set.units_basis = null;
   // THE WORDED RATINGS ARE READ INTO SOMETHING A FILTER CAN USE (db/444).
   // `condition_rank` / `quality_rank` are GENERATED from the UAD code alone, so a

@@ -135,6 +135,10 @@ async function property(street, opts = {}) {
     const pPartial = await property('40 Partial Pl', { type: 'Multi 2–4', units: 4, basis: 'grid' });
     // 5 — nobody has ever established it. It must SAY so, and must not become the
     //     subject's three units.
+    // A GRID-STATED COUNT WITH NO TYPE, against a warehouse that states both from
+    // the report FORM alone. The measurement has to win the count.
+    const cCountOnly = await comp('7', '70 CountOnly Rd', 445000, { type: null, units: 3, basis: 'grid' });
+    const pCountOnly = await property('70 CountOnly Rd', { type: 'SFR (1 unit)', units: 1, basis: 'form' });
     const cUnknown = await comp('5', '50 Unknown Ct', 460000);
     // THE ROW STATES BOTH AND THE WAREHOUSE HAS NEVER SEEN IT — the shape of the
     // two real `212-1/2 Rancocas Rd` comparables, whose house number
@@ -154,6 +158,7 @@ async function property(street, opts = {}) {
     await obs(cRecords, pRecords, { seq: '3', address: '30 Records Rd' });
     await obs(cPartial, pPartial, { seq: '4', address: '40 Partial Pl', units: 2, basis: 'grid' });
     await obs(cUnknown, pUnknown, { seq: '5', address: '50 Unknown Ct' });
+    await obs(cCountOnly, pCountOnly, { seq: '7', address: '70 CountOnly Rd', units: 3, basis: 'grid' });
 
     // ---- A. THE DECISION ITSELF ----------------------------------------
     const rows = (await db.query(
@@ -182,16 +187,31 @@ async function property(street, opts = {}) {
       'and the type is shown in the portal\'s own words — never the raw database key');
 
     ok(by(cPartial).property_type === 'Multi 2–4' && Number(by(cPartial).units) === 4,
-      'THE PAIR MOVES TOGETHER — a source stating both beats a source stating only a count');
+      'a source stating BOTH breaks a tie against one stating only a count');
     ok(by(cPartial).identity_source === 'records' && Number(by(cPartial).units) !== 2,
       'so a row can never read "2 units" beside a type describing a different building');
+
+    // …BUT THE RANK DECIDES FIRST, AND A PICK NEVER DELETES WHAT THE ROW SAID.
+    // Preferring a complete answer BEFORE the rank let a form inference (rank 1)
+    // stating both beat a grid statement (rank 3) stating only a count — and then
+    // deleted that count and reddened the cell, which is the exact class the
+    // module's header declares impossible.
+    ok(Number(by(cCountOnly).units) === 3,
+      'a GRID-stated count survives a form-inferred pair that would have overwritten it');
+    ok(by(cCountOnly).identity_source === 'grid' && by(cCountOnly).property_type == null,
+      'and the TYPE stays unstated rather than being borrowed from the reading that lost — '
+      + '"3 units" beside "SFR (1 unit)" is the self-contradiction the pair rule exists to stop');
 
     ok(by(cUnknown).property_type == null && by(cUnknown).units == null,
       'a comp nobody has established stays unknown');
     ok(by(cUnknown).identity_source == null,
       'and carries no source, so the screen says "not stated" rather than showing a blank');
-    ok(!got.some((r) => !r.is_subject && Number(r.units) === 3 && r.id !== cGrid),
-      'NOTHING is inherited from the subject — a 3-unit subject does not make its comps 3-unit');
+    // The only comps that may read 3 units are the two that STATE three: the
+    // grid-described one and the count-only one. Nothing else may pick up the
+    // subject's three.
+    ok(!got.some((r) => !r.is_subject && Number(r.units) === 3
+      && r.id !== cGrid && r.id !== cCountOnly),
+    'NOTHING is inherited from the subject — a 3-unit subject does not make its comps 3-unit');
 
     // THE ROW'S OWN ANSWER SURVIVES A WAREHOUSE THAT HAS NEVER SEEN IT. This is
     // the `212-1/2 Rancocas Rd` case, and it is what the first cut got wrong.

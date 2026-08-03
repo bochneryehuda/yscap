@@ -234,9 +234,15 @@ function buildQuery(input = {}) {
   const condMin = rankOf(CONDITION_SCALE, f.condition_best), condMax = rankOf(CONDITION_SCALE, f.condition_worst);
   if (condMin != null) where.push(`p.condition_rank_read >= ${P(condMin)}`);
   if (condMax != null) where.push(`p.condition_rank_read <= ${P(condMax)}`);
+  // …AND SO DOES QUALITY, for exactly the same reason. Leaving this on the
+  // code-only column while the condition filter moved shipped the feature half
+  // wired: the roll-up writes `quality_rank_read`, db/444 indexes it and the
+  // list ships it to the client, and nothing read it. Measured on the real
+  // corpus: "Q4 or better" returns 572 against the code column and 702 against
+  // the reading — 130 properties whose quality the appraiser wrote in words.
   const qualMin = rankOf(QUALITY_SCALE, f.quality_best), qualMax = rankOf(QUALITY_SCALE, f.quality_worst);
-  if (qualMin != null) where.push(`p.quality_rank >= ${P(qualMin)}`);
-  if (qualMax != null) where.push(`p.quality_rank <= ${P(qualMax)}`);
+  if (qualMin != null) where.push(`p.quality_rank_read >= ${P(qualMin)}`);
+  if (qualMax != null) where.push(`p.quality_rank_read <= ${P(qualMax)}`);
   // The explicit-code form stays supported (the facet chips send codes, not ranges).
   const condCodes = list(f.condition);
   if (condCodes) where.push(`p.condition_uad = ANY(${P(condCodes.map((c) => c.toUpperCase()))})`);

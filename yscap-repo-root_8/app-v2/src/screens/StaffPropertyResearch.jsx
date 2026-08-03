@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
-  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel,
+  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel, conditionRead,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
@@ -458,8 +458,15 @@ function PropertyCard({ p, checked, onToggle }) {
         </div>
         <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {p.condition_uad && <span style={S.tag} title={conditionLabel(p.condition_uad)}>{p.condition_uad}</span>}
-          {!p.condition_uad && p.condition_text && <span style={S.tag}>{p.condition_text}</span>}
+          {/* A WORDED RATING NOW MATCHES A CONDITION FILTER (db/444), so the row
+              has to say that the grade was READ from the appraiser's word rather
+              than given as a code — otherwise a property returned by "C3 or
+              better" shows a bare "Average" and nothing explains why it is here. */}
+          {!p.condition_uad && p.condition_text && <span style={S.tag}>{conditionRead(p)}</span>}
           {p.quality_uad && <span style={S.tag}>{p.quality_uad}</span>}
+          {!p.quality_uad && p.quality_text && p.quality_read_source === 'word' && (
+            <span style={S.tag}>{p.quality_text} (reads as Q{p.quality_rank_read})</span>
+          )}
           {p.arv_comp_count > 0 && <span style={{ ...S.tag, borderColor: GOLD, color: GOLD }}>Used as an ARV comp ×{p.arv_comp_count}</span>}
           {p.asis_comp_count > 0 && <span style={{ ...S.tag }}>Used as an as-is comp ×{p.asis_comp_count}</span>}
           {p.subject_count > 0 && <span style={{ ...S.tag, borderColor: '#2F7F86', color: '#2F7F86' }}>Our own file ×{p.subject_count}</span>}

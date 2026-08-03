@@ -562,6 +562,55 @@ async function makeAppraisal(appId, o) {
     ok(!Object.prototype.hasOwnProperty.call(banded.body.applied_filters || {}, 'units'),
       'the typed subject\'s `units` names the subject and never reaches the query');
 
+    // ---- A WORDED RATING IS ACTUALLY FILTERABLE --------------------------
+    // The pure test proves the READER. It proves nothing about the warehouse:
+    // an audit emptied the whole word table and every database suite still
+    // passed, because nothing asserted that a words-only property becomes
+    // findable. UAD was mandated for four forms and the 1025 (2-4 unit) was left
+    // out, so this is most of a 2-4 unit lender's book — 234 of 955 real
+    // properties carry words only.
+    const WORDY = `Wordytown${Date.now().toString(36)}`;
+    // THE READING IS NEVER HAND-WRITTEN INTO THE FIXTURE. An audit emptied the
+    // whole word table and every database suite still passed, because the rank
+    // columns were inserted directly — which tests the SQL and not the reader.
+    // These rows carry only what an appraiser wrote, and `rollupProperty` (the
+    // real production path) computes the rest.
+    const mkWordy = async (street, name, price, cond, qual) => {
+      const pid = (await db.query(
+        `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+           property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+         VALUES ($1,$2,$3,$4,'NJ','07006','SFR (1 unit)',1,1500,3,1960,$5,CURRENT_DATE - 20)
+         RETURNING id`,
+        [`${WORDY.toLowerCase()}|${street}|${Date.now()}${Math.random()}`, name, street, WORDY, price])).rows[0].id;
+      await db.query(
+        `INSERT INTO property_observations (property_id, role, observed_on, address_as_stated,
+           condition_uad, condition_text, quality_uad, quality_text, condition_basis)
+         VALUES ($1,'subject',CURRENT_DATE,$2,$3,$4,$5,$6,'as_is')`,
+        [pid, name, cond.code || null, cond.text || null, qual.code || null, qual.text || null]);
+      await ingest._internals.rollupProperty(db, pid);
+      return pid;
+    };
+    const wordProp = await mkWordy('1 Word Way', 'Word House', 500000,
+      { text: 'Average' }, { text: 'Good' });
+    const codeProp = await mkWordy('2 Word Way', 'Code House', 510000,
+      { code: 'C5' }, { code: 'Q5' });
+
+    const c3best = await S.searchProperties(db, { city: WORDY, state: 'NJ', condition_best: 'C1', condition_worst: 'C4' });
+    ok(c3best.rows.some((r) => r.id === wordProp),
+      'a property rated only in words is FOUND by a condition filter — the whole point of reading them');
+    ok(c3best.rows.every((r) => r.id !== codeProp),
+      'and a C5 property is still correctly excluded, so the filter did not simply stop filtering');
+    const q4best = await S.searchProperties(db, { city: WORDY, state: 'NJ', quality_best: 'Q1', quality_worst: 'Q4' });
+    ok(q4best.rows.some((r) => r.id === wordProp) && q4best.rows.every((r) => r.id !== codeProp),
+      'and QUALITY reads the words too — it was left on the code-only column while condition moved');
+    const listed = c3best.rows.find((r) => r.id === wordProp) || {};
+    ok(listed.condition_rank_low === 3 && listed.condition_rank_high === 4
+      && listed.condition_read_source === 'word',
+    'the reading travels to the screen with its SPAN, so it can show the word and what it reads as');
+    const wordFacets = await S.facets(db, { city: WORDY, state: 'NJ' });
+    ok(wordFacets.conditions_worded === 1,
+      'and the facet list says how many of the answer its code list cannot describe');
+
     // ---- AN AFTER-REPAIR VALUE RESTS ON RENOVATED SALES ------------------
     // The appraiser put each comparable on either the as-is grid or the
     // after-repair grid and the warehouse kept which, so "was this sale

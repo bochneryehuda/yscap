@@ -105,8 +105,15 @@ const clamp = (n) => Math.max(1, Math.min(6, n));
  * resolved.
  */
 function applyModifier(hit, text) {
-  const plus = /[+]/.test(text) || /\bplus\b/i.test(text);
-  const minus = /(?:\w|\s)-\s*$/.test(text) || /-\s*$/.test(text) || /\bminus\b/i.test(text);
+  // A SIGN ATTACHED TO A NUMBER IS AN ADJUSTMENT, NOT A GRADE. "Average +5%" is a
+  // percent adjustment written beside the rating, and reading its sign as a
+  // modifier made "+5%" a better building and "-5%" a worse one — from the very
+  // slot the corpus fills with "Inferior 5%" and "Superior 10%". The two signs
+  // were also detected ASYMMETRICALLY: `+` anywhere, `-` only at the end, so
+  // "+Average" was a plus and "-Average" was nothing.
+  const t = String(text).replace(/[+-]\s*\d+(?:\.\d+)?\s*%?/g, ' ');
+  const plus = /\+/.test(t) || /\bplus\b/i.test(t);
+  const minus = /-\s*$/.test(t.trim()) || /^\s*-/.test(t) || /\bminus\b/i.test(t);
   if (plus === minus) return { ...hit, modified: false };   // neither, or both — leave it alone
   // THE POINT MOVES TO THE EDGE THE MODIFIER NAMES; THE BAND IS NOT REPLACED.
   // Moving the whole reading a full grade made "Average-" come out as FAIR
@@ -137,6 +144,21 @@ function readCondition(text, opts = {}) {
 
   // A LITERAL CODE ALWAYS WINS, including inside a mixed "C4 / average" string —
   // the code is what the appraiser actually graded and the word is corroboration.
+  // TWO CODES ARE A SPAN THE APPRAISER DID NOT RESOLVE, and reading the first as
+  // definite is the opposite of what this module does for every word. `C3/C4`
+  // and `C4-C5` are in the real corpus, and the first cut filed
+  // `622 Winchester Ave` as a DEFINITE C3 — the flattering end — so a "C3 or
+  // better" search returned it and the screen printed a grade nobody chose.
+  const spanCodes = [...new Set((String(raw).match(/\bC[1-6]\b/gi) || [])
+    .map((x) => Number(x.slice(1))))].sort((a, b) => a - b);
+  if (spanCodes.length > 1) {
+    return { code: null, rank: spanCodes[spanCodes.length - 1], rankLow: spanCodes[0],
+      rankHigh: spanCodes[spanCodes.length - 1], basis, scale: 'C', source: 'code_span',
+      original: raw,
+      // The WORSE end is the point estimate: where the appraiser left it split we
+      // do not take the flattering reading.
+      confidence: 'likely', why: null };
+  }
   const c = CONDITION_CODE.exec(raw);
   if (c) {
     const rank = Number(c[1]);
@@ -236,6 +258,9 @@ function resolveQuality(row, opts = {}) {
 function describe(read) {
   if (!read || read.rank == null) return null;
   if (read.source === 'code') return read.code;
+  // A SPAN THE APPRAISER WROTE ("C3/C4") is shown as they wrote it — printing one
+  // end would state a grade they declined to choose.
+  if (read.source === 'code_span') return read.original;
   // THE SCALE'S OWN LETTER. Printing "C3" beside a quality-of-construction word
   // would state a condition grade the appraiser never gave.
   const L = read.scale === 'Q' ? 'Q' : 'C';

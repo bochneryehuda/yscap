@@ -60,6 +60,7 @@
 const db = require('../../db');
 const { _internals: I } = require('./ingest');
 const PT = require('../property-type');
+const PC = require('../appraisal/property-category');
 
 const has = (v) => v != null && v !== '';
 
@@ -84,7 +85,16 @@ const rankOfBasis = (basis) => I.identityRank(
  * property report. An unrecognised value is passed through untouched rather than
  * dropped: a vocabulary we have not seen is still the appraiser's word.
  */
-const label = (v) => (has(v) ? (PT.canonicalPropertyTypeLabel(v) || String(v)) : null);
+const label = (v) => {
+  if (!has(v)) return null;
+  // AN ATTACHMENT STYLE IS NOT A CATEGORY (db/405). `canonicalPropertyTypeLabel`
+  // maps /detached/ to "SFR (1 unit)", so "Detached", "SemiDetached" and even
+  // "Single Family Attached" would all render as a definite one-unit house —
+  // a confident wrong answer where the raw value was merely unhelpful. The repo
+  // already owns the test; use it rather than a second opinion.
+  if (PC.isAttachmentStyle && PC.isAttachmentStyle(v)) return String(v);
+  return PT.canonicalPropertyTypeLabel(v) || String(v);
+};
 
 /**
  * Attach `property_type` / `units` / `identity_source` / `property_id` to a set
@@ -107,7 +117,10 @@ async function attachCompIdentity(rows, opts = {}) {
   const out = list.map((r) => Object.assign({}, r, {
     property_type: label(r.property_type),
     units: has(r.units) ? Number(r.units) : null,
-    identity_source: (has(r.property_type) || has(r.units)) ? (r.identity_basis || 'grid') : null,
+    // A NULL BASIS IS NOT A CLAIM THAT THE APPRAISER WROTE IT ON THE GRID —
+    // labelling it 'grid' asserted a provenance we do not have, while the
+    // ranking scored the same row 0. `stated` says only that the row states it.
+    identity_source: (has(r.property_type) || has(r.units)) ? (r.identity_basis || 'stated') : null,
     identity_observations: null, property_id: null,
   }));
 
@@ -150,24 +163,39 @@ async function attachCompIdentity(rows, opts = {}) {
     // EVERY CANDIDATE ON ONE SCALE. Ordered best-first by how it was established;
     // ties keep this report's own statement, which needs no extra hop.
     const candidates = [
-      { type: src.property_type, units: src.units, source: src.identity_basis || 'grid',
+      { type: src.property_type, units: src.units, source: src.identity_basis || 'stated',
         rank: rankOfBasis(src.identity_basis) },
-      { type: o.obs_type, units: o.obs_units, source: o.identity_basis || 'grid',
+      { type: o.obs_type, units: o.obs_units, source: o.identity_basis || 'stated',
         rank: rankOfBasis(o.identity_basis) },
       { type: o.roll_type, units: o.roll_units, source: 'records', rank: rankOfBasis(o.roll_basis) },
     ].filter((c) => has(c.type) || has(c.units));
     if (!candidates.length) continue;
 
-    // THE PAIR MOVES TOGETHER: a source stating BOTH is preferred outright, and
-    // among those the best-sourced wins. Only if none states both is a partial
-    // answer taken, and then whole from one source.
-    const both = candidates.filter((c) => has(c.type) && has(c.units));
-    const pool = both.length ? both : candidates;
-    const pick = pool.reduce((best, c) => (c.rank > best.rank ? c : best), pool[0]);
+    // THE RANK DECIDES, AND COMPLETENESS ONLY BREAKS A TIE. Preferring a
+    // complete answer FIRST let a form inference (rank 1) that states both beat
+    // a grid statement (rank 3) that states only a count — and then, because
+    // both fields were assigned from the winner, it DELETED the count the
+    // appraiser had written and reddened the cell. Reproduced both ways against
+    // a real database. The file's own headline rule is that a later source may
+    // only ever improve on what the row states, so:
+    //   · the best-sourced candidate wins; a complete answer breaks a tie
+    //     between equals, which is where "the pair moves together" belongs;
+    //   · a winner that states only ONE fact leaves the other where it was,
+    //     rather than nulling it — but only if the seed does not contradict the
+    //     band it just claimed, which cannot happen here because a candidate
+    //     stating one fact never overwrites the other's source.
+    const better = (a, b) => {
+      if (b.rank !== a.rank) return b.rank > a.rank ? b : a;
+      const ca = has(a.type) && has(a.units), cb = has(b.type) && has(b.units);
+      return (cb && !ca) ? b : a;
+    };
+    const pick = candidates.reduce(better, candidates[0]);
 
-    r.property_type = has(pick.type) ? label(pick.type) : null;
-    r.units = has(pick.units) ? Number(pick.units) : null;
-    r.identity_source = pick.source;
+    // NEVER LESS THAN THE ROW ALREADY SAID. A pick that states one fact upgrades
+    // that fact and leaves the other as it was seeded.
+    if (has(pick.type)) r.property_type = label(pick.type);
+    if (has(pick.units)) r.units = Number(pick.units);
+    if (has(pick.type) || has(pick.units)) r.identity_source = pick.source;
   }
   return out;
 }
