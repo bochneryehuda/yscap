@@ -30,6 +30,8 @@
  */
 const path = require('path');
 const reg = require('../conditions/field-registry');
+// One wording for "what does this file vest in" across every tape + screen.
+const { vestingCell } = require('../vesting-label');
 
 // Template cell-style indices (from the workbook's styles.xml cellXfs) — reused
 // so injected cells carry the template's own formatting:
@@ -245,7 +247,7 @@ function economics(loan) {
 // Each entry: [column, type, styleIndex|null, getter(loan, econ)]
 const COLUMNS = [
   ['A', 's', null, (l) => l.app.investor_loan_number || l.app.ys_loan_number || ''],
-  ['B', 's', null, (l) => l.vesting.llc || ''],
+  ['B', 's', null, (l) => vestingCell(l.vesting)],   // Borrowing Entity ("Individual" when there is no entity)
   ['C', 's', null, (l) => guarantorC(l)],
   ['D', 's', null, (l) => l.address.line1 || ''],
   ['E', 's', null, (l) => l.address.city || ''],

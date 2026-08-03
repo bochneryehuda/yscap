@@ -121,13 +121,28 @@ console.log('\nC. #29 — the three side bugs');
 // vests in an individual, because there IS no entity — so the file could never
 // read complete.
 {
-  const m = file.match(/\{ key: 'entity_name',[\s\S]{0,600}?\},/);
+  // The field object runs from its own key to the next field's key — bounded by
+  // the sibling rather than by a character count, so adding a property to it can
+  // never quietly slide the assertions off the end of the window.
+  const m = file.match(/\{ key: 'entity_name',[\s\S]*?\n  \{ key: 'property_type'/);
   ok(!!m, 'the vesting completeness pill is findable');
   const row = m ? m[0] : '';
   ok(/personal_name_purchase && !app\.llc_id/.test(row),
     'it is satisfied by the individual choice as well as by an entity');
   ok(/label: \(app\.personal_name_purchase/.test(row),
     '…and it renames itself, so it never asks for an LLC on a file that has none by design');
+  /* AND THE CHOICE IS MAKEABLE FROM THE PILL ITSELF (owner-directed 2026-08-03:
+     "you have a plus mark where you can put an LLC. We need over there to have a
+     tool to select that this is on an individual"). Being SATISFIED by the
+     individual choice was only half of it — the pill could still only be
+     ANSWERED with an LLC name, and pointed at another section for the other
+     answer. It saves through the personal-name door, never as a typed value. */
+  ok(/altEndpoint: \(base\) => base\.replace\(.*vesting\/personal-name/.test(row),
+    'the pill offers the individual answer too, through the file\'s personal-name door');
+  ok(/altBlocked: app\.vesting_individual_blocked/.test(row),
+    '…greyed with the server\'s own reason on a Blue Lake / Gold file, before the click');
+  ok(/saveAlt\(f\)/.test(file) && /f\.altEndpoint && \(/.test(file),
+    '…and the panel actually renders and posts it');
 }
 
 console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  overview-shape: one block, then status, then the team — and the three side bugs are shut');
