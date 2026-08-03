@@ -1203,6 +1203,8 @@ async function writeReport(db, { a, comps, link, out }) {
       lot_sqft: fromAdjustments(c.adjustments, 'site', K.lotSqft),
       units: K.int(c.units, { min: 1, max: 100 }),
       stories: null, design_style: fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
+      // Written at last (db/409 §7): the comparable's own type, proved from how
+      // many unit rows its grid carried — never inherited from the subject.
       property_type: txt(c.property_type), property_category: null,
       condition_uad: txt(c.condition_uad), condition_text: txt(c.condition_text),
       quality_uad: txt(c.quality_uad), quality_text: txt(c.quality_text),

@@ -266,5 +266,32 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
     'the sentence itself is kept as the evidence behind the code');
 }
 
+// ---------------------------------------------------------------------------
+// 10. THE ONLY PROPERTY TYPE A COMPARABLE GRID EVER PROVES (task item 1.7).
+//     `appraisal_comparables.property_type` has existed since db/409 §7 and was
+//     written by NOTHING — 0 of 83 rows — which reads on screen as "the report
+//     didn't say" when the truth was "we never looked". No MISMO element states
+//     it, but a grid that wrote a room line PER UNIT has stated how many
+//     dwellings there are, and that IS the answer to "one-family or 2-4?".
+// ---------------------------------------------------------------------------
+{
+  const { comparableRowFrom } = require('../src/lib/appraisal/import');
+  const typeOf = (rows) => comparableRowFrom(comp(rows)).property_type;
+  ok(typeOf(R(5, 3, '1.0') + R(5, 2, '1.0')) === 'Multi 2–4', 'two unit rows is a 2-4 family');
+  ok(typeOf(R(5, 3, '1.0') + R(5, 2, '1.0') + R(4, 2, '1.0') + R(4, 2, '1.0')) === 'Multi 2–4',
+    'and so is four');
+  ok(typeOf(Array.from({ length: 6 }, () => R(4, 2, '1.0')).join('')) === 'Multi 5+',
+    'six unit rows is a 5+');
+  ok(typeOf(R(7, 3, '2.1')) === null,
+    'ONE room row proves nothing — a 1004 grid has exactly one whatever the property is, so '
+    + 'reading "SFR" out of it would be inventing a fact');
+  ok(typeOf('') === null, 'and a grid with no room line at all says nothing');
+  // It speaks the PORTAL's vocabulary, so a comparable and a subject can never
+  // describe the same building in two different words.
+  const { LABEL_OF } = require('../src/lib/property-type');
+  ok(typeOf(R(5, 3, '1.0') + R(5, 2, '1.0')) === LABEL_OF.multi_2_4,
+    'in the portal\'s own vocabulary, not a private spelling');
+}
+
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');
 process.exit(failures ? 1 : 0);

@@ -78,7 +78,7 @@ function shapeReport(A) {
   a.id = null;
   a.application_id = null;
   const comps = (A.comparables || []).map((c) => {
-    const row = comparableRowFrom(c);
+    const row = comparableRowFrom(c, A.formType);
     // In the database `adjustments` is jsonb and reads back as an array; the ingest
     // mines a comp's year built / lot / style out of those lines, so it must be one.
     if (typeof row.adjustments === 'string') {

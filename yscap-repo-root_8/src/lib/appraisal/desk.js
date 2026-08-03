@@ -560,7 +560,10 @@ async function backfillComparableParseOnce(limit = 150) {
   // about. Everything else on the row (comp_set, the human-facing overrides) is
   // left exactly as it stands.
   const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
-    'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis'];
+    'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis',
+    // The comparable's own property type, derived ONLY from its stated unit count
+    // (db/409 §7's column, written by nothing until now).
+    'property_type'];
   let scanned = 0, rewritten = 0, unrecoverable = 0, missing = 0;
   try {
     const rows = (await db.query(
@@ -608,7 +611,7 @@ async function backfillComparableParseOnce(limit = 150) {
           if (c.seq == null) continue;
           const rows = bySeq.get(String(c.seq));
           if (!rows) { missing++; continue; }
-          const full = comparableRowFrom(c);
+          const full = comparableRowFrom(c, A.formType);
           for (const row of rows) {
             // A REPORT THAT WAS SILENT NEVER BLANKS A FACT — the warehouse's own
             // first law, and this ignored it. It wrote all eleven columns

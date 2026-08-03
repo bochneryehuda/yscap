@@ -349,6 +349,11 @@ function compGrid(c) {
     // Both field maps warn about exactly those placeholder shapes. `gla_basis`
     // twelve lines below gets this right by setting value and basis together.
     ...pricePerArea(c),
+    // THE 2-4 FAMILY MEASURE. Stated per comparable and read by nothing: a 6-bed
+    // triplex and a 6-bed house are not comparable per FOOT, they are comparable
+    // per DOOR (db/430).
+    pricePerUnit: bounded(X.attr(c, 'SalesPricePerUnitAmount'), 1e10),
+    monthlyRent: null, grm: null, ageYears: null,
     adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
@@ -370,6 +375,13 @@ function compGrid(c) {
     // that writes "Good" or "Avg-Good" instead of "C3" was having the comparable's
     // condition — the single most important thing about a comp after its price —
     // thrown away entirely. The raw word is kept beside the code, never in place of it.
+    // THE AGE THE GRID ACTUALLY STATES IS A NUMBER OF YEARS. A year built was
+    // derived from it downstream and only that was kept, losing the appraiser's
+    // own figure. Store what was stated; the derived year still sits beside it.
+    else if (t === 'Age' && out.ageYears == null) {
+      const yrs = count((String(d || '').match(/\d+/) || [])[0], 999);
+      if (yrs != null) out.ageYears = yrs;
+    }
     else if (t === 'Condition' && d) { if (UAD_C.test(d)) out.conditionUad = d; else out.conditionText = d; }
     else if (t === 'Quality' && d) { if (UAD_Q.test(d)) out.qualityUad = d; else out.qualityText = d; }
   }
@@ -462,6 +474,17 @@ function compGrid(c) {
     const d = clean(X.attr(of, 'PropertyFeatureDescription'));
     const amt = toNum(X.attr(of, 'PropertyFeatureAdjustmentAmount'));
     if (d || amt != null) out.adjustments.push({ type: 'OtherFeature', description: d, amount: amt });
+  }
+  // THE COMPARABLE'S OWN RENT AND THE MULTIPLIER THE APPRAISER DERIVED FROM IT.
+  // On a rental-exit loan the GRM IS the comparison — and we stored the subject's
+  // while discarding every comp's, which makes the subject's number impossible to
+  // check against anything (db/430). Read only from the comp's OWN rental block.
+  const mrs = X.find(c, 'MULTIFAMILY_RENTAL_SUMMARY') || X.find(c, 'MULTIFAMILY_RENTAL');
+  if (mrs) {
+    out.monthlyRent = bounded(X.attr(mrs, 'RentalActualGrossMonthlyRentAmount'), 1e8)
+      ?? bounded(X.attr(mrs, 'RentalEstimatedGrossMonthlyRentAmount'), 1e8);
+    out.grm = bounded(X.attr(mrs, 'GrossRentMultiplierFactor')
+      || X.attr(mrs, 'RentalGrossRentMultiplierFactor'), 1e6);
   }
   const cd = X.find(c, 'COMPARISON_DETAIL');
   if (cd) {
@@ -580,6 +603,7 @@ function comparables(root) {
       // foot of GROSS BUILDING area describe different properties, and a 1025
       // states the second one.
       dom: g.dom, pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
+      pricePerUnit: g.pricePerUnit, monthlyRent: g.monthlyRent, grm: g.grm, ageYears: g.ageYears,
       adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).

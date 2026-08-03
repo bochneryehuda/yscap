@@ -180,7 +180,7 @@ async function continueImportTx(db, { A, appraisalId, applicationId, f, today, t
   //    days-on-market, $/GLA, and the itemized adjustments — so the review checks (and the
   //    report grid) have the data. Every field is null when the appraisal didn't carry it.
   for (const c of A.comparables || []) {
-    const row = comparableRowFrom(c);
+    const row = comparableRowFrom(c, A.formType);
     const ck = Object.keys(row);
     await db.query(
       `INSERT INTO appraisal_comparables (appraisal_id, is_subject, ${ck.join(',')})
@@ -359,7 +359,85 @@ async function fillFileFacts(db, applicationId, A) {
  * builds these in memory rather than storing them against a loan file, and the two
  * doors must read one report identically. PURE: no database, no IO.
  */
-function comparableRowFrom(c) {
+/**
+ * WHAT A COMPARABLE IS, AND HOW MANY DOORS IT HAS — the two facts the owner named
+ * as the most important in the whole warehouse, and the two a MISMO grid states
+ * least directly.
+ *
+ * "There shouldn't be a possibility that you should see a comparable in your
+ * system that doesn't have how many units the property is, what property type it
+ * is" — owner-directed, 2026-08-03. Three sources, strongest first, and each
+ * records WHERE it came from so a screen never presents an inference as a
+ * measurement:
+ *
+ *  1. THE GRID SAID IT. The appraiser wrote a room line per unit, so the count is
+ *     stated. `basis: 'grid'`.
+ *
+ *  2. THE ARITHMETIC PROVES IT. `SalesPricePerUnitAmount` and the sale price are
+ *     both stated, and the price divides by the per-unit figure into a whole
+ *     number inside the form's own band. Accepted ONLY when it divides cleanly
+ *     (within a rounding cent) — the field maps warn that per-unit figures are
+ *     rounded, so a ratio of 2.97 proves nothing and is refused. `basis: 'price'`.
+ *
+ *  3. THE FORM REQUIRES IT. This is the owner's own reasoning — "if it's a single
+ *     family residence obviously all the comparables are single families, and if
+ *     it's a 2 to 4 then all the comparables are two to 4" — and it is not a
+ *     guess: the sales-comparison approach REQUIRES comparables of the same
+ *     property type, and Fannie Mae publishes one form per type. A comparable on
+ *     a 1004 is a one-unit dwelling; on a 1073 a condo; on a 1025 a 2-4 family.
+ *     So the FORM decides the TYPE outright, and on a 1004/1073 it decides the
+ *     COUNT too (both forms are one dwelling by definition). On a 1025 it gives
+ *     the type and a 2-4 band, and the exact door count still needs 1 or 2.
+ *     `basis: 'form'`.
+ *
+ * A count is never invented beyond those three, and never taken from the
+ * SUBJECT's own unit count — two 2-4 families are not the same size, and copying
+ * the subject's 3 onto a 4-family comp would be a wrong number wearing the
+ * authority of a stated one.
+ */
+function compIdentity(c, formType) {
+  const { LABEL_OF, appraisalFormExpectation } = require('../property-type');
+  const exp = appraisalFormExpectation(formType);
+  const out = { units: null, propertyType: null, basis: null };
+
+  // 1 — the grid wrote a row per unit.
+  const stated = Number(c && c.units);
+  if (Number.isFinite(stated) && stated >= 2) {
+    out.units = stated; out.basis = 'grid';
+  }
+
+  // 2 — the price divides cleanly by the stated price per unit.
+  if (out.units == null) {
+    const price = Number(c && c.salePrice), per = Number(c && c.pricePerUnit);
+    if (Number.isFinite(price) && Number.isFinite(per) && per > 0 && price > 0) {
+      const ratio = price / per;
+      const n = Math.round(ratio);
+      // Within a cent per unit of exact, and inside the band the form allows.
+      const clean = n >= 1 && n <= 8 && Math.abs(ratio - n) * per < 1;
+      const inBand = !exp || (n >= (exp.minUnits || 1) && n <= (exp.maxUnits || 99));
+      if (clean && inBand && n >= 2) { out.units = n; out.basis = 'price'; }
+    }
+  }
+
+  // 3 — the form itself.
+  if (exp) {
+    out.propertyType = exp.label || null;
+    // A 1004 and a 1073 are ONE dwelling by definition, so the form states the
+    // count as surely as it states the type. A 1025 gives a 2-4 band only.
+    if (out.units == null && exp.minUnits === 1 && exp.maxUnits === 1) {
+      out.units = 1; out.basis = out.basis || 'form';
+    }
+    if (!out.basis) out.basis = 'form';
+  }
+  // A stated count still names the type when the form did not (an unknown form
+  // code, a vendor we have not seen).
+  if (!out.propertyType && out.units != null && out.units >= 2) {
+    out.propertyType = out.units >= 5 ? (LABEL_OF.multi_5_plus || null) : (LABEL_OF.multi_2_4 || null);
+  }
+  return out;
+}
+
+function comparableRowFrom(c, formType = null) {
   return {
     seq: c.seq, address: c.address, city: c.city, state: c.state, zip: c.zip,
     proximity: c.proximity, sale_price: c.salePrice, adjusted_price: c.adjustedPrice,
@@ -386,7 +464,27 @@ function comparableRowFrom(c) {
     // db/409 §7 and was written by nothing — this key was simply never emitted.
     // Both are NULL on a single-unit grid: one room row is the property, not a
     // unit, and neither may ever be inherited from the subject.
-    units: c.units, unit_mix: c.unitMix ? JSON.stringify(c.unitMix) : null,
+    unit_mix: c.unitMix ? JSON.stringify(c.unitMix) : null,
+    // …AND THE ONLY PROPERTY TYPE A GRID EVER PROVES. `property_type` has existed
+    // since db/409 §7 and was likewise written by nothing (0 of 83 rows), which
+    // reads on screen as "the report didn't say" when the truth was "we never
+    // looked". No MISMO element states a comparable's type — but a grid that
+    // wrote a room line PER UNIT has stated how many dwellings there are, and
+    // that IS the answer to "one-family or 2-4?". Spoken in the portal's own
+    // vocabulary through `LABEL_OF`, so it can never drift from the subject side.
+    //
+    // NEVER GUESSED and never inherited: one room row proves nothing (a 1004 has
+    // exactly one), so a single-unit grid still says nothing at all rather than
+    // claiming "SFR".
+    // WHAT IT IS AND HOW MANY DOORS — the two facts the owner named as the most
+    // important in the warehouse. Grid > arithmetic > the form itself, with the
+    // basis recorded so an inference is never shown as a measurement (db/431).
+    ...(() => { const id = compIdentity(c, formType);
+      return { units: id.units, property_type: id.propertyType, identity_basis: id.basis }; })(),
+    // db/430 — the 2-4 family price measure, the comp's own rent and the
+    // multiplier the appraiser derived from it, and the age they stated in YEARS.
+    price_per_unit: c.pricePerUnit, monthly_rent: c.monthlyRent, grm: c.grm,
+    age_years: c.ageYears,
   };
 }
 
@@ -436,7 +534,11 @@ function buildFieldsJson(A) {
 //     it under the gross-BUILDING-area attribute, which was never read).
 // 2 — db/429: the subject's WORDED condition/quality (dropped entirely before),
 //     the condition narrative, and the as-is code proven from it.
-const COMP_PARSE_VERSION = 2;
+// 3 — db/409 §7's `property_type` on a comparable, finally written from the one
+//     fact a grid proves: how many unit rows the appraiser wrote.
+// 4 — db/430: price per unit, the comparable's own rent + GRM, and the age it
+//     stated in years.
+const COMP_PARSE_VERSION = 4;
 
 module.exports = {
   importAppraisal,
