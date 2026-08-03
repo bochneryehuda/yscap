@@ -843,8 +843,22 @@ router.post('/valuations/:id/comps', async (req, res, next) => {
     const wanted = ids.filter(isUuid).slice(0, 24);
     if (!wanted.length) return res.status(400).json({ error: 'pick at least one property' });
 
-    const rates = req.body && req.body.suggest === false ? null
-      : (await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city, months: 24 })).rates;
+    // THE RATES ARE RECORDED, NOT JUST USED. `market_rates` exists so that "where
+    // did $119 a square foot come from?" stays answerable after the underlying
+    // sales have moved — and this is the path that actually pre-fills a grid (a
+    // valuation is built by adding comparables; the explicit re-suggest is the
+    // rarer second pass). It wrote the suggested numbers onto every comp and left
+    // the column at `{}`, so on the ordinary route the grid was full of derived
+    // adjustments with no record anywhere of what derived them, including on a
+    // FINALIZED valuation. `suggestRefusal` carries the one refusal the rates
+    // object cannot express — no town or state on the subject, so there is no
+    // market to read — which is otherwise a silent dead end: the button runs, no
+    // line changes, and nothing says why.
+    const asked = !(req.body && req.body.suggest === false);
+    const derived = asked
+      ? await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city, months: 24 })
+      : { rates: null };
+    const rates = derived.rates;
     let order = (await db.query(
       `SELECT COALESCE(max(comp_order), 0) AS n FROM property_valuation_comps WHERE valuation_id=$1`,
       [req.params.id])).rows[0].n;
@@ -890,10 +904,28 @@ router.post('/valuations/:id/comps', async (req, res, next) => {
          JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
          a.netAdjPct, a.grossAdjPct, null]);
     }
+    // Only when we actually asked. A caller passing `suggest:false` wants the
+    // comparables raw, and blanking a record captured by an earlier pass would
+    // destroy the provenance of the lines already on the grid.
+    if (asked) await storeRates(req.params.id, derived);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
   } catch (e) { next(e); }
 });
+
+/**
+ * Record what the suggestions were derived from.
+ *
+ * A top-level `why` means "no rates at all, and here is the reason" — the shape
+ * `deriveMarketRates` cannot produce (it refuses per RATE, each with its own
+ * `why`), so the two can never be confused by a reader.
+ */
+async function storeRates(id, derived) {
+  const value = derived.rates || (derived.why ? { why: derived.why } : null);
+  if (!value) return;
+  await db.query(`UPDATE property_valuations SET market_rates=$2, updated_at=now() WHERE id=$1`,
+    [id, JSON.stringify(value)]);
+}
 
 /** The comp facts a grid renders, frozen at the moment it was added. */
 function compSnapshot(p, o) {
@@ -1004,8 +1036,9 @@ router.post('/valuations/:id/suggest', async (req, res, next) => {
     const v = (await db.query(`SELECT * FROM property_valuations WHERE id=$1`, [req.params.id])).rows[0];
     if (!v) return res.status(404).json({ error: 'not found' });
     if (v.status === 'final') return res.status(409).json({ error: 'This valuation was finalized. Duplicate it to make changes.' });
-    const { rates } = await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city,
+    const derived = await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city,
       months: req.body && req.body.months ? req.body.months : 24 });
+    const rates = derived.rates;
     const comps = (await db.query(
       `SELECT * FROM property_valuation_comps WHERE valuation_id=$1`, [req.params.id])).rows;
     for (const c of comps) {
@@ -1021,8 +1054,7 @@ router.post('/valuations/:id/suggest', async (req, res, next) => {
         [c.id, JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
          a.netAdjPct, a.grossAdjPct]);
     }
-    await db.query(`UPDATE property_valuations SET market_rates=$2, updated_at=now() WHERE id=$1`,
-      [req.params.id, JSON.stringify(rates)]);
+    await storeRates(req.params.id, derived);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
   } catch (e) { next(e); }

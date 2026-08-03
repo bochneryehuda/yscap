@@ -151,6 +151,10 @@ export default function StaffValuation() {
       {/* ---- the subject ---- */}
       <SubjectBlock v={v} isFinal={isFinal} onSave={(patch) => act('subject', () => api.valuationUpdate(id, { subject: patch }))} />
 
+      {/* ---- what the suggestions were worked out from ---- */}
+      <MarketRates rates={v.market_rates} />
+
+
       {/* ---- the grid ---- */}
       {comps.length === 0 ? (
         <div className="card" style={{ color: MUTED }}>
@@ -243,6 +247,148 @@ function SubjectBlock({ v, isFinal, onSave }) {
   );
 }
 
+/* WHERE THE SUGGESTED NUMBERS CAME FROM.
+
+   The grid pre-fills itself from rates derived off our own closed sales, and
+   `market_rates` is the record of what those were — the column exists so that
+   "where did $119 a square foot come from?" stays answerable after the sales
+   underneath have moved. Nothing rendered it, so the rates reached a reviewer
+   only as the tail of a suggested line's note, which the grid then cut off.
+
+   THE SOURCE LINE MATTERS MORE THAN THE NUMBER. The per-foot adjustment rate is
+   either measured from what appraisers around here actually wrote on their
+   grids, or it is a national rule of thumb (40% of the average price per foot)
+   used because there was not enough local evidence. Those deserve very different
+   amounts of trust, and a bare "$40" cannot tell you which one you are looking
+   at.
+
+   A REFUSED RATE IS SHOWN, NOT HIDDEN. "We could not read a price per bathroom,
+   and here is why" is the honest answer to an empty grid line, and it stops a
+   reviewer assuming the tool simply forgot. */
+function MarketRates({ rates }) {
+  const [open, setOpen] = useState(false);
+  const r = rates && typeof rates === 'object' ? rates : {};
+  const keys = Object.keys(r);
+
+  if (!keys.length) {
+    return (
+      <section style={{ ...S.panel, marginBottom: 14, color: MUTED, fontSize: 13 }}>
+        Nothing has been worked out from our own sales yet. Add comparables, or press
+        <b style={{ color: INK }}> Suggest adjustments</b>, and what the numbers were derived from is recorded here.
+      </section>
+    );
+  }
+  // A top-level `why` is the one refusal the rates object itself cannot carry —
+  // no town or state on the subject, so there is no market to read.
+  if (r.why && r.pricePerSqft === undefined) {
+    return (
+      <section style={{ ...S.panel, marginBottom: 14, borderColor: GOLD }}>
+        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>No rates could be worked out</h2>
+        <div style={{ color: MUTED, fontSize: 13, marginTop: 6 }}>{r.why}</div>
+      </section>
+    );
+  }
+
+  const gla = r.glaAdjustmentPerSqft || {};
+  const peer = gla.source === 'peer';
+  const rows = [
+    ['What a square foot sells for here', r.pricePerSqft, 'psf'],
+    ['One bedroom', r.perBedroom, 'group'],
+    ['One bathroom', r.perBath, 'group'],
+    ['One condition grade', r.perConditionGrade, 'group'],
+    ['How the market is moving', r.monthlyMarketChangePct, 'time'],
+  ];
+
+  return (
+    <section style={{ ...S.panel, marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>What these suggestions were worked out from</h2>
+        <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Hide the rest' : 'Show the rest'}</button>
+      </div>
+
+      {/* The rate the grid leans on hardest, with the thing that decides how much to trust it. */}
+      <div style={{ marginTop: 10, display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <div style={{ color: MUTED, fontSize: 12, fontWeight: 700, textTransform: 'uppercase' }}>
+          Size adjustment
+        </div>
+        {gla.value != null ? (
+          <>
+            <div style={{ fontSize: 24, fontWeight: 700, color: INK }}>${gla.value}<span
+              style={{ fontSize: 14, fontWeight: 400, color: MUTED }}> a square foot</span></div>
+            {gla.low != null && gla.high != null && (
+              <div style={{ color: MUTED, fontSize: 13 }}>most of them between ${gla.low} and ${gla.high}</div>
+            )}
+            <span style={{ ...S.tag, borderColor: peer ? '#2F7F86' : GOLD, color: peer ? '#2F7F86' : GOLD }}>
+              {peer ? 'measured from our own reports' : 'national rule of thumb'}
+            </span>
+          </>
+        ) : (
+          <div style={{ fontSize: 15, color: MUTED }}>nothing we can stand behind</div>
+        )}
+      </div>
+      <div style={{ color: MUTED, fontSize: 13, marginTop: 4, maxWidth: 760, lineHeight: 1.5 }}>
+        {gla.basis || gla.why}
+        {peer
+          ? ' This is what appraisers in this market actually did, so it beats the trade convention.'
+          : gla.value != null
+            ? ' We do not have enough size adjustments from reports in this market yet, so this falls back to the'
+              + ' trade habit rather than local evidence — worth a closer look before you rely on it.'
+            : ''}
+      </div>
+
+      {/* Never a silent filter: a forced sale left out is the most important line here. */}
+      {r.distressedNote && (
+        <div style={{ marginTop: 10, color: GOLD, fontSize: 13, lineHeight: 1.5 }}>{r.distressedNote}</div>
+      )}
+
+      {open && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
+          <tbody>
+            {rows.map(([label, rate, kind]) => (
+              <tr key={label}>
+                <td style={{ ...S.cell, width: 210, fontWeight: 700 }}>{label}</td>
+                <td style={{ ...S.cell, width: 150, whiteSpace: 'nowrap' }}>
+                  {rateValue(rate, kind)}
+                </td>
+                <td style={{ ...S.cell, color: MUTED, lineHeight: 1.5 }}>
+                  {(rate && (rate.basis || rate.why)) || 'not worked out'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {open && (
+        <div style={{ color: MUTED, fontSize: 12, marginTop: 8 }}>
+          Worked out from {r.sampleSize == null ? 'our' : r.sampleSize} closed
+          {r.sampleSize === 1 ? ' sale' : ' sales'} in this market
+          {r.minSample ? `, and a rate is refused below ${r.minSample} of them` : ''}.
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One rate as a number a person can check, or a plain "no" — never a blank. */
+function rateValue(rate, kind) {
+  if (!rate) return <span style={{ color: MUTED }}>—</span>;
+  // A REFUSAL IS A RESULT. `value` and `valuePerSqft` are both absent on a refusal,
+  // and `0` is not one — so test for null explicitly rather than truthiness.
+  const v = kind === 'group' ? num(rate.valuePerSqft) : num(rate.value);
+  if (v == null) return <span style={{ color: MUTED }}>no rate</span>;
+  if (kind === 'time') return <b style={{ color: INK }}>{v > 0 ? '+' : ''}{v}% a month</b>;
+  if (kind === 'group') {
+    // The dollars on a typical house here is the figure a human can sanity-check;
+    // a per-foot rate for a bedroom is nearly impossible to judge by eye.
+    const d = num(rate.approxDollarsOnTypicalHouse);
+    return d == null
+      ? <b style={{ color: INK }}>${v} a sq ft</b>
+      : <><b style={{ color: INK }}>{money(d)}</b><div style={{ color: MUTED, fontSize: 11 }}>${v} a sq ft</div></>;
+  }
+  return <b style={{ color: INK }}>${v}</b>;
+}
+
 /* The side-by-side adjustment grid. Comps are COLUMNS, exactly as on the form. */
 function Grid({ d, isFinal, onChange, onRemove }) {
   const comps = d.grid.comps;
@@ -324,8 +470,15 @@ function Grid({ d, isFinal, onChange, onRemove }) {
                           color: l && Number(l.amount) < 0 ? '#B4423A' : INK,
                           background: l && l.source === 'suggested' ? '#FBF7EE' : '#fff' }} />
                       {l && l.note && (
-                        <div style={{ fontSize: 10, color: MUTED, marginTop: 2, lineHeight: 1.3 }} title={l.note}>
-                          {l.source === 'suggested' ? 'suggested: ' : ''}{l.note.length > 70 ? l.note.slice(0, 70) + '…' : l.note}
+                        // NOT TRUNCATED. The note is where a suggested number says
+                        // where it came from, and the reason is always at the END
+                        // ("… at about $40/sq ft (what appraisers in this market
+                        // actually adjusted, across 468 size adjustments on reports
+                        // we paid for)") — so cutting it at 70 characters kept the
+                        // arithmetic and threw away the provenance, which is the
+                        // half a reviewer needs. A tooltip does not count as shown.
+                        <div style={{ fontSize: 10, color: MUTED, marginTop: 2, lineHeight: 1.3 }}>
+                          {l.source === 'suggested' ? 'suggested: ' : ''}{l.note}
                         </div>
                       )}
                     </td>

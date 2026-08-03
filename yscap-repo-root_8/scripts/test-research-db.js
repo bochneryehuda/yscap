@@ -487,6 +487,34 @@ async function makeAppraisal(appId, o) {
     ok(added.body.grid.comps.some((c) => (c.warnings || []).some((w) => w.code === 'not_closed')),
       'the listing among them is flagged as an asking price, not a sale');
 
+    // WHAT THE SUGGESTIONS WERE WORKED OUT FROM IS RECORDED ON THE ORDINARY PATH.
+    // A valuation is BUILT by adding comparables — that call derives the market
+    // rates, writes suggested adjustments onto every comp from them, and used to
+    // leave `market_rates` at `{}`. So the ordinary grid was full of derived
+    // numbers with no record anywhere of what derived them, including after the
+    // valuation was finalized, which is the one moment the column exists for.
+    const ratesOnAdd = added.body.valuation.market_rates || {};
+    ok(Object.keys(ratesOnAdd).length > 0,
+      'ADDING COMPARABLES RECORDS THE RATES IT PRE-FILLED FROM — not just the explicit re-suggest');
+    ok(ratesOnAdd.pricePerSqft !== undefined && ratesOnAdd.glaAdjustmentPerSqft !== undefined,
+      'and the record is the rates themselves, so "where did that adjustment come from" is answerable');
+    // The per-foot adjustment always says WHICH KIND of claim it is — evidence
+    // from our own reports, or the national rule of thumb — because those deserve
+    // very different amounts of trust and the number alone cannot tell them apart.
+    ok(['peer', 'convention', 'none'].includes(ratesOnAdd.glaAdjustmentPerSqft.source),
+      'the size-adjustment rate names its source, so a rule of thumb can never pass for local evidence');
+
+    // A caller asking for the comparables RAW must not blank a record an earlier
+    // pass captured — the suggested lines already on the grid came from it. Re-adds
+    // a comp already on the grid, so the count below is untouched (the insert is
+    // ON CONFLICT DO NOTHING) and this tests only the record.
+    const rawAdd = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id], suggest: false });
+    ok(rawAdd.status === 200 && rawAdd.body.comps.length === 3,
+      'a comparable already on the grid is not added twice');
+    ok(Object.keys(rawAdd.body.valuation.market_rates || {}).length > 0,
+      'adding a comparable WITHOUT suggestions never erases the record of what the grid was pre-filled from');
+
     const compRow = added.body.comps.find((c) => c.property_id === maple3[0].id);
     const edited = await call(server, 'PATCH', `/api/research/valuations/${vid}/comps/${compRow.id}`, token,
       { adjustments: [{ key: 'gla', amount: 12000 }, { key: 'made_up_line', amount: 999999 }] });
