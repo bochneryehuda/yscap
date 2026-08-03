@@ -32,6 +32,10 @@ const RATES = {
     value: 45, low: 38.5, high: 55, n: 290, source: 'peer',
     basis: 'what appraisers in this market actually adjusted, across 290 size adjustments on reports we paid for',
   },
+  glaAdjustmentPerSqftGba: {
+    value: 28, low: 20, high: 50, n: 178, source: 'peer', basis_of: 'gba',
+    basis: 'what appraisers in this market actually adjusted on 2-4 unit grids, across 178 size adjustments measured on gross building area',
+  },
   perBedroom: {
     valuePerSqft: 23.54, n: 61, approxDollarsOnTypicalHouse: 35250,
     basis: 'difference in median price per foot between bedroom groups (61 sales, matched for size)',
@@ -129,6 +133,8 @@ const RATES = {
     ok(/measured from our own reports/i.test(body),
       'valuation: and says the number came from OUR reports, not a rule of thumb');
     ok(/forced sale/i.test(body), 'valuation: the forced sales set aside are stated');
+    ok(/On 2.4 unit sales/i.test(body) && /\$28/.test(body),
+      'valuation: the 2-4 unit rate renders when this market has one');
     // Always in the DOM so print can reveal it, but COLLAPSED on screen until the
     // reader asks — checked here, before anything is clicked.
     ok(await page.evaluate(() => {

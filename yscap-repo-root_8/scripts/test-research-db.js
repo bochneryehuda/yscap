@@ -472,6 +472,59 @@ async function makeAppraisal(appId, o) {
     ok(comps.body.rows.every((r) => Array.isArray(r.match_reasons) && r.match_reasons.length),
       'and every score shows its working');
 
+    // A 2-4 UNIT PROPERTY IS COMPARED WITH 2-4 UNIT PROPERTIES — the owner's first
+    // rule, in his own words: "if there's a single family residence obviously all
+    // the compatibles are single families and if it's a 2 to 4 then all the
+    // compatibles are two to 4". The defaults matched on town, sale and SIZE and
+    // never on the kind of building, so a three-family was compared against houses
+    // that merely happened to be about as big: measured over the real corpus, 21%
+    // of the candidates for a 2-4 unit subject were single families.
+    const bandSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'1 Band Way',$3,$4,'07001','Multi 2–4',3,2400,6,1960,600000,CURRENT_DATE - 30)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-subj|${Date.now()}`, 'Band Subject', CITY, 'NJ'])).rows[0].id;
+    const bandHouse = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'2 Band Way',$3,$4,'07001','SFR (1 unit)',1,2300,4,1962,520000,CURRENT_DATE - 40)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-house|${Date.now()}`, 'Band House', CITY, 'NJ'])).rows[0].id;
+    const bandTwin = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'3 Band Way',$3,$4,'07001','Multi 2–4',4,2500,8,1958,660000,CURRENT_DATE - 50)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-twin|${Date.now()}`, 'Band Twin', CITY, 'NJ'])).rows[0].id;
+
+    const banded = await call(server, 'GET', `/api/research/comps?property_id=${bandSubj}`, token);
+    ok(banded.status === 200 && banded.body.rows.some((r) => r.id === bandTwin),
+      'a 2-4 unit subject finds the other 2-4 unit sale in its town');
+    ok(banded.body.rows.every((r) => r.id !== bandHouse),
+      'and the single family of almost the same size is NOT offered as its comparable');
+    // …and the ladder must never widen its way past that. The house is close
+    // enough on size and recent enough to be picked up by every rung.
+    // EVERY ROW IS EITHER IN THE BAND OR HAS NO STATED UNIT COUNT — and a row
+    // with no stated count is shown in red as "units not stated", so it is never
+    // passed off as a match. Dropping those instead would turn missing data into
+    // an empty answer that reads as "this town is thin".
+    const inBand = (r) => r.units == null || (Number(r.units) >= 2 && Number(r.units) <= 4);
+    ok((banded.body.ladder || []).length >= 1 && banded.body.rows.every(inBand),
+      'no rung of the relaxation ladder ever relaxes the kind of building');
+    // The reverse: a single family is not offered a three-family either.
+    const houseComps = await call(server, 'GET', `/api/research/comps?property_id=${bandHouse}`, token);
+    ok(houseComps.status === 200
+      && houseComps.body.rows.every((r) => r.units == null || Number(r.units) === 1),
+    'and a single family is only ever compared with single families');
+    ok(houseComps.body.rows.every((r) => r.id !== bandSubj),
+      'the three-family is never offered as a comparable for the house');
+    // A caller may still ask for something else explicitly — this is a default.
+    const widened = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_min=1&units_max=4`, token);
+    ok(widened.status === 200 && widened.body.rows.some((r) => r.id === bandHouse),
+      'an explicit unit range still wins — the band is a default, not a cage');
+
     // ---- the valuation flow ----
     const made = await call(server, 'POST', '/api/research/valuations', token,
       { property_id: subj.id, title: 'Test valuation' });
@@ -659,7 +712,12 @@ async function makeAppraisal(appId, o) {
     // appraisal had already used — and the ladder then dressed the shortfall up as
     // "we looked as hard as we could, this town is thin".
     const byApp = await call(server, 'GET', `/api/research/comps?application_id=${appId}&want=25`, token);
-    const byProp = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&want=25`, token);
+    // THE SAME SUBJECT THROUGH BOTH DOORS. This used to point at an unrelated
+    // maple property, which was a fair proxy while nothing about the subject
+    // narrowed the search — but the defaults now band the answer to the subject's
+    // own kind of building, so two different subjects legitimately return
+    // different totals and the comparison stopped testing what it says it does.
+    const byProp = await call(server, 'GET', `/api/research/comps?property_id=${subj.id}&want=25`, token);
     ok(byApp.status === 200, 'a comp search can be anchored on a loan file');
     ok(byApp.body.filters.application_id === undefined && byApp.body.applied_filters.application_id === undefined,
       'the loan file NAMES the subject — it never becomes a filter on the comparables');

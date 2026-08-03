@@ -149,8 +149,25 @@ function buildQuery(input = {}) {
   const types = list(f.property_type);
   if (types) where.push(`p.property_type = ANY(${P(types)})`);
   const unitsMin = num(f.units_min), unitsMax = num(f.units_max);
-  if (unitsMin != null) where.push(`p.units >= ${P(unitsMin)}`);
-  if (unitsMax != null) where.push(`p.units <= ${P(unitsMax)}`);
+  // A PROPERTY THAT NEVER STATED ITS UNIT COUNT IS NOT PROVED TO BE THE WRONG
+  // KIND. `units_unknown_ok` keeps it in the answer instead of dropping it
+  // silently — for the comparable search, which bands every result to the
+  // subject's own kind of building, and where an empty answer caused by missing
+  // data is indistinguishable from a town we have never lent in. It is worth
+  // almost nothing and costs almost nothing: measured over the real corpus, ONE
+  // of 767 subject-to-comparable pairs has an unknown unit count, because a house
+  // that was only ever somebody's comparable usually turns up as a SUBJECT
+  // elsewhere and the roll-up fills it in. The screens render an unknown count in
+  // red as "units not stated", so nothing is passed off as known.
+  const unitsUnknownOk = f.units_unknown_ok === '1' || f.units_unknown_ok === true;
+  const unitClauses = [];
+  if (unitsMin != null) unitClauses.push(`p.units >= ${P(unitsMin)}`);
+  if (unitsMax != null) unitClauses.push(`p.units <= ${P(unitsMax)}`);
+  if (unitClauses.length) {
+    where.push(unitsUnknownOk
+      ? `((${unitClauses.join(' AND ')}) OR p.units IS NULL)`
+      : unitClauses.join(' AND '));
+  }
 
   // ---- size / rooms / age -------------------------------------------------
   const ranges = [

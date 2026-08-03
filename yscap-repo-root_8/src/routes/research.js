@@ -445,15 +445,42 @@ router.get('/comps', async (req, res, next) => {
         zip: txt(req.query.zip), gla: K.num(req.query.gla), beds: K.int(req.query.beds, { max: 99 }),
         baths_full: K.int(req.query.baths_full, { max: 99 }), baths_half: K.int(req.query.baths_half, { max: 99 }),
         year_built: K.yearBuilt(req.query.year_built), condition_uad: txt(req.query.condition_uad),
-        property_type: txt(req.query.property_type),
+        property_type: txt(req.query.property_type), units: K.int(req.query.units, { max: 999 }),
         latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
       };
     }
+    // A 2-4 UNIT PROPERTY IS COMPARED WITH 2-4 UNIT PROPERTIES. The owner's first
+    // rule, in his own words: "if there's a single family residence obviously all
+    // the compatibles are single families and if it's a 2 to 4 then all the
+    // compatibles are two to 4". The defaults below matched on town, sale and
+    // SIZE and never on the kind of building, so a three-family was compared with
+    // houses that merely happened to be about as big — measured over the corpus,
+    // **21% of the candidates for a 2-4 unit subject were single families**, one
+    // in five.
+    //
+    // BANDED ON THE UNIT COUNT, not the property type: `units` is stated on 951 of
+    // our 955 properties while the type is not, and it is also the fact the rule
+    // itself is phrased in. The bands are the owner's own — one, two-to-four, and
+    // five-plus. A subject whose unit count we do not know bands nothing rather
+    // than guessing, because guessing here silently hides real comparables.
+    const unitBand = (n) => {
+      const u = K.int(n, { max: 999 });
+      if (!u || u < 1) return null;
+      // `units_unknown_ok` because a property that never stated its count is not
+      // proved to be the wrong kind, and dropping it would turn missing data into
+      // an empty answer that reads as "this town is thin". The screens show an
+      // unknown count in red, so it is never passed off as known.
+      if (u === 1) return { units_min: 1, units_max: 1, units_unknown_ok: '1' };
+      if (u <= 4) return { units_min: 2, units_max: 4, units_unknown_ok: '1' };
+      return { units_min: 5, units_unknown_ok: '1' };
+    };
+
     // DEFAULTS THAT MAKE THE FIRST ANSWER USEFUL, all overridable from the query.
     // Same city, sold in the last 18 months, within a third to triple the subject's
     // size, and never the subject itself.
     const filters = Object.assign({
       state: subject.state, city: subject.city,
+      ...(unitBand(subject.units) || {}),
       has_sale: '1', sale_status: 'closed',
       sold_within_months: 18,
       sqft_min: subject.gla ? Math.round(subject.gla * 0.6) : undefined,
@@ -1003,7 +1030,18 @@ function compSnapshot(p, o) {
     if (closed && o.sale_price != null) out.sale_price = o.sale_price;
     if (closed && o.sale_date) out.sale_date = String(o.sale_date).slice(0, 10);
     if (o.sale_status) out.sale_status = o.sale_status;
-    if (o.gla != null) out.gla = o.gla;
+    // THE NUMBER AND ITS LABEL MUST COME FROM THE SAME ROW. The size is taken
+    // from the OBSERVATION here while the basis above is the property ROLL-UP,
+    // and the two are chosen by different rules — the roll-up prefers a living
+    // area (db/436) while this picks the most recent CLOSED comparable — so when
+    // they disagree the snapshot froze a building-area number labelled living
+    // area. Real case: 98 Thompson St, New Haven, a 3-unit whose newest closed
+    // observation is a 1025 stating 3,042 sq ft of BUILDING area while the
+    // roll-up says living. Against a 2,500 sq ft subject that is -$38,500 at New
+    // Haven's convention rate instead of -$27,100 at the 24 real local 2-4 unit
+    // adjustments — $11,400 on one comparable, with no caveat, which is the exact
+    // outcome the per-basis split exists to prevent.
+    if (o.gla != null) { out.gla = o.gla; out.gla_basis = o.gla_basis || null; }
     if (o.condition_uad) out.condition_uad = o.condition_uad;
   }
   return out;

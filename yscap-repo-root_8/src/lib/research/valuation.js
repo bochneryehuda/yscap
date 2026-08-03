@@ -752,14 +752,20 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
   // adjustments in each. A comp that does not say which foot it used is treated as
   // living area, which is what it is on a 1004 and on every row written before
   // db/427.
-  const compGba = String((comp && comp.gla_basis) || '').toLowerCase() === 'gba';
+  const basisOf = (x) => String((x && x.gla_basis) || '').trim().toLowerCase();
+  const compGba = basisOf(comp) === 'gba';
   // THE SUBJECT'S FOOT MATTERS TOO. Every peer rate is measured as the SUBJECT's
   // living area minus the comparable's, so a subject stated in gross building
   // area matches neither rate. Rare — of the properties we have lent on, exactly
   // one of 132 is in that state — but silently applying a rate to a delta it was
   // not measured from is the thing this whole split exists to stop.
-  const subjectGba = String((subject && subject.gla_basis) || '').toLowerCase() === 'gba';
-  const matched = !subjectGba && compGba && rates && rates.glaAdjustmentPerSqftGba;
+  const subjectGba = basisOf(subject) === 'gba';
+  // A USABLE VALUE, not object truthiness. Testing the object meant a
+  // hand-built `{value:null}` would be "matched" and the comparable would lose
+  // its size line altogether rather than falling back — the one asymmetry in the
+  // pick, and the fallback is the whole reason the other branch exists.
+  const gbaRate = rates && rates.glaAdjustmentPerSqftGba;
+  const matched = !subjectGba && compGba && gbaRate && num(gbaRate.value) != null;
   const rate = matched ? rates.glaAdjustmentPerSqftGba : (rates && rates.glaAdjustmentPerSqft) || null;
   const sqftRate = rate ? num(rate.value) : null;
   const sg = num(subject && subject.gla), cg = num(comp && comp.gla);

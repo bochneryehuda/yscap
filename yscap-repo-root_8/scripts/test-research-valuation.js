@@ -612,6 +612,19 @@ function corpus(n, f) {
     '…and the note says the feet do not match, naming the subject rather than the sale');
   ok(!/property being valued states gross BUILDING area/.test(glaLine(building, both).note),
     'an ordinary living-area subject says nothing of the sort');
+
+  ok(glaLine({ gla: 2000, gla_basis: ' GBA ', sale_price: 500000 }, both).amount === 11200,
+    'the basis is trimmed — `property_observations.gla_basis` carries no CHECK constraint');
+  // A RATE OBJECT WITH NO VALUE IS NOT A MATCH. Testing the object rather than a
+  // usable number made a `{value:null}` gba rate swallow the size line entirely
+  // instead of falling back — and the fallback is the whole reason that branch
+  // exists.
+  const hollow = { ...both, glaAdjustmentPerSqftGba: { value: null, why: 'too few' } };
+  const fellFromHollow = glaLine(building, hollow);
+  ok(fellFromHollow && fellFromHollow.amount === 18000,
+    'a 2-4 unit rate that refused falls back to the living-area rate rather than dropping the line');
+  ok(/BUILDING area and the rate is measured on LIVING area/.test(fellFromHollow.note),
+    '…and says so, exactly as a market with no 2-4 unit rate at all does');
 }
 
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
