@@ -1,0 +1,222 @@
+/**
+ * EVERY COMPARABLE ON THE APPRAISAL TAB STATES WHAT KIND OF BUILDING IT IS AND
+ * HOW MANY DOORS IT HAS — against a real database and the real HTTP routes.
+ *
+ * The owner's first requirement for the research build is that no comparable can
+ * appear anywhere in the system without those two facts. The comp search, the
+ * property page and the valuation grid answer it; the appraisal tab — the screen
+ * an underwriter actually reviews the appraiser's own comps on — did not, and
+ * could not: a MISMO sales grid has no element for either, which is why
+ * `appraisal_comparables` has no such column. The warehouse answers it.
+ *
+ * What this pins, in the order the answer is decided:
+ *   1. THIS REPORT'S OWN READING, and the fact that it says WHERE it came from —
+ *      an appraiser writing it on the grid and a form proving it are different
+ *      claims and a reviewer must be able to tell them apart.
+ *   2. THE ROLL-UP as the fallback: what every OTHER report says about that same
+ *      address, which is the thing the warehouse exists to know.
+ *   3. THE PAIR MOVES TOGETHER. A count from one source beside a type from
+ *      another lands "3 units · SFR (1 unit)" on one row — the self-contradiction
+ *      the roll-up has its own rule to prevent. Proven with an observation that
+ *      states ONLY a count while the roll-up states both.
+ *   4. AN UNKNOWN STAYS UNKNOWN — never guessed, and in particular NEVER
+ *      inherited from the report's subject. That is the tempting fix (every comp
+ *      on a 1025 is *probably* a 2-4) and it would paint the answer onto rows
+ *      nobody established, hiding the one comp that is a different kind of
+ *      building — which is exactly what the reviewer is looking for.
+ *   5. BOTH DOORS — staff and borrower — because a fix on one surface is not a
+ *      fix. The borrower's copy carries the two property facts and NOT our
+ *      internal bookkeeping (the warehouse id, how many of our reports describe
+ *      that address).
+ *   6. IT NEVER THROWS. The appraisal tab must still render if the warehouse is
+ *      unreachable; a missing fact reads exactly like an unstated one.
+ *
+ * Requires DATABASE_URL with migrations applied. Skips cleanly otherwise.
+ */
+process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64);
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecret12';
+
+if (!process.env.DATABASE_URL) { console.log('SKIP test-appraisal-comp-identity-db (no DATABASE_URL)'); process.exit(0); }
+
+const http = require('http');
+const db = require('../src/db');
+const C = require('../src/lib/crypto');
+const CI = require('../src/lib/research/comp-identity');
+const app = require('../src/server');
+
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); } };
+const tag = `ci${process.pid}${Math.floor(Math.random() * 1e5)}`;
+
+function call(server, method, path, token) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ method, path, port: server.address().port, host: '127.0.0.1',
+      headers: token ? { authorization: `Bearer ${token}` } : {} },
+    (res) => { let b = ''; res.on('data', (c) => b += c);
+      res.on('end', () => { let j = null; try { j = b ? JSON.parse(b) : null; } catch (_) { j = { raw: b }; }
+        resolve({ status: res.statusCode, body: j }); }); });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+// One property in the warehouse, with the roll-up it would have after however
+// many reports have described it.
+async function property(street, opts = {}) {
+  return (await db.query(
+    `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+       property_type, units, observation_count)
+     VALUES ($1,$2,$3,'Identitytown','NJ','07002',$4,$5,$6) RETURNING id`,
+    [`nj|identitytown|${street.toLowerCase()}|${tag}`, `${street} ${tag}`, street,
+      opts.type || null, opts.units == null ? null : opts.units, opts.observations || 1])).rows[0].id;
+}
+
+(async () => {
+  let server, out = {};
+  try {
+    const bor = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Comp','Identity',$1) RETURNING id`,
+      [`${tag}@example.com`])).rows[0].id;
+    const appId = (await db.query(
+      `INSERT INTO applications (borrower_id, status, purchase_price, as_is_value, submitted_at)
+       VALUES ($1,'underwriting',400000,400000,'2026-07-01') RETURNING id`, [bor])).rows[0].id;
+    const staffId = (await db.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+       VALUES ($1,'Comp Identity','super_admin',true,false,'x',0) RETURNING id`,
+      [`s${tag}@t.test`])).rows[0].id;
+    const staffToken = C.signJwt({ sub: staffId, kind: 'staff', role: 'super_admin', tv: 0 });
+
+    // A 1025: the SUBJECT is a three-family. Nothing below may inherit that.
+    const apprId = (await db.query(
+      `INSERT INTO appraisals (application_id, form_type, property_type, units, as_is_value, imported_at, superseded)
+       VALUES ($1,'FNM1025','Multi 2–4',3,400000,now(),false) RETURNING id`, [appId])).rows[0].id;
+
+    const comp = async (seq, street, price) => (await db.query(
+      `INSERT INTO appraisal_comparables (appraisal_id, is_subject, seq, address, city, state, sale_price, comp_set)
+       VALUES ($1,false,$2,$3,'Identitytown','NJ',$4,'as_is') RETURNING id`,
+      [apprId, seq, `${street} ${tag}`, price])).rows[0].id;
+    const subjectRow = (await db.query(
+      `INSERT INTO appraisal_comparables (appraisal_id, is_subject, seq, address, city, state)
+       VALUES ($1,true,'0',$2,'Identitytown','NJ') RETURNING id`, [apprId, `1 Subject Way ${tag}`])).rows[0].id;
+
+    // 1 — the appraiser wrote it on the grid.
+    const cGrid = await comp('1', '10 Grid St', 510000);
+    const pGrid = await property('10 Grid St', { type: 'Multi 2–4', units: 3, observations: 2 });
+    // 2 — the report FORM proves it (a 1004's grid only compares one-unit dwellings).
+    const cForm = await comp('2', '20 Form Ave', 480000);
+    const pForm = await property('20 Form Ave', { type: 'SFR (1 unit)', units: 1 });
+    // 3 — this report says nothing; another report described the same address.
+    const cRecords = await comp('3', '30 Records Rd', 495000);
+    const pRecords = await property('30 Records Rd', { type: 'Multi 5+', units: 6, observations: 4 });
+    // 4 — this report states a COUNT only; the roll-up states both. The pair must
+    //     come from ONE source, so the roll-up wins whole.
+    const cPartial = await comp('4', '40 Partial Pl', 470000);
+    const pPartial = await property('40 Partial Pl', { type: 'Multi 2–4', units: 4 });
+    // 5 — nobody has ever established it. It must SAY so, and must not become the
+    //     subject's three units.
+    const cUnknown = await comp('5', '50 Unknown Ct', 460000);
+    const pUnknown = await property('50 Unknown Ct', {});
+
+    const obs = async (compId, propId, o) => db.query(
+      `INSERT INTO property_observations (property_id, appraisal_id, application_id, comparable_id,
+         role, comp_seq, observed_on, address_as_stated, property_type, units, identity_basis)
+       VALUES ($1,$2,$3,$4,'comparable',$5,CURRENT_DATE,$6,$7,$8,$9)`,
+      [propId, apprId, appId, compId, o.seq, o.address, o.type || null,
+        o.units == null ? null : o.units, o.basis || null]);
+    await obs(cGrid, pGrid, { seq: '1', address: '10 Grid St', type: 'Multi 2–4', units: 3, basis: 'grid' });
+    await obs(cForm, pForm, { seq: '2', address: '20 Form Ave', type: 'SFR (1 unit)', units: 1, basis: 'form' });
+    await obs(cRecords, pRecords, { seq: '3', address: '30 Records Rd' });
+    await obs(cPartial, pPartial, { seq: '4', address: '40 Partial Pl', units: 2, basis: 'grid' });
+    await obs(cUnknown, pUnknown, { seq: '5', address: '50 Unknown Ct' });
+
+    // ---- A. THE DECISION ITSELF ----------------------------------------
+    const rows = (await db.query(
+      `SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [apprId])).rows;
+    const appr = (await db.query(`SELECT * FROM appraisals WHERE id=$1`, [apprId])).rows[0];
+    const got = await CI.attachCompIdentity(rows, { db, appraisal: appr });
+    const by = (id) => got.find((r) => r.id === id) || {};
+
+    ok(by(cGrid).property_type === 'Multi 2–4' && Number(by(cGrid).units) === 3,
+      'a comp the appraiser described on the grid states both facts');
+    ok(by(cGrid).identity_source === 'grid',
+      'and says the appraiser wrote it — not that we worked it out');
+    ok(Number(by(cGrid).identity_observations) === 2 && by(cGrid).property_id === pGrid,
+      'it carries the warehouse link, so a reviewer can see every other report on that address');
+
+    ok(by(cForm).identity_source === 'form' && Number(by(cForm).units) === 1,
+      'a one-unit comp proven by the report FORM is distinguishable from one the appraiser wrote down');
+
+    ok(by(cRecords).property_type === 'Multi 5+' && Number(by(cRecords).units) === 6,
+      'a comp this report says nothing about is answered from our own records');
+    ok(by(cRecords).identity_source === 'records',
+      'and it says the answer did NOT come from this report');
+
+    ok(by(cPartial).property_type === 'Multi 2–4' && Number(by(cPartial).units) === 4,
+      'THE PAIR MOVES TOGETHER — a source stating both beats a source stating only a count');
+    ok(by(cPartial).identity_source === 'records' && Number(by(cPartial).units) !== 2,
+      'so a row can never read "2 units" beside a type describing a different building');
+
+    ok(by(cUnknown).property_type == null && by(cUnknown).units == null,
+      'a comp nobody has established stays unknown');
+    ok(by(cUnknown).identity_source == null,
+      'and carries no source, so the screen says "not stated" rather than showing a blank');
+    ok(!got.some((r) => !r.is_subject && Number(r.units) === 3 && r.id !== cGrid),
+      'NOTHING is inherited from the subject — a 3-unit subject does not make its comps 3-unit');
+
+    const subj = by(subjectRow);
+    ok(subj.property_type === 'Multi 2–4' && Number(subj.units) === 3 && subj.identity_source === 'subject',
+      'the subject row states what the report itself says about the subject');
+
+    // ---- B. IT NEVER THROWS --------------------------------------------
+    const broken = { query: async () => { throw new Error('warehouse down'); } };
+    const degraded = await CI.attachCompIdentity(rows, { db: broken, appraisal: appr });
+    ok(Array.isArray(degraded) && degraded.length === rows.length,
+      'an unreachable warehouse degrades to "not stated" — the appraisal tab still renders');
+    ok(degraded.every((r) => r.is_subject || r.identity_source == null),
+      'and never invents a source it could not read');
+    ok((await CI.attachCompIdentity(null, { db })).length === 0, 'no comps at all is not an error');
+    // The rows handed in are the caller's — a route re-uses them for the implied-value
+    // read and the collateral score, so mutating them here would change those numbers.
+    ok(rows.every((r) => !('identity_source' in r)), 'the caller\'s own rows are not mutated');
+
+    // ---- C. BOTH DOORS -------------------------------------------------
+    server = app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+
+    const staff = await call(server, 'GET', `/api/appraisal/${appId}`, staffToken);
+    ok(staff.status === 200, 'the staff appraisal tab answers');
+    const sc = (staff.body.comparables || []).find((c) => c.id === cRecords) || {};
+    ok(sc.property_type === 'Multi 5+' && Number(sc.units) === 6 && sc.identity_source === 'records',
+      'and every comparable on it states its type and unit count');
+
+    // A borrower authenticates against `borrower_auth`, not `borrowers` — without
+    // the login row every request is refused as a revoked session.
+    await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version)
+                    VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [bor]);
+    const borToken = C.signJwt({ sub: bor, kind: 'borrower', tv: 0 });
+    const b = await call(server, 'GET', `/api/borrower/applications/${appId}/appraisal`, borToken);
+    ok(b.status === 200, 'the borrower property report answers');
+    const bc = (b.body.comparables || []).find((c) => c.id === cRecords) || {};
+    ok(bc.property_type === 'Multi 5+' && Number(bc.units) === 6,
+      'the borrower sees the same two property facts — a fix on one surface is not a fix');
+    ok(!('property_id' in bc) && !('identity_observations' in bc),
+      'but not our warehouse id, and not how many of our reports describe that address');
+
+    out = { pass, fail };
+  } catch (e) {
+    console.log('FAIL threw: ' + (e && e.stack || e));
+    fail++;
+  } finally {
+    if (server) server.close();
+    try {
+      await db.query(`DELETE FROM property_observations WHERE application_id IN (SELECT id FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email=$1))`, [`${tag}@example.com`]);
+      await db.query(`DELETE FROM properties WHERE address_key LIKE $1`, [`%|${tag}`]);
+      await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email=$1)`, [`${tag}@example.com`]);
+      await db.query(`DELETE FROM borrowers WHERE email=$1`, [`${tag}@example.com`]);
+      await db.query(`DELETE FROM staff_users WHERE email=$1`, [`s${tag}@t.test`]);
+    } catch (_) { /* cleanup is best-effort */ }
+    await db.pool.end().catch(() => {});
+  }
+  console.log(`test-appraisal-comp-identity-db: ${pass} passed${fail ? `, ${fail} FAILED` : ''}`);
+  process.exit(fail ? 1 : 0);
+})();

@@ -792,6 +792,32 @@ function SourceDocs({ a }) {
 
 // One comparable-sales row with an expandable adjustment breakdown (the itemized grid the
 // appraiser applied). `adjustments` is the jsonb list stored at import.
+// WHERE A COMPARABLE'S TYPE AND UNIT COUNT CAME FROM. A MISMO sales grid has no
+// element for either, so this is never "the report says so" by default — and a
+// reviewer deciding whether to trust "1 unit" on a row needs to know whether an
+// appraiser wrote it down or we worked it out. The server decides (see
+// research/comp-identity); this only words it.
+const IDENTITY_SOURCE = {
+  subject: 'the report states it for the subject',
+  grid: "stated on the appraiser's own grid",
+  form: 'the report form only compares this kind of dwelling',
+  style: 'read from the design style stated',
+  price: 'read from the per-unit pricing stated',
+  records: 'from our own records for this address, not from this report',
+};
+// The two facts, in the words used everywhere else in the system, with an
+// unknown SAYING SO — a blank reads as "ordinary", which is the misreading the
+// owner's first requirement exists to prevent.
+function identityLines(c) {
+  const units = c.units != null && c.units !== '' ? Number(c.units) : null;
+  return {
+    type: c.property_type || 'type not stated',
+    units: units != null ? `${units} unit${units === 1 ? '' : 's'}` : 'units not stated',
+    unknown: !c.property_type || units == null,
+    where: IDENTITY_SOURCE[c.identity_source] || null,
+  };
+}
+
 function CompRow({ c }) {
   const [open, setOpen] = useState(false);
   const adj = Array.isArray(c.adjustments) ? c.adjustments : (() => { try { return JSON.parse(c.adjustments || '[]'); } catch { return []; } })();
@@ -800,7 +826,9 @@ function CompRow({ c }) {
   const distress = c.sale_type && c.sale_type !== 'ArmsLengthSale' ? ({ REOSale: 'REO', EstateSale: 'Estate', ShortSale: 'Short', Listing: 'Listing', CourtOrderedSale: 'Court' }[c.sale_type] || null) : null;
   // Round-6 comp facts (view/location UAD ratings, basement, data source). The row expands when it
   // has adjustments OR any of these facts.
+  const ident = identityLines(c);
   const compFacts = [
+    ident.where && ['Type / units', `${ident.type} · ${ident.units} — ${ident.where}`],
     c.view_rating && ['View', c.view_rating],
     (c.location_rating || c.location_type) && ['Location', [c.location_rating, c.location_type ? human(c.location_type) : null].filter(Boolean).join(' · ')],
     c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
@@ -828,6 +856,16 @@ function CompRow({ c }) {
             <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
           )}
           {hasDetail ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+        {/* THE OWNER'S FIRST REQUIREMENT: no comparable anywhere in the system
+            without its property type and its unit count. This grid showed the
+            address, the distance, the size, the beds, the baths and the price
+            and neither of these, so a three-family could sit in a single-family
+            report's grid with nothing on the screen saying so. */}
+        <td style={{ ...td, color: ident.unknown ? 'var(--crit,#B4483C)' : undefined }}
+          title={ident.where ? `${ident.type} · ${ident.units} — ${ident.where}` : undefined}>
+          <div style={{ fontWeight: 600 }}>{ident.type}</div>
+          <div style={{ fontSize: 11.5 }}>{ident.units}</div>
+        </td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
         <td style={{ ...td, textAlign: 'center' }}>{bdba}</td>
@@ -842,7 +880,7 @@ function CompRow({ c }) {
       {open && hasDetail && (
         <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
           <td />
-          <td colSpan={11} style={{ padding: '4px 10px 12px' }}>
+          <td colSpan={12} style={{ padding: '4px 10px 12px' }}>
             {compFacts.length > 0 && (
               <div style={{ marginBottom: adj.length ? 10 : 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Comparable detail</div>
@@ -879,7 +917,7 @@ function CompHead() {
   return (
     <thead>
       <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
-        <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
+        <th style={th}>#</th><th style={th}>Address</th><th style={th}>Type / units</th><th style={th}>Proximity</th>
         <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>Bd/Ba</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
@@ -932,7 +970,7 @@ function CompGrid({ title, subtitle, rows, value, tone }) {
         </div>
       )}
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, borderTop: `3px solid ${accent}` }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 880 }}>
           <CompHead />
           <tbody>{rows.map((c) => <CompRow key={c.id} c={c} />)}</tbody>
         </table>
