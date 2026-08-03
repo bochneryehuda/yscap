@@ -388,6 +388,26 @@ function MarketRates({ rates, forceOpen }) {
             : ''}
       </div>
 
+      {/* THE 2-4 UNIT RATE, when this market has one. A 1025 grid states gross
+          BUILDING area where a 1004 states living area, and they are measured
+          and applied separately — several of our own towns hold their evidence
+          almost entirely on this side, so hiding it would read as "no local
+          evidence" in exactly the markets where we have the most. */}
+      {r.glaAdjustmentPerSqftGba && r.glaAdjustmentPerSqftGba.value != null && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <div style={{ color: MUTED, fontSize: 12, fontWeight: 700, textTransform: 'uppercase' }}>
+            On 2–4 unit sales
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: INK }}>
+            ${r.glaAdjustmentPerSqftGba.value}<span style={{ fontSize: 13, fontWeight: 400, color: MUTED }}> a square foot</span>
+          </div>
+          <span style={{ ...S.tag, borderColor: '#2F7F86', color: '#2F7F86' }}>measured from our own reports</span>
+          <div style={{ color: MUTED, fontSize: 13, flexBasis: '100%', lineHeight: 1.5 }}>
+            {r.glaAdjustmentPerSqftGba.basis} — used for a sale that states building area rather than living area.
+          </div>
+        </div>
+      )}
+
       {/* Never a silent filter: a forced sale left out is the most important line here. */}
       {r.distressedNote && (
         <div style={{ marginTop: 10, color: GOLD, fontSize: 13, lineHeight: 1.5 }}>{r.distressedNote}</div>

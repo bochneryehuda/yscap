@@ -491,8 +491,27 @@ function deriveMarketRates(obs, opts = {}) {
   // different KINDS of claim — one is what local appraisers did, the other is a
   // national habit — and averaging them would produce a number that is neither,
   // with a `basis` that could not honestly describe it. Whichever is used says so.
+  //
+  // AND THE RATE IS PER BASIS, because a foot of living area and a foot of gross
+  // BUILDING area are not the same foot (db/443). Splitting them was correct and
+  // it STRANDED evidence: measured across our own markets, 8 of the 18 that
+  // cleared the sample floor hold their adjustments almost entirely on 1025
+  // grids — Scranton 19, Elizabeth 11, Pittston 10, Roselle 8, all building area
+  // — so asking only for living area drops those markets back to the national
+  // rule of thumb while we hold twenty real local adjustments in each. They are
+  // also exactly the 2-4 unit towns. So BOTH are carried, and the suggester picks
+  // the one that matches the comparable in front of it; they are never blended.
   const peer = opts.peerGlaRate;
   const peerUsable = peer && peer.ok && num(peer.median) > 0 && num(peer.n) >= minSample;
+  const peerGba = opts.peerGlaRateGba;
+  const gbaUsable = peerGba && peerGba.ok && num(peerGba.median) > 0 && num(peerGba.n) >= minSample;
+  out.glaAdjustmentPerSqftGba = gbaUsable
+    ? { value: round(num(peerGba.median), 1),
+        low: peerGba.q1 == null ? null : round(num(peerGba.q1), 1),
+        high: peerGba.q3 == null ? null : round(num(peerGba.q3), 1),
+        n: peerGba.n, source: 'peer', basis_of: 'gba',
+        basis: `what appraisers in this market actually adjusted on 2-4 unit grids, across ${peerGba.n} size adjustments measured on gross building area` }
+    : null;
   out.glaAdjustmentPerSqft = peerUsable
     ? { value: round(num(peer.median), 1),
         low: peer.q1 == null ? null : round(num(peer.q1), 1),
@@ -724,11 +743,34 @@ function timeTrend(rows, today, minSample) {
 function suggestAdjustments(subject, comp, rates, opts = {}) {
   const today = opts.today || null;
   const lines = [];
-  const sqftRate = rates && rates.glaAdjustmentPerSqft ? num(rates.glaAdjustmentPerSqft.value) : null;
+  // THE RATE HAS TO MATCH THE FOOT BEING MEASURED. The delta here is the subject's
+  // LIVING area minus whatever this comparable stated — and on a 1025 (2-4 unit)
+  // grid that is gross BUILDING area, which db/427 records on the comp itself.
+  // The peer rates are measured the same way round (db/443), so a building-area
+  // comp is adjusted at the building-area rate. Without this the 2-4 unit markets
+  // fall back to the national rule of thumb while we hold twenty real local
+  // adjustments in each. A comp that does not say which foot it used is treated as
+  // living area, which is what it is on a 1004 and on every row written before
+  // db/427.
+  const compGba = String((comp && comp.gla_basis) || '').toLowerCase() === 'gba';
+  const matched = compGba && rates && rates.glaAdjustmentPerSqftGba;
+  const rate = matched ? rates.glaAdjustmentPerSqftGba : (rates && rates.glaAdjustmentPerSqft) || null;
+  const sqftRate = rate ? num(rate.value) : null;
   const sg = num(subject && subject.gla), cg = num(comp && comp.gla);
   if (sqftRate && sg && cg && Math.abs(sg - cg) >= 25) {
+    // THE MISMATCH IS STATED, NOT SWALLOWED. A 2-4 unit comparable in a market
+    // where we hold no building-area adjustments falls back to the living-area
+    // rate — which is what happened to every such comp before the two were told
+    // apart, so it is not a regression — but the two rates differ materially
+    // ($45 against $28 on our own corpus), and a suggestion carrying somebody
+    // else's foot has to say so or it gets believed.
+    const mismatch = compGba && !matched;
     lines.push({ key: 'gla', amount: round((sg - cg) * sqftRate, 50), source: 'suggested',
-      note: `${Math.round(sg - cg)} sq ft ${sg > cg ? 'more' : 'less'} than this sale, at about $${sqftRate}/sq ft (${rates.glaAdjustmentPerSqft.basis})` });
+      note: `${Math.round(sg - cg)} sq ft ${sg > cg ? 'more' : 'less'} than this sale, at about $${sqftRate}/sq ft (${rate.basis})`
+        + (mismatch
+          ? ' — NOTE this sale states gross BUILDING area and the rate is measured on LIVING area, '
+            + 'because this market has too few 2-4 unit adjustments to read one; check it before accepting'
+          : '') });
   }
   // The URAR grid has ONE "above-grade room count" line covering total rooms,
   // bedrooms and baths, so the bedroom and bath differences are summed into it

@@ -541,5 +541,63 @@ function corpus(n, f) {
     'and with no closed sales at all it still stands on its own evidence');
 }
 
+// ---------------------------------------------------------------------------
+// A FOOT OF LIVING AREA IS NOT A FOOT OF BUILDING AREA (db/443)
+// ---------------------------------------------------------------------------
+// Splitting the corpus by which foot each adjustment was measured on was
+// correct, and on its own it STRANDED evidence: measured over our own markets,
+// 8 of the 18 that cleared the sample floor hold their adjustments almost
+// entirely on 1025 grids — Scranton 19, Elizabeth 11, Pittston 10, Roselle 8,
+// every one of them building area — so asking only for living area dropped
+// those towns to the national rule of thumb while we held twenty real local
+// adjustments in each. They are also exactly the 2-4 unit towns.
+{
+  const obs = [];
+  for (let i = 0; i < 12; i++) {
+    obs.push({ sale_price: 400000 + i * 1000, gla: 1500 + i * 10, beds: 3, baths_full: 2,
+      baths_half: 0, sale_status: 'closed', sale_type: 'ArmsLengthSale', sale_date: '2026-01-01' });
+  }
+  const LIVING = { ok: true, n: 290, median: 45, q1: 38.5, q3: 55 };
+  const BUILDING = { ok: true, n: 178, median: 28, q1: 20, q3: 50 };
+  const both = V.deriveMarketRates(obs, { peerGlaRate: LIVING, peerGlaRateGba: BUILDING });
+  const livingOnly = V.deriveMarketRates(obs, { peerGlaRate: LIVING });
+
+  ok(both.glaAdjustmentPerSqft.value === 45 && both.glaAdjustmentPerSqftGba.value === 28,
+    'both rates are carried, each on its own foot');
+  ok(!/building/i.test(both.glaAdjustmentPerSqft.basis) && /building/i.test(both.glaAdjustmentPerSqftGba.basis),
+    'and each SAYS which foot it was measured on, so neither can pass for the other');
+  ok(livingOnly.glaAdjustmentPerSqftGba === null,
+    'a market with no 2-4 unit evidence reports none rather than borrowing the other');
+  ok(V.deriveMarketRates(obs, { peerGlaRate: LIVING, peerGlaRateGba: { ok: true, n: 3, median: 28 } })
+    .glaAdjustmentPerSqftGba === null,
+  'and the sample floor applies to it exactly as it does to the other');
+
+  const subject = { gla: 2400 };
+  const living = { gla: 2000, sale_price: 500000 };
+  const building = { gla: 2000, gla_basis: 'gba', sale_price: 500000 };
+  const glaLine = (comp, rates) => V.suggestAdjustments(subject, comp, rates, { today: '2026-08-01' })
+    .find((l) => l.key === 'gla');
+
+  ok(glaLine(living, both).amount === 18000, 'a 1004 comparable is adjusted at the LIVING-area rate');
+  ok(glaLine(building, both).amount === 11200, 'a 1025 comparable is adjusted at the BUILDING-area rate');
+  ok(glaLine({ gla: 2000, gla_basis: 'GBA', sale_price: 500000 }, both).amount === 11200,
+    'the basis is read case-insensitively');
+  ok(glaLine({ gla: 2000, gla_basis: null, sale_price: 500000 }, both).amount === 18000,
+    'a comparable that does not say which foot it used is living area — what it is on a 1004');
+
+  // THE FALLBACK IS HONEST. A 2-4 unit comp in a market with no building-area
+  // evidence still gets a suggestion — that is what every such comp got before
+  // the two were told apart, so it is not a regression — but the rates differ
+  // materially, and a number carrying somebody else's foot has to say so.
+  const fell = glaLine(building, livingOnly);
+  ok(fell.amount === 18000, 'with no 2-4 unit rate it falls back rather than leaving the line blank');
+  ok(/BUILDING area and the rate is measured on LIVING area/.test(fell.note),
+    '…and the note says the feet do not match, so the number is not quietly believed');
+  ok(!/BUILDING area and the rate is measured on LIVING area/.test(glaLine(building, both).note),
+    'and it says nothing of the sort when the rate DOES match');
+  ok(!/BUILDING area and the rate is measured on LIVING area/.test(glaLine(living, livingOnly).note),
+    'nor on an ordinary living-area comparable');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

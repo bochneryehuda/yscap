@@ -393,11 +393,18 @@ async function ratesFor(query) {
   // thumb the derivation falls back to. Best-effort by construction: it refuses
   // below its own sample floor and the convention takes over, so a thin market
   // degrades to exactly what it did before.
-  const peerGlaRate = await ingest.adjustmentRate(db, {
-    basis: 'sqft', state, city, zip,
-    months: Number.isFinite(months) && months > 0 ? months : 36,
-  });
-  return { rows: r.rows, rates: V.deriveMarketRates(r.rows, { today: todayNY(), peerGlaRate }) };
+  const window = Number.isFinite(months) && months > 0 ? months : 36;
+  const peerGlaRate = await ingest.adjustmentRate(db, { basis: 'sqft', state, city, zip, months: window });
+  // AND THE 2-4 UNIT POPULATION, asked for by name. db/443 split the corpus by
+  // which foot each adjustment was measured on, which was right and left the
+  // building-area half unreachable: 8 of the 18 markets that cleared the sample
+  // floor hold their adjustments almost entirely on 1025 grids, so asking only
+  // for living area dropped those towns to the national rule of thumb while we
+  // held twenty real local adjustments in each. The suggester picks per
+  // comparable; the two are never blended.
+  const peerGlaRateGba = await ingest.adjustmentRate(db, { basis: 'sqft_gba', state, city, zip, months: window });
+  return { rows: r.rows,
+    rates: V.deriveMarketRates(r.rows, { today: todayNY(), peerGlaRate, peerGlaRateGba }) };
 }
 
 router.get('/rates', async (req, res, next) => {
@@ -948,7 +955,15 @@ function compSnapshot(p, o) {
     property_id: p.id, display_address: p.display_address, city: p.city, state: p.state, zip: p.zip,
     latitude: p.latitude, longitude: p.longitude,
     property_type: p.property_type, units: p.units, year_built: p.year_built,
-    gla: p.gla, lot_area: p.lot_area, beds: p.beds, baths_full: p.baths_full, baths_half: p.baths_half,
+    gla: p.gla,
+    // WHICH FOOT `gla` IS. A 1025 (2-4 unit) grid states gross BUILDING area under
+    // the same element a 1004 uses for living area, and db/427 records which. The
+    // snapshot dropped it, so the grid could not tell the two apart — and the peer
+    // adjustment rate is now measured per basis (db/443), so without this every
+    // 2-4 unit comp would be adjusted at a living-area rate or, worse, at the
+    // national rule of thumb because the local evidence sits under the other one.
+    gla_basis: p.gla_basis || null,
+    lot_area: p.lot_area, beds: p.beds, baths_full: p.baths_full, baths_half: p.baths_half,
     baths_text: p.baths_text, total_rooms: p.total_rooms,
     condition_uad: p.condition_uad, condition_text: p.condition_text,
     quality_uad: p.quality_uad, quality_text: p.quality_text,
