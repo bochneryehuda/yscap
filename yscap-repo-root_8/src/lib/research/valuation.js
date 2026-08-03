@@ -417,9 +417,25 @@ const DISCLAIMER = 'This is an internal value indication built from the comparab
 function deriveMarketRates(obs, opts = {}) {
   const minSample = opts.minSample || 8;
   const today = opts.today || null;
-  const rows = (obs || []).filter((o) => num(o.sale_price) != null && (o.sale_status || 'closed') === 'closed');
+  // A FORCED SALE IS NOT A MARKET PRICE. A bank selling REO, a short sale, an
+  // estate or a relocation is transacting under a constraint an ordinary buyer
+  // and seller do not have, and the price says so — measured, 8 REO alongside 8
+  // arm's-length dragged the median down to $217/sqft. They were neither filtered
+  // out NOR selectable, so every derived rate quietly averaged two different
+  // markets. They are set aside here and the count is REPORTED, never dropped in
+  // silence: on a corpus where distressed sales are most of what we hold, "we set
+  // 14 aside" is the most important line on the panel.
+  const closedRows = (obs || []).filter((o) => num(o.sale_price) != null && (o.sale_status || 'closed') === 'closed');
+  const rows = closedRows.filter((o) => !isDistressed(o.sale_type));
+  const setAside = closedRows.length - rows.length;
   const withGla = rows.filter((o) => num(o.gla) > 200);
-  const out = { sampleSize: rows.length, minSample };
+  const out = { sampleSize: rows.length, minSample,
+    distressedSetAside: setAside,
+    distressedNote: setAside
+      ? `${setAside} forced sale${setAside === 1 ? '' : 's'} (bank-owned, short sale, estate or `
+        + 'relocation) were left out of these rates — a sale under that kind of pressure is not '
+        + 'what an ordinary buyer would pay'
+      : null };
 
   const ppsf = withGla.map((o) => num(o.sale_price) / num(o.gla));
   out.pricePerSqft = withGla.length >= minSample
@@ -461,18 +477,44 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
     const k = keyOf(o);
     if (k == null) continue;
     if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(num(o.sale_price) / num(o.gla));
+    groups.get(k).push({ ppsf: num(o.sale_price) / num(o.gla), gla: num(o.gla), price: num(o.sale_price) });
   }
+  const ppsfOf = (k) => median(groups.get(k).map((r) => r.ppsf));
+  const glaOf = (k) => median(groups.get(k).map((r) => r.gla));
   const keys = [...groups.keys()].sort((a, b) => a - b).filter((k) => groups.get(k).length >= 3);
   const n = keys.reduce((acc, k) => acc + groups.get(k).length, 0);
   if (keys.length < 2 || n < minSample) {
     return { value: null, n, why: `not enough sales spread across different ${label} counts to read a difference (${n} usable, need ${minSample} across at least two groups)` };
   }
-  const deltas = [];
+  // SIZE IS THE CONFOUND, AND IT IS NOT SUBTLE. Price per foot runs INVERSELY to
+  // size (the land, the kitchen and the systems are already paid for), and more
+  // bedrooms and bathrooms come with more house — so the price-per-foot gap
+  // between a 2-bath group and a 3-bath group is mostly measuring the SIZE
+  // difference, not the bathroom. Multiplied back by the subject's living area it
+  // produced a measured **$86,940 for one bathroom**, while the identical
+  // confound pointing the other way was correctly refused as "the wrong sign" and
+  // the message blamed the sample — when 73 sales is not a small sample, it is a
+  // sample answering a different question.
+  //
+  // A step is only readable when the two groups are genuinely comparable in size.
+  // Anything wider is skipped, and if that leaves nothing the refusal NAMES the
+  // confound rather than the sample size, because "get more sales" is the wrong
+  // advice for a problem more sales will not fix.
+  const MAX_GLA_SPREAD = 0.15;
+  const deltas = []; let confounded = 0;
   for (let i = 1; i < keys.length; i++) {
     const step = keys[i] - keys[i - 1];
     if (!step) continue;
-    deltas.push((median(groups.get(keys[i])) - median(groups.get(keys[i - 1]))) / step);
+    const gA = glaOf(keys[i - 1]), gB = glaOf(keys[i]);
+    if (gA > 0 && gB > 0 && Math.abs(gB - gA) / Math.min(gA, gB) > MAX_GLA_SPREAD) { confounded++; continue; }
+    deltas.push((ppsfOf(keys[i]) - ppsfOf(keys[i - 1])) / step);
+  }
+  if (!deltas.length && confounded) {
+    return { value: null, n, confoundedSteps: confounded,
+      why: `the sales with more ${label}s in this market are also materially BIGGER houses, so the `
+        + `difference in price per foot between them is measuring the size, not the ${label} — `
+        + `this is not something more sales would fix, and a rate read off it would be wrong by a `
+        + 'multiple, not by a little' };
   }
   const d = median(deltas);
   if (d == null) return { value: null, n, why: `could not read a per-${label} difference from this set` };
@@ -485,10 +527,32 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
   if (!(signed > 0)) {
     return { value: null, n, why: `our sales do not show a consistent price difference by ${label} yet — the ${n} we have point the wrong way, which means the sample is too small or too mixed to read` };
   }
+  // A PLAUSIBILITY CEILING, because a confound can survive every check above and
+  // still produce a number nobody would type. Expressed against the market's own
+  // median sale price rather than as a fixed dollar figure, so it means the same
+  // thing in Paterson and in Tenafly: one bedroom, one bathroom or one condition
+  // grade is not worth a quarter of the whole house. Past that the reading is
+  // telling us about something other than the thing it is named for.
+  const medPrice = median(rows.map((o) => num(o.sale_price)).filter((v) => v != null));
+  const medGla = median(rows.map((o) => num(o.gla)).filter((v) => v > 0));
+  const dollarsAtMedian = medGla ? signed * medGla : null;
+  if (medPrice && dollarsAtMedian != null && dollarsAtMedian > medPrice * 0.25) {
+    return { value: null, n,
+      why: `this set reads as ${money(round(dollarsAtMedian, 250))} for one ${label} on a typical house `
+        + `here (${money(round(medPrice, 1000))}) — a quarter of the whole property for one ${label} is `
+        + 'not a rate, it is a sign the groups differ in some other way we cannot see, so nothing is '
+        + 'filled in' };
+  }
   return {
     valuePerSqft: round(signed, 0.01), n,
-    groups: keys.map((k) => ({ key: k, n: groups.get(k).length, medianPricePerSqft: round(median(groups.get(k)), 1) })),
-    basis: `difference in median price per foot between ${label} groups (${n} sales) — multiply by the subject's living area to get dollars`,
+    // What that rate comes to in DOLLARS on a typical house here — the figure a
+    // human is actually being asked to sanity-check, which a per-foot rate hides.
+    approxDollarsOnTypicalHouse: dollarsAtMedian == null ? null : round(dollarsAtMedian, 250),
+    confoundedSteps: confounded || undefined,
+    groups: keys.map((k) => ({ key: k, n: groups.get(k).length,
+      medianPricePerSqft: round(ppsfOf(k), 1), medianGla: round(glaOf(k), 1) })),
+    basis: `difference in median price per foot between ${label} groups (${n} sales, matched for size) `
+      + '— multiply by the subject\'s living area to get dollars',
   };
 }
 
@@ -514,6 +578,20 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
  *     honest reading of an implausible rate is "this method cannot see it";
  *   * the total dollars are capped per comp where it is applied, below.
  */
+/**
+ * IS THIS SALE'S PRICE A MARKET PRICE?
+ *
+ * Read off the appraiser's OWN stated sale type — never guessed from the price
+ * being low, which would be circular. Anything we cannot read is treated as an
+ * ORDINARY sale, deliberately: excluding on a hunch would quietly shrink the
+ * sample, and this warehouse's rule is that an unread fact is not a "yes".
+ */
+const DISTRESSED_RE = /\b(reo|bank[\s-]*owned|foreclos|short[\s-]*sale|estate|relocation|auction|trustee|sheriff|distress|as[\s-]*is[\s-]*sale)\b/i;
+function isDistressed(saleType) {
+  const s = saleType == null ? '' : String(saleType).trim();
+  return s !== '' && DISTRESSED_RE.test(s);
+}
+
 const MIN_TREND_MONTHS = 6;
 const MAX_MONTHLY_PCT = 1.5;
 // …and a ceiling on the DOLLARS a time adjustment may carry on one comp, since a

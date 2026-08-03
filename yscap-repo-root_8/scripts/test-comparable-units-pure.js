@@ -1,5 +1,5 @@
 /**
- * A 2-4 UNIT COMPARABLE'S ROOM COUNTS — the wrong-answer bug, pinned. (db/426)
+ * THE COMPARABLE GRID — the wrong-answer bugs, pinned. (db/426 and Phase 1)
  *
  * On a Fannie Form 1025 the comparable grid states its room line PER UNIT: one
  * `ROOM_ADJUSTMENT` element per dwelling. `extract.js` read the FIRST one, which
@@ -124,6 +124,91 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   const c = comp(R(6, 3, '2.1') + R(4, 2, '1.1'));
   ok(c.bathsFull === 3 && c.bathsHalf === 2, 'full and half baths are summed separately');
   ok(c.bathsText === '3.2', 'and the text says 3 full + 2 half in UAD notation');
+}
+
+// ---------------------------------------------------------------------------
+// 6. PRICE PER FOOT WAS DEAD ON EVERY 2-4 UNIT COMP. A 1025 measures the
+//    BUILDING, so it writes the same fact under `…PerGrossBuildingArea…`, and
+//    only the living-area spelling was ever read: a 1004 read $154.59 and a 1025
+//    read null, on an owner-named field.
+// ---------------------------------------------------------------------------
+{
+  const mkPrice = (attrs) => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1025"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="600000" ${attrs}>
+ <LOCATION PropertyStreetAddress="9 Triplex Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`;
+  const of = (attrs) => (extract(mkPrice(attrs)).comparables || [])[0];
+
+  const gla = of('SalesPricePerGrossLivingAreaAmount="154.59"');
+  ok(gla.pricePerGla === 154.59 && gla.pricePerGlaBasis === 'gla',
+    'a 1004-style comp still reads its price per LIVING foot, and says that is what it is');
+
+  const gba = of('SalesPricePerGrossBuildingAreaAmount="121.40"');
+  ok(gba.pricePerGla === 121.40, 'a 1025 comp finally reads its price per BUILDING foot instead of null');
+  ok(gba.pricePerGlaBasis === 'gba',
+    'AND SAYS SO — $150 a foot of living area and $150 a foot of building area describe different '
+    + 'properties, so comparing them silently would be a wrong answer');
+
+  const both = of('SalesPricePerGrossLivingAreaAmount="154.59" SalesPricePerGrossBuildingAreaAmount="121.40"');
+  ok(both.pricePerGla === 154.59 && both.pricePerGlaBasis === 'gla',
+    'a file carrying both is read as living area, matching how gla_basis already resolves');
+
+  const neither = of('');
+  ok(neither.pricePerGla === null && neither.pricePerGlaBasis === null,
+    'and a grid stating neither claims neither');
+}
+
+// ---------------------------------------------------------------------------
+// 7. A COMPARABLE'S GARAGE WAS STRUCTURALLY ALWAYS NULL. The keyword list was
+//    matched against the MISMO `SALE_PRICE_ADJUSTMENT/@_Type` enum, and 2.6
+//    writes that line as `Parking` or `CarStorage` — neither of which was there,
+//    so the fact never reached a single comparable on a compliant file.
+// ---------------------------------------------------------------------------
+{
+  const { _internals } = require('../src/lib/research/ingest');
+  const from = _internals && _internals.fromAdjustments;
+  if (typeof from !== 'function') {
+    ok(false, 'ingest exposes fromAdjustments for testing');
+  } else {
+    const txt = (v) => { const t = v == null ? '' : String(v).trim(); return t === '' ? null : t; };
+    for (const type of ['Parking', 'CarStorage', 'Garage', 'GarageCarport', 'Carport']) {
+      ok(from([{ type, description: '2 car attached', amount: -5000 }], 'garage', txt) === '2 car attached',
+        `a garage line typed "${type}" is read`);
+    }
+    ok(from([{ type: 'Basement', description: 'full', amount: 0 }], 'garage', txt) === null,
+      'and an unrelated line is not mistaken for one');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. A POST-REHAB REFINANCE IS NOT AN AFTER-REPAIR REPORT. "The repairs were
+//    completed" reads identically on a file where the work really IS done and
+//    the appraiser really IS valuing the house as it stands — and letting that
+//    override an explicit `AsIs` threw the as-is value away and stamped every
+//    comparable `arv`, on the commonest file this lender takes after a flip.
+// ---------------------------------------------------------------------------
+{
+  const mkVal = (cond, narrative) => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY/>
+<VALUATION PropertyAppraisedValueAmount="450000" AppraisalEffectiveDate="05/02/2026"/>
+<_CONDITION_OF_APPRAISAL _Type="${cond}"/>
+<REPORT_SUMMARY _Comment="${narrative}"/>
+</REPORT></VALUATION_RESPONSE>`;
+  const basisOf = (cond, narrative) => extract(mkVal(cond, narrative)).values.basis;
+
+  ok(basisOf('AsIs', 'All repairs were completed in 2024.') === 'ASIS',
+    'an explicit AsIs report saying the repairs are DONE stays AS-IS — that is a finished flip, not a projection');
+  ok(basisOf('AsIs', 'The renovation has been completed and the property is in good order.') === 'ASIS',
+    'and so does the other phrasing of the same finished-work sentence');
+  ok(basisOf('AsIs', 'Appraised under the hypothetical condition that the repairs have been completed.') === 'ARV',
+    'but an explicit HYPOTHETICAL condition still overrules the enum — that IS an after-repair value');
+  ok(basisOf('SubjectToRepairs', 'Nothing in particular.') === 'ARV',
+    'and a subject-to enum is after-repair whatever the narrative says');
+  ok(basisOf('', 'All repairs were completed in 2024.') === 'ARV',
+    'with NO stated condition the looser sentence still infers after-repair — there the alternative is a coin flip');
+  ok(basisOf('', 'A quiet street near the park.') === 'ASIS',
+    'and an ordinary narrative with no stated condition reads as as-is');
 }
 
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');

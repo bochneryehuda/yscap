@@ -147,6 +147,9 @@ function appraisalRowFrom(A, { applicationId = null, sourceXmlDocumentId = null,
     // the two values; these say how the per-comp split was determined and whether it needs review.
     comp_split_confidence: (A.compSplit && A.compSplit.confidence) || null,
     comp_split_needs_review: A.compSplit ? !!A.compSplit.needsReview : null,
+    // Which parser wrote the comparable rows below (db/427). A fresh import is
+    // current by definition; the boot pass uses this to find the ones that are not.
+    comp_parse_version: COMP_PARSE_VERSION,
     fields: JSON.stringify(fieldsJson), warnings: JSON.stringify(A.warnings || []),
     imported_by: importedBy,
   };
@@ -370,6 +373,7 @@ function comparableRowFrom(c) {
     // The worded condition/quality rating a non-UAD vendor wrote, and which of
     // the two AREA measures this comp's `gla` actually is (db/409 §7).
     condition_text: c.conditionText, quality_text: c.qualityText, gla_basis: c.glaBasis,
+    price_per_gla_basis: c.pricePerGlaBasis,
     // THE UNITS, as the 1025 grid stated them (db/426). `units` has existed since
     // db/409 §7 and was written by nothing — this key was simply never emitted.
     // Both are NULL on a single-unit grid: one room row is the property, not a
@@ -403,10 +407,31 @@ function buildFieldsJson(A) {
   return out;
 }
 
+/**
+ * WHICH VERSION OF THE COMPARABLE-GRID PARSER WROTE A REPORT'S COMP ROWS.
+ *
+ * The distinction from `research/ingest.js`'s `INGEST_VERSION` is the one that
+ * decides whether a fix reaches the back book, and db/426 got it wrong:
+ *
+ *   * `INGEST_VERSION` re-reads a REPORT into the warehouse — but
+ *     `ingestAppraisal` reads the STORED `appraisals` and `appraisal_comparables`
+ *     rows, so it faithfully re-reads whatever the parser wrote. It heals a
+ *     WAREHOUSE bug and can do nothing at all about a PARSER bug.
+ *   * this heals a PARSER bug: a current report behind this version has its
+ *     source XML re-parsed at boot and its comparable rows rewritten.
+ *
+ * BUMP THIS whenever `compGrid` (or anything `comparableRowFrom` reads) starts
+ * producing a different answer for the same XML.
+ */
+// 1 — the room counts on a 2-4 unit grid (db/426: unit 1's numbers were filed as
+//     the property's), and the price per foot + its basis (db/427: a 1025 states
+//     it under the gross-BUILDING-area attribute, which was never read).
+const COMP_PARSE_VERSION = 1;
+
 module.exports = {
   importAppraisal,
   // Shared with the research warehouse's standalone XML upload (db/411) so one
   // report is read the same way whichever door it arrives through.
-  appraisalRowFrom, comparableRowFrom,
+  appraisalRowFrom, comparableRowFrom, COMP_PARSE_VERSION,
   _internals: { marketMonthlyRent, fillFileFacts },
 };

@@ -163,7 +163,26 @@ const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,8}(?!\\d))(?:\\.\\d{2})?';
 // and store it as `definite` (a never-guess violation — audit MAJOR).
 const ASIS_RE = new RegExp('(?<![a-z])as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const ARV_RE = new RegExp('(?<![a-z])(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
-const HYPO_RE = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)|(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
+/**
+ * TWO DIFFERENT SENTENCES, AND ONLY ONE OF THEM OVERRULES THE APPRAISER.
+ *
+ * `HYPO_STRICT` is the real signal: the appraiser SAYS they are valuing the
+ * property under a hypothetical condition — as though work that has not happened
+ * were done. That is an after-repair value however the form's enum is set.
+ *
+ * `HYPO_LOOSE` is "the repairs were completed" in any tense, which reads exactly
+ * the same on a POST-REHAB REFINANCE — the work really is finished, the appraiser
+ * really is valuing the house as it stands, and the report says `AsIs`. Letting
+ * that arm override an explicit `AsIs` threw the as-is value away and stamped
+ * every comparable `arv`, on the single commonest kind of file this lender takes
+ * after a flip. It is still useful where the form says NOTHING, because there the
+ * alternative is a coin flip.
+ *
+ * So: the loose arm INFERS, the strict arm OVERRULES. The appraiser's own
+ * explicit answer is only overturned by the appraiser's own explicit hypothesis.
+ */
+const HYPO_STRICT = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)/i;
+const HYPO_LOOSE = /(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
 
 function mineMoney(re, texts, ceil) {
   const hits = [];
@@ -184,13 +203,19 @@ function valuation(root) {
   const coa = X.find(root, '_CONDITION_OF_APPRAISAL');
   const cond = clean(X.attr(coa, '_Type'));
   const texts = narrativeTexts(root);
-  const hasHypo = texts.some((t) => HYPO_RE.test(t));
+  const hasHypoStrict = texts.some((t) => HYPO_STRICT.test(t));
+  const hasHypo = hasHypoStrict || texts.some((t) => HYPO_LOOSE.test(t));
 
   let basis, basisNote;
   // All three GSE "subject-to" conditions make the appraised value a conditional/as-completed
   // figure (not plain as-is). SubjectToInspection is a real spec enum — include it (audit/spec fix).
   if (cond === 'SubjectToRepairs' || cond === 'SubjectToCompletion' || cond === 'SubjectToInspection') { basis = 'ARV'; basisNote = `condition=${cond}`; }
-  else if (cond === 'AsIs' && hasHypo) { basis = 'ARV'; basisNote = 'condition=AsIs but hypothetical-completion language → ARV'; }
+  // ONLY THE STRICT ARM OVERRULES AN EXPLICIT `AsIs`. "The repairs were
+  // completed" is what a POST-REHAB REFINANCE says — the work is genuinely done
+  // and the appraiser is genuinely valuing the house as it stands — so reading it
+  // as an after-repair report threw the as-is value away and stamped every
+  // comparable `arv`, on the commonest file this lender takes after a flip.
+  else if (cond === 'AsIs' && hasHypoStrict) { basis = 'ARV'; basisNote = 'condition=AsIs but the appraiser states a HYPOTHETICAL condition → ARV'; }
   else if (cond === 'AsIs') { basis = 'ASIS'; basisNote = 'condition=AsIs'; }
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
 
@@ -289,7 +314,23 @@ function compGrid(c) {
   const out = { gla: null, glaBasis: null, saleDate: null, contractDate: null, conditionUad: null, qualityUad: null,
     conditionText: null, qualityText: null, dom: null,
     beds: null, bathsFull: null, bathsHalf: null, baths: null, totalRooms: null,
-    pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
+    units: null, unitMix: null,
+    // PRICE PER FOOT WAS DEAD ON EVERY 2-4 UNIT COMP. A 1025 measures the
+    // building, not the living area, so it writes the SAME fact under a DIFFERENT
+    // attribute — `…PerGrossBuildingArea…` — and only the living-area spelling was
+    // ever read. Same file, one word changed: a 1004 read $154.59 and a 1025 read
+    // null, on an owner-named field.
+    //
+    // The two are NOT interchangeable and the basis has to travel with the number,
+    // exactly as `gla_basis` already does for the area itself (db/409 §7): $150 a
+    // foot of LIVING area and $150 a foot of GROSS BUILDING area describe
+    // different properties, and comparing them silently is a wrong answer. The
+    // living-area spelling wins when a file carries both.
+    pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8)
+      ?? bounded(X.attr(c, 'SalesPricePerGrossBuildingAreaAmount'), 1e8),
+    pricePerGlaBasis: X.attr(c, 'SalesPricePerGrossLivingAreaAmount') != null ? 'gla'
+      : (X.attr(c, 'SalesPricePerGrossBuildingAreaAmount') != null ? 'gba' : null),
+    adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
     // The "Other" adjustment's human label lives in _TypeOtherDescription, NOT _Description
@@ -504,7 +545,11 @@ function comparables(root) {
       gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate, contractDate: g.contractDate,
       conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       conditionText: g.conditionText, qualityText: g.qualityText,
-      dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
+      // The basis travels WITH the number: $150 a foot of LIVING area and $150 a
+      // foot of GROSS BUILDING area describe different properties, and a 1025
+      // states the second one.
+      dom: g.dom, pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
+      adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
       viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),

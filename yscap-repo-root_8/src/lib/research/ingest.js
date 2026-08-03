@@ -1054,8 +1054,22 @@ async function writeReport(db, { a, comps, link, out }) {
       price: a.contract_price, type: txt(a.sale_type), status: 'pending', source: 'subject_contract',
       appraisalId, importId, observationId: subjectObsId,
       out, what: { address: txt(a.subject_address), of: 'the subject\'s contract' } });
-  } else if (txt(a.subject_address)) {
-    out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
+  } else {
+    // A SUBJECT THAT NEVER LANDS IS ALWAYS COUNTED. This used to be gated on the
+    // report having stated an address at all, so a report carrying NO subject
+    // address was dropped in total silence and its ledger row still read
+    // `status: ok, rows_skipped: 0` — measured on 64 rows. That is precisely what
+    // the ledger exists to prevent (db/409 §6): "nothing is ever silently
+    // dropped" has to include the case where there was nothing to drop it FROM.
+    // The two reasons are different and a human needs to be told which: one is a
+    // report we cannot read, the other is a report that did not say.
+    out.skipped.push(txt(a.subject_address)
+      ? { role: 'subject', address: txt(a.subject_address),
+        why: 'the report states this address but we could not read a house number, a state and a '
+          + 'town or ZIP out of it, so it cannot be told apart from any other property' }
+      : { role: 'subject', address: null,
+        why: 'this report states no subject address at all, so there is no property to file it '
+          + 'against — everything else on it (its market read, its comparables) is still kept' });
   }
 
   // ---- what the report said about the MARKET (db/423) ---------------------
@@ -1342,7 +1356,14 @@ const ADJ_TYPES = Object.freeze({
   age: ['age', 'actualage', 'yearbuilt'],
   site: ['site', 'sitearea', 'lot', 'lotsize'],
   design: ['design', 'designstyle', 'style'],
-  garage: ['garage', 'garagecarport', 'carport'],
+  // A COMPARABLE'S GARAGE WAS STRUCTURALLY ALWAYS NULL. These keys are matched
+  // against the MISMO `SALE_PRICE_ADJUSTMENT/@_Type` enum, and 2.6 writes the
+  // garage line as `Parking` or `CarStorage` — neither of which was here. The
+  // three original spellings are what a human would guess the enum says; they
+  // are kept because a vendor does emit them, but they matched nothing on a
+  // standards-compliant file, so the fact never reached a single comparable.
+  garage: ['garage', 'garagecarport', 'carport', 'parking', 'carstorage',
+    'garageparking', 'parkingoncarstorage'],
 });
 function fromAdjustments(adjustments, kind, parse) {
   const want = ADJ_TYPES[kind];

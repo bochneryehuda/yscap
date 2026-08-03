@@ -1,0 +1,78 @@
+/**
+ * A PARSER BUG ON A REPORT ALREADY IMPORTED — and the only thing that heals it.
+ *
+ * `research/ingest.js`'s `INGEST_VERSION` re-reads a report INTO the warehouse,
+ * but `ingestAppraisal` reads the STORED `appraisals` / `appraisal_comparables`
+ * rows — so it faithfully re-reads whatever the parser wrote. It heals a
+ * WAREHOUSE bug and can do nothing at all about a PARSER one. db/426 assumed
+ * otherwise, and the wrong 2-4 unit room counts it fixed would have stayed on
+ * every report already on disk.
+ *
+ * `backfillComparableParseOnce` re-PARSES the stored source XML and rewrites the
+ * grid fields. This proves it on a real database with real stored bytes: a
+ * comparable stored the way the old parser stored it (unit 1's 5 rooms / 3 beds /
+ * 1 bath, no price per foot) is healed to the property's 14 / 7 / 3 with its
+ * per-unit breakdown and its price per BUILDING foot.
+ *
+ * DB-gated. Run: DATABASE_URL=... node scripts/test-comparable-reparse-db.js
+ */
+if (!process.env.DATABASE_URL) { console.log('SKIP test-comparable-reparse-db (no DATABASE_URL)'); process.exit(0); }
+process.env.JWT_SECRET = 'x';
+const db = require('../src/db');
+const storage = require('../src/lib/storage');
+const desk = require('../src/lib/appraisal/desk');
+const sfx = `${process.pid}${Math.floor(Math.random() * 1e5)}`;
+const R = (r, b, ba) => `<ROOM_ADJUSTMENT TotalRoomCount="${r}" TotalBedroomCount="${b}" TotalBathroomCount="${ba}"/>`;
+const XML = `<?xml version="1.0"?><VALUATION_RESPONSE><REPORT AppraisalFormType="FNM1025"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="600000" SalesPricePerGrossBuildingAreaAmount="121.40">
+ <LOCATION PropertyStreetAddress="9 Reparse Rd ${sfx}" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ ${R(5,3,'1.0')}${R(5,2,'1.0')}${R(4,2,'1.0')}
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`;
+let bid, appId, docId, apprId;
+(async () => {
+  try {
+    bid = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Re','Parse',$1) RETURNING id`, [`rp${sfx}@t.test`])).rows[0].id;
+    appId = (await db.query(`INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `9 Reparse Rd ${sfx}` })])).rows[0].id;
+    const ref = await storage.save(Buffer.from(XML, 'utf8'), { filename: `a${sfx}.xml`, contentType: 'text/xml' });
+    docId = (await db.query(`INSERT INTO documents (application_id, filename, content_type, storage_ref, storage_provider, doc_kind)
+      VALUES ($1,$2,'text/xml',$3,$4,'appraisal_xml') RETURNING id`,
+    [appId, `a${sfx}.xml`, ref.ref || ref.storage_ref || ref, ref.provider || 'local'])).rows[0].id;
+    // The report, stored as the OLD parser would have: comp_parse_version NULL.
+    apprId = (await db.query(`INSERT INTO appraisals (application_id, form_type, effective_date, subject_address,
+        subject_city, subject_state, subject_zip, source_xml_document_id, superseded, imported_at)
+      VALUES ($1,'FNM1025','2026-05-01',$2,'Newark','NJ','07103',$3,false, now()) RETURNING id`,
+    [appId, `9 Reparse Rd ${sfx}`, docId])).rows[0].id;
+    await db.query(`INSERT INTO appraisal_comparables (appraisal_id, seq, is_subject, address, city, state, zip,
+        sale_price, beds, baths, baths_full, baths_half, total_rooms, price_per_gla, comp_set)
+      VALUES ($1,'1',false,$2,'Newark','NJ','07103',600000, 3,'1.0',1,0, 5, NULL, 'as_is')`,
+    [apprId, `9 Reparse Rd ${sfx}`]);
+    const before = (await db.query(`SELECT beds, total_rooms, baths_full, units, price_per_gla, price_per_gla_basis FROM appraisal_comparables WHERE appraisal_id=$1`, [apprId])).rows[0];
+    console.log('BEFORE (what the old parser stored):', JSON.stringify(before));
+    const res = await desk.backfillComparableParseOnce(50);
+    console.log('pass:', JSON.stringify(res));
+    const after = (await db.query(`SELECT beds, total_rooms, baths_full, units, unit_mix, price_per_gla, price_per_gla_basis FROM appraisal_comparables WHERE appraisal_id=$1`, [apprId])).rows[0];
+    console.log('AFTER  (re-parsed from the XML):    ', JSON.stringify(after));
+    const stamp = (await db.query(`SELECT comp_parse_version FROM appraisals WHERE id=$1`, [apprId])).rows[0];
+    console.log('stamped version:', stamp.comp_parse_version);
+    const again = await desk.backfillComparableParseOnce(50);
+    console.log('second run (must not re-do it):', JSON.stringify(again));
+    const good = after.beds === 7 && after.total_rooms === 14 && after.baths_full === 3
+      && after.units === 3 && Array.isArray(after.unit_mix) && after.unit_mix.length === 3
+      && Number(after.price_per_gla) === 121.40 && after.price_per_gla_basis === 'gba'
+      && stamp.comp_parse_version === 1;
+    console.log(good ? '\ntest-comparable-reparse-db: PASS — a stored wrong count was healed from the XML' : '\ntest-comparable-reparse-db: FAIL');
+    process.exitCode = good ? 0 : 1;
+  } catch (e) { console.log('THREW', e.stack || e); process.exitCode = 1; }
+  finally {
+    // The warehouse ingest is fire-and-forget; let it settle before the teardown
+    // deletes the rows out from under it, or its FK insert races our DELETE.
+    await new Promise((r) => setTimeout(r, 600));
+    try {
+      if (apprId) await db.query(`DELETE FROM appraisals WHERE id=$1`, [apprId]);
+      if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
+      if (bid) await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
+    } catch (e) { console.log('cleanup:', e.message); }
+    await db.pool.end().catch(() => {});
+  }
+})();

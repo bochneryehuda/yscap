@@ -360,5 +360,59 @@ function corpus(n, f) {
     'and when it is held back it SAYS so, rather than quietly shrinking');
 }
 
+// ---- 4c. A FORCED SALE IS NOT A MARKET PRICE ---------------------------------
+// A bank selling REO, a short sale, an estate or a relocation transacts under a
+// constraint an ordinary buyer and seller do not have. Measured: 8 REO alongside
+// 8 arm's-length dragged the median to $217/sqft. They were neither filtered out
+// NOR selectable, so every derived rate quietly averaged two different markets.
+{
+  const arms = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: 'Arms Length', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const reo = corpus(8, (i) => ({ sale_price: 225000, gla: 1500, sale_status: 'closed',
+    sale_type: 'REO', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const r = V.deriveMarketRates([...reo, ...arms], { today: TODAY });
+  ok(r.pricePerSqft.value === 250,
+    'the price per foot is the ARM\'S-LENGTH market ($250), not a blend of two different markets');
+  ok(r.distressedSetAside === 8, 'and the forced sales are counted, not silently dropped');
+  ok(/forced sale/.test(r.distressedNote || ''), 'with a plain-language note saying what was set aside');
+
+  // AN UNREAD SALE TYPE IS AN ORDINARY SALE. Excluding on a hunch would quietly
+  // shrink the sample, and an unread fact is never a "yes" in this warehouse.
+  const unknown = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: null, sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const r2 = V.deriveMarketRates(unknown, { today: TODAY });
+  ok(r2.distressedSetAside === 0 && r2.pricePerSqft.value === 250,
+    'a sale whose type the report never stated still counts — we do not guess "distressed" from a low price');
+}
+
+// ---- 4d. SIZE IS THE CONFOUND, AND IT IS NOT SUBTLE --------------------------
+// Price per foot runs INVERSELY to size, and more bathrooms come with more house,
+// so the price-per-foot gap between bath groups is mostly measuring SIZE.
+// Multiplied back by the subject's living area that produced a measured $86,940
+// for one bathroom — while the identical confound pointing the other way was
+// correctly refused as "the wrong sign", with a message blaming the sample size.
+{
+  const small = corpus(8, () => ({ sale_price: 300000, gla: 1200, baths_full: 2, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const big = corpus(8, () => ({ sale_price: 480000, gla: 2400, baths_full: 3, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const r = V.deriveMarketRates([...small, ...big], { today: TODAY });
+  ok(r.perBath.value == null, 'a bathroom rate read off groups that differ in SIZE is refused');
+  ok(/BIGGER houses/.test(r.perBath.why || '') && /measuring the size/.test(r.perBath.why || ''),
+    'and the refusal names the CONFOUND — "get more sales" is the wrong advice for a problem more sales will not fix');
+
+  // Matched for size, the same shape reads normally.
+  const matchedA = corpus(8, () => ({ sale_price: 300000, gla: 1500, baths_full: 2, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const matchedB = corpus(8, () => ({ sale_price: 330000, gla: 1550, baths_full: 3, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const r2 = V.deriveMarketRates([...matchedA, ...matchedB], { today: TODAY });
+  ok(r2.perBath.valuePerSqft != null, 'two size-matched groups still yield a bathroom rate');
+  ok(r2.perBath.approxDollarsOnTypicalHouse != null,
+    'and it reports what that comes to in DOLLARS on a typical house — the figure a human can sanity-check');
+  ok(r2.perBath.groups.every((g) => g.medianGla != null),
+    'each group publishes its median size, so the confound is visible even when it passes');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

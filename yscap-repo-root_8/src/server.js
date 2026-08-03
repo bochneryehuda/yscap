@@ -620,6 +620,13 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // THE ONLY THING THAT HEALS A PARSER BUG ON A REPORT ALREADY IMPORTED.
+        // Re-ingesting the warehouse cannot: it reads the STORED comparable rows,
+        // which are the ones the parser wrote wrong. Re-parses the source XML and
+        // rewrites the grid fields, drained by `comp_parse_version` (db/427).
+        require('./lib/appraisal/desk').backfillComparableParseOnce()
+          .then((r) => r && r.rewritten && console.log('[boot] comparable grid re-parse:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] comparable grid re-parse failed:', e.message));
         // Previous files (owner-directed 2026-07-30): evaluate the note-buyer appraisal checks
         // (EMCAP) for open EMCAP files that already have an imported appraisal but no note-buyer
         // findings yet. Bounded per boot, idempotent (the sync diffs by code), fire-and-forget.

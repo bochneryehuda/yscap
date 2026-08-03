@@ -533,6 +533,81 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
   return { scanned, split };
 }
 
+/**
+ * PREVIOUS FILES, FOR A PARSER BUG — the only thing that can heal one.
+ *
+ * `research/ingest.js`'s `INGEST_VERSION` re-reads a report INTO the warehouse,
+ * but `ingestAppraisal` reads the STORED `appraisals` / `appraisal_comparables`
+ * rows. So it faithfully re-reads whatever the parser wrote: it heals a WAREHOUSE
+ * bug and can do nothing at all about a PARSER one. db/426 assumed otherwise, and
+ * the wrong room counts it fixed would have stayed on every report already
+ * imported.
+ *
+ * This re-PARSES the stored source XML and rewrites the comparable rows —
+ * `backfillAppraisalCompSplitOnce` has done exactly this for `comp_set` since the
+ * split shipped; this is the general case, drained by `comp_parse_version`.
+ *
+ * ONLY THE PARSED GRID FIELDS ARE REWRITTEN, matched by `seq`. `comp_set` is
+ * deliberately NOT among them: it has its own backfill, and a human can override
+ * it from the desk. Bounded per boot, per-appraisal transactional, never throws.
+ * A report whose XML cannot be recovered is NOT stamped, so a transient storage
+ * failure retries on the next boot instead of draining the file out of the repair
+ * forever — the same rule the split backfill documents.
+ */
+async function backfillComparableParseOnce(limit = 150) {
+  const { COMP_PARSE_VERSION, comparableRowFrom } = require('./import');
+  // The fields the comparable-grid parser owns and may have changed its mind
+  // about. Everything else on the row (comp_set, the human-facing overrides) is
+  // left exactly as it stands.
+  const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
+    'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis'];
+  let scanned = 0, rewritten = 0, unrecoverable = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT a.id, a.source_xml_document_id
+         FROM appraisals a
+        WHERE a.superseded = false
+          AND a.source_xml_document_id IS NOT NULL
+          AND (a.comp_parse_version IS NULL OR a.comp_parse_version < $2)
+          AND EXISTS (SELECT 1 FROM appraisal_comparables c WHERE c.appraisal_id = a.id AND c.is_subject = false)
+        ORDER BY a.imported_at ASC NULLS LAST
+        LIMIT $1`, [limit, COMP_PARSE_VERSION])).rows;
+    for (const r of rows) {
+      scanned++;
+      const xml = await xmlForAppraisal(r);
+      if (!xml) { unrecoverable++; continue; }
+      let A;
+      try { A = extract(xml); } catch (_) { unrecoverable++; continue; }
+      if (!A || !A.ok || !Array.isArray(A.comparables)) { unrecoverable++; continue; }
+      const client = await db.getClient();
+      try {
+        await client.query('BEGIN');
+        for (const c of A.comparables) {
+          if (c.seq == null) continue;
+          const full = comparableRowFrom(c);
+          const cols = REPARSED.filter((k) => k in full);
+          if (!cols.length) continue;
+          await client.query(
+            `UPDATE appraisal_comparables SET ${cols.map((k, i) => `${k} = $${i + 3}`).join(', ')}
+              WHERE appraisal_id = $1 AND seq = $2 AND is_subject = false`,
+            [r.id, String(c.seq), ...cols.map((k) => full[k])]);
+        }
+        await client.query(`UPDATE appraisals SET comp_parse_version = $2 WHERE id = $1`,
+          [r.id, COMP_PARSE_VERSION]);
+        await client.query('COMMIT');
+        rewritten++;
+        // THE WAREHOUSE HOLDS A COPY OF EVERY ONE OF THOSE NUMBERS, and they just
+        // moved. Its ledger would never revisit a report already filed `ok`, so
+        // without this the research database keeps answering with unit 1's
+        // bedroom count forever.
+        fireResearchIngest(r.id, 'comparable re-parse');
+      } catch (_) { await client.query('ROLLBACK').catch(() => {}); }
+      finally { client.release(); }
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, rewritten, unrecoverable, version: COMP_PARSE_VERSION };
+}
+
 // Previous files (owner-directed 2026-07-30): run the note-buyer appraisal checks (EMCAP)
 // for open EMCAP files that already carry a current appraisal but have never had the
 // note-buyer findings evaluated (no source='note_buyer' rows at all, any status). One sync per
@@ -734,4 +809,4 @@ async function backfillAsIsReadsOnce({ freeLimit = null, pdfLimit = null } = {})
   return out;
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalPhotoKindsOnce, backfillAppraisalCompSplitOnce, backfillNoteBuyerFindingsOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalPhotoKindsOnce, backfillAppraisalCompSplitOnce, backfillComparableParseOnce, backfillNoteBuyerFindingsOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };
