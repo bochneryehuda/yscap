@@ -179,11 +179,11 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
  * case with no way back — the desk's own "Mark finished" button was a one-way door.
  *
  * THE STATUS IT GOES BACK TO IS NOT ALWAYS 'ordered', and this is the same
- * reasoning db/454's one-shot repair spells out: `order-sla.pendingOn` reads
+ * reasoning db/455's one-shot repair spells out: `order-sla.pendingOn` reads
  * 'ordered' as "the vendor owes us an answer", so reopening an order whose
  * commitment is already sitting on the file makes the overdue nudge email the team
  * "we asked Acme Title 40 days ago and nothing came back" about documents they can
- * see. It is db/454's own CASE, so the migration and the button agree:
+ * see. It is db/455's own CASE, so the migration and the button agree:
  *   · the vendor answered → 'documents_in'
  *   · otherwise           → 'ordered'
  *

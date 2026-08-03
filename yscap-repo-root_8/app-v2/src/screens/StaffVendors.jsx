@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* Vendor directory (admin): every title company / insurance agent contact
    entered anywhere on the platform, tagged by type. Admins enrich, correct,
@@ -387,7 +388,6 @@ export default function StaffVendors() {
   const [editing, setEditing] = useState(null);   // vendor id being edited
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
   // Manual merge (owner-directed 2026-07-21): mergePick = { survivorId, mergedId }.
   const [mergePick, setMergePick] = useState(null);
   const [mergePickChoice, setMergePickChoice] = useState(null);   // vendor id when picking a merge partner
@@ -402,7 +402,9 @@ export default function StaffVendors() {
       .catch(e => { if (mine === loadSeq.current) setErr(e.message); });
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type]);
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3000); };
+  // Vendor actions fire from rows anywhere down a long directory — confirm in
+  // the fixed toast so the list never jumps under the cursor (FlashToast.jsx).
+  const { flash, toast } = useFlash();
 
   const gate = useSubmitGate();
   async function add(f) {
@@ -456,7 +458,7 @@ export default function StaffVendors() {
           <button className="btn btn-ink btn-sm" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
         </div>
       </div>
-      {msg && <div className="notice ok">{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {rows != null && (

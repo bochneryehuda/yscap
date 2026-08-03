@@ -201,7 +201,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
         [applicationId]);
       // AND STAMP THAT THE ATTORNEY ANSWERED, exactly as order-inbox does for a
       // title or insurance vendor. Nothing on the live path wrote this column for
-      // the attorney order — only db/454's boot back-fill did — so an order
+      // the attorney order — only db/455's boot back-fill did — so an order
       // finished and then reopened before the next deploy went back to 'ordered'
       // and the overdue nudge told the team "we asked the closing attorney N days
       // ago and nothing has come back" about documents already on the file.
