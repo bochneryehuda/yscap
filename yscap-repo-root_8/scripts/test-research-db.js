@@ -598,6 +598,61 @@ async function makeAppraisal(appId, o) {
     const projHit = await S.searchProperties(db, { condo_project: 'harbor point' });
     ok(projHit.rows.some((r) => r.id === fProp.id), 'and by the name of its condo project, case-insensitively');
 
+    // (4g) THE MARKET GRID (db/423). The 1004MC states its windows RELATIVELY
+    // ("last 3 months"), which two reports written months apart cannot share an
+    // axis on. Each window is resolved against that report's own effective date
+    // into real dates — that is what turns a pile of reports into a time series.
+    const MK = require('../src/lib/research/market');
+    const mktGrid = {
+      MedianSalesPrice: { prior712: 412000, prior46: 441000, last3: 452500, trend: 'Increasing' },
+      Supply: { prior712: 5.1, prior46: 3.8, last3: 2.5, trend: 'Declining' },
+      TotalSales: { prior712: 88, prior46: 41, last3: 26 },
+      MedianSalesDOM: { prior712: 61, prior46: 44, last3: 29 },
+    };
+    const mktApp = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `2 Market Rd ${sfx}` })])).rows[0].id;
+    const mktA = (await db.query(
+      `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
+         subject_state, subject_zip, market_trends, nbhd_builtup, nbhd_value_trend, present_land_use,
+         market_conditions_comment, superseded)
+       VALUES ($1,'FNM1004','2026-05-01',$2,$3,'NJ','08854',$4,'Over 75%','Increasing',$5,
+         'Market is tightening.', false) RETURNING id`,
+      [mktApp, `2 Market Rd ${sfx}`, CITY, JSON.stringify(mktGrid),
+        JSON.stringify([{ use: 'One-Unit', pct: 85 }])])).rows[0].id;
+    const mktOut = await ingest.ingestAppraisal(D, mktA);
+    ok(mktOut.market === 1 && mktOut.marketPeriods === 3,
+      'a report carrying a 1004MC grid files one market read with all three windows');
+
+    const mObs = (await db.query(`SELECT * FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0];
+    const mPer = (await db.query(
+      `SELECT * FROM market_periods WHERE observation_id=$1 ORDER BY period_start`, [mObs.id])).rows;
+    ok(mPer.length === 3 && mPer.every((p) => p.period_start && p.period_end),
+      'every window is stored with REAL dates, never the form\'s relative wording');
+    ok(mPer[0].period_start === '2025-05-01' && mPer[2].period_end === '2026-05-01',
+      'and they are anchored on the report\'s own effective date, covering the full prior year');
+    ok(mPer[0].period_end === mPer[1].period_start && mPer[1].period_end === mPer[2].period_start,
+      'the three windows are contiguous and non-overlapping, so stacked reports never double-count');
+    ok(mObs.trends && mObs.trends.Supply === 'Declining' && mObs.nbhd_builtup === 'Over 75%'
+      && Array.isArray(mObs.present_land_use),
+    'the appraiser\'s trend conclusions and the page-1 neighbourhood read land with it');
+    // The market is about an AREA, so it must never appear on the property row.
+    const mProp = (await db.query(
+      `SELECT * FROM properties WHERE id=$1`, [mObs.property_id])).rows[0];
+    ok(mProp && !('months_supply' in mProp) && !('nbhd_value_trend' in mProp),
+      'and NONE of it is filed on the property — a house never carries its town\'s statistics');
+
+    await ingest.ingestAppraisal(D, mktA);
+    const mAgain = (await db.query(
+      `SELECT count(*)::int AS c FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0].c;
+    ok(mAgain === 1, 're-ingesting a report refreshes its market read rather than duplicating it');
+
+    const series = await MK.summarize(db, { city: CITY, months: 60 });
+    ok(series.months.length >= 3 && series.months.every((m) => m.reports > 0),
+      'the reads assemble into a month-by-month series');
+    ok(typeof series.reports === 'number' && /report count|report/i.test(series.note),
+      'and every answer carries how many REPORTS it averaged — this is opinion data, not a measurement');
+
     // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
     // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
     // forever and the filter underneath silently works inside a truncated set.
@@ -610,11 +665,12 @@ async function makeAppraisal(appId, o) {
 
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, factsAppId]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, factsAppId, mktApp]]);
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
     // The warehouse deliberately SURVIVES the files (the observations are SET NULL,
     // not cascaded) — that is the point of a cross-file database, so clean up by key.
+    await db.query(`DELETE FROM market_observations WHERE city = $1`, [CITY]);
     await db.query(`DELETE FROM properties WHERE city = $1`, [CITY]);
     await db.query(`DELETE FROM appraisers WHERE identity_key IN ($1,$2)`, [`lic:NJ:${LIC}`, `lic:NJ:RG${LIC.slice(-6)}`]);
     await db.query(`DELETE FROM appraisers WHERE name_key = $1`, [`dana ${SURNAME.replace('Kessler', 'Whitfield')}`.toLowerCase()]);

@@ -36,6 +36,7 @@
  *     keeping observations in the first place.
  */
 const K = require('./property-key');
+const MARKET = require('./market');
 const ID = require('./identity');
 
 const INGEST_VERSION = 1;
@@ -941,6 +942,28 @@ async function writeReport(db, { a, comps, link, out }) {
       out, what: { address: txt(a.subject_address), of: 'the subject\'s contract' } });
   } else if (txt(a.subject_address)) {
     out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
+  }
+
+  // ---- what the report said about the MARKET (db/423) ---------------------
+  // The 1004MC grid and the page-1 neighbourhood read describe an AREA over a
+  // PERIOD, not this house, so they go to their own table rather than onto the
+  // property — see db/423's header for why that distinction is load-bearing.
+  // Deliberately OUTSIDE the `if (subjectId)` branch above: a report whose
+  // address we could not key still told us about its market, and that is worth
+  // keeping. Best-effort — a market read is never worth failing a whole report
+  // over, and the failure is COUNTED rather than swallowed.
+  try {
+    // NO COORDINATES ARE PASSED, deliberately: `appraisals` carries no
+    // subject_latitude/longitude (verified against information_schema — reading
+    // them would be a phantom column that silently answers null forever). The
+    // subject's position lives on the PROPERTY, which `property_id` points at
+    // once the geocoder has placed it.
+    const m = await MARKET.writeMarket(db, a, {
+      appraisalId, importId, propertyId: subjectId || null, appraiserId,
+    });
+    if (m.written) { out.market = 1; out.marketPeriods = m.periods; }
+  } catch (e) {
+    out.skipped.push({ role: 'market', why: `the market grid could not be filed: ${e.message}` });
   }
 
   // ---- the COMPARABLES ---------------------------------------------------

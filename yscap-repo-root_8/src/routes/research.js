@@ -38,6 +38,7 @@ const { requireAuth, requireStaff } = require('../auth');
 const { can } = require('../lib/permissions');
 const { serveDocument } = require('../lib/serve-document');
 const S = require('../lib/research/search');
+const MARKET = require('../lib/research/market');
 const V = require('../lib/research/valuation');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
@@ -64,6 +65,54 @@ function todayNY() {
 // ---------------------------------------------------------------------------
 // STATS
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THE MARKET — what our appraisers have said about the areas we lend in (db/423)
+// ---------------------------------------------------------------------------
+/**
+ * "How is this market moving?" — assembled from the 1004MC grid on every report
+ * we hold for that area, with each report's relative windows resolved to real
+ * dates so reports written months apart stack into one series.
+ *
+ * IT IS OPINION DATA AND THE RESPONSE SAYS SO. Every month carries the number of
+ * REPORTS behind it, and the payload carries the note verbatim, because an
+ * average over two reports and over two hundred must never look alike. A caller
+ * that plots this without showing the count is misrepresenting it.
+ */
+router.get('/market', async (req, res, next) => {
+  try {
+    const out = await MARKET.summarize(db, {
+      state: txt(req.query.state), city: txt(req.query.city), zip: txt(req.query.zip),
+      months: K.int(req.query.months, { max: 120 }) || 24,
+    });
+    res.json(out);
+  } catch (e) { next(e); }
+});
+
+/** The individual reads behind that series — who said it, when, and about where. */
+router.get('/market/reports', async (req, res, next) => {
+  try {
+    const params = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const where = [];
+    if (txt(req.query.state)) where.push(`o.state = ${P(txt(req.query.state).toUpperCase())}`);
+    if (txt(req.query.city)) where.push(`lower(o.city) = ${P(txt(req.query.city).toLowerCase())}`);
+    if (txt(req.query.zip)) where.push(`o.zip = ${P(txt(req.query.zip))}`);
+    if (isUuid(req.query.property_id)) where.push(`o.property_id = ${P(req.query.property_id)}`);
+    const rows = (await db.query(
+      `SELECT o.id, o.effective_date, o.form_type, o.state, o.city, o.zip, o.trends,
+              o.nbhd_builtup, o.nbhd_growth, o.nbhd_value_trend, o.nbhd_demand_supply,
+              o.nbhd_marketing_time, o.nbhd_price_low, o.nbhd_price_high, o.nbhd_price_predominant,
+              o.present_land_use, o.market_conditions_comment,
+              a.name AS appraiser_name, a.company AS appraiser_company
+         FROM market_observations o
+         LEFT JOIN appraisers a ON a.id = o.appraiser_id
+        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+        ORDER BY o.effective_date DESC NULLS LAST, o.id
+        LIMIT 100`, params)).rows;
+    res.json({ rows, total: rows.length });
+  } catch (e) { next(e); }
+});
+
 router.get('/stats', async (req, res, next) => {
   try {
     const status = await ingest.ingestStatus(db);
