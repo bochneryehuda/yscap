@@ -314,23 +314,39 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
   return out;
 }
 
+// A sweep must never run twice at once. `sweepOnce` walks the pipeline result
+// SEQUENTIALLY — up to 500 loans, one call for the loan's orders plus one per
+// order to expand it, plus any download — so on a busy tenant or a slow
+// Encompass day a single pass can comfortably outrun the 60s floor. Without a
+// guard `setInterval` would fire on top of the pass already running, and each
+// tick would add another concurrent walk of the SAME loans: doubled read load on
+// a vendor API, two captures racing for one resource (the second `storage.save`
+// orphaning the first blob), and under sustained slowness an unbounded pile-up.
+// The same shape the sitewire orchestrator and the condition engine guard.
+//
+// Deliberately a plain in-process flag on the TIMER, not a lock inside
+// `sweepOnce`: an operator or a test calling `sweepOnce` directly should still
+// run, and a single process owns its own timer. It fails OPEN across restarts
+// (nothing is persisted) — the cost of a rare overlap after a crash is one
+// duplicated read, while refusing to sweep would silently lose files.
+let sweeping = false;
+
 /**
- * The timer. Started beside the other Encompass sync work.
- *
- * The interval must stay comfortably under the ~15-minute validity — a sweep of
- * the whole tenant measured ~20 seconds, so the default 5 minutes leaves a wide
- * margin for a slow Encompass day. Raising it past ~10 minutes starts losing
- * files, which is exactly the failure this module exists to prevent.
+ * Build the guarded timer callback. Returns a function that runs one sweep and
+ * resolves when that sweep has settled, so a caller (and the test) can await it;
+ * `setInterval` simply ignores the promise.
  */
-function start(db, { intervalSec = Number(process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC || 300) } = {}) {
-  if (process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED === '1') {
-    console.log('[encompass-xml] catcher disabled by env');
-    return null;
-  }
-  if (!encompass.configured()) return null;
-  const every = Math.max(60, Math.min(600, Number(intervalSec) || 300));
-  const tick = () => {
-    sweepOnce(db, { log: true })
+function makeTick(db) {
+  return function tick() {
+    if (sweeping) {
+      // Not an error — the previous pass is simply still walking. Say so, so a
+      // tenant that has outgrown its interval is visible in the log rather than
+      // silently sweeping half as often as configured.
+      console.log('[encompass-xml] previous sweep still running — skipping this tick');
+      return Promise.resolve({ skipped: 'in-flight' });
+    }
+    sweeping = true;
+    return sweepOnce(db, { log: true })
       .then((r) => {
         if (r.captured || r.failed || (r.errors || []).length) {
           console.log('[encompass-xml] sweep:', JSON.stringify({
@@ -339,9 +355,34 @@ function start(db, { intervalSec = Number(process.env.ENCOMPASS_APPRAISAL_XML_PO
             errors: (r.errors || []).slice(0, 3),
           }));
         }
+        return r;
       })
-      .catch((e) => console.error('[encompass-xml] sweep threw (non-fatal):', e && e.message));
+      .catch((e) => {
+        console.error('[encompass-xml] sweep threw (non-fatal):', e && e.message);
+        return { threw: (e && e.message) || String(e) };
+      })
+      // The flag MUST be released on every path — a sweep that threw and left it
+      // set would wedge the catcher for the life of the process, silently.
+      .finally(() => { sweeping = false; });
   };
+}
+
+/**
+ * The timer. Started beside the other Encompass sync work.
+ *
+ * The interval must stay comfortably under the ~15-minute validity, so the
+ * default 5 minutes leaves margin for a slow Encompass day even though the walk
+ * is sequential. Raising it past ~10 minutes starts losing files, which is
+ * exactly the failure this module exists to prevent.
+ */
+function start(db, { intervalSec = Number(process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC || 300) } = {}) {
+  if (process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED === '1') {
+    console.log('[encompass-xml] catcher disabled by env');
+    return null;
+  }
+  if (!encompass.configured()) return null;
+  const every = Math.max(60, Math.min(600, Number(intervalSec) || 300));
+  const tick = makeTick(db);
   const t = setInterval(tick, every * 1000);
   if (t.unref) t.unref();
   const first = setTimeout(tick, 15000);
@@ -354,5 +395,5 @@ module.exports = {
   start,
   sweepOnce,
   // exported for tests
-  _internals: { validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE },
+  _internals: { validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE, makeTick },
 };

@@ -13,7 +13,7 @@ const assert = require('assert');
 const path = require('path');
 
 const M = require(path.join(__dirname, '..', 'src', 'encompass', 'appraisal-xml-catcher'));
-const { validityOf, isAppraisalXml, assertStorageHost } = M._internals;
+const { validityOf, isAppraisalXml, assertStorageHost, makeTick } = M._internals;
 
 let pass = 0;
 // Sync assertions only — every async case below is awaited by the caller and its
@@ -190,6 +190,49 @@ t('a non-url is refused with a plain reason', () => {
   t('the kill switch stops it dead', () => {
     assert.strictEqual(killed.disabled, true);
     assert.strictEqual(killed.resources, 0);
+  });
+
+  // ── the timer never runs two sweeps at once ───────────────────────────────
+  // sweepOnce walks up to 500 loans SEQUENTIALLY (one call for the loan's
+  // orders, one per order to expand it, plus downloads), so on a busy tenant a
+  // pass can outrun the 60s interval floor. Unguarded, setInterval would stack
+  // passes on top of each other — doubled read load on Encompass and two
+  // captures racing for one resource.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let started = 0;
+  const origSearch = enc.pipelineSearch;
+  enc.configured = () => true;
+  // The sweep opens with pipelineSearch, so blocking THAT holds a pass open.
+  enc.pipelineSearch = async () => { started++; await held; return []; };
+
+  let overlap, secondRan, startedDuringOverlap;
+  try {
+    const tick = makeTick(db);
+    const first = tick();                 // begins a sweep and blocks in the search
+    await new Promise((r) => setImmediate(r));
+
+    // Fire the overlapping tick but DO NOT await it yet: with a broken guard it
+    // would block on the same held promise and the test would HANG, which reads
+    // as success. Its effect is visible immediately in `started`.
+    const overlapP = tick();
+    await new Promise((r) => setImmediate(r));
+    startedDuringOverlap = started;
+
+    release([]);
+    await first;
+    overlap = await overlapP;
+    secondRan = await tick();             // the flag was released — this one runs
+  } finally { enc.pipelineSearch = origSearch; enc.configured = origConfigured; }
+
+  t('a tick fired while a sweep is still running is SKIPPED, not stacked', () => {
+    assert.strictEqual(overlap.skipped, 'in-flight', 'the overlapping tick must stand down');
+    assert.strictEqual(startedDuringOverlap, 1, 'the second tick must not have started a second walk');
+  });
+
+  t('the in-flight flag is RELEASED when the sweep settles', () => {
+    assert.ok(secondRan && secondRan.skipped !== 'in-flight',
+      'a later tick must run — a stuck flag would wedge the catcher silently');
   });
 
   console.log(`test-encompass-appraisal-xml-catcher: ${pass} checks passed`);
