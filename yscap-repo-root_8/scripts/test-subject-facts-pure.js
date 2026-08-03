@@ -246,8 +246,37 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
     const r = SF.cleanCorrections({ property_type: '\u200BSingle Family' });
     ok(r.values.property_type === 'Single Family',
       `a pasted zero-width space is stripped from a stored value (${JSON.stringify(r.values.property_type)})`);
-    ok(SF.sameFactValue('property_type', r.values.property_type, 'Single Family'),
+    // The DESCRIPTOR, not the key — every other caller passes the FACTS object, and
+    // a string has no `.kind`, so the comparison silently takes the text path and
+    // the assertion would hold for any two equal strings.
+    const PT = SF.FACTS.find((x) => x.key === 'property_type');
+    ok(SF.sameFactValue(PT, r.values.property_type, 'Single Family'),
       'so it compares equal to the same words typed by hand — the confirmation is not born stale');
+  }
+
+  // PUNCTUATION MEANS PUNCTUATION, not the two marks the number reader strips. A
+  // full stop is a likelier stray keystroke than a dollar sign, and it was still
+  // being STORED as the property type — which reads as a stated fact and hides the
+  // "not stated" warning on the one fact the owner said may never be unknown.
+  for (const junk of ['.', '-', '--', '?', '/', '()', '*', '&', '#', '%', '_', ':', ';', "'"]) {
+    const r = SF.cleanCorrections({ property_type: junk });
+    ok(r.values.property_type === undefined && r.problems.length === 1,
+      `${JSON.stringify(junk)} alone is never stored as the property type`);
+  }
+  // …and every real value still stores untouched.
+  for (const real of ['Single Family', 'Multi 2-4', 'Condo', '2-4', 'Co-op', 'PUD', 'Mixed Use']) {
+    ok(SF.cleanCorrections({ property_type: real }).values.property_type === real,
+      `${JSON.stringify(real)} still stores unchanged`);
+  }
+  // THE ADDRESS IS COMPARED BOTH WAYS THROUGH THE SAME CLEANER. Once one side
+  // stripped invisibles and the other did not, a confirmation written earlier
+  // mismatched its own unchanged self forever — printing "was X, is now X", a
+  // warning nobody can act on and only re-confirming can clear.
+  {
+    const addr = '12 Elm St\u200B';
+    const st = SF.confirmationStale({ display_address: addr }, { __address: addr });
+    ok(st.stale === false && st.changed.length === 0,
+      'an address carrying an invisible character does not report itself as changed');
   }
 
   // The same, on the fact the owner cares about most.

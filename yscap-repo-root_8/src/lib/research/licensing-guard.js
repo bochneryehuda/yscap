@@ -81,9 +81,20 @@ async function checkGeoLicensing(dbc) {
        Matching the operator rather than the whole string keeps this working if a
        future Postgres major deparses the surrounding parentheses differently. */
     const def = String((r.rows[0] || {}).def || '');
+    /* CASE-SENSITIVE, AND PINNED TO `lower(...)`. The first attempt at this check
+       carried an `/i` flag, which re-opened the very hole it was written to close:
+       the constraint case-FOLDS the column, so a pattern written `'%GOOGLE%'` can
+       never match anything and the rule is always true — and `/i` reported it as
+       installed. Proven: with that constraint in place, `geo_source='google_places'`
+       INSERTed successfully while the guard answered ok:true. Requiring the pattern
+       to be lower-case AND to sit against `lower(geo_source)` ties the two halves
+       together, so neither can be "tidied" independently.
+       This is deliberately strict: a correct rule written some OTHER way (ILIKE,
+       strpos, a regex operator) reads as NOT installed. That is a false alarm
+       rather than a false all-clear, and db/458 re-applies this exact text on every
+       boot — so the strictness costs nothing and the laxity cost everything. */
     present = r.rows.length > 0
-      && /geo_source/i.test(def)
-      && /!~~\s*'%google%'/i.test(def);
+      && /lower\(geo_source\)\s*!~~\s*'%google%'/.test(def);
   } catch (e) {
     // We could not ask. That is NOT the same as "it is fine".
     const why = (db.describeError ? db.describeError(e) : e.message);
@@ -140,11 +151,44 @@ let refreshing = null;
    time can tell it has been superseded and stay silent. */
 let refreshEpoch = 0;
 
+/**
+ * The check, with POSTGRES enforcing the time limit so a hung query cannot hold a
+ * pooled connection. Never throws — `checkGeoLicensing` shapes its own errors, and
+ * a statement timeout arrives as one, so it reads as "could not confirm".
+ */
+async function probeBounded() {
+  const db = require('../../db');
+  let client = null;
+  try {
+    client = await db.getClient();
+  } catch (e) {
+    // Could not even take a connection — say we do not know, never that it is fine.
+    return { ok: false, checked: false, present: null, offenders: null,
+      why: `could not confirm the Google-coordinate rule is installed: ${e.message}` };
+  }
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${PROBE_TIMEOUT_MS}`);
+    return await checkGeoLicensing(client);
+  } catch (e) {
+    return { ok: false, checked: false, present: null, offenders: null,
+      why: `could not confirm the Google-coordinate rule is installed: ${e.message}` };
+  } finally {
+    // Read-only, so ROLLBACK is the honest close and leaves nothing behind.
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+  }
+}
+
 /** Run the check and say so in the log. Returns the result; never throws. */
 async function assertGeoLicensing(dbc) {
   let res;
   try { res = await checkGeoLicensing(dbc); }
   catch (e) { res = { ok: false, checked: false, present: null, offenders: null, why: e.message }; }
+  /* Bump the epoch as we publish, so a `health()` probe that was already in flight
+     cannot land afterwards and overwrite this answer with an older verdict wearing
+     a newer timestamp — the same rule the refresh path already follows. */
+  refreshEpoch++;
   last = { ...res, at: new Date().toISOString(), atMs: Date.now() };
   if (res.ok) console.log('[research] Google-coordinate rule installed');
   // Loud on purpose: this is a licensing control, and the whole failure mode it
@@ -162,18 +206,21 @@ async function assertGeoLicensing(dbc) {
 function health() {
   const stale = !last || (Date.now() - last.atMs) > FRESH_MS;
   if (stale && !refreshing) {
-    /* A REFRESH THAT NEVER SETTLES WOULD FREEZE THE ANSWER FOREVER. node-postgres
-       sets no statement_timeout, so a query blocked behind an ACCESS EXCLUSIVE
-       lock — or on a dead socket — waits indefinitely; `refreshing` would stay
-       non-null for the life of the process and "expires after a minute" would
-       quietly stop being true. This repo has been burned by exactly that class
-       before (see sharepoint-backup's DB_OP_TIMEOUT_MS). The timer is `unref`'d
-       so it can never hold the process open. */
+    /* A REFRESH THAT NEVER SETTLES WOULD FREEZE THE ANSWER FOREVER — but the
+       timeout has to be the SERVER's, not a promise race.
+       A `Promise.race` abandons the PROMISE and not the QUERY: `pool.query` keeps
+       its client checked out until the query settles, which by definition never
+       happens, while `.finally` frees the single-flight slot so the NEXT health
+       check starts a fresh probe on a FRESH connection. Measured: ten timeouts
+       check out all ten pooled connections permanently and every other query in
+       the app then blocks — strictly worse than the frozen verdict it replaced,
+       which cost nothing but one stale answer. /api/health is public and polled,
+       so that is a real way to take the app down.
+       `SET LOCAL` inside a transaction makes POSTGRES cancel the statement, so the
+       query genuinely ends and the client goes back to the pool; and being LOCAL it
+       cannot leak the setting onto a recycled connection. */
     const epoch = ++refreshEpoch;
-    const mine = Promise.race([
-      checkGeoLicensing(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), PROBE_TIMEOUT_MS).unref()),
-    ])
+    const mine = probeBounded()
       // A refresh whose slot was reset out from under it must NOT publish: it
       // would overwrite a newer verdict with a stale one wearing a fresh stamp.
       .then((res) => { if (epoch === refreshEpoch) last = { ...res, at: new Date().toISOString(), atMs: Date.now() }; })

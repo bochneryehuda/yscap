@@ -85,12 +85,17 @@ const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
    this exists for — and the first cut of this class missed it, along with the
    left/right marks a Word or web paste carries routinely. `​-‏` covers
    the zero-width trio plus both directional marks in one range. */
-const INVISIBLE_RE = /[­᠎​-‏⁠-⁤﻿]/g;
+const INVISIBLE_RE = /[­؜᠎​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
 const visible = (v) => String(v).replace(INVISIBLE_RE, '').trim();
 /** What is left once the currency sign and thousands commas come off. */
 const strippedForNumber = (v) => visible(v).replace(/[$,]/g, '');
-/** Nothing but punctuation and space — visible, so never blanked; never an answer either. */
-const punctuationOnly = (s) => s.replace(/[$,\s]/g, '') === '';
+/* Nothing but punctuation and space — visible, so never blanked; never an answer
+   either. ALL punctuation and symbols, not the two the number reader happens to
+   strip: the first cut knew only `$` and `,`, so a "." — a likelier stray
+   keystroke than either — was still STORED as the property type, which reads as a
+   stated fact and hides the "not stated" warning. Every real value carries a
+   letter or a digit, so none of them is caught. */
+const punctuationOnly = (s) => s.replace(/[\p{P}\p{S}\s]/gu, '') === '';
 const num = (v) => {
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -285,7 +290,13 @@ function confirmationStale(subject, confirmedSnapshot, confirmedAt) {
   // THE PROPERTY ITSELF FIRST. A confirmation is about a house, and a valuation
   // whose subject was re-pointed at a different address is not the thing that was
   // checked — however identical its bedroom count happens to be.
-  const thenAddr = (confirmedSnapshot || {})[IDENTITY_KEY];
+  /* BOTH SIDES THROUGH `txt()`, or the comparison is lopsided. Once `txt()` began
+     stripping invisible characters, a snapshot written BEFORE that whose stored
+     address carried one would mismatch its own unchanged self forever — the panel
+     printing "was 12 Elm St, is now 12 Elm St", a warning nobody can act on and
+     only re-confirming can clear. That is the born-stale defect this file already
+     fixed once, relocated to the address. */
+  const thenAddr = txt((confirmedSnapshot || {})[IDENTITY_KEY]);
   const nowAddr = txt((subject || {}).display_address);
   if (thenAddr && String(thenAddr).trim().toLowerCase() !== String(nowAddr || '').trim().toLowerCase()) {
     changed.push({ key: 'display_address', label: 'The property', was: thenAddr, now: nowAddr });
