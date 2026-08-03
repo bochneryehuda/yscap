@@ -13,8 +13,16 @@
  * Run: node scripts/test-research-licensing-guard-db.js
  */
 'use strict';
-process.env.DATABASE_URL = process.env.DATABASE_URL
-  || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_t3';
+
+/* SKIP WITHOUT A DATABASE, like every other -db suite here. `npm test` runs in two
+   CI jobs: one WITHOUT Postgres (fast, no services) and one with. Defaulting the
+   connection string instead of skipping made this suite try to connect in the
+   no-database job, grind through migrate-boot's 75-second retry ladder, and then
+   fail the whole job — a suite that cannot run must skip, never fail. */
+if (!process.env.DATABASE_URL) {
+  console.log('test-research-licensing-guard-db: skipped (no DATABASE_URL)');
+  process.exit(0);
+}
 
 const db = require('../src/db');
 const G = require('../src/lib/research/licensing-guard');
