@@ -37,7 +37,17 @@ function cset(k, val, ttl) { cache.set(k, { at: Date.now(), val, ttl }); if (cac
 // together could fire twice inside one second while every one of them looked
 // correct in isolation. The gate never carries a rejection forward — a failed
 // lookup poisoning the chain would break address autocomplete until restart.
-const osmThrottle = require('../lib/osm-gate').osmRun;
+const OSM = require('../lib/osm-gate');
+const osmThrottle = OSM.osmRun;
+/* HOW LONG SOMEBODY WILL WAIT FOR A SUGGESTION BEFORE IT IS NOT A SUGGESTION.
+ * Past this, answering with nothing is kinder than a spinner: the field still
+ * works as plain typing, which is what it does when the provider is down. */
+const SUGGEST_MAX_WAIT_MS = 2500;
+/* EVERY QUERY VALUE IS COERCED, AT EVERY DOOR. Express's extended query parser
+ * turns `?q[x]=1` into an OBJECT; `String(obj)` is "[object Object]", which is
+ * three characters long and therefore spent a real provider request and a slot of
+ * OpenStreetMap's process-wide budget on garbage. A non-string is not a query. */
+const qstr = (v) => (typeof v === 'string' ? v.trim() : '');
 
 async function fetchJson(url, opts = {}) {
   const ac = new AbortController();
@@ -127,7 +137,7 @@ async function smartySuggest(q) {
 }
 
 router.get('/suggest', async (req, res) => {
-  const q = String(req.query.q || '').trim();
+  const q = qstr(req.query.q);
   res.set('Cache-Control', 'public, max-age=60');
   if (q.length < 3) return res.json({ provider: cfg.addressProvider, suggestions: [] });
   const key = cfg.addressProvider + ':' + q.toLowerCase();
@@ -137,7 +147,14 @@ router.get('/suggest', async (req, res) => {
     let suggestions = [];
     if (cfg.addressProvider === 'google' && cfg.googlePlacesKey) suggestions = await googleSuggest(q);
     else if (cfg.addressProvider === 'smarty' && cfg.smartyAuthId) suggestions = await smartySuggest(q);
-    else suggestions = await osmSuggest(q);
+    else if (OSM.osmWouldWait() > SUGGEST_MAX_WAIT_MS) {
+      // A BACKGROUND SWEEP MUST NOT MAKE SOMEBODY'S TYPING STALL. OpenStreetMap's
+      // one-per-second limit is per process and correctly shared, but that means a
+      // 25-address backfill tick parks ~27 seconds in front of the next keystroke.
+      // Not cached: this is about this moment, not about this address.
+      res.set('Cache-Control', 'no-store');
+      return res.json({ provider: cfg.addressProvider, suggestions: [], busy: true });
+    } else suggestions = await osmSuggest(q);
     cset(key, suggestions);
     res.json({ provider: cfg.addressProvider, suggestions });
   } catch (e) {
@@ -147,7 +164,7 @@ router.get('/suggest', async (req, res) => {
 });
 
 router.get('/details', async (req, res) => {
-  const id = String(req.query.id || '');
+  const id = qstr(req.query.id);
   try {
     if (id.startsWith('g:')) return res.json({ address: await googleDetails(id.slice(2)) });
     // osm/smarty embed the address in /suggest, so /details is only needed for
@@ -159,7 +176,7 @@ router.get('/details', async (req, res) => {
 // Parse a free-text address into components (manual entry, imports, etc.).
 router.get('/parse', (req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
-  res.json({ address: parseAddress(String(req.query.q || '')) });
+  res.json({ address: parseAddress(qstr(req.query.q)) });
 });
 
 /**
@@ -271,7 +288,11 @@ router.get('/position', async (req, res) => {
   const hit = cget(key);
   if (hit) return res.json(hit);
   if (posBusy()) {
-    // Never cached: this says nothing about the address, only about this moment.
+    // Never cached, and the HEADER has to say so too — the handler sets a
+    // ten-minute cache up front, so a browser would answer "busy, try again" for
+    // the next ten minutes without ever asking again. This says nothing about the
+    // address, only about this moment.
+    res.set('Cache-Control', 'no-store');
     return res.json(NO_POSITION('the address lookup is busy right now — try again in a moment'));
   }
   try {
@@ -280,6 +301,10 @@ router.get('/position', async (req, res) => {
       ? { lat: p.lat, lng: p.lng, source: p.source, precision: p.precision, matched: p.matched || null, why: null }
       : NO_POSITION((p && p.why) || 'we could not place that address on the map');
     cset(key, out, out.lat == null ? POS_NEG_TTL : undefined);
+    // THE BROWSER'S CACHE MUST NOT OUTLIVE OURS. A short server-side TTL on a
+    // negative answer is pointless if the response tells the browser to keep it
+    // for ten minutes — the person who retries is answered by their own cache.
+    if (out.lat == null) res.set('Cache-Control', `public, max-age=${Math.round(POS_NEG_TTL / 1000)}`);
     res.json(out);
   } catch (e) {
     // Never break the form, and never quote a provider's error text to a caller
@@ -310,12 +335,14 @@ async function handleVerify(input, res) {
 // only the address label). A free-text `q` (or a bare string) is parsed into
 // components server-side so USPS has something to match on.
 const verifyInput = (src) => {
-  if (src && (src.q || typeof src === 'string') && !src.line1 && !src.street) {
-    return parseAddress(String(src.q || src));
-  }
+  if (typeof src === 'string') return parseAddress(src.trim());
+  const o = src || {};
+  // Same coercion as every other door: a non-string query value is not an address,
+  // and `String({})` is "[object Object]", which USPS is then asked about.
+  if (qstr(o.q) && !qstr(o.line1) && !qstr(o.street)) return parseAddress(qstr(o.q));
   return {
-    line1: src.line1 || src.street, unit: src.unit || src.secondary,
-    city: src.city, state: src.state, zip: src.zip || src.zipcode,
+    line1: qstr(o.line1) || qstr(o.street), unit: qstr(o.unit) || qstr(o.secondary),
+    city: qstr(o.city), state: qstr(o.state), zip: qstr(o.zip) || qstr(o.zipcode),
   };
 };
 router.get('/verify', (req, res) => handleVerify(verifyInput(req.query), res));

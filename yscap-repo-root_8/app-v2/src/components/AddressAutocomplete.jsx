@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom';
    the field itself (the "pops up on top of the text bar" bug). It repositions on
    scroll/resize and flips above the field when there isn't room below. */
 export default function AddressAutocomplete({ value, onChange, onPick, placeholder, className, autoFocus,
-  withPosition = false, onPosition }) {
+  withPosition = false, onPosition, staleKey }) {
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -111,6 +111,32 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
     if (el) place();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* THE PICK IS STALE — told from OUTSIDE, because only the screen can know.
+   *
+   * Typing over the address line already drops everything (`onInput`). But a
+   * research screen keeps the town, state and ZIP in its OWN boxes, and correcting
+   * one of those invalidates the coordinate just as surely: pick "26 S 10th St,
+   * Brooklyn NY", change the town to Queens, and the position that arrives a beat
+   * later measures from Brooklyn while the search filters Queens. The screen nulls
+   * its own copy, and without this the autocomplete's refs still held the pick and
+   * the next late report put it straight back.
+   *
+   * A change to `staleKey` clears the pick exactly as retyping does — same three
+   * lines, so the two paths cannot drift. The mount pass is skipped: an initial
+   * value is not a change. */
+  const staleSeen = useRef(staleKey);
+  useEffect(() => {
+    if (staleSeen.current === staleKey) return;
+    staleSeen.current = staleKey;
+    addrRef.current = null;
+    posRef.current = null;
+    pseq.current++;
+    vseq.current++;
+    setPosition(null);
+    onPosition && onPosition(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleKey]);
 
   // Reposition while open (scroll of ANY ancestor uses capture) + on resize.
   useEffect(() => {

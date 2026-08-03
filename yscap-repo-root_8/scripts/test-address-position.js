@@ -234,6 +234,39 @@ function restoreFetch() { global.fetch = realFetch; }
   ok(shed > 0, `a burst sheds rather than queueing without bound (${shed} of 20 shed)`);
   ok(settled.every((r) => r.body.lat === null), 'and a shed request never claims a position it does not have');
 
+  // A STREET SUFFIX IS NOT A TOWN, and a house number plus a state names nothing.
+  // "100 Broadway Ave, NJ" has no town in it at all, but the free-text parser used
+  // to pop the last token as the city — so "Ave" became the town, the address
+  // looked complete to everything downstream, and the geocoder answered with 100
+  // Broadway in whichever New Jersey town it found first, at full address
+  // precision. Measured: "15 Elm Road, NY" came back placed at 15 ELM ST, ALBANY.
+  // A confident pin on a house nobody named is the exact class this endpoint
+  // exists to close.
+  for (const q of ['100 Broadway Ave, NJ', '15 Elm Road, NY', '26 S 10th St, NJ', '9 Oak Street, PA']) {
+    asked = [];
+    answer = () => CENSUS_HIT('100 BROADWAY, NEWARK, NJ 07104');
+    const r = await get(port, '/api/address/position?q=' + encodeURIComponent(q));
+    ok(r.body.lat === null && asked.length === 0,
+      `"${q}" names no town, so it is refused WITHOUT troubling a provider`);
+  }
+  // …while a free-text address that does name a town still works.
+  asked = [];
+  answer = () => CENSUS_HIT('26 S 10TH ST, BROOKLYN, NY, 11249');
+  const okTyped = await get(port, '/api/address/position?q=' + encodeURIComponent('26 S 10th St, Brooklyn, NY 11249'));
+  ok(okTyped.body.lat === 40.7142, 'a free-text address that DOES name a town is still placed');
+
+  // A REFUSAL MUST NOT BE CACHED BY THE BROWSER FOR LONGER THAN WE CACHE IT. The
+  // handler sets a ten-minute cache up front; a "busy" or "could not place it"
+  // answer carrying that header is answered by the browser's own cache for ten
+  // minutes, which defeats both the short server-side TTL and the retry.
+  asked = [];
+  answer = () => null;
+  const negRes = await realFetch(`http://127.0.0.1:${port}/api/address/position?q=`
+    + encodeURIComponent('4 Nowhere Ln, Trenton, NJ 08608'));
+  const negCc = String(negRes.headers.get('cache-control') || '');
+  ok(!/max-age=600/.test(negCc), `a refusal is not cached for ten minutes (${negCc})`);
+  ok(/max-age=4[0-9]|no-store/.test(negCc), `it carries the short window instead (${negCc})`);
+
   RG.geocodeProperty = realGeocodeProperty;
   cfg.addressProvider = realProvider;
   server.close();

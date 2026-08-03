@@ -462,7 +462,7 @@ export default function StaffLayout({ children }) {
           style={inResearch ? { background: 'var(--surface-soft)', color: 'var(--text)', fontWeight: 600, borderLeftColor: 'var(--gold)' } : undefined}>
           <NavIcon name="pipeline" />Property Research</NavLink>
         {inResearch && RESEARCH_PAGES.map((p) => (
-          <NavLink key={p.to} end={p.end} className="sb-link sb-sub" to={p.to} title={p.blurb}
+          <NavLink key={p.to} end={p.end} className="sb-link" to={p.to} title={p.blurb}
             style={{ paddingLeft: 41, fontSize: 13 }}>{p.label}</NavLink>
         ))}
 

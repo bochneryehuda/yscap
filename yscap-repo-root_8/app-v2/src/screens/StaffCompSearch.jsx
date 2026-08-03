@@ -349,6 +349,19 @@ export default function StaffCompSearch() {
    file it is shown as a fact; otherwise it is a small form, so a brand-new deal
    with no appraisal can still be searched. */
 function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
+  /* EVERY HOOK ABOVE THE EARLY RETURN. This component returns a different shape
+     for an ANCHORED subject, so a hook declared below that return runs on some
+     renders and not others — and React crashes the whole page with "Rendered more
+     hooks than during the previous render" the moment somebody switches between a
+     typed subject and one opened from a loan file. Caught by
+     `scripts/test-react-hook-order.js`, which exists for exactly this.
+
+     `placeEdits` counts HUMAN edits of the town / state / ZIP boxes — never a pick
+     filling them in — so the address box can tell the two apart and forget its
+     resolved position for the first and not the second. */
+  const [placeEdits, setPlaceEdits] = useState(0);
+  const PLACE_KEYS = ['city', 'state', 'zip'];
+
   if (anchored) {
     return (
       <section style={{ ...S.panel, marginBottom: 12 }}>
@@ -383,11 +396,14 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
      FUNCTIONAL, because `AddressBox` reports a pick up to three times as the USPS
      answer and the position land, and a stale `form` captured by an earlier render
      would write itself back over whatever was typed in between. */
-  const PLACE_KEYS = ['city', 'state', 'zip'];
-  const set = (k) => (e) => setForm((f) => ({
-    ...f, [k]: e.target.value,
-    ...(PLACE_KEYS.includes(k) ? { lat: '', lng: '', position_source: null } : null),
-  }));
+  const set = (k) => (e) => {
+    const isPlace = PLACE_KEYS.includes(k);
+    if (isPlace) setPlaceEdits((n) => n + 1);
+    setForm((f) => ({
+      ...f, [k]: e.target.value,
+      ...(isPlace ? { lat: '', lng: '', position_source: null } : null),
+    }));
+  };
   return (
     <section style={{ ...S.panel, marginBottom: 12 }}>
       <div style={{ marginBottom: 8, color: INK, fontWeight: 600 }}>Describe the property you are valuing</div>
@@ -402,6 +418,7 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
         label="Address"
         placeholder="26 S 10th St"
         hint="Pick it from the list and the town, state and ZIP fill themselves in — and distance searches become possible."
+        staleKey={placeEdits}
         style={{ marginBottom: 10, maxWidth: 520 }}
       />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>

@@ -92,8 +92,13 @@ export default function StaffValuation() {
     finally { setBusy(''); }
   }
 
-  if (err && !d) return <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div>;
-  if (!d) return <div className="card" style={{ color: MUTED }}>Loading…</div>;
+  /* THE SECTION'S PAGE STRIP SURVIVES LOADING AND FAILURE. It used to sit below
+     these early returns, so it flickered out on every navigation here and vanished
+     entirely on an error — leaving somebody on a dead-end page with no way back
+     into the section except the sidebar. The strip is not about this page's data,
+     so it does not wait for it. */
+  if (err && !d) return (<div><ResearchNav /><div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div></div>);
+  if (!d) return (<div><ResearchNav /><div className="card" style={{ color: MUTED }}>Loading…</div></div>);
 
   const v = d.valuation;
   const g = d.grid;

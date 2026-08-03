@@ -33,6 +33,19 @@ import AddressAutocomplete from './AddressAutocomplete.jsx';
 export default function AddressBox({
   value, onChange, label = 'Address', placeholder = 'Start typing the address…',
   hint, className, autoFocus, style,
+  /* CHANGE THIS WHEN A PERSON EDITS THE TOWN, STATE OR ZIP BY HAND.
+   *
+   * The coordinate belongs to the WHOLE picked set, so correcting one of those
+   * boxes invalidates it — and the autocomplete has to forget the pick too, or the
+   * position that lands a beat later puts it straight back and the search measures
+   * from the address that was corrected away from.
+   *
+   * It is a PROP rather than something derived from `value` here, and that is the
+   * whole point: the town changes on every pick as well, so a derived key would
+   * fire on the pick itself and throw away the position it had just resolved
+   * (measured — the field went straight back to "we could not place that
+   * address"). Only the screen knows which of the two happened. */
+  staleKey,
 }) {
   const v = value || {};
 
@@ -98,6 +111,7 @@ export default function AddressBox({
         onChange={type}
         onPick={pick}
         withPosition
+        staleKey={staleKey}
         placeholder={placeholder}
         className={className}
         autoFocus={autoFocus}
@@ -127,7 +141,12 @@ export function TownLookup({ onFill, label = 'Start from an address', hint, styl
         value={text}
         onChange={setText}
         onPick={(a) => {
-          setText(a.line1 || text);
+          // A POSITION REPORT LEARNED A COORDINATE AND NOTHING ELSE — and this box
+          // never asked for one, so it has nothing to say here. Adopting it would
+          // re-apply the picked town over a town typed since. (`setText` reads the
+          // live value rather than a captured one for the same reason.)
+          if (a.reportKind === 'position') return;
+          setText((cur) => a.line1 || cur);
           onFill && onFill({ city: a.city || '', state: (a.state || '').toUpperCase(), zip: a.zip || '' });
         }}
         placeholder="Start typing a property address…"

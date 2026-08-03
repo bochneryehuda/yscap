@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ATTRIBUTION, MAX_ZOOM, MIN_ZOOM, TILE_SIZE, pixelsPerMile, pointInView,
+  BASEMAPS, basemapFor, MAX_ZOOM, MIN_ZOOM, TILE_SIZE, pixelsPerMile, pointInView,
   project, tileUrl, tilesFor, unproject, zoomToFit,
 } from '../lib/tilemap.js';
 
@@ -68,6 +68,16 @@ export default function CompMap({
   const [view, setView] = useState(null);          // {lat, lng, zoom} once we can compute one
   const [drag, setDrag] = useState(null);
   const [tilesBroken, setTilesBroken] = useState(false);
+  /* MAP OR SATELLITE. The owner asked to "look on the map actually where around
+     you have things" — for a property, the aerial view answers questions the
+     street map cannot (what is the lot, what backs on to it, is that a highway).
+     The imagery is USGS National Map: US federal work, public domain, keyless.
+     Google's own tiles are deliberately NOT an option here — their terms require
+     their imagery to be drawn by the Google Maps JavaScript API, and this is our
+     own renderer, so pointing at them would be a breach rather than an upgrade
+     (the reasoning is written out in `lib/tilemap.js`). */
+  const [basemap, setBasemap] = useState('street');
+  const base = basemapFor(basemap);
   const [hover, setHover] = useState(null);
   const tilesLoaded = useRef(0);
 
@@ -200,8 +210,22 @@ export default function CompMap({
     return unproject(c.x - size.w / 2 + px, c.y - size.h / 2 + py, view.zoom);
   };
 
+  /* EACH LAYER HAS ITS OWN CEILING, AND ASKING PAST IT LOOKS LIKE A BROKEN MAP.
+     USGS imagery stops at zoom 16 over much of the country; ask for 19 and the
+     server returns nothing at all — a grey square with no error, which reads as
+     "the map is broken" rather than as "this is as close as the photography
+     goes". So the zoom is clamped to the LAYER, and switching to satellite while
+     already zoomed in pulls back to what that layer can actually draw. */
   const zoomBy = (d) => setView((v) => (v
-    ? { ...v, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v.zoom + d)) } : v));
+    ? { ...v, zoom: Math.max(MIN_ZOOM, Math.min(base.maxZoom || MAX_ZOOM, v.zoom + d)) } : v));
+
+  function switchBasemap(key) {
+    setBasemap(key);
+    setTilesBroken(false);
+    tilesLoaded.current = 0;                       // a fresh layer gets a fresh verdict
+    const cap = basemapFor(key).maxZoom || MAX_ZOOM;
+    setView((v) => (v && v.zoom > cap ? { ...v, zoom: cap } : v));
+  }
 
   if (!centre) {
     return (
@@ -250,8 +274,8 @@ export default function CompMap({
             the pins below are ours and do not depend on it. */}
         {tiles.map((t) => (
           <img
-            key={`${t.z}/${t.x}/${t.y}/${t.left}`}
-            src={tileUrl(t)}
+            key={`${basemap}/${t.z}/${t.x}/${t.y}/${t.left}`}
+            src={tileUrl(t, basemap)}
             alt=""
             draggable={false}
             onLoad={() => { tilesLoaded.current += 1; setTilesBroken(false); }}
@@ -335,6 +359,22 @@ export default function CompMap({
           );
         })}
 
+        {/* MAP OR SATELLITE — two buttons, top-right, out of the way of the pins. */}
+        <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 6, display: 'flex',
+          borderRadius: 6, overflow: 'hidden', border: '1px solid #E4DECF', boxShadow: '0 1px 3px #0002' }}>
+          {Object.values(BASEMAPS).map((b) => (
+            <button key={b.key} type="button"
+              onClick={(e) => { e.stopPropagation(); switchBasemap(b.key); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              title={b.attribution}
+              style={{
+                border: 'none', cursor: 'pointer', font: '600 12px/1 system-ui', padding: '7px 10px',
+                background: basemap === b.key ? '#FBF6EC' : '#FFFFFF',
+                color: basemap === b.key ? '#141B22' : '#4B585C',
+              }}>{b.label}</button>
+          ))}
+        </div>
+
         {hover && (
           <div style={{
             position: 'absolute', left: 8, bottom: 8, right: 8, background: 'rgba(255,255,255,.96)',
@@ -352,7 +392,7 @@ export default function CompMap({
         <div style={{
           position: 'absolute', right: 4, bottom: 2, fontSize: 10, color: '#4B585C',
           background: 'rgba(255,255,255,.75)', padding: '0 4px', borderRadius: 3, pointerEvents: 'none',
-        }}>{ATTRIBUTION}</div>
+        }}>{base.attribution}</div>
       </div>
 
       {tilesBroken && (

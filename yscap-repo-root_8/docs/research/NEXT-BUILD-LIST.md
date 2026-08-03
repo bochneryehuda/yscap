@@ -174,16 +174,23 @@ tell us.
 
 ### B3. The build
 
-- [ ] **B3a** A Google base-map mode in `CompMap.jsx`, chosen at runtime when a
-  key is present and falling back to the current OpenStreetMap tiles when it is
-  not — so the map never goes blank because a key expired or a bill lapsed.
-- [ ] **B3b** Satellite / map toggle, and Street View for the subject and each
-  comparable.
-- [ ] **B3c** Keep every honesty rule the current map has: a property with no
-  position is NAMED below the map rather than dropped; a position we worked out
-  ourselves is drawn hollow and says so.
-- [ ] **B3d** Render-verify it, the same way everything else here was verified —
-  a green build is not evidence.
+- [x] **B3a / C4a — ANSWERED, AND THE ANSWER IS NOT GOOGLE'S TILES.** Google's
+  terms require their imagery to be displayed through the Google Maps JavaScript
+  API; pulling their raster tiles into a third-party renderer is a breach, and
+  `app-v2/src/lib/tilemap.js` IS a third-party renderer. Using their JS API means
+  handing the key to the browser and replacing that renderer wholesale — a real
+  project, not a switch, and one to weigh separately.
+
+  What the owner actually asked for ("look on the map actually where around you
+  have things") is the AERIAL view, and that is free and unrestricted: **USGS
+  National Map imagery** — US federal work, public domain, no key, no account, no
+  cap — recent high-resolution orthoimagery of exactly the country we lend in.
+  Shipped as a Map / Satellite toggle on `CompMap`, with each layer carrying its
+  OWN zoom ceiling (USGS stops at 16 over much of the country and returns nothing
+  past it, which reads as a broken map rather than as the edge of the photography)
+  and its own attribution. Pinned by `scripts/test-tilemap-pure.mjs` (56),
+  including an assertion that NO layer is served by Google — the swap looks
+  trivial and would pass every other check in the suite.
 
 ---
 

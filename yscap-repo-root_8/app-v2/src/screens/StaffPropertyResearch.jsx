@@ -53,6 +53,11 @@ export default function StaffPropertyResearch() {
 
   const [draft, setDraft] = useState(filters);
   useEffect(() => { setDraft(filters); }, [filters]);
+  // The LIVE filters, readable from a callback made on an earlier render — the
+  // address box reports a pick more than once and the later reports carry the
+  // closure from the first.
+  const filtersRef = useRef(filters);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
 
   const run = useCallback((f) => {
     const mine = ++reqRef.current;
@@ -171,9 +176,14 @@ export default function StaffPropertyResearch() {
               // unconditional `apply` would push two history entries and run two
               // searches for one pick.
               setDraft((d) => ({ ...d, city: city || d.city, state: state || d.state }));
+              // AGAINST THE LIVE FILTERS, NOT THE CAPTURED ONES. `onPick` fires
+              // again when USPS confirms, from the closure made at pick time — so
+              // comparing to `filters` there compares to the value from BEFORE the
+              // first fire applied, and the second fire navigates again.
+              const cur = filtersRef.current;
               const next = {};
-              if (city && city !== filters.city) next.city = city;
-              if (state && state !== filters.state) next.state = state;
+              if (city && city !== cur.city) next.city = city;
+              if (state && state !== cur.state) next.state = state;
               if (Object.keys(next).length) apply(next);
             }} />
 
