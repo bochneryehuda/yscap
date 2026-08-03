@@ -61,6 +61,12 @@ const REFS = Object.freeze({
   'property_observations.property_id': { how: 'move' },
   'property_valuations.property_id': { how: 'move' },
   'research_imports.subject_property_id': { how: 'move' },
+  // db/423 — the 1004MC market read a report filed while describing this property.
+  // MOVE: the two rows are the same house, so the market read belongs to the
+  // survivor; nothing stops several reports pointing at one property, so there is
+  // no collision to fold. (`market_periods` hangs off the observation, not off
+  // `properties`, so it follows automatically and is correctly absent here.)
+  'market_observations.property_id': { how: 'move' },
   // THE LEDGER'S OWN SURVIVOR POINTER, which CASCADES. Merging B into A and later
   // A into C deleted A — and with it the "B → A" row, so `survivorOf(B)` went
   // from A to NULL, a link to B stopped redirecting and started reading as data
