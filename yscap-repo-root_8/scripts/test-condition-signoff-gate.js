@@ -93,9 +93,15 @@ async function mkItem(appId, code, over = {}) {
     // and reused across files. A file's gov-ID condition with NO document linked
     // to its own item, but the borrower carrying photo_id_document_id, must still
     // be signable — the strict doc gate must NOT falsely block a reused ID.
+    // The profile ID must itself be ACCEPTED (owner-directed 2026-08-03): it is
+    // the same document that would ride into the investor package's ID folder,
+    // so "there is one on the profile" is not the test — "somebody accepted the
+    // one on the profile" is.
     const docId = (await db.query(`INSERT INTO documents (filename) VALUES ('gov-id.pdf') RETURNING id`)).rows[0].id;
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2 WHERE id=$1`, [borrowerId, docId]);
-    assert((await so(govId)).status === 200, 'reused gov-ID (photo on profile, none linked to this item) is signable');
+    assert((await so(govId)).status === 422, 'a reused gov-ID nobody has accepted does NOT clear the condition');
+    await db.query(`UPDATE documents SET review_status='accepted', reviewed_at=now() WHERE id=$1`, [docId]);
+    assert((await so(govId)).status === 200, 'reused gov-ID (accepted photo on profile, none linked to this item) is signable');
 
     // Vesting-entity (LLC) condition: required, fulfilled by VERIFYING the file's
     // linked LLC. Blocked with no LLC / an unverified LLC; signable once verified.

@@ -68,7 +68,7 @@ Read this before §5, or half the recommendations will look like things we have.
 | 1004MC market series, with the form's **relative** windows resolved to real dates | `market.js`, `db/449` |
 | Duplicate detection + human-confirmed merge | `property-merge.js`, `db/419` |
 | Standalone XML upload door (no loan file needed) | `xml-import.js`, `db/411` |
-| A comp's **contract date** (UAD `c MM/YY`), going forward | `db/425` |
+| A comp's **contract date** (UAD `c MM/YY`), going forward | `db/452` |
 
 ### Not built
 

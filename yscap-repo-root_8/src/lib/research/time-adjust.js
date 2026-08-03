@@ -21,7 +21,7 @@
  * market; June is when the paperwork finished. Adjusting from the settlement
  * date credits the sale with three months of movement it never saw — and on a
  * fast market that is real money in the wrong direction. UAD states both
- * (`s06/25;c03/25`) and `db/425` reads the contract month, so this is a
+ * (`s06/25;c03/25`) and `db/452` reads the contract month, so this is a
  * correction we can make on data we already hold.
  *
  * ─── WHAT IT REFUSES ────────────────────────────────────────────────────────

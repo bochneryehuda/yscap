@@ -153,10 +153,17 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
   for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
+      // BORN ACCEPTED (owner-directed 2026-08-03): these are the TOOL'S OWN output
+      // — the Excel/PDF/HTML PILOT generates from what was just submitted — not
+      // something a human uploaded for review. Left 'pending' the acceptance rule
+      // would keep the Scope of Work tool's own workbook out of the TPR export and
+      // make the tool-backed conditions unsignable (no document on them is ever
+      // human-reviewed). See lib/document-acceptance.js.
       `INSERT INTO documents
          (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
-          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$3,'system','borrower',$9) RETURNING id`,
+          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind,
+          review_status,reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$3,'system','borrower',$9,'accepted',now()) RETURNING id`,
       [itemId, appId, borrowerId, a.filename, a.contentType, buf.length, provider, ref, toolKey + '_export']);
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
@@ -3050,8 +3057,16 @@ router.post('/documents', async (req, res) => {
   if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'borrower',$11,$12,$13,$14) RETURNING id`,
+    // The borrower mirror of the staff door: a `term_sheet` here is the studio's
+    // OWN generated PDF captured at registration — the only thing that sets this
+    // kind — so it is born ACCEPTED. A real borrower upload (any other document)
+    // is born pending and waits for a reviewer, which is the whole rule.
+    // Owner-directed 2026-08-03; see lib/document-acceptance.js.
+    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final,
+                            review_status,reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'borrower',$11,$12,$13,$14,
+             CASE WHEN $12='term_sheet' THEN 'accepted' ELSE 'pending' END,
+             CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null, trackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot, termSheetFinal]);
   // The requested line item has its document — reflect it on the line too.

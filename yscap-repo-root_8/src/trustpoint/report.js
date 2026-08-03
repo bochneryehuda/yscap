@@ -155,7 +155,7 @@ async function buildOrGetReport(appId, tpDrawId, mode = 'staff') {
   const doc = (await db.query(
     `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
         storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, source_type, visibility, is_current, review_status)
-     VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,'draw_inspection_report','system',$7,true,'pending')
+     VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,'draw_inspection_report','system',$7,true,'accepted')
      RETURNING id`,
     [appId, app ? app.borrower_id : null, filename, bytes.length, saved.provider, saved.ref,
      mode === 'borrower' ? 'borrower' : 'staff_only'])).rows[0];
