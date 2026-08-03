@@ -404,12 +404,20 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
 
 /**
  * THE ONE LEGAL MOVE (owner-directed): relocate a mirror copy the portal itself
- * uploaded into a Version-N folder the portal itself created, inside the same
+ * uploaded into a folder the portal itself created, inside the same
  * `YS portal syncing` condition folder. Refuses unless the item's CURRENT
  * parent matches `expectedParentId` — so a human-placed or human-moved file can
  * never be touched even if our bookkeeping is stale. The caller MUST have
  * verified the item id against documents.sharepoint_backup_ref (DB ownership).
  * The name is never changed. Nothing is ever deleted.
+ *
+ * ITS SANCTIONED CALLER is `sharepoint-backup.refileRow` — the shelf sweep
+ * (owner-directed 2026-08-03), which moves a copy between the category folder,
+ * "Waiting for review" and "Old Versions/Version N" as its review verdict
+ * lands. That REPLACED the original caller (the Version-N supersede shuffle),
+ * which is retired; the guarantee is unchanged because it is enforced here, not
+ * by the caller. A new caller needs owner direction — this is not a general
+ * "move things in SharePoint" helper.
  */
 async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
   if (!expectedParentId) throw new Error('moveOwnItem: expectedParentId is required');

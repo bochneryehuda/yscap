@@ -216,9 +216,13 @@ async function attachCertificate(order, buf) {
   // download, so they are hashed here rather than riding along from a decode.
   const sha256 = require('../lib/upload-bytes').sha256hex(buf);
   const r = await db.query(
+    // BORN ACCEPTED — same reasoning as the Xactus flood desk: PILOT ordered the
+    // determination and pulled the PDF itself, so there is no human review step
+    // to wait for (owner-directed 2026-08-03, lib/document-acceptance.js).
     `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
-                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256)
-     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9)
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256,
+                            review_status, reviewed_at)
+     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9,'accepted',now())
      RETURNING id`,
     [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null, sha256]);
   if (itemId) {

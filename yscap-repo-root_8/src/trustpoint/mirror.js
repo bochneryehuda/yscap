@@ -275,7 +275,7 @@ async function archiveReport(appId, tpProjectId, tpDrawId) {
     const doc = (await db.query(
       `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, source_type, visibility, is_current, review_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',NULL,'draw_inspection_report','system','staff_only',true,'pending')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',NULL,'draw_inspection_report','system','staff_only',true,'accepted')
        RETURNING id`,
       [appId, borrower ? borrower.borrower_id : null, filename, meta.mime_type || 'application/pdf', bytes.length, saved.provider, saved.ref])).rows[0];
     await db.query(`UPDATE trustpoint_draws SET report_document_id=$2, updated_at=now() WHERE tp_draw_id=$1`, [tpDrawId, doc.id]);
