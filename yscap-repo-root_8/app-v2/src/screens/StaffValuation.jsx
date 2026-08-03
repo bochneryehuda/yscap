@@ -235,7 +235,7 @@ export default function StaffValuation() {
       </p>
 
       {picker && (
-        <CompPicker valuationId={id} subject={v.subject_snapshot} onClose={() => setPicker(false)}
+        <CompPicker valuationId={id} subject={v.subject_snapshot} purpose={v.purpose} onClose={() => setPicker(false)}
           onAdded={(next) => { setD(next); setPicker(false); }} />
       )}
 
@@ -656,12 +656,21 @@ function Grid({ d, isFinal, onChange, onRemove }) {
 }
 
 /* Find comparables for this subject, ranked by how close a match they are. */
-function CompPicker({ valuationId, subject, onClose, onAdded }) {
+function CompPicker({ valuationId, subject, purpose, onClose, onAdded }) {
   const [rows, setRows] = useState(null);
   const [sel, setSel] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [q, setQ] = useState({ city: subject.city || '', state: subject.state || '', sold_within_months: '18' });
+  // AN AFTER-REPAIR VALUE HAS TO REST ON SALES OF FINISHED HOUSES, and we do not
+  // have to guess which those are: the appraiser put each comparable on either
+  // the as-is grid or the after-repair grid, and the warehouse kept which. Every
+  // other tool in this industry leaves you to work out from a photograph whether
+  // a sale was renovated. So a valuation whose purpose is the after-repair value
+  // starts on renovated sales — and it SAYS so in a control the officer can see
+  // and change, because a default nobody can see or lift is how a filter empties
+  // a screen and gets blamed on the town.
+  const [q, setQ] = useState({ city: subject.city || '', state: subject.state || '',
+    sold_within_months: '18', comp_set: purpose === 'arv' ? 'arv' : '' });
 
   const search = useCallback(() => {
     setRows(null); setErr('');
@@ -696,6 +705,13 @@ function CompPicker({ valuationId, subject, onClose, onAdded }) {
             onChange={(e) => setQ({ ...q, city: e.target.value })} />
           <input style={{ ...S.input, maxWidth: 80 }} placeholder="State" value={q.state}
             onChange={(e) => setQ({ ...q, state: e.target.value.toUpperCase() })} />
+          <select style={{ ...S.input, width: 'auto' }} value={q.comp_set}
+            onChange={(e) => setQ({ ...q, comp_set: e.target.value })}
+            aria-label="Which kind of sale">
+            <option value="">Any sale</option>
+            <option value="arv">Renovated sales only (after-repair grids)</option>
+            <option value="as_is">As-is sales only</option>
+          </select>
           <select style={{ ...S.input, width: 'auto' }} value={q.sold_within_months}
             onChange={(e) => setQ({ ...q, sold_within_months: e.target.value })}>
             <option value="6">Sold in the last 6 months</option>
@@ -731,6 +747,12 @@ function CompPicker({ valuationId, subject, onClose, onAdded }) {
                     r.units != null ? `${r.units} unit${Number(r.units) === 1 ? '' : 's'}` : 'units not stated',
                   ].join(' · ')}
                 </div>
+                {r.arv_comp_count > 0 && (
+                  <div style={{ fontSize: 11.5, color: '#2F7F86', fontWeight: 600 }}>
+                    used on an after-repair grid{r.arv_comp_count > 1 ? ` in ${r.arv_comp_count} reports` : ''}
+                    {r.asis_comp_count > 0 ? ' — and on an as-is grid too' : ''}
+                  </div>
+                )}
                 <div style={{ color: MUTED, fontSize: 12 }}>
                   {[r.gla && sqft(r.gla), r.beds != null && `${r.beds} bed`,
                     (r.baths_full != null || r.baths_half != null) && `${baths(r)} bath`,

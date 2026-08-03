@@ -360,11 +360,22 @@ never attempted. Everything in this phase costs about $10, one time.
   in between $385,000 and $470,000 — median $428k. 7 of 9 were as-is grids. Most
   recent 3 months ago."* Never a point estimate; always the denominator; always
   the recency span; refuse below 5 matches; the empty state blames our coverage.
-- [ ] **5.2 ARV mode.** Every source in the industry says an ARV must come from
+- [x] **5.2 ARV mode.** Every source in the industry says an ARV must come from
   renovated comps and then leaves you to guess which sales were renovated. **We
   do not guess — the appraiser told us which grid each comp sat on.**
   `comp_set`/`arv_comp_count` exist, are indexed, and are unexposed. This is the
-  fix-and-flip lender's core question and it is nearly free.
+  fix-and-flip lender's core question and it is nearly free. **EXPOSED.** The
+  query builder already understood `comp_set`; the two screens an officer
+  actually picks comps on did not offer it. Both now do (Any sale / Renovated
+  only / As-is only), a valuation whose PURPOSE is the after-repair value starts
+  on renovated sales with the control visibly set that way, and every result row
+  states which grid an appraiser put it on whether or not the filter was used.
+  Measured: **154 of 955 properties have been used on an after-repair grid**, 144
+  with a recorded sale, and only **6** appear on both — the two sets really are
+  different sales. A LADDER RUNG falls back to any kind of sale when a town holds
+  no renovated ones, ahead of the unit band, because a same-kind as-is sale beats
+  a renovated sale of the wrong kind of building; an explicitly chosen set is
+  never relaxed.
 - [ ] **5.3 THE ADJUSTMENT CORPUS.** Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin

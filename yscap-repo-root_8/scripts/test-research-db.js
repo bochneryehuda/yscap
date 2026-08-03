@@ -562,6 +562,57 @@ async function makeAppraisal(appId, o) {
     ok(!Object.prototype.hasOwnProperty.call(banded.body.applied_filters || {}, 'units'),
       'the typed subject\'s `units` names the subject and never reaches the query');
 
+    // ---- AN AFTER-REPAIR VALUE RESTS ON RENOVATED SALES ------------------
+    // The appraiser put each comparable on either the as-is grid or the
+    // after-repair grid and the warehouse kept which, so "was this sale
+    // renovated?" is the appraiser's own judgement rather than a guess from a
+    // photograph. Measured on the real corpus: 154 of 955 properties have been
+    // used on an after-repair grid, 144 with a recorded sale, and only 6 appear
+    // on both — the two sets really are different sales.
+    const ARV = `Arvtown${Date.now().toString(36)}`;
+    const arvSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built)
+       VALUES ($1,$2,'1 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1500,3,1960) RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-subj|${Date.now()}`, 'Arv Subject', ARV])).rows[0].id;
+    const arvDone = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date,
+         arv_comp_count, asis_comp_count)
+       VALUES ($1,$2,'2 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1520,3,1961,610000,CURRENT_DATE - 30,2,0)
+       RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-done|${Date.now()}`, 'Arv Renovated', ARV])).rows[0].id;
+    const arvRaw = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date,
+         arv_comp_count, asis_comp_count)
+       VALUES ($1,$2,'3 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1480,3,1959,430000,CURRENT_DATE - 40,0,3)
+       RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-raw|${Date.now()}`, 'Arv AsIs', ARV])).rows[0].id;
+
+    const arvOnly = await call(server, 'GET',
+      `/api/research/comps?property_id=${arvSubj}&comp_set=arv`, token);
+    ok(arvOnly.status === 200 && arvOnly.body.rows.some((r) => r.id === arvDone)
+      && arvOnly.body.rows.every((r) => r.id !== arvRaw),
+    'asking for renovated sales returns the after-repair-grid sale and not the as-is one');
+    const asIsOnly = await call(server, 'GET',
+      `/api/research/comps?property_id=${arvSubj}&comp_set=as_is`, token);
+    ok(asIsOnly.status === 200 && asIsOnly.body.rows.some((r) => r.id === arvRaw)
+      && asIsOnly.body.rows.every((r) => r.id !== arvDone),
+    'and asking for as-is sales is the mirror of it');
+    const anySale = await call(server, 'GET', `/api/research/comps?property_id=${arvSubj}`, token);
+    ok(anySale.status === 200 && anySale.body.rows.some((r) => r.id === arvDone)
+      && anySale.body.rows.some((r) => r.id === arvRaw),
+    'and with no choice made, both kinds come back — it is never a silent default');
+    // AN EXPLICIT CHOICE IS NEVER RELAXED, even into an empty answer: the officer
+    // asked, and quietly answering a different question is the thing the ladder
+    // is not allowed to do.
+    const noneRenovated = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&comp_set=arv`, token);
+    ok(noneRenovated.status === 200
+      && (noneRenovated.body.ladder || []).every((r) => r.step !== 'any_kind_of_sale'),
+    'a comp set the caller asked for is never relaxed away');
+
     // ---- THE BAND MUST NEVER LEAVE AN EMPTY SCREEN ----------------------
     // The band is a default this route supplies: no screen has a units control,
     // so an officer can neither see it nor lift it. When it is what emptied the

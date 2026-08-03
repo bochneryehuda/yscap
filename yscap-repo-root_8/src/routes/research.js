@@ -640,6 +640,18 @@ router.get('/comps', async (req, res, next) => {
       // found anything, and it stands down the moment the caller named a unit
       // range themselves. It is monotone like every other rung — it only ever
       // removes a predicate.
+      // A RENOVATED SALE IS A DIFFERENT QUESTION FROM A DIFFERENT KIND OF
+      // BUILDING, and it gives way FIRST. An after-repair value has to rest on
+      // sales of FINISHED houses, and the appraiser told us which those are —
+      // `comp_set='arv'` is the grid they put it on, not a guess about whether
+      // somebody renovated it. But if a town holds none, a same-kind AS-IS sale
+      // is a more useful answer than a renovated sale of the wrong kind of
+      // building, so this rung is tried before the unit band gives way.
+      // Same discipline as that band: only on an empty answer, never on a merely
+      // short one, and never when the caller asked for the set themselves.
+      { id: 'any_kind_of_sale', label: 'sales of any kind, not only renovated ones',
+        relax: (f) => ((best && best.total > 0) || askedFor.has('comp_set') || !f.comp_set
+          ? null : { comp_set: undefined }) },
       //
       // IT FIRES ONLY ON AN EMPTY ANSWER, not merely a short one. Every other rung
       // keeps widening until it has `want` (6) rows, and letting this one do that

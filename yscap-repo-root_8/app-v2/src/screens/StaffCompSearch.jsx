@@ -203,6 +203,25 @@ export default function StaffCompSearch() {
             onChange={(e) => apply({ sold_within_months: e.target.value })}>
             {MONTHS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
           </select>
+          {/* RENOVATED OR NOT — AND WE DO NOT HAVE TO GUESS. An after-repair
+              value has to rest on sales of FINISHED houses, and every other tool
+              in this industry leaves you to work that out from a photograph. The
+              appraiser put each comparable on either the as-is grid or the
+              after-repair grid and the warehouse kept which, so this is the
+              appraiser's own judgement, not ours. Measured: 154 of 955
+              properties have been used on an after-repair grid, 144 of them with
+              a recorded sale, and only 6 appear on both — the two sets really are
+              different sales.
+              Left OFF by default: it is a real narrowing, the officer should
+              choose it, and the ladder falls back with a labelled rung rather
+              than leaving an empty screen if a town holds none. */}
+          <select style={{ ...S.input, width: 'auto' }} value={effective.comp_set || ''}
+            onChange={(e) => apply({ comp_set: e.target.value })}
+            aria-label="Which kind of sale">
+            <option value="">Any sale</option>
+            <option value="arv">Renovated sales only (after-repair grids)</option>
+            <option value="as_is">As-is sales only</option>
+          </select>
           <select style={{ ...S.input, width: 'auto' }} value={effective.want}
             onChange={(e) => apply({ want: e.target.value })}>
             {['3', '6', '10', '15'].map((n) => <option key={n} value={n}>want at least {n}</option>)}
@@ -410,6 +429,16 @@ function CompRow({ r, checked, onToggle }) {
           <span>{r.beds ?? '—'} bed / {baths(r)} bath</span>
           <span>built {r.year_built || '—'}</span>
           <span>{conditionRead(r)}</span>
+          {/* WHICH GRID AN APPRAISER PUT IT ON. A sale used to support an
+              after-repair value is a FINISHED house, said so by the person who
+              stood in it — the fact this whole feature rests on, so the row
+              states it whether or not the filter was used. */}
+          {r.arv_comp_count > 0 && (
+            <span style={{ color: '#2F7F86', fontWeight: 600 }}>
+              renovated — used on an after-repair grid
+              {r.asis_comp_count > 0 ? ' and an as-is one' : ''}
+            </span>
+          )}
         </div>
       </div>
       <div style={{ textAlign: 'right', minWidth: 130 }}>
