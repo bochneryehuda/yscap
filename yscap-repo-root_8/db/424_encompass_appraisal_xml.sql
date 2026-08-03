@@ -40,11 +40,17 @@ CREATE TABLE IF NOT EXISTS encompass_appraisal_xml (
   received_date      timestamptz,             -- when the AMC delivered it
   validity_at        timestamptz,             -- when its download URL dies (~received + 15 min)
 
-  -- 'captured'  — bytes are in storage
+  -- A row holds the STRONGEST outcome it has ever reached — the writer keeps the
+  -- higher-ranked status on conflict, so an outcome never walks backwards. That
+  -- matters because this ledger's job is to say what happened to each file:
+  -- 'captured'  — bytes are in storage (an `error` alongside it means the bytes
+  --               are safe but the research warehouse would not take them)
+  -- 'failed'    — we saw it live and the download/save did not work; retried
   -- 'expired'   — first seen after its URL died; only the AMC can supply it now
-  -- 'failed'    — download/save threw; retried on the next sweep
+  -- 'pending'   — recorded, about to be downloaded. Distinct from 'failed' so a
+  --               crash mid-capture is not mistaken for a real download failure.
   status             text NOT NULL DEFAULT 'expired'
-                     CHECK (status IN ('captured','expired','failed')),
+                     CHECK (status IN ('captured','expired','failed','pending')),
 
   storage_ref        text,
   storage_provider   text,
