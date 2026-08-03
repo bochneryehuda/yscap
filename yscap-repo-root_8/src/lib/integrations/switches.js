@@ -41,7 +41,9 @@ const SWITCHES = [
   // Render restart. The env var ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED=1 still
   // wins on its own (it is checked first, so it can stop the catcher even if the
   // switches table is unreachable).
-  { key: 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED', integration: 'encompass', label: 'Catch appraisal XML out of Encompass (read-only poller)', dangerous: false, resume: true, envDefault: () => process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED !== '1' },
+  // `resume: false` — the catcher re-reads this switch on EVERY tick, so turning
+  // it back on resumes by itself with no restart.
+  { key: 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED', integration: 'encompass', label: 'Catch appraisal XML out of Encompass (read-only poller)', dangerous: false, resume: false, envDefault: () => process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED !== '1' },
   // Xactus "Flood ReportX" — the ACTIVE flood-cert provider (owner-directed
   // 2026-07-30). This master switch turns the button's Xactus ordering on/off — the
   // ONE control here. There is deliberately NO "TEST MODE" toggle: test mode was

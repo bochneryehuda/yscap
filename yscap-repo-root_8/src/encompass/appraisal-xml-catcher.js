@@ -47,16 +47,35 @@ const encompass = require('../lib/integrations/encompass');
 // mimeType check below is the real gate, this only classifies.
 const APPRAISAL_XML_TYPE = 'urn:ice:epc:partner:appraisal:report';
 
+// A sweep walks up to 500 loans, so an error per resource could grow without
+// bound and be carried around in memory for the whole pass. Keep a readable
+// sample and COUNT the rest — a silent truncation would read as "only three
+// things went wrong".
+const MAX_ERRORS = 50;
+function pushErr(out, msg) {
+  if (out.errors.length < MAX_ERRORS) out.errors[out.errors.length] = msg;
+  else out.errorsDropped = (out.errorsDropped || 0) + 1;
+}
+
 // ICE's own object store. An allowlist rather than a blanket fetch: the URL comes
 // from an API response, and a compromised or malformed response must not be able
 // to make the server fetch an arbitrary host.
 //
-// Deliberately NOT bare `elliemae.com` — that is the API host's own domain, and
-// this is the one place in the repo that reaches an Encompass host with a raw
-// `fetch` instead of the frozen client's `_fetchGuarded`. Keeping the API domain
-// out of the allowlist preserves the property "every request to the Encompass
-// API domain goes through the frozen client" for whoever edits this next.
-const STORAGE_HOST_RE = /(^|\.)(skydrive\.ellieservices\.com|skydrive\.rd\.elliemae\.io|media-pod\d*-\w+\.elliemae\.com)$/i;
+// The invariant worth protecting is "this raw fetch never reaches the Encompass
+// API HOST" — not "never reaches its domain". This is the one place in the repo
+// that talks to an Encompass host outside the frozen client's `_fetchGuarded`,
+// so `api.elliemae.com` (and any api* sibling) is refused outright.
+//
+// Everything else is deliberately GENEROUS, because the two failure directions
+// are not symmetric: letting through an unexpected ICE storage host costs
+// nothing (the URL still has to carry ICE's own signature), while refusing a
+// legitimate one throws inside capture(), the link dies minutes later, and the
+// file is unrecoverable. The hosts actually observed are all non-production
+// (`-int`, `.rd.`), so pinning their exact spelling would have refused their
+// production siblings — `media-pod0.elliemae.com`,
+// `streaming.us-west-2.skydrive.elliemae.io` — the day this went live.
+const API_HOST_RE = /(^|\.)api[\w-]*\.elliemae\.(com|io)$/i;
+const STORAGE_HOST_RE = /(^|\.)(skydrive\.ellieservices\.com|elliemae\.io|(media-pod[\w-]*|[\w-]*skydrive[\w-]*|[\w-]*streaming[\w-]*)\.elliemae\.com)$/i;
 
 const MAX_XML_BYTES = 80 * 1024 * 1024;   // matches research/xml-import's ceiling
 const DOWNLOAD_TIMEOUT_MS = 120000;       // a MISMO file embeds the whole report PDF
@@ -78,10 +97,24 @@ const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
  * running, because silently not catching is the failure this module exists to
  * prevent, and the env var remains as the guaranteed stop.
  */
+const CATCH_SWITCH_KEY = 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED';
+
 function catchDisabled() {
   if (process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED === '1') return true;
   try {
-    return !require('../lib/integrations/switches').on('ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED');
+    const switches = require('../lib/integrations/switches');
+    // `switches.on()` answers FALSE for an unknown key — safe for a read gate,
+    // but NEGATED here that reads as "disabled", so a future rename or removal of
+    // the registry entry would silently stop the catcher forever: `start()` only
+    // consults the env var, so it would still log "catcher on", and a sweep that
+    // returns all zeros logs nothing. That is the same silent-total-failure the
+    // noLink alarm exists to prevent. So the key's EXISTENCE is checked first.
+    if (!switches.BY_KEY || !switches.BY_KEY[CATCH_SWITCH_KEY]) {
+      console.warn(`[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
+        'staying ON and relying on the env kill switch');
+      return false;
+    }
+    return !switches.on(CATCH_SWITCH_KEY);
   } catch { return false; }
 }
 
@@ -125,14 +158,14 @@ function isAppraisalXml(res) {
   // Likewise an SVG or an XHTML page: both contain "xml", both would pass a
   // "starts with <" byte sniff, and neither is an appraisal.
   if (mime.includes('svg') || mime.includes('xhtml')) return false;
-  const looksXml = mime.includes('xml') || /\.xml$/i.test(name);
-  // The declared type URN is a strong signal but NOT sufficient on its own: a UAD
-  // 3.6 delivery carries the same `urn:ice:epc:partner:appraisal:report:…` type on
-  // a ZIP PACKAGE. Downloading that burns the window and lands a permanent
-  // 'failed' row that reads to an operator as a breakage rather than "not
-  // applicable", so the payload still has to look like XML.
-  if (String(res.type || '').startsWith(APPRAISAL_XML_TYPE)) return looksXml;
-  return looksXml;
+  // The declared type URN (`urn:ice:epc:partner:appraisal:report:…`, matched as a
+  // PREFIX so a future MISMO/UAD version needs no code change) says WHAT the
+  // resource is, but not what FORMAT it is in: a UAD 3.6 delivery carries that
+  // same type on a ZIP PACKAGE. Downloading that burns part of the 15-minute
+  // window on something that can never parse and leaves a permanent 'failed' row
+  // which every later sweep retries and which reads to an operator as a breakage
+  // rather than "not applicable". So the format decides, for every resource.
+  return mime.includes('xml') || /\.xml$/i.test(name);
 }
 
 /** Guard the download URL's host. Throws with a plain reason. */
@@ -140,6 +173,9 @@ function assertStorageHost(rawUrl) {
   let u;
   try { u = new URL(String(rawUrl)); } catch { throw new Error('resource url is not a url'); }
   if (u.protocol !== 'https:') throw new Error('resource url is not https');
+  // The API host is refused BEFORE the allowlist, so no future widening of the
+  // storage patterns can accidentally readmit it.
+  if (API_HOST_RE.test(u.hostname)) throw new Error(`resource url is the API host, not storage: ${u.hostname}`);
   if (!STORAGE_HOST_RE.test(u.hostname)) throw new Error(`resource url host not allowed: ${u.hostname}`);
   return u.toString();
 }
@@ -154,6 +190,15 @@ function assertStorageHost(rawUrl) {
  * outcome this module exists to prevent, so the BOM is handled before sniffing.
  */
 function decodeHead(buf) {
+  // `swap16()` REQUIRES an even length, so every big-endian path trims to one —
+  // a truncated odd-length body would otherwise throw a RangeError and the
+  // operator would see a Node internal message instead of a reason.
+  const beToLe = (slice) => {
+    const even = slice.length - (slice.length % 2);
+    const b = Buffer.from(slice.slice(0, even));
+    b.swap16();
+    return b.toString('utf16le');
+  };
   if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
     return buf.slice(3, 1200).toString('utf8');
   }
@@ -161,14 +206,16 @@ function decodeHead(buf) {
     return buf.slice(2, 2400).toString('utf16le');
   }
   if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) {
-    // UTF-16BE: swap to LE so Node can decode it.
-    const b = Buffer.from(buf.slice(2, 2400));
-    b.swap16();
-    return b.toString('utf16le');
+    return beToLe(buf.slice(2, 2400));
   }
-  // Unmarked UTF-16LE (no BOM) still shows as `<\0?\0x\0m\0l`.
+  // Unmarked UTF-16, both byte orders. LE shows as `<\0?\0`, BE as `\0<\0?`.
+  // Handling only LE meant an unmarked big-endian appraisal was refused and its
+  // bytes discarded.
   if (buf.length >= 4 && buf[0] !== 0 && buf[1] === 0 && buf[3] === 0) {
     return buf.slice(0, 2400).toString('utf16le');
+  }
+  if (buf.length >= 4 && buf[0] === 0 && buf[1] !== 0 && buf[2] === 0) {
+    return beToLe(buf.slice(0, 2400));
   }
   return buf.slice(0, 1200).toString('utf8');
 }
@@ -184,14 +231,30 @@ function decodeHead(buf) {
  * recorded a successful capture.
  */
 function looksLikeXml(head) {
-  const s = String(head || '').replace(/^﻿/, '').trimStart();
+  let s = String(head || '').replace(/^﻿/, '').trimStart();
+  if (!s) return false;
+  // A real document may legitimately open with a comment or a processing
+  // instruction before its root ("<!-- generated by … -->\n<?xml …"). Step over
+  // those first, or a genuine appraisal is discarded — and its bytes are gone.
+  for (let guard = 0; guard < 10; guard++) {
+    const m = /^(<!--[\s\S]*?-->|<\?[^>]*\?>|<!DOCTYPE\s+[^>[]*(\[[\s\S]*?\])?\s*>)\s*/i.exec(s);
+    if (!m) break;
+    // A DOCTYPE naming html is decisive the other way.
+    if (/^<!DOCTYPE\s+html/i.test(m[0])) return false;
+    // An XML declaration is decisive FOR xml, but keep walking: the payload may
+    // still be an XML-wrapped error, which the token check below catches.
+    s = s.slice(m[0].length);
+  }
   if (!s.startsWith('<')) return false;
-  // An HTML document is never an appraisal, however it is spelled.
-  if (/^<!doctype\s+html/i.test(s) || /^<html[\s>]/i.test(s)) return false;
-  // An XML declaration settles it.
-  if (/^<\?xml[\s?]/i.test(s)) return true;
-  // Otherwise require a plausible XML root element — a name, optionally
-  // namespaced — rather than merely "a < and a letter".
+  // An HTML document OR FRAGMENT is never an appraisal. The store serves both —
+  // a bare `<body>Access Denied</body>` has no doctype and no <html>.
+  if (/^<(html|head|body|title|h[1-6]|div|p|span|a|meta|script|table|center|pre)[\s/>]/i.test(s)) return false;
+  // An XML-wrapped error is the object store's OTHER refusal shape
+  // (`<Error><Code>AccessDenied</Code>…`), and it is well-formed XML, so nothing
+  // below would catch it.
+  if (/^<(Error|error|Fault|ErrorResponse)[\s/>]/.test(s)) return false;
+  // Require a plausible XML root element — a name, optionally namespaced —
+  // rather than merely "a < and a letter".
   return /^<[A-Za-z_][\w.-]*(:[A-Za-z_][\w.-]*)?[\s/>]/.test(s);
 }
 
@@ -261,17 +324,36 @@ async function expandOrder(loanGuid, orderId) {
 const { textColumn } = require('../lib/fields');
 const t500 = (v) => textColumn(v, null, 500);
 
+// Postgres `timestamptz` cannot hold a year outside 4713 BC .. 294276 AD, and
+// `Date.prototype.toISOString()` emits the ES extended-year form ("+275760-09-13…")
+// for anything past year 9999 — which Postgres refuses outright with 22009
+// ("time zone displacement out of range"). Keep every bound timestamp inside a
+// plainly sane window instead: no appraisal was delivered before 1970 and none
+// will be delivered after 9999.
+const TS_MIN_MS = Date.UTC(1970, 0, 1);
+const TS_MAX_MS = Date.UTC(9999, 11, 31);
+
 /**
- * A vendor timestamp bound into a `timestamptz`. An unparseable one raises 22007
- * and costs us the file, and this column is a record rather than a key — so an
- * unreadable value is dropped, not fatal.
+ * A vendor timestamp bound into a `timestamptz`. PURE.
+ *
+ * An unparseable — or unrepresentable — value raises 22007/22009, which fails the
+ * whole INSERT and therefore costs us the FILE. These columns are a record, not a
+ * key, so an unusable value is dropped rather than allowed to be fatal.
  */
 function tsOrNull(v) {
   if (v == null || v === '') return null;
-  const d = new Date(v);
-  const ms = d.getTime();
-  if (Number.isNaN(ms) || Math.abs(ms) > MAX_TIME_MS) return null;
-  return d.toISOString();
+  if (v instanceof Date) return tsFromMs(v.getTime());
+  if (typeof v === 'number') return tsFromMs(v);
+  if (typeof v !== 'string') return null;
+  // A padded but perfectly valid vendor stamp must not be thrown away.
+  const s = v.trim();
+  if (!s) return null;
+  return tsFromMs(new Date(s).getTime());
+}
+
+function tsFromMs(ms) {
+  if (!Number.isFinite(ms) || ms < TS_MIN_MS || ms > TS_MAX_MS) return null;
+  return new Date(ms).toISOString();
 }
 
 // Which status may overwrite which. A row must hold the STRONGEST outcome it has
@@ -305,10 +387,15 @@ async function recordSighting(db, row) {
                          ELSE EXCLUDED.status
                        END
      RETURNING id, status, storage_ref`,
+    // EVERY timestamp goes through tsOrNull — `validity_at` included. It is
+    // derived from validityOf(), which accepts any epoch-ms up to Date's own
+    // ±8.64e15 limit, so a stamp in epoch MICROseconds (a plausible vendor
+    // variation) yields a year-58528 date whose ISO form Postgres rejects with
+    // 22009 — failing the INSERT, skipping the download, and losing the file.
     [t500(row.resourceId), t500(row.loanGuid), t500(row.loanNumber), t500(row.orderId),
      t500(row.transactionId), t500(row.vendor), t500(row.resourceType),
      t500(row.filename), t500(row.mimeType),
-     tsOrNull(row.receivedDate), row.validityAt || null, row.status]
+     tsOrNull(row.receivedDate), tsOrNull(row.validityAt), row.status]
   );
   return r.rows[0];
 }
@@ -367,7 +454,7 @@ async function capture(db, res, meta) {
     // re-fetched. A warehouse failure is recorded ALONGSIDE it in `error`, so the
     // two questions — "did we get the file?" and "is it in the warehouse?" — stay
     // separately answerable instead of one masking the other.
-    await db.query(
+    const upd = await db.query(
       `UPDATE encompass_appraisal_xml
           SET status='captured', storage_ref=$2, storage_provider=$3, byte_size=$4,
               sha256=$5, research_import_id=$6, captured_at=now(), error=$7,
@@ -376,6 +463,15 @@ async function capture(db, res, meta) {
       [meta.resourceId, saved.ref, saved.provider || null, buf.length, digest, importId,
        importNote ? String(importNote).slice(0, 500) : null]
     );
+    // An UPDATE that matched NOTHING means the ledger and this write disagree
+    // about the key — the bytes are saved but orphaned, the row never leaves
+    // 'pending', and every later sweep re-attempts a dead URL. Silence here is
+    // what let exactly that bug live, so it is now said out loud.
+    if (upd && upd.rowCount === 0) {
+      console.error(`[encompass-xml] capture recorded NOTHING for resource ${meta.resourceId} — ` +
+        `the bytes are at ${saved.ref} but the ledger row was not found`);
+      return `captured-unrecorded ${meta.filename} (${buf.length} bytes)`;
+    }
     return importNote
       ? `captured ${meta.filename} (${buf.length} bytes) — ${importNote}`
       : `captured ${meta.filename} (${buf.length} bytes)`;
@@ -386,7 +482,11 @@ async function capture(db, res, meta) {
               error=$2, attempts = attempts + 1
         WHERE resource_id=$1`,
       [meta.resourceId, String((e && e.message) || e).slice(0, 500)]
-    ).catch(() => {});
+    ).then((r) => {
+      if (r && r.rowCount === 0) {
+        console.error(`[encompass-xml] failure recorded NOTHING for resource ${meta.resourceId} — ledger row not found`);
+      }
+    }).catch(() => {});
     return `failed ${meta.filename}: ${(e && e.message) || e}`;
   }
 }
@@ -428,12 +528,23 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
         sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
         fields: ['Loan.Guid', 'Loan.LoanNumber'],
       }, { limit: 500 });
+      // Read the row through reader.js's OWN helpers rather than a narrower copy.
+      // A live pipeline response on 2026-07-26 came back without a `Loan.Guid`,
+      // which is why `_rowGuid` accepts six spellings; a private two-spelling
+      // reader here would have dropped every row, reported all zeros, and — since
+      // a sweep with nothing in it logs nothing — done so in complete silence.
+      const reader = require('./reader');
+      const guidOf = reader._rowGuid || ((r) => r.loanId || (r.fields || {})['Loan.Guid']);
+      const fieldOf = reader._rowField || ((r, n) => (r.fields || {})[n]);
       list = (Array.isArray(rows) ? rows : []).map((r) => ({
-        loanId: r.loanId || (r.fields || {})['Loan.Guid'],
-        loanNumber: (r.fields || {})['Loan.LoanNumber'] || null,
+        loanId: guidOf(r),
+        loanNumber: fieldOf(r, 'Loan.LoanNumber') || null,
       })).filter((x) => x.loanId);
+      if (Array.isArray(rows) && rows.length && !list.length) {
+        pushErr(out, `pipeline returned ${rows.length} row(s) but no loan id could be read from any of them`);
+      }
     } catch (e) {
-      out.errors.push(`pipeline: ${(e && e.message) || e}`);
+      pushErr(out, `pipeline: ${(e && e.message) || e}`);
       return out;
     }
   }
@@ -442,13 +553,13 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
     out.loans++;
     let orders;
     try { orders = await appraisalOrders(l.loanId); }
-    catch (e) { out.errors.push(`orders ${l.loanId}: ${(e && e.message) || e}`); continue; }
+    catch (e) { pushErr(out, `orders ${l.loanId}: ${(e && e.message) || e}`); continue; }
 
     for (const o of orders) {
       out.orders++;
       let full;
       try { full = await expandOrder(l.loanId, o.id); }
-      catch (e) { out.errors.push(`expand ${o.id}: ${(e && e.message) || e}`); continue; }
+      catch (e) { pushErr(out, `expand ${o.id}: ${(e && e.message) || e}`); continue; }
 
       // Array.isArray, not `|| []`: a malformed response carrying a non-array
       // here would make `for…of` throw and abort the rest of the sweep — the same
@@ -470,16 +581,31 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
         // UNDOCUMENTED fields; if ICE drops them, every resource silently records
         // as 'expired' — indistinguishable from the legitimately-expired back
         // book — and the feature would stop working with nobody ever knowing.
-        if (!url || !auth) {
+        // Counted SEPARATELY from `expired`: a link we never got is a different
+        // fact from a link that died, and folding them together is precisely the
+        // confusion the alarm exists to break. The row is still recorded (so the
+        // back book stays a complete list) but it is not double-counted.
+        const missingLink = !url || !auth;
+        if (missingLink) {
           out.noLink++;
-          out.errors.push(`resource ${res.id} has no ${!url ? 'location' : 'authorization'} — ICE may have changed the service-order shape`);
+          pushErr(out, `resource ${res.id} has no ${!url ? 'location' : 'authorization'} — ICE may have changed the service-order shape`);
         }
 
         // A resource with no id cannot be recorded (`resource_id` is NOT NULL) and
         // could not be de-duplicated even if it were. Say so rather than let the
         // INSERT fail with a bare constraint error.
-        if (!textColumn(res.id, null, 500)) {
-          out.errors.push(`resource on order ${o.id} has no id — cannot record it`);
+        //
+        // NORMALISE ONCE, HERE, and carry THIS value everywhere. `textColumn`
+        // trims, strips NUL and caps at 500, so an id that differs from the raw
+        // one — padded, NUL-bearing, over-long — would be STORED under the
+        // normalised key while capture()'s UPDATEs looked for the raw one:
+        // matching zero rows, leaving the ledger stuck at 'pending' with the
+        // bytes saved and orphaned, and letting every later sweep re-attempt a
+        // dead URL. Both UPDATEs are silent about `rowCount`, so it would never
+        // have surfaced.
+        const resourceId = textColumn(res.id, null, 500);
+        if (!resourceId) {
+          pushErr(out, `resource on order ${o.id} has no id — cannot record it`);
           continue;
         }
 
@@ -494,7 +620,7 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
         // fighting for.
         const live = validity ? (validity.getTime() + skewMs) > now : false;
         const meta = {
-          resourceId: res.id,
+          resourceId,
           loanGuid: l.loanId,
           loanNumber: l.loanNumber,
           orderId: o.id,
@@ -513,13 +639,17 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
         };
         let known;
         try { known = await recordSighting(db, meta); }
-        catch (e) { out.errors.push(`record ${res.id}: ${(e && e.message) || e}`); continue; }
+        catch (e) { pushErr(out, `record ${res.id}: ${(e && e.message) || e}`); continue; }
 
         if (known && known.status === 'captured') { out.skipped++; continue; }
+        // A resource whose link never arrived is not "expired" — it is the alarm
+        // case, already counted in noLink.
+        if (missingLink) continue;
         if (!live) { out.expired++; continue; }
 
         const verdict = await capture(db, res, meta);
-        if (/^captured/.test(verdict)) out.captured++; else out.failed++;
+        if (verdict.startsWith('captured-unrecorded')) out.capturedUnrecorded = (out.capturedUnrecorded || 0) + 1;
+        if (verdict.startsWith('captured')) out.captured++; else out.failed++;
         if (log) console.log('[encompass-xml]', verdict);
       }
     }
@@ -556,7 +686,9 @@ function makeTick(db) {
       // tenant that has outgrown its interval is visible in the log rather than
       // silently sweeping half as often as configured.
       console.log('[encompass-xml] previous sweep still running — skipping this tick');
-      return Promise.resolve({ skipped: 'in-flight' });
+      // `skippedTick`, not `skipped` — sweepOnce returns `skipped` as a COUNT, and
+      // reusing the key with a string would give one field two types.
+      return Promise.resolve({ skippedTick: true });
     }
     sweeping = true;
     return sweepOnce(db, { log: true })
@@ -626,6 +758,6 @@ module.exports = {
   // exported for tests
   _internals: {
     validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE, makeTick,
-    decodeHead, looksLikeXml, tsOrNull,
+    decodeHead, looksLikeXml, tsOrNull, recordSighting,
   },
 };

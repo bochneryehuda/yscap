@@ -406,12 +406,12 @@ t('a non-url is refused with a plain reason', () => {
   } finally { enc.pipelineSearch = origSearch; enc.configured = origConfigured; }
 
   t('a tick fired while a sweep is still running is SKIPPED, not stacked', () => {
-    assert.strictEqual(overlap.skipped, 'in-flight', 'the overlapping tick must stand down');
+    assert.strictEqual(overlap.skippedTick, true, 'the overlapping tick must stand down');
     assert.strictEqual(startedDuringOverlap, 1, 'the second tick must not have started a second walk');
   });
 
   t('the in-flight flag is RELEASED when the sweep settles', () => {
-    assert.ok(secondRan && secondRan.skipped !== 'in-flight',
+    assert.ok(secondRan && secondRan.skippedTick !== true,
       'a later tick must run — a stuck flag would wedge the catcher silently');
   });
 

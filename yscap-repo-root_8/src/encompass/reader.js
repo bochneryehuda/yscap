@@ -575,4 +575,10 @@ module.exports = {
   // exported for unit tests
   _scrubForStorage,
   PIPELINE_SEARCH_FIELDS,
+  // Pipeline-row readers. Exported so anything else reading a pipelineSearch
+  // result uses THESE — a live response on 2026-07-26 came back without a
+  // `Loan.Guid`, which is why _rowGuid accepts six spellings. A private,
+  // narrower copy elsewhere would silently drop every row.
+  _rowGuid,
+  _rowField,
 };
