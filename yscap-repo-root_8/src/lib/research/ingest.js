@@ -717,7 +717,7 @@ async function writeReport(db, { a, comps, link, out }) {
     //     where we are today; if they match we produce the same locality the
     //     city-bearing reports already produce.
     // A comp outside the subject's ZIP that states no city still keys on its ZIP, and
-    // goes to the duplicate detector (db/416) instead.
+    // goes to the duplicate detector (db/419) instead.
     const compCity = txt(c.city)
       || (K._internals.zip5(c.zip) && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
         ? txt(a.subject_city) : null);
