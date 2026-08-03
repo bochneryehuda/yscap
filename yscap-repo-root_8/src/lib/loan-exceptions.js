@@ -126,6 +126,19 @@ const APPRAISAL_XML_WAIVER_REASONS = Object.freeze({
   other:            'Other (see note)',
 });
 
+// A CREDIT REPORT "we are not pulling one here" waiver (owner-directed
+// 2026-08-03). The credit condition normally requires a report IMPORTED here —
+// that is what files the PDF + data file AND reads the scores. These are the
+// reasons a current report obtained elsewhere stands in for that import instead.
+// EVERY one of them needs an admin's approval; unlike the appraisal no-XML
+// waiver there is deliberately no reason that auto-waives.
+const CREDIT_IMPORT_WAIVER_REASONS = Object.freeze({
+  report_from_elsewhere: 'A current credit report was obtained elsewhere — we are not re-pulling it',
+  avoid_new_inquiry:     'Re-pulling would put another inquiry on the borrower for a report we already hold',
+  vendor_unavailable:    'The credit vendor cannot reissue this report (login / vendor issue)',
+  other:                 'Other (see note)',
+});
+
 // An issuance override is recorded, not requested — one catch-all code.
 const ISSUANCE_OVERRIDE_REASONS = Object.freeze({
   other: 'Super-admin override past a fatal hard-warning (see note)',
@@ -258,6 +271,20 @@ const EXCEPTION_TYPES = Object.freeze({
     recordOnly: false,
     slaHours: 24,
     decideRole: 'super_admin',
+  }),
+  // Owner-directed 2026-08-03: sign the credit condition off on a report obtained
+  // ELSEWHERE, without importing/reissuing credit here. Not expirable — like the
+  // guaranty waiver it decides one condition on one file in one moment, and a
+  // clock must never silently re-arm a condition somebody already cleared. Decided
+  // by the register's default gate (`manage_pricing` = admins + super-admins),
+  // matching the owner's "the admin should sign off".
+  credit_import_waiver: Object.freeze({
+    label: 'Credit report — no import (report from elsewhere)',
+    reasonCodes: CREDIT_IMPORT_WAIVER_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: false,
+    slaHours: 24,
   }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
@@ -499,6 +526,20 @@ async function requestAppraisalXmlWaiver(client, { appId, reasonCode, reasonNote
     type: 'appraisal_xml_waiver', appId, reasonCode, reasonNote, requestedBy,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
     reRequestOf,
+  });
+}
+
+/**
+ * Request a CREDIT REPORT import waiver (owner-directed 2026-08-03). The waiver
+ * row itself is written by the credit-waiver route; this is the reviewable
+ * register entry an admin approves, and until it IS approved the credit
+ * condition's sign-off gate is unchanged (lib/credit/waiver.js fails closed).
+ */
+async function requestCreditImportWaiver(client, { appId, reasonCode, reasonNote, requestedBy, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'credit_import_waiver', appId, reasonCode, reasonNote, requestedBy,
+    compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
   });
 }
 
@@ -1099,12 +1140,14 @@ module.exports = {
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
   APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS, TAPE_ENCOMPASS_REASONS,
+  CREDIT_IMPORT_WAIVER_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig, decideRoleFor,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
+  requestCreditImportWaiver,
   recordIssuanceOverride, recordConditionOverride, recordTapeEncompassOverride,
   recordEncompassException, approvedForApp, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
