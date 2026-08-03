@@ -687,14 +687,18 @@ router.post('/applications', async (req, res) => {
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
-        is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
+        is_assignment,underlying_contract_price,assignment_fee,personal_name_purchase,source,raw_intake,status,submitted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$23,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b))]);
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b)),
+     /* HOW IS IT VESTED — the borrower is asked at the door now (owner-directed
+        2026-08-02). `vestsIndividually` also refuses to read "individual" when an
+        entity was picked, so llcId above always wins. */
+     require('../lib/fields').vestsIndividually(b)]);
   const appId = r.rows[0].id;
   // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
   await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
@@ -3855,8 +3859,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
         payoff_lender,payoff_loan_number,
         requested_ir_amount,
+        personal_name_purchase,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
@@ -3890,7 +3895,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
      // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
      refiEcon(textField(b.payoffLender, 'payoff_lender')), refiEcon(textField(b.payoffLoanNumber, 'payoff_loan_number')),
-     moneyField(b.irAmount)]);
+     moneyField(b.irAmount),
+     /* $33 — HOW THE BORROWER SAID THEY WILL HOLD TITLE (owner-directed
+        2026-08-02). Appended LAST and referenced LAST in the VALUES list, per
+        the warning above. `vestsIndividually` lets a picked entity win, so this
+        can never contradict the llc_id bound at $2. */
+     require('../lib/fields').vestsIndividually(b)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }

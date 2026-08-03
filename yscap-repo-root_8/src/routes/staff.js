@@ -1321,9 +1321,10 @@ router.post('/applications', async (req, res) => {
           rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
           processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,
           payoff_amount,original_purchase_price,acquisition_date,payoff_lender,payoff_loan_number,
+          personal_name_purchase,
           source,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-               $24,$25,$26,$27,$28,'staff','new',now())
+               $24,$25,$26,$27,$28,$29,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, addr ? jsonbText(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
@@ -1331,7 +1332,11 @@ router.post('/applications', async (req, res) => {
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo),   // #97: General REO slot
-       refiCols.payoff, refiCols.origPrice, refiCols.acqDate, refiCols.payoffLender, refiCols.payoffLoanNumber]);
+       refiCols.payoff, refiCols.origPrice, refiCols.acqDate, refiCols.payoffLender, refiCols.payoffLoanNumber,
+       /* HOW IS IT VESTED — asked at the door now, not waived afterwards
+          (owner-directed 2026-08-02). One shared reading, so this form, the
+          borrower's application and the public form can never disagree. */
+       require('../lib/fields').vestsIndividually(b)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }

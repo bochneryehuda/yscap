@@ -307,7 +307,7 @@ export default function StaffNewFile() {
   const _fromTermSheet = Object.keys(_pf.f).length > 0 || Object.keys(_pf.addr).length > 0;
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '', vesting: 'entity',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     // Refinance-only. The loan is sized on the as-is value above; these carry the
@@ -469,6 +469,9 @@ export default function StaffNewFile() {
         // creates on the borrower after the file is made.
         llcId: f.llcId || undefined,
         entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
+        // The server reads this through fields.vestsIndividually, which lets a
+        // picked entity win — so the two can never contradict each other.
+        vesting: f.vesting || 'entity',
         program: f.program || undefined,
         loanType: f.loanType || undefined,
         /* A refinance sends NO purchase price and NO assignment — it is sized on
@@ -689,6 +692,29 @@ export default function StaffNewFile() {
                 <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
             )}
           </div>
+          {/* HOW IS IT VESTED — asked outright (owner-directed 2026-08-02).
+              Leaving the LLC box blank used to be the only way to say "no
+              entity", which nobody reads as an answer, so every new file was
+              created as an entity purchase and undone later inside the file. */}
+          <div className="field"><label>How is it vested?</label>
+            <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 4 }}>
+              {[{ v: 'entity', t: 'In an entity (LLC / Corp)' }, { v: 'individual', t: 'In the borrower’s own name — no entity' }].map(o => (
+                <label key={o.v} className="row" style={{ gap: 6, alignItems: 'center', cursor: 'pointer', color: '#141B22' }}>
+                  <input type="radio" name="vestingChoice" value={o.v}
+                    checked={(f.vesting || 'entity') === o.v}
+                    onChange={() => setF(s2 => (o.v === 'individual'
+                      ? { ...s2, vesting: 'individual', entityName: '', llcId: '' }
+                      : { ...s2, vesting: 'entity' }))} />
+                  <span>{o.t}</span>
+                </label>
+              ))}
+            </div>
+            <p className="muted small" style={{ marginTop: 4, color: '#4B585C' }}>
+              An individual purchase asks the borrower for a non-owner-occupied affidavit instead of entity paperwork.
+              The Gold Standard program will refuse to register an individually-vested file.
+            </p>
+          </div>
+          {(f.vesting || 'entity') === 'entity' ? (
           <div className="field"><label>Vesting entity / LLC (if any)</label>
             <LlcPicker value={f.entityName} staff borrowerId={borrowerId}
               placeholder={borrowerId ? 'Which LLC is this property purchased under?' : 'Type the LLC name (created once the borrower is saved)'}
@@ -697,6 +723,7 @@ export default function StaffNewFile() {
               {borrowerId ? 'Pick one of this borrower’s LLCs or create a new one — we’ll ask for its EIN letter, formation docs, and operating agreement.'
                 : 'If the property vests in an LLC, type its name — it’s created on the borrower once the file is saved.'}
             </p></div>
+          ) : null}
           </div>
         </div>
 
