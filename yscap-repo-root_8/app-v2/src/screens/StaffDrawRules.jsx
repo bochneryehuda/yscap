@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { InfoTip } from '../components/FileSections.jsx';
@@ -162,6 +162,9 @@ export default function StaffDrawRules() {
         {/* Sitewire partner linking (smart-link) */}
         <PartnerLinks partners={partners} onChanged={load} />
 
+        {/* Who each note buyer's draw deliveries go to */}
+        <InvestorContacts />
+
         {/* Add / update a rule */}
         <div className="dd-card">
           <CardHead icon="plus" title="Add / update a rule" />
@@ -246,6 +249,80 @@ export default function StaffDrawRules() {
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* INVESTOR DELIVERY CONTACTS (owner-directed 2026-08-03) — who at each note buyer receives a draw
+   once the borrower has agreed to it. Saved per note buyer, so the delivery goes to the right
+   people automatically every time. A buyer with nothing saved here blocks its own delivery with a
+   plain "add the contacts" message rather than guessing an address. */
+function InvestorContacts() {
+  const [rows, setRows] = useState([]);
+  const [draft, setDraft] = useState({ label: '', email: '', name: '', role: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [note, setNote] = useState('');
+  const load = useCallback(() => {
+    api.get('/api/sitewire/investor-contacts').then((d) => setRows(d.contacts || [])).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function add() {
+    setBusy(true); setErr(''); setNote('');
+    try {
+      await api.post('/api/sitewire/investor-contacts', draft);
+      setDraft({ label: draft.label, email: '', name: '', role: '' });   // keep the buyer, clear the person
+      setNote('Contact saved.'); load();
+    } catch (e) { setErr(e?.data?.error || 'Could not save that contact.'); }
+    finally { setBusy(false); }
+  }
+  async function remove(id, email) {
+    if (!window.confirm(`Stop sending draw deliveries to ${email}?`)) return;
+    setBusy(true); setErr(''); setNote('');
+    try { await api.del(`/api/sitewire/investor-contacts/${id}`); setNote('Contact removed.'); load(); }
+    catch (e) { setErr(e?.data?.error || 'Could not remove that contact.'); }
+    finally { setBusy(false); }
+  }
+
+  const byBuyer = new Map();
+  for (const r of rows) { if (!byBuyer.has(r.label)) byBuyer.set(r.label, []); byBuyer.get(r.label).push(r); }
+
+  return (
+    <div className="dd-card">
+      <CardHead icon="link" title="Investor draw-delivery contacts" />
+      <div className="small" style={{ color: '#4B585C', marginBottom: 8 }}>
+        When the borrower agrees to a draw, PILOT emails it to the note buyer who funds it — with the
+        inspector’s report, our report, the draw packet and the signed wire instructions. These are the
+        people who receive it. The draw coordinator, the loan officer and draws@yscapgroup.com are always
+        copied; the borrower never is.
+      </div>
+      {[...byBuyer.entries()].map(([label, list]) => (
+        <div key={label} style={{ marginBottom: 10 }}>
+          <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>{label}</div>
+          {list.map((c) => (
+            <div key={c.id} className="row between" style={{ gap: 8, alignItems: 'center', padding: '3px 0', flexWrap: 'wrap' }}>
+              <span className="small" style={{ color: c.active ? '#141B22' : '#8a949a', textDecoration: c.active ? 'none' : 'line-through' }}>
+                {c.email}{c.name ? ` · ${c.name}` : ''}{c.role ? ` · ${c.role}` : ''}
+              </span>
+              {c.active
+                ? <button className="btn btn-xs ghost" disabled={busy} onClick={() => remove(c.id, c.email)}>Remove</button>
+                : <span className="small" style={{ color: '#8a949a' }}>removed</span>}
+            </div>
+          ))}
+        </div>
+      ))}
+      {!rows.length && <div className="small" style={{ color: '#4B585C' }}>No investor contacts saved yet.</div>}
+
+      <div className="row" style={{ gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="input" style={{ width: 150 }} placeholder="Note buyer (e.g. Fidelis)" value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
+        <input className="input" style={{ width: 230 }} placeholder="email@investor.com" value={draft.email} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))} />
+        <input className="input" style={{ width: 140 }} placeholder="Name (optional)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+        <input className="input" style={{ width: 140 }} placeholder="Role (optional)" value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))} />
+        <button className="btn btn-sm primary" disabled={busy || !draft.label.trim() || !draft.email.trim()} onClick={add}>Add contact</button>
+      </div>
+      {note ? <div className="small" style={{ color: '#2F7F86', marginTop: 6 }}>{note}</div> : null}
+      {err ? <div className="small" style={{ color: '#B4453C', marginTop: 6 }}>{err}</div> : null}
     </div>
   );
 }
