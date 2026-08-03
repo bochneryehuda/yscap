@@ -39,13 +39,48 @@ function tokenKey(s) {
   return collapse(s).toLowerCase().replace(/[.,'’]/g, '').replace(/\s+/g, ' ').trim();
 }
 
-// "Unit 4B" / "#4B" / "Apt. 4-B" / "Ste 200" → "4b" / "4-b" / "200".
-const UNIT_WORD = /^(unit|apt|apartment|ste|suite|fl|floor|rm|room|bldg|building|lot|trlr|#)\s*/i;
+/**
+ * "Unit 4B" / "#4B" / "Apt. 4-B" / "Ste 200" → "4b" / "4-b" / "ste200".
+ *
+ * THE KIND WORD IS NOT ALWAYS NOISE. Stripping every one of them collapsed
+ * `Apt 5`, `Suite 5`, `Floor 5`, `Building 5` and `Lot 5` into the same key `5` —
+ * so in a mixed-use building the commercial Suite 5 and the residential Apt 5
+ * became one property, and a whole BUILDING 5 became one of its own apartments.
+ *
+ * But keeping every kind distinct is worse in the other direction, and far more
+ * often: `Apt 5`, `Unit 5`, `#5` and a bare `5` are the same apartment written by
+ * five different appraisers, and splitting those would fracture the corpus on its
+ * commonest variation.
+ *
+ * So the DWELLING words form ONE equivalence class (they are synonyms for "the
+ * apartment") and drop out, while a kind that names a genuinely DIFFERENT thing —
+ * a suite, a floor, a room, a building, a lot — is KEPT as a canonical prefix.
+ * `Ste 200` and `Suite 200` still agree; `Ste 200` and `Apt 200` no longer do.
+ */
+const DWELLING_WORDS = /^(unit|apt|apartment|trlr|trailer|condo|no|num|number|#)\s*\.?\s*/i;
+// LONGEST SPELLING FIRST, and `\b` after it. Without both, `fl|floor` matched the
+// "Fl" inside "Floor 5" and left "oor 5" behind, so the key came out `floor5` —
+// which LOOKS right and is actually the prefix 'fl' glued to the debris 'oor5',
+// and would never match a file that wrote "Fl 5".
+const KEPT_KINDS = [
+  [/^(suite|ste)\b\s*\.?\s*/i, 'ste'],
+  [/^(floor|fl)\b\s*\.?\s*/i, 'fl'],
+  [/^(room|rm)\b\s*\.?\s*/i, 'rm'],
+  [/^(building|bldg)\b\s*\.?\s*/i, 'bldg'],
+  [/^(lot)\b\s*\.?\s*/i, 'lot'],
+  [/^(department|dept)\b\s*\.?\s*/i, 'dept'],
+];
 function unitKey(raw) {
   let u = collapse(raw).replace(/^#\s*/, '');
-  let prev;
-  do { prev = u; u = u.replace(UNIT_WORD, ''); } while (u !== prev);
-  return tokenKey(u).replace(/\s+/g, '');
+  // A KEPT kind is read once, from the front, and becomes the prefix. Read before
+  // the dwelling words so "Building 5" is a building rather than a bare 5.
+  let kind = '';
+  for (const [re, canon] of KEPT_KINDS) {
+    if (re.test(u)) { kind = canon; u = u.replace(re, ''); break; }
+  }
+  if (!kind) { let prev; do { prev = u; u = u.replace(DWELLING_WORDS, ''); } while (u !== prev); }
+  const rest = tokenKey(u).replace(/\s+/g, '');
+  return rest ? kind + rest : '';
 }
 
 /** Is the first token a house number? A street with none is a ROAD, not a property. */
@@ -70,6 +105,14 @@ function normalizeParts(input) {
   if (typeof input === 'string') src = { street: input };
   let street = collapse(src.street || src.line1 || src.address || '');
   let city = collapse(src.city || '');
+  // A town we are INFERRING rather than reading — today, the subject's town lent
+  // to a comparable that named none (gated on the ZIPs matching, see ingest.js).
+  // It is applied LAST, after the packed-street parse below, because a town the
+  // comparable actually WROTE — even buried inside its own address line — must
+  // always beat one we inherited. Passing it as `city` put it in front of that
+  // parse and filed the house in the wrong town, creating the very split the
+  // inheritance exists to close.
+  const fallbackCity = collapse(src.fallbackCity || '');
   let state = collapse(src.state || '');
   let zip = collapse(src.zip || src.postal_code || '');
   let unit = collapse(src.unit || '');
@@ -93,6 +136,9 @@ function normalizeParts(input) {
     const s = ADDR.splitUnit(street);
     if (s.unit) { unit = s.unit; street = s.line1; }
   }
+  // LAST: the inferred town, only if nothing we READ produced one — not the
+  // explicit element, not the packed address line.
+  if (!city && fallbackCity) city = fallbackCity;
   return {
     street: ADDR.abbreviateStreet(street) || street,
     unit,
@@ -114,7 +160,42 @@ function propertyKey(input) {
   if (!p.state || p.state.length !== 2) return null;
   const locality = p.city ? tokenKey(p.city) : (p.zip ? 'z' + p.zip : '');
   if (!locality) return null;
-  return [tokenKey(p.street), unitKey(p.unit), locality, p.state.toLowerCase()].join('|');
+  return [streetKey(p.street), unitKey(p.unit), locality, p.state.toLowerCase()].join('|');
+}
+
+/**
+ * THE STREET, REDUCED TO WHAT MAKES IT THAT STREET.
+ *
+ * Deliberately KEY-ONLY: it never touches a displayed or stored address, so it
+ * cannot re-open the 2026-07-26 "PILOT addresses got messed up again" incident.
+ * `abbreviateStreet` already did the mailing-form work above; this closes the
+ * three ways one street was still producing several keys, each measured:
+ *
+ *   150 15 Ave  ≠  150 15th Ave          (the ordinal)
+ *   8 St James  ≠  8 Saint James         (the saint)
+ *   12 Oak Street Ext ≠ 12 Oak St Ext    (a suffix left long mid-name)
+ *
+ * The ordinal is STRIPPED rather than added, because the two forms are the same
+ * street and stripping is the direction that cannot invent one ("100 Route 9"
+ * must never become "Route 9th"). Word-ordinals are deliberately NOT handled:
+ * "First St" and "1st St" do differ in the wild and guessing between them would
+ * be the kind of merge this file exists to prevent.
+ */
+const SAINT_RE = /\bsaint\b/gi;
+const ORDINAL_RE = /\b(\d+)(st|nd|rd|th)\b/gi;
+const STREET_WORD = {
+  street: 'st', avenue: 'ave', road: 'rd', drive: 'dr', lane: 'ln', place: 'pl',
+  court: 'ct', boulevard: 'blvd', circle: 'cir', terrace: 'ter', parkway: 'pkwy',
+  highway: 'hwy', extension: 'ext', turnpike: 'tpke', square: 'sq', trail: 'trl',
+  north: 'n', south: 's', east: 'e', west: 'w',
+  northeast: 'ne', northwest: 'nw', southeast: 'se', southwest: 'sw',
+};
+function streetKey(street) {
+  const base = tokenKey(street).replace(SAINT_RE, 'st').replace(ORDINAL_RE, '$1');
+  // The FIRST token is the house number and is never a street word — "1 North St"
+  // must not have its number rewritten, and a range like "27-29" must survive.
+  const toks = base.split(' ').filter(Boolean);
+  return toks.map((t, i) => (i === 0 ? t : (STREET_WORD[t] || t))).join(' ');
 }
 
 /**
@@ -238,7 +319,22 @@ function bathsNumeric({ bathsFull, bathsHalf, bathsText }) {
   return +m[1] + (m[2] ? +m[2] * 0.5 : 0);
 }
 
+/**
+ * WHICH VERSION OF THE IDENTITY RULE THIS FILE IMPLEMENTS.
+ *
+ * `address_key` IS a property's identity, so changing how it is computed makes
+ * every stored row's key stale — and a stale key does not fail loudly, it mints a
+ * DUPLICATE the next time a report arrives about that house. BUMP THIS whenever
+ * `propertyKey` (or anything it calls) can produce a different string for the
+ * same address, and the boot sweep in `research/rekey.js` re-keys the back book.
+ */
+// 2 — the street name eaten as a unit ("5 Building Rd"), the unit KIND collapsed
+//     ("Apt 5" = "Suite 5" = "Floor 5"), and one street split several ways by
+//     ordinals, "Saint" and a long suffix mid-name.
+const KEY_VERSION = 2;
+
 module.exports = {
   propertyKey, normalizeParts, displayAddress, titleCity, saleDate, yearBuilt, lotSqft, num, int, bathsNumeric,
-  _internals: { tokenKey, unitKey, hasHouseNumber, zip5 },
+  KEY_VERSION,
+  _internals: { tokenKey, unitKey, streetKey, hasHouseNumber, zip5 },
 };

@@ -231,7 +231,15 @@ router.get('/:appId', async (req, res, next) => {
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
       impliedValue: compImpliedValue({ comps: impliedComps, subjectGla: appr.gla }),
     };
-    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score,
+    // WHAT KIND OF BUILDING EACH COMPARABLE IS, AND HOW MANY DOORS. A MISMO
+    // sales grid has no element for either, so the table cannot answer it and
+    // the column was simply absent — on the one screen where an underwriter
+    // reviews the appraiser's own comps. The warehouse answers it (this report's
+    // own reading first, then what every other report says about that address);
+    // see `research/comp-identity`.
+    const comparables = await require('../lib/research/comp-identity')
+      .attachCompIdentity(comps.rows, { db, appraisal: appr });
+    res.json({ appraisal: appr, comparables, units: units.rows, findings: open, photos: photos.rows, summary, score,
       // The standing appraisal-vs-file side-by-side. Independent of the findings above: a fact stays
       // in this table whether or not a finding was ever raised on it, and whether or not that finding
       // has been answered.

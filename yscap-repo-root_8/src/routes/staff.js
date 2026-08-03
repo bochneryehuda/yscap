@@ -6217,7 +6217,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       // only one of the three with no owner and no history — so it showed "nobody
       // assigned" on the desk and in the overdue nudge (which could then never
       // reach the assignee tier), and its timeline was empty while orders placed
-      // BEFORE this shipped had a 'placed' line from db/427's back-fill. Old rows
+      // BEFORE this shipped had a 'placed' line from db/454's back-fill. Old rows
       // being better recorded than new ones is the drift these two calls close.
       await orderTracking.ensureAssignee(appId, 'attorney');
       await orderTracking.recordEvent({

@@ -148,9 +148,18 @@ function adjustComp(comp, adjustments) {
 function normalizeAdjustments(adjustments) {
   const out = [];
   if (!adjustments) return out;
+  // A GRID LINE HAS TO FIT ITS COLUMN. `adjusted_price` is numeric(14,2) and
+  // `net_adj_pct` is numeric(8,2) — so the PERCENTAGE overflows an order of
+  // magnitude before the money does. A pasted 5000000000 on a $300,000 comp made
+  // Postgres answer 22003 and the route had no catch, which reads to the user as
+  // "PILOT is broken", not "that number is too big". A line this size is a paste
+  // accident, never a real adjustment, so it is DROPPED like an unknown key
+  // rather than clamped to a number nobody typed.
+  const MAX_ADJ = 1e9;
   const push = (key, amount, note, source) => {
     const a = num(amount);
     if (a == null || a === 0) return;
+    if (!Number.isFinite(a) || Math.abs(a) > MAX_ADJ) return;
     if (!GRID_KEYS.has(key)) return;      // an unknown line is dropped, never silently summed
     out.push({ key, label: labelOf(key), amount: a, note: note || null, source: source || 'user' });
   };
@@ -228,11 +237,33 @@ function compWarnings(subject, comp, adj, { today = null } = {}) {
 function setWarnings(subject, comps, { today = null } = {}) {
   const w = [];
   const T = THRESHOLDS;
-  const usable = comps.filter((c) => c.adjustedPrice != null);
+  // THE SAME SET THE VALUE IS COMPUTED FROM — `reconcile` filters switched-off
+  // comps and this did not, so warnings described rows that were not in the
+  // answer. Concretely: four comps with three switched off produced a value
+  // resting on ONE comp and NO "too few comps" warning, and `finalize` gates on
+  // the value's own comp count, so that valuation could be finished clean.
+  const usable = comps.filter((c) => c.adjustedPrice != null && c.include !== false);
   const closed = usable.filter((c) => (c.sale_status || 'closed') === 'closed');
   if (closed.length < T.minClosedComps) {
     w.push({ code: 'too_few_comps', severity: closed.length === 0 ? 'fatal' : 'warning',
       text: `Only ${closed.length} closed sale${closed.length === 1 ? '' : 's'} — an opinion of value normally rests on at least ${T.minClosedComps}.` });
+  }
+  // AN ASKING PRICE IS NOT A SALE. `reconcile` already halves a listing's weight,
+  // but a half-weighted listing in a small set still carries a lot — a recent,
+  // well-matched one was measured at 36% of the total — and it counts in FULL
+  // toward the median, the range and the price per foot, which are plain
+  // unweighted statistics over the same rows. The value is still produced (rule 2
+  // of this engine: never hide a weak answer, show it wearing its caveats); the
+  // reader is simply told how much of it is what somebody is asking.
+  const open = usable.filter((c) => c.sale_status && c.sale_status !== 'closed');
+  if (open.length && usable.length) {
+    const share = Math.round((open.length / usable.length) * 100);
+    if (share >= 25) {
+      w.push({ code: 'listings_in_the_answer', severity: 'warning',
+        text: `${open.length} of the ${usable.length} comparables ${open.length === 1 ? 'is' : 'are'} still `
+          + `for sale or under contract — about ${share}% of this answer rests on what somebody is ASKING, `
+          + 'not on what anybody paid. Asking prices lead the market on the way up and lag it on the way down.' });
+    }
   }
   // BRACKETING: a defensible value has comps ABOVE and BELOW the subject on the
   // things that drive price. Without it the answer is an extrapolation.
@@ -298,6 +329,16 @@ function reconcile(subject, comps, opts = {}) {
     return w > 0 ? w : 0.0001;
   });
   const wsum = weights.reduce((a, b) => a + b, 0);
+  // HOW MUCH OF THIS ANSWER IS AN ASKING PRICE. A listing is halved above, but a
+  // half-weighted listing in a small set still carries a lot: with three comps a
+  // recent, well-matched listing was measured carrying 36% of the total — and it
+  // counts in FULL toward the median, the range and the price per foot, which are
+  // plain unweighted statistics over the same rows. A number resting a third on
+  // what somebody is ASKING is a different claim from one resting on what people
+  // PAID, and the reader has to be told which they are looking at.
+  const openWeight = usable.reduce((acc, c, i) =>
+    acc + ((c.sale_status && c.sale_status !== 'closed') ? weights[i] : 0), 0);
+  const listingWeightPct = wsum > 0 ? round((openWeight / wsum) * 100, 0.1) : 0;
   const prices = usable.map((c) => c.adjustedPrice);
   const weighted = wsum > 0 ? usable.reduce((acc, c, i) => acc + c.adjustedPrice * weights[i], 0) / wsum : null;
   const mid = median(prices);
@@ -320,6 +361,9 @@ function reconcile(subject, comps, opts = {}) {
     method,
     indicatedValue: round(raw, roundTo),
     indicatedValueRaw: raw,
+    // What share of the weighted answer is an ASKING price rather than a sale.
+    listingWeightPct,
+
     weightedAverage: round(weighted, roundTo),
     median: round(mid, roundTo),
     mean: round(mean, roundTo),
@@ -403,9 +447,25 @@ const DISCLAIMER = 'This is an internal value indication built from the comparab
 function deriveMarketRates(obs, opts = {}) {
   const minSample = opts.minSample || 8;
   const today = opts.today || null;
-  const rows = (obs || []).filter((o) => num(o.sale_price) != null && (o.sale_status || 'closed') === 'closed');
+  // A FORCED SALE IS NOT A MARKET PRICE. A bank selling REO, a short sale, an
+  // estate or a relocation is transacting under a constraint an ordinary buyer
+  // and seller do not have, and the price says so — measured, 8 REO alongside 8
+  // arm's-length dragged the median down to $217/sqft. They were neither filtered
+  // out NOR selectable, so every derived rate quietly averaged two different
+  // markets. They are set aside here and the count is REPORTED, never dropped in
+  // silence: on a corpus where distressed sales are most of what we hold, "we set
+  // 14 aside" is the most important line on the panel.
+  const closedRows = (obs || []).filter((o) => num(o.sale_price) != null && (o.sale_status || 'closed') === 'closed');
+  const rows = closedRows.filter((o) => !isDistressed(o.sale_type));
+  const setAside = closedRows.length - rows.length;
   const withGla = rows.filter((o) => num(o.gla) > 200);
-  const out = { sampleSize: rows.length, minSample };
+  const out = { sampleSize: rows.length, minSample,
+    distressedSetAside: setAside,
+    distressedNote: setAside
+      ? `${setAside} forced sale${setAside === 1 ? '' : 's'} (bank-owned, short sale, estate or `
+        + 'relocation) were left out of these rates — a sale under that kind of pressure is not '
+        + 'what an ordinary buyer would pay'
+      : null };
 
   const ppsf = withGla.map((o) => num(o.sale_price) / num(o.gla));
   out.pricePerSqft = withGla.length >= minSample
@@ -416,10 +476,58 @@ function deriveMarketRates(obs, opts = {}) {
   // of the same house is worth a fraction of the average foot (the land, the
   // kitchen and the systems are already paid for); the trade convention is a
   // quarter to a half. We publish the range and use the midpoint, and we SAY so.
-  out.glaAdjustmentPerSqft = out.pricePerSqft.value == null ? { value: null, why: out.pricePerSqft.why }
-    : { value: round(out.pricePerSqft.value * 0.4, 1),
+  //
+  // AND A MEASURED PEER RATE BEATS THE CONVENTION. `opts.peerGlaRate` is what
+  // appraisers in THIS market actually wrote on their grids — each size
+  // adjustment divided by the size difference it was made for (db/441, from the
+  // adjustment corpus). The 40% figure above is a rule of thumb about a national
+  // trade habit; this is evidence from the reports we paid for. Measured over the
+  // 152 real reports: 468 usable rates, ZERO negative, median $40/sq ft.
+  //
+  // It is PASSED IN rather than queried here, because this function is pure and
+  // its purity is what makes every rate in it testable without a database.
+  //
+  // The convention remains the fallback, and the two are never blended: they are
+  // different KINDS of claim — one is what local appraisers did, the other is a
+  // national habit — and averaging them would produce a number that is neither,
+  // with a `basis` that could not honestly describe it. Whichever is used says so.
+  //
+  // AND THE RATE IS PER BASIS, because a foot of living area and a foot of gross
+  // BUILDING area are not the same foot (db/443). Splitting them was correct and
+  // it STRANDED evidence: measured across our own markets, 8 of the 18 that
+  // cleared the sample floor hold their adjustments almost entirely on 1025
+  // grids — Scranton 19, Elizabeth 11, Pittston 10, Roselle 8, all building area
+  // — so asking only for living area drops those markets back to the national
+  // rule of thumb while we hold twenty real local adjustments in each. They are
+  // also exactly the 2-4 unit towns. So BOTH are carried, and the suggester picks
+  // the one that matches the comparable in front of it; they are never blended.
+  const peer = opts.peerGlaRate;
+  const peerUsable = peer && peer.ok && num(peer.median) > 0 && num(peer.n) >= minSample;
+  const peerGba = opts.peerGlaRateGba;
+  const gbaUsable = peerGba && peerGba.ok && num(peerGba.median) > 0 && num(peerGba.n) >= minSample;
+  out.glaAdjustmentPerSqftGba = gbaUsable
+    ? { value: round(num(peerGba.median), 1),
+        low: peerGba.q1 == null ? null : round(num(peerGba.q1), 1),
+        high: peerGba.q3 == null ? null : round(num(peerGba.q3), 1),
+        n: peerGba.n, source: 'peer', basis_of: 'gba',
+        // WHERE IT CAME FROM, IN THE SENTENCE ITSELF. The rate may have been
+        // measured one rung out from the subject's own town, and "$28 a foot in
+        // Newark" and "$28 a foot across New Jersey" are different claims — only
+        // one of them true. `where` is the scope the corpus actually answered at.
+        scope: peerGba.scope || null, relaxed: !!peerGba.relaxed,
+        basis: `what appraisers ${peerGba.where || 'in this market'} actually adjusted on 2-4 unit grids, across ${peerGba.n} size adjustments measured on gross building area` }
+    : null;
+  out.glaAdjustmentPerSqft = peerUsable
+    ? { value: round(num(peer.median), 1),
+        low: peer.q1 == null ? null : round(num(peer.q1), 1),
+        high: peer.q3 == null ? null : round(num(peer.q3), 1),
+        n: peer.n, source: 'peer',
+        scope: peer.scope || null, relaxed: !!peer.relaxed,
+        basis: `what appraisers ${peer.where || 'in this market'} actually adjusted, across ${peer.n} size adjustments on reports we paid for` }
+    : out.pricePerSqft.value == null ? { value: null, source: 'none', why: out.pricePerSqft.why }
+      : { value: round(out.pricePerSqft.value * 0.4, 1),
         low: round(out.pricePerSqft.value * 0.25, 1), high: round(out.pricePerSqft.value * 0.5, 1),
-        n: withGla.length,
+        n: withGla.length, source: 'convention',
         basis: 'about 40% of the average price per foot — an extra foot of the same house is worth less than the average foot, and the trade convention is a quarter to a half' };
 
   out.perBedroom = groupDelta(withGla, (o) => num(o.beds), minSample, 'bedroom');
@@ -447,18 +555,55 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
     const k = keyOf(o);
     if (k == null) continue;
     if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(num(o.sale_price) / num(o.gla));
+    groups.get(k).push({ ppsf: num(o.sale_price) / num(o.gla), gla: num(o.gla), price: num(o.sale_price) });
   }
+  const ppsfOf = (k) => median(groups.get(k).map((r) => r.ppsf));
+  const glaOf = (k) => median(groups.get(k).map((r) => r.gla));
   const keys = [...groups.keys()].sort((a, b) => a - b).filter((k) => groups.get(k).length >= 3);
   const n = keys.reduce((acc, k) => acc + groups.get(k).length, 0);
   if (keys.length < 2 || n < minSample) {
     return { value: null, n, why: `not enough sales spread across different ${label} counts to read a difference (${n} usable, need ${minSample} across at least two groups)` };
   }
-  const deltas = [];
+  // SIZE IS THE CONFOUND, AND IT IS NOT SUBTLE. Price per foot runs INVERSELY to
+  // size (the land, the kitchen and the systems are already paid for), and more
+  // bedrooms and bathrooms come with more house — so the price-per-foot gap
+  // between a 2-bath group and a 3-bath group is mostly measuring the SIZE
+  // difference, not the bathroom. Multiplied back by the subject's living area it
+  // produced a measured **$86,940 for one bathroom**, while the identical
+  // confound pointing the other way was correctly refused as "the wrong sign" and
+  // the message blamed the sample — when 73 sales is not a small sample, it is a
+  // sample answering a different question.
+  //
+  // A step is only readable when the two groups are genuinely comparable in size.
+  // Anything wider is skipped, and if that leaves nothing the refusal NAMES the
+  // confound rather than the sample size, because "get more sales" is the wrong
+  // advice for a problem more sales will not fix.
+  const MAX_GLA_SPREAD = 0.15;
+  const deltas = []; let confounded = 0;
   for (let i = 1; i < keys.length; i++) {
     const step = keys[i] - keys[i - 1];
     if (!step) continue;
-    deltas.push((median(groups.get(keys[i])) - median(groups.get(keys[i - 1]))) / step);
+    const gA = glaOf(keys[i - 1]), gB = glaOf(keys[i]);
+    if (gA > 0 && gB > 0 && Math.abs(gB - gA) / Math.min(gA, gB) > MAX_GLA_SPREAD) { confounded++; continue; }
+    deltas.push((ppsfOf(keys[i]) - ppsfOf(keys[i - 1])) / step);
+  }
+  // A DISCARDED STEP IS EVIDENCE OF A CONFOUND, NOT A ROW TO IGNORE. Skipping it
+  // and medianing whatever survived turned a CORRECT refusal into a confident
+  // wrong answer: on the live NJ segment the 2.5→3 bath step (1,480 vs 3,152 sqft)
+  // was the strongly negative delta that used to trigger the "wrong sign"
+  // refusal, and dropping it left one surviving step publishing $23.54/sqft —
+  // **$35,250 for one bathroom**. The guard built to stop "$86,940 for one
+  // bathroom" produced $35,250 on the first real market it saw.
+  //
+  // So a set where ANY step is confounded is a confounded set. It is the same
+  // sample either way; removing the inconvenient half does not make the rest
+  // trustworthy, it just hides why it looked wrong.
+  if (confounded) {
+    return { value: null, n, confoundedSteps: confounded, readableSteps: deltas.length,
+      why: `the sales with more ${label}s in this market are also materially BIGGER houses, so the `
+        + `difference in price per foot between them is measuring the size, not the ${label} — `
+        + `this is not something more sales would fix, and a rate read off it would be wrong by a `
+        + 'multiple, not by a little' };
   }
   const d = median(deltas);
   if (d == null) return { value: null, n, why: `could not read a per-${label} difference from this set` };
@@ -471,14 +616,85 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
   if (!(signed > 0)) {
     return { value: null, n, why: `our sales do not show a consistent price difference by ${label} yet — the ${n} we have point the wrong way, which means the sample is too small or too mixed to read` };
   }
+  // A PLAUSIBILITY CEILING, because a confound can survive every check above and
+  // still produce a number nobody would type. Expressed against the market's own
+  // median sale price rather than as a fixed dollar figure, so it means the same
+  // thing in Paterson and in Tenafly: one bedroom, one bathroom or one condition
+  // grade is not worth a quarter of the whole house. Past that the reading is
+  // telling us about something other than the thing it is named for.
+  const medPrice = median(rows.map((o) => num(o.sale_price)).filter((v) => v != null));
+  const medGla = median(rows.map((o) => num(o.gla)).filter((v) => v > 0));
+  const dollarsAtMedian = medGla ? signed * medGla : null;
+  if (medPrice && dollarsAtMedian != null && dollarsAtMedian > medPrice * 0.25) {
+    return { value: null, n,
+      why: `this set reads as ${money(round(dollarsAtMedian, 250))} for one ${label} on a typical house `
+        + `here (${money(round(medPrice, 1000))}) — a quarter of the whole property for one ${label} is `
+        + 'not a rate, it is a sign the groups differ in some other way we cannot see, so nothing is '
+        + 'filled in' };
+  }
   return {
     valuePerSqft: round(signed, 0.01), n,
-    groups: keys.map((k) => ({ key: k, n: groups.get(k).length, medianPricePerSqft: round(median(groups.get(k)), 1) })),
-    basis: `difference in median price per foot between ${label} groups (${n} sales) — multiply by the subject's living area to get dollars`,
+    // What that rate comes to in DOLLARS on a typical house here — the figure a
+    // human is actually being asked to sanity-check, which a per-foot rate hides.
+    approxDollarsOnTypicalHouse: dollarsAtMedian == null ? null : round(dollarsAtMedian, 250),
+    confoundedSteps: confounded || undefined,
+    groups: keys.map((k) => ({ key: k, n: groups.get(k).length,
+      medianPricePerSqft: round(ppsfOf(k), 1), medianGla: round(glaOf(k), 1) })),
+    basis: `difference in median price per foot between ${label} groups (${n} sales, matched for size) `
+      + '— multiply by the subject\'s living area to get dollars',
   };
 }
 
-/** Monthly % change in median $/sqft, older half vs newer half. Null when thin. */
+/**
+ * THE TWO HALVES HAVE TO BE FAR ENOUGH APART TO BE A TREND.
+ *
+ * A percentage gap divided by the months between the halves is a RATE, and this
+ * used to gate only on how MANY dated sales there were — never on how far apart
+ * they sat. Sixteen sales all closed inside one month still passed, and a 4% gap
+ * over ONE month became 3.95% A MONTH. The same sixteen readings spread over a
+ * year read 0.33%/month: a 12-fold swing driven entirely by the spacing.
+ *
+ * `suggestAdjustments` then multiplied that by the months since a comp sold with
+ * no ceiling, so a $400,000 comp sold a year ago was pre-filled at **+$190,750**
+ * — a 47.7% net adjustment offered to a human as a suggestion.
+ *
+ * Three guards, and each refuses OUT LOUD rather than returning a quiet number:
+ *   * the half-midpoints must be at least MIN_TREND_MONTHS apart;
+ *   * the resulting rate must be inside MAX_MONTHLY_PCT. A crude median-of-halves
+ *     on a few dozen sales that says the market is moving faster than ~1.5% a
+ *     month is telling us the two halves differ for some reason OTHER than time
+ *     (different streets, different sizes, a couple of distressed sales) — the
+ *     honest reading of an implausible rate is "this method cannot see it";
+ *   * the total dollars are capped per comp where it is applied, below.
+ */
+/**
+ * IS THIS SALE'S PRICE A MARKET PRICE?
+ *
+ * Read off the appraiser's OWN stated sale type — never guessed from the price
+ * being low, which would be circular. Anything we cannot read is treated as an
+ * ORDINARY sale, deliberately: excluding on a hunch would quietly shrink the
+ * sample, and this warehouse's rule is that an unread fact is not a "yes".
+ */
+// NO WORD BOUNDARIES — the vocabulary this system actually stores is CamelCase
+// with no spaces. `extract.js` whitelists exactly `ArmsLengthSale`, `REOSale`,
+// `EstateSale`, `ShortSale`, `Listing`, `CourtOrderedSale` and `ingest.js` stores
+// them verbatim, so `\breo\b` could not match `REOSale` (O→S is not a boundary)
+// and the filter was a no-op on every real row. `compWarnings` 390 lines above
+// has always used the boundary-free form and got this right — the two are now in
+// step, which is the point: one file must not label a comp "bank-owned, sells
+// below market" on screen while the other folds it into the rate.
+const DISTRESSED_RE = /(reo|bank[\s-]*owned|foreclos|short[\s-]*sale|estate|relocation|auction|trustee|sheriff|court[\s-]*ordered|distress)/i;
+function isDistressed(saleType) {
+  const s = saleType == null ? '' : String(saleType).trim();
+  return s !== '' && DISTRESSED_RE.test(s);
+}
+
+const MIN_TREND_MONTHS = 6;
+const MAX_MONTHLY_PCT = 1.5;
+// …and a ceiling on the DOLLARS a time adjustment may carry on one comp, since a
+// legal rate compounded over a long-ago sale gets there anyway. 15% mirrors the
+// net-adjustment figure this desk already flags for review.
+const MAX_TIME_ADJ_PCT = 15;
 function timeTrend(rows, today, minSample) {
   const dated = rows.filter((o) => o.sale_date).slice().sort((a, b) => String(a.sale_date).localeCompare(String(b.sale_date)));
   if (dated.length < minSample * 2) {
@@ -492,7 +708,25 @@ function timeTrend(rows, today, minSample) {
   const midNewer = newer[Math.floor(newer.length / 2)].sale_date;
   const months = monthsBetween(String(midNewer).slice(0, 10), String(midOlder).slice(0, 10));
   if (!mo || !mn || !months || months <= 0) return { value: null, n: dated.length, why: 'the sales are not spread over enough time to read a trend' };
+  if (months < MIN_TREND_MONTHS) {
+    // NAME THE SPAN THE USER CAN SEE. `months` is between the two half-MIDPOINTS,
+    // roughly half the set's actual span — so a user who supplied nine months of
+    // sales was told they supplied five, a number matching nothing on their
+    // screen.
+    const span = monthsBetween(String(dated[dated.length - 1].sale_date).slice(0, 10),
+      String(dated[0].sale_date).slice(0, 10));
+    return { value: null, n: dated.length, monthsApart: round(months, 0.1), spanMonths: round(span, 0.1),
+      why: `these ${dated.length} sales cover about ${round(span, 0.1)} month${span < 1.5 ? '' : 's'} — `
+        + 'dividing a price gap by that little time turns ordinary scatter into a huge monthly rate, '
+        + 'so we need about a year of sales before calling anything a trend' };
+  }
   const pct = ((mn - mo) / mo) * 100 / months;
+  if (!(Math.abs(pct) <= MAX_MONTHLY_PCT)) {
+    return { value: null, n: dated.length, monthsApart: round(months, 0.1),
+      why: `this set reads as ${round(pct, 0.01)}% a month, which is faster than a market moves — `
+        + `the two halves almost certainly differ for some reason other than time (different streets, `
+        + `different sizes, a distressed sale or two), so there is nothing here we can honestly call a trend` };
+  }
   return {
     value: round(pct, 0.01), n: dated.length, monthsApart: round(months, 0.1),
     basis: `median price per foot moved ${round(((mn - mo) / mo) * 100, 0.1)}% over about ${round(months, 0.1)} months between the older and newer halves of the set`,
@@ -515,11 +749,59 @@ function timeTrend(rows, today, minSample) {
 function suggestAdjustments(subject, comp, rates, opts = {}) {
   const today = opts.today || null;
   const lines = [];
-  const sqftRate = rates && rates.glaAdjustmentPerSqft ? num(rates.glaAdjustmentPerSqft.value) : null;
+  // THE RATE HAS TO MATCH THE FOOT BEING MEASURED. The delta here is the subject's
+  // LIVING area minus whatever this comparable stated — and on a 1025 (2-4 unit)
+  // grid that is gross BUILDING area, which db/427 records on the comp itself.
+  // The peer rates are measured the same way round (db/443), so a building-area
+  // comp is adjusted at the building-area rate. Without this the 2-4 unit markets
+  // fall back to the national rule of thumb while we hold twenty real local
+  // adjustments in each. A comp that does not say which foot it used is treated as
+  // living area, which is what it is on a 1004 and on every row written before
+  // db/427.
+  const basisOf = (x) => String((x && x.gla_basis) || '').trim().toLowerCase();
+  const compGba = basisOf(comp) === 'gba';
+  // THE SUBJECT'S FOOT MATTERS TOO. Every peer rate is measured as the SUBJECT's
+  // living area minus the comparable's, so a subject stated in gross building
+  // area matches neither rate. Rare — of the properties we have lent on, exactly
+  // one of 132 is in that state — but silently applying a rate to a delta it was
+  // not measured from is the thing this whole split exists to stop.
+  const subjectGba = basisOf(subject) === 'gba';
+  // A USABLE VALUE, not object truthiness. Testing the object meant a
+  // hand-built `{value:null}` would be "matched" and the comparable would lose
+  // its size line altogether rather than falling back — the one asymmetry in the
+  // pick, and the fallback is the whole reason the other branch exists.
+  //
+  // AND ZERO IS NOT A USABLE VALUE HERE, which is the same hole left half-shut:
+  // `!= null` is true for 0, and a rate of 0 is then falsy at the size-line guard
+  // below, so the comparable loses its size line entirely rather than falling
+  // back to the living-area rate. `deriveMarketRates` cannot emit one (it guards
+  // `median > 0`), but `market_rates` is STORED as jsonb and read back, so the
+  // predicate has to match the contract rather than rely on the producer. This
+  // is deliberately NOT the general rule that a zero rate is a refusal — a
+  // derived rate of exactly 0 stays meaningful elsewhere; it is this pick, where
+  // 0 can only come from a value the engine would never have written.
+  const gbaRate = rates && rates.glaAdjustmentPerSqftGba;
+  const matched = !subjectGba && compGba && gbaRate && num(gbaRate.value) > 0;
+  const rate = matched ? rates.glaAdjustmentPerSqftGba : (rates && rates.glaAdjustmentPerSqft) || null;
+  const sqftRate = rate ? num(rate.value) : null;
   const sg = num(subject && subject.gla), cg = num(comp && comp.gla);
   if (sqftRate && sg && cg && Math.abs(sg - cg) >= 25) {
+    // THE MISMATCH IS STATED, NOT SWALLOWED. A 2-4 unit comparable in a market
+    // where we hold no building-area adjustments falls back to the living-area
+    // rate — which is what happened to every such comp before the two were told
+    // apart, so it is not a regression — but the two rates differ materially
+    // ($45 against $28 on our own corpus), and a suggestion carrying somebody
+    // else's foot has to say so or it gets believed.
+    const mismatch = subjectGba || (compGba && !matched);
     lines.push({ key: 'gla', amount: round((sg - cg) * sqftRate, 50), source: 'suggested',
-      note: `${Math.round(sg - cg)} sq ft ${sg > cg ? 'more' : 'less'} than this sale, at about $${sqftRate}/sq ft (${rates.glaAdjustmentPerSqft.basis})` });
+      note: `${Math.round(sg - cg)} sq ft ${sg > cg ? 'more' : 'less'} than this sale, at about $${sqftRate}/sq ft (${rate.basis})`
+        + (mismatch
+          ? (subjectGba
+            ? ' — NOTE the property being valued states gross BUILDING area while every rate here is '
+              + 'measured from a LIVING area subject, so the two feet do not match; check it before accepting'
+            : ' — NOTE this sale states gross BUILDING area and the rate is measured on LIVING area, '
+              + 'because this market has too few 2-4 unit adjustments to read one; check it before accepting')
+          : '') });
   }
   // The URAR grid has ONE "above-grade room count" line covering total rooms,
   // bedrooms and baths, so the bedroom and bath differences are summed into it
@@ -553,8 +835,22 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
   const trend = rates && rates.monthlyMarketChangePct ? num(rates.monthlyMarketChangePct.value) : null;
   const months = today && comp && comp.sale_date ? monthsBetween(today, comp.sale_date) : null;
   if (trend && months && months > 1 && num(comp.sale_price)) {
-    lines.push({ key: 'market_conditions', amount: round(num(comp.sale_price) * (trend / 100) * months, 250), source: 'suggested',
-      note: `sold about ${Math.round(months)} months ago; our own sales moved about ${trend}% a month (${rates.monthlyMarketChangePct.basis})` });
+    // A CEILING ON THE DOLLARS, on top of the ceiling on the RATE. A rate inside
+    // MAX_MONTHLY_PCT is still compounded by however long ago the comp sold, so a
+    // three-year-old sale would carry a 54% adjustment on a perfectly ordinary
+    // 1.5%/month reading. Past MAX_TIME_ADJ_PCT of the sale price the suggestion
+    // stops being a nudge and becomes the value, and a human should be typing it:
+    // the line is capped and SAYS it was capped, rather than quietly shrinking.
+    const raw = num(comp.sale_price) * (trend / 100) * months;
+    const cap = num(comp.sale_price) * (MAX_TIME_ADJ_PCT / 100);
+    const capped = Math.abs(raw) > cap;
+    const amount = capped ? Math.sign(raw) * cap : raw;
+    lines.push({ key: 'market_conditions', amount: round(amount, 250), source: 'suggested',
+      note: `sold about ${Math.round(months)} months ago; our own sales moved about ${trend}% a month `
+        + `(${rates.monthlyMarketChangePct.basis})`
+        + (capped ? ` — held at ${MAX_TIME_ADJ_PCT}% of the sale price, because ${Math.round(months)} months `
+          + 'at that rate comes to more than a time adjustment should ever carry on its own; '
+          + 'read the sale yourself before accepting it' : '') });
   }
   // Concessions the appraiser recorded are a FACT, not a judgement — a seller
   // credit inflated the recorded price by exactly that much.
@@ -659,6 +955,13 @@ function buildGrid(subject, comps, opts = {}) {
     const adj = adjustComp(c, c.adjustments);
     const merged = Object.assign({}, c, adj);
     merged.warnings = compWarnings(subject, c, adj, { today });
+    /* THE SCORE TRAVELS WITH THE ROW. `scoreComp` has always returned named
+       `parts[]` with a weight each, and nothing ever attached it here — so every
+       consumer that wanted to show WHY a comparable scored what it did had to
+       call it again with its own idea of the subject, which is how two screens
+       come to disagree about the same comparable. One call, on the same row the
+       adjustments were computed for. */
+    merged.score = scoreComp(subject, c, { today });
     return merged;
   });
   const value = reconcile(subject, rows, opts);
