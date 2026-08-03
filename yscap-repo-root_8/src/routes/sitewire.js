@@ -223,8 +223,9 @@ router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_
 
 // ---- PILOT-branded inspection reports (phase 2b) ----
 // Turn the persisted inspector findings + the DURABLE archived photos into a branded PDF the coordinator
-// can file and the borrower can see. mode=staff (full: fee/net + GPS) | mode=borrower (borrower-safe: no
-// partner name, no fee/net, no GPS). Idempotent + cached by a version hash: an unchanged draw reuses the
+// can file and the borrower can see. mode=staff (everything) | mode=borrower (borrower-safe: no
+// capital-partner name, no photo GPS, and no project-wide fee income — but the per-draw processing fee
+// IS shown, owner-directed 2026-08-03, because it comes out of the borrower's own approved amount). Idempotent + cached by a version hash: an unchanged draw reuses the
 // stored `documents` row; a change mints a fresh one and supersedes the old. manage_draws + canSeeFile +
 // (per-draw) IDOR draw-owns-file.
 async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {

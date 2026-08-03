@@ -5,8 +5,15 @@
  *   • per-draw report  — one draw: schedule of values, per-line approved/not-approved, inspector notes,
  *                        and the inspector's photos embedded (never expiring — read from PILOT storage);
  *   • whole-project    — cumulative construction progress across every draw + all inspections;
- *   • borrower-safe    — the same, with every capital-partner name scrubbed, lender fee/net stripped, and
- *                        photo GPS removed (a borrower must never see our margin or a note-buyer name).
+ *   • borrower-safe    — the same, with every capital-partner name scrubbed and photo GPS removed.
+ *                        THE DRAW PROCESSING FEE IS SHOWN TO THE BORROWER (owner-directed 2026-08-03:
+ *                        "yes add the fee to the borrower report too" — SUPERSEDES the earlier
+ *                        "lender fee/net stripped" rule for THIS fee only). It comes out of the
+ *                        borrower's own approved amount and decides what actually wires, so hiding it
+ *                        left them reconciling a number nobody had explained. What stays hidden is
+ *                        unchanged and is a different thing entirely: the capital-partner / note-buyer
+ *                        name, and OUR fee income across the project (the "Our draw fees on this
+ *                        project" band — charged vs expected — which is our margin, not their money).
  *
  * The builder (`buildDrawReport`) is a PURE renderer over already-loaded data (app header, rollup,
  * draw sections with photo BYTES) so it unit-tests with no DB and no network. The DB/storage side
@@ -23,6 +30,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { pdfSafe, fit } = require('../lib/esign/application-pdf');
 const { scrubText } = require('../lib/borrower-safe');
+const APPROVAL = require('./approval');   // PURE — the one definition of the approval ladder + the netting wording
 // DB / storage / rollup are required lazily inside the DB-side functions only, so the PURE builder path
 // (and its unit test) never touches the database or trips the "DATABASE_URL not set" boot log.
 const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); } };
@@ -195,10 +203,17 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
         + (Number(s.retainage_held_cents) > 0 ? ' and ' + usd(s.retainage_held_cents) + ' retainage' : '')
         + (s.fee_projected ? ' (standard fee for this file \u2014 final once the release is recorded).' : '.')
       : '');
+    // The borrower's netting sentence comes from the ONE definition in ./approval so their report and
+    // ours can never describe the same deduction differently.
+    const borrowerNet = APPROVAL.netExplanation({
+      approved_cents: appr, fee_cents: s.fee_cents, retainage_held_cents: s.retainage_held_cents,
+      net_release_cents: s.net_release_cents, fee_projected: s.fee_projected,
+    }, { borrower: true });
     const meaning = borrower
-      ? (notAppr > 0
-        ? stageLine + '\nAnything not approved stays in your budget for a future draw once that work is complete.'
-        : stageLine)
+      ? [stageLine,
+        borrowerNet || '',
+        notAppr > 0 ? 'Anything not approved stays in your budget for a future draw once that work is complete.' : '',
+      ].filter(Boolean).join('\n')
       : (stageLine + netLine + ' Status: ' + (s.approval_label || STATUS_LABEL(s.status, false)) + '.');
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8); doc.setTextColor.apply(doc, [70, 78, 82]);
     doc.text(pdfSafe(meaning), M + 18, y + 84, { maxWidth: W - 2 * M - 36 });
@@ -393,6 +408,21 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
         kv('Requested', usd(s.requested_cents));
         kv('Approved', usd(s.approved_cents), { accent: true });
         if (Number(s.not_approved_cents) > 0) kv('Not approved (this inspection)', usd(s.not_approved_cents));
+      }
+      // WHAT ACTUALLY REACHES THE BORROWER (owner-directed 2026-08-03). The fee comes out of their
+      // approved amount, so they are shown the same arithmetic we are: approved, less the fee, equals
+      // the wire. Our fee income ACROSS the project stays staff-only — that is our margin, not a
+      // deduction from this draw.
+      if (Number(s.fee_cents) > 0 || s.net_release_cents != null) {
+        kv('Approved on this draw', usd(s.approved_cents));
+        if (Number(s.fee_cents) > 0) kv('Less: draw processing fee', '-' + usd(s.fee_cents));
+        if (Number(s.retainage_held_cents) > 0) kv('Less: retainage held until completion', '-' + usd(s.retainage_held_cents));
+        if (s.net_release_cents != null) kv('Amount wired to you', usd(s.net_release_cents), { accent: true });
+        if (Number(s.fee_cents) > 0) {
+          para('The draw processing fee is the standard fee for handling and inspecting a draw on your loan. '
+            + 'It is taken out of the approved amount, so the figure above is what reaches your account'
+            + (s.fee_projected ? ' — it is confirmed when the funds are sent.' : '.'), 7.4, GRAY);
+        }
       }
       kv('Status', STATUS_LABEL(s.status, true));
     } else {

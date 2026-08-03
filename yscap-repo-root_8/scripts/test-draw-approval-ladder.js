@@ -264,8 +264,13 @@ const ROLLUP = rollupMod.computeRollup({
     lines: [{ name: 'Unit 1 - Roof', sow_line_key: 'cat:roof', inspector_comments: 'Fidelis signed off.', requested_cents: 625000, approved_cents: 625000, not_approved_cents: 0, photos: [] }],
   };
   const text = report.buildDrawReport({ app, rollup: ROLLUP, sections: [section], scope: 'draw', mode: 'borrower' }).toString('latin1');
-  ok('E10 the borrower copy never shows our draw fee', !/draw processing fee/i.test(text));
-  ok('E11 the borrower copy never shows the net release', !/Net release/i.test(text));
+  // Owner-directed 2026-08-03: the borrower SEES the draw processing fee — it is deducted from their
+  // own approved amount and decides what wires. It is our project-wide fee INCOME that stays ours.
+  ok('E10 the borrower copy shows the draw processing fee', /draw processing fee/i.test(text));
+  ok('E10b …and the arithmetic that produces their wire', /\$25,000/.test(text) && /\$24,701/.test(text));
+  ok('E10c …in words they can act on', /wired to you/i.test(text));
+  ok('E11 the borrower copy never shows our fee income across the project',
+    !/OUR DRAW FEES ON THIS PROJECT/i.test(text) && !/Charged so far/i.test(text) && !/Expected on draws/i.test(text));
   ok('E12 the borrower copy scrubs the capital-partner name', !text.includes('Fidelis'));
   ok('E13 the borrower is told this is the inspector\'s approval to accept', /inspector approved/i.test(text));
 }
