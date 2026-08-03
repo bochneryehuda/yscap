@@ -568,6 +568,9 @@ export const api = {
   staffOrderDue:      (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/due`, body || {}),
   staffOrderNote:     (appId, kind, note) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/note`, { note }),
   staffOrderEvents:   (appId, kind) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/events`),
+  // How this vendor has actually performed — shown where the choice is made.
+  staffOrderVendorScore: (appId, kind) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/vendor-scorecard`),
+  staffVendorScorecards: (type) => req('GET', `/api/staff/vendor-scorecards${type ? `?type=${encodeURIComponent(type)}` : ''}`),
   staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
   // Attorney closing prep — the third order. Its own routes: the recipients, the
   // document package and the closing email chain have nothing in common with a

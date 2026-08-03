@@ -5083,6 +5083,42 @@ const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_o
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
 
 /**
+ * A DEAL THAT IS OVER MUST NOT SEND A VENDOR A NEW ORDER.
+ *
+ * Nothing stopped a title order going out on a file that was declined last month,
+ * withdrawn, or funded and closed — an email to an outside company about a loan
+ * that no longer exists, with the borrower CC'd on the insurance one. `canTouchApp`
+ * answers "may this person act on this file", which is a different question from
+ * "is there anything left to act on".
+ *
+ * FOLLOW-UPS AND REPLIES ARE DELIBERATELY NOT GATED. After funding a vendor still
+ * owes us the final policy and the recorded mortgage, and shutting the team out of
+ * writing to them would be the mistake this guard is meant to avoid — it is the
+ * distinction closing-prep already draws between a finished order and a cancelled
+ * one. Only PLACING a new order is refused.
+ *
+ * There is deliberately NO capability gate beyond file access either. Placing a
+ * title order is ordinary loan-officer work, and gating it would take it away from
+ * the person most likely to be doing it — the same reasoning `entity-adopt`
+ * records for its own button.
+ *
+ * Returns a refusal message, or null when the file is live. Fails OPEN on a read
+ * error: refusing a legitimate order because the database hiccupped is worse.
+ */
+const DEAD_FOR_NEW_ORDERS = ['declined', 'withdrawn', 'cancelled', 'funded'];
+async function deadFileOrderReason(appId) {
+  try {
+    const r = await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    if (!r.rows[0]) return 'This file no longer exists.';
+    const s = String(r.rows[0].status || '').toLowerCase();
+    if (!DEAD_FOR_NEW_ORDERS.includes(s)) return null;
+    return s === 'funded'
+      ? 'This loan has already funded, so a new order should not go out. If the vendor still owes something, use Follow-up on the existing order.'
+      : `This file is ${s}, so an order should not go out to a vendor. Reopen the file first if that is wrong.`;
+  } catch (_) { return null; }
+}
+
+/**
  * WHO IS ON THIS ORDER'S THREAD — ONE definition (owner-directed 2026-07-31: title
  * defaults OFF, insurance ON, and a per-order choice always wins).
  *
@@ -5238,6 +5274,9 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   try {
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
+    // Nothing goes out to an outside vendor about a deal that is over.
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
     const blk = orders.blockers(kind, data);
     if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
     if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
@@ -5587,6 +5626,39 @@ router.post('/applications/:id/orders/:kind/note', async (req, res) => {
     });
     res.json({ ok: true, notes: note });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * HOW THIS VENDOR HAS ACTUALLY PERFORMED — shown where the choice is made.
+ *
+ * File-scoped on purpose: it hangs off the order card, and the numbers are about
+ * OUR orders with that company, which is exactly what somebody about to send them
+ * another one wants to know.
+ */
+router.get('/applications/:id/orders/:kind/vendor-scorecard', async (req, res) => {
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(req.params.id);
+    const vendor = data && data.vendors[kind];
+    if (!vendor || !vendor.id) return res.json({ card: null });
+    const scorecard = require('../lib/vendor-scorecard');
+    const card = await scorecard.scorecardFor(vendor.id);
+    res.json({
+      card,
+      summary: scorecard.summarize(card, { vendorName: vendor.company_name || vendor.contact_name || null }),
+    });
+  } catch (e) { res.json({ card: null }); }   // decoration on a decision — never a blocker
+});
+
+/** Every vendor we have ever ordered from, worst first. */
+router.get('/vendor-scorecards', async (req, res) => {
+  try {
+    const type = ['title_company', 'insurance_agent', 'attorney'].includes(String(req.query.type || ''))
+      ? String(req.query.type) : null;
+    res.json(await require('../lib/vendor-scorecard').vendorLeaderboard({ contactType: type }));
+  } catch (e) { res.json([]); }
 });
 
 /** The order's own timeline — placed, chased, replied, assigned, finished. */
@@ -6056,10 +6128,13 @@ router.get('/orders', async (req, res) => {
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
               b.first_name, b.last_name, b.full_name,
               o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
+              o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.notes,
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email,
               COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN staff_users su ON su.id = o.assigned_to
          LEFT JOIN LATERAL (
            -- "unassigned" means a returned VENDOR document nobody has classified yet
            -- (binder / invoice / commitment). A closing-chain document needs no
@@ -6081,8 +6156,15 @@ router.get('/orders', async (req, res) => {
         -- this is what makes that visible. Cancelled was already hidden for the same
         -- reason; the file's own card still shows either state in full.
         WHERE o.status NOT IN ('cancelled','completed') ${scopeSql}
-        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
-    // Group into one row per file with a title + insurance sub-object.
+        -- OLDEST FIRST, and the LATENESS ordering is applied below rather than
+        -- here: "late" is a BUSINESS-day question against a per-order SLA, which
+        -- SQL cannot answer without duplicating order-sla's calendar arithmetic —
+        -- and a second copy of that would eventually disagree with the card and the
+        -- nudge about the same order. This ordering makes the pre-sort stable; the
+        -- real one is by daysLate, computed once, right after.
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at ASC NULLS LAST, o.id`, params);
+    const now = new Date();
+    // Group into one row per file, with a sub-object per order kind.
     const byFile = new Map();
     for (const row of r.rows) {
       if (!byFile.has(row.application_id)) {
@@ -6094,13 +6176,37 @@ router.get('/orders', async (req, res) => {
         });
       }
       const f = byFile.get(row.application_id);
+      // THE SAME orderState THE CARD AND THE SWEEP USE. Computed on the server so
+      // the desk can never call an order late that the file screen calls on time.
+      const state = orderSla.orderState(row, now);
       f[row.order_type] = {
         status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,
         lastFollowupAt: row.last_followup_at, followupCount: row.followup_count,
         unassignedDocs: row.unassigned_docs, returnedDocs: row.returned_docs,
+        assignedTo: row.assigned_to || null,
+        assignedName: row.assigned_name || row.assigned_email || null,
+        firstResponseAt: row.first_response_at || null,
+        notes: row.notes || null,
+        ...state,
       };
     }
-    res.json([...byFile.values()]);
+    const files = [...byFile.values()];
+    for (const f of files) {
+      const orders_ = ['title', 'insurance', 'attorney'].map((k) => f[k]).filter(Boolean);
+      // The file's headline: how late its WORST order is, and whether anything on
+      // it is waiting to be classified. Both are what somebody scanning this queue
+      // is actually looking for.
+      f.worstDaysLate = orders_.reduce((n, o) => Math.max(n, Number(o.daysLate) || 0), 0);
+      f.anyOverdue = orders_.some((o) => o.overdue);
+      f.toAssign = orders_.reduce((n, o) => n + (Number(o.unassignedDocs) || 0), 0);
+    }
+    // LATEST FIRST — this is a queue of what is going wrong, so the thing going
+    // wrong most should not be on page two. Ties break on the file id so a capped
+    // read is deterministic.
+    files.sort((a, b) => (b.worstDaysLate - a.worstDaysLate)
+      || (b.toAssign - a.toAssign)
+      || String(a.applicationId).localeCompare(String(b.applicationId)));
+    res.json(files);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

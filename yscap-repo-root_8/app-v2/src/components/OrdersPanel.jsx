@@ -119,6 +119,21 @@ function ContactSlot({ appId, kind, vendor, onChanged }) {
   const [link, setLink] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /* HOW THIS COMPANY HAS ACTUALLY PERFORMED, shown WHERE THE CHOICE IS MADE.
+     A scorecard on an admin screen nobody opens changes nothing; the moment it
+     matters is the moment somebody is about to send this vendor another order, or
+     is deciding whether to use a different one. Best-effort and unobtrusive: it
+     never blocks and it says "not enough to go on" rather than printing a
+     confident percentage off two orders. */
+  const [score, setScore] = useState(null);
+  useEffect(() => {
+    let live = true;
+    if (!vendor || !vendor.id) { setScore(null); return undefined; }
+    api.staffOrderVendorScore(appId, kind)
+      .then((r) => { if (live) setScore(r && r.card ? r : null); })
+      .catch(() => { if (live) setScore(null); });
+    return () => { live = false; };
+  }, [appId, kind, vendor && vendor.id]);
 
   const openEditor = async () => {
     setErr(''); setBusy(true);
@@ -156,6 +171,16 @@ function ContactSlot({ appId, kind, vendor, onChanged }) {
           : <button className="btn primary small" onClick={() => setAdding(true)}>Add {CONTACT_ASK[kind]}</button>}
         {vendor && !editing && <button className="btn ghost small" onClick={() => setAdding(true)} title="Use a different company for this order">Use a different one</button>}
       </div>
+      {score && score.card && score.card.orders > 0 && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 2, paddingLeft: 128 }}>
+          {score.summary}
+          {score.card.overdueNow > 0 && (
+            <span style={{ color: '#B3261E', fontWeight: 600 }}>
+              {' '}They are late on {score.card.overdueNow} other order{score.card.overdueNow === 1 ? '' : 's'} right now.
+            </span>
+          )}
+        </div>
+      )}
       {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
       {(editing || adding) && (
         <ContactForm appId={appId} kind={kind} existing={editing ? link : null}
