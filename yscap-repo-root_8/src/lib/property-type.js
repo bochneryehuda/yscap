@@ -257,19 +257,38 @@ function appraisalFormExpectation(raw) {
  * Everything decorative — Colonial, Ranch, Townhouse, Row, Garden Apt, Cape —
  * says nothing about a count and returns null.
  */
-const STYLE_HALF = /(?:\b1\s*\/\s*2|½|\bhalf(?:\s+of)?)\s*(?:a\s+)?(?:duplex|double)/i;
-const STYLE_WORD_N = Object.freeze({ two: 2, three: 3, four: 4, duplex: 2, triplex: 3, tri: 3, fourplex: 4, quadplex: 4, quad: 4 });
+// A HALF-DUPLEX IS ONE DWELLING, however it is spelled. The separator between
+// the fraction and the word may be a hyphen as easily as a space, the fraction
+// can trail the word ("Duplex - 1/2", "Duplex (1/2)"), and it need not stand on
+// a word boundary at all ("AT1/2 Duplex" is a real UAD design code). Each of
+// those spellings would otherwise be read as TWO units — the single most
+// damaging false positive this reader can produce, because on the corpus every
+// half-duplex comparable sits on a 1004 and is a single-family house.
+const HALF = '(?:1\\s*[/⁄]\\s*2|½|half)';
+const DUP = '(?:duplex|double)';
+const STYLE_HALF = new RegExp(`(?:${HALF}[\\s-]*(?:of\\s+)?(?:a\\s+)?${DUP}|${DUP}[\\s\\-(]*${HALF})`, 'i');
+// A RANGE IS NOT A COUNT. "2-4 Family" is the appraisers' own phrase for the
+// small-income CATEGORY and appears verbatim in the corpus; reading it as "4"
+// would put a made-up door count on a comparable that never stated one.
+const NUMWORD = '(?:one|two|three|four|five|six)';
+const STYLE_RANGE = new RegExp(
+  `(?:\\d|${NUMWORD})\\s*(?:-|–|—|\\bto\\b)\\s*(?:\\d|${NUMWORD})\\s*[-\\s]?\\s*(?:fam(?:ily|ilies)?|plex|unit)`, 'i');
+const STYLE_WORD_N = Object.freeze({ two: 2, three: 3, four: 4, duplex: 2, triplex: 3, fourplex: 4, quadplex: 4 });
 function unitsFromDesignStyle(raw) {
   const s = String(raw == null ? '' : raw).trim();
   if (!s) return null;
-  // A half-duplex is one dwelling; refuse the whole string rather than risk the
-  // "duplex" inside it being read as two.
   if (STYLE_HALF.test(s)) return null;
-  // "2 Family" / "3-FAMILY" / "4 Fam" — a digit immediately qualifying "family".
-  let m = /(\d)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
+  if (STYLE_RANGE.test(s)) return null;
+  // "2 Family" / "3-FAMILY" / "12 Fam". TWO digits are captured, not one — a
+  // single-digit capture read a 12-family as a DUPLEX, silently, which is worse
+  // than not reading it: `band` would have refused 12 outright.
+  // A DECIMAL is refused: "2.5 Family" is two-and-a-half STORIES in the UAD
+  // design code ("DT2.5;2 Family"), and taking the digit after the point turned
+  // it into five dwellings.
+  let m = /(?<![\d.])(\d{1,2})(?!\s*[.,]\s*\d)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
   if (m) return band(+m[1]);
   // "3-PLEX" / "4 PLEX" / "6PLEX"
-  m = /(\d)\s*[-\s]?\s*plex\b/i.exec(s);
+  m = /(?<![\d.])(\d{1,2})(?!\s*[.,]\s*\d)\s*[-\s]?\s*plex\b/i.exec(s);
   if (m) return band(+m[1]);
   // "Two Family" / "Three-Family"
   m = /\b(two|three|four)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
@@ -279,6 +298,9 @@ function unitsFromDesignStyle(raw) {
   if (m) return band(STYLE_WORD_N[m[1].toLowerCase()]);
   return null;
 }
+// 2 to 8 dwellings. A count outside that is not refused because it is
+// impossible — it is refused because a design-style STRING is not where a
+// 12-unit building's door count would ever be stated reliably.
 function band(n) { return Number.isInteger(n) && n >= 2 && n <= 8 ? n : null; }
 
 module.exports = {

@@ -689,7 +689,9 @@ async function makeAppraisal(appId, o) {
     // fact off every property in PR #974, so prove it survived the round trip.
     ok(Array.isArray(fProp.off_site_improvements) && fProp.off_site_improvements.includes('Curb'),
       'a jsonb fact round-trips through the roll-up instead of throwing on the bind');
-    ok(Number(fProp.rollup_version) === 5, 'the property is stamped at the widened roll-up version');
+    ok(Number(fProp.rollup_version) === ingest._internals.ROLLUP_VERSION,
+      `the property is stamped at the CURRENT roll-up version (${ingest._internals.ROLLUP_VERSION}) — read from the module, `
+      + 'not hard-coded, so a bump can never leave this asserting a stale number');
     // THE OTHER VERSION, AND THE DISTINCTION THAT STRANDS A BACK BOOK IF MISSED.
     // A new PROPERTY column is recomputed FROM the observations, so bumping
     // ROLLUP_VERSION reaches it. A new OBSERVATION column is read off the REPORT,

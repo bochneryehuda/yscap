@@ -669,12 +669,15 @@ function comparables(root, effectiveYear) {
   }
   // A PADDED GRID COLUMN IS NOT A COMPARABLE. Several vendors emit the form's
   // unused trailing slots as empty `COMPARABLE_SALE` elements — measured across
-  // the real corpus, every comparable that could not establish a unit count was
-  // one of these, with no address, no price and no area. Kept, each became a
-  // warehouse observation of nothing and an entry in the comp counts, and made
-  // the coverage numbers look worse than the parser actually is. A row is
-  // dropped only when it states NONE of the three facts that make a comparable a
-  // comparable — anything that names a property, a price or a size is kept.
+  // the real corpus, six of them across four reports, every one with no address,
+  // no price, no area, no beds, no age and no style. Kept, each became an
+  // `appraisal_comparables` row and an entry in the comp counts. (It never
+  // reached the warehouse: an address with no house number yields no property
+  // key and the ingest already skipped it.) A row is dropped only when it states
+  // NONE of the three facts that make a comparable a comparable — anything that
+  // names a property, a price or a size is kept, which is why the ONE genuine
+  // comparable with no unit count (103 George Ave, $130,000, style "DOUBLE
+  // BLOCK") survives and is still counted.
   return {
     comps: comps.filter((c) => c.address || c.salePrice != null || c.gla != null),
     subject0,
@@ -1194,7 +1197,17 @@ function extract(xml) {
   };
   const site = X.find(root, 'SITE');
   const val = valuation(root);
-  const { comps, subject0 } = comparables(root, year((val.effectiveDate || '').slice(0, 4)));
+  // THE YEAR TO SUBTRACT A COMPARABLE'S AGE FROM. The effective date is the right
+  // answer and is present on nearly every report — but one corpus file carries
+  // twelve `EffectiveDate` occurrences that this reader does not resolve, and
+  // with no year every comparable on it silently loses its year built. The
+  // report's SIGNED date is within days of its effective date and is a different
+  // element, so it is a safe second reading; the appraiser's own inspection date
+  // is a third. A year is all that is taken from any of them.
+  const reportYear = year((val.effectiveDate || '').slice(0, 4))
+    || year((X.attr(rep, 'AppraiserReportSignedDate') || '').slice(0, 4))
+    || year((X.attr(X.find(root, 'INSPECTION'), 'InspectionDate') || '').slice(0, 4));
+  const { comps, subject0 } = comparables(root, reportYear);
   // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
   // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
   // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else
@@ -1250,8 +1263,19 @@ function extract(xml) {
     qualityText: cq.qualityText,
     priorSale: subjectPriorSale(root, subject0),
   };
-  // imply units by form when blank (1004/1073 → 1)
-  if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) subject.units = 1;
+  // imply units by form when blank (1004/1073 → 1) — AND SAY WHICH IT WAS.
+  //
+  // The count the appraiser COUNTED and the count the form IMPLIES are two very
+  // different facts, and until now they left this function indistinguishable. The
+  // research warehouse then treated every subject observation as measured ("the
+  // appraiser stood in the building and counted the doors") and let it outrank a
+  // grid-stated count on a comparable — so a form-implied 1 off a 1004 could
+  // overwrite a triplex that another report had actually counted. Recording the
+  // basis costs nothing and makes the roll-up's ranking honest.
+  subject.unitsBasis = subject.units != null ? 'grid' : null;
+  if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) {
+    subject.units = 1; subject.unitsBasis = 'form';
+  }
 
   // THE PROPERTY CATEGORY — single family / 2–4 / condo / townhouse / PUD — derived from the
   // appraisal's OWN evidence (the form, the settled unit count, the ownership signals) and written

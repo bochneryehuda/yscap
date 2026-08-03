@@ -138,7 +138,12 @@ function appraisalRowFrom(A, { applicationId = null, sourceXmlDocumentId = null,
     condition_text: s.conditionText, quality_text: s.qualityText,
     condition_comment: (A.enrich || {}).condition_comment || null,
     condition_uad_as_is: (A.enrich || {}).condition_uad_as_is || null,
-    units: s.units, year_built: s.yearBuilt, gla: s.gla,
+    units: s.units,
+    // db/434 — whether that count was COUNTED off the grid or merely implied by
+    // the form. The warehouse ranks a measurement above an inference, and could
+    // not tell these apart.
+    subject_units_basis: s.unitsBasis || null,
+    year_built: s.yearBuilt, gla: s.gla,
     rooms: s.rooms, beds: s.beds, baths_full: s.bathsFull, baths_half: s.bathsHalf,
     stories: s.stories, design_style: s.design, lot_area: s.lotArea,
     zoning_id: s.zoningId, zoning_desc: s.zoningDesc, zoning_compliance: s.zoningCompliance,
@@ -415,7 +420,13 @@ function compIdentity(c, formType) {
   // 2 — the appraiser's own design-style words for THIS comparable.
   if (out.units == null) {
     const n = unitsFromDesignStyle(designStyleOf(c));
-    if (n != null && inFormBand(n, exp)) { out.units = n; out.basis = 'style'; }
+    // Bounded the same way the arithmetic below is, and for the same reason:
+    // `inFormBand` returns TRUE when there is no expectation, so an unrecognised
+    // form ("URAR", a 2055, a blank) left this branch completely unbounded and an
+    // "8 Family" style word became a Multi 5+ comparable. With no form to bound
+    // it, accept only the 2-4 band the small-income grid is written for.
+    const ok = exp ? inFormBand(n, exp) : (n >= 2 && n <= 4);
+    if (n != null && ok) { out.units = n; out.basis = 'style'; }
   }
 
   // 3 — the price divides cleanly by the stated price per unit.
@@ -460,7 +471,26 @@ function compIdentity(c, formType) {
   // a 1004 stored as `units 2 / SFR (1 unit)`, and a grid-stated 5-unit on a 1025
   // stored as `units 5 / Multi 2–4`. It also made `identity_basis:'grid'` a lie,
   // because the label it described had come from the form.
-  if (out.units != null) {
+  //
+  // A COUNT THE FORM FLATLY FORBIDS IS A MIS-PARSE, NOT A NEW CATEGORY — but only
+  // where the form is a HARD single-dwelling constraint. Two different rules hide
+  // behind "the form's band":
+  //
+  //   1004 / 1073 — the form is written for ONE dwelling and an appraiser cannot
+  //     report a duplex on it. A grid count of 2 there means the room rows were
+  //     double-counted, so relabelling would turn a misread condo into a
+  //     "Multi 2–4" and quietly lose the one fact the form proves outright. The
+  //     stated count is KEPT (so the contradiction stays visible in the data
+  //     rather than being erased) and the FORM keeps the label.
+  //
+  //   1025 — the 2-4 band describes the SUBJECT, not the comparables. An
+  //     appraiser reaching for a five-unit comparable in a thin market is doing
+  //     something unusual, not something impossible, and the corpus contains it.
+  //     There the stated count is the better fact and it names the type: a
+  //     5-unit building is "Multi 5+", and calling it "Multi 2–4" because of the
+  //     form would be the self-contradicting row this whole block exists to stop.
+  const formPinsOne = !!(exp && exp.minUnits === 1 && exp.maxUnits === 1);
+  if (out.units != null && !(formPinsOne && out.units !== 1)) {
     out.propertyType = out.units >= 5 ? (LABEL_OF.multi_5_plus || null)
       : out.units >= 2 ? (LABEL_OF.multi_2_4 || null)
         : (exp ? exp.label : null) || null;
@@ -603,7 +633,12 @@ function buildFieldsJson(A) {
 //     fact a grid proves: how many unit rows the appraiser wrote.
 // 4 — db/430: price per unit, the comparable's own rent + GRM, and the age it
 //     stated in years.
-const COMP_PARSE_VERSION = 4;
+// 5 — db/432: the vendor total row is no longer counted as a dwelling (134
+//     comparables carried a wrong unit count), the year built is derived from
+//     the stated age, the design style is stored, and `REPARSED` finally
+//     carries every column this parser owns. 4 was claimed by the commit
+//     immediately before this one, so a report stamped 4 must be re-read.
+const COMP_PARSE_VERSION = 5;
 
 module.exports = {
   importAppraisal,

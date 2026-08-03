@@ -69,7 +69,13 @@ const ID = require('./identity');
 //     in the warehouse is holding a wrong number right now (measured: a grid
 //     stating 14 rooms / 7 beds / 3 baths stored 5 / 3 / 1), and `beds` rolls up,
 //     so the wrong number is on `properties` too. Only re-reading fixes it.
-const INGEST_VERSION = 3;
+// 4 — the observation now carries `identity_basis` (WHERE a comparable's unit
+//     count came from), the 2-4 family transaction facts `price_per_unit` /
+//     `monthly_rent` / `grm`, the parsed `year_built`, and the appraiser's own
+//     `design_style`. Without this bump every stored observation keeps
+//     `identity_basis` NULL, which scores 0 in `identityRank` and collapses the
+//     new best-sourced roll-up back into plain recency on the whole back book.
+const INGEST_VERSION = 4;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -197,7 +203,10 @@ const ROLLUP_FACTS = Object.freeze({
 // (`rerollStaleProperties`) drains it through the one definition of the roll-up;
 // db/421 made its index version-agnostic so this bump does not silently cost it
 // that index (verified by EXPLAIN at both 4 and 5).
-const ROLLUP_VERSION = 5;
+// 6 — the roll-up's rule for `units` / `property_type` changed: a MEASURED unit
+//     count now outranks an INFERRED one whatever the dates say, so every
+//     property has to be recomputed.
+const ROLLUP_VERSION = 6;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -530,7 +539,14 @@ function bindable(v) {
  */
 function identityRank(o) {
   if (!o) return -1;
-  if (o.role === 'subject') return 4;
+  // A SUBJECT OBSERVATION IS NOT AUTOMATICALLY A MEASUREMENT. The appraiser
+  // usually did stand in the building and count the doors — but on a 1004 or a
+  // 1073 with a blank `LivingUnitCount` the parser IMPLIES the count from the
+  // form, and that inference used to rank above a grid-counted comparable. It
+  // now says which it was (db/434), and a legacy row with nothing recorded is
+  // read as measured, because before db/434 a subject count came only from
+  // `LivingUnitCount`.
+  if (o.role === 'subject') return o.identity_basis === 'form' ? 1 : 4;
   return { grid: 3, style: 2, price: 2, form: 1 }[o.identity_basis] || 0;
 }
 
@@ -584,11 +600,14 @@ async function rollupProperty(db, propertyId) {
   const bestUnits = obs
     .filter((o) => o.units != null && o.units !== '')
     .sort((a, b) => identityRank(b) - identityRank(a))[0];
-  if (bestUnits) {
+  // THE PAIR MOVES TOGETHER OR NOT AT ALL. Taking `units` from the best-sourced
+  // observation while leaving `property_type` to the recency loop can land a
+  // 3-unit count beside "SFR (1 unit)" — the self-contradicting row this whole
+  // rule exists to prevent — whenever that observation states a count but no
+  // type (a subject observation's type can be null).
+  if (bestUnits && bestUnits.property_type != null && bestUnits.property_type !== '') {
     set.units = bestUnits.units;
-    if (bestUnits.property_type != null && bestUnits.property_type !== '') {
-      set.property_type = bestUnits.property_type;
-    }
+    set.property_type = bestUnits.property_type;
   }
   const comps = obs.filter((o) => o.role === 'comparable');
   const counts = {
@@ -955,6 +974,9 @@ async function writeReport(db, { a, comps, link, out }) {
       property_id: subjectId, appraisal_id: appraisalId, import_id: importId,
       application_id: a.application_id || null,
       comparable_id: null, appraiser_id: appraiserId, role: 'subject',
+      // Whether the subject's unit count was counted or implied (db/434), so the
+      // roll-up ranks it for what it is.
+      identity_basis: txt(a.subject_units_basis),
       comp_seq: null, comp_set: null, comp_set_confidence: null, comp_set_needs_review: null,
       observed_on: observedOn, form_type: txt(a.form_type),
       address_as_stated: [txt(a.subject_address), subjectUnit, txt(a.subject_city),

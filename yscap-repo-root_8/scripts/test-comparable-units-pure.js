@@ -334,10 +334,20 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
     'and a style outside the form\'s own band is refused, never allowed to contradict it');
 
   // --- the grid outranks everything, and NAMES THE TYPE ---
-  ok(id({ units: 2 }, 'FNM1004') === `2/${LABEL_OF.multi_2_4}/grid`,
-    'a grid-stated 2 beats the form: it used to store "units 2 / SFR (1 unit)", a row contradicting itself');
+  // TWO DIFFERENT RULES HIDE BEHIND "THE FORM'S BAND", and the first draft of
+  // this assertion had them backwards — it asserted that a grid-stated 2 on a
+  // 1004 RELABELS the comparable "Multi 2–4", which throws away the one thing
+  // that form proves outright.
+  ok(id({ units: 2 }, 'FNM1004') === '2/SFR (1 unit)/grid',
+    'a 1004 is written for ONE dwelling, so a grid-stated 2 is a MIS-PARSE: the count is kept so the '
+    + 'contradiction stays visible, and the form keeps the label');
+  ok(id({ units: 2 }, 'FNM1073') === '2/Condo/grid',
+    'and a 1073 comparable never stops being a condo because its room rows were double-counted');
   ok(id({ units: 5 }, 'FNM1025') === `5/${LABEL_OF.multi_5_plus}/grid`,
-    'and a grid-stated 5 is Multi 5+, not the form\'s "Multi 2-4" — 18 such rows in the real corpus');
+    'but a 1025\'s 2-4 band describes the SUBJECT — a five-unit COMPARABLE is unusual, not '
+    + 'impossible, and the corpus has them, so the stated count names the type');
+  ok(id({ units: 3 }, 'FNM1025') === `3/${LABEL_OF.multi_2_4}/grid`,
+    'and inside the band the count still names the type');
   ok(id(Object.assign(styled('4-PLEX'), { units: 3 }), 'FNM1025') === `3/${LABEL_OF.multi_2_4}/grid`,
     'the grid outranks the appraiser\'s style word');
 
@@ -433,6 +443,42 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   const row = comparableRowFrom(Object.assign({}, cls, { salePrice: 600000, pricePerUnit: 200000 }), 'FNM1025');
   ok(row.units === 3 && Math.round(600000 / 200000) === row.units,
     'and the count now agrees with the price per unit the appraiser stated beside it');
+}
+
+// ---------------------------------------------------------------------------
+// 13. THE RE-PARSE MUST ACCOUNT FOR EVERY COLUMN THE PARSER WRITES.
+//
+//     `backfillComparableParseOnce` stamps `comp_parse_version` and then never
+//     revisits the report, so a column added to `comparableRowFrom` and left out
+//     of `REPARSED` is drained out of the back-book repair PERMANENTLY and needs
+//     a further version bump to recover. That already happened once: db/430's
+//     four facts and db/431's `identity_basis` were added to the writer and not
+//     to the list, while the version was bumped — so every stored report would
+//     have been stamped "re-parsed" with all five still NULL.
+//
+//     The file carried a comment saying every parser-owned column must be listed
+//     and listed 19 of 53. An invariant nothing asserts is a wish, so this is the
+//     assertion: every column the writer emits is either RE-PARSED or explicitly
+//     named as deliberately left alone. Adding a column now fails here until a
+//     human decides which it is.
+// ---------------------------------------------------------------------------
+{
+  const { comparableRowFrom } = require('../src/lib/appraisal/import');
+  const { REPARSED, NOT_REPARSED } = require('../src/lib/appraisal/desk')._internals;
+  const written = Object.keys(comparableRowFrom({}, 'FNM1025'));
+  const covered = new Set([...REPARSED, ...NOT_REPARSED]);
+  const uncovered = written.filter((k) => !covered.has(k));
+  ok(uncovered.length === 0,
+    `every column comparableRowFrom writes is accounted for (uncovered: ${uncovered.join(', ') || 'none'})`);
+  const phantom = [...covered].filter((k) => !written.includes(k));
+  ok(phantom.length === 0,
+    `and nothing is listed that the writer never emits (phantom: ${phantom.join(', ') || 'none'})`);
+  const both = REPARSED.filter((k) => NOT_REPARSED.includes(k));
+  ok(both.length === 0, `no column is both re-parsed and left alone (${both.join(', ') || 'none'})`);
+  // The three facts that must always travel together.
+  for (const k of ['units', 'property_type', 'identity_basis']) {
+    ok(REPARSED.includes(k), `${k} is re-parsed — the identity trio moves as one`);
+  }
 }
 
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');
