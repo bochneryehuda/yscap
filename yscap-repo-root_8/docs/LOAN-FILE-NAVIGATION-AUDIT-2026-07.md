@@ -281,6 +281,21 @@ unchanged.
 | 6 | st-draws | **Construction Draws** | Post-funding money | sec-draws (`manage_draws`; hand-off to the Draw Center unchanged) |
 | 7 | st-messages | **Messages & History** | Chat, email, activity | sec-messages |
 
+> **AMENDED 2026-08-03 — `sec-encompass` NO LONGER EXISTS.** The Phase-2 pairing
+> this table anticipates ("the two mirror-compare panels finally live together")
+> happened on 2026-08-02, but as a TAB of Application details rather than a
+> Data-sync area — and the section was left behind as a shell whose only content
+> was a button into that tab. The owner reported the result as a duplicate
+> ("encompass sync is now duplicated also in the application details and it's
+> also a separate section in the deal … it should not be a separate section in
+> the deal") and the shell was deleted. **The Deal is now four sections**:
+> sec-application · sec-payoff (refi only) · sec-pricing · sec-exceptions.
+> The `#sec-encompass` ADDRESS is still live — it is retired in
+> `app-v2/src/lib/stations.js` (`RETIRED_SECTION`) and resolves to Application
+> details with the Encompass tab open, so every email and bookmark still lands.
+> `app-v2/src/lib/stations.js` is the source of truth for the rooms; this table
+> is the design record.
+
 Naming notes (owner-fit review): "Send to Investor" — not "Investor
 Delivery" — and the word "tapes" never appears in anything the owner reads
 (staff-only label stays as-is inside). Internally these are "stations"; to

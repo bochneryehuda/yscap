@@ -19,23 +19,29 @@ const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 let failures = 0;
 const ok = (cond, what) => { if (cond) console.log(`  ✓ ${what}`); else { failures++; console.error(`  ✗ ${what}`); } };
 
-const { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, stationLabel, whereDidItGo } =
+const { STATIONS, STATION_OF, ANCHOR_SECTION, RETIRED_SECTION, stationOf, resolveSection, stationLabel, whereDidItGo } =
   await import(join(ROOT, 'app-v2/src/lib/stations.js'));
 
 /* ---------------------------------------------- 1. the map itself is sound */
 console.log('1. the room map');
+/* SIXTEEN live sections. `sec-encompass` LEFT this list on 2026-08-03 — the
+   Encompass comparison is a TAB of Application details, and the shell section
+   that pointed at that tab was the duplicate the owner asked to remove. Its id
+   lives on as a retired ADDRESS (section 1b), never as a section. */
 const ALL_SECTIONS = [
   'sec-overview', 'sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions',
-  'sec-encompass', 'sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track',
+  'sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track',
   'sec-documents', 'sec-esign', 'sec-orders', 'sec-closing', 'sec-tapes',
   'sec-draws', 'sec-messages',
 ];
-ok(ALL_SECTIONS.length === 17, 'the inventory names 17 sections');
+ok(ALL_SECTIONS.length === 16, 'the inventory names 16 sections');
 const flat = STATIONS.flatMap((s) => s.sections);
 ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
-  'the rooms cover exactly the 17 sections — nothing homeless, nothing invented');
+  'the rooms cover exactly the 16 sections — nothing homeless, nothing invented');
+ok(!flat.includes('sec-encompass'),
+  'no room CLAIMS sec-encompass — a retired address is not a section');
 /* EIGHT rooms now. The original promise was seven; the owner then asked for
    Orders to get its own button ("the same way we have a button now Signing and
    Closing, we should have a button Orders", 2026-08-02), which is a room the
@@ -53,6 +59,31 @@ ok(STATIONS.every((s) => s.label && !/hub|station|palette|canvas/i.test(s.label)
   'room labels are plain words (no internal jargon)');
 ok(stationLabel('st-delivery') === 'Send to Investor',
   '"Send to Investor" (owner-fit review) — never "Investor Delivery"');
+
+/* ------------------------------------------------------ 1b. retired addresses */
+/* A sec-* id is a PERMANENT public address — emails already sent carry it — so
+   deleting a section means RETIRING its id, never dropping it. Every one of
+   these must still resolve to a room and must rewrite to a section that really
+   exists, or the link is dead. */
+console.log('1b. retired section addresses');
+for (const [old, to] of Object.entries(RETIRED_SECTION)) {
+  ok(!ALL_SECTIONS.includes(old), `${old} is genuinely gone from the page`);
+  ok(ALL_SECTIONS.includes(to.section), `${old} rewrites to ${to.section}, which is a live section`);
+  ok(stationOf(old) === STATION_OF[to.section], `${old} still resolves — to ${to.section}'s room`);
+  const r = resolveSection(`#${old}`);
+  ok(r.moved && r.id === to.section && r.appTab === (to.appTab || null),
+    `resolveSection('#${old}') → ${to.section}${to.appTab ? ` + the "${to.appTab}" tab` : ''}`);
+}
+ok(RETIRED_SECTION['sec-encompass'] && RETIRED_SECTION['sec-encompass'].appTab === 'encompass',
+  'sec-encompass lands on the Encompass TAB, not merely on Application details');
+{
+  const live = resolveSection('sec-pricing');
+  ok(!live.moved && live.id === 'sec-pricing' && live.appTab === null,
+    'a live id passes through resolveSection unchanged (behavior elsewhere is byte-identical)');
+  const unknown = resolveSection('sec-nonsense');
+  ok(!unknown.moved && unknown.id === 'sec-nonsense', 'an unknown id passes through too');
+  ok(resolveSection('').id === '' && resolveSection(null).id === '', 'blank/null are safe');
+}
 
 /* -------------------------------------------------------- 2. inner anchors */
 console.log('2. inner anchors');
@@ -80,7 +111,12 @@ const CLIENT_TARGETS = {
   'ExceptionCard footer': 'sec-conditions',
   'server blocker stamps': 'sec-conditions',
   'EditFileDetails payoff link': 'sec-payoff',
-  'EsignFileSection encompass-gate': 'sec-encompass',
+  // The e-sign Encompass blocker and the tape gate now ask for the TAB and open
+  // the section that holds it, so they point at a live id. ExceptionCard keeps
+  // the RETIRED id on purpose — it is a URL, and only the retired address
+  // carries "open the Encompass tab" with it.
+  'EsignFileSection encompass-gate': 'sec-application',
+  'ExceptionCard (encompass, retired address)': 'sec-encompass',
   'TapeExport gate links': 'sec-overview',
   '?focus=ai-findings': 'ai-findings',
   '?focus=chat': 'conversations',
@@ -142,6 +178,19 @@ for (const sec of ALL_SECTIONS) {
   const re = new RegExp(`<Section hidden=\\{!show\\('${sec}'\\)\\} id="${sec}"`, 'g');
   ok((staff.match(re) || []).length === 1, `${sec} renders once, behind the room switch`);
 }
+/* The removal itself: no Section renders at a retired id, or the "duplicate
+   Encompass room" the owner asked to delete is back. */
+for (const old of Object.keys(RETIRED_SECTION)) {
+  ok(!new RegExp(`<Section [^>]*id="${old}"`).test(staff), `no <Section> renders at the retired id ${old}`);
+}
+/* …and the two halves that keep the retired ADDRESS landing. Both are needed:
+   classic view registers no resolver, so the landing handler must resolve too. */
+ok(/const moved = t\.kind === 'section' \? resolveSection\(t\.id\) : null;/.test(staff),
+  'the room resolver rewrites a retired section id before it looks up a room');
+ok(/const moved = resolveSection\(target\);/.test(staff),
+  'the deep-link landing handler resolves it too (classic view has no resolver)');
+ok(/if \(t\.appTab\) requestAppDetailTab\(t\.appTab\);/.test(staff),
+  'a queued jump carries the Application-details tab, so the link lands on the right tab');
 ok(/return setSectionResolver\(/.test(staff), 'the resolver registers in an effect WITH cleanup (returns the unregister)');
 ok(/if \(classic\) return undefined;/.test(staff), 'classic view never registers the resolver (byte-identical behavior)');
 ok(/get\('finding'\)/.test(staff) && /h\.indexOf\('\?'\)/.test(staff),
@@ -198,6 +247,15 @@ ok(/if \(sectionResolver && sectionResolver\(\{ kind: 'section'/.test(fs),
 console.log('6. helpers');
 const map = whereDidItGo([{ id: 'sec-tapes', label: 'Capital-provider data tapes' }]);
 ok(map[0].now === 'Send to Investor', 'whereDidItGo maps an old label to its room');
+/* The list's whole job is "where did X go?", and a DELETED section is the most
+   likely thing to be looked up in it — it is no longer in the SECTIONS array the
+   screen passes, so it must come from the retired table. */
+{
+  const enc = map.find((r) => r.old === 'Encompass sync');
+  ok(!!enc, 'a retired section still appears in the "where did everything go?" list');
+  ok(enc && /Application details/.test(enc.now) && /Encompass sync/.test(enc.now),
+    '…and it names the TAB, not just the room the reader is already standing in');
+}
 
 if (failures) { console.error(`\n${failures} FAILURE(S)`); process.exit(1); }
 console.log('\nAll Seven Rooms link-contract checks passed.');
