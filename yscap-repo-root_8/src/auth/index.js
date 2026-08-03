@@ -359,6 +359,11 @@ router.post('/borrower/register', async (req, res) => {
            VALUES ($1,'borrower',$2, now() + interval '7 days')`, [C.sha256(claim), email]);
         await mail.send('borrowerInvite', email, {
           firstName: firstName || '', acceptUrl: mail.link('/accept?token=' + claim) }).catch(() => {});
+        // Record it (lib/portal-invite) — from the team's side this looks exactly
+        // like an invitation that is out and unaccepted, and the file should say
+        // so rather than read "never invited" while a live claim link exists. No
+        // staff id: the PERSON asked for this by trying to register.
+        await require('../lib/portal-invite').recordInviteSent(id0, { email, byStaffId: null });
       } catch (_) { /* email is best-effort; the security guarantee is the no-session return */ }
       return res.status(202).json({ verifyRequired: true,
         message: 'We found an existing record for this email. Check your email to activate your account.' });

@@ -54,10 +54,37 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
     // default: not a personal-name purchase → vesting is LLC by default
     ok((await pnpOf(appId)) === false, 'a new file is not a personal-name purchase (vesting defaults to LLC)');
 
-    // waive WITHOUT an affidavit → refused
+    /* MARKING A FILE INDIVIDUAL NO LONGER NEEDS AN AFFIDAVIT IN HAND
+       (owner-directed 2026-08-02, superseding the 2026-07-31 refusal). The
+       affidavit is still required — as its OWN rule-driven condition (db/408),
+       which is prior_to_docs and so holds clear-to-close exactly as this refusal
+       used to. The refusal had to go because it made the choice impossible at
+       the two doors that matter most: a borrower on the public application form
+       has no affidavit to attach, and neither does a staffer opening a new file.
+
+       So what is asserted here is that the requirement MOVED, not that it was
+       dropped: the mark succeeds, AND the affidavit condition appears. */
     let r = await call('POST', `/api/staff/applications/${appId}/vesting/personal-name`, tok, {});
-    ok(r.status === 400, 'waiving with no affidavit is refused (400)');
-    ok((await pnpOf(appId)) === false, 'a refused waive does not flag the file');
+    ok(r.status === 200, 'marking the file individual with NO affidavit now succeeds');
+    ok((await pnpOf(appId)) === true, '…and the file really is flagged individual');
+    {
+      const cond = (await db.query(
+        `SELECT ci.status FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+          WHERE ci.application_id=$1 AND t.code='cond_noo_affidavit_individual'`, [appId])).rows[0];
+      ok(!!cond, 'THE AFFIDAVIT IS STILL ASKED FOR — as its own condition, attached immediately');
+      const llc = (await db.query(
+        `SELECT ci.status, ci.is_required, ci.waived_at, ci.signed_off_at
+           FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+          WHERE ci.application_id=$1 AND t.code='rtl_p1_llc'`, [appId])).rows[0];
+      // A waive here is `waived_at` + is_required=false — the status column's
+      // CHECK has no 'waived' value, the stamp IS the waive.
+      ok(llc && llc.waived_at && llc.is_required === false,
+        'the LLC condition is WAIVED as not-applicable — there is no entity to document');
+      ok(llc && !llc.signed_off_at,
+        '…and NOT signed off, so the file never reads as though somebody met a requirement they did not');
+    }
+    // Put it back so the rest of the file tests the affidavit-in-hand path.
+    await call('POST', `/api/staff/applications/${appId}/vesting/personal-name`, tok, { undo: true });
 
     // waive WITH the affidavit → flagged, filed, signed off
     const pdf = Buffer.from('%PDF-1.4 fake noo affidavit').toString('base64');
@@ -81,9 +108,16 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
       const actor = { id: staffId, kind: 'staff', role: 'super_admin' };
       const g1 = await gate(itemId, actor);
       ok(g1 === null, 'signOffGate allows a personal-name file that has the affidavit');
+      /* The gate no longer demands the affidavit HERE either (owner-directed
+         2026-08-02). Asking in two places meant one affidavit chased twice, and
+         left the LLC condition unclosable on a file that has no entity at all —
+         which is the entire point of a personal-name purchase. The demand lives
+         on `cond_noo_affidavit_individual`, which is prior_to_docs and so still
+         holds clear-to-close. */
       await db.query(`UPDATE documents SET is_current=false WHERE application_id=$1 AND doc_kind='noo_affidavit'`, [appId]);
       const g2 = await gate(itemId, actor);
-      ok(typeof g2 === 'string' && /affidavit/i.test(g2), 'signOffGate refuses a personal-name file with no affidavit');
+      ok(g2 === null,
+        'the LLC gate stands down on a personal-name file — there is no entity to verify, and the affidavit has its own condition');
       await db.query(`UPDATE documents SET is_current=true WHERE application_id=$1 AND doc_kind='noo_affidavit'`, [appId]);
     } else {
       console.log('  ~~ signOffGate not exported — skipping the direct-gate assertions');

@@ -131,7 +131,14 @@ const tracking = require(R + '/src/lib/esign/tracking');
 
   ok('a non-admin is told the two real next steps instead of hitting a dead end', () => {
     assert.ok(/ask an admin to make an exception for this send/.test(panel));
-    assert.ok(/goToSection\('sec-encompass'\)/.test(panel), 'and can jump straight to what does not match');
+    // Encompass sync is a TAB of Application details, not a section of its own
+    // (owner-directed 2026-08-03) — the jump asks for the tab, then opens the
+    // section that holds it. Jumping at the deleted section id would silently
+    // do nothing, which is a dead end dressed up as a way out.
+    assert.ok(/requestAppDetailTab\('encompass'\); goToSection\('sec-application'\)/.test(panel),
+      'and can jump straight to what does not match — the Encompass tab, already open');
+    assert.ok(!/goToSection\('sec-encompass'\)/.test(panel),
+      'and never at the retired section id');
   });
 
   ok('the term-sheet Send button no longer fires a send that can only fail', () => {

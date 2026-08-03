@@ -35,8 +35,8 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
-import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
@@ -167,26 +167,14 @@ function CondNoteBuyerEntry({ appId, onSaved }) {
    dedicated /loan-number endpoint, which enforces the YSCAP format and
    cross-file/ClickUp uniqueness (a duplicate is rejected here and parked to
    manual review). Filling it retracts the condition. STAFF-ONLY. */
+/* The loan-number box ON the "loan number missing" condition. It is the SAME
+   control Application details carries (LoanNumberEntry) — this used to be a
+   second, near-identical implementation with its own input, its own save and its
+   own error line, which is exactly how two write paths drift apart. Here it opens
+   straight into the box (the condition already says the number is missing) and
+   carries no label column of its own. */
 function CondLoanNumberEntry({ appId, onSaved }) {
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  async function save() {
-    const v = draft.trim(); if (!v) return;
-    setBusy(true); setErr('');
-    try { await api.post(`/api/staff/applications/${appId}/loan-number`, { loanNumber: v }); if (onSaved) await onSaved(); }
-    catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
-  }
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input className="input small" style={{ maxWidth: 220 }} placeholder="YSCAP…" value={draft} disabled={busy}
-          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
-        <button className="btn primary small" onClick={save} disabled={busy || !draft.trim()}>{busy ? '…' : 'Set loan number'}</button>
-      </div>
-      {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
-    </div>
-  );
+  return <LoanNumberEntry appId={appId} value={null} onSaved={onSaved} autoOpen label={null} />;
 }
 
 /* INTERNAL As-Is panel ON the "Confirm the As-Is value" condition (owner-directed 2026-07-28).
@@ -402,15 +390,38 @@ function isFixHoldStrategy(app) {
   return /hold|brrrr/.test(s);
 }
 
-// Field metadata shared by the staff + borrower completeness panels. `edit`
-// false = filled elsewhere (address picker / secure SSN flow) so we only hint.
-const COMPLETENESS_FIELDS = (app, borrower) => [
+/* COMPLETENESS IS THREE LISTS, NOT ONE (owner-directed 2026-08-02: split it
+   three ways — the application, the borrower, the co-borrower).
+
+   It used to be one flat run of pills that mixed the DEAL (address, program,
+   price, loan number) with the PERSON (date of birth, Social, FICO), so a
+   processor chasing deal terms and an officer chasing borrower identity read the
+   same undifferentiated wall — and the co-borrower's identical six fields sat in
+   their own section below, which only made the primary's look like part of the
+   deal. Now: what is true of the FILE, what is true of the BORROWER, what is true
+   of the CO-BORROWER.
+
+   The split is by SUBJECT, and the test asserts it both ways so a new field
+   cannot quietly land in the wrong list: a field that reads `borrower.*` belongs
+   to the person, everything else to the file. `edit:false` still means "filled
+   somewhere else" (the address picker, the secure SSN flow) so we only hint. */
+const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
   // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
   // for application completeness. Filled from the Vesting entity (LLC) section
   // above OR from the Term Sheet Studio's entity-name field on register.
-  { key: 'entity_name', label: 'Subject-property LLC', ok: !!(app.entity_name || app.llc_name || app.llc_id),
-    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or type it on Products & Pricing.' },
+  /* VESTING — satisfied by an entity OR by the file being in an individual's
+     name (owner-directed 2026-08-02). It used to check only for an LLC, so a
+     personal-name purchase carried a "Subject-property LLC" pill that could
+     NEVER be filled: there is no entity to link, by definition. The file could
+     therefore never read complete. Answering it with the individual choice is
+     correct — the question is "what does this vest in?", and "an individual" is
+     a real answer, which the non-owner-occupied affidavit condition then
+     documents (db/408). */
+  { key: 'entity_name',
+    label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
+    ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
+    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or mark the file as vesting in an individual\'s name.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -435,23 +446,6 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   ]),
   { key: 'arv', label: 'ARV', ok: app.arv != null, type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
-  { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
-  // Borrower's PRIMARY (home) residence address — required for application
-  // completeness (owner-directed 2026-07-21). Filled via the PrimaryAddressPanel
-  // below; the panel writes borrowers.current_address through
-  // staffUpdateBorrower({currentAddress}), so completeness only checks it here.
-  { key: 'current_address', label: 'Borrower primary home address',
-    ok: !!(borrower && borrower.current_address
-      && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
-    edit: false, hint: 'Set with the borrower primary address panel below.' },
-  { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
-  // SSN is entered on its own audited line in the Borrower section (it has a
-  // duplicate-profile resolver and a reveal that this compact panel can't carry),
-  // so the pill jumps you straight there rather than naming a screen to go hunt.
-  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the SSN line in the Borrower section — click to go there.' },
-  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
-  { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   // Note buyer / capital partner (applications.lender). Normally fed from ClickUp;
   // staff can fill it here when ClickUp doesn't feed it or is empty (owner-directed
   // 2026-07-20). Type 'notebuyer' renders a datalist of every note buyer available
@@ -473,6 +467,32 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
     postBody: (v) => ({ loanNumber: v }) },
 ];
 
+/* THE BORROWER — facts about the PERSON, not about the deal. Every row here
+   reads `borrower.*`, and it is the mirror of CO_COMPLETENESS_FIELDS below, so
+   the two people are asked for the same things in the same order. It saves
+   through the SAME complete-fields endpoint as the deal list (the server keys on
+   the field name, not on which panel it came from), so nothing about the write
+   path changed. */
+const BORROWER_COMPLETENESS_FIELDS = (app, borrower) => [
+  { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
+  // Borrower's PRIMARY (home) residence address — required for application
+  // completeness (owner-directed 2026-07-21). Filled via the PrimaryAddressPanel
+  // below; the panel writes borrowers.current_address through
+  // staffUpdateBorrower({currentAddress}), so completeness only checks it here.
+  { key: 'current_address', label: 'Borrower primary home address',
+    ok: !!(borrower && borrower.current_address
+      && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
+    edit: false, hint: 'Set with the borrower primary address panel below.' },
+  { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
+  // SSN is entered on its own audited line in the Borrower section (it has a
+  // duplicate-profile resolver and a reveal that this compact panel can't carry),
+  // so the pill jumps you straight there rather than naming a screen to go hunt.
+  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTab: 'people',
+    hint: 'Add it on the SSN line of the Borrower profile — click to go there.' },
+  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
+  { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
+];
+
 // #30 / #60 — the co-borrower's own required identity fields, shown in a SEPARATE
 // "Co-borrower completeness" section (not mixed into the primary borrower's).
 // Name / phone / date of birth / FICO / citizenship are all inline-addable (+)
@@ -484,15 +504,26 @@ const PLACEHOLDER_NAME = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tb
 const realName = (v) => !!v && !PLACEHOLDER_NAME.has(String(v).trim().toLowerCase());
 const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name' in app)) ? [
   { key: 'co_name', label: 'Co-borrower name', ok: realName(app.co_first_name) && realName(app.co_last_name), type: 'text' },
-  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the Email line in the Co-borrower block — click to go there.' },
+  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, goTab: 'people',
+    hint: 'Add it on the Email line of the Co-borrower profile — click to go there.' },
   { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
   { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
   { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'fico' },
   { key: 'co_citizenship', label: 'Co-borrower citizenship', ok: !!app.co_citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
-  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, goTo: 'sec-overview',
-    hint: 'Add it on the SSN line in the Co-borrower block (stored encrypted) — click to go there.' },
+  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, goTab: 'people',
+    hint: 'Add it on the SSN line of the Co-borrower profile (stored encrypted) — click to go there.' },
 ] : []);
+
+/* "Show me the tab that edits this" — a one-line channel, the shape FileSections
+   already uses for the Conditions hub (requestConditionsTab/subscribe).
+   `CompletenessPanel` is a module-level component with no access to the section's
+   own state, and its pills for fields it cannot edit itself (the Social, the
+   co-borrower's email) point at a SIBLING TAB of the very section they are
+   rendered in — so they need to flip a tab, not navigate anywhere.
+   It MOVED into FileSections.jsx (2026-08-03) and is imported at the top of this
+   file: components that are not defined here — the e-sign section, the tape
+   export — need the same channel now that Encompass sync is a tab rather than a
+   section, and they cannot import this screen without a cycle. */
 
 /* Application completeness with INLINE editing — click a missing field to enter
    it right there; it saves to the file (and syncs to ClickUp) without a form.
@@ -502,7 +533,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const fields = fieldsProp || COMPLETENESS_FIELDS(app, borrower);
+  const fields = fieldsProp || [...APP_COMPLETENESS_FIELDS(app), ...BORROWER_COMPLETENESS_FIELDS(app, borrower)];
   // Note-buyer picker: load every note buyer available in ClickUp (+ known + on
   // file) so a 'notebuyer' field renders a datalist. Only fetched when the panel
   // actually carries such a field. Its own datalist id avoids id collisions.
@@ -569,9 +600,10 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
               // A field this compact panel can't edit itself is still one CLICK
               // from where it IS edited — it used to be a dead grey pill naming a
               // panel that had no such control (owner-reported 2026-07-27).
-              f.goTo ? (
+              (f.goTo || f.goTab) ? (
                 <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
-                  onClick={() => goToSection(f.goTo)} title={f.hint}>+ {f.label} →</button>
+                  onClick={() => { if (f.goTab) requestAppDetailTab(f.goTab); if (f.goTo) goToSection(f.goTo); }}
+                  title={f.hint}>+ {f.label} →</button>
               ) : (
                 <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
               )
@@ -590,8 +622,20 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   );
 }
 
+/* THE DEAL's own missing pieces (owner-directed 2026-08-02 — the first of the
+   three). Same endpoint as before; only the list it is handed is narrower. */
 function Completeness({ app, borrower, appId, onSaved }) {
+  return <CompletenessPanel app={app} borrower={borrower} fields={APP_COMPLETENESS_FIELDS(app)}
+    heading="Application — what's missing"
+    endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
+}
+
+/* THE BORROWER's own missing pieces — the second of the three, and the mirror of
+   the co-borrower panel below, so the two people read identically. */
+function BorrowerCompleteness({ app, borrower, appId, onSaved }) {
   return <CompletenessPanel app={app} borrower={borrower}
+    fields={BORROWER_COMPLETENESS_FIELDS(app, borrower)}
+    heading="Borrower — what's missing"
     endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
 }
 
@@ -684,7 +728,7 @@ function CoBorrowerCompleteness({ app, appId, onSaved }) {
   if (!fields.length) return null;
   return <CompletenessPanel app={app} borrower={null} fields={fields}
     endpoint={`/api/staff/applications/${appId}/co-borrower-fields`} onSaved={onSaved}
-    heading="Co-borrower completeness" />;
+    heading="Co-borrower — what's missing" />;
 }
 
 /* Staff-only file detail the team keeps in ClickUp — pulled onto the file for a
@@ -835,8 +879,14 @@ function sowUrl(appId, itemId, app) {
 }
 // The status list moved with the status dropdown into components/ConditionActions
 // — it reads CONDITION_STATUSES from lib/conditions-vocab.js directly.
-const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+/* Kept in the SERVER'S order, and it must stay in step with `APP_STATUS` in
+   routes/staff.js — a status the server accepts but this list omits simply
+   cannot be set from PILOT. That is exactly what happened to `on_hold`: it has
+   been a real status since db/319 (2026-07-26) and settable by the API ever
+   since, but it was missing here, so a file could be parked from ClickUp and
+   never from the portal. */
+const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -1956,6 +2006,95 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    scrollbar): the SAME static builder the marketing site serves, bridged to
    this borrower's live record. Every staff edit saves to the server and
    refreshes the saved static HTML copy, which downloads right here. */
+/* WHAT'S WRONG WITH THIS TRACK RECORD, AND WHAT TO DO ABOUT IT (owner-directed
+   2026-08-02: "we should have findings ON the track record of stuff that was not
+   done correctly … and you should not be able to sign off the experience
+   condition till you clear those findings … give a few options over there what
+   to do").
+
+   The options come from the SERVER (`f.actions`), never from a list re-typed
+   here — the same discipline the sync-review screen follows, so a finding type
+   added later gets its buttons for free and the two can never disagree about
+   what is on offer. Text is explicit dark ink: `var(--ink*)` is a LIGHT token in
+   this palette and would render white-on-white. */
+const TRK_ACTION_LABEL = {
+  merge: 'Yes — same property, merge them',
+  keep_both: 'They are two different properties',
+  remove_line: 'Take this line off the track record',
+  not_our_property: 'The borrower really did own this before',
+  dismiss: 'Dismiss',
+};
+const TRK_ACTION_TITLE = {
+  merge: 'Fold the two lines into one. Details only the second line had are kept, and any documents on it move across. This removes the duplicate line.',
+  keep_both: 'Record that these really are two different properties. Both lines stay and you will not be asked about this pair again.',
+  remove_line: 'Remove this line from the borrower’s track record. Any documents on it are kept — they are just no longer attached to a deal.',
+  not_our_property: 'Record that the borrower genuinely owned and exited this property before. The line stays and counts as experience.',
+  dismiss: 'Set this aside without changing anything.',
+};
+
+function TrackRecordFindings({ appId, onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    api.staffTrackRecordFindings(appId)
+      .then((r) => setRows(Array.isArray(r && r.findings) ? r.findings : []))
+      .catch(() => setRows([]));
+  }, [appId]);
+  useEffect(load, [load]);
+
+  async function act(f, action) {
+    setBusy(f.id + action); setErr(''); setMsg('');
+    try {
+      const r = await api.staffResolveTrackRecordFinding(appId, f.id, action, null);
+      setRows(Array.isArray(r && r.findings) ? r.findings : []);
+      setMsg(r && r.outcome ? r.outcome : 'Done.');
+      if (onChanged) onChanged();
+    } catch (e) {
+      setErr((e && e.message) || 'That did not go through.');
+    } finally { setBusy(''); }
+  }
+
+  if (!rows) return null;
+  if (!rows.length) {
+    return (
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        Nothing to review on this track record.
+      </p>
+    );
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 16, borderLeft: '4px solid #AE8746' }}>
+      <h3 style={{ color: '#141B22', marginTop: 0 }}>
+        Track record — {rows.length} thing{rows.length === 1 ? '' : 's'} to review
+      </h3>
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        The experience condition cannot be signed off until each of these is settled.
+      </p>
+      {err ? <p className="small" style={{ color: '#B3261E' }}>{err}</p> : null}
+      {msg ? <p className="small" style={{ color: '#2F7F86' }}>{msg}</p> : null}
+      {rows.map((f) => (
+        <div key={f.id} style={{ borderTop: '1px solid #EAE4D7', paddingTop: 12, marginTop: 12 }}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>{f.title}</div>
+          <p className="small" style={{ color: '#4B585C', margin: '4px 0 10px' }}>{f.detail}</p>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            {(f.actions || []).map((a) => (
+              <button key={a} type="button" className="btn secondary small"
+                title={TRK_ACTION_TITLE[a] || ''}
+                disabled={!!busy}
+                onClick={() => act(f, a)}>
+                {busy === f.id + a ? 'Working…' : (TRK_ACTION_LABEL[a] || a)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StaffTrackRecordPanel({ app, role }) {
   // On a co-borrower file each borrower has their OWN track record (#80): pick
   // whose you're editing. Every deal you add saves to THAT borrower's profile
@@ -2052,6 +2191,9 @@ function StaffTrackRecordPanel({ app, role }) {
   }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
+      {/* What is WRONG with this track record comes first — it holds the
+          experience condition, so it must not be below the fold. */}
+      <TrackRecordFindings appId={app.id} onChanged={refreshTrs} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
@@ -3179,6 +3321,168 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   );
 }
 
+/* WHAT PILOT HOLDS vs WHAT THE CARD HOLDS, field by field (owner-directed
+   2026-08-02: "Pipeline data" becomes ClickUp Sync, with a full every-field data
+   comparison).
+
+   The old panel printed a read-only list of the figures the last PULL happened to
+   leave on the file — PILOT's own columns, labelled as though they came from
+   ClickUp — so it could not answer the one question anyone asks of a sync screen:
+   do the two systems agree right now? Both values are on screen now, and the
+   VERDICT is the sync's own (lib/clickup-compare reuses the same equivalence rule
+   the outbound no-op suppression uses), so a row this table calls "matching" is
+   exactly a row a push would decline to write.
+
+   Disagreements come first — nobody scrolls a 60-row table to find the one thing
+   that is wrong. Everything that agrees is one click away, deliberately kept
+   rather than hidden: "these match" is exactly what somebody is checking. */
+function ClickupCompare({ appId }) {
+  const [state, setState] = useState({ loading: true });
+  const [showAll, setShowAll] = useState(false);
+  const load = useCallback(() => {
+    setState({ loading: true });
+    return api.clickupCompare(appId)
+      .then((r) => setState({ loading: false, ...r }))
+      .catch((e) => setState({ loading: false, error: e.message || 'Could not compare' }));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (state.loading) return <p className="small" style={{ color: '#4B585C' }}>Comparing with ClickUp…</p>;
+  if (state.error) return <p className="small" style={{ color: '#B3261E' }}>{state.error}</p>;
+  if (state.linked === false) {
+    return <p className="small" style={{ color: '#4B585C' }}>This file is not linked to a ClickUp card yet, so there is nothing to compare.</p>;
+  }
+  if (state.unreadable) {
+    return (
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className="small" style={{ color: '#8A6A22' }}>{state.summary}</span>
+        <button className="btn ghost small" onClick={load}>Try again</button>
+      </div>
+    );
+  }
+
+  const rows = state.rows || [];
+  const attention = state.attention || [];
+  const clean = attention.length === 0;
+  const shown = showAll ? rows : attention;
+  const TONE = {
+    differs: { c: '#B3261E', t: 'Different' },
+    only_pilot: { c: '#8A6A22', t: 'Only in PILOT' },
+    only_clickup: { c: '#8A6A22', t: 'Only on the card' },
+    match: { c: '#1F7A4D', t: 'Match' },
+    blank: { c: '#4B585C', t: 'Neither' },
+  };
+
+  return (
+    <div>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+        <span style={{ fontWeight: 600, color: clean ? '#1F7A4D' : '#8A6A22' }}>{state.summary}</span>
+        <div className="spacer" />
+        <button className="btn ghost small" onClick={load}>Re-check</button>
+        <button className="btn ghost small" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? 'Show only what differs' : `Show all ${rows.length} fields`}
+        </button>
+      </div>
+      {clean && !showAll && (
+        <p className="small" style={{ color: '#4B585C', margin: '0 0 8px' }}>
+          Nothing to reconcile. Use &ldquo;Show all&rdquo; to read every field side by side.
+        </p>
+      )}
+      {shown.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="small" style={{ width: '100%', borderCollapse: 'collapse', color: '#141B22' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--line)' }}>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>Field</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>PILOT</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>ClickUp card</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>Syncs</th>
+                <th style={{ padding: '6px 8px', fontWeight: 600 }}>&nbsp;</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => {
+                const tone = TONE[r.status] || TONE.blank;
+                return (
+                  <tr key={r.fieldId || r.field} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ padding: '6px 8px', color: '#141B22' }}>{r.label}</td>
+                    <td style={{ padding: '6px 8px', color: r.pilot ? '#141B22' : '#4B585C' }}>{r.pilot || '—'}</td>
+                    <td style={{ padding: '6px 8px', color: r.clickup ? '#141B22' : '#4B585C' }}>{r.clickup || '—'}</td>
+                    <td style={{ padding: '6px 8px', color: '#4B585C' }}>{r.direction}</td>
+                    <td style={{ padding: '6px 8px', color: tone.c, whiteSpace: 'nowrap' }}>{tone.t}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="small" style={{ color: '#4B585C', marginTop: 8, marginBottom: 0 }}>
+        A row reads &ldquo;Match&rdquo; when the two systems mean the same thing, even if they spell it
+        differently — that is the same test the sync itself uses to decide whether a push would
+        actually change anything.
+      </p>
+    </div>
+  );
+}
+
+/* THE YS LOAN NUMBER, enterable where every other detail is (owner-directed
+   2026-08-02: "YS loan number — add an action to ENTER it"). Until now it could
+   only be typed on a completeness pill, which DISAPPEARS once the number is
+   set — so a wrong one could never be corrected from anywhere.
+
+   ONE WRITE PATH: it posts to the same dedicated `/loan-number` door, which is
+   what enforces the YSCAP format and refuses a number already used on another
+   file or ClickUp card (a duplicate is parked to manual review). This is a
+   second BUTTON, never a second rule. */
+function LoanNumberEntry({ appId, value, onSaved, autoOpen = false, label = 'YS loan number' }) {
+  const [editing, setEditing] = useState(!!autoOpen);
+  const [val, setVal] = useState(value || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function save() {
+    const v = String(val || '').trim();
+    if (!v) { setErr('Enter the loan number.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await api.staffSetLoanNumber(appId, v);
+      setEditing(false);
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save that loan number.'); }
+    finally { setBusy(false); }
+  }
+  const inner = (
+    <>
+        {!editing ? (
+          <span className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ color: value ? '#141B22' : '#4B585C' }}>{value || 'not set yet'}</span>
+            <button className="btn ghost small" onClick={() => { setVal(value || ''); setErr(''); setEditing(true); }}>
+              {value ? 'Change' : 'Enter the loan number'}
+            </button>
+          </span>
+        ) : (
+          <span className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" style={{ maxWidth: 220 }} value={val} placeholder="YSCAP…"
+              onChange={(e) => setVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }} />
+            <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+            <button className="btn ghost small" disabled={busy} onClick={() => { setEditing(false); setErr(''); }}>Cancel</button>
+          </span>
+        )}
+        {err && <div className="small" style={{ color: '#B3261E', marginTop: 4 }}>{err}</div>}
+    </>
+  );
+  // On a condition card there is no label column — the condition's own wording is
+  // the label, and a `metrow` there would read as a stray table row.
+  if (label === null) return <div style={{ marginTop: 8 }}>{inner}</div>;
+  return (
+    <div className="metrow" style={{ alignItems: 'flex-start' }}>
+      <span className="k">{label}</span>
+      <span className="v" style={{ display: 'block' }}>{inner}</span>
+    </div>
+  );
+}
+
 /* ClickUp sync panel — staff-only surface on the file overview.
    Shows the two-layer status (exact ClickUp mirror vs. borrower-facing), the
    YS loan number, the note buyer (internal only — never borrower-facing), the
@@ -3403,7 +3707,17 @@ export default function StaffApplication() {
       const target = m[1];
       let inner = null;
       const t = setTimeout(() => {
-        if (target.startsWith('sec-')) { goToSection(target); return; }
+        if (target.startsWith('sec-')) {
+          // A RETIRED address (#sec-encompass) lands on the section that holds
+          // its content, with the right tab already showing. Resolved HERE as
+          // well as in the room resolver because CLASSIC view registers no
+          // resolver at all — every section renders, so the jump would go to an
+          // element that no longer exists and quietly do nothing.
+          const moved = resolveSection(target);
+          if (moved.appTab) requestAppDetailTab(moved.appTab);
+          goToSection(moved.id);
+          return;
+        }
         // Rooms view: the resolver hops to the owning room, opens it and scrolls.
         if (revealAnchor(target)) return;
         // revealAnchor is three-state collapsed into a boolean: `true` means only
@@ -3637,7 +3951,6 @@ export default function StaffApplication() {
   // link/unlink) and the 38-status internal-status dropdown — is shown by default so
   // staff can change/maneuver the ClickUp status and re-sync right from the file. The
   // toggle stays so it can be collapsed when someone wants a quieter overview.
-  const [showPipeline, setShowPipeline] = useState(true);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   // Revealing / adding / correcting the SSN moved into the shared
@@ -3961,6 +4274,10 @@ export default function StaffApplication() {
     if (t.kind === 'section') {
       requestOpenSection(t.id);
       if (t.tab) requestConditionsTab(t.tab);
+      // A jump at a RETIRED section id (sec-encompass) resolves to the section
+      // that took its content PLUS the tab holding it — open the tab first, so
+      // the scroll lands on the thing the link was actually pointing at.
+      if (t.appTab) requestAppDetailTab(t.appTab);
       setTimeout(() => {
         const el = document.getElementById(t.id);
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -4006,20 +4323,30 @@ export default function StaffApplication() {
   useEffect(() => {
     if (classic) return undefined;
     return setSectionResolver((t) => {
-      const st = stationOf(t.id);
+      // A RETIRED section id is rewritten to where its content lives now (plus
+      // the tab holding it) BEFORE anything else looks at it — the default path
+      // below would call getElementById on an id that no longer renders and
+      // silently do nothing, which is a dead link, not a fallback.
+      const moved = t.kind === 'section' ? resolveSection(t.id) : null;
+      const target = moved && moved.moved ? { ...t, id: moved.id, appTab: moved.appTab } : t;
+      const st = stationOf(target.id);
       if (!st || !stationEnabled(st)) return false;
       if (st === activeStationRef.current) {
         // Right room already — but the target section may be collapsed
         // (unmounted). Take over only for the anchor/tab work goToSection's
         // default path already handles… it does, so decline. The one caller
         // that needs more (open-studio) queues an action explicitly.
-        return false;
+        // A retired id is the exception: there is nothing at its address for
+        // that default path to open or scroll to, so run the rewritten jump here.
+        if (target === t) return false;
+        runReveal(target);
+        return true;
       }
-      pendingRevealRef.current = t;
+      pendingRevealRef.current = target;
       setActiveStation(st);
       return true;
     });
-  }, [classic, stationEnabled]);
+  }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -4046,6 +4373,9 @@ export default function StaffApplication() {
   // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
   // editor is the right first thing every time the section is opened.
   const [appDetailTab, setAppDetailTab] = useState('deal');
+  // A completeness pill for a field only the Borrower profile can edit asks for
+  // that tab (they are two tabs of THIS section, so nothing has to navigate).
+  useEffect(() => subscribeAppDetailTab(setAppDetailTab), []);
   // ONE "off my plate" rule for every surface — see roleDone() above.
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
@@ -4231,9 +4561,11 @@ export default function StaffApplication() {
     ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     // Exceptions sits directly under pricing (most exceptions are pricing
-    // exceptions); Encompass sync reads as the room's "advanced" tail.
+    // exceptions). Encompass sync is NOT a section — it is a tab of Application
+    // details, beside the ClickUp comparison it belongs with (owner-directed
+    // 2026-08-03: "it should not be a separate section in the deal"). Listing it
+    // here would put a second door to one screen in the rail.
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
-    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     /* REVIEW & CONDITIONS, in the owner's order (2026-08-02): conditions, track
        record, appraisal and findings, document review, documents. This array is
        what the RAIL reads, so it has to move in lock-step with the JSX order
@@ -4312,6 +4644,113 @@ export default function StaffApplication() {
     </div>
   );
 
+  /* STATUS & CLOSING — ONE definition, rendered in BOTH places (owner-directed
+     2026-08-02: it belongs under Application details, and "may stay on the
+     overview too").
+
+     It is a plain element built once and rendered twice rather than a second
+     copy of the markup, so the two can never drift — the trap the borrower
+     editor fell into. Safe to render twice because sec-overview and
+     sec-application live in DIFFERENT ROOMS: only one of them is ever on screen,
+     so nobody sees two identical status panels at once. */
+  const statusClosingBlock = (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+            <b>Status &amp; closing</b>
+            {gating && (() => {
+              const g = gating.clear_to_close || {};
+              const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+              const jump = () => revealAnchor('ctc-outstanding');
+              return g.ready
+                ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
+                : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
+                    title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
+            })()}
+            <div className="spacer" />
+            {/* The ClickUp controls moved to their own tab under Application
+                details, alongside the field-by-field comparison — this is the way
+                in, so the toggle that used to hide them here is retired. */}
+            <button type="button" className="btn link small"
+              onClick={() => { setAppDetailTab('pipeline'); goToSection('sec-application'); }}
+              title="The ClickUp card: the link, re-sync, and a field-by-field comparison of what PILOT holds against what the card holds">
+              ClickUp Sync →
+            </button>
+          </div>
+
+          {/* The workflow moves the status automatically now (owner-directed
+              2026-07-21) — the team uses the Submit buttons above, not this
+              dropdown. Only a super-admin keeps a manual override. Everyone else
+              sees the status read-only. */}
+          {role === 'super_admin' ? (
+          <div className="grid cols-2" style={{ gap: 16 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
+              <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
+                {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
+              </select>
+              <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
+            </div>
+            {/* The internal status renders UNCONDITIONALLY (it used to hide with
+                the pipeline toggle; the retired right aside was then its only
+                always-visible surface — red-team minor, Seven Rooms Phase 1). */}
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
+              <select className="input" value={app.internal_status || ''}
+                onChange={e => changeInternalStatus(e.target.value)}
+                title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
+                {/* Keep the current value selectable even if it isn't a normalized known key
+                    (live ClickUp statuses carry irregular casing / trailing spaces). */}
+                {!app.internal_status && <option value="">— not set —</option>}
+                {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
+                  <option value={app.internal_status}>{app.internal_status} (current)</option>}
+                {(() => {
+                  const groups = {};
+                  for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
+                  return Object.keys(groups).map(ext => (
+                    <optgroup key={ext} label={ext}>
+                      {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
+                    </optgroup>
+                  ));
+                })()}
+              </select>
+              <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
+            </div>
+          </div>
+          ) : (
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Status</label>
+              <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
+                {app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
+              </div>
+              <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
+            </div>
+          )}
+
+          <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Expected closing</label>
+              <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
+              <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Actual closing</label>
+              <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+            <button className="btn ghost" onClick={() => setChatOpen(true)}><IconMessage />Message</button>
+            <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says"><IconBell />Remind</button>
+            <div className="spacer" />
+            <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
+              title="Email the borrower an invite to join this file in PILOT">
+              {inviteBusy ? 'Sending…' : 'Invite borrower'}
+            </button>
+          </div>
+        </div>
+  );
+
   return (
     <>
       {/* The file's identity bar STAYS while you scroll — borrower, address,
@@ -4385,14 +4824,20 @@ export default function StaffApplication() {
       {/* Only the file's assigned LO sees this — presets to VIP / Quiet /
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
-      <DealSnapshot app={app} gating={gating} />
-      {/* THE ONE WORK LIST (owner-directed 2026-08-02) — what is holding the file,
-          what is needed before funding, and PILOT's advisory notes, in one place
-          directly under the deal. It carries the permanent #ctc-outstanding
-          anchor, so every deep link and the header's "N to clear before CTC"
-          badge still land here. Sits high in the Overview on purpose: after the
-          deal facts, before everything else. */}
-      <WhatsLeftPanel gating={gating} items={items} conds={conds} />
+      {/* ONE BLOCK, NOT TWO (owner-directed 2026-08-02: the first section of the
+          overview "with what's left to clear to close MERGED TOGETHER WITH IT").
+          The deal facts and the work they imply were two separately-bordered
+          cards stacked on each other, which read as two subjects; they are one.
+          `.deal-block` joins them into a single bordered card — the two children
+          keep their own internals untouched, so nothing about either component
+          had to be rewritten to say they belong together. WhatsLeftPanel keeps
+          the permanent #ctc-outstanding anchor, so every deep link and the
+          header's "N to clear before CTC" badge still land exactly here. */}
+      <div className="deal-block">
+        <DealSnapshot app={app} gating={gating} />
+        <WhatsLeftPanel gating={gating} items={items} conds={conds} />
+      </div>
+      <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
       {/* THE NOTE-BUYER SLOT (owner-directed 2026-07-27) — one obvious home for the
           capital partner: who it is, what they require of this file, and what
           switching would change. It used to live only as a pencil icon on a muted
@@ -4401,180 +4846,88 @@ export default function StaffApplication() {
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />
-      {showPipeline && <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />}
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a
           responsive 2-col grid (owner-directed redesign 2026-07-14). */}
-      <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-          <b>Status &amp; closing</b>
-          {gating && (() => {
-            const g = gating.clear_to_close || {};
-            const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
-            const jump = () => revealAnchor('ctc-outstanding');
-            return g.ready
-              ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
-              : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
-                  title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
-          })()}
+      {statusClosingBlock}
+
+
+      {/* THE PEOPLE MOVED INTO APPLICATION DETAILS (owner-directed 2026-08-02:
+          "both borrower profiles under Application Details, side by side").
+          They used to render right here on the overview — see the "Borrower
+          profiles" tab in sec-application for the panels themselves and for why
+          the discoverability worry that put them here is now handled.
+
+          A POINTER, NOT A SECOND COPY. The record is edited in exactly ONE place
+          per person; printing a read-only echo of it here would recreate the
+          very drift the shared panel exists to prevent. */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, color: '#141B22' }}>
+            {app.co_borrower_id ? 'Borrower & co-borrower' : 'Borrower'}
+          </span>
+          <span className="small" style={{ color: '#4B585C' }}>
+            {[fullNameOf(app), app.co_borrower_id ? fullNameOf(app, 'co_') : null].filter(Boolean).join(' · ')}
+          </span>
           <div className="spacer" />
-          <button type="button" className="btn link small" onClick={() => setShowPipeline(v => !v)}
-            title="Show or hide the ClickUp / pipeline controls (internal status, sync, read-only pipeline data)">
-            {showPipeline ? 'Hide pipeline details' : 'Pipeline details'}
-          </button>
-        </div>
-
-        {/* The workflow moves the status automatically now (owner-directed
-            2026-07-21) — the team uses the Submit buttons above, not this
-            dropdown. Only a super-admin keeps a manual override. Everyone else
-            sees the status read-only. */}
-        {role === 'super_admin' ? (
-        <div className="grid cols-2" style={{ gap: 16 }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
-            <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
-              {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
-            </select>
-            <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
-          </div>
-          {/* The internal status renders UNCONDITIONALLY (it used to hide with
-              the pipeline toggle; the retired right aside was then its only
-              always-visible surface — red-team minor, Seven Rooms Phase 1). */}
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
-            <select className="input" value={app.internal_status || ''}
-              onChange={e => changeInternalStatus(e.target.value)}
-              title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
-              {/* Keep the current value selectable even if it isn't a normalized known key
-                  (live ClickUp statuses carry irregular casing / trailing spaces). */}
-              {!app.internal_status && <option value="">— not set —</option>}
-              {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
-                <option value={app.internal_status}>{app.internal_status} (current)</option>}
-              {(() => {
-                const groups = {};
-                for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
-                return Object.keys(groups).map(ext => (
-                  <optgroup key={ext} label={ext}>
-                    {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
-                  </optgroup>
-                ));
-              })()}
-            </select>
-            <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
-          </div>
-        </div>
-        ) : (
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Status</label>
-            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-              <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
-              {app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
-            </div>
-            <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
-          </div>
-        )}
-
-        <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Expected closing</label>
-            <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
-            <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
-          </div>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Actual closing</label>
-            <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
-          </div>
-        </div>
-
-        <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          <button className="btn ghost" onClick={() => setChatOpen(true)}><IconMessage />Message</button>
-          <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says"><IconBell />Remind</button>
-          <div className="spacer" />
-          <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
-            title="Email the borrower an invite to join this file in PILOT">
-            {inviteBusy ? 'Sending…' : 'Invite borrower'}
+          <button type="button" className="btn primary small"
+            onClick={() => { setAppDetailTab('people'); goToSection('sec-application'); }}
+            title="Every field on both borrowers' records — name, contact, date of birth, Social, home address, housing, employment, and where each of them stands with the portal">
+            Open borrower profiles
           </button>
         </div>
       </div>
 
-      <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
+      {/* THE TEAM, AND ONLY THE TEAM (owner-directed 2026-08-02: the old
+          "Entity, team & assignment" panel "mingled a few sections for no good
+          reason"). The ENTITY row and the ASSIGNMENT figures moved up into the
+          first overview block, which already owns the parties and the deal's
+          economics; the As-is row went with them (the snapshot has shown it for
+          a while, so this was printing the same number twice).
 
-      {/* THE BORROWER SECTION — every field, editable, for EVERY borrower
-          (owner-directed 2026-07-27: "in the BORROWER profile section you can
-          only edit a few fields from the first borrower, you can't edit the
-          fields from the 2nd borrower … you need to be able to edit any field on
-          the entire BORROWER section from any BORROWER").
-
-          This spot — the Borrower panel on the file overview — is the section the
-          owner was looking at, and it was a hand-rolled list of READ-ONLY rows
-          with exactly two editable ones (date of birth and SSN); the co-borrower
-          block under it had none at all. Both now render the shared
-          BorrowerProfilePanel, which is the ONE definition of the person's
-          record and its editor (#850), so the primary and the co-borrower are
-          the same code path and neither can drift.
-
-          The panel is mounted HERE rather than down in "Application details" —
-          that section is collapsed by default, so a Borrower editor inside it is
-          invisible until you go looking, which is how this surface stayed
-          read-only in the first place. It is mounted exactly ONCE per person:
-          two editors for one record on one page is worse than none. */}
-      {app.borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
-      )}
-      {app.co_borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
-      )}
-      <CoBorrowerBlock appId={id} app={app} onChanged={load} />
-
-      <div style={{ marginTop: 14 }}>
-        <div className="panel">
-          <h3 style={{ marginBottom: 4 }}>Entity, team &amp; assignment</h3>
-          {/* The headline numbers (purchase, ARV, rehab, loan amount) live in the
-              snapshot above and the sticky summary on the right — this panel shows
-              only what isn't there and what you act on, so the same fact isn't
-              printed three times. */}
-          <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>Headline numbers are in the snapshot above — this is what you act on.</p>
-          <div className="metrow"><span className="k">Entity</span><span className="v">
-            {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
-            {app.llc_id && (app.entity_verified
-              ? <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>
-              : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
-          </span></div>
-          {app.is_assignment && <>
-            <div className="metrow"><span className="k">Assignment</span><span className="v" style={{ color: 'var(--teal)' }}>Yes</span></div>
-            <div className="metrow"><span className="k">Underlying price</span><span className="v">{money(app.underlying_contract_price)}</span></div>
-            <div className="metrow"><span className="k">Assignment fee</span><span className="v">{money(app.assignment_fee)}</span></div>
-          </>}
-          <div className="metrow"><span className="k">As-is</span><span className="v">
-            {money(app.as_is_value ?? (app.is_assignment && app.underlying_contract_price != null
-              ? Number(app.underlying_contract_price) + Number(app.assignment_fee || 0)
-              : app.purchase_price))}
-            {app.as_is_value == null && app.purchase_price != null &&
-              <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
-          </span></div>
-          <TeamAssignees appId={id} officers={officers} processors={processors}
-            closers={team.filter(m => m.role === 'closer')}
-            drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
-            onChanged={load} />
-          {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
-          <div className="gold-rule" style={{ margin: '10px 0' }} />
-          {/* Reassigning a file is an admin function (S3-02) — the server 403s a
-              non-admin, so don't offer the control to them. */}
-          {isAdmin ? (<>
-          <div className="field"><label>Assign loan officer</label>
-            <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
-              <option value="">— select —</option>
-              {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
-            </select></div>
-          <div className="field"><label>Assign processor</label>
-            <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
-              <option value="">— select —</option>
-              {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-            </select></div>
-          <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
-          </>) : <p className="muted small">Only an admin can change who this file is assigned to.</p>}
+          What is left is the one thing this panel is for: who is on this file,
+          in every role, and how to change it. It is the LAST thing on the
+          overview — first block, then Status & closing, then the team. */}
+      <div className="panel team-panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 2 }}>
+          <h3 style={{ margin: 0 }}>Team on this file</h3>
+          <span className="small" style={{ color: '#4B585C' }}>Who is working it, in every role.</span>
         </div>
+        <TeamAssignees appId={id} officers={officers} processors={processors}
+          closers={team.filter(m => m.role === 'closer')}
+          drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
+          onChanged={load} />
+        {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
+        {/* Reassigning a file is an admin function (S3-02) — the server 403s a
+            non-admin, so the control is not offered to them. Side by side rather
+            than stacked: they are two halves of one action, and the Assign button
+            sits with them instead of floating under a tall column. */}
+        {isAdmin ? (
+          <div className="team-assign">
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Loan officer</label>
+              <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
+                <option value="">— select —</option>
+                {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Processor</label>
+              <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
+                <option value="">— select —</option>
+                {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+              </select>
+            </div>
+            <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>
+              {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
+            </button>
+          </div>
+        ) : (
+          <p className="small" style={{ color: '#4B585C', marginBottom: 0 }}>
+            Only an admin can change who this file is assigned to.
+          </p>
+        )}
       </div>
       </Section>
 
@@ -4590,17 +4943,14 @@ export default function StaffApplication() {
           two BorrowerProfilePanel mounts up on the file overview, once per
           person, never twice on one page — the line under the tabs points
           there so nobody hunts this section for them. */}
-      <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
-        Borrower personal details (name, contact, home address) are edited in the Borrower panel —{' '}
-        <button type="button" className="btn link small" onClick={() => goToSection('sec-overview')}>
-          Open the Borrower panel
-        </button>
-      </p>
       <div className="cond-tabs" role="tablist" aria-label="Application details">
         {[
           { k: 'deal', label: 'Deal & property' },
+          { k: 'people', label: app.co_borrower_id ? 'Borrower profiles' : 'Borrower profile' },
           { k: 'missing', label: 'Missing info' },
-          { k: 'pipeline', label: 'Pipeline data (read-only)' },
+          { k: 'status', label: 'Status & closing' },
+          { k: 'pipeline', label: 'ClickUp Sync' },
+          { k: 'encompass', label: 'Encompass sync' },
         ].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={appDetailTab === t.k}
             className={`cond-tab${appDetailTab === t.k ? ' active' : ''}`} onClick={() => setAppDetailTab(t.k)}>
@@ -4624,12 +4974,52 @@ export default function StaffApplication() {
         </>
       )}
 
+      {/* BOTH PEOPLE, SIDE BY SIDE (owner-directed 2026-08-02). Each is the ONE
+          shared BorrowerProfilePanel (#850) keyed on a borrower id, so the
+          primary and the co-borrower are literally the same code path and
+          neither can drift — and each is mounted exactly ONCE on the page.
+
+          WHY IT IS SAFE HERE NOW. These panels sat on the overview because
+          "Application details" is collapsed by default, and a Borrower editor
+          nobody can see is how this surface stayed read-only in the first place
+          (2026-07-27). That worry is answered rather than ignored: the overview
+          carries a named button that opens this exact tab, the completeness
+          pills that used to point at the overview now land here with the tab
+          already open, and the tab is named after the people it holds. */}
+      {appDetailTab === 'people' && <>
+        <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
+          Every field on each person&rsquo;s own record — name, contact, date of birth, Social,
+          home address, housing and employment — plus where each of them stands with the portal.
+          A change here follows the person onto every file they are on.
+        </p>
+        <div className="bprof-pair">
+          {app.borrower_id && (
+            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+          )}
+          {app.co_borrower_id && (
+            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+          )}
+        </div>
+        {/* What is about the LINK rather than about the person: find / add /
+            remove / invite. It stays full width under the pair. */}
+        <CoBorrowerBlock appId={id} app={app} onChanged={load} />
+      </>}
+
+      {/* THREE LISTS, BY SUBJECT (owner-directed 2026-08-02). What is missing on
+          the DEAL, on the BORROWER, and on the CO-BORROWER — one flat run of
+          pills mixed the loan number in with somebody's date of birth, so
+          neither the processor chasing terms nor the officer chasing identity
+          could see their own work. The co-borrower panel already stood apart;
+          this makes the primary borrower its equal instead of leaving their
+          identity fields looking like part of the deal. */}
       {appDetailTab === 'missing' && <>
         <p className="small" style={{ margin: '0 0 4px', color: '#4B585C' }}>
-          Anything still missing on the file — fill a pill and it disappears. Every field here can
-          also be edited any time under Deal &amp; property or in the Borrower panel.
+          Anything still missing, split three ways — the deal, the borrower, the co-borrower.
+          Fill a pill and it disappears. Every field here can also be edited any time under
+          Deal &amp; property or on the borrower&rsquo;s own profile.
         </p>
         <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+        <BorrowerCompleteness app={app} borrower={borrower} appId={app.id} onSaved={load} />
         <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
         {/* The two primary-address rows moved here rather than being deleted
             with the people's editors: this small panel still edits something
@@ -4648,11 +5038,52 @@ export default function StaffApplication() {
         )}
       </>}
 
-      {appDetailTab === 'pipeline' && (
-        /* Read-only pipeline data pulled from ClickUp — its own tab now, no
-           longer buried inside a disclosure; the panel carries its own
-           "Pulled from the pipeline · read-only" intro line. */
+      {/* EVERY DETAIL, EVERY EDIT (owner-directed 2026-08-02: "you should not
+          look where you need to change stuff, everything should be available
+          right there"). The owner named five things: the YS loan number with an
+          action to ENTER it, the expected and actual closing dates, BOTH
+          statuses, and the note buyer.
+
+          The Status & closing panel is the SAME ELEMENT the overview renders —
+          built once, rendered twice — so the two can never drift. That is safe
+          here because sec-overview and sec-application are in different ROOMS:
+          only one is ever on screen. The owner explicitly asked for it in both
+          places ("may stay on the overview too"). */}
+      {appDetailTab === 'status' && <>
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 8px', color: '#141B22' }}>File identity</h4>
+          <LoanNumberEntry appId={app.id} value={app.ys_loan_number} onSaved={load} />
+        </div>
+        {statusClosingBlock}
+        {/* The note buyer's ONE editor, mounted here as well — same card, same
+            single write path (complete-fields with `lender`). Never a second
+            editor: this is the card itself. */}
+        <NoteBuyerCard appId={id} value={app.lender} onSaved={load} />
+      </>}
+
+      {/* CLICKUP SYNC (owner-directed 2026-08-02) — everything about the card in
+          ONE place: the link and the re-sync controls (moved down from the
+          overview, where they sat behind a "Pipeline details" toggle on a panel
+          about a different subject), then the field-by-field comparison, then the
+          read-only figures the pipeline carries. The tab was called "Pipeline
+          data (read-only)", which described the least useful third of it. */}
+      {appDetailTab === 'pipeline' && <>
+        <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 8px', color: '#141B22' }}>PILOT vs the ClickUp card</h4>
+          <ClickupCompare appId={app.id} />
+        </div>
         <ClickupFileData app={app} />
+      </>}
+
+      {/* ENCOMPASS SYNC (owner-directed 2026-08-02) — the file's two outside
+          systems now sit side by side under Application details, in the order the
+          owner asked for: ClickUp first, then Encompass. It was its own top-level
+          section, which put the same KIND of screen (a live field-by-field
+          comparison against another system) two rooms away from its twin.
+          READ-ONLY, unchanged: Encompass is never written to. */}
+      {appDetailTab === 'encompass' && (
+        <EncompassSyncPanel appId={id} />
       )}
       </Section>
 
@@ -4687,10 +5118,18 @@ export default function StaffApplication() {
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      <Section hidden={!show('sec-encompass')} id="sec-encompass" title="Encompass sync" defaultOpen={false}
-        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. Pull any Encompass value into your file with one click. A term sheet can't be issued while a field here doesn't match. Encompass is never written to.">
-        <EncompassSyncPanel appId={id} />
-      </Section>
+      {/* THERE IS NO "Encompass sync" SECTION (owner-directed 2026-08-03: it "is
+          now duplicated also in the application details and it's also a separate
+          section in the deal … it should not be a separate section in the deal").
+          The 2026-08-02 move left a shell here whose only content was a button
+          pointing at the tab — which read as a second Encompass room and is
+          exactly the duplicate the owner is describing. The panel has ONE home:
+          Application details → Encompass sync.
+
+          The ADDRESS `#sec-encompass` is not dead — it is a permanent public
+          address carried by emails already sent, so `RETIRED_SECTION` in
+          lib/stations.js resolves it to that section + that tab. Deleting a
+          section means retiring its id there, never just removing the JSX. */}
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
           conditions, the underwriting conditions, the internal staff conditions +
@@ -5246,10 +5685,12 @@ function TapeExport({ appId }) {
             </div>
           )}
           <div style={{ marginTop: 8 }}>
-            <button type="button" onClick={() => goToSection('sec-encompass')}
-              title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+            {/* The comparison is a TAB of Application details, not a section —
+                ask for the tab, then open the section that holds it. */}
+            <button type="button" onClick={() => { requestAppDetailTab('encompass'); goToSection('sec-application'); }}
+              title="Open the Encompass sync tab, reconcile every field, then come back to export"
               style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-              Open the Encompass section →
+              Open the Encompass sync tab →
             </button>
           </div>
           {/* Escape hatch. Super admin: allow inline (a reason is asked at export). */}

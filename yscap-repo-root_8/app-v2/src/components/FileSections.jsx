@@ -28,6 +28,25 @@ export function subscribeConditionsTab(cb) {
   sectionBus.addEventListener('pilot-conditions-tab', h);
   return () => sectionBus.removeEventListener('pilot-conditions-tab', h);
 }
+/* "Application details" is a tabbed sub-hub too, and its tabs are now the ONLY
+   home of things that used to be their own sections (the Encompass comparison).
+   So the channel that flips them lives HERE beside the conditions one rather
+   than privately inside StaffApplication: a component that is merely rendered
+   on the file screen — the e-sign section's Encompass blocker, the tape export's
+   "open the Encompass section" — has to be able to ask for a tab without
+   importing the screen that renders it (a cycle) or navigating anywhere.
+   The subscriber is the screen itself, mounted whatever room is showing, so a
+   request may be made BEFORE the section is open — it flips the tab underneath
+   and the open+scroll lands on the right one. */
+export function requestAppDetailTab(tab) {
+  if (sectionBus && tab) sectionBus.dispatchEvent(new CustomEvent('pilot-app-detail-tab', { detail: tab }));
+}
+export function subscribeAppDetailTab(cb) {
+  if (!sectionBus) return () => {};
+  const h = (e) => cb(e.detail);
+  sectionBus.addEventListener('pilot-app-detail-tab', h);
+  return () => sectionBus.removeEventListener('pilot-app-detail-tab', h);
+}
 /* THE ROOM RESOLVER (Seven Rooms, Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md).
    The staff file screen renders one room at a time, so a jump's target section
    may not be MOUNTED (the bus listeners above exist only while a Section is

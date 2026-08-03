@@ -687,14 +687,18 @@ router.post('/applications', async (req, res) => {
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
-        is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
+        is_assignment,underlying_contract_price,assignment_fee,personal_name_purchase,source,raw_intake,status,submitted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$23,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b))]);
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b)),
+     /* HOW IS IT VESTED — the borrower is asked at the door now (owner-directed
+        2026-08-02). `vestsIndividually` also refuses to read "individual" when an
+        entity was picked, so llcId above always wins. */
+     require('../lib/fields').vestsIndividually(b)]);
   const appId = r.rows[0].id;
   // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
   await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
@@ -1024,6 +1028,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a
        stale or hand-rolled payload getting past that. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
@@ -2754,6 +2771,16 @@ function trackRecordCols(b) {
     notes: b.notes ? String(b.notes).slice(0, 1000) : null,
     property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
     entity_name: (!personal && b.entityName) ? String(b.entityName).slice(0, 160) : null,
+    /* THE DEDUPE KEY, written on every save from either door (owner-reported
+       2026-08-02: "one track record has twice the same address"). Both tool-save
+       routes used to write NO address_key at all — they deduped on client_row_id,
+       which is per tool SESSION, so the same house entered again next week, or
+       arriving from ClickUp or Encompass, became a second row. Writing it here
+       covers both doors and both the create and update paths at once, and keeps
+       the key in step with the address on every edit (address-heal's rewrite used
+       to leave a key describing the OLD text). '' when the address is unreadable
+       — stored as NULL so it never groups with another unreadable row. */
+    address_key: require('../lib/track-record-key').trackRecordKey(b.propertyAddress) || null,
   };
 }
 router.post('/track-records', async (req, res) => {
@@ -3746,6 +3773,11 @@ async function inviteCoBorrower(appId, primaryName, co) {
       officer,
     }, { replyTo: fileReplyTo(appId), from: officer ? require('../lib/email').fromWithName(officer.name) : null });   // #68 + #150
   } catch (_) {}
+  // Record it on the co-borrower (lib/portal-invite), so the staff file can say
+  // they were already invited instead of the team sending a second one. No
+  // staff id: the PRIMARY borrower sent this from their own portal, and the
+  // panel shows that distinction rather than inventing a staffer.
+  await require('../lib/portal-invite').recordInviteSent(coId, { email: co.email, byStaffId: null });
   return coId;
 }
 
@@ -3827,8 +3859,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
         payoff_lender,payoff_loan_number,
         requested_ir_amount,
+        personal_name_purchase,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
@@ -3862,7 +3895,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
      // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
      refiEcon(textField(b.payoffLender, 'payoff_lender')), refiEcon(textField(b.payoffLoanNumber, 'payoff_loan_number')),
-     moneyField(b.irAmount)]);
+     moneyField(b.irAmount),
+     /* $33 — HOW THE BORROWER SAID THEY WILL HOLD TITLE (owner-directed
+        2026-08-02). Appended LAST and referenced LAST in the VALUES list, per
+        the warning above. `vestsIndividually` lets a picked entity win, so this
+        can never contradict the llc_id bound at $2. */
+     require('../lib/fields').vestsIndividually(b)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }
