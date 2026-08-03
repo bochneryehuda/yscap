@@ -549,6 +549,162 @@ async function upsertObservation(db, cols) {
   return r.rows[0];
 }
 
+
+/**
+ * THE ADJUSTMENT LINES, AS ROWS (db/440).
+ *
+ * `property_observations.adjustments` holds every line the appraiser wrote on this
+ * comparable, and as jsonb it can only be read one comparable at a time. Written
+ * out as rows keyed by line code, the same data answers "what are appraisers
+ * actually paying for a bathroom in Paterson?" in one GROUP BY — the corpus no
+ * data vendor has, because these are adjustments from reports we paid for.
+ *
+ * REPLACE, NEVER APPEND. A report is re-ingested on every re-parse and on every
+ * version bump, so adding rows would multiply the corpus by the number of deploys
+ * and quietly corrupt every median computed from it. The jsonb column stays as the
+ * record of what the report said; these rows are a derived index of it.
+ *
+ * A NULL amount is KEPT and is not zero: a line written with no figure means the
+ * appraiser looked and adjusted nothing, which is different from a line the form
+ * never asked for. Collapsing them would make every average wrong.
+ *
+ * Best-effort. This is a derived index; failing to build it must never fail an
+ * ingest that has already stored the observation it derives from.
+ */
+async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on }) {
+  if (!observationId) return 0;
+  const rows = (Array.isArray(adjustments) ? adjustments : []).filter((a) => a && a.type);
+  // UPSERT BY POSITION, THEN TRIM — never delete-then-insert. Two ingests of one
+  // report genuinely overlap (`fireResearchIngest` is called from the import, the
+  // photo pass, the comparable re-parse and the boot backfill), and
+  // delete-then-insert is not atomic against an identical concurrent operation:
+  // both delete, both insert, and the corpus keeps BOTH copies. Measured before
+  // this shape: one report seeded through two racing ingests stored 266 rows
+  // where it holds 133, exactly double, and every median it fed would have
+  // counted that report twice.
+  if (rows.length) {
+    const vals = [];
+    const chunks = rows.map((a, i) => {
+      const b = i * 9;
+      vals.push(observationId, i, propertyId || null, String(a.type),
+        a.description == null ? null : String(a.description).slice(0, 500),
+        // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
+        a.amount != null && Number.isFinite(Number(a.amount)) ? Number(a.amount) : null,
+        (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null);
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${rows.length * 9 + 1})`;
+    });
+    vals.push(on || null);
+    await db.query(
+      `INSERT INTO property_adjustments
+         (observation_id, seq, property_id, line_type, description, amount, state, city, zip, observed_on)
+       VALUES ${chunks.join(',')}
+       ON CONFLICT (observation_id, seq) DO UPDATE SET
+         property_id = EXCLUDED.property_id, line_type = EXCLUDED.line_type,
+         description = EXCLUDED.description, amount = EXCLUDED.amount,
+         state = EXCLUDED.state, city = EXCLUDED.city, zip = EXCLUDED.zip,
+         observed_on = EXCLUDED.observed_on`, vals);
+  }
+  // A re-read that found FEWER lines must not leave the extra ones standing.
+  await db.query('DELETE FROM property_adjustments WHERE observation_id = $1 AND seq >= $2',
+    [observationId, rows.length]);
+  return rows.length;
+}
+
+/**
+ * WHAT APPRAISERS IN THIS MARKET ACTUALLY ADJUST FOR THIS LINE.
+ *
+ * Returns the count, the median and the quartiles of the NON-ZERO adjustments —
+ * a peer benchmark, not a rate. It REFUSES below `minSample` rather than answer
+ * from four numbers, for the same reason the valuation engine's derived rates
+ * refuse: a figure on a screen gets believed, and a median of four is noise
+ * wearing the clothes of an answer.
+ *
+ * THIS IS NOT A PER-UNIT RATE. A -$5,000 room-count adjustment says nothing per
+ * room without knowing how many rooms apart the two properties were. The caller
+ * is told so in `basis` so the wording on any screen cannot drift from the truth.
+ *
+ * Never throws.
+ */
+async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample = 8 } = {}) {
+  if (!lineType) return { ok: false, reason: 'no line type' };
+  try {
+    const p = [String(lineType), String(months)];
+    const where = ['line_type = $1', 'amount IS NOT NULL', 'amount <> 0',
+      "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
+    else if (city) {
+      p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`);
+      if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    } else if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    const r = await db.query(
+      `SELECT count(*)::int AS n,
+              percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS median,
+              percentile_cont(0.25) WITHIN GROUP (ORDER BY amount) AS q1,
+              percentile_cont(0.75) WITHIN GROUP (ORDER BY amount) AS q3
+         FROM property_adjustments WHERE ${where.join(' AND ')}`, p);
+    const row = r.rows[0] || { n: 0 };
+    if (!row.n || row.n < minSample) {
+      return { ok: false, n: row.n || 0, minSample,
+        reason: `only ${row.n || 0} adjustment${row.n === 1 ? '' : 's'} on this line in this market — too few to state a benchmark` };
+    }
+    return {
+      ok: true, n: row.n,
+      median: row.median == null ? null : Number(row.median),
+      q1: row.q1 == null ? null : Number(row.q1),
+      q3: row.q3 == null ? null : Number(row.q3),
+      months,
+      // Said explicitly so no screen can present this as a rate per room / per foot.
+      basis: 'the dollar adjustment appraisers wrote on this grid line, not a per-unit rate',
+    };
+  } catch (_) { return { ok: false, reason: 'could not read the adjustment corpus' }; }
+}
+
+
+/**
+ * PREVIOUS AND FUTURE — build the adjustment rows for observations already stored.
+ *
+ * Every observation already carries its lines in the `adjustments` jsonb, so this
+ * needs no re-parse and no stored XML: it reads what is there and writes the rows.
+ *
+ * Bounded per boot and SELF-DRAINING — an observation is picked only while it has
+ * lines in the jsonb and no rows in the table, so each pass permanently reduces
+ * the queue. An observation whose array is genuinely EMPTY is skipped by the same
+ * predicate rather than being re-examined forever.
+ *
+ * Deliberately NOT a SQL statement inside the migration. `jsonb_array_elements`
+ * over the whole table would be one unbounded write of tens of millions of rows
+ * inside the boot transaction, on a table the app is trying to serve from.
+ *
+ * Best-effort; never throws.
+ */
+async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
+  let scanned = 0, written = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT o.id, o.property_id, o.adjustments, o.observed_on,
+              p.state, p.city, p.zip
+         FROM property_observations o
+         LEFT JOIN properties p ON p.id = o.property_id
+        WHERE jsonb_typeof(o.adjustments) = 'array'
+          AND jsonb_array_length(o.adjustments) > 0
+          AND NOT EXISTS (SELECT 1 FROM property_adjustments a WHERE a.observation_id = o.id)
+        ORDER BY o.observed_on DESC NULLS LAST
+        LIMIT $1`, [limit])).rows;
+    for (const r of rows) {
+      scanned++;
+      try {
+        written += await writeAdjustments(db, {
+          observationId: r.id, propertyId: r.property_id,
+          adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
+          place: { state: r.state, city: r.city, zip: r.zip },
+          on: r.observed_on,
+        });
+      } catch (_) { /* one bad observation must not stop the drain */ }
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, written };
+}
+
 /**
  * A VALUE THE DRIVER CAN BIND — and the reason this exists is a bug that took the
  * whole warehouse down.
@@ -1511,6 +1667,20 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
     });
     compObs.push({ id: obs.id, property_id: pid, comp_seq: txt(c.seq) });
     out.observations++;
+    // The adjustment lines as rows (db/440) — the market benchmark's raw material.
+    // Its own savepoint: a derived index must never fail the ingest that feeds it.
+    await bestEffort(db, 'adj_rows', () => writeAdjustments(db, {
+      observationId: obs.id, propertyId: pid, adjustments: c.adjustments || [],
+      // The comparable's OWN town where it stated one, falling back the same way
+      // its property key does — never a town it did not sit in.
+      place: { state: txt(c.state) || txt(a.subject_state),
+        city: txt(c.city) || inheritedCity,
+        zip: txt(c.zip) },
+      // WHEN the adjustment describes: the comparable's own sale date, because
+      // that is the market the appraiser was pricing against. The report's
+      // effective date is the fallback.
+      on: saleDate || observedOn,
+    }), (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
       type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
       appraisalId, importId, observationId: obs.id,
@@ -2040,12 +2210,13 @@ async function ingestStatus(db) {
 }
 
 module.exports = {
-  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties,
+  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties, adjustmentBenchmark,
+  backfillAdjustmentRowsOnce,
   // The shared report-writing body — the standalone XML upload (db/411) drives it
   // with the same row shapes, so both doors read one report identically.
   writeReport,
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal, bindable,
-    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank },
+    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank, writeAdjustments },
 };

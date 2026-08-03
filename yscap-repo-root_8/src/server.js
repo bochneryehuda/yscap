@@ -689,6 +689,14 @@ if (require.main === module) {
           { limit: Number(process.env.RESEARCH_REROLL_BOOT || 500) })
           .then((r) => r && r.rerolled && console.log('[boot] research roll-up refresh:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research roll-up refresh failed:', e.message));
+        // db/440 — the adjustment lines as rows, for observations already stored.
+        // Reads the jsonb each observation already carries, so it needs no
+        // re-parse; bounded and self-draining (an observation with rows is never
+        // picked again).
+        require('./lib/research/ingest').backfillAdjustmentRowsOnce(require('./db'),
+          { limit: Number(process.env.RESEARCH_ADJUSTMENT_BACKFILL || 2000) })
+          .then((r) => r && r.written && console.log('[boot] adjustment corpus backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] adjustment corpus backfill failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at
