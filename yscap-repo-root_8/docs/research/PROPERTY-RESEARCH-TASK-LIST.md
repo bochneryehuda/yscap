@@ -644,7 +644,33 @@ never attempted. Everything in this phase costs about $10, one time.
   had to call `scoreComp` again with its own idea of the subject — which is how
   two screens come to disagree about the same comparable. One call now, on the
   same row the adjustments were computed for.
-- [ ] **5.5 Confirm-the-facts step, then instant re-value**
+- [x] **5.5 Confirm-the-facts step, then instant re-value** — **DONE**
+  (`src/lib/research/subject-facts.js`, 63 assertions; db/456; the confirm door
+  `POST /valuations/:id/confirm-subject`; the "What this value rests on" panel on
+  the valuation screen; `test-subject-facts-db.js`, 25).
+  **It leads with what is NOT happening, not with what is blank.** A WRONG fact
+  produces a wrong number somebody can argue with; a MISSING one removes
+  adjustments from the grid, and an absent line reads exactly like "no adjustment
+  was needed". Without a living area FOUR go at once — `suggestAdjustments`
+  multiplies the bedroom, bathroom and condition rates by the subject's own square
+  footage and skips the size line entirely — so the value quietly becomes close to
+  a plain average of the raw sale prices and still prints confidently. The pure
+  test PROVES that rather than asserting the wording: the same subject and
+  comparable, once with a living area and once without, and all three adjustments
+  disappear.
+  **The confirmation can go stale**, because a "checked" stamp that survives the
+  fact being changed afterwards is worse than no stamp — it launders an unchecked
+  number as a checked one. Compared by MEANING (2400 and "2400" are the same
+  living area), so the badge is never cried wolf.
+  **The correction re-values before the panel closes**, and that meant re-deriving
+  every suggested adjustment rather than re-running the arithmetic: the first cut
+  stored the fact and left the grid on the OLD one, so the value was
+  byte-identical before and after. `resuggestAll` is now shared with the explicit
+  re-suggest button so the two cannot drift, and a line a human typed is never
+  overwritten. A correction is checked rather than coerced ("about 2400" is
+  refused, naming the field, and NOTHING from that request is filed); a blank is a
+  legitimate answer and shows back up as a blind spot; a finalized valuation
+  refuses a later check, because it is a record of what was said.
 - [x] **5.6 Bracketing + QC panel** — **DONE**
   (`src/lib/research/bracketing.js`, 50 assertions; panel
   `app-v2/src/components/ValuationQc.jsx` on the valuation screen).
@@ -748,7 +774,29 @@ never attempted. Everything in this phase costs about $10, one time.
   position) because a half-loaded index answers confidently for the states that
   made it in, and it UPSERTS so a quarterly refresh is idempotent and a revised
   quarter overwrites rather than leaving two rows nobody can choose between.
-- [ ] **5.11 Draw and save a market-area polygon**
+- [x] **5.11 Draw and save a market-area polygon** — **DONE, and it now CUTS the
+  comparable search** (`src/lib/research/market-area.js`, 68 assertions including a
+  61x61 grid scan; db/454; the drawing UI on `StaffMarketAreas`;
+  `?market_area_id=` on `GET /api/research/comps`;
+  `test-market-area-filter-db.js`, 20).
+  **A radius is a bad model of a neighbourhood and every appraiser knows it**: a
+  mile in one direction crosses a river, a rail line or a town line; a mile in
+  another is the same houses on the same streets. Drawing a boundary was only half
+  the job — using it is the other half, or the drawing is theatre.
+  **The cut is EXACT, and there is one definition of exact.** Ray casting lives in
+  one tested place; re-implementing it in SQL to run it inside the query would give
+  this codebase two answers to the same question, and the wrong one would be
+  invisible — the search still returns houses and they still look plausible. So the
+  route resolves the shape to the properties inside it (bounding box in SQL,
+  because that is what an index can express, then the exact test on what survives,
+  because the box includes the corners a drawn shape deliberately cuts off).
+  **Three ways this goes silently wrong, all closed and all proven by reverting
+  them**: the cut happens IN SQL, so the LIMIT and the total stay honest; an area
+  containing none of our properties returns nothing rather than the whole town; and
+  the relaxation ladder never widens past a boundary a person drew. An archived or
+  unknown shape is a refusal naming what happened, and the answer says what the
+  boundary cut in BOTH numbers — "12 of the 40 in its bounding box" is a boundary
+  doing real work, "40 of the 40" means the shape is a rectangle.
 
 ## PHASE 6 — CONDITION, PROPERLY
 
