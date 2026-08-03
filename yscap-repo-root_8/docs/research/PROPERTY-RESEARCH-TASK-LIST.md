@@ -351,7 +351,12 @@ never attempted. Everything in this phase costs about $10, one time.
   `geocodeStatus` reports **90 trilaterated** (not 91) and `looked_up: 0`, the
   latter because a derived position is no longer counted as a rooftop lookup —
   it is still owed one.
-- [ ] **3.2 Geocodio as the backfill fallback** — $1/1,000, true US rooftop,
+- [ ] **3.2 Geocodio as the backfill fallback** — **BLOCKED ON AN ACCOUNT, and
+  no longer urgent.** 3.1b proved the FREE US Census geocoder places real
+  warehouse addresses at rooftop precision in ~120 ms, 5 of 5, so this is a
+  fallback for the addresses Census cannot place rather than the main path. It
+  needs a Geocodio API key in the environment; there is nothing left to build
+  until there is one. — $1/1,000, true US rooftop,
   permanent storage, and it returns census tract + school district in the same
   call. Nominatim cannot do a bulk backfill under its own policy.
 - [x] **3.3 The appraiser's OWN stated proximity is parsed and used for nothing**
@@ -409,8 +414,12 @@ never attempted. Everything in this phase costs about $10, one time.
   `test-research-geo-box-pure.js` walks 360 bearings across 10 latitudes and 7
   radii — 25,200 points, all inside — and fails on the old formula, which came
   out 0.11% NARROWER than the circle east-west at every latitude.
-- [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — free, and it is
-  the second identity signal item 1.9 needs
+- [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — **BLOCKED ON
+  CREDENTIALS.** The code is wired and `src/config.js` reads `USPS_CLIENT_ID` /
+  `USPS_CLIENT_SECRET`; both are unset, which is the only reason it has stamped
+  nothing. It needs a free developer.usps.com account and those two values in the
+  Render environment — nothing here is left to write. Free, and it is the second
+  identity signal item 1.9 needs.
 - [x] **3.7 THE MAP.** Subject pin, numbered comp pins, a distance ring,
   click-to-select — **DONE**, on the comparable search
   (`app-v2/src/components/CompMap.jsx`). **The two halves of the original plan
