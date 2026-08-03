@@ -62,11 +62,31 @@ if (!process.env.DATABASE_URL) {
     <COLLATERALS><COLLATERAL><PROPERTIES><PROPERTY>
     <SALES_COMPARISON><COMPARABLE_SALE/></SALES_COMPARISON></PROPERTY></PROPERTIES></COLLATERAL></COLLATERALS>
     </DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;
-  const r36 = await importAppraisal(db, { applicationId: appId, xml: uad36, importedBy: bid });
+  // THE ID PRODUCTION ACTUALLY PASSES. `importedBy` is `req.actor.id`, and both
+  // import routes sit behind `requireStaff`, so it is a `staff_users` id — the
+  // one value the first version of this test never used, which is exactly why a
+  // foreign key to `borrowers` sat here discarding every real refusal while the
+  // test stayed green.
+  const staffId = (await db.query(
+    `INSERT INTO staff_users (email, full_name, role, is_active)
+     VALUES ($1,'Fmt Staff','admin',true) RETURNING id`,
+    [`fmtstaff-${process.pid}@example.test`])).rows[0].id;
+  const r36 = await importAppraisal(db, { applicationId: appId, xml: uad36, importedBy: staffId });
   ok(!r36.ok && /3\.6|3\.x/.test(r36.error || ''), `a UAD 3.6 file is refused with a named reason`);
+  const asStaff = (await db.query(
+    `SELECT count(*)::int n FROM appraisal_format_refusals
+      WHERE application_id = $1 AND refused_by = $2`, [appId, staffId])).rows[0].n;
+  ok(asStaff === 1, `a refusal by a STAFF user is recorded (${asStaff}) — the id every production route passes`);
 
+  // SCOPED TO THIS FILE'S OWN APPLICATION, never global. The suite shares ONE
+  // database, other tests import appraisals, and a global count therefore
+  // depends on what ran before it — which is how this test passed locally and
+  // failed in CI. It also makes the file re-runnable: the rows deliberately
+  // survive their application (ON DELETE SET NULL), so a second run against the
+  // same database would otherwise see the first run's rows.
   const rows = (await db.query(
-    `SELECT kind, count(*)::int n FROM appraisal_format_refusals GROUP BY kind ORDER BY kind`)).rows;
+    `SELECT kind, count(*)::int n FROM appraisal_format_refusals
+      WHERE application_id = $1 GROUP BY kind ORDER BY kind`, [appId])).rows;
   console.log('  recorded:', JSON.stringify(rows));
   const byKind = Object.fromEntries(rows.map((r) => [r.kind, r.n]));
   ok((byKind.uad_3_6 || 0) === 1, `the UAD 3.6 refusal is recorded as its OWN kind (${byKind.uad_3_6 || 0})`);
@@ -74,8 +94,10 @@ if (!process.env.DATABASE_URL) {
     `the wrong-document refusals are recorded SEPARATELY (${byKind.not_appraisal || 0}) — not buried in the number that matters`);
 
   const counts = await formatRefusalCounts(db);
-  ok(counts.ok && counts.uad36.n === 1 && counts.notAppraisal.n >= 2,
+  ok(counts.ok && counts.uad36.n >= 1 && counts.notAppraisal.n >= 3,
     `the count reads back: ${counts.uad36.n} unreadable-format, ${counts.notAppraisal.n} wrong-document, mandatory from ${counts.mandatoryFrom}`);
+  ok(counts.mandatoryFrom === '2026-11-02' && /2\.6/.test(counts.reads || ''),
+    'and it states the deadline and what we can read, so a reader needs no context');
 
   // AND IT CANNOT HURT THE IMPORT. Drop the table and refuse again: the caller
   // must still get its clean refusal, not a 500.
@@ -101,8 +123,12 @@ if (!process.env.DATABASE_URL) {
   ok(rg.ok, 'a readable appraisal still imports');
   ok(after === before, 'and records no refusal');
 
+  // The refusal rows deliberately OUTLIVE their application (the count must not
+  // be erasable by deleting a loan file), so this file cleans up its own.
+  await db.query(`DELETE FROM appraisal_format_refusals WHERE application_id=$1`, [appId]);
   await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [bid]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
+  await db.query(`DELETE FROM staff_users WHERE email=$1`, [`fmtstaff-${process.pid}@example.test`]);
   console.log(fails ? `\ntest-appraisal-format-refusals-db: ${fails} FAILED` : '\ntest-appraisal-format-refusals-db: all passed');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error('HARNESS ERROR', e && e.message, e && e.stack); process.exit(1); });

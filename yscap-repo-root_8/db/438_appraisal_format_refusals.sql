@@ -45,9 +45,20 @@ CREATE TABLE IF NOT EXISTS appraisal_format_refusals (
   filename        text,
   size_bytes      integer,
   reason          text,
-  refused_by      uuid REFERENCES borrowers(id) ON DELETE SET NULL,
+  -- WHO TRIED, and NOT a foreign key. Every production caller passes
+  -- `req.actor.id`, which behind `requireStaff` is a `staff_users` id — so a FK
+  -- to `borrowers` refused every real refusal with 23503, `bestEffortRefusal`
+  -- swallowed it, and the table stayed permanently empty while reporting
+  -- "no exposure yet": the single wrong answer this feature exists to prevent.
+  -- `appraisals.imported_by` carries the same id with no FK for the same reason.
+  refused_by      uuid,
   refused_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- Correct a table created by the first version of this file, which constrained
+-- `refused_by` to `borrowers` and therefore discarded every real refusal.
+ALTER TABLE appraisal_format_refusals
+  DROP CONSTRAINT IF EXISTS appraisal_format_refusals_refused_by_fkey;
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'appraisal_format_refusals_kind_ck') THEN

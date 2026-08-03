@@ -42,6 +42,8 @@ const MARKET = require('../lib/research/market');
 const V = require('../lib/research/valuation');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
+// db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
+const { formatRefusalCounts } = require('../lib/appraisal/import');
 
 router.use(requireAuth, requireStaff);
 
@@ -1073,6 +1075,31 @@ router.delete('/valuations/:id', async (req, res, next) => {
     await db.query(`DELETE FROM property_valuations WHERE id=$1`, [req.params.id]);
     await audit(req.actor.id, 'valuation_deleted', req.params.id, {});
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// HOW MANY APPRAISALS WE HAVE HAD TO TURN AWAY (db/438)
+// ---------------------------------------------------------------------------
+/**
+ * UAD 3.6 / MISMO 3.x becomes MANDATORY for Fannie and Freddie appraisals on
+ * 2 NOVEMBER 2026, and PILOT reads UAD 2.6. From that date the appraisal desk
+ * stops working on new reports unless a 3.6 reader exists.
+ *
+ * Recording the refusals was only half of it — a count nothing can read answers
+ * nobody's question. `uad_3_6` above zero means real appraisals are ALREADY
+ * arriving in a format the desk cannot read, and the reader has stopped being
+ * optional. It is reported apart from `not_appraisal` (somebody attached a
+ * loan-application export instead of the appraisal) because that is a different
+ * problem with a different answer, and mixing them buries the number that matters.
+ *
+ * Staff-wide, like the rest of this router: it is a count of file formats, with
+ * no borrower, no loan and no money in it.
+ */
+router.get('/appraisal-formats', async (req, res, next) => {
+  try {
+    const days = Math.min(3650, Math.max(1, parseInt(req.query.days, 10) || 365));
+    res.json(await formatRefusalCounts(db, { sinceDays: days }));
   } catch (e) { next(e); }
 });
 

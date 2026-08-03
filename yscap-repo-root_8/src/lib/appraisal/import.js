@@ -107,26 +107,38 @@ async function bestEffortRefusal(db, args) {
  * "is the 2 November 2026 format change here yet?". Never throws; a reporting
  * surface must never be the thing that breaks a page.
  */
+const EMPTY_COUNT = () => ({ n: 0, last_30: 0, latest: null });
 async function formatRefusalCounts(db, { sinceDays = 365 } = {}) {
   try {
+    // `= 365` only defaults `undefined`, and a window of 0 or a negative would
+    // answer "nothing refused" from a query that asked nothing.
+    const days = Number(sinceDays);
+    const window = Number.isFinite(days) && days > 0 ? Math.floor(days) : 365;
     const r = await db.query(
       `SELECT kind, count(*)::int AS n, max(refused_at) AS latest,
               count(*) FILTER (WHERE refused_at > now() - interval '30 days')::int AS last_30
          FROM appraisal_format_refusals
         WHERE refused_at > now() - ($1 || ' days')::interval
-        GROUP BY kind ORDER BY n DESC`, [String(sinceDays)]);
+        GROUP BY kind ORDER BY n DESC`, [String(window)]);
     const by = {}; for (const row of r.rows) by[row.kind] = row;
     return {
       ok: true,
       // The headline. Above zero means real appraisals are already arriving in a
       // format the desk cannot read, and the reader is no longer optional.
-      uad36: (by.uad_3_6 || { n: 0, last_30: 0, latest: null }),
-      notAppraisal: (by.not_appraisal || { n: 0, last_30: 0, latest: null }),
-      unreadable: (by.unreadable || { n: 0, last_30: 0, latest: null }),
+      uad36: (by.uad_3_6 || EMPTY_COUNT()),
+      notAppraisal: (by.not_appraisal || EMPTY_COUNT()),
+      unreadable: (by.unreadable || EMPTY_COUNT()),
       mandatoryFrom: '2026-11-02',
       reads: 'UAD 2.6 (MISMO 2.6)',
     };
-  } catch (_) { return { ok: false }; }
+  } catch (_) {
+    // FAIL CLOSED TO THE SAME SHAPE. Returning a bare `{ok:false}` made every
+    // documented consumer (`counts.uad36.n`) throw a TypeError on the one path
+    // where the reporting surface is already degraded — turning "we could not
+    // read the count" into a broken page.
+    return { ok: false, uad36: EMPTY_COUNT(), notAppraisal: EMPTY_COUNT(), unreadable: EMPTY_COUNT(),
+      mandatoryFrom: '2026-11-02', reads: 'UAD 2.6 (MISMO 2.6)' };
+  }
 }
 
 async function importAppraisalTx(db, {

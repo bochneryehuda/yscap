@@ -160,8 +160,11 @@ export default function StaffPropertyDetail() {
               const f = p.below_grade_baths_full || 0; const h = p.below_grade_baths_half || 0;
               bits.push(`${f}${h ? `.${h}` : ''} bath${f === 1 && !h ? '' : 's'}`);
             }
-            if (p.below_grade_rec_rooms) bits.push(`${p.below_grade_rec_rooms} rec`);
-            if (p.below_grade_other_rooms) bits.push(`${p.below_grade_other_rooms} other`);
+            // `!= null`, NOT truthiness — the comment above promises a stated zero
+            // shows, and 16 corpus comparables state 0 rec rooms while 62 state 0
+            // other rooms. Truthiness swallowed every one of them.
+            if (p.below_grade_rec_rooms != null) bits.push(`${p.below_grade_rec_rooms} rec`);
+            if (p.below_grade_other_rooms != null) bits.push(`${p.below_grade_other_rooms} other`);
             return bits.length ? bits.join(' · ') : null;
           })()} />
           <Fact k="Basement exit" v={p.basement_exit === 'WalkOut' ? 'Walk-out'
@@ -171,6 +174,10 @@ export default function StaffPropertyDetail() {
           {/* The view RATING beside it is one appraiser's verdict; this is the
               thing itself, and every factor they listed, not just the first. */}
           <Fact k="View" v={p.view_type} />
+          {/* The price-relevant half of the same fix — "Residential; BusyRoad".
+              24 corpus comparables gain a second location factor against 10 on
+              the view side, and it reached no screen at all. */}
+          <Fact k="Location" v={p.location_type} />
           {/* db/439 — the appraiser's own words for whether the layout works. */}
           <Fact k="Functional utility" v={p.functional_utility} />
           <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />
