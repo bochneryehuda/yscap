@@ -37,6 +37,7 @@
  */
 const K = require('./property-key');
 const CS = require('./condition-scale');
+const COORDS = require('./coords');
 // The portal's own property-type vocabulary — a rental comparable's category is
 // derived from its unit count exactly the way a sales comparable's is, so the
 // two grids can never describe one building in two different words.
@@ -2019,7 +2020,9 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       effective_age: null, remaining_economic_life: null,
       heating_type: null, heating_fuel: null, cooling: null, foundation_type: null,
       attic: null, has_adu: null, lot_shape: null, lot_dimensions: null, listed_within_year: null,
-      latitude: c.latitude, longitude: c.longitude,
+      // BOTH OR NEITHER — the same rule the importer applies, restated here
+      // because this path also runs over reports stored before it existed.
+      ...COORDS.coordPair(c.latitude, c.longitude),
       net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
       adjustments: JSON.stringify(c.adjustments || []),
       appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,

@@ -684,7 +684,11 @@ function comparableRowFrom(c, formType = null) {
     total_rooms: c.totalRooms, sale_type: c.saleType, concession_amount: c.compConcession,
     financing_type: c.financingType,
     prior_sale_amount: c.priorSaleAmount, prior_sale_date: c.priorSaleDate,
-    latitude: c.latitude, longitude: c.longitude,
+    // A COORDINATE IS A PAIR — BOTH OR NEITHER. A vendor writing a LONGITUDE into
+    // `LatitudeNumber` and leaving `LongitudeNumber` empty produced 11 real
+    // comparables stored as "-86.96, (nothing)", which every single-column
+    // IS NOT NULL check reads as a placed property. See research/coords.js.
+    ...require('../research/coords').coordPair(c.latitude, c.longitude),
     view_rating: c.viewRating, location_rating: c.locationRating, view_type: c.viewType,
     below_grade_sqft: c.belowGradeSqft, below_grade_finished_sqft: c.belowGradeFinishedSqft,
     below_grade_beds: c.belowGradeBeds,
