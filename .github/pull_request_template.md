@@ -21,7 +21,9 @@
 - [ ] Nothing was copied, moved, re-used, imported, or generalized **from one product to the other**. If anything
       was, the owner's **written authorization** is recorded in `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md`
       and linked here.
-- [ ] **LT changes stay inside** `src/longterm/**`, `/api/lt/*`, `lt_*` tables, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`.
+- [ ] **LT changes stay inside** `src/longterm/**` (back end), `app-v2/src/longterm/**` (front end), `/api/lt/*`,
+      `lt_*` tables and trigger functions, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`.
+- [ ] Nothing was **copied by value** from one product to the other (CI cannot see a copy — only a human can).
 - [ ] **No RTL table, trigger, mapping, enum, or checklist template was changed to make LT work** (no new column on
       `applications`, no new ClickUp/Encompass/SharePoint/DocuSign/Sitewire/Trustpoint wiring for LT).
 - [ ] No `lt_*` table references an RTL table, and no migration touches both sides.

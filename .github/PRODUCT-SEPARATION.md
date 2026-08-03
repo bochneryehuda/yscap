@@ -9,7 +9,7 @@ If the three ever disagree, `CLAUDE.md` wins and the others must be corrected to
 | Full name | Residential Transition Loans | Long-Term Loans |
 | What it covers | Bridge, ground-up construction, fix & flip | Long-term / stabilized lending |
 | Status | **The main product.** Everything built before 2026-08-02 | **Brand new, starts at zero.** Side build, **not live**, no borrowers, no production traffic |
-| Where it lives | Everywhere else in the repo | `src/longterm/**`, `/api/lt/*`, `lt_*` tables, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js` |
+| Where it lives | Everywhere else in the repo | `src/longterm/**` (back end), `app-v2/src/longterm/**` (front end), `/api/lt/*`, `lt_*` tables + trigger functions, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js` |
 
 Think of them as **two different companies' software that happen to share one repository** — the owner's own
 comparison: *"if I'm telling you to build something you don't know if you should build this for Amazon or for
@@ -24,10 +24,12 @@ eBay — you ask."*
    endpoints, screens, components, prompts, mappings or integrations — in either direction. Wanting to re-use
    something is fine and expected: **ask, get it in writing, record it in
    `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md`, then build.** Authorization is per item, never blanket.
-3. **The back end is separate, always.** LT code only in `src/longterm/**`; LT HTTP only under `/api/lt/*`; LT tables
-   only named `lt_*`; LT schema only in its own `db/NNN_lt_*.sql` files; LT tests only `scripts/test-lt-*.js`.
-   No LT table may reference an RTL table. No trigger crosses. No shared writer, service module, queue row, or
-   condition/checklist template. The **only** permitted seam in the back end is `src/server.js` mounting the LT router.
+3. **The back end is separate, always.** LT code only in `src/longterm/**` (back end) and `app-v2/src/longterm/**`
+   (front end); LT HTTP only under `/api/lt/*`; LT tables and trigger functions only named `lt_*`; LT schema only in
+   its own `db/NNN_lt_*.sql` files; LT tests only `scripts/test-lt-*.js`. No LT table may reference an RTL table, and
+   LT may not reach an RTL table by raw SQL either — a crossing does not need a `require()`. No trigger crosses. No
+   shared writer, service module, database pool, queue row, or condition/checklist template. The **only** permitted
+   seams are `src/server.js` mounting the LT router and `scripts/test-lt-*.js`.
 4. **Do not touch RTL in order to build LT.** No new column on `applications` or any RTL table, no new ClickUp
    mapping, no new Encompass / SharePoint / DocuSign / Sitewire / Trustpoint wiring, no new checklist template,
    no new enum value — unless the owner asked for **that exact thing**.
@@ -44,7 +46,7 @@ eBay — you ask."*
 
 | Where | What |
 |---|---|
-| CI (`npm test` → `scripts/check-product-separation.js`) | Blocks a PR and the auto-deploy on any crossing: an LT module importing RTL code, RTL importing LT, an `lt_*` table with a foreign key to an RTL table, an LT-named column added to an RTL table, or a migration that touches both sides. |
+| CI (`npm test` → `scripts/check-product-separation.js`) | Blocks a PR and the auto-deploy on any crossing: an LT module importing RTL code (or the reverse), LT reaching an RTL table in raw SQL (or the reverse), RTL back-end code calling `/api/lt`, an `lt_*` table with a foreign key to an RTL table, an LT-named column added to an RTL table, a migration touching both sides, a trigger or function carrying one product's logic onto the other's table, an LT table or function not named `lt_*` — and any attempt to delete these rules or unwire the gate. `scripts/test-product-separation-gate.js` proves it still catches all of that. |
 | Pull requests | `.github/pull_request_template.md` — the "which product" answer and the separation checklist are mandatory. |
 | AI agents | `AGENTS.md` (git root) and `yscap-repo-root_8/CLAUDE.md`. |
 | Written authorization | `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` — the ledger. The CI gate reads it; an entry there is the only thing that makes a crossing legal. |
@@ -52,3 +54,8 @@ eBay — you ask."*
 
 **Do not weaken, bypass, baseline, or "temporarily" disable the gate.** If it blocks you, the answer is either to fix
 the crossing or to get written authorization and record it in the ledger — never to edit the gate.
+
+**A green build is not proof that nothing crossed.** CI sees *structural* crossings. It cannot see RTL code copied
+by value into an LT folder, a plainly-named new column added to an RTL table for LT's benefit, a new ClickUp or
+Encompass mapping, or a new checklist template. Rules 1, 4, 5, 7 and 8 rest on the person doing the work — which
+is what the PR checklist is for.

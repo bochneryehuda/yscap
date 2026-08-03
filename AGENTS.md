@@ -26,9 +26,11 @@ Treat them as two different companies' software that happen to share one reposit
    importing, extending, generalizing or sharing of code, tables, columns, migrations, conditions, templates,
    endpoints, screens, components, prompts, mappings or integrations, in either direction. Ask → get it in writing →
    record it in `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` → then build.
-3. **The back end is separate.** LT lives only in `src/longterm/**`, `/api/lt/*`, `lt_*` tables,
-   `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`. No LT table references an RTL table, no trigger crosses, no shared
-   writer or service module. The only permitted seam is `src/server.js` mounting the LT router.
+3. **The back end is separate.** LT lives only in `src/longterm/**` (back end), `app-v2/src/longterm/**` (front
+   end), `/api/lt/*`, `lt_*` tables and trigger functions, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`. No LT table
+   references an RTL table, no trigger crosses, no shared writer, service module or database pool — and LT may not
+   reach an RTL table by raw SQL either (a crossing does not need a `require()`). The only permitted seams are
+   `src/server.js` mounting the LT router and `scripts/test-lt-*.js`, which exist to test it.
 4. **Never change RTL to make LT work** — no new column on `applications`, no new ClickUp/Encompass/SharePoint/
    DocuSign/Sitewire/Trustpoint mapping, no new checklist template, unless the owner asked for that exact thing.
 5. **LT is explicitly not getting, for now: conditions, document underwriting, orders.**
@@ -40,5 +42,10 @@ Treat them as two different companies' software that happen to share one reposit
 Enforced by `yscap-repo-root_8/scripts/check-product-separation.js` (runs in `npm test`, blocks CI and the deploy),
 `.github/pull_request_template.md`, and `.github/PRODUCT-SEPARATION.md`. Do not weaken or bypass the gate —
 fix the crossing, or get written authorization and record it in the ledger.
+
+**A green build is not proof that nothing crossed.** The gate sees structural crossings (imports, raw SQL,
+foreign keys, columns, migrations, triggers, its own wiring). It cannot see RTL code copied by value into an LT
+folder, a plainly-named column added to an RTL table for LT, or a new field mapping. Rules 1, 4, 5, 7 and 8 are
+on you.
 
 Design and research behind the split: `yscap-repo-root_8/docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md`.

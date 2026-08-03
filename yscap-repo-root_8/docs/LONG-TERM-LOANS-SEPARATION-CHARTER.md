@@ -52,7 +52,7 @@ loan-type column?" is no.
 | Tables in the schema | **218** |
 | Numbered migrations replayed on every boot | **405** |
 | Migration files that reference `applications` | **193** |
-| Columns on `applications` (45 in `schema.sql` + 42 added later) | **87** |
+| Columns on `applications` (45 in `schema.sql` + 97 added later, none ever dropped) | **142** |
 | Foreign keys pointing at `applications` | **108** |
 | Database triggers defined in `db/` | **35** |
 | Test scripts in `npm test` | **564** |
@@ -71,7 +71,8 @@ moment a row exists or changes in `applications`:
 | Reopen the signed-terms acknowledgement, re-stale the term sheet | `db/280`, `db/288` |
 | Ground-up plans condition opens/closes as program or rehab type changes | `db/178` |
 | Auto-post conditions (e.g. condo / cash-out) | `db/303` |
-| Rebuild the whole document/condition checklist by "track" | `db/095`, `db/200` |
+| Rebuild the whole document/condition checklist by "track" | `db/095` |
+| The document-underwriting spine (extractions + findings on every document) | `db/200` |
 | Flood certificate ordered on **every single file, no matter the capital provider** | owner rule 2026-07-30 |
 | ClickUp two-way sync, SharePoint mirror, Encompass weekly read, DocuSign, Sitewire draws, Trustpoint | `src/sync/`, `src/encompass/`, `src/lib/esign/`, `src/routes/sitewire.js`, `src/trustpoint/` |
 | Investor-guideline (ISG) whole-loan run, appraisal findings enforcement, AI underwriting | `src/lib/underwriting/**` |
@@ -95,6 +96,10 @@ The word **DSCR** already exists in this codebase — and it is **RTL**, not Lon
   program is a non-RTL type such as DSCR, `reconcileLinkedProgramsOnce()` descopes it, and the card is kept only
   as a read-only snapshot in `clickup_task_index` with `kind = 'data_only'`. Those snapshots are counted in the
   data audit as `nonRtlPrograms`.
+- Sharpest edge of all: **`db/095_reconcile_full_checklists.sql` already computes a "track" of `'dscr'` from the
+  words *long-term*, *30-year* and *rental*, and generates the RTL document checklist off it** (the same
+  vocabulary in `src/lib/conditions/field-registry.js` maps to `rental_dscr`). RTL machinery is keyed on the exact
+  words Long-Term will use every day — which is precisely why the two products may never share a table.
 
 **Nobody may assume that any of this is the Long-Term product.** It is RTL plumbing that happens to use the same
 English word. If Long-Term needs a DSCR calculation, that is a new thing built inside `src/longterm/` — or an
@@ -146,34 +151,49 @@ migrations and its own tests. Nothing is shared, and a machine checks that nothi
 ```
 yscap-repo-root_8/
 ├─ src/
-│  ├─ server.js                 ← the ONE permitted seam: mounts the LT router
-│  └─ longterm/                 ← ALL Long-Term back-end code lives here, and only here
-│     ├─ routes/                   HTTP under /api/lt/*
-│     ├─ lib/                      Long-Term's own logic
-│     └─ db.js                     Long-Term's own data access (lt_* tables only)
+│  ├─ server.js                    ← the ONE permitted seam: mounts the LT router
+│  └─ longterm/                    ← ALL Long-Term back-end code lives here, and only here
+│     ├─ routes/                      HTTP under /api/lt/*
+│     ├─ lib/                         Long-Term's own logic
+│     └─ db.js                        Long-Term's own pool + data access (lt_* tables only)
 ├─ db/
-│  └─ NNN_lt_*.sql              ← Long-Term migrations: lt_* tables only, never an RTL table
+│  └─ NNN_lt_*.sql                 ← Long-Term migrations: lt_* tables only, never an RTL table
 ├─ scripts/
-│  ├─ test-lt-*.js              ← Long-Term tests
+│  ├─ test-lt-*.js                 ← Long-Term tests (the only RTL-side files that may import LT)
 │  └─ check-product-separation.js  ← the gate that keeps all of the above true
-└─ app-v2/src/                  ← front end: may show both, read-only, always stamped
+└─ app-v2/src/
+   ├─ longterm/                    ← ALL Long-Term front-end code lives here, and only here
+   └─ screens/StaffQueue.jsx       ← the combined pipeline: may show both, read-only, always stamped
 ```
 
 **The rules the gate enforces**
 
 | Rule | Why |
 |---|---|
-| `src/longterm/**` may not import RTL code | Long-Term starts at zero. An import is a crossing. |
-| Nothing outside `src/longterm/**` may import Long-Term code — except `src/server.js` mounting the router | RTL, the live product, must never depend on a side build. |
+| Long-Term code (`src/longterm/**`, `app-v2/src/longterm/**`) may not import RTL code | Long-Term starts at zero. An import is a crossing — including a shared UI component, which is still something already built. |
+| Nothing else may import Long-Term code — except `src/server.js` mounting the router, and `scripts/test-lt-*.js` | RTL, the live product, must never depend on a side build. |
+| Long-Term may not read or write an RTL table **in raw SQL**, and RTL may not touch an `lt_*` table | The crossing that needs no `require()` at all — the easiest one to make and the easiest to miss. |
+| RTL back-end code may not call `/api/lt` | The combined view is assembled at the read/view layer, never inside RTL. |
 | `lt_*` tables may only reference `lt_*` tables | A foreign key across the line welds the products together and blocks the graduation to Option C. |
 | No `lt_`/`long_term` column on an RTL table | *"Don't add any columns … unless we specifically ask you to."* |
-| A migration may not touch both sides | Mixed migrations are how two products quietly become one. |
-| A trigger on an `lt_*` table may not run RTL logic (and the reverse) | RTL triggers reopen RTL pricing and RTL conditions. Long-Term has none of that. |
-| The rule documents must stay in place and keep saying the rule | So the law cannot be quietly deleted. |
+| A migration may not touch both sides, and a Long-Term migration may only create `lt_*` tables and `lt_*` functions | Mixed migrations are how two products quietly become one — and a `CREATE OR REPLACE FUNCTION` with an RTL name would silently replace a live RTL trigger. |
+| A trigger on an `lt_*` table may only run an `lt_*` function (and the reverse) | RTL triggers reopen RTL pricing and RTL conditions. Long-Term has none of that. |
+| The rule documents — **and this gate's own wiring in `package.json` and the CI workflow** — must stay in place | A gate that has been unwired fails nothing, with every document still intact. |
 
 Anything the owner authorizes in writing is recorded in **`docs/LONG-TERM-AUTHORIZED-COPIES.md`**; the gate reads
 that ledger and permits exactly what is listed there, and nothing else. That is what makes "written
 authorization" a real thing rather than a memory of a chat message.
+
+**What the machine cannot check.** The gate catches *structural* crossings. It cannot see RTL code **copied by
+value** into a Long-Term folder (there is no import to find), a plainly-named new column added to an RTL table for
+Long-Term's benefit, a new ClickUp mapping, or a new checklist template. Those rest on the person doing the work
+and on the PR checklist. Do not read a green build as proof that nothing crossed.
+
+**The first collision, pre-answered.** Long-Term's very first file needs a database connection, and the existing
+pool (`src/db.js`) is RTL code — so importing it is a crossing the gate will block. **Until the owner says
+otherwise, Long-Term opens its own pool inside `src/longterm/db.js`.** That is the zero-assumption default: it
+needs no authorization, and it is what makes the eventual move to a separate database trivial. (See open
+question 11 if you would rather authorize sharing the pool.)
 
 ### What Long-Term does NOT get (2026-08-02)
 
@@ -205,9 +225,12 @@ asks each side for its slice and then sorts. That is fine at Long-Term's expecte
 live traffic) and is the price of never joining the two in the database. If Long-Term ever grows large enough
 that this hurts, the answer is a paging strategy at the edge — never a shared table.
 
-**Front-end sharing, precisely:** shared *presentation* (a table, a chip, a layout, brand tokens) is fine.
-Shared *product logic* — fields, statuses, workflow steps, money math, anything that knows what a loan is — is
-not. If it is unclear which one you are looking at: **ask.**
+**Front-end sharing, precisely:** shared *presentation* (a table, a chip, a layout, brand tokens) is the kind of
+thing that *may* be shared — but a component built for RTL is still something already built, so re-using one is a
+crossing like any other: **ask, get it in writing, add one `import` line to the ledger.** Shared *product logic* —
+fields, statuses, workflow steps, money math, anything that knows what a loan is — is not shareable at all. The
+gate blocks both until the ledger says otherwise, on purpose. If it is unclear which one you are looking at:
+**ask.**
 
 ---
 
@@ -217,7 +240,7 @@ not. If it is unclear which one you are looking at: **ask.**
 |---|---|---|
 | **RTL** / Residential Transition Loans | "the loan system", "short term" (in code) | `rtl_` already appears in the schema and workflow codes |
 | **LT** / Long-Term Loans | "DSCR", "rental", "30-year" | Those words already mean an RTL **exit strategy** in this codebase (§2.1) |
-| `lt_*` (tables), `src/longterm/` (code), `/api/lt/*` (URLs) | anything else | The gate keys off these names |
+| `lt_*` (tables + trigger functions), `src/longterm/` and `app-v2/src/longterm/` (code), `/api/lt/*` (URLs), `db/NNN_lt_*.sql` (migrations), `scripts/test-lt-*.js` (tests) | anything else | The gate keys off these names — a Long-Term table called `longterm_loans` would slip straight through |
 
 The exact words shown to staff on the stamp and the filter are the owner's call — see the open questions.
 
@@ -231,7 +254,7 @@ The exact words shown to staff on the stamp and the filter are the owner's call 
 | Every AI agent, before any work | `AGENTS.md` (git root) |
 | GitHub | `.github/PRODUCT-SEPARATION.md` |
 | Every pull request | `.github/pull_request_template.md` — "Which product is this for?" plus the separation checklist |
-| CI, blocking merges and deploys | `scripts/check-product-separation.js`, first in `npm test` |
+| CI, blocking merges and deploys | `scripts/check-product-separation.js`, at the head of `npm test` (step 2, right after the migration gate), plus `scripts/test-product-separation-gate.js` which proves it still catches what it claims |
 | Written authorizations | `docs/LONG-TERM-AUTHORIZED-COPIES.md` |
 | This design | `docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md` |
 
@@ -260,6 +283,9 @@ Long-Term gets built until they are answered.
 9. **Does a Long-Term file need documents at all right now** (just uploading and storing files), given that
    conditions, document underwriting and orders are all out of scope?
 10. **Anything Long-Term must NOT show** — e.g. does the note-buyer / capital-partner name rule apply there too?
+11. **May Long-Term share the database connection (`src/db.js`) with RTL?** Until you say yes, Long-Term opens its
+    own — which costs nothing and keeps the door open to moving Long-Term to its own database later. Say the word
+    and it becomes one ledger entry. *(Recommendation: leave it separate.)*
 
 ---
 

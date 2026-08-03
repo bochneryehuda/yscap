@@ -23,11 +23,15 @@ A yes for LT→RTL is not a yes for RTL→LT. If the owner's answer was "not for
 
 | Kind | Means | Example |
 |---|---|---|
-| `import <path>` | A file under `src/longterm/**` may `require()` this RTL module. Path is repo-relative (from `yscap-repo-root_8/`). | `import src/lib/crypto.js` |
-| `rtl-import <path>` | This one RTL file may `require()` Long-Term code. `src/server.js` is already allowed as the single mount seam and does not need an entry. | `rtl-import src/worker.js` |
+| `import <path>` | Long-Term code (`src/longterm/**`, `app-v2/src/longterm/**`) may `require()`/`import` this RTL module — including a shared front-end component. Path is repo-relative (from `yscap-repo-root_8/`). | `import src/lib/crypto.js` |
+| `rtl-import <path>` | This one RTL file may `require()` Long-Term code. `src/server.js` (the mount seam) and `scripts/test-lt-*.js` are already allowed and need no entry. | `rtl-import src/worker.js` |
 | `sql-ref <table>` | An `lt_*` table may carry a foreign key to this RTL table. | `sql-ref borrowers` |
+| `sql-read <table>` | Long-Term code may read or write this RTL table directly in SQL. | `sql-read borrowers` |
 
-Lines starting with `#` are comments. Everything else must match one of the three kinds exactly.
+Lines starting with `#` are comments. Everything else must match one of the four kinds exactly.
+
+**Only the FIRST `authorized` block in this file counts.** An example block written later in the prose can never
+quietly become a real permission.
 
 ```authorized
 # ---------------------------------------------------------------------------
@@ -53,3 +57,4 @@ stops a "no" quietly turning into a "yes" months later.
 |---|---|---|
 | 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now" |
 | 2026-08-02 | New columns / new field mappings anywhere for Long-Term | **No** — "don't add any columns don't add any mapping unless we specifically ask you to" |
+| 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
