@@ -7,7 +7,9 @@ import { moneyCents } from '../lib/money.js';
    reply_token in the URL is the capability — no login needed to ACCEPT your own release or to
    PUSH BACK on a line (amount + reason). Photo evidence on a dispute is added from the portal
    (an unauthenticated file upload is an abuse surface). Everything here is borrower-safe: the
-   server scrubs capital-partner names, strips photo GPS, and never exposes lender fees. */
+   server scrubs capital-partner names and strips photo GPS. This SCREEN shows the approval only —
+   the draw processing fee deducted from it is spelled out on the borrower's report PDF
+   (owner-directed 2026-08-03); our fee income across the project is never borrower-facing. */
 
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const usd0 = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');

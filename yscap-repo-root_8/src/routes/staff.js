@@ -1606,6 +1606,21 @@ router.get('/applications/:id', async (req, res) => {
   fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
   delete fileRow.registered_stale;
   delete fileRow.registered_stale_reason;
+  // Does this file need an estimated monthly rent to be complete? Decided HERE,
+  // with the same two shared helpers `applicationCompleteness` uses, and sent as
+  // a plain boolean (owner-directed 2026-08-03).
+  //
+  // It used to be re-derived in the browser (StaffApplication.jsx `isEmcapBuyer`),
+  // which put a capital partner's name in the one portal bundle every visitor
+  // downloads AND drifted from the server the moment the server was corrected:
+  // the client still compared `=== 'emcap'`, the exact match that 2026-07-30
+  // replaced precisely because the real ClickUp label "EMCAP Financial"
+  // normalizes to `emcapfinancial` and so matched NO live file. The panel was
+  // therefore silently not asking for a rent the submit gate would refuse
+  // without. One definition, on the side that owns it, is the fix for both.
+  fileRow.requires_estimated_rent = conditionRegistry.isEmcapNoteBuyer(fileRow.lender)
+    && conditionRegistry.normStrategy(
+      [fileRow.program, fileRow.loan_type, fileRow.rehab_type].filter(Boolean).join(' ')) === 'fix_hold';
   res.json(fileRow);
 });
 

@@ -1272,13 +1272,25 @@
   }
 
   /* ---------------- admin pricing overrides (soft-gated; Standard-only page) ---------------- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — obfuscation, not security.
-  function cyrb53(str, seed) {
-    seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-    for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  // The password and the check both live on the server now
+  // (POST /api/pricing-admin/unlock — src/routes/pricing-admin.js). They used to be
+  // right here: a cyrb53 hash with the plaintext beside it in a comment, compared in
+  // the visitor's own browser. Same password, still no login required.
+  function checkAdminPassword(pw, cb) {
+    var done = false;
+    var finish = function (ok) { if (!done) { done = true; cb(ok); } };
+    try {
+      var timer = setTimeout(function () { finish(false); }, 12000);
+      fetch("/api/pricing-admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: String(pw == null ? "" : pw) })
+      }).then(function (r) {
+        return r.ok ? r.json().catch(function () { return null; }) : null;
+      }).then(function (d) {
+        clearTimeout(timer); finish(!!(d && d.ok === true));
+      }).catch(function () { clearTimeout(timer); finish(false); });
+    } catch (e) { finish(false); }
   }
   // Company pricing defaults, live from /api/pricing-defaults so a fee/markup
   // change in the Admin Center reaches this public estimate too (audit #9), plus
@@ -1300,10 +1312,18 @@
         pw = el("laAdminPw"), go = el("laAdminGo"), err = el("laAdminErr"), hide = el("laAdminHide");
     if (!trig) return;
     function openLock() { if (lock) lock.hidden = false; if (panel) panel.hidden = true; trig.setAttribute("aria-expanded", "true"); if (err) err.hidden = true; if (pw) { pw.value = ""; pw.focus(); } }
+    var checking = false;   // one request at a time (the unlock route is rate-limited)
     function attempt() {
-      if (!pw) return;
-      if (cyrb53(pw.value, 0) === ADMIN_HASH) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
-      else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      if (!pw || checking) return;
+      checking = true;
+      if (go) { go.disabled = true; }
+      if (err) err.hidden = true;
+      checkAdminPassword(pw.value, function (ok) {
+        checking = false;
+        if (go) { go.disabled = false; }
+        if (ok) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
+        else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      });
     }
     function setVal(id, v) { var e = el(id); if (e) e.value = v; }
     function lockDown() {

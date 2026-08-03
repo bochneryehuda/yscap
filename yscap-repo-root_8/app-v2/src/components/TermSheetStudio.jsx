@@ -27,6 +27,17 @@ const HIDE_CSS = `
 // Borrowers never see the studio's admin pricing zone; staff keep it (and get
 // it pre-unlocked) so markups, origination and fee overrides work exactly as
 // they do on the marketing tool.
+//
+// TWO different "not visible", and the difference matters. For STAFF the zone is
+// merely HIDDEN — deliberately, so every admin value stays live in the (hidden)
+// inputs and locking admin mode never resets the pricing, exactly how the static
+// tool behaves. On a screen where the viewer can NEVER be admin (`adminCapable`
+// false — the borrower's own pricing studio) hiding is not enough: the markup and
+// origination inputs are still sitting in the DOM, one deleted style rule away
+// from being read and edited. There the zone is REMOVED outright. Pricing is
+// unaffected either way — the tool's `adminNum(id, dflt)` falls back to the same
+// company defaults when a field is absent, which is what it already does before
+// the fields are seeded.
 const HIDE_ADMIN_CSS = `.ts-admin-zone { display: none !important; }`;
 
 /* ---- shared field mapping: portal loan data <-> studio input ids ---- */
@@ -382,7 +393,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null, issueHold = null, provenance = null }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, adminCapable = true, officer = null, issueHold = null, provenance = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -396,12 +407,27 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   // (the "wiped-off coloring" blink) before the embed styling is injected.
   const [loaded, setLoaded] = useState(false);
 
+  // Strip the admin pricing zone out of the embedded document entirely. Used
+  // only where the viewer can never be admin (see HIDE_ADMIN_CSS above); after
+  // this there is nothing left to un-hide, which is the point.
+  function stripAdminZone() {
+    const win = winRef.current;
+    if (!win) return;
+    try {
+      const zone = win.document.querySelector('.ts-admin-zone');
+      if (zone && zone.remove) zone.remove();
+    } catch (_) { /* best-effort; the CSS hide below is still in force */ }
+  }
+
   // Show/hide the studio's admin pricing zone WITHOUT remounting the frame:
   // hiding keeps every admin value live in the (hidden) inputs — exactly how
   // the static tool behaves — so locking admin mode never resets the pricing.
   function applyAdminVisible(show) {
     const win = winRef.current;
     if (!win) return;
+    // On a viewer-can-never-be-admin screen the zone is gone from the DOM, so a
+    // stray show() must not be able to conjure it back.
+    if (show && !adminCapable) return;
     try {
       const doc = win.document;
       if (show) {
@@ -587,6 +613,10 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // pricing controls open; everyone else gets them hidden — togglable
         // later through the ref WITHOUT remounting (values persist hidden).
         applyAdminVisible(!!showAdmin);
+        // Where the viewer can NEVER be admin, hidden is not good enough — take
+        // the whole zone out of the document. The CSS hide above runs first and
+        // stays as the fallback if the node can't be found.
+        if (!adminCapable) stripAdminZone();
         // Loan-officer branding (owner-directed 2026-07-21): when this studio is
         // opened on a file with an ASSIGNED loan officer, publish the officer to
         // the tool's window.YSBRAND so the exported term-sheet PDF renders the LO

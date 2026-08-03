@@ -12,6 +12,8 @@
  * is flagged (unknown), never folded into a line.
  */
 
+const EV = require('./inspection-evidence');
+
 const N = (x) => Number(x || 0) || 0;
 const fmt = (c) => '$' + (N(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -19,22 +21,34 @@ const SEV_RANK = { high: 3, medium: 2, low: 1 };
 
 /**
  * @param draw     { sitewire_draw_id, number, status, total_requested_cents, total_approved_cents }
- * @param requests [{ sitewire_job_item_id, requested_cents, approved_cents, inspection_count }]
+ * @param requests [{ sitewire_request_id, sitewire_job_item_id, requested_cents, approved_cents, inspection_count }]
  * @param links    crosswalk rows [{ sitewire_job_item_id, sow_line_key, name, budgeted_cents, is_media_item, unit_index }]
  * @param rollup   output of rollup.computeRollup (line.remaining/drawn/budgeted EXCLUDING this pending draw), project totals
- * @param opts     { frontLoadPct=40, firstDrawMaxPct=30, inspectionMethod=null }
+ * @param opts     { frontLoadPct=40, firstDrawMaxPct=30, inspectionMethod=null, evidence=null }
  *                 inspectionMethod 'traditional' = a PHYSICAL-inspection file: the on-site
  *                 inspection happens OUTSIDE Sitewire (TrustPoint/Trinity), so zero Sitewire
  *                 inspection photos is the expected state — the no_inspection flag is
  *                 suppressed (phase 1, 2026-07-24). 'mobile'/null keep the flag.
+ *                 evidence = the inspection-evidence map (see ./inspection-evidence). A request's
+ *                 `inspection_count` is only ONE source and Sitewire's draw-level payload routinely
+ *                 omits it, so "is this line verified?" is answered by the union of the mirror, the
+ *                 delivered findings and the archived photos — never by that one counter alone
+ *                 (owner-reported 2026-08-03: four fully-photographed roof lines flagged unverified).
  * @returns        { flags:[{code,severity,message,key?}], level:'high'|'medium'|'low'|'clear', score }
  */
 function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts = {} } = {}) {
   const frontLoadPct = Number.isFinite(Number(opts.frontLoadPct)) ? Number(opts.frontLoadPct) : 40;
   const firstDrawMaxPct = Number.isFinite(Number(opts.firstDrawMaxPct)) ? Number(opts.firstDrawMaxPct) : 30;
   const physicalFile = opts.inspectionMethod === 'traditional';
+  const evidence = opts.evidence || null;
   const flags = [];
   const add = (code, severity, message, key) => flags.push({ code, severity, message, key: key || null });
+  // A line is VERIFIED when any durable source proves an inspection landed on it: the live mirror's
+  // count, the delivered findings' photo/video counts, or the photos archived into PILOT.
+  const verified = (r) => N(r.inspection_count) > 0 || EV.hasEvidence(evidence, r.sitewire_request_id);
+  // SOW lines every one of whose money requests is verified — used to soften the front-loading
+  // advisory below, which otherwise reads as an accusation on a line the photos already prove.
+  const verifiedLines = new Set(), unverifiedLines = new Set();
 
   // Exclude removed crosswalk rows (matching rollup.js) so a draw request against a DELETED
   // job item is flagged unknown/never budget-checked, not silently mapped to the dead line
@@ -64,7 +78,10 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
     const isMedia = !!l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0;
     if (isMedia) { if (req > 0) add('money_on_media_line', 'medium', `Money (${fmt(req)}) was requested against a photo/media line ("${l.name}"), which carries no budget.`, l.sow_line_key); continue; }
     if (appr > req) add('approved_exceeds_requested', 'high', `"${l.name}" was approved for ${fmt(appr)} but only ${fmt(req)} was requested.`, l.sow_line_key);
-    if (req > 0 && N(r.inspection_count) === 0 && !physicalFile) add('no_inspection', 'high', `"${l.name}" is requesting ${fmt(req)} with no inspection photos attached — the work isn't verified.`, l.sow_line_key);
+    if (req > 0) {
+      if (verified(r)) verifiedLines.add(l.sow_line_key);
+      else { unverifiedLines.add(l.sow_line_key); if (!physicalFile) add('no_inspection', 'high', `"${l.name}" is requesting ${fmt(req)} with no inspection photos attached — the work isn't verified.`, l.sow_line_key); }
+    }
     const agg = reqByLine.get(l.sow_line_key) || { requested: 0, approved: 0, label: rollup && lineByKey.get(l.sow_line_key) ? lineByKey.get(l.sow_line_key).label : l.name };
     agg.requested += req; agg.approved += appr;
     reqByLine.set(l.sow_line_key, agg);
@@ -112,7 +129,15 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
         if (!ln || N(ln.budgeted) <= 0) continue;
         const linePctAfter = (N(ln.drawn) + agg.requested) / N(ln.budgeted) * 100;
         if (linePctAfter - projPctAfter > frontLoadPct && linePctAfter > 60) {
-          add('front_loading', 'medium', `"${ln.label}" would be ${Math.round(linePctAfter)}% drawn while the project overall is ${Math.round(projPctAfter)}% — this line is running well ahead of the work.`, key);
+          // A trade finished ahead of the rest of the job is only a WARNING when nothing proves the
+          // work happened. Once every money request on the line carries inspection photos, the
+          // pattern is explained, so it stays on the report as a note (low) rather than a red flag —
+          // otherwise a draw that did exactly what it should reads as suspicious (owner-reported
+          // 2026-08-03: "Roof would be 100% drawn… this message even though the report has full
+          // pictures for each and every line item").
+          const proven = verifiedLines.has(key) && !unverifiedLines.has(key);
+          add('front_loading', proven ? 'low' : 'medium',
+            `"${ln.label}" would be ${Math.round(linePctAfter)}% drawn while the project overall is ${Math.round(projPctAfter)}%${proven ? ' — that trade is finished ahead of the rest of the job, and the inspection photos on file verify it.' : ' — this line is running well ahead of the work.'}`, key);
         }
       }
     }
