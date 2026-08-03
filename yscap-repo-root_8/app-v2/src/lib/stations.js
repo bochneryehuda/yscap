@@ -27,8 +27,18 @@ export const STATIONS = [
      separate section of orders … the same way we have a button now Signing and
      Closing, we should have a button Orders"). It sits BEFORE Signing & Closing
      because that is the order of the work — title and insurance are ordered, and
-     closing prep is sent, well before anything is signed or closed. */
-  { id: 'st-orders', label: 'Orders', sections: ['sec-orders'] },
+     closing prep is sent, well before anything is signed or closed.
+
+     THREE SECTIONS, NOT ONE (owner-directed 2026-08-03: "once we click on orders
+     by the left side we should also have the three options over there right away
+     — we shouldn't need to go into orders and then see the 3 options"). The rail
+     renders the active room's sections as spokes, but only when the room has more
+     than one (FileSections.jsx) — so a single-section Orders room showed NOTHING
+     under it and the three orders were reachable only by opening the room and
+     then hunting inside it. Splitting them is what lights the rail up, and it
+     also gives each order its own deep link, its own badge and its own scroll
+     target. `sec-orders` still lands: see RETIRED_SECTION. */
+  { id: 'st-orders', label: 'Orders', sections: ['sec-order-title', 'sec-order-insurance', 'sec-order-closing'] },
   /* E-signatures BEFORE closing (owner-directed 2026-08-02). */
   { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-closing'] },
   { id: 'st-delivery', label: 'Send to Investor', sections: ['sec-tapes'] },
@@ -75,6 +85,17 @@ export const RETIRED_SECTION = {
     appTab: 'encompass',
     label: 'Encompass sync',
     where: 'The Deal → Application details → Encompass sync',
+  },
+  /* `sec-orders` was ONE section holding all three orders until 2026-08-03, when
+     it was split so the rail could list them (see st-orders above). Its address is
+     live in the wild — every "documents came back on the title order" notification
+     PILOT has ever sent deep-links to it, and those emails do not expire — so it
+     resolves to the title order, the first of the three. */
+  'sec-orders': {
+    section: 'sec-order-title',
+    appTab: null,
+    label: 'Orders (title, insurance & closing prep)',
+    where: 'Orders → Title / Insurance / Attorney closing prep',
   },
 };
 
