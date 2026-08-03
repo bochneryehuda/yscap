@@ -70,6 +70,40 @@ async function handle401(data) {
   sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
+/* Read a token's own claims WITHOUT verifying (ordering only — the server
+   verifies every call). Tolerates missing base64url padding. */
+function tokenClaims(t) {
+  try {
+    const p = String(t).split('.')[1];
+    if (!p) return null;
+    const b64 = p.replace(/-/g, '+').replace(/_/g, '/');
+    const c = JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)));
+    return { sub: c.sub || null, iat: Number(c.iat) || 0 };
+  } catch { return null; }
+}
+
+/* Take a server-refreshed token ONLY if it is genuinely NEWER, for the SAME
+   account. A response's headers do not always come from the network: when the
+   browser revalidates a cached GET and the server answers 304, the fetch layer
+   hands JavaScript the STORED response's headers. So an `X-Refresh-Token`
+   minted during an earlier session could be replayed on every later request and
+   overwrite the LIVE token with an old one — and once that replayed token aged
+   past its 30-day life the very next call answered 401 `bad_token` and the SPA
+   signed the user out a second after they signed in on a correct password.
+   (The server now sends Cache-Control: no-store, which stops NEW poisoning;
+   this guard is what saves a browser whose cache is already poisoned.)
+   Comparing `iat` makes a replay a no-op: same-or-older is ignored. */
+function acceptRefreshedToken(fresh) {
+  const current = getToken();
+  if (!current) return;                    // signed out — a header must never resurrect a session
+  const now = tokenClaims(current);
+  const next = tokenClaims(fresh);
+  if (!now || !next) return;               // unreadable — keep the token we know works
+  if (next.sub !== now.sub) return;        // a different account's token — never swap it in
+  if (next.iat <= now.iat) return;         // same or older: a cached replay, not a refresh
+  setToken(fresh);
+}
+
 // One fetch with retry-on-transient-failure (only for GETs — retrying a write
 // could double-submit) + refresh-token capture + global 401 handling.
 async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
@@ -91,7 +125,7 @@ async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
       continue;
     }
     const fresh = res.headers.get('X-Refresh-Token');
-    if (fresh && getToken()) setToken(fresh);
+    if (fresh) acceptRefreshedToken(fresh);
     if (res.status === 401 && !isAuthCall && getToken()) {
       let data = null; try { data = await res.clone().json(); } catch { /* empty */ }
       handle401(data);   // not awaited — the caller's error path shouldn't wait on the probe

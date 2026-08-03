@@ -89,10 +89,12 @@ async function sessionQuery(claims) {
   }
 }
 
-function sessionDenied(req, res, code, message, extra) {
+function sessionDenied(req, res, code, message, extra, detail) {
   // One line per rejection, so "why was I signed out" is answerable from the
   // logs instead of reconstructed. No token, no PII — reason + route only.
-  console.warn('[auth] 401', code, req.method, req.path);
+  // `detail` narrows a code that covers several distinct causes (bad_token is
+  // four different bugs wearing one name); it is logged, never returned.
+  console.warn('[auth] 401', code, req.method, req.path, detail ? `(${detail})` : '');
   // `extra` carries any caller-specific field the SPA already keys on (e.g.
   // borrowerViewEnded) — it rides ALONGSIDE the standard marker, never instead.
   return res.status(401).json({ error: message, code, session: 'invalid', ...(extra || {}) });
@@ -101,7 +103,8 @@ function sessionDenied(req, res, code, message, extra) {
 async function authenticate(req, res, next) {
   const raw = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
   const claims = C.verifyJwt(raw);
-  if (!claims) return sessionDenied(req, res, 'bad_token', 'unauthenticated');
+  if (!claims) return sessionDenied(req, res, 'bad_token', 'unauthenticated', null,
+    C.jwtFailureReason(raw));
   // A pending-MFA challenge is NOT an access token — it only authorizes the
   // /mfa/verify step. Reject it here or the second factor is bypassable.
   if (claims.mfa) return sessionDenied(req, res, 'mfa_incomplete', 'mfa not completed');
