@@ -263,7 +263,13 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false }, ref) {
+// `adminCapable` mirrors the V2 component (see its note): on a screen where the
+// viewer can NEVER be admin — the borrower's own — the admin zone is REMOVED
+// from the studio's DOM instead of hidden by the style rule below, because
+// hiding still ships the markup, origination and fee inputs (and the password
+// box) into the borrower's page. It defaults to TRUE so every existing call site
+// behaves exactly as it did; only the borrower screens pass false.
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, adminCapable = true }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -277,12 +283,24 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   // (the "wiped-off coloring" blink) before the embed styling is injected.
   const [loaded, setLoaded] = useState(false);
 
+  function stripAdminZone() {
+    const win = winRef.current;
+    if (!win) return;
+    try {
+      const zone = win.document.querySelector('.ts-admin-zone');
+      if (zone && zone.remove) zone.remove();
+    } catch (_) { /* best-effort; the CSS hide below is still in force */ }
+  }
+
   // Show/hide the studio's admin pricing zone WITHOUT remounting the frame:
   // hiding keeps every admin value live in the (hidden) inputs — exactly how
   // the static tool behaves — so locking admin mode never resets the pricing.
   function applyAdminVisible(show) {
     const win = winRef.current;
     if (!win) return;
+    // On a viewer-can-never-be-admin screen the zone is gone from the DOM, so a
+    // stray show() must not be able to conjure it back.
+    if (show && !adminCapable) return;
     try {
       const doc = win.document;
       if (show) {
@@ -431,6 +449,9 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // Portal-authenticated staff (or an unlocked admin session) get the
         // pricing controls open; everyone else gets them hidden — togglable
         // later through the ref WITHOUT remounting (values persist hidden).
+        // Where the viewer can never be admin the zone is DELETED instead, so
+        // nothing about our pricing is in the page to begin with.
+        if (!adminCapable) stripAdminZone();
         applyAdminVisible(!!showAdmin);
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {

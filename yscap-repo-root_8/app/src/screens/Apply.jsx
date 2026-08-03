@@ -68,7 +68,7 @@ export default function Apply() {
   const [partners, setPartners] = useState([]);
   const [snap, setSnap] = useState(null);          // live Term Sheet Studio state (step 4)
   const [appId, setAppId] = useState(null);        // set the moment the application is submitted (step 4 entry)
-  const [adminKey, setAdminKey] = useState('');    // admin pricing unlock (same gate as the static studio)
+  // (no adminKey state — see the note above the studio mount)
   const studioRef = useRef(null);
   const lastStudioSync = useRef('');
   const idRef = useRef(id);
@@ -364,22 +364,11 @@ export default function Apply() {
         fico: s.fields.fico,
         expFlips: s.fields.expFlips, expHolds: s.fields.expBrrrr, expGround: s.fields.expGround,
       };
-      if (adminKey) {
-        // Admin-unlocked pricing: carry the studio's fee/markup/manual knobs.
-        Object.assign(overrides, {
-          markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold,
-          origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold,
-          lenderFee: s.fields.tsFeeUW, creditFee: s.fields.tsFeeCredit,
-          appraisalFee: s.fields.tsFeeAppr, titleFee: s.fields.tsFeeTitle,
-          manualPricing: !!s.fields.tsManualOn,
-          ovrAcqLTVPct: s.fields.tsManualOn ? s.fields.tsMLtv : undefined,
-          ovrARLTVPct: s.fields.tsManualOn ? s.fields.tsMArv : undefined,
-          ovrLTCPct: s.fields.tsManualOn ? s.fields.tsMLtc : undefined,
-          ovrRatePct: s.fields.tsManualOn ? s.fields.tsMRate : undefined,
-          ovrIrMonths: s.fields.tsManualOn ? s.fields.tsMIr : undefined,
-        });
-      }
-      await api.borrowerRegisterProduct(target, s.program, overrides, adminKey || undefined);
+      // No borrower admin-pricing branch here: the server stopped honoring a
+      // borrower `adminKey` in audit S1-04 (2026-07-12), so the staff-grade
+      // fee / markup / manual-basis knobs this used to attach were already
+      // being discarded server-side. It is gone rather than left dangling.
+      await api.borrowerRegisterProduct(target, s.program, overrides);
       if (pdf && pdf.blob) {
         try {
           const dataBase64 = await blobToBase64(pdf.blob);
@@ -393,22 +382,14 @@ export default function Apply() {
     }
   }
 
-  function unlockAdminPricing() {
-    if (adminKey) { setAdminKey(''); return; }
-    const pw = window.prompt('Admin mode — enter the pricing admin password:');
-    if (pw == null) return;
-    // same soft gate as the static Term Sheet tool (cyrb53 hash)
-    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
-    for (let i = 0, ch; i < pw.length; i++) {
-      ch = pw.charCodeAt(i);
-      h1 = Math.imul(h1 ^ ch, 2654435761);
-      h2 = Math.imul(h2 ^ ch, 1597334677);
-    }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    if (4294967296 * (2097151 & h2) + (h1 >>> 0) === 6019969998889003) setAdminKey(pw);
-    else setErr('Incorrect admin password.');
-  }
+  /* There WAS an `unlockAdminPricing()` here — a fifth copy of the browser-side
+     admin gate: the cyrb53 rounds written out inline and compared against the
+     very same constant the four public files carried. It is deleted, not
+     ported: nothing ever called it (no button), so esbuild tree-shook it and no
+     built bundle carried the hash, and the server stopped honoring a borrower
+     `adminKey` in audit S1-04 anyway. Porting it to the server route would have
+     re-created a borrower-side admin unlock the owner deliberately removed.
+     Staff unlock pricing on the staff file screen; a borrower never does. */
 
   if (err && !form) return <div role="alert" className="notice err">{err}</div>;
   if (!form) return <div className="panel muted">Loading your application…</div>;
@@ -771,8 +752,14 @@ export default function Apply() {
               and register: your loan amount, structure, cash to close, liquidity requirement and
               the signable term sheet PDF are all saved onto your loan file.
             </p>
-            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill}
-              lockedIds={STUDIO_LOCKED} onState={onStudioState} showAdmin={!!adminKey} />
+            {/* adminCapable={false}: this is the BORROWER's own screen, so the
+                admin zone is REMOVED from the studio's DOM rather than hidden by
+                a style rule — the markup, origination and fee inputs (and the
+                password box) were being shipped into the borrower's page and
+                were one deleted CSS rule from being read and edited. Matches
+                PricingStudio; staff keep the zone on the staff file screen. */}
+            <TermSheetStudio ref={studioRef} prefill={studioPrefill}
+              lockedIds={STUDIO_LOCKED} onState={onStudioState} showAdmin={false} adminCapable={false} />
           </>
         )}
 
