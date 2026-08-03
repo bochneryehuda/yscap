@@ -310,6 +310,54 @@ async function makeAppraisal(appId, o) {
     ok(reno.year_built === 1930 && Number(reno.gla) === 1600,
       'everything that is true either way (size, year built) still rolls up from the same report');
 
+    // (4b) DEPRECIATION IS CONDITION IN DOLLARS, AND MUST OBEY THE SAME RULE.
+    // db/422 added the cost approach without this protection, which produced a
+    // property row reading "condition C5" and "zero physical depreciation,
+    // replacement cost as-if-new" AT THE SAME TIME — not a conservative answer or
+    // an optimistic one, a self-contradicting one. Reproduced here exactly: an
+    // older as-is report states real depreciation, then the renovation report
+    // states none, and the property must keep the as-is figures.
+    // Its own loan file: one non-superseded appraisal per application, and the
+    // warehouse joins these two by ADDRESS, which is the whole point.
+    const asIsApp = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `4 Reno Rd ${sfx}` })])).rows[0].id;
+    const asIsRep = await makeAppraisal(asIsApp, {
+      date: '2019-04-01', asIs: 260000, address: '4 Reno Rd', city: CITY, state: 'NJ', zip: '08854',
+      gla: 1600, beds: 3, condition: 'C5', quality: 'Q4', yearBuilt: '1930',
+      appraiser: 'Dana Reyes', company: 'Reno Appraisals', license: `RG${LIC.slice(-6)}`, licenseState: 'NJ',
+    });
+    await db.query(
+      `UPDATE appraisals SET depreciation_physical=60000, depreciation_total=72000,
+         cost_new_total=300000, depreciated_cost_improvements=228000, dwelling_cost_new=250000,
+         cost_quality_rating='Average', building_status='Existing' WHERE id=$1`, [asIsRep]);
+    await db.query(
+      `UPDATE appraisals SET depreciation_physical=0, depreciation_total=0,
+         cost_new_total=520000, depreciated_cost_improvements=520000, dwelling_cost_new=500000,
+         cost_quality_rating='Good', building_status='SubstantiallyComplete' WHERE id=$1`, [A3]);
+    await ingest.ingestAppraisal(D, asIsRep);
+    await ingest.ingestAppraisal(D, A3);          // the RENOVATION report is newest
+    const renoCost = (await db.query(`SELECT * FROM properties WHERE id=$1`, [reno.id])).rows[0];
+    ok(renoCost.condition_uad === 'C5', 'the older as-is report still governs the condition');
+    ok(Number(renoCost.depreciation_physical) === 60000 && Number(renoCost.depreciation_total) === 72000
+      && Number(renoCost.cost_new_total) === 300000
+      && Number(renoCost.depreciated_cost_improvements) === 228000
+      && Number(renoCost.dwelling_cost_new) === 250000,
+    'AND SO DOES ITS DEPRECIATION — the newest report is about a house that does not exist yet, so the '
+      + 'warehouse can no longer report "C5" and "no depreciation" on one row');
+    ok(renoCost.cost_quality_rating === 'Average' && renoCost.building_status === 'Existing',
+      'the cost grade and the build status follow the same rule — both describe the finished building '
+      + 'on an after-repair report');
+    const renoObs2 = (await db.query(
+      `SELECT depreciation_physical, cost_new_total FROM property_observations
+        WHERE appraisal_id=$1 AND role='subject'`, [A3])).rows[0];
+    ok(Number(renoObs2.depreciation_physical) === 0 && Number(renoObs2.cost_new_total) === 520000,
+      'while the after-repair figures are still recorded on the observation, dated and marked as such — '
+      + 'refused for the roll-up, never lost');
+    // Put the address back to a single-report state for section 5.
+    await db.query(`UPDATE appraisals SET superseded = true WHERE id=$1`, [asIsRep]);
+    await ingest.ingestAppraisal(D, asIsRep);
+
     // ---- 5. superseded -----------------------------------------------------
     await db.query(`UPDATE appraisals SET superseded = true WHERE id=$1`, [A3]);
     const r3 = await ingest.ingestAppraisal(D, A3);
@@ -567,10 +615,13 @@ async function makeAppraisal(appId, o) {
     const factsA = (await db.query(
       `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
          subject_state, subject_zip, property_tax_amount, property_tax_year, cost_new_total,
-         off_site_improvements, condo_project_name, condo_units_planned,
-         lender_name, form_version, addendum_text, seller_is_owner, superseded)
+         off_site_improvements, condo_project_name, condo_units_planned, condo_units_sold,
+         condo_developer_control, listing_history, cost_data_source, attachment_type,
+         lender_name, addendum_text, seller_is_owner, superseded)
        VALUES ($1,'FNM1073','2026-05-02',$2,$3,'NJ','08854', 12345.67, 2025, 310000.00,
-         $4, 'Harbor Point', 120, 'Other Lender Bank NA', 'UAD 2.6', 'Corner lot.', true, false)
+         $4, 'Harbor Point', 120, 40, true,
+         'Listed 3/2018 at $310,000, expired 9/2018.', 'Marshall & Swift 2026', 'Attached',
+         'Other Lender Bank NA', 'Corner lot.', true, false)
        RETURNING id`,
       [factsAppId, `9 Fact Way ${sfx}`, CITY, JSON.stringify(['Curb', 'Gutter'])])).rows[0].id;
     await ingest.ingestAppraisal(D, factsA);
@@ -586,17 +637,49 @@ async function makeAppraisal(appId, o) {
     'and the PROPERTY facts roll up onto the property, where the search can reach them');
     ok(!('lender_name' in fProp) && !('addendum_text' in fProp) && !('form_version' in fProp),
       'while the REPORT facts have no property column at all — they can never overwrite a durable answer');
+    // db/424 — the audit's five corrected placements, each proven from the SAME
+    // report. A fact is on the wrong side if it describes a REPORT, a FUTURE
+    // house, or a WHOLE BUILDING, and `properties` claims none of those.
+    ok(fObs.listing_history && fObs.cost_data_source && !('listing_history' in fProp)
+      && !('cost_data_source' in fProp),
+    'the listing note and the cost service stay on the report — the first has no date-qualifier on a '
+      + 'property row, the second names a service, not a house');
+    ok(fObs.condo_units_sold === 40 && fObs.condo_developer_control === true
+      && !('condo_units_sold' in fProp) && !('condo_developer_control' in fProp),
+    'the BUILDING\'s absorption counts stay on the report — filing them per unit gave every condo its '
+      + 'own private, disagreeing copy of the building\'s statistics');
+    ok(Number(fProp.condo_units_planned) === 120 && fProp.condo_project_name === 'Harbor Point',
+      'while what the project was DESIGNED as does roll up — that does not move as it sells out');
+    ok(fObs.attachment_type === 'Attached' && fProp.attachment_type === 'Attached',
+      'the attachment STYLE reaches both sides — db/405 evicted it from property_type so it would '
+      + 'survive, and until now it reached nothing');
+    ok(!('form_version' in fObs) && !('software_vendor' in fObs),
+      'and the two columns nothing has ever been able to fill are gone, rather than shipped empty');
     // A jsonb column reads back as a JS array; binding it raw is what wiped every
     // fact off every property in PR #974, so prove it survived the round trip.
     ok(Array.isArray(fProp.off_site_improvements) && fProp.off_site_improvements.includes('Curb'),
       'a jsonb fact round-trips through the roll-up instead of throwing on the bind');
-    ok(Number(fProp.rollup_version) === 3, 'the property is stamped at the widened roll-up version');
+    ok(Number(fProp.rollup_version) === 4, 'the property is stamped at the widened roll-up version');
 
-    // …AND THE POINT OF ALL THAT: they are searchable.
+    // …AND THE POINT OF ALL THAT: they are searchable, AND the result says what it
+    // matched on. A filter whose fact has no result column is half a feature — you
+    // could search on the tax bill and get back rows that never state the tax bill.
     const taxHit = await S.searchProperties(db, { tax_min: 12000, tax_max: 13000, state: 'NJ' });
     ok(taxHit.rows.some((r) => r.id === fProp.id), 'a property can be found by its tax bill');
+    const taxRow = taxHit.rows.find((r) => r.id === fProp.id);
+    ok(Number(taxRow.property_tax_amount) === 12345.67 && taxRow.condo_project_name === 'Harbor Point'
+      && taxRow.attachment_type === 'Attached',
+    'and the result actually STATES the tax bill, the project and the attachment style');
     const projHit = await S.searchProperties(db, { condo_project: 'harbor point' });
     ok(projHit.rows.some((r) => r.id === fProp.id), 'and by the name of its condo project, case-insensitively');
+    // A VALUE WE OFFER IS A VALUE WE ACCEPT. `has_tax` used to take only '1' and
+    // boolean true, so `?has_tax=true` — the spelling all four of its siblings on
+    // this builder accept — silently matched EVERY property.
+    for (const spelling of ['1', 'true', true]) {
+      const hit = await S.searchProperties(db, { has_tax: spelling, state: 'NJ', city: CITY });
+      ok(hit.rows.length > 0 && hit.rows.every((r) => r.property_tax_amount != null),
+        `has_tax=${JSON.stringify(spelling)} filters rather than matching everything`);
+    }
 
     // (4g) THE MARKET GRID (db/423). The 1004MC states its windows RELATIVELY
     // ("last 3 months"), which two reports written months apart cannot share an
@@ -615,11 +698,12 @@ async function makeAppraisal(appId, o) {
     const mktA = (await db.query(
       `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
          subject_state, subject_zip, market_trends, nbhd_builtup, nbhd_value_trend, present_land_use,
-         market_conditions_comment, superseded)
+         market_conditions_comment, comp_research, superseded)
        VALUES ($1,'FNM1004','2026-05-01',$2,$3,'NJ','08854',$4,'Over 75%','Increasing',$5,
-         'Market is tightening.', false) RETURNING id`,
+         'Market is tightening.', $6, false) RETURNING id`,
       [mktApp, `2 Market Rd ${sfx}`, CITY, JSON.stringify(mktGrid),
-        JSON.stringify([{ use: 'One-Unit', pct: 85 }])])).rows[0].id;
+        JSON.stringify([{ use: 'One-Unit', pct: 85 }]),
+        JSON.stringify({ salesCount: 26, salesLow: 380000, salesHigh: 610000, listingsCount: 9 })])).rows[0].id;
     const mktOut = await ingest.ingestAppraisal(D, mktA);
     ok(mktOut.market === 1 && mktOut.marketPeriods === 3,
       'a report carrying a 1004MC grid files one market read with all three windows');
@@ -636,6 +720,12 @@ async function makeAppraisal(appId, o) {
     ok(mObs.trends && mObs.trends.Supply === 'Declining' && mObs.nbhd_builtup === 'Over 75%'
       && Array.isArray(mObs.present_land_use),
     'the appraiser\'s trend conclusions and the page-1 neighbourhood read land with it');
+    // db/424 — this column was declared `text` and written through a string
+    // helper, so a jsonb source object stored the literal "[object Object]" on
+    // every single row. The type is what makes the value readable.
+    ok(mObs.comp_research && typeof mObs.comp_research === 'object'
+      && mObs.comp_research.salesCount === 26 && mObs.comp_research.salesHigh === 610000,
+    'the appraiser\'s OWN researched sales bracket round-trips as real JSON, not as "[object Object]"');
     // The market is about an AREA, so it must never appear on the property row.
     const mProp = (await db.query(
       `SELECT * FROM properties WHERE id=$1`, [mObs.property_id])).rows[0];
@@ -665,7 +755,7 @@ async function makeAppraisal(appId, o) {
 
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, factsAppId, mktApp]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, asIsApp, factsAppId, mktApp]]);
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
     // The warehouse deliberately SURVIVES the files (the observations are SET NULL,

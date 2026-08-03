@@ -155,6 +155,33 @@ export default function StaffPropertyDetail() {
           <Fact k="Market rent" v={p.market_rent ? money(p.market_rent) + ' / month' : null} />
           <Fact k="Owner of record" v={p.owner_of_record} />
           <Fact k="HOA fee" v={p.hoa_fee_amount ? `${money(p.hoa_fee_amount)}${p.hoa_fee_period ? ' / ' + String(p.hoa_fee_period).toLowerCase() : ''}` : null} />
+          {/* db/422 + db/424. A fact you can FILTER on but never SEE is half a
+              feature — the tax search shipped without a tax column, so a search
+              on the tax bill returned rows that never said what the tax bill was. */}
+          <Fact k="Attached / detached" v={p.attachment_type} />
+          <Fact k="Property tax" v={p.property_tax_amount
+            ? `${money(p.property_tax_amount)}${p.property_tax_year ? ' (' + p.property_tax_year + ')' : ''}` : null} />
+          <Fact k="Condo project" v={p.condo_project_name} />
+          <Fact k="Project type" v={p.condo_project_type} />
+          <Fact k="Units planned" v={p.condo_units_planned} />
+          <Fact k="Parking spaces" v={p.condo_parking_spaces} />
+          <Fact k="Common elements" v={p.condo_common_elements} />
+          <Fact k="Managed by" v={p.condo_management_type} />
+          <Fact k="Effective age" v={p.effective_age ? `${p.effective_age} years` : null} />
+          <Fact k="Foundation" v={p.foundation_type} />
+          <Fact k="Neighbourhood" v={p.neighborhood} />
+          {/* The cost approach. AS-IS ONLY (db/424): a renovation report states
+              these about the FINISHED house, so the roll-up refuses them there —
+              which is why "condition C5" and "no depreciation" can no longer
+              appear on one row. */}
+          <Fact k="Cost new" v={p.cost_new_total ? money(p.cost_new_total) : null} />
+          <Fact k="Depreciation" v={p.depreciation_total != null ? money(p.depreciation_total) : null} />
+          <Fact k="Depreciated improvements" v={p.depreciated_cost_improvements ? money(p.depreciated_cost_improvements) : null} />
+          <Fact k="Site improvements" v={p.site_improvements_value ? money(p.site_improvements_value) : null} />
+          <Fact k="Cost quality grade" v={p.cost_quality_rating} />
+          <Fact k="Building status" v={p.building_status} />
+          <Fact k="Zoning compliance" v={p.zoning_compliance_note} />
+          <Fact k="Noted deficiency" v={p.physical_deficiency_note} />
           <Fact k="First seen" v={day(p.first_observed_on)} />
           <Fact k="Last seen" v={day(p.last_observed_on)} />
         </dl>

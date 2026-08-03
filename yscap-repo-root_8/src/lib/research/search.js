@@ -178,7 +178,14 @@ function buildQuery(input = {}) {
   // same expression `idx_properties_condo_project` indexes, so it stays indexed.
   if (str(f.condo_project)) where.push(`lower(p.condo_project_name) = lower(${P(str(f.condo_project))})`);
   // "only ones we know the tax bill for" — a distinct question from a range.
-  if (f.has_tax === '1' || f.has_tax === true) where.push('p.property_tax_amount IS NOT NULL');
+  // ACCEPTS THE SAME THREE SPELLINGS as every sibling on this builder (`has_sale`,
+  // `has_photos`, `has_unit_mix`, and the `yesNo()` helper below). It used to take
+  // only `'1'` and boolean true, so `?has_tax=true` — the spelling every one of
+  // its neighbours accepts — returned EVERY property, indistinguishable from a
+  // filter that matched everything. A value we offer is a value we accept.
+  if (f.has_tax === true || f.has_tax === 'true' || f.has_tax === '1') {
+    where.push('p.property_tax_amount IS NOT NULL');
+  }
 
   const lotMin = num(f.lot_sqft_min), lotMax = num(f.lot_sqft_max);
   if (lotMin != null) where.push(`p.lot_sqft >= ${P(lotMin)}`);
@@ -338,6 +345,13 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   p.view_rating, p.location_rating,
   p.sfha, p.fema_flood_zone, p.flood_zone, p.property_rights, p.occupancy_status,
   p.has_adu, p.attic, p.basement_finished_pct, p.lot_shape, p.market_rent, p.unit_mix,
+  -- A FILTER WITHOUT A COLUMN IS HALF A FEATURE: you could search on the tax bill
+  -- and the condo project and get back rows that never said what either was. The
+  -- attachment style rides here for the same reason — db/405 kept it out of
+  -- property_type so it would survive, and a fact nothing can read has not.
+  p.property_tax_amount, p.property_tax_year, p.condo_project_name, p.attachment_type,
+  p.hoa_fee_amount, p.hoa_fee_period, p.heating_type, p.heating_fuel, p.cooling,
+  p.garage_type, p.garage_spaces, p.stories, p.design_style, p.effective_age,
   p.last_sale_price, p.last_sale_date, p.last_sale_type, p.last_sale_status, p.last_list_price,
   p.sale_count, p.subject_count, p.comp_count, p.arv_comp_count, p.asis_comp_count,
   p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on,

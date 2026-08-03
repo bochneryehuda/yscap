@@ -95,6 +95,10 @@ const ROLLUP_FACTS = Object.freeze({
   // concessions) are deliberately ABSENT from this map — rolling those onto the
   // property would let the newest appraisal overwrite a durable answer with
   // something that was only ever true of one report.
+  // db/424 — the attachment STYLE, which db/405 evicted from `property_type`
+  // specifically so the fact would not be lost, and which then reached no
+  // warehouse table at all. Durable and searchable; it is simply not a category.
+  attachment_type: 'attachment_type',
   property_tax_amount: 'property_tax_amount',
   property_tax_year: 'property_tax_year',
   site_improvements_value: 'site_improvements_value',
@@ -107,9 +111,14 @@ const ROLLUP_FACTS = Object.freeze({
   depreciation_functional: 'depreciation_functional',
   depreciation_external: 'depreciation_external',
   depreciation_total: 'depreciation_total',
-  cost_data_source: 'cost_data_source',
+  // db/424 — `cost_data_source` and `listing_history` are DELIBERATELY absent.
+  // The first names the cost SERVICE the appraiser consulted (report methodology,
+  // the exact analogue of `contract_data_source`, which is already observation-
+  // only); the second is a note whose date-qualifier `listed_within_year` is
+  // observation-only, so on the property row it becomes a listing note nothing
+  // can ever clear. `cost_quality_rating` grades the DWELLING and stays — under
+  // AS_IS_ONLY, so an after-repair report cannot state it.
   cost_quality_rating: 'cost_quality_rating',
-  listing_history: 'listing_history',
   building_status: 'building_status',
   off_site_improvements: 'off_site_improvements',
   rent_included_utilities: 'rent_included_utilities',
@@ -118,19 +127,19 @@ const ROLLUP_FACTS = Object.freeze({
   fema_panel_date: 'fema_panel_date',
   condo_project_name: 'condo_project_name',
   condo_project_type: 'condo_project_type',
+  // THE DURABLE project attributes only (db/424). What the project was DESIGNED
+  // as does not move; how much of it has SOLD does, and those counts describe the
+  // whole BUILDING as of one report's date — filing them here gave every unit a
+  // private copy of the building's statistics, disagreeing with the unit next
+  // door by whichever report happened to be newest. Proven on a real database.
+  // The eight moving ones stay on `property_observations`, correctly dated by the
+  // report that stated them, until the project gets its own table.
   condo_units_planned: 'condo_units_planned',
-  condo_units_completed: 'condo_units_completed',
-  condo_units_sold: 'condo_units_sold',
-  condo_units_rented: 'condo_units_rented',
-  condo_units_for_sale: 'condo_units_for_sale',
-  condo_owner_occupied: 'condo_owner_occupied',
   condo_total_phases: 'condo_total_phases',
   condo_parking_spaces: 'condo_parking_spaces',
   condo_common_elements: 'condo_common_elements',
   condo_commercial_space: 'condo_commercial_space',
   condo_management_type: 'condo_management_type',
-  condo_developer_control: 'condo_developer_control',
-  condo_concentrated_ownership: 'condo_concentrated_ownership',
 });
 
 /**
@@ -145,11 +154,15 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-// 3 — db/422 widened the fact set by 36 property columns. The boot sweep
-// (`rerollStaleProperties`) re-rolls every existing property through the one
-// definition of the roll-up; db/421 made its index version-agnostic so this
-// bump does not silently cost it that index.
-const ROLLUP_VERSION = 3;
+// 4 — db/422 widened the fact set by 36 property columns; db/424 corrected five
+// of those placements, added the attachment style, and — the reason this bump
+// MATTERS rather than merely tidying — put the cost approach and its depreciation
+// under AS_IS_ONLY. A property already rolled at 3 is carrying after-repair
+// depreciation figures right now, and only a re-roll takes them back off. The
+// boot sweep (`rerollStaleProperties`) drains it through the one definition of
+// the roll-up; db/421 made its index version-agnostic so this bump does not
+// silently cost it that index.
+const ROLLUP_VERSION = 4;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -161,8 +174,36 @@ const ROLLUP_VERSION = 3;
  * files this lender writes most. An observation whose `condition_basis` is
  * 'as_repaired' is skipped for these columns only; everything else it stated
  * (the size, the year built, the address) is a fact either way and still counts.
+ *
+ * db/424 EXTENDED THIS SET, because db/422 added the numeric analogue of
+ * `condition_uad` and left it unprotected. Proven on a real database: a 2019
+ * as-is report said C5 with $72,000 of depreciation, a 2026 renovation report
+ * (correctly stamped `as_repaired`) said C2 with ZERO physical depreciation and
+ * replacement cost as-if-new — and the property row ended up reading
+ *
+ *     condition_uad             C5      <- correctly protected
+ *     depreciation_physical     0.00    <- the AFTER-repair figure
+ *     cost_new_total            520000
+ *
+ * at the same time. "Condition C5, zero physical depreciation" is not a
+ * conservative answer or an optimistic one; it is a self-contradicting one, and
+ * every number in it describes a house that does not exist yet. Depreciation IS
+ * condition expressed in dollars, so it belongs under exactly the same rule.
+ *
+ * `building_status` joins it for the same reason at one remove — Proposed /
+ * UnderConstruction / SubstantiallyComplete is a statement about a moment, and an
+ * after-repair report's answer is about the finished building.
  */
-const AS_IS_ONLY = new Set(['condition_uad', 'condition_text', 'quality_uad', 'quality_text']);
+const AS_IS_ONLY = new Set([
+  'condition_uad', 'condition_text', 'quality_uad', 'quality_text',
+  // The cost approach and its depreciation — the same claim as `condition_uad`,
+  // in dollars (db/424).
+  'depreciation_physical', 'depreciation_functional', 'depreciation_external',
+  'depreciation_total', 'depreciated_cost_improvements',
+  'cost_new_total', 'dwelling_cost_new', 'dwelling_price_per_sqft',
+  'site_improvements_value', 'cost_quality_rating',
+  'building_status',
+]);
 
 // ---------------------------------------------------------------------------
 // APPRAISER
@@ -822,6 +863,11 @@ async function writeReport(db, { a, comps, link, out }) {
       stories: txt(a.stories), design_style: txt(a.design_style),
       property_type: txt(a.property_category) || txt(a.property_type),
       property_category: txt(a.property_category),
+      // The attachment STYLE, kept as its own fact rather than smuggled into the
+      // category. db/405 evicted it from `property_type` precisely so it would
+      // not be lost — "Detached" answers a different question from "Multi 2-4",
+      // and neither substitutes for the other (db/424).
+      attachment_type: txt(a.attachment_type),
       condition_uad: txt(a.condition_uad), condition_text: null,
       quality_uad: txt(a.quality_uad), quality_text: null,
       condition_basis: conditionBasis,
@@ -876,8 +922,13 @@ async function writeReport(db, { a, comps, link, out }) {
       condo_project_type: txt(a.condo_project_type),
       condo_common_elements: txt(a.condo_common_elements),
       condo_management_type: txt(a.condo_management_type),
-      form_version: txt(a.form_version),
-      software_vendor: txt(a.software_vendor),
+      // `form_version` and `software_vendor` were written here by db/422 and are
+      // GONE (db/424): the parser never assigns either, `appraisalRowFrom`
+      // hard-codes software_vendor null and omits form_version entirely, so both
+      // source columns are always NULL and both observation columns were dead.
+      // db/422's own test only passed because it INSERTed a value straight into
+      // `appraisals`, which no real import path does. If a vendor's XML turns out
+      // to carry them, they come back WITH a parser that reads them.
       appraisal_purpose: txt(a.appraisal_purpose),
       appraisal_purpose_other: txt(a.appraisal_purpose_other),
       uspap_report_type: txt(a.uspap_report_type),
