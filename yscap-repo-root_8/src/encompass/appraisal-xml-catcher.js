@@ -16,9 +16,18 @@
  * everything without that signature. Eleven other retrieval routes were tried and
  * eliminated — see docs/ENCOMPASS-APPRAISAL-XML-DISCOVERY.md.
  *
- * So the file is reachable ONLY between delivery and delivery+15min. A sweep of
- * every loan's appraisal orders takes ~20 seconds, so polling every few minutes
- * catches each one with room to spare. That is the whole design.
+ * So the file is reachable ONLY between delivery and delivery+15min, and polling
+ * every few minutes catches each one. That is the whole design.
+ *
+ * ON THE TIMING MARGIN — the honest version. The "~20 seconds for the whole
+ * tenant" figure from the research came from a probe script running at
+ * concurrency 10. THIS walk is strictly sequential and paced (350ms between
+ * loans, matching reader.bulkPullAllLoans), because a burst risks a vendor rate
+ * limit that would hit the three other Encompass workers sharing this process
+ * and credential. In steady state the `sinceDays:2` window keeps the list small,
+ * so a tick is seconds. A large backlog costs minutes, and if a sweep outruns the
+ * interval the in-flight guard skips the next tick and SAYS SO — the cadence
+ * degrades loudly, never silently. Watch for "previous sweep still running".
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -81,6 +90,7 @@ const DOWNLOAD_TIMEOUT_MS = 120000;       // a MISMO file embeds the whole repor
 const MAX_TIME_MS = 8.64e15;
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Is the catcher switched off? Two ways, deliberately.
@@ -516,7 +526,8 @@ async function capture(db, res, meta) {
  *
  * Returns a summary. NEVER throws.
  */
-async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log = false } = {}) {
+async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log = false,
+  paceMs = Number(process.env.ENCOMPASS_APPRAISAL_XML_PACE_MS || 350) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
     skipped: 0, noLink: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
@@ -568,7 +579,19 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
     }
   }
 
+  let first = true;
   for (const l of list) {
+    // PACE THE VENDOR. A sweep issues 1 + orders-per-loan sequential GETs, so a
+    // busy tick is hundreds of calls with no breathing room — and `apiGet` has no
+    // 429/Retry-After handling, so tripping ICE's rate limit would take the THREE
+    // OTHER Encompass workers down with it: the catalog refresh, the per-file
+    // pull and the enrichment pass share this process, this credential and one
+    // module-level token cache. The bulk puller already paces at 350ms for
+    // exactly this reason (reader.bulkPullAllLoans); match it rather than invent
+    // a second convention. Skipped before the FIRST loan so a one-loan sweep
+    // costs nothing.
+    if (!first) await sleep(paceMs);
+    first = false;
     out.loans++;
     let orders;
     try { orders = await appraisalOrders(l.loanId); }
