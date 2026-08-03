@@ -59,6 +59,9 @@
 const db = require('../db');
 const storage = require('./storage');
 const { classifyReturnAttachment } = require('./order-return-filter');
+// Which order type a returned document belongs to — the ONE mapping, shared with
+// order-inbox and the Orders desk.
+const { RETURN_DOC_KIND } = require('./order-slots');
 
 // The three doc kinds an inbound email can file on its own. A human upload is
 // deliberately out of scope: somebody chose that file.
@@ -98,6 +101,61 @@ async function writeCursor(row) {
   } catch (_) { /* best-effort — the worst case is re-examining these rows */ }
 }
 
+/** doc_kind → order type, from the one shared mapping rather than a second copy. */
+const ORDER_TYPE_OF_KIND = Object.freeze(Object.fromEntries(
+  Object.entries(RETURN_DOC_KIND).map(([type, kind]) => [kind, type])));
+
+/**
+ * TAKE BACK A "THE VENDOR DELIVERED" THAT THIS PASS JUST INVALIDATED.
+ *
+ * `order-inbox` flips an order to 'documents_in' and stamps `first_response_at`
+ * when ANY attachment files, so an order that turned over on what we now know was
+ * a signature strip is left claiming the vendor answered. With the image retired
+ * it then reads "waiting on us" with nothing to classify, the desk's Chase button
+ * is withheld (that needs 'ordered'), and the overdue ladder emails the team "N
+ * days of documents waiting to be filed" every two days — escalating to the
+ * administrators — about nothing at all.
+ *
+ * NARROW BY CONSTRUCTION, in three ways that all have to hold:
+ *   · only for the two VENDOR order types. The attorney order's chain is running
+ *     correspondence, not a delivery, and its status is not a promise about
+ *     documents.
+ *   · only when NOTHING current is left on that order. One real commitment
+ *     alongside the logo means the vendor did answer, and the order stays put.
+ *   · only from 'documents_in'. A completed or cancelled order is a human's
+ *     decision and is never rewritten by a cleanup pass.
+ *
+ * `first_response_at` goes back to NULL with it, because that column is the
+ * vendor's responsiveness score and a signature image is not a response.
+ * Best-effort: this must never fail the retirement it follows.
+ */
+async function unwindEmptyDelivery(applicationId, docKind) {
+  const orderType = ORDER_TYPE_OF_KIND[String(docKind || '')];
+  if (!orderType || !applicationId) return false;
+  try {
+    const r = await db.query(
+      `UPDATE file_orders o
+          SET status = 'ordered', first_response_at = NULL, updated_at = now()
+        WHERE o.application_id = $1 AND o.order_type = $2
+          AND o.status = 'documents_in'
+          AND NOT EXISTS (
+            SELECT 1 FROM documents d
+             WHERE d.application_id = o.application_id
+               AND d.doc_kind = $3::text
+               AND d.is_current = true)
+      RETURNING o.id`, [applicationId, orderType, docKind]);
+    if (!r.rows[0]) return false;
+    await require('./order-tracking').recordEvent({
+      applicationId, orderType, kind: 'note', orderId: r.rows[0].id,
+      detail: { note: 'the only returned document was an email-signature image — still waiting on the vendor' },
+    });
+    return true;
+  } catch (e) {
+    console.error('[order-signature-retire] could not unwind an empty delivery:', (e && e.message) || e);
+    return false;
+  }
+}
+
 /**
  * One bounded pass.
  * @param {object} [opts] { limit }
@@ -118,7 +176,7 @@ async function retireSignatureImagesOnce({ limit = 200 } = {}) {
       args.push(cursor.afterCreatedAt, cursor.afterId);
     }
     const r = await db.query(
-      `SELECT d.id, d.application_id, d.filename, d.content_type, d.size_bytes,
+      `SELECT d.id, d.application_id, d.doc_kind, d.filename, d.content_type, d.size_bytes,
               d.storage_ref, d.review_status, d.created_at::text AS created_at_txt
          FROM documents d
         WHERE d.doc_kind = ANY($1)
@@ -176,6 +234,18 @@ async function retireSignatureImagesOnce({ limit = 200 } = {}) {
       if (!upd.rows.length) { final(); kept += 1; continue; }   // a human moved it first — settled either way
       retired += 1;
       final();
+      // AN ORDER MUST NOT BE LEFT WAITING ON DOCUMENTS THAT ARE NO LONGER THERE.
+      // `order-inbox` flips an order to 'documents_in' and stamps
+      // `first_response_at` when ANY attachment files, so an order that turned over
+      // on what we now know was a signature strip is left claiming the vendor
+      // delivered. It then sits on the desk reading "waiting on us" with nothing to
+      // classify, the Chase button withheld (that needs 'ordered'), and — since the
+      // order desk grew a chasing ladder — the team emailed "N days of documents
+      // waiting to be filed" every two days, escalating to the administrators,
+      // about nothing. The vendor's scorecard keeps credit for the "delivery" too.
+      // Only put back what THIS retirement invalidated: an order with no returned
+      // document left standing.
+      if (row.application_id) await unwindEmptyDelivery(row.application_id, row.doc_kind);
       // The row is off every screen now, so the audit log is the only place that
       // says it was ever here. Best-effort — it may never reverse the retirement.
       try {

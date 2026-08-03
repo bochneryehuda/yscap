@@ -48,6 +48,13 @@ const VENDOR_LABEL = Object.freeze({ title: 'the title company', insurance: 'the
     is an explicit stand-down, 'completed' is done. */
 const OPEN_STATUSES = Object.freeze(['ordered', 'documents_in']);
 
+/** A FILE nobody is working, so nobody is chasing a vendor about it. An order on
+    one of these is still open and still visible — it simply stops accruing
+    lateness. Deliberately EXCLUDES 'funded': the final title policy and the
+    recorded mortgage arrive after funding, which is why the follow-up and reply
+    doors stay open past it. */
+const DORMANT_FILE_STATUSES = Object.freeze(['on_hold', 'declined', 'withdrawn']);
+
 function str(v) { try { return v == null ? null : (typeof v === 'string' ? (v.trim() || null) : String(v)); } catch (_e) { return null; } }
 function num(v) { try { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; } catch (_e) { return null; } }
 
@@ -261,18 +268,31 @@ function orderState(order, now) {
   const status = str(o.status) || 'not_ordered';
   const open = OPEN_STATUSES.includes(status);
   const dueOn = open ? effectiveDueOn(o) : null;
-  /* A FILE ON HOLD IS NOT LATE, and that rule lives HERE so it cannot be applied
-     to one surface and not another. It was written into the cross-file desk only,
-     so a file parked for 90 days read "on time" on the Orders desk and, for the
-     same order, "64 business days late" in a red strip inside the file — the exact
-     disagreement this module exists to make impossible. The order is genuinely
-     still open (its documents still need classifying, and it still shows on the
-     desk); nobody is being asked to chase a vendor about a paused deal.
+  /* AN ORDER ON A DORMANT FILE IS NOT LATE, and the rule lives HERE so it cannot
+     be applied to one surface and not another. It was written into the cross-file
+     desk only, so a file parked for 90 days read "on time" on the Orders desk and,
+     for the same order, "64 business days late" in a red strip inside the file —
+     the exact disagreement this module exists to make impossible.
 
-     Read off the row when the caller joined the file's status; a caller that did
-     not is unaffected, so this can only ever silence lateness, never invent it. */
-  const onHold = str(o.file_status || o.fileStatus) === 'on_hold';
-  const late = open && !onHold ? daysLate(dueOn, today) : 0;
+     THE SET IS WIDER THAN `on_hold`, because that was only the case somebody
+     happened to notice first. An order is never RETIRED unless its condition is
+     signed off, so a title order on a file that was later declined or withdrawn
+     lives forever — and the desk, the overdue nudge and the vendor scorecard all
+     drop those files in SQL while the order's own card went on counting. Nobody
+     is chasing a title company about a deal that died, and the vendor is not
+     being scored on it.
+
+     `funded` is DELIBERATELY NOT HERE: the final policy and the recorded mortgage
+     arrive after funding, which is exactly why the follow-up and reply doors stay
+     open past it. A funded file's order is still real work.
+
+     The order stays OPEN either way — its documents still need classifying and it
+     still shows on the desk. Read off the row when the caller joined the file's
+     status; a caller that did not is unaffected, so this can only ever silence
+     lateness, never invent it. */
+  const fileStatus = str(o.file_status || o.fileStatus);
+  const dormant = DORMANT_FILE_STATUSES.includes(fileStatus);
+  const late = open && !dormant ? daysLate(dueOn, today) : 0;
   const orderedDay = dayOf(o.ordered_at || o.orderedAt);
   // CALENDAR days out — "how long has this been sitting", which a human reads in
   // real days. Lateness is the business-day question; they are different questions
@@ -294,8 +314,12 @@ function orderState(order, now) {
     daysLate: late,
     overdue: late > 0,
     // Surfaced so a card can SAY why an obviously old order is not being chased,
-    // rather than looking like the clock is broken.
-    onHold,
+    // rather than looking like the clock is broken. `onHold` is kept as its own
+    // flag because the desk's marker names that state specifically ("file on hold
+    // — not being chased"); `dormantReason` is the general answer.
+    onHold: fileStatus === 'on_hold',
+    dormant,
+    dormantReason: dormant ? fileStatus : null,
     pendingOn: open ? pendingOn(o) : null,
     // Derived from `late`, so a held order is never handed an escalation tier the
     // ladder would act on. Reading the pre-override lateness here left the state
@@ -313,7 +337,7 @@ function orderState(order, now) {
    there waiting for its first caller. `orderState` is the one answer. */
 
 module.exports = {
-  SLA_BUSINESS_DAYS, DEFAULT_SLA_DAYS, ORDER_TYPES, ORDER_LABEL, VENDOR_LABEL, OPEN_STATUSES,
+  SLA_BUSINESS_DAYS, DEFAULT_SLA_DAYS, ORDER_TYPES, ORDER_LABEL, VENDOR_LABEL, OPEN_STATUSES, DORMANT_FILE_STATUSES,
   // `dayOf` is exported alongside `nyDay` ON PURPOSE: the two differ in exactly
   // one way (a missing value reads as TODAY vs as nothing) and that difference has
   // already caused one real bug, so a caller outside this module must be able to

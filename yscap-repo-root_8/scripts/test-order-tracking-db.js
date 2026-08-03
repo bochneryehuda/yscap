@@ -75,11 +75,11 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     return { status: r.status, body: j };
   };
   // Place an order for real, with the provider stubbed to succeed.
-  const placeOrder = async (appId, kind) => {
+  const placeOrder = async (appId, kind, body = {}) => {
     const email = require('../src/lib/email');
     const real = email.sendMail;
     email.sendMail = async () => ({ ok: true, id: 'test' });
-    try { return await call('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, {}); }
+    try { return await call('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body); }
     finally { email.sendMail = real; }
   };
   const orderRow = async (appId, kind) => (await db.query(
@@ -396,6 +396,40 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     const withDocs = await call('POST', `/api/staff/applications/${appG}/orders/title/cancel`, { reopen: true });
     assert(withDocs.body.status === 'documents_in',
       'a returned title document reopens the order to documents_in even with no first_response_at');
+
+    /* RE-SENDING A FINISHED ORDER IS A REOPEN, and the sweep has to see it that
+       way. The retire sweep leaves an order alone only while a 'reopened' event is
+       NEWER than the last 'completed' one — the place route recorded 'resent', so
+       a coordinator re-sending a completed title order (the Re-send button IS
+       offered there, because the vendor may still owe the final policy) sent the
+       email, brought the order back, and then watched the next digest tick — half
+       an hour later — put it straight back to 'completed'. It fell off the desk,
+       the nudge skipped it, and nobody ever chased that title company again. */
+    const appH = await mkApp();
+    await addVendor(appH, 'title_company', `${uniq}-t10@vendor.test`);
+    await placeOrder(appH, 'title');
+    await signOffCondition(appH, 'rtl_cond_title');
+    await tracking.retireSatisfiedOrdersOnce();
+    assert((await orderRow(appH, 'title')).status === 'completed',
+      'the sweep retires an order whose condition is signed off');
+    await db.query(`UPDATE file_orders SET ordered_at = ordered_at - interval '1 minute'
+                     WHERE application_id=$1 AND order_type='title'`, [appH]);
+    // FORCED, because that is what the card's "Re-send order" button sends — an
+    // unforced place on a live order is refused as the double-click it usually is.
+    const resend = await placeOrder(appH, 'title', { force: true });
+    assert(resend.status === 200, `a FINISHED order can be deliberately re-sent to the vendor (got ${resend.status})`);
+    const afterResend = await orderRow(appH, 'title');
+    assert(afterResend.status === 'ordered', 'which brings it back to life');
+    assert(afterResend.completed_at === null,
+      'and clears the finished-on date — an order being chased must not also show one');
+    const evH = await tracking.listEvents(appH, 'title');
+    assert(evH.some((e) => e.kind === 'reopened'),
+      'the re-send is recorded as a REOPEN, which is what the sweep reads');
+    // The condition is STILL signed off, so the order re-qualifies on every count
+    // except the human's decision — which is precisely what has to hold.
+    await tracking.retireSatisfiedOrdersOnce();
+    assert((await orderRow(appH, 'title')).status === 'ordered',
+      'so the very next sweep leaves it alone instead of closing it behind them');
   }
 
   /* ── I. the file's own payload carries the whole picture ──────────────────── */

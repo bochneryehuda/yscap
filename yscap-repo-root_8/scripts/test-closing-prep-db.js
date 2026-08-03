@@ -875,6 +875,30 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(reLive.status === 409 && reLive.body.code === 'not_reopenable',
       'reopening one that is already open is refused rather than silently rewritten');
 
+    /* A RE-SEND KEEPS THE RETIRE STAMP. `auto_retired_at` is the once-per-order
+       mark that stops the sweep closing an order a second time, and the forced
+       re-send REPLACED the whole meta object — so a coordinator pressing "Re-send
+       request" on a finished order (the button IS offered there) sent the entire
+       package, brought the order back to life, and then watched the next sweep,
+       within half an hour, retire it straight off the desk again. Reopen never had
+       this bug because it does not touch meta, so the two ways back to life
+       disagreed about whether the order stayed. */
+    await db.query(
+      `UPDATE file_orders SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('auto_retired_at', now()),
+              status='completed', ordered_at = ordered_at - interval '1 minute'
+        WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    sends.length = 0;
+    const resent = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(resent.status === 200 && sends.length >= 1, 'a finished request can be deliberately re-sent');
+    const metaRow = (await db.query(
+      `SELECT status, (meta ? 'auto_retired_at') AS stamped, meta->>'parts' AS parts
+         FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    assert(metaRow.status === 'ordered', 'the re-send brings it back to life');
+    assert(metaRow.stamped === true,
+      'and it KEEPS the retire stamp, so the sweep does not close it again half an hour later');
+    assert(metaRow.parts != null,
+      'while this send’s own bookkeeping is still written — the merge adds, it does not just preserve');
+
     /* THE ROW IS WRITTEN AFTER THE SEND, so a DB blip can leave a file whose
        request genuinely went out with nothing recorded — and Cancel is the one
        action that must stay reachable once outside counsel has been written to.
