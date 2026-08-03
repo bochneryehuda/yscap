@@ -350,18 +350,29 @@ function LicensingControlPanel() {
   useEffect(() => { load(); }, [load]);
 
   if (loading || !st) return null;
-  const good = st.ok === true;
+  /* A QUALIFIED YES IS NOT A YES. The server attaches a `why` to an `ok:true`
+     answer in exactly one situation: the write probe could not run, so the verdict
+     fell back to reading the constraint's TEXT — and a `lower()` shadowed from an
+     earlier schema deparses byte-identically to db/459's while refusing nothing.
+     Reading `ok` alone painted that green with the canned "the database itself
+     refuses…" line underneath, which is the confident sentence this whole control
+     exists to stop being printed when it is not true. No new field is needed: the
+     guard never attaches a `why` to an unqualified pass. */
+  const qualified = st.ok === true && !!st.why;
+  const good = st.ok === true && !qualified;
   // Unconfirmed is its OWN state — amber, never green and never the red of a
-  // rule we have proven is missing.
-  const fg = good ? '#3F7A5B' : (st.checked ? '#B4483C' : '#8A6D1F');
-  const bg = good ? 'rgba(63,122,91,.08)' : (st.checked ? '#F6E7E4' : '#FBF3DF');
+  // rule we have proven is missing. A qualified yes lands here too.
+  const fg = good ? '#3F7A5B' : (st.checked && !qualified ? '#B4483C' : '#8A6D1F');
+  const bg = good ? 'rgba(63,122,91,.08)' : (st.checked && !qualified ? '#F6E7E4' : '#FBF3DF');
   return (
     <section style={{ marginTop: 18, border: '1px solid rgba(0,0,0,.08)', borderRadius: 10,
       background: bg, padding: '12px 14px' }}>
       <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <strong style={{ color: '#141B22' }}>Property warehouse — Google coordinate rule</strong>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: fg }}>
-          {good ? '✓ On' : (st.checked ? '✕ NOT installed' : '○ Not confirmed')}
+          {good ? '✓ On'
+            : qualified ? '○ Not fully confirmed'
+              : (st.checked ? '✕ NOT installed' : '○ Not confirmed')}
         </span>
         <button className="btn ghost small" onClick={load} style={{ marginLeft: 'auto' }}>Re-check</button>
       </div>

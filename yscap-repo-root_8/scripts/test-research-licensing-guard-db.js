@@ -360,8 +360,50 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           (blocked.why || '').slice(0, 70)})`);
       ok(blocked.probeBlockedBy === 'lic_probe_blocker',
         '  …naming the constraint that blocked it, so it can be found');
+      /* AND IT MUST NOT READ AS A PLAIN PASS ANYWHERE. Writing the sentence was
+         not enough: `assertGeoLicensing` logged the unqualified "installed" line
+         whenever `ok` was true and threw `why` away, and the admin card painted
+         green off `st.ok` alone with a canned "the database itself refuses…"
+         underneath. So the one signal that the authoritative half had stopped
+         running reached nobody, and combined with a shadowed `lower()` — which the
+         TEXT check cannot see — that is a live false all-clear.
+         The CONTRACT the screen relies on, asserted here so it cannot drift: the
+         guard attaches a `why` to an `ok:true` answer ONLY when the probe was
+         blocked. `qualified = ok && why` therefore needs no extra field. */
+      ok(blocked.ok === true && !!blocked.why,
+        '  …and a blocked probe is a QUALIFIED yes — ok:true carrying a why');
+      // Drop the blocker FIRST — the contrast is only meaningful once the probe
+      // can actually run again.
       await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_probe_blocker`);
+      const cleanPass = await G.checkGeoLicensing(client, { verifyWrite: true });
+      ok(cleanPass.ok === true && cleanPass.probeTested === true && !cleanPass.why,
+        `while a genuine pass carries NO why at all, so the two can be told apart (${
+          JSON.stringify({ probeTested: cleanPass.probeTested, why: cleanPass.why })})`);
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* (g) AN ORDINARY NEUTERING IS DIAGNOSED AS ONE. The `present &&`
+         short-circuit means the probe never runs once the text check has said no,
+         so keying the "EXISTS but does not refuse" wording on the probe's verdict
+         sent every ordinary case — `… OR true`, wildcards dropped, `CHECK (true)`
+         — to "check the [migrate] log for its FAILED line", which is advice about
+         a migration that plainly succeeded. The constraint EXISTING is proof
+         enough that db/459 ran. */
+      for (const [body, label] of [
+        [`CHECK (true)`, 'a constraint that checks nothing'],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR true)`, 'OR true'],
+        [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE 'google')`, 'wildcards dropped'],
+      ]) {
+        await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
+        const w = (await G.checkGeoLicensing(client)).why || '';
+        ok(/EXISTS but does not refuse/.test(w) && !/FAILED line/.test(w),
+          `${label} is diagnosed as ALTERED, not as a migration that never applied`);
+        ok(/re-run db\/459/.test(w), `  …telling somebody what to actually do about ${label}`);
+        await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      }
+      // …while a genuinely ABSENT constraint still points at the migrate log.
+      const absent = (await G.checkGeoLicensing(client)).why || '';
+      ok(/NOT installed/.test(absent) && /FAILED line/.test(absent),
+        'and a genuinely missing constraint still points at the [migrate] log');
     }
 
     // ---- G. RESTORED, and the constraint itself still bites --------------
@@ -412,14 +454,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       let elapsed = 0;
       try {
         await locker.query('BEGIN');
+        // Bounded on OUR side too: if some other session holds a conflicting lock
+        // on `properties`, this would otherwise wait forever with nothing to stop
+        // it, and the suite would hang rather than fail.
+        await locker.query(`SET LOCAL lock_timeout = '5s'`);
         await locker.query('LOCK TABLE properties IN ACCESS EXCLUSIVE MODE');
         const t0 = Date.now();
-        const held = await G.probeBounded();
+        /* RACED AGAINST A DEADLINE THAT FAILS. Without this the assertion is only
+           reachable when the fix is present: remove the server-side
+           statement_timeout and `probeBounded()` never returns, so the suite prints
+           no summary at all and CI reports a 30-minute JOB TIMEOUT instead of a
+           failed assertion. A test that hangs on a regression is not a test.
+           The deadline is generous (2x the bound + 5s) so a slow machine cannot
+           trip it — the real bound is enforced by Postgres, not by wall clock. */
+        const DEADLINE = G._internals.PROBE_TIMEOUT_MS * 2 + 5000;
+        const held = await Promise.race([
+          G.probeBounded(),
+          new Promise((r) => setTimeout(() => r({ __timedOut: true }), DEADLINE)),
+        ]);
         elapsed = Date.now() - t0;
-        ok(held.ok === false && held.checked === false,
-          `behind an ACCESS EXCLUSIVE lock it reports UNCONFIRMED, never ok (${(held.why || '').slice(0, 50)})`);
-        ok(elapsed < G._internals.PROBE_TIMEOUT_MS * 2,
-          `and it gives up in bounded time rather than hanging (${elapsed}ms)`);
+        ok(!held.__timedOut,
+          `probeBounded() RETURNS behind an ACCESS EXCLUSIVE lock rather than hanging (${elapsed}ms)`);
+        ok(!held.__timedOut && held.ok === false && held.checked === false,
+          `and reports UNCONFIRMED, never ok (${(held.why || '').slice(0, 50)})`);
+        ok(elapsed < DEADLINE,
+          `giving up in bounded time (${elapsed}ms, bound ${G._internals.PROBE_TIMEOUT_MS}ms)`);
       } finally {
         await locker.query('ROLLBACK').catch(() => {});
         locker.release();

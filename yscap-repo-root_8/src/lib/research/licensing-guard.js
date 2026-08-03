@@ -141,6 +141,7 @@ async function checkGeoLicensing(dbc, opts) {
   const db = dbc || require('../../db');
   let present;
   let neutered = false;
+  let named = false;
   let probe = null;
   try {
     /* KEYED ON THE TABLE THE APP ACTUALLY WRITES TO, AND ON A CONSTRAINT THAT
@@ -186,7 +187,8 @@ async function checkGeoLicensing(dbc, opts) {
        db/459 re-applies this exact text on every boot, and the behavioural probe
        below can only ever make this answer STRICTER, never laxer. */
     const def = String((r.rows[0] || {}).def || '').replace(/\s+/g, ' ').trim();
-    present = r.rows.length > 0 && EXACT_DEF.test(def);
+    named = r.rows.length > 0;   // a validated CHECK of that name IS on the table
+    present = named && EXACT_DEF.test(def);
 
     /* AND WHERE WE CAN, WE ALSO ASK THE DATABASE — but ONLY to say NO.
        The probe DOWNGRADES and never promotes: a row the database accepts proves
@@ -245,14 +247,23 @@ async function checkGeoLicensing(dbc, opts) {
   /* A CONSTRAINT WEARING THE RIGHT NAME OVER A PREDICATE THAT REFUSES NOTHING is a
      different problem from a missing one, and it needs its own words: db/459 DID
      apply at some point, so "check the [migrate] log for its FAILED line" would
-     send somebody looking at a log that says the migration succeeded. */
-  if (neutered) {
+     send somebody looking at a log that says the migration succeeded.
+
+     KEYED ON THE CONSTRAINT EXISTING, not on the probe having caught it. `named`
+     is true whenever a validated CHECK of that name is on the table, which is
+     proof enough on its own that the migration ran. Keying this on `neutered`
+     alone was a real regression: the `present &&` short-circuit means the probe
+     never even runs once the text check has said no, so EVERY ordinary neutering
+     (`… OR true`, wildcards dropped, `CHECK (true)`) fell through to exactly the
+     advice the paragraph above says must never be given. Only the shadowed-lower
+     case — where the text is canonical — still set `neutered`. */
+  if (neutered || named) {
     return { ok: false, checked: true, present: false, offenders,
       why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does not refuse a `
-        + 'Google-sourced coordinate — the database accepted one when asked. The constraint has been '
-        + 'altered since db/459 installed it. Restore it (re-run db/459) and check who changed it; '
-        + 'until then nothing at the database level stops a Google coordinate being stored '
-        + 'permanently in the property warehouse.' };
+        + `Google-sourced coordinate${neutered ? ' — the database accepted one when asked' : ''}. `
+        + 'The constraint has been altered since db/459 installed it. Restore it (re-run db/459) '
+        + 'and check who changed it; until then nothing at the database level stops a Google '
+        + 'coordinate being stored permanently in the property warehouse.' };
   }
 
   const head = `the Google-coordinate rule (${CONSTRAINT}) is NOT installed`;
@@ -340,7 +351,15 @@ async function assertGeoLicensing(dbc) {
      a newer timestamp — the same rule the refresh path already follows. */
   refreshEpoch++;
   last = { ...res, at: new Date().toISOString(), atMs: Date.now() };
-  if (res.ok) console.log('[research] Google-coordinate rule installed');
+  /* AN `ok:true` THAT CARRIES A `why` IS A QUALIFIED YES, AND IT MUST NOT PRINT AS
+     A PLAIN ONE. The only way that happens is the write probe being blocked, which
+     drops the check back to reading the constraint's TEXT — and a shadowed
+     `lower()` deparses byte-identically to db/459's while refusing nothing. The
+     previous version logged the unqualified "installed" line and threw `why` away,
+     so the one signal that the authoritative half had stopped running reached
+     nobody. */
+  if (res.ok && res.why) console.warn(`[research] Google-coordinate rule: ${res.why}`);
+  else if (res.ok) console.log('[research] Google-coordinate rule installed');
   // Loud on purpose: this is a licensing control, and the whole failure mode it
   // guards against is one nobody notices.
   else console.error(`[research] LICENSING CONTROL NOT CONFIRMED — ${res.why}`);
@@ -379,7 +398,7 @@ function health() {
        this one has data in flight.) For that window the single-flight slot stays
        taken and the verdict is frozen at whatever it last said. That is bounded
        and self-healing rather than the permanent connection leak it replaced, and
-       and it is confined to /api/health's own snapshot. The admin page does NOT read
+       it is confined to /api/health's own snapshot. The admin page does NOT read
        that snapshot — it answers from its own bounded probe and stamps its own
        `at` at response time — so a stuck refresh surfaces there as that card's
        ordinary "could not check", never as a frozen timestamp nobody notices. Do not "fix" it by clearing the slot

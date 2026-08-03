@@ -93,6 +93,43 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
       'saying in plain words what the rule actually does');
     ok(/Last checked/i.test(lic), 'and when it last asked, so a stale answer is visible');
 
+    /* ---- A QUALIFIED YES MUST NOT PAINT GREEN ---------------------------
+     * The server can answer ok:true WITH a `why` in exactly one situation: the
+     * write probe could not run, so the verdict fell back to reading the
+     * constraint's TEXT — which a `lower()` shadowed from an earlier schema
+     * defeats byte-identically. The server-side sentence was written and then
+     * NOTHING RENDERED IT: the card keyed on `st.ok` alone and painted green with
+     * a canned "the database itself refuses…" underneath. That is the exact
+     * confident sentence this control exists to stop being printed when untrue,
+     * and no unit test could see it — only the page can.
+     *
+     * The probe is blocked here the same way maintenance would block it: an
+     * unrelated CHECK its row happens to violate. Dropped in the finally. */
+    await db.query(
+      `ALTER TABLE properties ADD CONSTRAINT lic_render_blocker CHECK (city <> 'Licensing Probe')`);
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(11000);
+      const q = (await page.locator('text=Google coordinate rule').first()
+        .locator('xpath=ancestor::section[1]').innerText()).replace(/\s+/g, ' ').trim();
+      ok(!/✓ On/.test(q),
+        `with the write probe blocked the card does NOT read as plainly On (${q.slice(0, 80)})`);
+      ok(/Not fully confirmed/i.test(q),
+        '  …it reads as NOT FULLY CONFIRMED');
+      ok(/could NOT run/i.test(q),
+        '  …and says the write probe could not run, so somebody can act on it');
+      ok(!/database itself refuses/i.test(q),
+        '  …and never repeats the confident "the database itself refuses" line');
+    } finally {
+      await db.query(`ALTER TABLE properties DROP CONSTRAINT IF EXISTS lic_render_blocker`);
+    }
+    // And it goes back to green once the probe can run again.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(11000);
+    ok(/✓ On/.test((await page.locator('text=Google coordinate rule').first()
+      .locator('xpath=ancestor::section[1]').innerText()).replace(/\s+/g, ' ')),
+      'and it reads On again once the probe can run');
+
     ok(errors.length === 0, `no page errors (${errors.slice(0, 3).join(' | ') || 'none'})`);
   } catch (e) {
     console.error(e);
