@@ -3691,3 +3691,37 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .team-assign{grid-template-columns:1fr}
   .team-assign > .btn{width:100%}
 }
+
+/* ── Dashboards ────────────────────────────────────────────────────────────
+   Namespaced `dsh-*` throughout. `.rb-*` is already double-booked in this file
+   (rehab budget + RuleBuilder) and the bare one-word utilities (.on .off .num
+   .k .v .d .sub) are global — a component-scoped `.off` once blew out a modal's
+   width, so nothing here is a bare word.
+   Text colours are explicit hex: `var(--ink)` is a LIGHT paper colour in this
+   stylesheet despite the name, and using it for text renders white-on-white. */
+.dsh-heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:14px}
+.dsh-body{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.dsh-slot{min-width:0}
+.dsh-w-one{grid-column:span 1}
+.dsh-w-two{grid-column:span 2}
+.dsh-w-full{grid-column:1/-1}
+.dsh-card{padding:14px 16px;border-radius:12px;min-width:0;display:flex;flex-direction:column}
+.dsh-card.dsh-hero{border-color:var(--border-strong)}
+.dsh-card-bad{border-color:#E4BDB8;background:#FCF6F5}
+.dsh-card-h{display:flex;align-items:baseline;gap:8px;font-size:13px}
+.dsh-card-h b{font-weight:650;color:#141B22}
+.dsh-bar:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.dsh-explain-t{align-self:flex-start}
+.dsh-explain{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-size:12.5px;color:#3F4A52}
+.dsh-explain>div{display:flex;gap:8px;padding:2px 0}
+.dsh-k{flex:0 0 116px;color:#6B7378;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
+.dsh-tile{padding:14px 16px;border-radius:12px;display:block}
+.dsh-tile:hover{border-color:var(--gold)}
+.dsh-editor h4{margin:18px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.dsh-ed-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.dsh-ed-preview{margin-top:16px;padding:12px 14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px}
+@media (max-width:1080px){.dsh-body{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dsh-w-two,.dsh-w-full{grid-column:1/-1}}
+@media (max-width:720px){.dsh-body{grid-template-columns:1fr}
+  .dsh-w-one,.dsh-w-two,.dsh-w-full{grid-column:1/-1}
+  .dsh-k{flex-basis:92px}}

@@ -27,7 +27,8 @@ const TITLES = [
   [/^\/internal\/leads/, 'Leads'],
   [/^\/internal\/vendors/, 'Vendors'],
   [/^\/internal\/chat/, 'Chat'],
-  [/^\/internal/, 'Pipeline'],
+  [/^\/internal\/dashboards/, 'Dashboards'],
+    [/^\/internal/, 'Pipeline'],
 ];
 
 export default function RouteChrome() {
