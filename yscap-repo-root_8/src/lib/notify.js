@@ -718,6 +718,17 @@ async function notifyBorrower(borrowerId, opts) {
           recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
           type: opts.type, opts, recipientLabel: label,
           autoSendAt: decision.autoSendAt || null });
+        /* DELIBERATELY `null`, NOT the DELIVERY_DRAFTED sentinel its staff twin
+           returns, and the asymmetry is on purpose. The four readers of THIS
+           function's return value (lo-notification-worker, three in
+           staff-notif-center) write it straight into
+           `lo_notification_drafts.sent_notification_id`, a uuid column — so a
+           non-uuid sentinel here would be a type error rather than a nicer answer.
+           They only reach that write with `_bypassLoGate: true`, which makes this
+           branch unreachable for them, but "unreachable today" is not a reason to
+           arm it. If a caller ever needs to tell "held for later" from "dropped"
+           on the BORROWER side, give it a separate accessor the way
+           `deliveredCount` does — do not change this return. */
         return null;
       }
     } catch (_) { /* fall through and send */ }
@@ -860,30 +871,82 @@ async function notifyAppStaff(appId, opts = {}) {
   // staffer's email says WHICH file without re-querying per recipient.
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
-  // Returns the staff ids actually notified, so a caller running a LADDER can
-  // exclude them from its next rung. Every existing caller only tests `.length`
-  // ("was anybody on this file?"), which is unaffected.
+  /* WHAT THE ARRAY MEANS, and why the delivery count is a PROPERTY on it.
+     `.length` has meant ONE thing since this function was written — "how many
+     people are on this file" — and four callers rely on exactly that:
+     esign/webhook (three places) and esign/dead-letter all do
+     `if (!sent || !sent.length) await notifyAdmins(opts)`, meaning "this file has
+     nobody on it, so tell the administrators".
+
+     Filtering the array down to REAL deliveries silently changed that question to
+     "did anybody hear us", and the two are not the same. Every e-sign event uses
+     type `status_change`, which the notification catalog marks non-forced, so a
+     loan officer who mutes one of their own files — an ordinary, supported thing
+     to do — turned every "fully signed", "declined", "voided" and "we could not
+     save the signed copy" on that file into an email to EVERY administrator and
+     super-admin in the company.
+
+     So the array is the recipients again, and the delivery count rides along as
+     `.delivered` — the same additive-property shape `retrieveAttachmentsSafe`
+     uses for its dropped counters. A caller that wants "was anybody reached"
+     asks for it by name; a caller that wants "is this file covered" keeps
+     `.length` and is unaffected. */
   const out = [];
+  let delivered = 0;
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
     if (exceptMany.has(String(r.staff_id))) continue;
-    // Only a REAL delivery counts. notifyStaff returns null when the staffer muted
-    // this file, or when the loan-officer gate held the message as a draft — so
-    // pushing unconditionally reported recipients nobody actually heard from, and a
-    // caller's "nobody was reached, fall back" branch could never fire.
-    //
-    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this
-    // catch a single failing row aborted the whole fan-out, and the caller was
-    // told NOTHING about the people already reached — so a throttled nudge (the
+    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this catch
+    // a single failing row aborted the whole fan-out, and the caller was told
+    // NOTHING about the people already reached — so a throttled nudge (the
     // overdue-order ladder) released its claim on the strength of a zero that was
-    // wrong and re-sent to everyone who had already received it. Reporting who
-    // genuinely got it is what makes "was anybody reached?" answerable at all.
+    // wrong and re-sent to everyone who had already received it.
     let one = null;
+    let threw = false;
     try { one = await notifyStaff(r.staff_id, { ...shared }); }
-    catch (e) { console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
-    if (one) out.push(r.staff_id);
+    catch (e) { threw = true; console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
+    // The RECIPIENT, whatever the OUTCOME — a ladder's next rung must not write to
+    // somebody again just because their copy was muted or held for later.
+    //
+    // A THROW IS DIFFERENT and is deliberately NOT recorded: nothing reached them
+    // and nothing is holding a copy for them, so putting them on the exclusion list
+    // would remove their one remaining chance of hearing about it on the next rung.
+    // Their absence also keeps `.length` honest about who this call actually
+    // covered.
+    if (!threw) out.push(r.staff_id);
+    // A real delivery, or one the loan-officer gate is holding for later
+    // (DELIVERY_DRAFTED is truthy precisely so it counts here).
+    if (one) delivered += 1;
   }
+  // Non-enumerable so nothing that serializes or spreads this array picks it up.
+  Object.defineProperty(out, 'delivered', { value: delivered, enumerable: false });
   return out;
+}
+
+/**
+ * HOW MANY OF A `notifyAppStaff` RESULT WERE ACTUALLY REACHED.
+ *
+ * Ask through here, never `list.delivered` directly. The count rides on a
+ * non-enumerable property, which survives being awaited or passed around but is
+ * SILENTLY LOST by `[...list]`, `.map`, `.filter`, `.slice`, `.concat` and
+ * `Array.from` — and the caller that reads it (the overdue-order ladder) treats
+ * zero as "nobody heard us, tell every administrator in the company" AND writes
+ * that zero into the audit trail. So the day somebody memoizes or wraps that
+ * array for a test, a silent `undefined` would reintroduce exactly the
+ * escalate-to-everyone failure the property exists to prevent, with the audit row
+ * asserting nobody was told while people were emailed.
+ *
+ * A missing count is therefore LOUD and falls back to the safe direction —
+ * "assume the people we named heard us" — which is the pre-existing behaviour and
+ * costs at most one delayed escalation, rather than mailing the whole company.
+ */
+function deliveredCount(list) {
+  if (!Array.isArray(list)) return 0;
+  const n = list.delivered;
+  if (Number.isFinite(n)) return n;
+  console.error('[notify] deliveredCount: this array lost its delivery count — ' +
+    'something copied a notifyAppStaff result. Assuming everyone named was reached.');
+  return list.length;
 }
 
 /** Notify every active admin (used when an application has no loan officer). */
@@ -1013,4 +1076,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
