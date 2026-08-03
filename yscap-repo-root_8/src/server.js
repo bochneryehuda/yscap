@@ -716,6 +716,18 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
           .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
+        // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
+        // the tiny pictures out of a title / insurance agent's signature "still
+        // coming in as documents … we still need to manually reject it on every
+        // file"). The July filter stops NEW ones; db/420 then pulled every OLD one
+        // into its condition, where the team has been rejecting them by hand. This
+        // retires them — is_current=false, nothing deleted, decided by the SAME
+        // classifier the inbound sinks run. Bounded, self-draining, idempotent.
+        // Off with ORDER_SIGNATURE_RETIRE_DISABLED=1.
+        require('./lib/order-signature-retire')
+          .retireSignatureImagesOnce({ limit: Number(process.env.ORDER_SIGNATURE_RETIRE_BOOT || 200) })
+          .then((r) => r && r.retired && console.log('[boot] email-signature image retirement:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] email-signature image retirement failed:', e.message));
         // BACK-DATE THE RESEARCH DATABASE (owner-directed 2026-08-02: "open and back date
         // this database — on every single file that we have already in XML, all the
         // comparables that he used should be saved into that database"). Folds every
