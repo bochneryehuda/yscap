@@ -128,25 +128,51 @@ const TR=(function(){
     save();
   }
 
+  /* Is this the tool inside a real loan file, where every deal is REVIEWED by the
+     loan team before it counts? The standalone marketing copy has nobody to
+     review anything, so it must not talk about review at all. The portal bridge
+     defines TR_PORTAL_ONRENDER before the first render — that is the signal. */
+  function inPortal(){ try{ return !!(window && window.TR_PORTAL_ONRENDER); }catch(e){ return false; } }
+
   function viewSummary(){
     const s=summary();
     const stat=(v,l)=>'<div class="tr-stat"><div class="tr-stat-v">'+v+'</div><div class="tr-stat-l">'+l+'</div></div>';
+    /* THE RANKING IS SELF-REPORTED UNTIL SOMEBODY VERIFIES IT (owner-reported
+       2026-08-03: "the borrower entered his entire track record, and everything
+       came back as verified already … it should be pending review").
+       Nothing was ever marked verified in the database — every door writes
+       is_verified=false — but this headline told the borrower they were an
+       "Expert" with "10 of 10 qualifying exits" the moment they finished typing,
+       and never once said the word review. That IS the report: a screen that
+       announces a rank off unreviewed typing has told them it went through.
+       `qualifies()` is untouched — it is the FROZEN 3-year exit window and this
+       says nothing about it; what changes is that the count now states what it
+       is counting, and how many of them we have actually verified. */
+    const awaiting = inPortal() ? Math.max(0, s.qual - s.verified) : 0;
+    const rankNote = inPortal()
+      ? ' · Self-reported — your loan team verifies each deal from the documents on it. '
+        + s.verified + ' verified so far'
+        + (awaiting ? ', ' + awaiting + ' waiting on our review' : '')
+        + '.'
+      : '';
     return '<section class="tr-summary">'+
       '<div class="tr-rank '+s.tcls+'">'+
-        '<div class="tr-rank-main"><span class="tr-rank-eyebrow">Experience ranking</span><span class="tr-rank-tier">'+s.tier+'</span></div>'+
+        '<div class="tr-rank-main"><span class="tr-rank-eyebrow">Experience ranking'+(inPortal()?' — self-reported':'')+'</span><span class="tr-rank-tier">'+s.tier+'</span></div>'+
         '<div class="tr-rank-prog">'+
           '<div class="tr-rank-bar"><span style="width:'+Math.min(100,s.qual/10*100)+'%"></span></div>'+
-          '<div class="tr-rank-sub">'+s.qual+' of '+s.total+' deal'+(s.total===1?"":"s")+' count as qualifying exits — completed and closed within the last 3 years · '+s.tnext+'</div>'+
+          '<div class="tr-rank-sub">'+s.qual+' of '+s.total+' deal'+(s.total===1?"":"s")+' count as qualifying exits — completed and closed within the last 3 years · '+s.tnext+rankNote+'</div>'+
         '</div>'+
       '</div>'+
       '<div class="tr-stats">'+
         stat(s.total, "Deals on record")+
+        (inPortal()?stat(s.verified, "Verified by your loan team"):"")+
         stat(s.flips, "Fix &amp; flips")+
         stat(s.holds, "Fix &amp; holds")+
         stat(money(s.vol), "Acquisition volume")+
         stat(money(s.rehab), "Rehab invested")+
         stat(s.avgHold!=null?(s.avgHold+" mo"):"—", "Avg hold")+
       '</div>'+
+      (inPortal()&&awaiting?('<div class="tr-summary-flag">'+awaiting+' deal'+(awaiting===1?"":"s")+' '+(awaiting===1?"is":"are")+' waiting for your loan team to review — upload the closing statement, deed or lease on each one so it can be verified.</div>'):'')+
       (s.issues?('<div class="tr-summary-flag">⚠ '+s.issues+' record'+(s.issues===1?"":"s")+' need'+(s.issues===1?"s":"")+' attention — see the highlighted entries below.</div>'):'')+
     '</section>';
   }

@@ -61,6 +61,12 @@ function formFrom(app) {
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
     llcId: app.llc_id || '', entityName: app.entity_name || '',
+    /* WHO TAKES TITLE — a CHOICE, not a name box (owner-directed 2026-08-03:
+       "where you can fill the Vesting Entity LLC, you can only fill that LLC
+       name. You cannot select that. You don't need to fill that LLC name because
+       it's an individual"). A linked entity always wins over a stale flag, the
+       same precedence the server uses. */
+    vesting: (app.personal_name_purchase && !app.llc_id) ? 'individual' : 'entity',
     rehabType: app.rehab_type || '', sqftPre: num(app.sqft_pre), sqftPost: num(app.sqft_post),
     requestedExpFlips: num(app.requested_exp_flips), requestedExpHolds: num(app.requested_exp_holds),
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
@@ -109,6 +115,13 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
   // cosmetic one: the register door refuses it and the studio cannot price it.
   // Say so on the field rather than letting them find out at the end.
   const asIsMissing = isRefi && !(moneyNum(f.asIsValue) > 0);
+  /* MAY THIS FILE VEST IN AN INDIVIDUAL? The SERVER decides (the same rule the
+     personal-name door enforces) and sends the reason on the file — Blue Lake /
+     Gold does not buy a loan taken in a personal name. Never re-derived here:
+     that would put a capital partner's name in the browser bundle and would
+     drift from the door. A blocked file shows the reason on the control instead
+     of letting somebody find out from a 409 after they press Save. */
+  const individualBlocked = app.vesting_individual_blocked || '';
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
@@ -175,18 +188,35 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
         } : null;
       }
       const r = await api.staffEditApplication(app.id, body);
-      // Vesting entity (owner-directed 2026-07-20): an LLC change goes through the
-      // dedicated vesting endpoint (its own guarded chokepoint that wires the LLC
-      // condition + docs). A picked LLC carries an id; a typed-but-new name is
-      // created on the borrower first. Best-effort — the field edits already saved.
+      /* VESTING goes through the file's one vesting door (owner-directed
+         2026-07-20) — its own guarded chokepoint, which wires the LLC condition
+         and its documents. Two shapes now: an ENTITY (a picked LLC carries an
+         id; a typed-but-new name is created on the borrower first) or an
+         INDIVIDUAL (the personal-name door, which stands the LLC condition down
+         and posts the affidavit condition).
+
+         A FAILURE IS REPORTED, NOT SWALLOWED. This used to `catch (_) {}` and
+         print "Saved ✓" over a vesting change that never happened — the repo's
+         #1 class, and here it is the difference between a file that vests in an
+         individual and one that still says LLC. The field edits above DID save,
+         so this is reported as a warning naming exactly what did not. */
+      let vestErr = '';
+      const wasIndividual = !!(app.personal_name_purchase && !app.llc_id);
       try {
-        let llcId = f.llcId;
-        if (!llcId && f.entityName.trim()) {
-          const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim() });
-          llcId = c.llcId || c.id;
+        if (f.vesting === 'individual') {
+          if (!wasIndividual) await api.staffVestingPersonalName(app.id, {});
+        } else {
+          // Back to an entity: clear the personal-name flag FIRST, so a linked
+          // LLC can never sit next to a file still flagged individual.
+          if (wasIndividual) await api.staffVestingPersonalName(app.id, { undo: true });
+          let llcId = f.llcId;
+          if (!llcId && f.entityName.trim()) {
+            const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim() });
+            llcId = c.llcId || c.id;
+          }
+          if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
         }
-        if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
-      } catch (_) { /* vesting is best-effort */ }
+      } catch (e) { vestErr = e.message || 'The vesting change did not save.'; }
       // HONEST RESULT (owner-reported 2026-07-27: "the Save button doesn't save
       // anything — at least come up with an error that it's not saving"). A 200
       // is not the same as "your change stuck": the server now re-reads the row
@@ -196,10 +226,15 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
       const refused = (r && r.refused) || [];
       const unsynced = (r && r.unsynced) || [];
       const changedN = ((r && r.changed) || []).length;
-      if (refused.length) {
-        setErr(`NOT saved — ${refused.map(LABEL).join(', ')} did not change. `
-          + 'The file still has its previous value. This is usually a locked file or a value the system refused; '
-          + 'the file’s Activity log records what happened. Please tell an admin if it keeps happening.');
+      if (refused.length || vestErr) {
+        setErr([
+          refused.length
+            ? `NOT saved — ${refused.map(LABEL).join(', ')} did not change. `
+              + 'The file still has its previous value. This is usually a locked file or a value the system refused; '
+              + 'the file’s Activity log records what happened. Please tell an admin if it keeps happening.'
+            : '',
+          vestErr ? `Vesting did NOT change: ${vestErr} Everything else on this form saved.` : '',
+        ].filter(Boolean).join(' '));
       } else {
         setMsg(changedN
           ? `Saved ✓ — ${changedN} field${changedN === 1 ? '' : 's'} changed (logged in Activity).`
@@ -260,11 +295,41 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
               // yet: a free, editable count — never locked or forced to 1.
               <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             )}
-            <label className="col-4"><span>Vesting entity / LLC</span>
-              <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id}
-                placeholder="Which LLC is this property purchased under?"
-                onPick={({ id, name }) => setF((s) => ({ ...s, entityName: name, llcId: id || '' }))} />
-            </label>
+            {/* VESTING — the choice first, the name only when there is one to
+                type. An individual purchase has no entity by definition, so the
+                LLC box is not shown at all rather than sitting there empty and
+                unanswerable. Individual vesting is a SIGN-OFF (it stands the LLC
+                condition down and asks for the non-owner-occupied affidavit on
+                its own condition, db/417), so it saves through the file's one
+                vesting door — never as a field on this form. */}
+            <div className="col-4 edit-fld"><span>Vesting — who takes title</span>
+              <div className="edit-choice">
+                <label>
+                  <input type="radio" name={`vesting-${app.id}`} checked={f.vesting === 'entity'}
+                    onChange={() => set('vesting', 'entity')} />
+                  <span>An LLC / entity</span>
+                </label>
+                <label className={individualBlocked ? 'is-off' : ''}
+                  title={individualBlocked || 'The borrower buys in their own personal name — no company takes title.'}>
+                  <input type="radio" name={`vesting-${app.id}`} checked={f.vesting === 'individual'}
+                    disabled={!!individualBlocked}
+                    onChange={() => setF((s) => ({ ...s, vesting: 'individual' }))} />
+                  <span>An individual (the borrower&rsquo;s own name)</span>
+                </label>
+              </div>
+              {individualBlocked
+                ? <span className="edit-hint warn">{individualBlocked}</span>
+                : f.vesting === 'individual'
+                  ? <span className="edit-hint">No LLC name is needed. Saving this stands the LLC documents down and asks for the signed non-owner-occupied affidavit as its own condition instead.</span>
+                  : null}
+            </div>
+            {f.vesting === 'entity' && (
+              <label className="col-4"><span>Vesting entity / LLC</span>
+                <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id}
+                  placeholder="Which LLC is this property purchased under?"
+                  onPick={({ id, name }) => setF((s) => ({ ...s, entityName: name, llcId: id || '' }))} />
+              </label>
+            )}
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>
@@ -289,7 +354,7 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
                 Refinance details. */}
             {!isRefi && <label><span>Purchase price</span><MoneyInput value={f.purchasePrice} onChange={(v) => set('purchasePrice', v)} /></label>}
             <label><span>As-is value{isRefi ? ' *' : ''}</span><MoneyInput value={f.asIsValue} onChange={(v) => set('asIsValue', v)} />
-              {isRefi && <span className="small" style={{ color: asIsMissing ? 'var(--warning)' : '#4B585C' }}>
+              {isRefi && <span className={`edit-hint${asIsMissing ? ' warn' : ''}`}>
                 {asIsMissing
                   ? 'Required — a refinance is sized on this number.'
                   : 'What the property is worth today. This sets the initial advance.'}
@@ -320,10 +385,10 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
                 rule and the title/flip checks want. */}
             <div className="edit-grid">
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} />
-                <span className="small" style={{ color: '#4B585C' }}>What they paid when they bought it — not what this loan is sized on.</span>
+                <span className="edit-hint">What they paid when they bought it — not what this loan is sized on.</span>
               </label>
               <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} />
-                <span className="small" style={{ color: '#4B585C' }}>
+                <span className="edit-hint">
                   {seasoningText(f.acquisitionDate) ? `Owned ${seasoningText(f.acquisitionDate)}.` : 'Used to count how long they have owned it (seasoning).'}
                 </span>
               </label>
@@ -368,7 +433,10 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
           <div className="edit-grid">
             <label className="col-4" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
-              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: '#141B22' }}>This is an assignment purchase</span>
+              {/* No inline text-transform escape hatch any more — the caption rule
+                  is scoped to a label's FIRST direct span, and here that is the
+                  checkbox, so this reads as ordinary sentence text on its own. */}
+              <span style={{ fontSize: '14px', color: '#141B22' }}>This is an assignment purchase</span>
             </label>
             {f.isAssignment && <>
               <label className="col-2"><span>Original (underlying) price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
