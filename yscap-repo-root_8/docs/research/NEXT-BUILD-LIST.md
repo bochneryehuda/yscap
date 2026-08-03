@@ -351,7 +351,23 @@ API* + *Maps JavaScript API*, restrict it to our domain):
 - [ ] **C4a** Google base map in `CompMap`, falling back to the current
   OpenStreetMap tiles when no key is present — the map must never go blank
   because a bill lapsed.
-- [ ] **C4b** Satellite toggle and Street View for the subject and each comp.
+- [x] **C4b / B3b** **DONE, and dormant until a key exists.** The satellite half
+  shipped with B3a above (USGS imagery — public domain, keyless). Street View is
+  the FALLBACK on a property with no appraisal photograph, served through our own
+  `/api/address/photo` proxy so the key never reaches the browser, and rendering
+  NOTHING at all when no key is configured, so the layout is unchanged until one is.
+
+  **It is always LABELLED, and that is not decoration.** An appraiser's photo is
+  evidence of the property on the day of the report and is what the condition grade
+  was written from; a street image is a car that drove past at some point, from the
+  road, possibly years out. Presenting the two alike invites somebody to read a
+  tidy front garden as evidence of condition — so an appraisal photo is never
+  replaced by one, and the fallback carries a corner label saying what it is.
+
+  **It is LAZY, which is a cost decision as much as a speed one.** Street View
+  Static is billed per request, and a 25-row comparable list would otherwise fire
+  25 billable calls per page view including the rows nobody scrolls to. Verified in
+  a real browser in both states (`scripts/render-street-fallback.mjs`, 10).
 - [x] **C4c** **DONE** — same guard as B2 above (`db/455`).
 
 ---
