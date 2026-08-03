@@ -78,7 +78,7 @@ function deltaColor(pct, target) {
 function Bars({ series, format, onPick }) {
   const max = Math.max(1, ...series.map((s) => Math.abs(s.value || 0)));
   const n = series.length;
-  if (!n) return <p className="muted small" style={{ margin: '10px 0 0' }}>Nothing in this period yet.</p>;
+  if (!n) return <p className="dsh-empty">Nothing in this period yet.</p>;
   return (
     <div className="dsh-bars" style={{ display: 'flex', alignItems: 'flex-end', gap: n > 20 ? 2 : 6, height: 96, marginTop: 12, overflowX: 'auto' }}>
       {series.map((s, i) => {
@@ -101,7 +101,7 @@ function Bars({ series, format, onPick }) {
 
 function Rows({ series, format, onPick }) {
   const max = Math.max(1, ...series.map((s) => Math.abs(s.value || 0)));
-  if (!series.length) return <p className="muted small" style={{ margin: '10px 0 0' }}>Nothing to show yet.</p>;
+  if (!series.length) return <p className="dsh-empty">Nothing to show yet.</p>;
   return (
     <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
       {series.slice(0, ROWS_DRAWN).map((s) => (
@@ -175,21 +175,22 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
       );
     }
     return (
-      <button type="button" onClick={onDrill ? () => onDrill(null) : undefined}
-        style={{ border: 0, background: 'none', padding: 0, textAlign: 'left', cursor: onDrill ? 'pointer' : 'default', width: '100%' }}>
-        <div style={{ fontSize: hero ? 34 : 27, fontWeight: 600, lineHeight: 1.05, letterSpacing: '-.02em',
-          color: t ? TONE_COLOR[t] : INK, fontVariantNumeric: 'tabular-nums', marginTop: 6 }}>
+      <button type="button" className="dsh-figure" onClick={onDrill ? () => onDrill(null) : undefined}
+        style={{ cursor: onDrill ? 'pointer' : 'default' }}>
+        {/* Size lives in `.dsh-num` / `.dsh-hero .dsh-num`, so hero-vs-body is one CSS rule
+            instead of a ternary here. Only the TONE colour stays inline — it is data. */}
+        <div className="dsh-num" style={t ? { color: TONE_COLOR[t] } : undefined}>
           {fmt(answer.value, answer.format)}
           {answer.target && answer.target.unit && answer.value != null
-            && <span style={{ fontSize: 13, color: MUTED, fontWeight: 400 }}>{answer.target.unit === '%' ? '' : answer.target.unit}</span>}
+            && <span className="dsh-num-u">{answer.target.unit === '%' ? '' : answer.target.unit}</span>}
         </div>
         {answer.denominator != null && (
-          <div className="small" style={{ color: MUTED, marginTop: 2 }}>
+          <div className="small dsh-note">
             {nf.format(answer.numerator)} of {nf.format(answer.denominator)}
           </div>
         )}
         {answer.matched != null && answer.denominator == null && (
-          <div className="small" style={{ color: MUTED, marginTop: 2 }}>
+          <div className="small dsh-note">
             {nf.format(answer.matched)} file{answer.matched === 1 ? '' : 's'}
           </div>
         )}
@@ -197,7 +198,7 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
           // Both figures, always — the percentage is the summary, the old number is the
           // evidence. Green/red is deliberately read off the card's own "good is higher /
           // lower" setting rather than assuming up is good: rising days-to-fund is bad.
-          <div className="small" style={{ color: MUTED, marginTop: 4 }}>
+          <div className="small dsh-note">
             {answer.compare.deltaPct == null ? null : (
               <b style={{ color: deltaColor(answer.compare.deltaPct, answer.target) }}>
                 {answer.compare.deltaPct >= 0 ? '▲' : '▼'}{' '}
@@ -218,7 +219,7 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
         <span className="spacer" />
         {editable && <button className="btn link small" onClick={onEdit} title="Change this card">Edit</button>}
       </div>
-      {answer.subtitle && <div className="small" style={{ color: MUTED, marginTop: -2 }}>{answer.subtitle}</div>}
+      {answer.subtitle && <div className="small dsh-sub">{answer.subtitle}</div>}
       {body()}
 
       {/* A partly-populated column says so on its face rather than passing off half the
@@ -234,8 +235,9 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
         </div>
       )}
 
-      <button type="button" className="btn link small dsh-explain-t" onClick={() => setOpen((v) => !v)}
-        style={{ marginTop: 10, padding: 0 }}>
+      {/* NO inline margin-top here: `.dsh-explain-t{margin-top:auto}` is what pushes this
+          to the bottom of the card so a row of cards has its footers on one line. */}
+      <button type="button" className="btn link small dsh-explain-t" onClick={() => setOpen((v) => !v)}>
         {open ? 'Hide' : 'How is this worked out?'}
       </button>
       {open && answer.explain && (
