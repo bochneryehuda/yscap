@@ -301,6 +301,41 @@ async function upsertObservation(db, cols) {
 }
 
 /**
+ * A VALUE THE DRIVER CAN BIND — and the reason this exists is a bug that took the
+ * whole warehouse down.
+ *
+ * A `jsonb` column READS BACK as a JavaScript object or array. Bind that value
+ * straight into the next statement and node-postgres does the natural thing for a
+ * JS array — it serialises it as a POSTGRES ARRAY literal (`{...}`) — and Postgres
+ * answers `invalid input syntax for type json`. jsonb wants a JSON STRING.
+ *
+ * Every write into these tables goes through `JSON.stringify` on the way IN, so
+ * this was invisible until the roll-up started carrying a jsonb column (`unit_mix`,
+ * db/414) — which reads a value OUT of one row and writes it into another. The
+ * blast radius was total rather than partial, for two reasons worth remembering:
+ *
+ *   • `upsertProperty` writes ONLY the address columns. EVERY fact on `properties`
+ *     comes from the roll-up, so a roll-up that throws leaves a property with an
+ *     address and nothing else — which reads on screen as "we know nothing about
+ *     this property", not as an error.
+ *   • The roll-up runs in a loop over every property a report touched, and the
+ *     subject is first. One throw abandoned the whole report, so a single
+ *     multi-family subject with a rent roll took every comparable on that report
+ *     down with it.
+ *
+ * Generic on purpose: the next jsonb column added to ROLLUP_FACTS is safe without
+ * anyone remembering this. A string is passed through untouched — already-serialised
+ * values must not be double-encoded — and so is a Date, which the driver handles.
+ */
+function bindable(v) {
+  if (v == null) return v;
+  if (typeof v !== 'object') return v;
+  if (v instanceof Date) return v;
+  if (Buffer.isBuffer(v)) return v;
+  return JSON.stringify(v);
+}
+
+/**
  * Recompute a property's roll-up from its observations.
  *
  * For each fact column the winner is the most recent observation that STATED it
@@ -362,7 +397,7 @@ async function rollupProperty(db, propertyId) {
        apn = COALESCE(properties.apn, $${keys.length + 2}),
        rollup_version = $${keys.length + 3}, updated_at = now()
      WHERE id = $1`,
-    [propertyId, ...keys.map((k) => all[k]), apn || null, ROLLUP_VERSION]);
+    [propertyId, ...keys.map((k) => bindable(all[k])), apn || null, ROLLUP_VERSION]);
 }
 
 // ---------------------------------------------------------------------------
@@ -755,7 +790,20 @@ async function writeReport(db, { a, comps, link, out }) {
     await retireDuplicateImports(db, { appraisalId, subjectId, observedOn, appraiserId, touched });
   }
 
-  for (const pid of touched) await rollupProperty(db, pid);
+  // ONE PROPERTY MUST NEVER TAKE THE REST OF THE REPORT DOWN. The roll-up is the
+  // only thing that puts facts on a property row, and it used to run bare in this
+  // loop — so a single property it could not roll up abandoned the whole report,
+  // leaving every property after it with an address and no facts at all. The
+  // failure is COUNTED and named rather than swallowed: `rollup_version` stays
+  // behind on the row, so the boot re-roll retries it, and the skip is reported.
+  for (const pid of touched) {
+    try {
+      await rollupProperty(db, pid);
+    } catch (e) {
+      out.rollupFailed = (out.rollupFailed || 0) + 1;
+      out.skipped.push({ role: 'rollup', property_id: pid, why: `the property's facts could not be recomputed: ${(e && e.message) || e}` });
+    }
+  }
   await recountAppraiser(db, appraiserId);
   return out;
 }
@@ -1048,6 +1096,6 @@ module.exports = {
   writeReport,
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
-    recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal,
+    recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal, bindable,
     ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION },
 };

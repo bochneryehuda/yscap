@@ -51,6 +51,20 @@ function appraisalXml(o = {}) {
     comps: DEFAULT_COMPS,
   }, o);
 
+  // A 1025 RENT ROLL. This is the shape that broke the whole warehouse: the unit mix
+  // lands in a jsonb column, the roll-up reads it back as a JS array, and binding a
+  // JS array into jsonb is a Postgres error — so any report carrying one used to
+  // abandon its ENTIRE property set. A fixture without it cannot catch that.
+  const unitRows = (s.units2to4 || []).map((u, i) => `
+      <_UNIT_GROUP UnitType="${['UnitOne', 'UnitTwo', 'UnitThree', 'UnitFour'][i] || 'UnitOne'}"
+                   TotalRoomCount="${esc(u.rooms)}" TotalBedroomCount="${esc(u.beds)}"
+                   TotalBathroomCount="${esc(u.baths)}"
+                   GrossLivingAreaSquareFeetCount="${esc(u.sqft)}"/>`).join('');
+  const rentRows = (s.units2to4 || []).map((u, i) => `
+    <UNIT_RENT_SCHEDULE UnitSequenceIdentifier="${i + 1}"
+                        UnitActualRentAmount="${esc(u.actualRent)}"
+                        UnitMarketRentAmount="${esc(u.marketRent)}"/>`).join('');
+
   const comps = (s.comps || []).map((c, i) => `
     <COMPARABLE_SALE PropertySequenceIdentifier="${esc(c.seq || String(i + 1))}"
                      PropertySalesAmount="${esc(c.price)}"
@@ -89,7 +103,8 @@ function appraisalXml(o = {}) {
                  GrossLivingAreaSquareFeetCount="${esc(s.gla)}"
                  TotalBedroomCount="${esc(s.beds)}" TotalBathroomCount="${esc(s.baths)}"
                  TotalRoomCount="${esc(s.rooms)}" StoriesCount="2"
-                 _DesignDescription="${esc(s.design)}"/>
+                 _DesignDescription="${esc(s.design)}">${unitRows}
+      </STRUCTURE>
       <SITE _AreaDescription="${esc(s.lotArea)}" _ZoningClassificationIdentifier="R-1"
             _ZoningClassificationDescription="Residential" _ZoningComplianceType="Legal"
             _DimensionsDescription="${esc(s.lotDimensions || '60 x 123')}">
@@ -100,7 +115,7 @@ function appraisalXml(o = {}) {
                   SpecialFloodHazardAreaIndicator="${esc(s.sfha || 'N')}"
                   NFIPMapIdentifier="34023C0123F"/>
     </PROPERTY>
-    <NEIGHBORHOOD _Name="North Piscataway"/>
+    <NEIGHBORHOOD _Name="North Piscataway"/>${rentRows}
     <COMPARABLE_SALE PropertySequenceIdentifier="0">
       <COMPARISON_DETAIL GSEOverallConditionType="${esc(s.conditionUad)}"
                          GSEQualityOfConstructionRatingType="${esc(s.qualityUad)}"/>
