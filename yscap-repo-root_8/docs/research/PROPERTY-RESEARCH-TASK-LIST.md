@@ -326,9 +326,23 @@ throw away.
 Measured: **0 properties have ever been placed by a real geocoder.** 77% were
 never attempted. Everything in this phase costs about $10, one time.
 
-- [ ] **3.1 Turn on the geocoder that is already written** — US Census (free, no
+- [x] **3.1 Turn on the geocoder that is already written** — US Census (free, no
   key, batch 10k, unrestricted permanent storage) as primary, routed through
-  `geocodeRewriteIsSafe` (item 1.8)
+  `geocodeRewriteIsSafe` (item 1.8). **DONE** — `src/lib/research/geocode.js`,
+  booted in `server.js` (`RESEARCH_GEOCODE_BOOT`, default 120/pass, paced,
+  ordered by observation count so the properties the search actually returns are
+  placed first, self-draining via `geo_attempted_at`, off-switch
+  `RESEARCH_GEOCODE_DISABLED=1`). The `geocodeRewriteIsSafe` routing is the half
+  that matters and it IS wired: every provider returns its matched string, and a
+  match that drops or moves the house number, disagrees on a ZIP we hold, or
+  loses a leading directional is REFUSED with a reason rather than adopted — the
+  Census geocoder answers "26 S 10th St, Piscataway" with "26 10TH ST", a
+  different street, at `precision:'address'`. A confident wrong pin is worse than
+  no pin. Nominatim's road-level answers are refused separately (no house number
+  → not a property), so only a rooftop match is ever stored.
+- [ ] **3.1b Confirm the live sweep against the real corpus** — the code is on and
+  correct; nothing here has yet PROVEN it places a real address end to end
+  against the live services from this environment.
 - [ ] **3.2 Geocodio as the backfill fallback** — $1/1,000, true US rooftop,
   permanent storage, and it returns census tract + school district in the same
   call. Nominatim cannot do a bulk backfill under its own policy.
@@ -459,7 +473,13 @@ never attempted. Everything in this phase costs about $10, one time.
   5,649,900%"*. The renovated marker is the appraiser's own (they put the resale
   on an after-repair grid), never inferred from the size of the spread. Photos
   are not in it yet: `property_photos` coverage is the open half.
-- [ ] **5.8 Conflict detection** — two of our own reports disagreeing about one house
+- [x] **5.8 Conflict detection** — two of our own reports disagreeing about one
+  house. **DONE** — `src/lib/research/conflicts.js` (`findConflicts`, pure),
+  surfaced by `GET /api/research/properties/:id` and rendered as the "Where the
+  reports disagree" section of the property page. `test-property-conflicts-pure`
+  is in `npm test`. A disagreement between two of our own appraisals is
+  information, not something to hide, which is the whole premise of the
+  provenance-first property page.
 - [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage
 - [ ] **5.10 Defensible time adjustment from contract date + FHFA HPI**
 - [ ] **5.11 Draw and save a market-area polygon**

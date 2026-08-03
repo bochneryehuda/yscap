@@ -48,6 +48,7 @@ const { formatRefusalCounts } = require('../lib/appraisal/import');
 // Where two reports describe the same house differently — a review signal only
 // a warehouse holding several appraisals of one property can compute.
 const { findConflicts } = require('../lib/research/conflicts');
+const VAR = require('../lib/research/variance');
 
 router.use(requireAuth, requireStaff);
 
@@ -786,6 +787,91 @@ router.get('/comps', async (req, res, next) => {
 });
 
 /** The subject property of a loan file, as the warehouse knows it. */
+// ---------------------------------------------------------------------------
+// WHAT OUR OWN FILES SAY ABOUT AN APPRAISER'S VALUE
+// ---------------------------------------------------------------------------
+// The in-house analogue of the desk review a capital partner buys. Every gate
+// and every refusal lives in `research/variance`; this route only assembles the
+// evidence and hands it over.
+//
+// THE ASSEMBLY IS THE PART THAT MATTERS HERE: each candidate comparable is
+// annotated with EVERY report and appraiser that ever described it, not just the
+// newest. The independence rule needs that — a house our warehouse learned about
+// from the report under review AND from somebody else's is corroboration, and
+// attributing it to one source alone would throw the best rows away.
+router.get('/variance', async (req, res, next) => {
+  try {
+    if (!isUuid(req.query.appraisal_id)) return res.status(400).json({ error: 'appraisal_id is required' });
+    const a = (await db.query(
+      `SELECT id, application_id, appraised_value, as_is_value, subject_address, subject_city,
+              subject_state, subject_zip, units, property_type, gla, beds, baths_full, baths_half,
+              year_built, condition_uad, effective_date
+         FROM appraisals WHERE id = $1`, [req.query.appraisal_id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+
+    // The subject as the warehouse knows it, falling back to what the report says.
+    const stored = a.application_id ? await subjectForApplication(a.application_id) : null;
+    const subject = stored || {
+      display_address: a.subject_address, city: a.subject_city, state: a.subject_state,
+      zip: a.subject_zip, gla: a.gla, beds: a.beds, baths_full: a.baths_full,
+      baths_half: a.baths_half, year_built: a.year_built, condition_uad: a.condition_uad,
+      property_type: a.property_type, units: a.units,
+    };
+
+    // The candidate set, through the SAME comparable search the screen uses, so a
+    // reviewer can go and see exactly the rows this was built from.
+    const picked = await S.searchProperties(db, stripEmpty({
+      state: subject.state, city: subject.city,
+      exclude_property_id: subject.id || undefined,
+      sold_within_months: 18, limit: 25, sort: 'recent_sale',
+    }));
+    const rows = (picked && picked.rows) || [];
+    const ids = rows.map((r) => r.id).filter(Boolean);
+
+    // EVERY source, per property.
+    const sources = new Map();
+    if (ids.length) {
+      const obs = (await db.query(
+        `SELECT property_id, appraisal_id, appraiser_id FROM property_observations
+          WHERE property_id = ANY($1::uuid[]) AND appraisal_id IS NOT NULL`, [ids])).rows;
+      for (const o of obs) {
+        const e = sources.get(o.property_id) || { r: new Set(), a: new Set() };
+        if (o.appraisal_id) e.r.add(String(o.appraisal_id));
+        if (o.appraiser_id) e.a.add(String(o.appraiser_id));
+        sources.set(o.property_id, e);
+      }
+    }
+    // THE GRID WANTS `sale_price` / `sale_date`; THE WAREHOUSE ROLL-UP CALLS THEM
+    // `last_sale_price` / `last_sale_date`. Without the rename every comparable
+    // arrives priceless, the reconcile produces nothing, and the route answers
+    // "our own comparables did not produce a value" on a set that is perfectly
+    // good — a refusal that reads as thin coverage and is actually a typo. The
+    // valuation route does the same rename at its own snapshot; this is that one
+    // line, and it is why the end-to-end check exists.
+    const comps = rows
+      .map((r) => Object.assign({}, r, {
+        sale_price: r.last_sale_price,
+        sale_date: r.last_sale_date ? String(r.last_sale_date).slice(0, 10) : null,
+        source_appraisal_ids: [...((sources.get(r.id) || {}).r || [])],
+        appraiser_ids: [...((sources.get(r.id) || {}).a || [])],
+      }))
+      // A COMPARABLE WITH NO PRICE IS NOT EVIDENCE, and counting it toward the
+      // coverage gate would let three priceless rows clear a floor that exists
+      // to mean three SALES.
+      .filter((r) => r.sale_price != null);
+
+    // The APPRAISED value is what the appraiser concluded; on a renovation report
+    // that is the after-repair figure, so the as-is is used when it is the one the
+    // comparables are actually about. Never averaged — one or the other.
+    const value = a.appraised_value != null ? a.appraised_value : a.as_is_value;
+    const result = VAR.assessVariance({
+      appraisedValue: value, subject, comps, appraisalId: a.id, today: todayNY(),
+    });
+    res.json({ appraisal_id: a.id, appraised_value: value == null ? null : Number(value),
+      variance: result, summary: VAR.describeVariance(result) });
+  } catch (e) { next(e); }
+});
+
 async function subjectForApplication(appId) {
   const r = await db.query(
     `SELECT p.* FROM properties p
