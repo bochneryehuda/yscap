@@ -11,7 +11,7 @@
 // data by hand (the recurring "works after I clear my cookies" logout reports).
 // The name is now versioned for real. Rule going forward: any time this file's
 // caching behavior changes, bump CACHE — activation cleanup keys off it.
-const CACHE = 'pilot-v2-shell-v4';
+const CACHE = 'pilot-v2-shell-v5';
 const SHELL = ['/portal/', '/portal/index.html', '/portal/manifest.webmanifest', '/portal/icon.svg'];
 
 self.addEventListener('install', (e) => {

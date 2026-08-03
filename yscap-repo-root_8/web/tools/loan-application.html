@@ -19,9 +19,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
-<link rel="preconnect" href="https://fonts.googleapis.com/">
-<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/assets/fonts/fonts.css?v=pilot-selfhost1">
 <link rel="stylesheet" href="../suite.css?v=n8">
 <style>
 /* ===========================================================
@@ -191,7 +189,6 @@
 .own-total.ok{ color:var(--good); }
 .own-total.bad{ color:var(--bad); }
 
-
 /* ---- v2 additions (multi-borrower, vesting, exports) ---- */
 .hidden{ display:none !important; }
 .panel-num svg{ width:15px; height:15px; stroke:var(--ink); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
@@ -210,7 +207,6 @@
 .own-total{ margin-top:.85rem; font-size:.86rem; font-weight:600; }
 .own-total.ok{ color:var(--good); }
 .own-total.bad{ color:var(--bad); }
-
 
 /* ---- v2 additions (multi-borrower, vesting, exports) ---- */
 .hidden{ display:none !important; }
@@ -1272,7 +1268,7 @@
   }
 
   /* ---------------- admin pricing overrides (soft-gated; Standard-only page) ---------------- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — obfuscation, not security.
+  var ADMIN_HASH = 6019969998889003;   // cyrb53 of the admin passphrase (value deliberately NOT written here — this file is public). Soft gate only — obfuscation, not security.
   function cyrb53(str, seed) {
     seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
     for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
