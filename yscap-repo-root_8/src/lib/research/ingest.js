@@ -443,10 +443,39 @@ async function rollupProperty(db, propertyId) {
 // SALES
 // ---------------------------------------------------------------------------
 /** Record a transaction. Silently ignores anything without a date (never guesses one). */
-async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId, importId }) {
+async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId,
+  importId, out = null, what = null }) {
   const d = dateOnly(date);
-  if (!propertyId || !d) return 0;
+  // A SALE WE CANNOT FILE IS COUNTED, NEVER DROPPED IN SILENCE. A comparable whose
+  // date of sale reads "Unk" has a perfectly good PRICE, and this used to return 0
+  // — so a $444,000 sale vanished from `property_sales`, the property's roll-up
+  // showed no last sale at all, and the ingest ledger still said `ok` with zero
+  // skips. "The numbers still look healthy" is the worst shape a data loss can
+  // take, and it is exactly what the owner's "it saves every property" is about.
+  const note = (why) => {
+    if (out && Array.isArray(out.skipped)) out.skipped.push(Object.assign({ role: 'sale', why }, what || {}));
+    return 0;
+  };
+  if (!propertyId) return 0;                      // no property = nothing to hang it on; already counted upstream
+  // NOTHING STATED IS NOT A LOSS. Most reports simply do not carry a prior sale or
+  // a contract, and counting those as skips would bury the real ones in noise and
+  // make every clean import look damaged. A skip is only worth reporting when the
+  // report DID state something we then failed to file.
+  if (date == null && price == null) return 0;
+  if (!d) {
+    return note(price != null
+      ? 'the report stated a sale price but no date we could read, so the sale could not be filed'
+      : 'the report stated a sale date we could not read');
+  }
   const amount = K.num(price, { min: 1, max: 1e10 });
+  // AN UNSTORABLE PRICE MUST NOT BECOME A PRICELESS SALE. `K.num` returns null for
+  // a figure outside the guard, and the unique key is
+  // (property_id, sale_date, COALESCE(sale_price,-1)) — so two different
+  // out-of-range transactions on one date collapsed into ONE row with no price at
+  // all. Refuse and count it instead of silently inventing a merged, unpriced sale.
+  if (price != null && amount == null) {
+    return note('the sale price on this report is outside anything we can store, so the sale was not filed');
+  }
   await db.query(
     // `source_import_id` was in the table and in every caller's arguments, and was
     // neither destructured above nor listed here — so an UPLOADED report's sales
@@ -759,7 +788,12 @@ async function writeReport(db, { a, comps, link, out }) {
       price_per_gla: null, gla_basis: 'gla', proximity: null,
       neighborhood: txt(a.neighborhood), census_tract: txt(a.census_tract),
       flood_zone: txt(a.flood_zone), fema_flood_zone: txt(a.fema_flood_zone),
-      sfha: a.special_flood_hazard == null ? null : !!a.special_flood_hazard,
+      // THE FEMA DETERMINATION WINS over the appraiser's own typed indicator when
+      // we have one — it is the authoritative answer, and the flood-certificate
+      // condition already treats it as governing. Without this the warehouse could
+      // only ever see what the appraiser ticked.
+      sfha: a.fema_flood_sfha != null ? !!a.fema_flood_sfha
+        : (a.special_flood_hazard == null ? null : !!a.special_flood_hazard),
       zoning_id: txt(a.zoning_id), zoning_desc: txt(a.zoning_desc),
       occupancy_status: txt(a.occupancy_status), market_rent: marketRent,
       unit_mix: unitMix ? JSON.stringify(unitMix) : null,
@@ -785,10 +819,12 @@ async function writeReport(db, { a, comps, link, out }) {
     // know about — marked 'pending' until a later report proves it closed).
     out.sales += await recordSale(db, { propertyId: subjectId, date: a.prior_sale_date,
       price: a.prior_sale_amount, type: null, status: 'closed', source: 'subject_prior_sale',
-      appraisalId, importId, observationId: subjectObsId });
+      appraisalId, importId, observationId: subjectObsId,
+      out, what: { address: txt(a.subject_address), of: 'the subject\'s previous sale' } });
     out.sales += await recordSale(db, { propertyId: subjectId, date: a.contract_date,
       price: a.contract_price, type: txt(a.sale_type), status: 'pending', source: 'subject_contract',
-      appraisalId, importId, observationId: subjectObsId });
+      appraisalId, importId, observationId: subjectObsId,
+      out, what: { address: txt(a.subject_address), of: 'the subject\'s contract' } });
   } else if (txt(a.subject_address)) {
     out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
   }
@@ -900,9 +936,11 @@ async function writeReport(db, { a, comps, link, out }) {
     out.observations++;
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
       type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
-      appraisalId, importId, observationId: obs.id });
+      appraisalId, importId, observationId: obs.id,
+      out, what: { address: txt(c.address), seq: txt(c.seq), of: 'a comparable sale' } });
     out.sales += await recordSale(db, { propertyId: pid, date: c.prior_sale_date, price: c.prior_sale_amount,
-      type: null, status: 'closed', source: 'comp_prior_sale', appraisalId, importId, observationId: obs.id });
+      type: null, status: 'closed', source: 'comp_prior_sale', appraisalId, importId, observationId: obs.id,
+      out, what: { address: txt(c.address), seq: txt(c.seq), of: 'a comparable\'s previous sale' } });
   }
 
   // ---- photos, then the roll-ups ----------------------------------------
@@ -1068,13 +1106,31 @@ function fromAdjustments(adjustments, kind, parse) {
 }
 
 /** The per-unit rent roll off a 1025/1007, or null when the report carried none. */
+/* ONE SHAPE FOR A RENT ROLL, WHICHEVER DOOR IT CAME THROUGH.
+ *
+ * node-postgres renders a `numeric` column as a STRING, so the loan-file door
+ * (which reads `appraisal_units` rows) produced {"sqft":"1100.00"} where the
+ * upload door (which carries the parsed numbers) produced {"sqft":1100}. Same
+ * fact, two shapes, in a jsonb column — harmless while only existence checks and
+ * display read it, and a real trap for the first thing that does arithmetic on a
+ * rent roll. The warehouse's whole promise is that a fact is filed ONE way
+ * whichever door it arrives through. */
+function numericUnit(u) {
+  const n = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+  return {
+    unit_seq: n(u.unit_seq), rooms: n(u.rooms), beds: n(u.beds), baths: n(u.baths),
+    sqft: n(u.sqft), actual_rent: n(u.actual_rent), market_rent: n(u.market_rent),
+    lease_status: u.lease_status == null ? null : String(u.lease_status),
+  };
+}
+
 async function subjectUnitMix(db, a) {
   // An UPLOADED report (db/411) has no `appraisal_units` rows — it was never stored
   // per-file — so it hands its parsed rent schedule along on the row shape itself.
   // Without this a 1025 uploaded straight into the research database would lose its
   // whole unit mix, which is one of the facts the warehouse exists to hold.
   if (Array.isArray(a && a._units)) {
-    const rows = a._units.map((u) => ({
+    const rows = a._units.map((u) => numericUnit({
       unit_seq: u.seq, rooms: u.rooms, beds: u.beds, baths: u.baths, sqft: u.sqft,
       actual_rent: u.actualRent, market_rent: u.marketRent, lease_status: u.leaseStatus,
     }));
@@ -1083,7 +1139,7 @@ async function subjectUnitMix(db, a) {
   const r = await db.query(
     `SELECT unit_seq, rooms, beds, baths, sqft, actual_rent, market_rent, lease_status
        FROM appraisal_units WHERE appraisal_id = $1 ORDER BY unit_seq`, [(a && a.id) || null]);
-  return r.rows.length ? r.rows : null;
+  return r.rows.length ? r.rows.map(numericUnit) : null;
 }
 
 /** The appraiser's stated monthly market rent for the whole subject property, or null. */

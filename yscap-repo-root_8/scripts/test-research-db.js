@@ -517,6 +517,45 @@ async function makeAppraisal(appId, o) {
       && Number(strict.body.applied_filters.sold_within_months) === 6,
     'a time window the user actually typed is honoured, never widened underneath them');
 
+    // (4c) WHAT NAMES THE SUBJECT IS NOT A FILTER ON THE ANSWER. `application_id`
+    // selects WHICH property we are finding comps for; `search.js` also reads it
+    // as `EXISTS (… o.application_id = …)`, so leaving it in the filters meant the
+    // loan-file entry point could only ever return the comps that file's OWN
+    // appraisal had already used — and the ladder then dressed the shortfall up as
+    // "we looked as hard as we could, this town is thin".
+    const byApp = await call(server, 'GET', `/api/research/comps?application_id=${appId}&want=25`, token);
+    const byProp = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&want=25`, token);
+    ok(byApp.status === 200, 'a comp search can be anchored on a loan file');
+    ok(byApp.body.filters.application_id === undefined && byApp.body.applied_filters.application_id === undefined,
+      'the loan file NAMES the subject — it never becomes a filter on the comparables');
+    ok(byApp.body.total >= byProp.body.total,
+      'so the loan-file door finds at least as much as the same subject by property id');
+    ok(byApp.body.filters.property_id === undefined && byApp.body.filters.gla === undefined,
+      'the other subject selectors are not filters either');
+
+    // (4d) THE COVERAGE COUNT NEVER STATES A FALSE ZERO. A ZIP-only subject used to
+    // be told "we hold no properties at all in that area" because the query keyed
+    // on `state = NULL`. A panel built to stop the tool overstating itself must
+    // never itself be the thing that overstates.
+    const zipOnly = await call(server, 'GET',
+      '/api/research/comps?zip=08854&state=NJ&want=25', token);
+    ok(zipOnly.status === 200 && zipOnly.body.coverage
+      && zipOnly.body.coverage.properties > 0,
+    'a subject named by ZIP still gets a truthful coverage count, not a false zero');
+    const nowhere = await call(server, 'GET', '/api/research/comps?city=&state=&zip=', token);
+    ok(nowhere.status === 200 && nowhere.body.coverage === null,
+      'and with no locality named at all it reports NO coverage rather than zero');
+
+    // (4e) EVERY RUNG STRICTLY WIDENS. A rung that replaced the caller's band could
+    // return FEWER rows than the query before it, under a label that says "wider".
+    const wide = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&sqft_min=100&sqft_max=100000&relaxable=sqft_min,sqft_max&want=25`,
+      token);
+    ok(wide.status === 200 && wide.body.ladder.every((s, i, arr) => i === 0 || s.found >= arr[0].found),
+      'no rung of the ladder ever finds less than the first query did');
+    ok(Number(wide.body.applied_filters.sqft_min) <= 100 && Number(wide.body.applied_filters.sqft_max) >= 100000,
+      'a caller-supplied size band is only ever widened, never replaced with a narrower one');
+
     // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
     // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
     // forever and the filter underneath silently works inside a truncated set.

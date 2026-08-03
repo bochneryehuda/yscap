@@ -387,11 +387,23 @@ router.get('/comps', async (req, res, next) => {
       // `distance` when the subject is placed and `recent_sale` when it is not.
       // A caller that asks for a specific sort still wins — this is only a default.
       limit: 60,
-      // `want` and `relaxable` steer the LADDER, not the SQL — strip them so they
-      // never reach the query builder or show up as filters in the response.
+      // WHAT NAMES THE SUBJECT IS NOT A FILTER ON THE ANSWER. `application_id`,
+      // `property_id` and the typed-subject fields are read off `req.query` above
+      // to work out WHICH property we are finding comps for — but they were then
+      // merged into the search filters too, and `search.js` turns
+      // `application_id` into `EXISTS (… o.application_id = $n)`. So the loan-file
+      // entry point could only ever return the comps that file's OWN appraisal had
+      // already used: measured 2 rows instead of 5, on the primary path. Worse, the
+      // ladder then walked every rung and the screen reported "we looked as hard as
+      // we could and this town is thin" — a filter bug wearing an honest face.
+      //
+      // `want` and `relaxable` steer the LADDER, not the SQL, and are stripped for
+      // the same reason.
     }, (() => {
       const c = stripEmpty(req.query);
-      delete c.want; delete c.relaxable;
+      for (const k of ['want', 'relaxable', 'application_id', 'property_id',
+        'address', 'gla', 'beds', 'baths_full', 'baths_half', 'year_built',
+        'condition_uad', 'property_type', 'lat', 'lng']) delete c[k];
       return c;
     })());
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
@@ -448,17 +460,37 @@ router.get('/comps', async (req, res, next) => {
       if (key) askedFor.delete(key);
     }
     const want = Math.max(1, Math.min(25, K.int(req.query.want, { max: 25 }) || 6));
+    // EVERY RUNG MUST STRICTLY WIDEN. A "relax" that replaces a caller's band with
+    // its own can NARROW the search — measured: a 100–100000 sq ft request became
+    // 600–3300 on a rung labelled "a wider size range", dropping three comparables
+    // the first query had already found. Each rung therefore takes the UNION of
+    // what is already there and what it proposes, so it is monotone by
+    // construction and the ladder can only ever add.
+    const widen = (cur, lo, hi) => ({
+      sqft_min: Math.min(K.num(cur.sqft_min) == null ? Infinity : K.num(cur.sqft_min), lo),
+      sqft_max: Math.max(K.num(cur.sqft_max) == null ? 0 : K.num(cur.sqft_max), hi),
+    });
     const RUNGS = [
       { id: 'as_asked', label: 'as asked', relax: () => ({}) },
       { id: 'wider_size', label: 'a wider size range',
-        relax: (f) => (subject.gla && !askedFor.has('sqft_min') && !askedFor.has('sqft_max')
-          ? { sqft_min: Math.round(subject.gla * 0.4), sqft_max: Math.round(subject.gla * 2.2) } : null) },
+        relax: (f) => {
+          if (!subject.gla || askedFor.has('sqft_min') || askedFor.has('sqft_max')) return null;
+          const w = widen(f, Math.round(subject.gla * 0.4), Math.round(subject.gla * 2.2));
+          // Nothing to do if the band already covers it — a rung that changes
+          // nothing must not spend a query or claim a step on the ladder.
+          if (w.sqft_min === K.num(f.sqft_min) && w.sqft_max === K.num(f.sqft_max)) return null;
+          return w;
+        } },
       { id: 'longer_window', label: 'a longer time window',
-        relax: (f) => (!askedFor.has('sold_within_months') && f.sold_within_months
-          ? { sold_within_months: 36 } : null) },
+        relax: (f) => (!askedFor.has('sold_within_months') && K.num(f.sold_within_months) > 0
+          && K.num(f.sold_within_months) < 36 ? { sold_within_months: 36 } : null) },
       { id: 'wider_radius', label: 'a wider distance',
-        relax: (f) => (f.radius_miles && !askedFor.has('radius_miles')
-          ? { radius_miles: Math.min(10, Number(f.radius_miles) * 3) } : null) },
+        relax: (f) => {
+          if (!f.radius_miles || askedFor.has('radius_miles')) return null;
+          const cur = Number(f.radius_miles);
+          const next = Math.min(10, cur * 3);
+          return next > cur ? { radius_miles: next } : null;   // never shrink a radius over 10
+        } },
       { id: 'whole_town', label: 'the whole town, any distance',
         relax: (f) => (f.radius_miles && !askedFor.has('radius_miles') ? { radius_miles: undefined } : null) },
       { id: 'any_time', label: 'any time',
@@ -467,9 +499,13 @@ router.get('/comps', async (req, res, next) => {
     ];
 
     let active = Object.assign({}, filters);
-    let page = null;
     const ladder = [];
-    let usedRung = 'as_asked';
+    // KEEP THE BEST RUNG, NOT THE LAST ONE. The rungs are monotone now, so a later
+    // rung should never find less — but "should never" is not "cannot", and the
+    // answer the officer reads must never be worse than one this same request
+    // already had in hand. So the winner is tracked explicitly and the loop can
+    // only improve on it.
+    let best = null, bestRung = 'as_asked', bestFilters = Object.assign({}, active);
     for (const rung of RUNGS) {
       const change = rung.relax(active);
       if (rung.id !== 'as_asked' && !change) continue;      // nothing left to relax on this rung
@@ -478,11 +514,16 @@ router.get('/comps', async (req, res, next) => {
           if (v === undefined) delete active[k]; else active[k] = v;
         }
       }
-      page = await S.searchProperties(db, active);
-      ladder.push({ step: rung.id, label: rung.label, found: page.total });
-      usedRung = rung.id;
-      if (page.total >= want) break;
+      const got = await S.searchProperties(db, active);
+      ladder.push({ step: rung.id, label: rung.label, found: got.total });
+      if (!best || got.total > best.total) {
+        best = got; bestRung = rung.id; bestFilters = Object.assign({}, active);
+      }
+      if (best.total >= want) break;
     }
+    const page = best;
+    const usedRung = bestRung;
+    active = bestFilters;
 
     const ranked = page.rows.map((c) => {
       const s = V.scoreComp(subject, c, { today });
@@ -495,16 +536,28 @@ router.get('/comps', async (req, res, next) => {
     // HOW MUCH OF THIS MARKET WE HOLD AT ALL. Without it an empty answer reads as
     // "your filters are too tight" when the truth is usually "we have never lent
     // in this town". Cheap: one count, no joins.
+    // EVERY PART OF IT OPTIONAL, and NULL when no locality was named at all.
+    // `WHERE state = $1` with a NULL state matches zero rows, so a ZIP-only
+    // subject — which this screen explicitly allows — was told "we hold no
+    // properties at all in that area yet… nothing you change in the filters will
+    // find anything here" while the warehouse held 147 in that very ZIP. A panel
+    // built to stop the tool overstating itself must never itself state a false
+    // zero: with nothing to scope by it returns null and the screen says nothing.
     let coverage = null;
     try {
-      const c = (await db.query(
-        `SELECT count(*)::int AS properties,
-                count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale
-           FROM properties
-          WHERE state = $1 AND ($2::text IS NULL OR lower(city) = lower($2))`,
-        [subject.state || null, subject.city || null])).rows[0];
-      coverage = { town: subject.city || null, state: subject.state || null,
-        properties: c ? c.properties : 0, with_sale: c ? c.with_sale : 0 };
+      const town = subject.city || null, st = subject.state || null, zp = subject.zip || null;
+      if (town || st || zp) {
+        const c = (await db.query(
+          `SELECT count(*)::int AS properties,
+                  count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale
+             FROM properties
+            WHERE ($1::text IS NULL OR state = $1)
+              AND ($2::text IS NULL OR lower(city) = lower($2))
+              AND ($3::text IS NULL OR zip = $3)`, [st, town, zp])).rows[0];
+        coverage = { town, state: st, zip: zp,
+          where: town || zp || st,
+          properties: c ? c.properties : 0, with_sale: c ? c.with_sale : 0 };
+      }
     } catch (_) { coverage = null; }
 
     res.json({

@@ -256,7 +256,12 @@ function settledMonth(desc) {
 // what `settledMonth` falls back to), so guessing there would file a settlement
 // as a contract — silently, on the majority of comps. Null rather than a guess.
 function contractMonth(desc) {
-  const m = /c\s*(\d{1,2})\/(\d{2,4})/i.exec(String(desc || ''));
+  // THE `c` MUST BE ITS OWN MARKER, not the tail of a word. Without the boundary,
+  // "Public 06/25" and "Doc 06/25" — a data-source note followed by the SETTLED
+  // date — both matched, filing a settlement as a contract date, which is the one
+  // thing this function's own contract says it will never do. Still matches
+  // "c09/25", "s06/25;c05/25" and "c 03/25".
+  const m = /(?:^|[^A-Za-z])c\s*(\d{1,2})\/(\d{2,4})/i.exec(String(desc || ''));
   if (!m) return null;
   const mo = parseInt(m[1], 10);
   let yr = parseInt(m[2], 10);

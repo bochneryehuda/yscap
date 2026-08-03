@@ -107,6 +107,11 @@ export default function StaffCompSearch() {
   }, [effective, canSearch]);
 
   useEffect(() => { run(); }, [run]);
+  // A NEW SUBJECT MEANS A NEW SHORTLIST. Without this, ticking two comps and then
+  // searching a different property left the sticky bar offering to build a
+  // valuation for the NEW subject out of the OLD subject's comps.
+  const subjectKey = `${q.property_id || ''}|${q.application_id || ''}|${q.address || ''}|${q.city || ''}|${q.zip || ''}`;
+  useEffect(() => { setPicked(new Map()); }, [subjectKey]);
 
   function apply(next) {
     const merged = { ...q, ...next };
@@ -131,12 +136,24 @@ export default function StaffCompSearch() {
     if (!picked.size) return;
     setSending(true); setErr('');
     try {
+      // CARRY THE SUBJECT, whichever way we got here. Sending only a title and an
+      // address left `subject_snapshot` with one key, so `ratesFor` refused ("no
+      // market was named") and every comp landed with an EMPTY adjustment grid —
+      // on two of the three entry paths, including the loan file.
       const subj = d && d.subject;
+      const title = `Value: ${(subj && subj.display_address) || subjForm.address || 'new property'}`;
+      const pid = q.property_id || (subj && subj.id) || null;
       const v = await api.valuationCreate(
-        q.property_id
-          ? { property_id: q.property_id, title: `Value: ${(subj && subj.display_address) || 'property'}` }
-          : { title: `Value: ${(subj && subj.display_address) || 'new property'}`,
-            address: (subj && subj.display_address) || subjForm.address || '' });
+        pid ? { property_id: pid, title }
+          : q.application_id ? { application_id: q.application_id, title }
+            : { title,
+              address: (subj && subj.display_address) || subjForm.address || '',
+              subject: {
+                display_address: (subj && subj.display_address) || subjForm.address || null,
+                city: subjForm.city || null, state: subjForm.state || null, zip: subjForm.zip || null,
+                gla: subjForm.gla || null, beds: subjForm.beds || null,
+                year_built: subjForm.year_built || null, condition_uad: subjForm.condition_uad || null,
+              } });
       await api.valuationAddComps(v.valuation.id, { property_ids: [...picked.keys()] });
       nav(`/internal/research/valuation/${v.valuation.id}`);
     } catch (e) { setErr(e.message || 'Could not start that valuation'); setSending(false); }
@@ -167,10 +184,21 @@ export default function StaffCompSearch() {
 
       {canSearch && (
         <div style={{ ...S.panel, marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <select style={{ ...S.input, width: 'auto' }} value={effective.radius_miles}
-            onChange={(e) => apply({ radius_miles: e.target.value })}>
-            {RADII.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
-          </select>
+          {/* A DISTANCE WE COULD NOT APPLY MUST NOT LOOK APPLIED. Most warehouse
+              properties have never been placed on a map, and the route drops the
+              radius and says so (`radius_dropped`) — while this box went on
+              reading "within 1 mile". */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <select style={{ ...S.input, width: 'auto',
+              ...(d && d.radius_dropped ? { borderColor: GOLD, color: MUTED } : null) }}
+              value={effective.radius_miles}
+              onChange={(e) => apply({ radius_miles: e.target.value })}>
+              {RADII.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
+            </select>
+            {d && d.radius_dropped && (
+              <span style={{ color: GOLD, fontSize: 12 }}>not applied — this property isn’t on the map yet</span>
+            )}
+          </span>
           <select style={{ ...S.input, width: 'auto' }} value={effective.sold_within_months}
             onChange={(e) => apply({ sold_within_months: e.target.value })}>
             {MONTHS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
@@ -292,13 +320,18 @@ function Honesty({ d }) {
       {none ? (
         <div>
           <strong style={{ color: INK }}>Nothing found — and here is why.</strong>
+          {d.subject_located === false && (
+            <div style={{ color: GOLD, fontSize: 13, marginTop: 6 }}>
+              We have not placed this property on the map yet, so distance was not used at all.
+            </div>
+          )}
           <p style={{ margin: '6px 0 0', color: MUTED, fontSize: 13 }}>
             {cov && cov.properties === 0
-              ? <>We hold <b style={{ color: INK }}>no properties at all</b> in {cov.town || cov.state || 'that area'} yet.
+              ? <>We hold <b style={{ color: INK }}>no properties at all</b> in {cov.where || 'that area'} yet.
                 This database only knows houses that appeared in an appraisal we paid for, so a town we have not
                 lent in is simply empty. Nothing you change in the filters will find anything here.</>
               : <>We searched as far as the settings allow and still found nothing that matched.
-                {cov && <> We hold {num(cov.properties)} propert{cov.properties === 1 ? 'y' : 'ies'} in {cov.town || cov.state},
+                {cov && <> We hold {num(cov.properties)} propert{cov.properties === 1 ? 'y' : 'ies'} in {cov.where},
                   {' '}{num(cov.with_sale)} of them with a recorded sale price.</>}</>}
           </p>
         </div>
@@ -316,7 +349,7 @@ function Honesty({ d }) {
           {cov && (
             <span style={{ color: MUTED, fontSize: 13 }}>
               We hold <b style={{ color: INK }}>{num(cov.properties)}</b> propert{cov.properties === 1 ? 'y' : 'ies'} in
-              {' '}{cov.town || cov.state} in total, {num(cov.with_sale)} with a sale price — all from our own appraisals.
+              {' '}{cov.where} in total, {num(cov.with_sale)} with a sale price — all from our own appraisals.
             </span>
           )}
           {d.subject_located === false && (
@@ -366,13 +399,16 @@ function CompRow({ r, checked, onToggle }) {
         <div style={{ color: MUTED, fontSize: 12 }}>{saleMonth(r.last_sale_date)}</div>
         <div style={{ marginTop: 5 }}>
           <span style={S.tag} title="How well it matches on what we know about both properties">
-            match {r.match_score}
+            match {Math.round(r.match_score)}
           </span>
           {/* Coverage travels WITH the score, always — a comp scored on half the
               facts must say so, or the number overstates itself. */}
-          {r.match_coverage != null && (
+          {/* ALREADY A PERCENTAGE — scoreComp returns round((possible/total)*100,1).
+              Multiplying again rendered "on 6100% of the facts" on every row.
+              Hidden at full coverage: "on 100% of the facts" is noise. */}
+          {r.match_coverage != null && Math.round(r.match_coverage) < 100 && (
             <div style={{ color: MUTED, fontSize: 11, marginTop: 3 }}>
-              on {Math.round(r.match_coverage * 100)}% of the facts
+              on {Math.round(r.match_coverage)}% of the facts
             </div>
           )}
         </div>

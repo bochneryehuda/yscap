@@ -243,6 +243,13 @@ function fireFloodCheck(appraisalId, appId) {
         [appraisalId, appId, `FEMA zone ${r.femaZone}`, row.flood_zone ? `Appraisal zone ${row.flood_zone}` : null,
          'Flood zone disagrees with the FEMA flood map', cmp.note]);
     }
+    // AND TELL THE RESEARCH WAREHOUSE. This UPDATE lands AFTER the import has
+    // already been ingested, so without a re-ingest the FEMA answer never reaches
+    // `property_observations`/`properties` at all — the warehouse's flood columns
+    // were populated only by luck, when a report happened to carry an embedded PDF
+    // and the photo pass's follow-up ingest won the race. An XML with no PDF
+    // returns early from that pass and there is no second ingest at all.
+    fireResearchIngest(appraisalId, 'flood determination');
     // A newly-known flood zone (SFHA) makes the flood-certificate condition
     // required on EVERY program — re-run the Condition Center so it attaches now
     // rather than waiting for the next file edit (db/207 + engine.in_flood_zone).
