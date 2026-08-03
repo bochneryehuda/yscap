@@ -60,6 +60,7 @@ const DIGEST_ACTION = Object.freeze({
   DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
   TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
   DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  ORDER_OVERDUE: 'order_overdue_nudge',
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
   DIRECT_SOURCE_FILE: 'direct_source_file_verified',
@@ -887,6 +888,234 @@ async function drawReleaseOverdueOnce() {
   return sent;
 }
 
+/**
+ * AN ORDER THAT IS LATE GETS CHASED — the clock the Orders desk never had
+ * (owner-directed 2026-08-03).
+ *
+ * Orders is the one place PILOT waits on somebody OUTSIDE the company, and until
+ * now it was also the only place with no clock, no owner and no nudge: we emailed
+ * a title company and a human had to remember. Vendor turnaround is the
+ * operational problem lenders name most often, so this is the sweep that makes
+ * "which orders are late?" a question the system answers instead of a person.
+ *
+ * TWO DIFFERENT JOBS, deliberately worded differently (order-sla.pendingOn):
+ *   · status 'ordered'      → the VENDOR owes us. Chase them.
+ *   · status 'documents_in' → they answered; the work came back to US, and the job
+ *     is classifying and accepting what arrived. Telling somebody to "chase the
+ *     title company" when the title company already replied is exactly how a desk
+ *     teaches people to ignore it.
+ *
+ * WHO IS TOLD escalates rather than repeating (order-sla.chaseTier): the assignee
+ * first, then the whole file team, then the administrators. A nudge that always
+ * lands in the same inbox stops being read, which is the failure this exists to
+ * prevent.
+ *
+ * The SQL pre-filter is deliberately COARSE — `ordered_at` older than the SLA in
+ * CALENDAR days, which is a strict superset of "N business days have passed", so
+ * it can over-select but never under-select. The precise business-day test then
+ * runs in JS through the SAME `orderState` the card and the desk use, so a row can
+ * never be late on one screen and on time on another. The throttle appears in the
+ * WHERE as well as the gate (a per-file digest must, or an already-nudged file
+ * keeps taking a slot — see notThrottled).
+ */
+async function orderOverdueOnce() {
+  const orderSla = require('./order-sla');
+  const { hour } = nyParts();
+  // Business hours only: an order nudge at 3am helps nobody and trains people to
+  // filter the sender.
+  if (hour < 8 || hour > 18) return 0;
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT o.id, o.application_id, o.order_type, o.status, o.ordered_at, o.due_on, o.sla_days,
+              o.assigned_to, o.vendor_name,
+              -- Falls back to the EMAIL exactly as the desk does. Keying on
+              -- full_name alone meant an active staffer with a blank name (one
+              -- of the two account-creation doors does not require one) read as
+              -- 'inactive' to the ladder — the nudge skipped them and blasted
+              -- the file team, stamping assigneeInactive on a live account.
+              COALESCE(NULLIF(btrim(COALESCE(su.full_name,'')),''), su.email) AS assigned_name
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id
+          AND a.deleted_at IS NULL
+          -- FUNDED FILES ARE IN. A vendor still owes the final policy and the
+          -- recorded mortgage after the loan funds, which is why the follow-up and
+          -- reply doors stay open past funding and why the desk keeps those rows.
+          -- Excluding them here made the nudge disagree with the desk about the
+          -- same order: it was listed as outstanding and never chased. An order
+          -- that reaches here on a funded file is one whose condition was never
+          -- signed off — genuinely unfinished — and a human can end it from the
+          -- card with "Mark finished" when the work really is done.
+          AND a.status NOT IN ('withdrawn','declined','on_hold')
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
+        WHERE o.status IN ('ordered','documents_in')
+          AND o.ordered_at IS NOT NULL
+          -- Coarse superset of "past due". N business days is always at least N
+          -- calendar days, so the SLA arm never filters out something genuinely
+          -- late — but a HUMAN-PINNED due date can be EARLIER than the SLA implies
+          -- ("they said tomorrow" on a rush title order), and that row is overdue
+          -- before the SLA window opens. Without the second arm the nudge arrived
+          -- up to sla_days late on exactly the orders somebody cared most about.
+          AND (o.ordered_at < now() - ((COALESCE(o.sla_days, 2))::text || ' days')::interval
+               OR (o.due_on IS NOT NULL AND o.due_on < (now() AT TIME ZONE 'America/New_York')::date))
+          AND ${notThrottled('o.application_id', DIGEST_ACTION.ORDER_OVERDUE, "interval '2 days'")}
+        -- Deterministic, oldest first, so the cap can never hide the same order
+        -- forever. The id LAST makes it a TOTAL order: without a unique final term
+        -- two orders placed in the same instant tie and the cap returns them in
+        -- whatever order the plan felt like, which is how one of them starves.
+        ORDER BY o.ordered_at ASC, o.order_type, o.id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] order-overdue query', e && e.message); return 0; }
+
+  const now = new Date();
+  for (const r of rows) {
+    let claimId = null;
+    let delivered = 0;   // declared out here so the catch can see it
+    try {
+      const st = orderSla.orderState(r, now);
+      if (!st.overdue) continue;   // the coarse filter over-selected — correct, and cheap
+      // The throttle is keyed on the FILE (matching notThrottled above, which has
+      // to be — audit_log's per-file index is what makes it fast). Two late orders
+      // on one file therefore share a slot; the body names the one that is worst,
+      // which is the one somebody should pick up first anyway.
+      // Claimed BY ID, so a send that throws can give the exact row back (below)
+      // rather than leaving the file silenced for two days with nothing delivered.
+      claimId = await _claim(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, '2 days');
+      if (!claimId) continue;
+      const label = orderSla.ORDER_LABEL[r.order_type] || r.order_type;
+      const vendorWord = orderSla.VENDOR_LABEL[r.order_type] || 'the vendor';
+      const ours = st.pendingOn === 'us';
+      const days = st.daysLate;
+      const who = r.assigned_name ? `${r.assigned_name} has it` : 'Nobody is assigned to it';
+      /* THE LADDER IS ACTUALLY WALKED, not just described and recorded.
+         `st.chase` was computed, written into the audit detail as `tier`, and then
+         ignored: every nudge at every tier went through one unconditional
+         `notifyAppStaff`, which fans out to `application_assignees` ONLY. Since an
+         order may be assigned to ANY active staff member (owner-directed, "and
+         also any staff members"), a coordinator who is not on the file team got a
+         nudge that said "Jane Smith has it" delivered to everyone EXCEPT Jane —
+         the one person being asked to act. */
+      const payload = {
+        type: 'order_overdue',
+        title: ours
+          ? `${label}: ${days} day${days === 1 ? '' : 's'} of documents waiting to be filed`
+          : `${label} order is ${days} day${days === 1 ? '' : 's'} late`,
+        badge: { text: days > 5 ? 'Very late' : 'Late', tone: 'action' },
+        body: ours
+          ? `${r.vendor_name ? `${r.vendor_name} has` : `${vendorWord.replace(/^the /, 'The ')} has`} sent documents back on the ${label.toLowerCase()} order and they are still waiting to be classified and accepted — ${days} business day${days === 1 ? '' : 's'} past when we expected this order to be finished. ${who}.`
+          // "…on 20 days ago" — the `on` belonged to the 'this file' branch and rode
+          // along on the normal path, so EVERY nudge read ungrammatically.
+          : `We asked ${r.vendor_name || vendorWord} for the ${label.toLowerCase()} ${st.daysOut != null ? `${st.daysOut} day${st.daysOut === 1 ? '' : 's'} ago` : 'on this file'} and nothing has come back. It is ${days} business day${days === 1 ? '' : 's'} past the date we expected an answer. ${who} — please chase ${r.vendor_name ? 'them' : vendorWord}.`,
+        applicationId: r.application_id,
+        link: `/internal/app/${r.application_id}${r.order_type === 'title' ? '#sec-order-title' : r.order_type === 'insurance' ? '#sec-order-insurance' : '#sec-order-closing'}`,
+        ctaLabel: 'Open the order',
+      };
+      /* WHO IS TOLD, by tier. The ASSIGNEE is told at every tier, because
+         escalating past the owner would tell everyone except the person doing the
+         work. Higher tiers ADD the file team and then the administrators.
+
+         THE ASSIGNEE MUST BE ACTIVE, and that is judged on `assigned_name`, not on
+         `assigned_to`. The row's join is `… AND su.is_active = true`, so a
+         DEPARTED staffer leaves the id set and the name NULL. Branching on the id
+         meant: notifyStaff wrote an in-app row on an account that cannot sign in
+         (notify.js skips the email for an inactive staffer), and the file-team arm
+         was skipped BECAUSE the id was truthy — so at the first tier the nudge
+         reached NOBODY, and the audit stamp recorded that the assignee had been
+         told. The assign route already refuses a deactivated staffer for exactly
+         this reason: "indistinguishable from nobody, except that it LOOKS
+         covered". An order owned by somebody who has left is an UNOWNED order, and
+         the team is told.
+
+         NOTE, deliberately accepted: an order may be assigned to any active staff
+         member (owner-directed), including one not on the file, so this can email
+         the file's identity to somebody whose "Open the order" link will refuse
+         them. Telling the assigned person is the whole point of an assignment;
+         withholding the nudge would be the worse failure. */
+      const tier = st.chase;
+      const assignee = r.assigned_name ? r.assigned_to : null;
+      /* ONE COPY PER PERSON. `exceptStaffId` covers only the file-team arm, and
+         nothing stopped notifyAdmins repeating what the other two already sent —
+         so an admin who is on the file, or an order assigned TO an admin, produced
+         two identical emails and two in-app rows every time, every two days, for as
+         long as the order stayed late. */
+      const told = [];
+      // `notifyStaff` returns null when the staffer muted this file or the
+      // loan-officer gate parked the message as a draft — counting the CALL rather
+      // than the delivery meant the "nobody was reached, tell the admins" fallback
+      // below could never fire for a muted assignee.
+      if (assignee) {
+        const one = await notify.notifyStaff(assignee, { ...payload });
+        told.push(String(assignee));          // never write to them twice regardless
+        if (one) delivered++;
+      }
+      /* `|| !delivered` is the third condition and it is the one that keeps the
+         ladder a LADDER. At the first tier with a present assignee this arm is
+         false — correct while that assignee actually heard us. When they did not
+         (they muted the file, or the loan-officer gate held the message), the
+         admin arm below fires on the same `!delivered`, so a ONE-day-late order
+         went straight past the file team to every administrator in the company.
+         The team is the next rung up from the assignee, not a rung to skip. */
+      if (tier === 'team' || tier === 'admins' || !assignee || !delivered) {
+        const team = await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: assignee || null, exceptStaffIds: told });
+        // COUNTED BY WHO WAS ACTUALLY REACHED, not by "the call returned".
+        // `delivered++` unconditionally meant a fan-out over a file with NO active
+        // assignees counted as a delivery — so a later rung throwing kept the
+        // throttle and the file was silenced for two days having told nobody at
+        // all, which is precisely what the release exists to prevent.
+        if (Array.isArray(team) && team.length) { told.push(...team.map(String)); delivered += team.length; }
+      }
+      /* NOBODY TO TELL → THE ADMINS, which is what every other fan-out in this
+         repo already does (`if (!sent || !sent.length) await notify.notifyAdmins`
+         — esign/dead-letter, three places in esign/webhook). 188 of the files on
+         this database have no active assignee; without this, a late order on one
+         of them told literally nobody at every tier below `admins` while stamping
+         the audit row as though the nudge had gone out. */
+      if (tier === 'admins' || !delivered) {
+        // Counted the same way as the other two rungs: `notifyAdmins` returns one
+        // entry per administrator and a NULL for each one who muted the file, so
+        // `delivered++` on the call itself claimed a delivery on a database with
+        // no active administrator at all — the one case where the release below
+        // is the only thing standing between a late order and total silence.
+        const admins = await notify.notifyAdmins({ ...payload, exceptStaffIds: told });
+        delivered += Array.isArray(admins) ? admins.filter(Boolean).length : 0;
+      }
+      await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
+        orderType: r.order_type, daysLate: days, tier, pendingOn: st.pendingOn,
+        toldAssignee: !!assignee,
+        // An assignment left behind by somebody who has gone is worth seeing.
+        assigneeInactive: !!(r.assigned_to && !r.assigned_name),
+        /* HOW MANY PEOPLE THIS ACTUALLY REACHED. The stamp is what the audit trail
+           shows, and it used to say a nudge went out whatever happened: on a
+           database with no active administrator, an absent or muted assignee and
+           an empty file team, every rung reaches nobody, nothing throws, and the
+           file was recorded as nudged and then silenced for two days. The claim is
+           deliberately still KEPT here — releasing it would re-run the whole
+           ladder every half hour, which on a configured NOTIFY_ADMINS inbox means
+           a copy every half hour — so the honest number is the fix: a run of
+           `delivered: 0` rows is the signal that the roster, not the sweep, is
+           what needs attention. */
+        delivered,
+        toldNobody: delivered === 0,
+      });
+      sent++;
+    } catch (e) {
+      /* RELEASE THE CLAIM — but ONLY when nothing went out. The stamp is written
+         BEFORE the send, so a send that threw used to leave the file silenced for
+         two days with nothing delivered. Now that the ladder is THREE sends, an
+         unconditional release is its own bug: if the assignee's nudge landed and
+         the team's then threw, releasing means the next pass re-sends to the
+         assignee, who is the one person guaranteed to have received it. Keeping
+         the claim costs at most one delayed escalation; releasing it costs a
+         duplicate. Released BY ID, so it can only ever remove this pass's row. */
+      if (!delivered) await _releaseClaim(claimId);
+      console.error('[digest] order-overdue', r.application_id, e && e.message,
+        delivered ? `(${delivered} already delivered — the throttle is KEPT so nobody is told twice)` : '');
+    }
+  }
+  return sent;
+}
+
 /* THE WORKFLOW, phase two: nudge anyone whose personal Workflow has OVERDUE
    hand-offs (past their SLA due date), once/day per person. Keeps files moving
    without a manager having to chase — mirrors the draw-overdue self-gate. */
@@ -1614,6 +1843,15 @@ async function runDue() {
     // dead deal, and retiring first would make the ordering look load-bearing when
     // it is not.
     await require('./closing-prep').retireClosedOrdersOnce().catch((e) => console.error('[digests] closing-orders-retire', e && e.message));
+    // The title/insurance half of the same hygiene: an order whose condition has
+    // been signed off, or whose loan has funded, is finished. Nothing ever wrote
+    // 'completed' for those two, so every deal we have ever closed sat on the desk
+    // looking like outstanding work — which is how a queue stops being read.
+    await require('./order-tracking').retireSatisfiedOrdersOnce().catch((e) => console.error('[digests] order-retire', e && e.message));
+    // …and THEN chase what is genuinely still out. Ordered after the retires on
+    // purpose: nudging somebody about an order the same tick is about to retire is
+    // the noise this desk exists to remove.
+    await orderOverdueOnce().catch((e) => console.error('[digests] order-overdue', e && e.message));
   }
 }
 
@@ -1778,6 +2016,7 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,

@@ -279,8 +279,87 @@ function recipientsFor(kind, data, opts) {
   return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower };
 }
 
+/**
+ * THE PROVIDER'S ANSWER DECIDES — the one rule for "did this order email go out?".
+ *
+ * PURE, so the whole truth table is unit-testable. `email/noop.js` returns
+ * `{ok:false, skipped:true}` WITHOUT throwing, and `email/index.js` silently falls
+ * back to that provider when its API key is missing — so the three order doors,
+ * which all did a bare `await email.sendMail(...)` and then recorded success,
+ * would record an order as SENT that no vendor ever received. On this desk that is
+ * the worst possible failure: the file waits on a title company that was never
+ * asked, and the Orders desk shows a healthy placed order, so nobody chases it.
+ * Exactly the trap closing-thread.sendOnThread already documents.
+ *
+ * @returns {{ok:true} | {ok:false, reason:'email_disabled'|'send_failed', message:string}}
+ */
+function sendVerdict(res) {
+  if (res && res.ok === true) return { ok: true };
+  if (res && res.skipped) {
+    return { ok: false, reason: 'email_disabled', message: 'Email sending is turned off in this environment, so the order was not sent and has not been recorded.' };
+  }
+  return { ok: false, reason: 'send_failed', message: 'The email provider did not accept the order, so it was not sent and has not been recorded.' };
+}
+
+/**
+ * A send failure we cannot call either way.
+ *
+ * Resend gives up at 15 seconds and the provider may well have accepted the
+ * message, so an abort/timeout must NEVER be reported as "not sent" — that is what
+ * makes an operator re-send and the vendor receive the order twice. Same list, same
+ * reasoning, as closing-thread.isAmbiguousSendFailure.
+ */
+function isAmbiguousSendFailure(err) {
+  const s = `${(err && err.message) || ''} ${(err && err.code) || ''} ${(err && err.name) || ''}`.toLowerCase();
+  return /timed out|timeout|abort|econnreset|econnaborted|etimedout|epipe|socket hang up|network|fetch failed/.test(s);
+}
+
+/**
+ * PUT AN ORDER EMAIL ON THE WIRE, and say plainly what happened. NEVER THROWS.
+ *
+ * Every door that writes to a title or insurance vendor — place, follow-up, and the
+ * Email Center reply — goes through here, so "did it send?" has ONE answer and the
+ * bookkeeping each door does can be keyed on it. Before this, each door had its own
+ * bare `await email.sendMail(...)` inside a route-wide try/catch, which conflated
+ * three different outcomes into one generic "Could not send the order."
+ *
+ * @returns {Promise<{ok:true, to:string[], cc:string[]} | {ok:false, reason:string, message:string, ambiguous?:boolean}>}
+ */
+async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type }) {
+  const toList = (to || []).filter(Boolean);
+  const ccList = (cc || []).filter(Boolean);
+  if (!toList.length) {
+    return { ok: false, reason: 'contact', message: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first — there is no one to send the order to.` };
+  }
+  let res;
+  try {
+    res = await email.sendMail({
+      to: toList, cc: ccList,
+      subject: built.subject, html: built.html, text: built.text,
+      replyTo: replyTo || require('./file-address').fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: fromName && email.fromWithName ? email.fromWithName(fromName) : undefined,
+      _ctx: { applicationId: appId, type, audience: 'staff' },
+    });
+  } catch (e) {
+    // AMBIGUOUS IS NOT FAILED. The provider may have taken it, so the caller must
+    // keep whatever it recorded and let a human decide, rather than inviting a
+    // re-send that delivers the order to the vendor twice.
+    if (isAmbiguousSendFailure(e)) {
+      return {
+        ok: false, ambiguous: true, reason: 'send_unconfirmed',
+        message: 'The order may or may not have gone out — the email provider stopped responding while we were sending. Check the Email Center before re-sending, so the vendor does not get it twice.',
+      };
+    }
+    return { ok: false, reason: 'send_failed', message: 'Could not send the order — the email provider rejected it.' };
+  }
+  const verdict = sendVerdict(res);
+  if (!verdict.ok) return { ok: false, reason: verdict.reason, message: verdict.message };
+  return { ok: true, to: toList, cc: ccList };
+}
+
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
   transactionType, propertyLine, money,
+  sendOrderMail, sendVerdict, isAmbiguousSendFailure,
 };
