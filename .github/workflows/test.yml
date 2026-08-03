@@ -99,10 +99,11 @@ jobs:
   # failure this whole system exists to prevent, so "merged to main" now reaches
   # the backup jobs too.
   #
-  # Each hook is INDEPENDENT and OPTIONAL: an unset secret skips with a notice
-  # (same contract as the web hook), and one service failing to deploy does not
-  # stop the others being asked — the loop records the failure and fails the job
-  # at the end, so a broken backup hook is loud without also blocking the site.
+  # The website uses its native deploy hook. Render exposes no deploy hook for
+  # these manually-created cron jobs, so they use the authenticated Render API.
+  # Every credential is required: a missing value fails this job loudly. One
+  # service failure does not stop the others being attempted; failures are
+  # collected and reported at the end.
   # ---------------------------------------------------------------------------
   deploy:
     # test-db added 2026-07-23 after its soak went green (task #195): a DB-layer
@@ -113,24 +114,31 @@ jobs:
     steps:
       - name: Trigger Render deploys
         env:
-          # The website.
+          # The website has a native Render deploy hook.
           HOOK_WEB: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          # The nightly off-site backup (Docker cron, Dockerfile.backup).
-          HOOK_BACKUP: ${{ secrets.RENDER_BACKUP_DEPLOY_HOOK_URL }}
-          # The weekly restore drill (same image, different command).
-          HOOK_BACKUP_VERIFY: ${{ secrets.RENDER_BACKUP_VERIFY_DEPLOY_HOOK_URL }}
+          # Render does not expose deploy hooks for these manually-created cron
+          # jobs, so they use the authenticated deploy API instead.
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BACKUP_SERVICE_ID: ${{ secrets.RENDER_BACKUP_SERVICE_ID }}
+          BACKUP_VERIFY_SERVICE_ID: ${{ secrets.RENDER_BACKUP_VERIFY_SERVICE_ID }}
         run: |
           set -u
           failed=0
           triggered=0
 
-          publish() {
-            name="$1"; secret_name="$2"; hook="$3"
-            if [ -z "$hook" ]; then
-              echo "::notice::$secret_name is not set — skipping $name."
-              echo "  Add it under Settings → Secrets and variables → Actions to publish $name automatically."
+          require_value() {
+            name="$1"; value="$2"
+            if [ -n "$value" ]; then
               return 0
             fi
+            echo "::error::$name is not set — tested publishing is incomplete."
+            failed=$((failed+1))
+            return 1
+          }
+
+          publish_hook() {
+            name="$1"; secret_name="$2"; hook="$3"
+            require_value "$secret_name" "$hook" || return 0
             echo "Asking Render to publish $name…"
             code=$(curl -sS --retry 4 --retry-all-errors --max-time 30 \
                    -w '%{http_code}' -o /tmp/render_resp.json -X POST "$hook" || echo "000")
@@ -143,13 +151,34 @@ jobs:
             esac
           }
 
+          publish_api() {
+            name="$1"; service_secret="$2"; service_id="$3"
+            require_value "RENDER_API_KEY" "$RENDER_API_KEY" || return 0
+            require_value "$service_secret" "$service_id" || return 0
+            echo "Asking Render to publish $name…"
+            code=$(curl -sS --retry 4 --retry-all-errors --max-time 30 \
+                   -w '%{http_code}' -o /tmp/render_resp.json -X POST \
+                   -H "Authorization: Bearer $RENDER_API_KEY" \
+                   -H 'Accept: application/json' \
+                   -H 'Content-Type: application/json' \
+                   --data '{"clearCache":"do_not_clear"}' \
+                   "https://api.render.com/v1/services/$service_id/deploys" || echo "000")
+            echo "  Render responded HTTP $code"
+            cat /tmp/render_resp.json 2>/dev/null || true
+            echo ""
+            case "$code" in
+              201|202) echo "::notice::$name deploy triggered successfully."; triggered=$((triggered+1)) ;;
+              *) echo "::error::$name Render API deploy failed (HTTP $code)."; failed=$((failed+1)) ;;
+            esac
+          }
+
           echo "Tests passed on main — publishing…"
-          publish "the website"          "RENDER_DEPLOY_HOOK_URL"                "$HOOK_WEB"
-          publish "the nightly backup"   "RENDER_BACKUP_DEPLOY_HOOK_URL"         "$HOOK_BACKUP"
-          publish "the weekly restore drill" "RENDER_BACKUP_VERIFY_DEPLOY_HOOK_URL" "$HOOK_BACKUP_VERIFY"
+          publish_hook "the website" "RENDER_DEPLOY_HOOK_URL" "$HOOK_WEB"
+          publish_api "the nightly backup" "RENDER_BACKUP_SERVICE_ID" "$BACKUP_SERVICE_ID"
+          publish_api "the weekly restore drill" "RENDER_BACKUP_VERIFY_SERVICE_ID" "$BACKUP_VERIFY_SERVICE_ID"
 
           echo "Deploys triggered: $triggered; failed: $failed"
           if [ "$failed" -gt 0 ]; then
-            echo "::error::$failed Render deploy hook(s) failed — see above."
+            echo "::error::$failed Render deploy(s) failed — see above."
             exit 1
           fi
