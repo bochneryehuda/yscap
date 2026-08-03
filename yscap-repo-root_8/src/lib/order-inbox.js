@@ -21,10 +21,20 @@
  * audit can verify the mirror. The mirror is kicked so returned PDFs flow into
  * the file's SharePoint folder like any upload.
  *
- * Retry-safe: the inbound webhook can redeliver, so each save dedups on
- * (filename, size, doc_kind, application, condition) within a short window
- * (doc-dedup, #87) — and file-inbox additionally marks the order 'saved' in its
- * per-webhook results so a redelivery minutes later never re-files.
+ * STAFF-ONLY, ALWAYS. `rtl_cond_title` / `rtl_cond_insurance` are `audience='staff'`
+ * conditions, but the borrower's document library and download route gate on the
+ * DOCUMENT's `visibility` column, not on the owning condition's audience — and this
+ * insert used to omit both classification columns, so every returned document took
+ * db/014's defaults (`visibility='borrower'`, `source_type='borrower_upload'`). A
+ * borrower could therefore list and download the title commitment, the CPL, the tax
+ * certificate and the title company's WIRING INSTRUCTIONS. Exactly the same omission,
+ * with exactly the same consequence, as the appraisal source documents db/175 closed.
+ * They still ride into the TPR investor package (that selector filters chat
+ * attachments and regenerable artifacts, never visibility).
+ *
+ * Retry-safe: the inbound webhook can redeliver, so each save dedups on the CONTENT
+ * HASH with no time window (`alreadyFiled`) — which is what lets file-inbox withhold
+ * its per-order 'saved' marker on a recoverable failure and actually retry.
  *
  * Best-effort by contract: a persistence hiccup here NEVER fails the webhook.
  */
@@ -35,9 +45,9 @@ const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes'
 const { classifyReturnAttachment } = require('./order-return-filter');
 // The slot vocabulary + the condition each order files into live in ONE place,
 // shared with the Orders desk and the condition's own slot picker (order-slots.js).
-const { CONDITION_CODE } = require('./order-slots');
+const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
 
-const DOC_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const DOC_KIND = RETURN_DOC_KIND;
 const MAX_RETURN_DOCS = 20;
 
 /**
@@ -106,26 +116,82 @@ async function conditionItemFor(applicationId, orderType) {
 }
 
 /**
+ * IS THIS EXACT DOCUMENT ALREADY FILED ON THIS ORDER?
+ *
+ * Identity is the CONTENT — the sha256 this module has always computed and stored
+ * for the SharePoint integrity audit, and never once queried. That omission is what
+ * forced the caller's always-write marker: `doc-dedup.recentDuplicateDocId` only
+ * looks back 120 SECONDS, so a webhook redelivery arriving minutes later (Resend
+ * retries up to 8 times, with backoff) sailed straight past it and re-filed the whole
+ * package. With no safe retry available, file-inbox had to mark the order handled
+ * even when a storage or database blip had just lost documents — trading a duplicate
+ * risk for a silent-loss risk, on the vendor package the file is waiting for.
+ *
+ * A content hash has no window, so a retry is idempotent HOWEVER much later it
+ * arrives. That is the whole point: it lets the caller withhold the marker on a
+ * TRANSIENT failure and genuinely recover, without the duplicates that made
+ * withholding it wrong before. Same fix, same reasoning, as closing-inbox.alreadyFiled.
+ *
+ * Keyed on (file, kind, bytes, name) and only against a CURRENT row, so a document a
+ * human deliberately superseded can still be re-filed when the vendor resends it.
+ * Deliberately NOT keyed on the condition: `conditionItemFor` can create the condition
+ * on a later pass, so including it would make the same bytes file twice the moment the
+ * condition appeared. The same bytes under a genuinely different filename file
+ * normally — on a vendor return the name is part of what arrived.
+ */
+async function alreadyFiled({ applicationId, sha256, filename, kind }) {
+  if (!sha256 || !applicationId || !kind) return null;
+  const r = await db.query(
+    `SELECT id FROM documents
+      WHERE sha256 = $1 AND application_id = $2
+        AND COALESCE(doc_kind,'') = $3 AND filename = $4
+        AND is_current = true
+      -- id breaks the tie so a capped read is deterministic.
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [sha256, applicationId, kind, String(filename).slice(0, 300)]);
+  return r.rows[0] ? r.rows[0].id : null;
+}
+
+/**
  * Persist a vendor's returned documents against an order.
+ *
+ * The two failure counts are NOT cosmetic — file-inbox decides from them whether a
+ * webhook redelivery may retry, so collapsing them (as this did, by swallowing every
+ * attachment error into a bare `catch (_)`) is what made a recoverable blip
+ * indistinguishable from an unrecoverable one:
+ *   · failedPermanent — retrying produces the identical result (bytes that will not
+ *     decode, an empty attachment, a file we cannot look up because it is gone).
+ *     Holding the delivery open for these buys nothing and blocks the marker forever.
+ *   · failedTransient — storage or the database threw. Retrying can genuinely
+ *     succeed, so the caller must NOT mark the order handled.
+ *
  * @param {object} p { applicationId, orderType, attachments:[{filename,contentType,content(base64)}], fromEmail }
- * @returns {Promise<{saved:number, suspect:number, skipped:number}>}
+ * @returns {Promise<{saved:number, deduped:number, failed:number, failedPermanent:number, failedTransient:number, suspect:number, skipped:number}>}
  */
 async function saveReturnedDocs({ applicationId, orderType, attachments, fromEmail }) {
+  const empty = { saved: 0, deduped: 0, failed: 0, failedPermanent: 0, failedTransient: 0, suspect: 0, skipped: 0 };
   const kind = DOC_KIND[orderType];
-  if (!kind) return { saved: 0, suspect: 0, skipped: 0 };
+  if (!kind) return { ...empty };
   const list = (Array.isArray(attachments) ? attachments : []).filter((a) => a && a.filename && a.content).slice(0, MAX_RETURN_DOCS);
-  if (!list.length) return { saved: 0, suspect: 0, skipped: 0 };
+  if (!list.length) return { ...empty };
 
   let borrowerId = null;
   try {
     const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
-    if (!a.rows[0]) return { saved: 0, suspect: 0, skipped: 0 };   // unknown / archived file — nothing to attach to
+    // The file is gone or archived. PERMANENT — no redelivery brings it back, and
+    // holding the order open for it would block the marker for good.
+    if (!a.rows[0]) return { ...empty, failed: list.length, failedPermanent: list.length };
     borrowerId = a.rows[0].borrower_id;
-  } catch (_) { return { saved: 0, suspect: 0, skipped: 0 }; }
+  } catch (_) {
+    // The lookup itself threw: the database, not the data. Retryable.
+    return { ...empty, failed: list.length, failedTransient: list.length };
+  }
 
   const itemId = await conditionItemFor(applicationId, orderType);
-  const dedup = require('./doc-dedup');
   let saved = 0;
+  let deduped = 0;
+  let failedPermanent = 0;
+  let failedTransient = 0;
   let suspect = 0;   // decoded fine but the bytes don't look like the claimed type
   let skipped = 0;   // email-signature/logo images — never returned documents
   for (const a of list) {
@@ -135,8 +201,11 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
       // sha256 for the SharePoint integrity audit.
       let buf, sha256;
       try { ({ buf, sha256 } = decodeUploadBase64(String(a.content))); }
-      catch (_) { continue; }   // undecodable attachment — skip, never store garbage
-      if (!buf.length) continue;
+      // Undecodable bytes are not a transient failure — retrying cannot fix them —
+      // but they are still a document the vendor believes we received, so they are
+      // COUNTED. Silently returning "0 problems" is how six PDFs became four.
+      catch (_) { failedPermanent += 1; console.error('[order-inbox] undecodable attachment', String(a.filename || '')); continue; }
+      if (!buf.length) { failedPermanent += 1; continue; }
       // An email-SIGNATURE image (the vendor's logo/headshot embedded in their
       // reply — inline/Content-ID, or a small standalone image) is not a returned
       // document. Filing one used to flip the order to 'documents_in', nudge the
@@ -157,23 +226,44 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
       const got = sniffKind(buf);
       const corrupt = !!(want && got && got !== want && !(want === 'zip' && got === 'zip'));
       if (corrupt) suspect += 1;
-      // Idempotent: a redelivered webhook must not double-file the same bytes.
-      const dupId = await dedup.recentDuplicateDocId({
-        filename: a.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: null,
-        applicationId, checklistItemId: itemId, docKind: kind,
-      }).catch(() => null);
-      if (dupId) { saved += 1; continue; }
+      // IDEMPOTENT FOREVER, not for 120 seconds — see alreadyFiled. This is what lets
+      // file-inbox retry a delivery that half-failed instead of writing it off. A
+      // lookup failure here is the DATABASE, so it is transient: filing anyway could
+      // duplicate, and the retry re-checks cleanly.
+      let dupId = null;
+      try { dupId = await alreadyFiled({ applicationId, sha256, filename: a.filename, kind }); }
+      catch (e) {
+        failedTransient += 1;
+        console.error('[order-inbox] could not check for a duplicate returned attachment:', (e && e.message) || e);
+        continue;
+      }
+      // Already on the file — success, but NOT a new document. Counting it as `saved`
+      // (which is what this did) overstated what came back, and re-fired the
+      // "documents came back" notice on every webhook redelivery.
+      if (dupId) { deduped += 1; continue; }
       const { ref, provider } = await storage.save(buf, { filename: a.filename });
       await db.query(
+        // source_type='system', visibility='staff_only' — see the module header. These
+        // two columns were omitted, so db/014's borrower-facing defaults applied and a
+        // borrower could download the title company's wiring instructions.
         `INSERT INTO documents
            (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
-            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10)`,
+            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
+            source_type, visibility)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10,'system','staff_only')`,
         [applicationId, borrowerId, itemId, String(a.filename).slice(0, 300),
          a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null]);
       saved += 1;
-    } catch (_) { /* skip this attachment, keep going */ }
+    } catch (e) {
+      // A storage or DB failure IS transient and IS recoverable — but only if somebody
+      // knows, AND only if the caller is allowed to try again. Swallowed and uncounted,
+      // file-inbox marked the order handled and the webhook redelivery skipped it, so
+      // the documents were gone with no log line and no sign on the file.
+      failedTransient += 1;
+      console.error('[order-inbox] could not file a returned attachment:', (e && e.message) || e);
+    }
   }
+  const failed = failedPermanent + failedTransient;
 
   if (saved) {
     // Move the order to 'documents_in' (only from an active state — never revive a
@@ -183,6 +273,20 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         `UPDATE file_orders SET status='documents_in', updated_at=now()
           WHERE application_id=$1 AND order_type=$2 AND status IN ('ordered','documents_in')`,
         [applicationId, orderType]);
+    } catch (_) { /* best-effort */ }
+    // STOP THE CLOCK ON THE VENDOR, and start it on us. `first_response_at` is
+    // fill-only (the FIRST reply is the responsiveness fact a scorecard wants —
+    // a later one says nothing new), and the event line is what makes the order's
+    // own timeline answer "when did they finally come back?". Both best-effort:
+    // the documents are filed either way, and a history one row short is a far
+    // smaller problem than a webhook that failed.
+    try {
+      const tracking = require('./order-tracking');
+      await tracking.noteFirstResponse(applicationId, orderType);
+      await tracking.recordEvent({
+        applicationId, orderType, kind: 'documents_in',
+        detail: { saved, from: fromEmail || null, suspect: suspect || 0 },
+      });
     } catch (_) { /* best-effort */ }
     // Nudge the linked document condition to 'received' so it reflects that
     // documents arrived — but NEVER reopen one already satisfied/waived.
@@ -205,12 +309,18 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         body: `${saved} document${saved === 1 ? '' : 's'}${fromEmail ? ` from ${fromEmail}` : ''} arrived on the ${orderType} order${ctx ? ` for ${ctx.addr}` : ''}${suspect ? ` (${suspect} may be unreadable — check before accepting)` : ''}. Open the file's Orders section to classify (binder / invoice / …) and accept.`,
         applicationId,
         subjectTag: ctx ? ctx.subjectTag : '',
-        link: `/internal/app/${applicationId}`,
+        // Straight to the order that has work waiting, not the top of the file.
+        // A LITERAL anchor per type, never `#sec-order-${orderType}`: the link
+        // contract test (test-file-stations-pure) scans this file for the anchors it
+        // emits and checks each one resolves to a room, and a COMPUTED anchor is
+        // unverifiable by that scan — which is precisely how two dead deep links
+        // survived a green suite once already.
+        link: `/internal/app/${applicationId}${orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
         ctaLabel: 'Open the loan file',
       });
     } catch (_) { /* best-effort */ }
   }
-  return { saved, suspect, skipped };
+  return { saved, deduped, failed, failedPermanent, failedTransient, suspect, skipped };
 }
 
-module.exports = { saveReturnedDocs, conditionItemFor, DOC_KIND, CONDITION_CODE };
+module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE };
