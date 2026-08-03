@@ -59,10 +59,35 @@ what Census cannot place, not the main path.
 
 ### A3. Confirm-the-facts step, then instant re-value
 
-- [ ] **A3** Before a valuation is trusted, walk the user through the subject's
-  facts — the ones the value is most sensitive to (size, condition, unit count) —
-  let them correct any, and re-run the grid immediately. Most of the machinery
-  exists; this is the step that turns "the system says" into "I checked".
+- [x] **A3** **DONE** — `src/lib/research/subject-facts.js` + the confirm door +
+  the panel on the valuation screen.
+
+  **It leads with what is NOT happening, not with what is blank.** A WRONG fact
+  produces a wrong number somebody can argue with; a MISSING one removes
+  adjustments from the grid, and an absent line reads exactly like "no adjustment
+  was needed". Without a living area, FOUR go at once — `suggestAdjustments`
+  multiplies the bedroom, bathroom and condition rates by the subject's own square
+  footage and skips the size line entirely, so the value quietly becomes close to a
+  plain average of the raw sale prices and still prints confidently. The panel says
+  that, in those words. `test-subject-facts-pure.js` proves the claim rather than
+  asserting the wording: the same subject and comparable, once with a living area
+  and once without, and all three adjustments vanish.
+
+  **The confirmation can go stale**, because a "checked" stamp that survives the
+  fact being changed afterwards is worse than no stamp — it launders an unchecked
+  number as a checked one. Compared by MEANING (2400 and "2400" are the same
+  living area), so the badge is never cried wolf.
+
+  **The correction re-values before the panel closes** — and that meant re-deriving
+  every suggested adjustment, not just re-running the arithmetic. The first cut
+  stored the fact and left the grid on the OLD one, so the value was byte-identical
+  before and after; caught by the DB test, which was then proven to fail again when
+  the fix is reverted. A line a human typed is never overwritten.
+
+  A correction is checked, not coerced ("about 2400" is refused, naming the field,
+  and NOTHING from that request is filed); a blank is a legitimate answer and shows
+  back up as a blind spot; and a finalized valuation refuses a later check, because
+  it is a record of what was said.
 
 ### A4. Draw and save a market-area polygon
 

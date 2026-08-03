@@ -45,6 +45,7 @@ const QA = require('../lib/research/quick-answer');
 const BR = require('../lib/research/bracketing');
 const MA = require('../lib/research/market-area');
 const K = require('../lib/research/property-key');
+const SF = require('../lib/research/subject-facts');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
 const { formatRefusalCounts } = require('../lib/appraisal/import');
@@ -1140,7 +1141,20 @@ async function loadValuation(id) {
     bracketing = BR.assessBracketing(subject, (grid.comps || []).filter((c) => c.include !== false),
       { indicatedValue: grid.value && grid.value.indicatedValue });
   } catch (e) { bracketing = null; }
-  return { valuation: v, comps, grid, bracketing };
+  /* THE FACTS THE VALUE LEANS ON, AND WHETHER ANYBODY HAS LOOKED AT THEM.
+     Returned on every read rather than behind its own call, because the point of
+     it is that it is impossible to look at the number without also seeing what it
+     rests on — a blind spot the officer has to go and ASK about is a blind spot.
+     Advisory and never allowed to break the screen it sits on. */
+  let subjectReview = null;
+  try {
+    subjectReview = SF.reviewSubject(subject, {
+      confirmedAt: v.subject_confirmed_at || null,
+      confirmedBy: v.subject_confirmed_by || null,
+      confirmedSnapshot: v.subject_confirmed_snapshot || null,
+    });
+  } catch (e) { subjectReview = null; }
+  return { valuation: v, comps, grid, bracketing, subjectReview };
 }
 
 router.get('/valuations', async (req, res, next) => {
@@ -1258,6 +1272,91 @@ router.patch('/valuations/:id', async (req, res, next) => {
     await db.query(`UPDATE property_valuations SET ${sets.join(', ')}, updated_at = now() WHERE id = $1`, params);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
+  } catch (e) { next(e); }
+});
+
+/**
+ * CONFIRM THE SUBJECT'S FACTS, AND RE-VALUE ON THE SPOT.
+ *
+ * The step that turns "the system says" into "I checked". A person walks the
+ * handful of facts the grid is genuinely sensitive to, corrects any that are
+ * wrong, and the value is rebuilt before they look away — because a correction
+ * that does not visibly move the number is a correction nobody trusts they made.
+ *
+ * THREE THINGS IT REFUSES TO DO:
+ *
+ *  - IT DOES NOT COERCE. A living area of "about 2400" is not a number, and
+ *    quietly reading it as 2400 (or as 0) is how a typo becomes a valuation.
+ *    Every correction is checked and the whole request is refused, naming the
+ *    field, rather than filing the good ones and losing the bad one silently
+ *    (the "returned 200 but did not save" class this codebase keeps meeting).
+ *  - IT DOES NOT CONFIRM A FINALIZED VALUATION. That one is a record of what was
+ *    said; changing its subject would rewrite history.
+ *  - IT DOES NOT PRETEND A BLANK IS AN ANSWER. Clearing a fact is allowed - "we
+ *    do not actually know" is a legitimate thing for a person to say - and it
+ *    then shows up as a blind spot, which is exactly right.
+ */
+router.post('/valuations/:id/confirm-subject', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const v = (await db.query('SELECT * FROM property_valuations WHERE id=$1', [req.params.id])).rows[0];
+    if (!v) return res.status(404).json({ error: 'not found' });
+    if (v.status === 'final') {
+      return res.status(409).json({ error: 'This valuation was finalized - it is a record of what was said. Duplicate it to change anything.' });
+    }
+    const { values, problems } = SF.cleanCorrections((req.body && req.body.corrections) || {});
+    if (problems.length) {
+      return res.status(400).json({
+        error: problems.map((p) => `${p.label}: ${p.why}`).join('; '),
+        problems,
+      });
+    }
+    const before = Object.assign({}, v.subject_snapshot || {});
+    // A null CLEARS the fact; `subjectSnapshot` drops empties, so merging first
+    // and cleaning after is what makes "I do not know" storable.
+    const merged = subjectSnapshot(Object.assign({}, before, values));
+    // WHAT THE CHECK ACTUALLY CHANGED. A confirmation that corrected the living
+    // area is a different event from one that agreed with everything, and the
+    // difference is the evidence that the step is worth doing.
+    const changes = [];
+    for (const f of SF.FACTS) {
+      const a = SF._internals.readValue(before, f.key);
+      const b = SF._internals.readValue(merged, f.key);
+      if (String(a == null ? '' : a) !== String(b == null ? '' : b)) {
+        changes.push({ key: f.key, label: f.label, was: a, now: b });
+      }
+    }
+    await db.query(
+      `UPDATE property_valuations
+          SET subject_snapshot = $2,
+              subject_address = COALESCE($3, subject_address),
+              subject_confirmed_at = now(),
+              subject_confirmed_by = $4,
+              subject_confirmed_snapshot = $5,
+              subject_confirmed_changes = $6,
+              updated_at = now()
+        WHERE id = $1`,
+      [req.params.id, JSON.stringify(merged), txt(merged.display_address),
+        (req.actor && req.actor.id) || null,
+        JSON.stringify(SF.confirmedSnapshotOf(merged)),
+        JSON.stringify(changes)]);
+    /* RE-VALUE BEFORE ANSWERING, AND THAT MEANS RE-DERIVING THE ADJUSTMENTS.
+       The whole promise of this step is that the number already reflects the
+       correction by the time the panel closes. Storing the fact is not enough: the
+       grid is rebuilt from the STORED adjustment lines, and those were derived from
+       the OLD fact — so a corrected living area moved nothing at all until this ran
+       (the value was identical before and after, which is exactly the "correction
+       nobody trusts they made" this step exists to avoid).
+       Only when something actually CHANGED: a confirmation that agreed with
+       everything has nothing to re-derive, and re-running the market rates for it
+       would be work bought for nothing. Best-effort — a rates lookup failing must
+       not lose the confirmation itself. */
+    if (changes.length) {
+      try { await resuggestAll(req.params.id, merged); } catch (e) { /* keep the confirmation */ }
+    }
+    await saveComputed(req.params.id);
+    const out = await loadValuation(req.params.id);
+    res.json(Object.assign({ changed: changes }, out));
   } catch (e) { next(e); }
 });
 
@@ -1512,31 +1611,52 @@ router.delete('/valuations/:id/comps/:compId', async (req, res, next) => {
  * every line the human typed. A user's number is never overwritten by a formula —
  * that is the whole contract of this tool.
  */
+/**
+ * RE-DERIVE EVERY SUGGESTED ADJUSTMENT FOR A VALUATION, and never touch a human's.
+ *
+ * Extracted so the explicit "re-suggest" button and the confirm-the-facts step run
+ * the SAME code. They must: correcting the subject's living area changes what every
+ * suggestion should be — the size line, and the multiplier under the bedroom,
+ * bathroom and condition lines — and a confirm step that stored the fact without
+ * re-deriving them left the screen showing a value computed from the OLD fact. The
+ * grid is rebuilt from the STORED adjustments, so nothing moves until these are
+ * rewritten (caught by `scripts/test-subject-facts-db.js`, which is why it exists).
+ *
+ * A SUGGESTION NEVER OVERWRITES A HUMAN. A line somebody typed is `source:'user'`
+ * and is kept exactly; only the suggested ones are re-derived, and a fresh
+ * suggestion for a key a person has already answered is dropped rather than
+ * arguing with them.
+ */
+async function resuggestAll(valuationId, subject, months = 24) {
+  const derived = await ratesFor({ state: subject.state, city: subject.city, months });
+  const rates = derived.rates;
+  const comps = (await db.query(
+    `SELECT * FROM property_valuation_comps WHERE valuation_id=$1`, [valuationId])).rows;
+  for (const c of comps) {
+    const mine = (c.adjustments || []).filter((l) => l && l.source === 'user');
+    const keys = new Set(mine.map((l) => l.key));
+    const fresh = V.suggestAdjustments(subject, c.snapshot || {}, rates, { today: todayNY() })
+      .filter((l) => !keys.has(l.key));
+    const adj = V.normalizeAdjustments(mine.concat(fresh));
+    const a = V.adjustComp(c.snapshot || {}, adj);
+    await db.query(
+      `UPDATE property_valuation_comps SET adjustments=$2, adjusted_price=$3, net_adjustment=$4,
+         gross_adjustment=$5, net_adj_pct=$6, gross_adj_pct=$7, updated_at=now() WHERE id=$1`,
+      [c.id, JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
+       a.netAdjPct, a.grossAdjPct]);
+  }
+  await storeRates(valuationId, derived);
+  return comps.length;
+}
+
 router.post('/valuations/:id/suggest', async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
     const v = (await db.query(`SELECT * FROM property_valuations WHERE id=$1`, [req.params.id])).rows[0];
     if (!v) return res.status(404).json({ error: 'not found' });
     if (v.status === 'final') return res.status(409).json({ error: 'This valuation was finalized. Duplicate it to make changes.' });
-    const derived = await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city,
-      months: req.body && req.body.months ? req.body.months : 24 });
-    const rates = derived.rates;
-    const comps = (await db.query(
-      `SELECT * FROM property_valuation_comps WHERE valuation_id=$1`, [req.params.id])).rows;
-    for (const c of comps) {
-      const mine = (c.adjustments || []).filter((l) => l && l.source === 'user');
-      const keys = new Set(mine.map((l) => l.key));
-      const fresh = V.suggestAdjustments(v.subject_snapshot, c.snapshot || {}, rates, { today: todayNY() })
-        .filter((l) => !keys.has(l.key));
-      const adj = V.normalizeAdjustments(mine.concat(fresh));
-      const a = V.adjustComp(c.snapshot || {}, adj);
-      await db.query(
-        `UPDATE property_valuation_comps SET adjustments=$2, adjusted_price=$3, net_adjustment=$4,
-           gross_adjustment=$5, net_adj_pct=$6, gross_adj_pct=$7, updated_at=now() WHERE id=$1`,
-        [c.id, JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
-         a.netAdjPct, a.grossAdjPct]);
-    }
-    await storeRates(req.params.id, derived);
+    await resuggestAll(req.params.id, v.subject_snapshot,
+      req.body && req.body.months ? req.body.months : 24);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
   } catch (e) { next(e); }

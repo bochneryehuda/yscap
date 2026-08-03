@@ -1172,6 +1172,8 @@ export const api = {
   valuationDropComp:   (id, compId) => req('DELETE', `/api/research/valuations/${id}/comps/${compId}`),
   valuationSuggest:    (id, b) => req('POST', `/api/research/valuations/${id}/suggest`, b || {}),
   valuationFinalize:   (id, b) => req('POST', `/api/research/valuations/${id}/finalize`, b || {}),
+  // The confirm-the-facts step: corrections in, a re-valued grid straight back.
+  valuationConfirmSubject: (id, corrections) => req('POST', `/api/research/valuations/${id}/confirm-subject`, { corrections }),
   valuationDuplicate:  (id) => req('POST', `/api/research/valuations/${id}/duplicate`, {}),
   valuationDelete:     (id) => req('DELETE', `/api/research/valuations/${id}`),
 
