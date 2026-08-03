@@ -5,6 +5,9 @@ import { api } from '../lib/api.js';
 // shared formatter, never `new Date('2026-08-07')`, which parses as UTC midnight
 // and prints the day BEFORE for anybody west of Greenwich.
 import { fmtDay } from '../lib/dates.js';
+// Why an order's clock is stopped, worded in ONE place and shared with the file's
+// own order card — the decision itself is the server's (order-sla.orderState).
+import { dormantMarker } from '../lib/orderDormant.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS QUEUE — every title, insurance & attorney closing-prep order across the
@@ -49,14 +52,14 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const [msg, setMsg] = useState('');
   if (!o) return <span className="muted small">—</span>;
 
-  /* WHY THIS ORDER IS NOT BEING CHASED. Wider than "on hold", which was only the
-     case somebody noticed first: an order is never retired unless its condition is
-     signed off, so one on a file that was later declined or withdrawn lives
-     forever — and the server already stops calling those late (order-sla
-     DORMANT_FILE_STATUSES). The row must say the same thing the clock does, or the
-     order reads as ignored rather than as parked. */
-  const DORMANT = { on_hold: 'file on hold', declined: 'file declined', withdrawn: 'file withdrawn' };
-  const dormantLabel = DORMANT[String(fileStatus || '')] || null;
+  /* WHY THIS ORDER IS NOT BEING CHASED — READ OFF THE SERVER'S OWN ANSWER.
+     `o.dormant` / `o.dormantReason` come from `order-sla.orderState`, which is the
+     one place that decides whether an order's clock is running. Re-deriving it here
+     from the file status was a second copy of the rule inside the very module whose
+     stated purpose is that a second copy cannot exist: add a status to
+     DORMANT_FILE_STATUSES and the server would stop the clock while this desk went
+     on offering "Chase now", firing a follow-up at a vendor on a dead deal. */
+  const dormantLabel = dormantMarker(o);
   const onHold = !!dormantLabel;
   const tone = o.overdue ? { color: '#B3261E', borderColor: '#B3261E' }
     : o.status === 'completed' ? { color: 'var(--ok)', borderColor: 'var(--ok)' }
@@ -120,7 +123,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
           held file does not vanish the moment it is sent — but the overdue sweep
           deliberately will not chase a paused file, and a one-click Chase here
           would have the desk doing what the system has decided not to do. */}
-      {dormantLabel && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>{dormantLabel} — not being chased</span>}
+      {dormantLabel && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>{dormantLabel}</span>}
       {!onHold && o.status === 'ordered' && o.pendingOn === 'vendor' && (
         kind === 'attorney'
           ? <Link className="btn ghost small" to={`/internal/app/${appId}#sec-order-closing`}>Chase on the chain</Link>

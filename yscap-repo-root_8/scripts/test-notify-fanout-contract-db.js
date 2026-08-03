@@ -33,7 +33,6 @@ process.env.EMAIL_PROVIDER = 'none';
 const db = require('../src/db');
 const email = require('../src/lib/email');
 const notify = require('../src/lib/notify');
-const loSelfGate = require('../src/lib/lo-self-gate');
 
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -71,33 +70,45 @@ email.sendMail = async () => ({ ok: true });
   }
 
   /* ── 2. THE REGRESSION. A muted file must not empty the array ────────────── */
+  const mute = async (staffId) => {
+    // lo-self-gate answers channel 'off' for a muted file, so notifyStaff returns
+    // null for that person — a real "they did not hear this", and NOT a statement
+    // about whether the file has a team.
+    await db.query(
+      `INSERT INTO lo_muted_files (staff_id, application_id) VALUES ($1,$2)
+       ON CONFLICT DO NOTHING`, [staffId, app]);
+    // PROVE the mute took. Left as a soft skip, a schema drift here would disarm
+    // the whole point of this file while the run stayed green — which is exactly
+    // the silent-disarm class these tests exist to catch.
+    const n = Number((await db.query(
+      `SELECT count(*)::int c FROM lo_muted_files WHERE staff_id=$1 AND application_id=$2`,
+      [staffId, app])).rows[0].c);
+    assert(n === 1, `the mute is really in place for ${staffId === officer ? 'the officer' : 'the processor'}`);
+  };
   {
-    // The officer mutes THIS file. lo-self-gate returns channel 'off', so
-    // notifyStaff returns null for them — a real "nobody heard this" for that
-    // one person, and NOT a statement about whether the file has a team.
-    let muted = false;
-    try {
-      await db.query(
-        `INSERT INTO lo_muted_files (staff_id, application_id) VALUES ($1,$2)
-         ON CONFLICT DO NOTHING`, [officer, app]);
-      muted = true;
-    } catch (_) { /* table shape differs — fall back to the gate's own API below */ }
-    if (!muted && loSelfGate && typeof loSelfGate.muteFile === 'function') {
-      try { await loSelfGate.muteFile(officer, app); muted = true; } catch (_) { /* ignore */ }
-    }
-
+    await mute(officer);
     const out = await notify.notifyAppStaff(app, { ...payload });
     assert(out.length === 2,
       'the array still names EVERYONE on the file — this is what the e-sign callers ask');
-    if (muted) {
-      assert(out.delivered === 1, 'while the delivery count drops to the one person who heard it');
-    } else {
-      console.log('NOTE  could not mute the file in this schema — delivery-count half not exercised');
-    }
+    assert(out.delivered === 1, 'while the delivery count drops to the one person who heard it');
+  }
+
+  /* ── 2b. THE CASE THAT ACTUALLY DISCRIMINATES: EVERYBODY muted ───────────── */
+  {
+    /* With only ONE of two people muted, a filtered array still has length 1, so
+       `!out.length` is false either way and the headline assertion above passes on
+       the broken code too. The regression only bites when EVERY recipient is
+       silent — which is the real-world shape, because most files have one loan
+       officer and it is that officer who mutes them. */
+    await mute(proc);
+    const out = await notify.notifyAppStaff(app, { ...payload });
+    assert(out.length === 2, 'every recipient is still named even when NONE of them heard it');
+    assert(out.delivered === 0, 'and the delivery count says so honestly');
     // The e-sign shape, verbatim from esign/webhook.js and esign/dead-letter.js.
-    const wouldEscalateToAdmins = !out || !out.length;
-    assert(wouldEscalateToAdmins === false,
-      'so a muted loan officer NEVER escalates their own file to every administrator');
+    assert((!out || !out.length) === false,
+      'so a file whose whole team muted it NEVER escalates to every administrator in the company');
+    // Put them back, so section 4 measures the real roster.
+    await db.query(`DELETE FROM lo_muted_files WHERE application_id=$1`, [app]);
   }
 
   /* ── 3. a file with nobody on it DOES still escalate ─────────────────────── */

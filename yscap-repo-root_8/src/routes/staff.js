@@ -5660,11 +5660,36 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       // may well have delivered it, and releasing would invite the re-send that
       // double-orders.
       await orderTracking.ensureAssignee(appId, kind);
+      /* RE-SENDING A FINISHED ORDER IS A REOPEN, AND IT MUST BE RECORDED AS ONE.
+         The retire sweep leaves an order alone only while a 'reopened' event is
+         NEWER than the last 'completed' one — that is the whole mechanism by which
+         a human's decision survives it. This route recorded 'resent', so a
+         coordinator re-sending a completed title order (the Re-send button IS
+         offered there, because the vendor may still owe the final policy) sent the
+         email, brought the order back to life, and then watched the next digest
+         tick — within half an hour — put it straight back to 'completed'. It fell
+         off the desk, the nudge skipped it, and nobody ever chased that title
+         company again.
+         This is the same defect the closing-prep meta merge fixes for the attorney
+         order; it was live on the two commoner types from the same button. */
+      const wasFinished = !!(existing && existing.status === 'completed');
       await orderTracking.recordEvent({
-        applicationId: appId, orderType: kind, kind: existing && existing.send_count ? 'resent' : 'placed',
+        applicationId: appId, orderType: kind,
+        kind: wasFinished ? 'reopened' : (existing && existing.send_count ? 'resent' : 'placed'),
         actorId: req.actor.id, orderId: claimed.id,
-        detail: { vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null, to: to.length, cc: cc.length, force: !!force, unconfirmed: !!sendRes.ambiguous },
+        detail: {
+          vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null,
+          to: to.length, cc: cc.length, force: !!force, unconfirmed: !!sendRes.ambiguous,
+          ...(wasFinished ? { reopenedBy: 'resend' } : {}),
+        },
       });
+      // An order being chased must not also carry the date it was finished — the
+      // same reason `reopenOrder` clears it. The claim already set status='ordered'.
+      if (wasFinished) {
+        await db.query(
+          `UPDATE file_orders SET completed_at = NULL, updated_at = now()
+            WHERE id = $1 AND status <> 'completed'`, [claimed.id]).catch(() => {});
+      }
     } catch (e) {
       // `sendOrderMail` and `recordEvent` never throw, so reaching here after a
       // successful send means the BOOKKEEPING failed — which must never be reported
@@ -5863,7 +5888,15 @@ router.post('/applications/:id/orders/:kind/due', async (req, res) => {
           SET due_on   = CASE WHEN $5::boolean THEN $3::date ELSE due_on END,
               sla_days = CASE WHEN $6::boolean THEN $4::int  ELSE sla_days END,
               updated_at = now()
-        WHERE application_id=$1 AND order_type=$2 RETURNING id, ordered_at, due_on, sla_days, order_type, status`,
+        WHERE application_id=$1 AND order_type=$2
+        -- The file's status rides along so the state handed back is the SAME
+        -- state every other surface computes. Without it orderState cannot know
+        -- the file is paused and answers "late" for an order the desk and the card
+        -- both show as not being chased. Harmless only because the panel discards
+        -- this body and refetches — which is exactly the kind of accident that
+        -- stops being harmless the day somebody renders it.
+        RETURNING id, ordered_at, due_on, sla_days, order_type, status,
+                  (SELECT a.status FROM applications a WHERE a.id = file_orders.application_id) AS file_status`,
       [appId, kind, dueOn, slaDays, dueGiven, slaGiven]);
     if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
     await orderTracking.recordEvent({

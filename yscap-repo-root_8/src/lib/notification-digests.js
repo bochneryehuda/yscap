@@ -1067,7 +1067,10 @@ async function orderOverdueOnce() {
            a later rung throwing kept the claim and silenced the file for two days
            having told nobody at all. */
         if (Array.isArray(team) && team.length) told.push(...team.map(String));
-        delivered += (team && Number(team.delivered)) || 0;
+        // Through the helper, never `team.delivered`: a missing count must be LOUD
+        // and fall back to "assume they heard us", because reading it as zero means
+        // "escalate to every administrator" two lines down.
+        delivered += notify.deliveredCount(team);
       }
       /* NOBODY TO TELL → THE ADMINS, which is what every other fan-out in this
          repo already does (`if (!sent || !sent.length) await notify.notifyAdmins`

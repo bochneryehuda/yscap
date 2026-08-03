@@ -189,6 +189,67 @@ const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Roo
       'the agent\'s reply files the invoice and leaves BOTH signature images out — nothing to reject');
   }
 
+  /* ── 8. AN ORDER IS NOT LEFT WAITING ON DOCUMENTS THAT ARE NO LONGER THERE ──
+     `order-inbox` flips an order to 'documents_in' and stamps `first_response_at`
+     when ANY attachment files — so an order that turned over on what we now know
+     was a signature strip was left claiming the vendor delivered. It then sat on
+     the Orders desk reading "waiting on us" with nothing to classify, its Chase
+     button withheld (that needs 'ordered'), while the overdue ladder emailed the
+     team "N days of documents waiting to be filed" every two days, escalating to
+     the administrators, about nothing at all. */
+  {
+    const app2 = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, ys_loan_number, property_address, status, loan_type)
+       VALUES ((SELECT borrower_id FROM applications WHERE id=$1), (SELECT loan_officer_id FROM applications WHERE id=$1),
+               $2, '{"oneLine":"9 Unwind Way"}'::jsonb, 'underwriting', 'Purchase') RETURNING id`,
+      [appId, `YSUNW${String(process.pid).slice(-5)}`])).rows[0].id;
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, ordered_at, first_response_at)
+       VALUES ($1,'insurance','documents_in', now() - interval '9 days', now() - interval '8 days')`, [app2]);
+    // The ONLY thing that ever came back was the agent's signature card.
+    const s1 = await storage.save(LOGO_SMALL, { filename: 'image.png' });
+    await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, size_bytes, storage_provider, storage_ref, doc_kind, is_current, review_status)
+       VALUES ($1,'image.png','image/png',$2,$3,$4,'insurance_order_return',true,'pending')`,
+      [app2, LOGO_SMALL.length, s1.provider, s1.ref]);
+
+    await retireSignatureImagesOnce({ limit: 200 });
+    const o = (await db.query(
+      `SELECT status, first_response_at FROM file_orders WHERE application_id=$1 AND order_type='insurance'`,
+      [app2])).rows[0];
+    assert(o.status === 'ordered',
+      'with its only "delivery" retired, the order goes back to waiting on the vendor');
+    assert(o.first_response_at === null,
+      'and the vendor loses credit for a response that was a signature strip');
+
+    // AND IT IS NARROW: a real document alongside the logo means the vendor DID
+    // answer, so that order must not be touched.
+    const app3 = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, ys_loan_number, property_address, status, loan_type)
+       VALUES ((SELECT borrower_id FROM applications WHERE id=$1), (SELECT loan_officer_id FROM applications WHERE id=$1),
+               $2, '{"oneLine":"11 Unwind Way"}'::jsonb, 'underwriting', 'Purchase') RETURNING id`,
+      [appId, `YSUNW2${String(process.pid).slice(-4)}`])).rows[0].id;
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, ordered_at, first_response_at)
+       VALUES ($1,'insurance','documents_in', now() - interval '9 days', now() - interval '8 days')`, [app3]);
+    const s2 = await storage.save(PDF, { filename: 'binder.pdf' });
+    const s3 = await storage.save(LOGO_SMALL, { filename: 'image.png' });
+    await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, size_bytes, storage_provider, storage_ref, doc_kind, is_current, review_status)
+       VALUES ($1,'binder.pdf','application/pdf',$2,$3,$4,'insurance_order_return',true,'pending'),
+              ($1,'image.png','image/png',$5,$6,$7,'insurance_order_return',true,'pending')`,
+      [app3, PDF.length, s2.provider, s2.ref, LOGO_SMALL.length, s3.provider, s3.ref]);
+
+    await retireSignatureImagesOnce({ limit: 200 });
+    const o3 = (await db.query(
+      `SELECT status, first_response_at FROM file_orders WHERE application_id=$1 AND order_type='insurance'`,
+      [app3])).rows[0];
+    assert(o3.status === 'documents_in' && o3.first_response_at !== null,
+      'an order that also got a REAL document keeps its delivery — only an emptied one is put back');
+
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[app2, app3]]);
+  }
+
   await db.query(`DELETE FROM documents WHERE application_id=$1`, [appId]);
   await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
   console.log(failures ? `\n${failures} FAILURES` : '\nall checks passed');
