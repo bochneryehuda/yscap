@@ -182,6 +182,49 @@ nothing to do with a "loan folder attachment".)
 | `POST /encompass/v3/loans/{id}/mediaDownloadUrl` and variants | 403 |
 | `GET /services/v1/partners/{partnerId}/transactions/{transactionId}?generateFileUrls=true` — the legacy path ICE documents as the one that exposes **native** formats — tried against all 44 partner ids in the tenant directory | HTTP 500 (`A null value was returned…`) for every partner id. The transaction is an **EPC2** transaction; the legacy EVP transaction store does not contain it. Class Valuations is not in the legacy partner directory at all (its only appraisal entries are DART and Mercury Network). Avenue closed. |
 
+### HOW THE EPC HAND-OFF ACTUALLY WORKS — the mechanism, established end to end
+
+This is the deeper answer, and it explains why every retrieval attempt fails the same way:
+
+1. The AMC uploads its files to ICE's own object store (SkyDrive, `streaming.<region>.skydrive.ellieservices.com/v1/clients/<clientId>/<objectId>`).
+2. ICE sorts them **by file type**. A type the eFolder supports (PDF/JPG/DOCX/TXT) becomes a real
+   **eFolder attachment**. Anything else — `.xml`, `.json`, `.zip` — becomes **loan media**
+   (`urn:elli:media:loans`): addressable, but never in the eFolder and never visible in Encompass.
+   This is automatic and the lender cannot reconfigure it.
+3. The service order keeps, per resource, a **pointer plus a download URL minted at the moment of
+   delivery**, carrying a `validity` stamp ~15 minutes out. That stored URL is never regenerated.
+4. The lender-side API can mint a FRESH signed URL — but only through
+   `GET .../response/resources`, which is built on the **eFolder export pipeline** and therefore
+   only ever returns eFolder-backed resources. Loan media has no path through it.
+5. The object store itself refuses everything without that signature
+   (`SKYDRIVESTREAM-2002 Required parameter 'validity' missing`) — a Bearer token is not accepted,
+   with or without instance headers, and there is no lender-reachable endpoint that signs a media
+   object.
+
+**So the XML is permanently VISIBLE and permanently UN-DOWNLOADABLE after ~15 minutes, by design.**
+ICE's own documented route for a lender to obtain these non-viewable files is *"the partner
+application's user-interface"* — i.e. the AMC's own portal — which is why §6d is the real answer.
+
+**Uniform across all 298**, so there is no lucky subset: every XML resource is
+`uploadedEntity.entityType = "urn:elli:media:loans"`, `status.type = "Success"`, and **none** has
+an `assignedTo` (never filed into an eFolder document).
+
+### Everything eliminated — do not re-run these
+
+| # | Attempt | Result |
+|---|---|---|
+| 1 | `?generateFileUrls=true` (the ICE-documented fresh-URL switch) in 6 spellings, on v3 AND `/services/v1/orders` | Accepted, 200 — but the `validity` stamp decodes to the ORIGINAL delivery time. It does not refresh. |
+| 2 | 20 query-param variants on `/response/resources` (`includeAll`, `includeMedia`, `native`, `nonViewable`, `entityType=urn:elli:media:loans`, `mimeType=application/xml`, `resourceId=`, every `view`) | Always the same 1 eFolder PDF. Never the XML. |
+| 3 | Order **history** — all 50 events, each fetched individually, with `?view=complete` and `?generateFileUrls=true` | 254–742-byte status records. No resources, no URLs. |
+| 4 | Object store direct: Bearer token, unencoded key, instance header, no auth, the `/v2/media/instance/…` shape | `Required parameter 'validity' missing` / 404. The signature is the only key. |
+| 5 | `/skydrive/*`, `/media/*`, `/v1/clients/*`, `/loanMedia/*`, `/efolder/v1/media/*` on the API host | 403 — and no such endpoint appears anywhere in ICE's ~670 published API reference pages. |
+| 6 | `/efolder/v1/loans/{id}/files` by media object id, and by filename | `EFOLDER-5093` / `not found` — it indexes eFolder attachments only. |
+| 7 | `POST attachmentDownloadUrl` with the media object id | `EFOLDER-5050 Attachment not found` — it is not an attachment. |
+| 8 | `POST /efolder/v1/exportjobs` | entityType limited to loan/attachment/document/condition, and its output is a merged **PDF**. |
+| 9 | Legacy `GET /services/v1/partners/{partnerId}/transactions/{txn}?generateFileUrls=true`, all 44 partner ids | HTTP 500 for every one — EPC2 transactions are not in the EVP store, and Class Valuations is not in that directory. |
+| 10 | Persona escalation | Already maxed: `isSuperAdministrator: true`, `accessMode: ReadWrite`, `isTopLevelUser: true`. |
+| 11 | Archived / other-ownership loans hiding an older back-book | 746 loans with `includeArchivedLoans` / `AllLoans` / `Internal` — identical to the default. |
+
 **Two hypotheses ruled OUT, so nobody re-tries them:**
 
 1. **It is not a persona problem.** ICE documents that native (non-viewable) file formats require
