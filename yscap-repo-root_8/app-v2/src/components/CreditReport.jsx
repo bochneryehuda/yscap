@@ -847,14 +847,20 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   const reasons = (state && state.reasons) || {};
   const accepted = docs.filter((d) => d.review_status === 'accepted');
 
+  // WHICH condition the report is filed on. Never guess: a document uploaded with
+  // no condition would land loose on the file, and the waiver — which is keyed on
+  // the condition — would never see it.
+  const targetItemId = (state && state.itemId) || itemId || null;
+
   async function upload(file) {
     if (!file) return;
+    if (!targetItemId) { setErr('This credit condition could not be identified — reload the page and try again.'); return; }
     setErr(''); setBusy(true);
     try {
       const dataBase64 = await fileToBase64(file);
       await api.staffUploadAppDoc(appId, {
         filename: file.name, contentType: file.type || 'application/pdf', dataBase64,
-        checklistItemId: state && state.itemId ? state.itemId : itemId,
+        checklistItemId: targetItemId,
         slot: 'Credit report (uploaded)',
       });
       await load();
@@ -886,7 +892,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
     setBusy(true);
     try {
       await api.creditWaiverRequest(appId, {
-        reason, note: note.trim(), itemId: (state && state.itemId) || itemId,
+        reason, note: note.trim(), itemId: targetItemId,
         scope: scopeKind === 'co' ? 'co' : 'primary',
       });
       setAsking(false); setNote('');
@@ -901,7 +907,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
     if (!window.confirm('Withdraw the exception request? The credit condition goes back to needing an imported report.')) return;
     setErr(''); setBusy(true);
     try {
-      await api.creditWaiverRemove(appId, { itemId: (state && state.itemId) || itemId, scope: scopeKind === 'co' ? 'co' : 'primary' });
+      await api.creditWaiverRemove(appId, { itemId: targetItemId, scope: scopeKind === 'co' ? 'co' : 'primary' });
       await load();
       onChanged && onChanged();
     } catch (e) { setErr(e.message || 'Could not withdraw the request.'); }
@@ -925,9 +931,9 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
             exception — an admin approves it and this condition can be signed off with no credit imported.
           </div>
         </div>
-        <label className={'crx-btn ghost sm' + (busy ? ' crx-disabled' : '')}>
+        <label className={'crx-btn ghost sm' + (busy || !targetItemId ? ' crx-disabled' : '')}>
           {busy ? 'Working…' : '⬆ Upload credit report PDF'}
-          <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} disabled={busy}
+          <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} disabled={busy || !targetItemId}
             onChange={(e) => { const f = e.target.files[0]; e.target.value = ''; upload(f); }} />
         </label>
       </div>
