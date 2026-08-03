@@ -1928,7 +1928,13 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         </div>
       )}
 
-      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+      {/* ACTIONS GROUPED BY WHAT THEY DO (owner-directed 2026-08-03: "everything is a little
+          messed up … the button is not a nice place"). This had grown to nine buttons in one
+          wrapping row, all the same weight — so Approve, which moves real money, read exactly as
+          loudly as Draw packet, which downloads a spreadsheet. Two clusters now: the DECISIONS on
+          this draw, then the DOCUMENTS it produces (quiet `soft` buttons), with a hairline
+          between them. Same actions, same handlers — only the grouping and the weight changed. */}
+      <div className="act-bar">
         {/* AMEND AND REOPEN MUST SURVIVE THE FINAL APPROVAL (owner-reported 2026-08-03: "we're
             missing the amend button, which is available in Sitewire after the final approval").
             These two actions only make sense on a draw somebody already decided — that is what
@@ -1959,15 +1965,21 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
-        <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'ghost')} onClick={() => setShowPhotos((s) => !s)}>
-          {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
-        </button>
-        <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
-        <button className="btn btn-sm ghost" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
-          onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>PILOT report (PDF)</button>
-        <button className="btn btn-sm ghost" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-          onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
-        {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
+
+        <span className="act-sep" aria-hidden="true" />
+
+        <span className="act-group">
+          <span className="act-label">Documents</span>
+          <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'soft')} onClick={() => setShowPhotos((s) => !s)}>
+            {showPhotos ? 'Hide photos' : 'Photos'}
+          </button>
+          <button className="btn btn-sm soft" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Packet (Excel)</button>
+          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
+            onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
+          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
+            onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+          {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
+        </span>
       </div>
 
       {showPhotos && <InspectionGallery appId={appId} draw={draw} finding={finding} readsOff={readsOff} />}
@@ -2020,82 +2032,93 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     finally { setBusy(false); }
   }
 
+  // A section that OWNS its action (owner-directed 2026-08-03: "the button is not a nice place").
+  // Collapsed, it is a titled row that says what it does with the action on the right — never a
+  // bare button floating under the card attached to nothing.
   if (!open) {
     return (
-      <div style={{ marginTop: 8 }}>
-        <button className="btn btn-sm ghost" onClick={() => setOpen(true)}>Investor delivery</button>
+      <div className="act-card">
+        <div className="act-card-head">
+          <div style={{ minWidth: 220, flex: 1 }}>
+            <div className="act-card-title">Investor delivery</div>
+            <div className="act-card-sub">Send this draw to the investor who funds it, with the reports, the packet and the signed wire instructions.</div>
+          </div>
+          <button className="btn btn-sm ghost" onClick={() => setOpen(true)}>Open</button>
+        </div>
       </div>
     );
   }
   return (
-    <div style={{ marginTop: 8, border: '1px solid var(--line,#e6e0d4)', borderRadius: 8, padding: '10px 12px' }}>
-      <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ fontWeight: 700, color: '#141B22' }}>Investor delivery</div>
-        <button className="btn btn-xs ghost" onClick={() => setOpen(false)}>Hide</button>
+    <div className="act-card is-open">
+      <div className="act-card-head">
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div className="act-card-title">Investor delivery</div>
+          {p && <div className="act-card-sub">Goes to <b style={{ color: 'var(--text)' }}>{p.note_buyer || 'the note buyer'}</b> with the inspector’s report, our report, the draw packet and the borrower’s signed wire instructions.</div>}
+        </div>
+        <button className="btn btn-sm soft" onClick={() => setOpen(false)}>Close</button>
       </div>
-      {!p ? <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>Loading…</div> : (
+
+      {!p ? <div className="act-card-sub" style={{ marginTop: 10 }}>Loading…</div> : (
         <>
-          <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
-            Sends the approved draw to <b style={{ color: '#141B22' }}>{p.note_buyer || 'the note buyer'}</b> with the inspector’s report, our report, the draw packet and the borrower’s signed wire instructions.
-          </div>
-
-          {/* the money, exactly as the report and packet state it */}
-          <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr auto', gap: '2px 12px', maxWidth: 460 }}>
-            <span className="small" style={{ color: '#4B585C' }}>Approved on inspection</span>
-            <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.approved_cents)}</span>
-            <span className="small" style={{ color: '#4B585C' }}>To the borrower</span>
-            <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.to_borrower_cents)}</span>
+          {/* the money, exactly as the report and the packet state it */}
+          <dl className="act-figs">
+            <dt>Approved on inspection</dt><dd>{usd2(p.money.approved_cents)}</dd>
+            <dt>To the borrower</dt><dd>{usd2(p.money.to_borrower_cents)}</dd>
             {p.money.to_us_cents > 0 && (<>
-              <span className="small" style={{ color: '#4B585C' }}>Our draw fee</span>
-              <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.to_us_cents)}</span>
+              <dt>Our draw fee</dt><dd>{usd2(p.money.to_us_cents)}</dd>
             </>)}
-            <span className="small" style={{ color: '#141B22', fontWeight: 700 }}>Investor funds</span>
-            <span className="small" style={{ color: '#141B22', fontWeight: 700, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.investor_total_cents)}</span>
-          </div>
+            <div className="rule" />
+            <dt className="tot">Investor funds</dt><dd className="tot">{usd2(p.money.investor_total_cents)}</dd>
+          </dl>
 
-          {/* how it is funded */}
-          <div style={{ marginTop: 10 }}>
-            <div className="small" style={{ color: '#141B22', fontWeight: 700 }}>How this draw is funded</div>
-            <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+          {/* how it is funded — one segmented control, not two look-alike buttons */}
+          <div style={{ marginTop: 14 }}>
+            <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>How this draw is funded</div>
+            <div className="seg" role="group" aria-label="How this draw is funded">
               {(p.modes || []).map((m) => (
-                <button key={m.mode} className={'btn btn-xs ' + (p.funding_mode === m.mode ? 'primary' : 'ghost')}
-                  disabled={busy} title={m.help} onClick={() => setMode(m.mode, 'draw')}>{m.label}</button>
+                <button key={m.mode} type="button" className={p.funding_mode === m.mode ? 'on' : ''}
+                  disabled={busy} title={m.help} aria-pressed={p.funding_mode === m.mode}
+                  onClick={() => setMode(m.mode, 'draw')}>{m.label}</button>
               ))}
             </div>
-            <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+            <div className="act-card-sub" style={{ marginTop: 6 }}>
               {(p.modes || []).find((m) => m.mode === p.funding_mode)?.help}
               {p.funding_mode_source === 'default' ? ' This is the standard arrangement.' : p.funding_mode_source === 'file' ? ' Set as this file’s default.' : ' Set for this draw.'}
+              {' '}
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} disabled={busy}
+                onClick={() => setMode(p.funding_mode, 'file')}>Use for every draw on this file</button>
             </div>
-            <button className="btn btn-xs ghost" style={{ marginTop: 4 }} disabled={busy}
-              onClick={() => setMode(p.funding_mode, 'file')}>Use this for every draw on this file</button>
           </div>
 
           {/* who it goes to */}
-          <div className="small" style={{ marginTop: 10, color: '#4B585C' }}>
-            <b style={{ color: '#141B22' }}>To:</b> {p.to.length ? p.to.join(', ') : <span style={{ color: '#B4453C' }}>no investor contacts saved</span>}<br />
-            <b style={{ color: '#141B22' }}>Copied:</b> {p.cc.join(', ') || '—'}<br />
-            <span>The borrower is never included.</span>
+          <div style={{ marginTop: 14 }}>
+            <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
+            <div className="act-card-sub" style={{ marginTop: 0 }}>
+              <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
+              <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
+              The borrower is never included.
+            </div>
           </div>
 
           {p.blockers.length > 0 && (
-            <ul className="small" style={{ marginTop: 8, color: '#B4453C', paddingLeft: 18 }}>
+            <ul className="act-card-sub" style={{ marginTop: 12, color: 'var(--danger,#B4453C)', paddingLeft: 18 }}>
               {p.blockers.map((b, i) => <li key={i}>{b}</li>)}
             </ul>
           )}
 
-          <div className="row" style={{ gap: 8, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
               title={p.can_send ? `Deliver this draw to ${p.note_buyer}` : 'Clear the items above first'}>
               {busy ? 'Sending…' : `Deliver to ${p.note_buyer || 'the investor'}`}
             </button>
             {p.history.length > 0 && (
-              <span className="small" style={{ color: '#4B585C' }}>
-                Last delivered {new Date(p.history[0].sent_at).toLocaleString('en-US')}{p.history[0].status === 'error' ? ' (failed)' : ''} · {p.history.length} delivery{p.history.length === 1 ? '' : 's'} on record
+              <span className="act-card-sub" style={{ marginTop: 0 }}>
+                Last sent {new Date(p.history[0].sent_at).toLocaleString('en-US')}{p.history[0].status === 'error' ? ' (failed)' : ''} · {p.history.length} on record
               </span>
             )}
           </div>
-          {msg ? <div className="small" style={{ color: '#2F7F86', marginTop: 6 }}>{msg}</div> : null}
-          {err ? <div className="small" style={{ color: '#B4453C', marginTop: 6 }}>{err}</div> : null}
+          {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
+          {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
         </>
       )}
     </div>
@@ -2149,12 +2172,16 @@ function FindingStatus({ appId, finding, reload }) {
       <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}
         {finding.accepted_via === 'staff' ? <span className="muted"> · recorded by the team</span> : null}</div>
       {finding.status === 'delivered' && (
-        <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn btn-sm ghost" disabled={recording} onClick={recordAgreement}
-            title="Use this when the borrower approved by phone or email instead of clicking Accept in their portal.">
-            {recording ? 'Recording…' : 'Borrower agreed (by phone or email)'}
-          </button>
-          <span className="small" style={{ color: '#4B585C' }}>Waiting on the borrower — or record their approval here if they gave it to you directly.</span>
+        <div className="act-card" style={{ marginTop: 8 }}>
+          <div className="act-card-head">
+            <div style={{ minWidth: 220, flex: 1 }}>
+              <div className="act-card-title">Waiting on the borrower</div>
+              <div className="act-card-sub">If they approved by phone or email instead of in their portal, record it here.</div>
+            </div>
+            <button className="btn btn-sm ghost" disabled={recording} onClick={recordAgreement}>
+              {recording ? 'Recording…' : 'Borrower agreed'}
+            </button>
+          </div>
         </div>
       )}
       {recErr ? <div className="small" style={{ color: '#B4453C', marginTop: 4 }}>{recErr}</div> : null}
