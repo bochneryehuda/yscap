@@ -693,5 +693,171 @@ t('a non-url is refused with a plain reason', () => {
     });
   }
 
+  // ── an appraisal we CANNOT parse is counted and said out loud ─────────────
+  // The post-merge audit's silent-total-failure finding. The skip used to happen
+  // before any counter, and makeTick's log gate is
+  // `resources || captured || failed || errors` — so a tenant whose appraisals
+  // all arrive as UAD 3.6 ZIPs produced all-zeros, which is exactly what a
+  // healthy quiet sweep looks like. The catcher would stop working on the day the
+  // format changed, with nothing anywhere saying so.
+  {
+    const enc3 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+    const origGet = enc3.apiGet, origConfigured = enc3.configured, origErr = console.error;
+    const origPipeline = enc3.pipelineSearch, origLog = console.log;
+    const errs = [];
+    const zipSweepLog = [];
+    let zipSweep;
+    try {
+      console.error = (...a) => { errs.push(a.join(' ')); };
+      console.log = (...a) => { zipSweepLog.push(a.join(' ')); };
+      enc3.configured = () => true;
+      // One appraisal service order carrying ONE resource: the appraisal type
+      // URN on a ZIP package — the exact UAD 3.6 shape the module documents.
+      enc3.apiGet = async (p) => {
+        if (/serviceOrders\/[^/?]+\?/.test(String(p))) {
+          return { response: { resources: [{
+            id: 'zip-1', name: 'AppraisalReport.zip', mimeType: 'application/zip',
+            type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+            location: 'https://skydrive.ellieservices.com/x?validity=zzz', authorization: 'sig',
+          }, {
+            // A SECOND unparsable resource, so the fixture can tell "counted once"
+            // from "counted per resource". Without two of these the error-budget
+            // assertion below is vacuous — errors.length is 1 either way.
+            id: 'zip-2', name: 'Appraiser_License.pdf', mimeType: 'application/pdf',
+            location: 'https://skydrive.ellieservices.com/y?validity=zzz', authorization: 'sig',
+          }] } };
+        }
+        if (/serviceOrders$/.test(String(p))) {
+          return [{ id: 'o-zip', serviceSetup: { category: 'APPRAISAL' } }];
+        }
+        return [];
+      };
+      // THROUGH makeTick, not sweepOnce: makeTick owns the real log gate and the
+      // real log call, which is the half being asserted. It sweeps the pipeline
+      // rather than a supplied list, so the pipeline is stubbed to one loan.
+      enc3.pipelineSearch = async () => [{ loanId: 'zl1', fields: { 'Loan.LoanNumber': 'ZL1' } }];
+      zipSweep = await M._internals.makeTick(db)();
+    } finally {
+      console.error = origErr; console.log = origLog;
+      enc3.apiGet = origGet; enc3.configured = origConfigured;
+      enc3.pipelineSearch = origPipeline;
+    }
+
+    t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
+      assert.strictEqual(zipSweep.otherFormat, 2,
+        `every unparsable appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
+    });
+
+    t('but it spends ONE error slot per sweep, not one per resource', () => {
+      // The substantive behaviour change, and it was unpinned: `errors[]` is ONE
+      // shared 50-slot budget whose first three are printed, and nothing is written
+      // to the ledger for these, so the same resources are re-seen every sweep. Per
+      // resource, a companion PDF beside the XML would burn slots forever and crowd
+      // out a real orders/expand/record failure on another loan.
+      //
+      // Two unparsable resources, ONE error line — that is the whole assertion, and
+      // it is why the fixture above carries a second one.
+      const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, 1,
+        `two unparsable resources must produce ONE error line, saw ${mine.length}: ${JSON.stringify(mine)}`);
+      assert.ok(/first of this sweep/.test(mine[0]),
+        'and it must SAY it is only the first, so the count is not mistaken for the whole story');
+    });
+
+    t('it is never downloaded — the 15-minute window is not spent on it', () => {
+      assert.strictEqual(zipSweep.resources, 0, 'a non-XML resource must not enter the capture path');
+      assert.strictEqual(zipSweep.captured, 0, 'nothing may be captured from a ZIP');
+      assert.strictEqual(zipSweep.failed, 0,
+        'and it must NOT be recorded as a failure — a format we do not handle is not a breakage');
+    });
+
+    t('it ALARMS, so a tenant-wide format change cannot pass unnoticed', () => {
+      assert.ok(errs.some((e) => /does not parse/.test(e)),
+        `expected an alarm naming the unparsable format, saw: ${JSON.stringify(errs).slice(0, 300)}`);
+    });
+
+    t('a ZIP-only sweep is REPORTED, not silent — driven through the real makeTick', () => {
+      // The first version of this test re-wrote the production gate condition into
+      // the test body and asserted on its own copy, so it could only ever pass —
+      // it stayed green with the production gate reverted. Drive `makeTick`, which
+      // owns the real gate and the real log call, and assert on what it prints.
+      assert.ok(!zipSweepLog.some((l) => /"resources":[1-9]/.test(l)),
+        'fixture check: the ZIP sweep must have captured nothing for this to mean anything');
+      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":2/.test(l)),
+        `a sweep whose only finding is an unparsable format must still report it, saw: ${
+          JSON.stringify(zipSweepLog).slice(0, 300)}`);
+    });
+
+    t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {
+      // The comment claimed this for months while nothing read res.type at all.
+      const { isAppraisalResource, APPRAISAL_TYPE_PREFIX } = M._internals;
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V2.6` }), 'V2.6');
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V9.9` }), 'a future version');
+      assert.ok(isAppraisalResource({ type: String(APPRAISAL_TYPE_PREFIX).toUpperCase() + ':X' }),
+        'case must not decide it');
+      assert.ok(!isAppraisalResource({ type: 'urn:ice:epc:partner:title:report:version:V1' }),
+        'a title report is not an appraisal');
+      assert.ok(!isAppraisalResource({}), 'nothing to go on → not an appraisal');
+    });
+
+    t('the NAME fallback is a real backstop, and does not fire on unrelated documents', () => {
+      // The generous half of isAppraisalResource, and the half with a false-
+      // positive cost — so pin both directions.
+      const { isAppraisalResource } = M._internals;
+      assert.ok(isAppraisalResource({ name: 'AppraisalReport.zip' }),
+        'a delivery whose type URN ALSO changed must still be noticed by name');
+      assert.ok(isAppraisalResource({ name: 'appraisal invoice.pdf' }),
+        'a companion document DOES match — that is accepted, and is why the alarm is once per sweep');
+      assert.ok(!isAppraisalResource({ name: 'UCDP_Submission_Summary.pdf' }),
+        'a real sibling document type from a fulfilled order must NOT fire');
+      assert.ok(!isAppraisalResource({ name: '16341496.xml' }),
+        "the XML's own bare-numeric name must not fire it either");
+    });
+
+    t('a typo\'d poll interval falls back and SAYS SO, like every other knob', () => {
+      // Fix 4 shipped with no test, and an envNum-only test would not have caught
+      // that either — start() has to actually USE it. So drive start() and assert
+      // on what it says: reverting it to the raw `Number(process.env…)` read makes
+      // this go red, which is the whole point.
+      const enc4 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+      const warned = [], logged = [];
+      const ow = console.warn, ol = console.log, oc = enc4.configured;
+      let timer = null;
+      try {
+        console.warn = (...a) => { warned.push(a.join(' ')); };
+        console.log = (...a) => { logged.push(a.join(' ')); };
+        enc4.configured = () => true;
+        process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC = 'five minutes';
+        timer = M.start(db);
+      } finally {
+        // Disarm what we CAN, and be precise about what that is: start() arms TWO
+        // timers — the 300s interval it returns, and a 15s first-tick setTimeout it
+        // does NOT return, which therefore survives this cleanup. Neither can leak:
+        // both are unref'd (so neither holds the process open) and this suite
+        // finishes in well under a second, ~14s before the first-tick one could
+        // fire. If it ever did, `encompass.configured` is restored by then and is
+        // false here, so the sweep returns `{disabled:true}` immediately — no
+        // network, no db, no output.
+        if (timer) clearInterval(timer);
+        console.warn = ow; console.log = ol; enc4.configured = oc;
+        delete process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC;
+      }
+      assert.ok(warned.some((w) => /ENCOMPASS_APPRAISAL_XML_POLL_SEC/.test(w)),
+        `a bad poll interval must not be swallowed in silence, saw: ${JSON.stringify(warned)}`);
+      assert.ok(logged.some((l) => /catcher on, sweeping every 300s/.test(l)),
+        `and it must fall back to the 300s default, saw: ${JSON.stringify(logged)}`);
+    });
+
+    t('a plain XML delivery is UNCHANGED by any of this', () => {
+      // The whole risk of the fix is that it alters what gets downloaded.
+      assert.ok(M._internals.isAppraisalXml({ mimeType: 'application/xml', name: 'a.xml' }),
+        'an xml resource is still an xml resource');
+      assert.ok(!M._internals.isAppraisalXml({
+        mimeType: 'application/zip', name: 'x.zip',
+        type: `${M._internals.APPRAISAL_TYPE_PREFIX}:version:V3.6`,
+      }), 'the appraisal URN must NOT make a ZIP look parsable — that would start the ZIP downloads');
+    });
+  }
+
   console.log(`test-encompass-appraisal-xml-catcher: ${pass} checks passed`);
 })().catch((e) => { console.error('FAIL (async block):', e && e.message); process.exitCode = 1; });
