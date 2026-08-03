@@ -6,6 +6,7 @@ import {
   INK, MUTED, GOLD, S, money, sqft, num, saleMonth, day, baths,
   conditionLabel, compSetShort, severityColor,
 } from '../lib/research.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* BUILD YOUR OWN VALUATION — pick the comparable sales you believe in, adjust
    each one to the subject by hand, and see what the property would appraise for.
@@ -101,6 +102,7 @@ export default function StaffValuation() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Property Research</Link>
         {v.property_id && (

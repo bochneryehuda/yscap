@@ -486,7 +486,13 @@ router.get('/comps', async (req, res, next) => {
         baths_full: K.int(req.query.baths_full, { max: 99 }), baths_half: K.int(req.query.baths_half, { max: 99 }),
         year_built: K.yearBuilt(req.query.year_built), condition_uad: txt(req.query.condition_uad),
         property_type: txt(req.query.property_type), units: K.int(req.query.units, { max: 999 }),
-        latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
+        // A COORDINATE THAT IS NOT ON EARTH IS NOT A COORDINATE. Unbounded, a
+        // typed `?lat=1e9` reached the haversine — harmless in that it matches
+        // nothing, but a filter that silently matches nothing is the shape of the
+        // bug this whole area exists to close. Out of range reads as "no
+        // position", which the search already answers honestly.
+        latitude: K.num(req.query.lat, { min: -90, max: 90 }),
+        longitude: K.num(req.query.lng, { min: -180, max: 180 }),
       };
     }
     // A 2-4 UNIT PROPERTY IS COMPARED WITH 2-4 UNIT PROPERTIES. The owner's first
@@ -1797,7 +1803,13 @@ router.get('/quick', async (req, res, next) => {
         zip: txt(req.query.zip), gla: K.num(req.query.gla),
         condition_uad: txt(req.query.condition_uad), property_type: txt(req.query.property_type),
         units: K.int(req.query.units, { max: 999 }),
-        latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
+        // A COORDINATE THAT IS NOT ON EARTH IS NOT A COORDINATE. Unbounded, a
+        // typed `?lat=1e9` reached the haversine — harmless in that it matches
+        // nothing, but a filter that silently matches nothing is the shape of the
+        // bug this whole area exists to close. Out of range reads as "no
+        // position", which the search already answers honestly.
+        latitude: K.num(req.query.lat, { min: -90, max: 90 }),
+        longitude: K.num(req.query.lng, { min: -180, max: 180 }),
       };
     }
     // A QUICK ANSWER STILL NEEDS A MARKET. Nationwide is about nowhere — the same

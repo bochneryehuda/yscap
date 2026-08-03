@@ -206,11 +206,19 @@ circle at every latitude. **A different geocoding API would not have fixed this.
   and return nothing rather than hand back nine states. This is the same rule
   the quick answer and the adjustment corpus already follow, and it is the one
   the comp search is missing.
-- [ ] **C1b** **GEOCODE THE TYPED SUBJECT** so the radius can actually run —
-  which is what C2 is for. Until a typed address has a position, a radius search
-  from it is not answerable, and saying so is the honest behaviour.
-- [ ] **C1c** A test that FAILS on today's code: ask for a radius with no
-  position and assert nothing comes back with a null distance.
+- [x] **C1b** **GEOCODE THE TYPED SUBJECT** so the radius can actually run —
+  **DONE** with C2. `GET /api/address/position` answers a typed address with a
+  coordinate from KEYLESS sources only (US Census, then OpenStreetMap), and the
+  comp search carries it through the URL into `/api/research/comps`. It goes
+  through `geocodeProperty`, so it inherits the two refusals written after the
+  2026-07-28 Piscataway incident: a provider answering with a DIFFERENT house is
+  refused rather than adopted, and "a house number plus a state" is refused
+  before anyone is asked.
+- [x] **C1c** A test that FAILS on today's code — **DONE** earlier
+  (`scripts/test-research-geo-box-pure.js`, proven to fail via `break-radius.js`).
+  Extended in `scripts/test-address-position.js` (33) and by the browser check
+  `scripts/render-address-box.mjs` (55), which asserts an unplaceable address
+  sends NO position and the search refuses honestly.
 
 ### C2. **Address autofill everywhere in the Resource Center**
 
@@ -222,13 +230,31 @@ Today only the loan-application form has it (`/api/address/suggest`, which
 already prefers Google Places when `GOOGLE_PLACES_API_KEY` is set and falls back
 to the free OpenStreetMap service otherwise).
 
-- [ ] **C2a** One shared `<AddressBox>` component that suggests as you type and
-  — the important part — **returns the POSITION with the address**, so every
-  screen that takes an address can run a real distance search from it.
-- [ ] **C2b** Put it on every research screen that takes an address.
-- [ ] **C2c** It must degrade honestly: with no key the free service still
-  suggests, and if a chosen address yields no position the screen says the
-  distance filter cannot run rather than quietly widening.
+- [x] **C2a** **DONE** — `app-v2/src/components/AddressBox.jsx`. It wraps the
+  autocomplete the loan application already uses (deliberately the SAME
+  component, so an address typed on a research screen is standardised exactly
+  like one typed on a loan file) and adds the two things a research screen needs:
+  picking fills the town, state and ZIP as well as the street, and the pick
+  carries the position. `TownLookup` is the same box for the screens that search
+  a town rather than a house.
+- [x] **C2b** **DONE** — on all six: Property Research, Find comparables, Market
+  conditions, What we charge, Quick answer, Market areas. Driven for real in a
+  browser on every one of them.
+- [x] **C2c** **DONE**. The field says which of the two states it is in, worded
+  as the consequence: "Found on the map — distance searches can run from here",
+  or "we could not place that address on the map — a distance search cannot be
+  answered from it, so search by town instead." Typing over a picked address
+  drops the position (a coordinate belongs to the address it was looked up for),
+  and so does correcting the town, state or ZIP by hand.
+
+**Two things found on the way, both fixed here.** The suggestion menu's
+flip-above-the-field logic had never once run: the menu only renders after
+`place()` has measured it, so `place()` always measured a menu that was not in
+the DOM yet and took its height as zero. On a tall page the list was pinned below
+the fold with no way to scroll to it — you could type and nothing would appear.
+That affected every address field in PILOT, not just these. And OpenStreetMap's
+one-request-per-second limit is per PROCESS, while three modules each kept their
+own clock — one clock now (`src/lib/osm-gate.js`).
 
 ### C3. **One Property Research & Resource Center section**
 
@@ -237,9 +263,23 @@ them should technically be combined in one section with different pages …
 property research, find comparables, market conditions, what we charge, quick
 answer — all of it is one Resource Center."*
 
-- [ ] **C3** Collapse the six research nav links into ONE section with pages
-  inside it. Keep every existing URL working — officers have bookmarks, and a
-  reorganisation that breaks a saved link is a reorganisation that gets undone.
+- [x] **C3** **DONE** — `app-v2/src/components/ResearchNav.jsx`. One sidebar
+  entry, whose pages appear beneath it while you are inside the section, and the
+  same page strip on every page of it.
+
+  **Every URL is unchanged, and that is the design rather than a redirect.** The
+  AI Command Center collapsed its screens behind `?tab=` and redirected the old
+  routes; that shape is wrong here for two concrete reasons — every research
+  screen keeps its entire search in its OWN query string precisely so a search is
+  a link you can paste to a colleague, and a `?tab=` would sit in that same query
+  string; and these pages already lived at nested paths under
+  `/internal/research`, so making them pages of one section needed no new address
+  at all. Nothing anyone bookmarked moved, so nothing has to be caught. The tabs
+  are ROUTES, so Back, middle-click and bookmarking behave as they look.
+  Verified in a browser (`scripts/render-research-section.mjs`, 46): one sidebar
+  entry from outside, the pages beneath it from inside, every page still on its
+  own address with the right tab lit, and a saved link carrying a search still
+  opening on that search.
 
 ### C4. **Real Google maps** — see A/B above for the recommendation
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 /* Typeahead address input backed by our own /api/address/suggest (the provider
@@ -36,9 +36,19 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
   const withPos = (addr, p) => (p && p.lat != null && p.lng != null
     ? { ...addr, lat: p.lat, lng: p.lng, positionSource: p.source || null }
     : { ...addr });
-  const report = () => {
+  /* EVERY REPORT SAYS WHAT IT LEARNED, because the three of them learn different
+     things and a consumer that treats them alike overwrites the user's own work.
+       'pick'         — the address the user chose. Everything is new.
+       'standardized' — USPS corrected the TEXT of that address. It is the
+                        authority on that address's town and ZIP, so a consumer
+                        should adopt them.
+       'position'     — a coordinate arrived, and NOTHING else was learned. A
+                        consumer that re-applied the address here would revert
+                        whatever the user typed in the second since the pick,
+                        silently and with no explanation. */
+  const report = (kind) => {
     if (!addrRef.current) return;
-    onPick && onPick(withPos(addrRef.current, posRef.current));
+    onPick && onPick({ ...withPos(addrRef.current, posRef.current), reportKind: kind });
   };
   // USPS verification of the PICKED address (the authoritative standardizer). null
   // until a pick is verified; then 'verified' | 'corrected' | 'unverified'. States
@@ -73,8 +83,34 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
     const mh = menuRef.current ? menuRef.current.offsetHeight : 0;
     const below = vh - r.bottom, above = r.top;
     const flip = mh && below < mh + 8 && above > below;
-    setPos({ left: Math.round(r.left), width: Math.round(r.width), top: Math.round(flip ? r.top - mh - 4 : r.bottom + 4), flip });
+    const next = { left: Math.round(r.left), width: Math.round(r.width), top: Math.round(flip ? r.top - mh - 4 : r.bottom + 4), flip: !!flip };
+    // IDEMPOTENT. `place` runs on every scroll event and on the menu attaching, so
+    // an unconditional setState would re-render the whole field on every scroll
+    // tick — and would make the measure-on-attach below an infinite loop.
+    setPos((cur) => (cur && cur.left === next.left && cur.width === next.width
+      && cur.top === next.top && cur.flip === next.flip ? cur : next));
   }
+
+  /* MEASURE THE MENU ONCE IT EXISTS — the flip-above decision needs its height,
+     and on the first open there is nothing to measure yet.
+     The menu renders only when `open && pos`, and `pos` only exists after
+     `place()` has run — so on the first open `place()` necessarily measured a
+     menu that was not in the DOM, took its height as 0, and could never decide to
+     flip. The consequence was invisible until an address box landed low on a tall
+     page: the field sat at y=688 in a 720px window, the menu was pinned
+     (position:fixed) at y=739, and the suggestions were simply off the bottom of
+     the screen with no way to scroll to them — you could type and nothing would
+     ever appear. It only ever worked because scrolling re-ran `place()` with the
+     menu present by then.
+     A callback ref fires the moment the element attaches, which is the only point
+     at which the height is knowable — the same reason CompMap measures its box
+     with one. `place` reads refs and calls an idempotent setter, so capturing the
+     first render's copy is safe and the empty dep list keeps the ref stable. */
+  const attachMenu = useCallback((el) => {
+    menuRef.current = el;
+    if (el) place();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reposition while open (scroll of ANY ancestor uses capture) + on resize.
   useEffect(() => {
@@ -141,7 +177,7 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
           // only the address half and re-reports through `report()` — handing its
           // answer back bare would drop a position the pick had already resolved.
           addrRef.current = j.address;
-          report();
+          report('standardized');
         }
         setUsps({ status: j.status });
       } else if (j && j.configured && j.status === 'unverified') {
@@ -167,7 +203,7 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
     posRef.current = p && p.lat != null ? p : null;
     setPosition(p);
     onPosition && onPosition(posRef.current);
-    report();
+    report('position');
   }
   async function resolvePosition(addr, carried) {
     const mine = ++pseq.current;
@@ -198,17 +234,25 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
     setPosition(null);
     addrRef.current = null;
     posRef.current = null;
-    pseq.current++;
+    // EVERY IN-FLIGHT ANSWER FROM THE PREVIOUS PICK IS INVALIDATED HERE, all three
+    // of them. Bumping only the position counter left a window across the details
+    // await in which the PREVIOUS pick's USPS answer still passed its own guard
+    // and reported itself over the newer pick's address.
+    const mine = ++pseq.current;
+    vseq.current++;
     let addr = s.address;
     if (!addr && s.id) {
       try { const j = await (await fetch('/api/address/details?id=' + encodeURIComponent(s.id))).json(); addr = j.address; }
       catch { addr = null; }
     }
+    // The details lookup is a network call (Google's provider needs one), so the
+    // user may have typed on or picked something else while it was out.
+    if (mine !== pseq.current) return;
     if (addr) {
       onChange && onChange(addr.line1 || value);
       addrRef.current = addr;
       if (withPosition && s.position) posRef.current = s.position;   // free, straight off the suggestion
-      report();
+      report('pick');
       if (withPosition) resolvePosition(addr, s.position);
       verifyWithUsps(addr);
     } else { onChange && onChange(s.label); }
@@ -222,7 +266,7 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
   }
 
   const menu = open && pos ? createPortal(
-    <div className="addr-menu" role="listbox" ref={menuRef}
+    <div className="addr-menu" role="listbox" ref={attachMenu}
       style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, right: 'auto', marginTop: 0, zIndex: 2147483000, maxHeight: 'min(320px, 44vh)', overflowY: 'auto' }}>
       {suggestions.map((s, i) => (
         <div key={s.id || i} role="option" aria-selected={i === active}

@@ -26,24 +26,18 @@ const { preferBorough, osmComponentsToAddress, compactFormattedAddress } = ADDR;
 // small TTL cache + a min-interval throttle (Nominatim asks for <=1 req/sec)
 const cache = new Map();
 const TTL = 5 * 60 * 1000;
-function cget(k) { const v = cache.get(k); if (v && Date.now() - v.at < TTL) return v.val; if (v) cache.delete(k); return null; }
-function cset(k, val) { cache.set(k, { at: Date.now(), val }); if (cache.size > 2000) cache.delete(cache.keys().next().value); }
-let osmChain = Promise.resolve(); let osmLast = 0;
-function osmThrottle(fn) {
-  // Serialize calls ~1.1s apart (Nominatim asks for <=1 req/sec). The promise
-  // returned to the caller carries fn()'s success/failure, but the internal
-  // `osmChain` gate must always RESOLVE — a rejection propagating into it would
-  // make every future call chain off a rejected promise, permanently breaking
-  // address autocomplete until the process restarted.
-  const run = osmChain.then(async () => {
-    const wait = 1100 - (Date.now() - osmLast);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    osmLast = Date.now();
-    return fn();
-  });
-  osmChain = run.then(() => {}, () => {});   // gate swallows the outcome; never carries a rejection forward
-  return run;
-}
+function cget(k) { const v = cache.get(k); if (v && Date.now() - v.at < (v.ttl || TTL)) return v.val; if (v) cache.delete(k); return null; }
+// `ttl` is per entry: a coordinate does not move, but "nobody could place it" is
+// often a service having a bad minute, and pinning that for the full window means
+// a person who retries is answered by a cache rather than by a lookup.
+function cset(k, val, ttl) { cache.set(k, { at: Date.now(), val, ttl }); if (cache.size > 2000) cache.delete(cache.keys().next().value); }
+// Nominatim asks for at most 1 request/second — for the PROCESS, not per module.
+// The clock is SHARED with the research geocoder and the ClickUp canonicaliser
+// (`lib/osm-gate`): each of the three used to keep its own, so any two running
+// together could fire twice inside one second while every one of them looked
+// correct in isolation. The gate never carries a rejection forward — a failed
+// lookup poisoning the chain would break address autocomplete until restart.
+const osmThrottle = require('../lib/osm-gate').osmRun;
 
 async function fetchJson(url, opts = {}) {
   const ac = new AbortController();
@@ -188,49 +182,109 @@ router.get('/parse', (req, res) => {
  * That way a position from this endpoint is safe to store anywhere, and nothing
  * downstream has to know which provider the address came from.
  *
- * Only an ADDRESS-level match is returned. Both providers already refuse to
- * answer with a road or a town rather than the house — a street-level answer puts
- * every house on the road at one point, and a quarter-mile search over that looks
- * like it worked, which is the expensive way to be wrong.
+ * IT GOES THROUGH `geocodeProperty`, NOT THE PROVIDERS DIRECTLY — and that is the
+ * whole safety of it. Calling `census()`/`osm()` here would have skipped the two
+ * refusals written after the 2026-07-28 Piscataway incident, both of which live
+ * inside that function:
+ *
+ *   · `geocodeRewriteIsSafe` — a geocoder answers a DIFFERENT HOUSE rather than
+ *     admit it cannot find yours. Verified live: Census answers "26 S 10th St,
+ *     Piscataway NJ" with "26 10TH ST" — the directional dropped, a different
+ *     street, `precision: 'address'`, full confidence. Adopting that pin puts the
+ *     subject on the wrong street and every distance measured from it is wrong
+ *     WITHOUT LOOKING WRONG, which is precisely the class this endpoint exists to
+ *     close, re-armed one layer up.
+ *   · "A STATE IS NOT A PLACE" — "26 S 10th St, NJ" has a house number and a
+ *     state and still names nothing; there are dozens of them and both services
+ *     will happily return the first. `addressLine` refuses it; a bare length
+ *     check does not.
+ *
+ * So the components are handed over as COMPONENTS and that function decides what
+ * is lookup-able. Its refusals already carry a plain-language reason.
  */
 const RG = require('../lib/research/geocode');
+
+/* THE PUBLIC DOOR GETS ITS OWN QUEUE, AND IT SHEDS RATHER THAN GROWS.
+ *
+ * `/api/address/*` is public and unauthenticated (it backs the marketing loan
+ * application), rate-limited only per IP. A position lookup can cost a second or
+ * more of OpenStreetMap's process-wide one-per-second budget, so running it on
+ * the SAME chain as `/suggest` meant a burst from one visitor queued behind
+ * itself and stalled the address autocomplete for everybody — measured at 67 ms
+ * on an empty chain against 10,989 ms behind ten queued lookups, and the backlog
+ * grows without bound because the arrival rate can exceed the drain rate.
+ *
+ * Two separate limits, because they answer different questions: how many of these
+ * may be in flight at once (`POS_MAX_INFLIGHT`), and how many may be WAITING
+ * (`POS_MAX_QUEUE`). Past the queue limit the request is answered immediately
+ * with no position — which is a truthful answer this endpoint already has to be
+ * able to give, and infinitely better than a queue that never drains. */
+const POS_MAX_INFLIGHT = 2;
+const POS_MAX_QUEUE = 8;
+let posInflight = 0, posQueued = 0;
+const posBusy = () => posQueued >= POS_MAX_QUEUE;
+async function posSlot(fn) {
+  posQueued++;
+  try {
+    while (posInflight >= POS_MAX_INFLIGHT) await new Promise((r) => setTimeout(r, 120));
+    posInflight++;
+    try { return await fn(); } finally { posInflight--; }
+  } finally { posQueued--; }
+}
+
+const NO_POSITION = (why) => ({ lat: null, lng: null, source: null, precision: null, matched: null, why });
+// A POSITIVE ANSWER KEEPS; A NEGATIVE ONE EXPIRES SOON. A coordinate does not
+// move, but "nobody could place it" is often a service having a bad minute — and
+// pinning that for the full window means a person who retries is told the same
+// thing by a cache rather than by a lookup.
+const POS_NEG_TTL = 45 * 1000;
+
 router.get('/position', async (req, res) => {
   res.set('Cache-Control', 'public, max-age=600');
-  // Either a free-text line or the components the autocomplete already has.
-  const q = String(req.query.q || '').trim();
-  const line = q || ADDR.canonicalOneLine({
-    line1: req.query.line1 || req.query.street || '',
-    city: req.query.city || '', state: req.query.state || '', zip: req.query.zip || '',
+  // EVERY QUERY VALUE IS COERCED. Express's extended query parser turns
+  // `?state[x]=1` into an OBJECT, and handing that to the address helpers threw
+  // out of the handler as a 500 on a public endpoint — the same "a value must fit
+  // what reads it, and the door refuses politely" discipline as everywhere else.
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const q = str(req.query.q);
+  // NORMALIZED, NOT TAKEN AS TYPED. `geocodeProperty` reads `street` verbatim —
+  // right for a warehouse row, where the unit lives in its own column and the
+  // state is already a code, and wrong for a query string, where they arrive
+  // however a person typed them. Two things had to be handled here:
+  //   · A GEOCODER RESOLVES A BUILDING, NOT AN APARTMENT. "Apt 4D" on the end of
+  //     the street line is a common cause of a match failing outright, and every
+  //     unit of one building sharing a coordinate is correct — they ARE at the
+  //     same place. `normalizeAddress` splits the unit off into its own field,
+  //     which `geocodeProperty` then simply never asks about.
+  //   · A SPELLED-OUT STATE is not what either service is asked for elsewhere;
+  //     `stateAbbr` inside the same helper turns "New York" into "NY".
+  const parts = normalizeAddress(q ? parseAddress(q) : {
+    line1: str(req.query.line1) || str(req.query.street),
+    city: str(req.query.city), state: str(req.query.state), zip: str(req.query.zip),
   });
-  if (!line || line.length < 5) {
-    return res.json({ lat: null, lng: null, source: null, why: 'that is not enough of an address to look up' });
-  }
-  // A GEOCODER RESOLVES A BUILDING, NOT AN APARTMENT — a unit token in the query
-  // is a common cause of a match failing outright, and every unit of one building
-  // sharing a coordinate is correct: they ARE at the same place.
-  const lookup = ADDR.withoutUnit(line);
-  const key = 'pos:' + lookup.toLowerCase();
+  const subject = {
+    street: ADDR.abbreviateStreet(parts.line1 || ''),
+    city: ADDR.normalizeCityName(parts.city || ''),
+    state: parts.state || '', zip: parts.zip || '',
+  };
+  const key = 'pos:' + [subject.street, subject.city, subject.state, subject.zip].join('|').toLowerCase();
   const hit = cget(key);
   if (hit) return res.json(hit);
-  const answer = async () => {
-    // Census first: no rate limit, no key, and it only ever answers with a real
-    // address match. OSM is the fallback, run through THIS module's throttle as
-    // well as its own — the two modules keep separate clocks, and the published
-    // limit is one request per second for the whole process, not per module.
-    const c = await RG._internals.census(lookup);
-    if (c) return c;
-    return osmThrottle(() => RG._internals.osm(lookup));
-  };
+  if (posBusy()) {
+    // Never cached: this says nothing about the address, only about this moment.
+    return res.json(NO_POSITION('the address lookup is busy right now — try again in a moment'));
+  }
   try {
-    const p = await answer();
-    const out = p
+    const p = await posSlot(() => RG.geocodeProperty(subject));
+    const out = p && p.ok
       ? { lat: p.lat, lng: p.lng, source: p.source, precision: p.precision, matched: p.matched || null, why: null }
-      : { lat: null, lng: null, source: null, why: 'we could not place that address on the map' };
-    cset(key, out);
+      : NO_POSITION((p && p.why) || 'we could not place that address on the map');
+    cset(key, out, out.lat == null ? POS_NEG_TTL : undefined);
     res.json(out);
   } catch (e) {
-    // Never break the form. No position simply means no distance search.
-    res.json({ lat: null, lng: null, source: null, why: 'the address lookup is not answering right now' });
+    // Never break the form, and never quote a provider's error text to a caller
+    // — this endpoint is public. No position simply means no distance search.
+    res.json(NO_POSITION('the address lookup is not answering right now'));
   }
 });
 

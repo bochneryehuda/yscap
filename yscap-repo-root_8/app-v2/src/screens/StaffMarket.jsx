@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, TEAL, S, money, num } from '../lib/research.js';
 import { TownLookup } from '../components/AddressBox.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* THE MARKET — what our own appraisers have said about the areas we lend in.
  *
@@ -110,6 +111,7 @@ export default function StaffMarket() {
 
   return (
     <div>
+      <ResearchNav />
       <header style={{ marginBottom: 14 }}>
         <div style={{ marginBottom: 8 }}>
           <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Property Research</Link>

@@ -36,13 +36,42 @@ export default function AddressBox({
 }) {
   const v = value || {};
 
-  // A PICK REPLACES THE WHOLE SET, INCLUDING WITH BLANKS. If the chosen address
-  // carries no ZIP, keeping the ZIP from whatever was in the box before would
-  // silently search a different place than the one on screen — the same class of
-  // "the control lies about its own search" the radius box was guilty of.
+  /* IT REPORTS ONLY THE KEYS IT OWNS, AND THE CALLER MUST MERGE FUNCTIONALLY.
+   *
+   * Both halves of that are load-bearing, and getting either wrong loses the
+   * officer's typing. A pick is reported up to THREE times — on the click, again
+   * when USPS standardises the text, and again when the position lands a second or
+   * two later — each from a closure created on the render where the suggestion was
+   * clicked. Meanwhile the natural next move is to tab straight on and fill in
+   * Living area, Bedrooms and Year built, which are the next boxes.
+   *
+   * So: spreading the whole captured `value` would write the PRE-PICK form back
+   * over everything typed since (reproduced in a browser — four fields silently
+   * blanked ~1s after the pick, with nothing said), and a caller merging
+   * `{...form, ...next}` from a stale `form` does the same thing one level up.
+   * Reporting a PARTIAL and merging with the functional form makes the late
+   * reports carry only what they actually learned.
+   */
+  const emit = (patch) => onChange && onChange(patch);
+
+  // A PICK REPLACES THE WHOLE ADDRESS SET, INCLUDING WITH BLANKS. If the chosen
+  // address carries no ZIP, keeping the ZIP from whatever was in the box before
+  // would silently search a different place than the one on screen — the same
+  // class of "the control lies about its own search" the radius box was guilty of.
   function pick(a) {
-    onChange && onChange({
-      ...v,
+    // A POSITION REPORT LEARNED A COORDINATE AND NOTHING ELSE. Re-applying the
+    // address here would revert whatever the officer typed in the second since
+    // the pick — silently, a beat later, with nothing said. USPS standardising
+    // the text IS about the address, so that one still replaces the set.
+    if (a.reportKind === 'position') {
+      emit({
+        lat: a.lat != null ? a.lat : null,
+        lng: a.lng != null ? a.lng : null,
+        position_source: a.positionSource || null,
+      });
+      return;
+    }
+    emit({
       address: a.line1 || v.address || '',
       city: a.city || '',
       state: (a.state || '').toUpperCase(),
@@ -58,7 +87,7 @@ export default function AddressBox({
   // measure a half mile from the wrong house, which is worse than measuring from
   // nothing.
   function type(text) {
-    onChange && onChange({ ...v, address: text, lat: null, lng: null, position_source: null });
+    emit({ address: text, lat: null, lng: null, position_source: null });
   }
 
   return (

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, TEAL, S } from '../lib/research.js';
 import { TownLookup } from '../components/AddressBox.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* QUICK ANSWER — an address, a few basics, and roughly what properties like that
  * have been coming in at.
@@ -67,6 +68,7 @@ export default function StaffQuickAnswer() {
 
   return (
     <div>
+      <ResearchNav />
       <h1 style={{ margin: '0 0 4px', color: INK, fontSize: 24 }}>Quick answer</h1>
       <p style={{ margin: '0 0 14px', color: MUTED, fontSize: 14, maxWidth: 760 }}>
         A town and a couple of basics, and what properties like that have been coming in at

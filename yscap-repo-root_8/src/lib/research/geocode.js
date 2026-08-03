@@ -121,15 +121,16 @@ async function census(address) {
 // OSM's public service has a HARD published limit of one request per second, and
 // exceeding it is a policy breach that gets a user agent blocked — for everyone
 // using it, not just this sweep. The main pace (350ms) is set for Census, which has
-// no such limit, so the OSM call has to hold its own floor. This is a module-level
-// clock on purpose: it is the process's shared budget, not one sweep's.
-let lastOsmAt = 0;
-const OSM_MIN_GAP_MS = 1100;
+// no such limit, so the OSM call has to hold its own floor.
+//
+// THE CLOCK IS SHARED (`lib/osm-gate`), and it has to be: this module used to keep
+// its own, as did the address autocomplete and the ClickUp canonicaliser, so any
+// two of them running together fired twice inside one second while each looked
+// correct in isolation. One clock, one budget.
+const osmGate = require('../osm-gate').osmGate;
 
 async function osm(address) {
-  const wait = OSM_MIN_GAP_MS - (Date.now() - lastOsmAt);
-  if (wait > 0) await sleep(wait);
-  lastOsmAt = Date.now();
+  await osmGate();
   const url = 'https://nominatim.openstreetmap.org/search'
     + `?q=${encodeURIComponent(address)}&format=json&addressdetails=1&limit=1&countrycodes=us`;
   const j = await getJson(url);

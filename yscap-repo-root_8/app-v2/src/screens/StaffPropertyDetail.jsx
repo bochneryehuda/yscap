@@ -8,6 +8,7 @@ import {
 import NearbyComps from '../components/NearbyComps.jsx';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
 import { uadWords } from '../lib/uadWords.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -63,6 +64,7 @@ export default function StaffPropertyDetail() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10 }}>
         <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Back to Property Research</Link>
       </div>

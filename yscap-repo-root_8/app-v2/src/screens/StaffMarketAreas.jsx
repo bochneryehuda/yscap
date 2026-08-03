@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import CompMap from '../components/CompMap.jsx';
 import { INK, MUTED, GOLD, TEAL, S } from '../lib/research.js';
 import { TownLookup } from '../components/AddressBox.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* DRAW THE NEIGHBOURHOOD — because a radius is a bad model of one.
  *
@@ -88,6 +89,7 @@ export default function StaffMarketAreas() {
 
   return (
     <div>
+      <ResearchNav />
       <h1 style={{ margin: '0 0 4px', color: INK, fontSize: 24 }}>Market areas</h1>
       <p style={{ margin: '0 0 14px', color: MUTED, fontSize: 14, maxWidth: 760 }}>
         Draw the neighbourhood the way an appraiser would. A circle cannot say

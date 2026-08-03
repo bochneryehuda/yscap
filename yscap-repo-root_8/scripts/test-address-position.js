@@ -55,8 +55,10 @@ const posBody = SRC.slice(posStart, SRC.indexOf('\n});', posStart));
 
 ok(!/google/i.test(posBody),
   'the position handler never mentions Google — a coordinate must come from a keyless source');
-ok(/_internals\.census/.test(posBody) && /_internals\.osm/.test(posBody),
-  'the position handler asks the Census geocoder and OpenStreetMap');
+ok(/RG\.geocodeProperty/.test(posBody),
+  'the position handler goes through geocodeProperty — where the post-incident guards live');
+ok(!/_internals\./.test(posBody),
+  'and never reaches past it to a raw provider, which would skip those guards');
 
 // Google's details lookup must not start requesting geometry: the moment it does,
 // a coordinate we may not store is one destructure away from every caller.
@@ -122,57 +124,117 @@ function restoreFetch() { global.fetch = realFetch; }
     'the label is still the compact mailing form, not the provider long form');
 
   // ---- C: the position endpoint ------------------------------------------
+  //
+  // The route calls `geocodeProperty`, and the point of that is the two refusals
+  // living INSIDE it — so the provider is injected and the real function runs.
+  // Stubbing `_internals.census` would prove nothing: `PROVIDERS` captured the
+  // originals at module load, so the stub would never be reached.
   const RG = require('../src/lib/research/geocode');
-  const realCensus = RG._internals.census, realOsm = RG._internals.osm;
-  let askedCensus = [], askedOsm = [];
+  const realGeocodeProperty = RG.geocodeProperty;
+  let answer = () => null;                       // what the (single) provider says
+  let asked = [];                                // the lines it was asked about
+  RG.geocodeProperty = (subject) => realGeocodeProperty(subject, {
+    providers: [async (line) => { asked.push(line); return answer(line); }],
+  });
+  const CENSUS_HIT = (matched) => ({ lat: 40.7142, lng: -73.9614, source: 'census', precision: 'address', matched });
 
-  // A placed address.
-  RG._internals.census = async (line) => { askedCensus.push(line); return { lat: 40.7142, lng: -73.9614, source: 'census', precision: 'address', matched: '26 S 10TH ST, BROOKLYN, NY, 11249' }; };
-  RG._internals.osm = async (line) => { askedOsm.push(line); return null; };
-
+  answer = () => CENSUS_HIT('26 S 10TH ST, BROOKLYN, NY, 11249');
   const p1 = await get(port, '/api/address/position?line1=26+South+10th+Street+Apt+4D&city=Brooklyn&state=New+York&zip=11249');
   ok(p1.status === 200 && p1.body.lat === 40.7142 && p1.body.lng === -73.9614, 'a real address comes back placed');
   ok(p1.body.source === 'census', 'the Census geocoder answered first — no key, no cap on the answer');
-  ok(askedOsm.length === 0, 'and OpenStreetMap was never troubled once Census answered');
-  ok(askedCensus.length === 1 && !/4D|Apt/i.test(askedCensus[0]),
-    `the UNIT is stripped before the lookup (asked: ${JSON.stringify(askedCensus[0])})`);
-  ok(/26 S 10th St/.test(askedCensus[0]) && /Brooklyn/.test(askedCensus[0]) && /NY 11249/.test(askedCensus[0]),
+  ok(asked.length === 1 && !/4D|Apt/i.test(asked[0]),
+    `the UNIT is stripped before the lookup (asked: ${JSON.stringify(asked[0])})`);
+  ok(/26 S 10th St/.test(asked[0]) && /Brooklyn/.test(asked[0]) && /NY 11249/.test(asked[0]),
     'and it is asked in the canonical mailing form');
 
   // The cache: the same address must not re-ask the provider.
-  askedCensus = [];
+  asked = [];
   const p1b = await get(port, '/api/address/position?line1=26+South+10th+Street+Apt+4D&city=Brooklyn&state=New+York&zip=11249');
-  ok(p1b.body.lat === 40.7142 && askedCensus.length === 0, 'the same address is served from cache, not re-asked');
+  ok(p1b.body.lat === 40.7142 && asked.length === 0, 'the same address is served from cache, not re-asked');
 
-  // Census silent → OSM is the fallback.
-  askedCensus = []; askedOsm = [];
-  RG._internals.census = async (line) => { askedCensus.push(line); return null; };
-  RG._internals.osm = async (line) => { askedOsm.push(line); return { lat: 40.2, lng: -74.7, source: 'osm', precision: 'address', matched: '1 Test St' }; };
-  const p2 = await get(port, '/api/address/position?q=1+Test+St,+Trenton,+NJ+08608');
-  ok(p2.body.lat === 40.2 && p2.body.source === 'osm', 'when Census cannot place it, OpenStreetMap is asked');
-  ok(askedCensus.length === 1 && askedOsm.length === 1, 'each provider was asked exactly once');
+  // THE WRONG-HOUSE REFUSAL — the reason this goes through `geocodeProperty` at
+  // all. Verified live in 2026-07-28: Census answers "26 S 10th St, Piscataway"
+  // with "26 10TH ST" — the directional dropped, a DIFFERENT STREET, at full
+  // address precision. Adopting that pin measures every distance from the wrong
+  // house without looking wrong, which is the exact class this endpoint exists to
+  // close. It must refuse rather than answer confidently.
+  asked = [];
+  answer = () => CENSUS_HIT('26 10TH ST, PISCATAWAY, NJ, 08854');
+  const pw = await get(port, '/api/address/position?line1=26+S+10th+St&city=Piscataway&state=NJ&zip=08854');
+  ok(pw.status === 200 && pw.body.lat === null,
+    'a geocoder answering with a DIFFERENT street is refused, not adopted');
+  ok(/different property|wrong pin|unplaced/i.test(String(pw.body.why || '')),
+    'and it says the answer was a different property: ' + JSON.stringify(pw.body.why));
 
-  // Neither can place it — an ANSWER, with a reason a person can act on.
-  RG._internals.census = async () => null;
-  RG._internals.osm = async () => null;
-  const p3 = await get(port, '/api/address/position?q=99999+Nowhere+Rd,+Nowheresville,+ZZ');
+  // The other half of the same incident: a rooftop-precise match on a house ~130m
+  // away across a municipal line, where the ZIP we already hold disagrees.
+  asked = [];
+  answer = () => ({ lat: 40.61, lng: -74.41, source: 'census', precision: 'address', matched: '1727 S 2nd St, Plainfield, NJ 07063' });
+  const pz = await get(port, '/api/address/position?line1=1727+S+2nd+St&city=Piscataway&state=NJ&zip=08854');
+  ok(pz.body.lat === null, 'a precise match whose ZIP disagrees with ours is refused too');
+
+  // "A STATE IS NOT A PLACE" — a house number and a state names nothing; there
+  // are dozens of them and a geocoder returns the first it finds. A bare length
+  // check let this through; `geocodeProperty` refuses before asking anyone.
+  asked = [];
+  answer = () => CENSUS_HIT('26 S 10TH ST, SOMEWHERE, NJ');
+  const ps = await get(port, '/api/address/position?line1=26+S+10th+St&state=NJ');
+  ok(ps.body.lat === null && asked.length === 0,
+    'a house number with only a state is refused WITHOUT troubling a provider');
+
+  // Nobody can place it — an ANSWER, with a reason a person can act on.
+  asked = [];
+  answer = () => null;
+  const p3 = await get(port, '/api/address/position?q=99999+Nowhere+Rd,+Nowheresville,+NJ+08608');
   ok(p3.status === 200 && p3.body.lat === null && p3.body.lng === null, 'an address nobody can place answers with no position');
   ok(typeof p3.body.why === 'string' && p3.body.why.length > 10, 'and says why, in words: ' + JSON.stringify(p3.body.why));
+  // A NEGATIVE IS CACHED ONLY BRIEFLY. "Nobody could place it" is usually a
+  // service having a bad minute, and pinning that for the full window answers a
+  // person who retries from a cache rather than from a lookup.
+  asked = [];
+  answer = () => CENSUS_HIT('99999 NOWHERE RD, NOWHERESVILLE, NJ, 08608');
+  const p3b = await get(port, '/api/address/position?q=99999+Nowhere+Rd,+Nowheresville,+NJ+08608');
+  ok(p3b.body.lat === null && asked.length === 0, 'within the short window the refusal is still cached');
+  await new Promise((r) => setTimeout(r, 50));
 
   // A provider that THROWS must still leave the form working.
-  RG._internals.census = async () => { throw new Error('census exploded'); };
-  RG._internals.osm = async () => { throw new Error('osm exploded'); };
-  const p4 = await get(port, '/api/address/position?q=5+Broken+Ave,+Trenton,+NJ');
+  asked = [];
+  answer = () => { throw new Error('census exploded'); };
+  const p4 = await get(port, '/api/address/position?q=5+Broken+Ave,+Trenton,+NJ+08608');
   ok(p4.status === 200 && p4.body.lat === null, 'a provider blowing up is answered, never 500');
   ok(!/exploded/.test(JSON.stringify(p4.body)), 'and the provider error text is never handed to the caller');
 
   // Not enough of an address to be worth a lookup.
-  let asked = 0;
-  RG._internals.census = async () => { asked++; return null; };
+  asked = [];
   const p5 = await get(port, '/api/address/position?q=NJ');
-  ok(p5.body.lat === null && asked === 0, 'a scrap of text is refused without troubling a provider');
+  ok(p5.body.lat === null && asked.length === 0, 'a scrap of text is refused without troubling a provider');
 
-  RG._internals.census = realCensus; RG._internals.osm = realOsm;
+  // A NON-STRING QUERY VALUE IS AN ANSWER, NOT A 500. Express's extended query
+  // parser turns `?state[x]=1` into an OBJECT; handing that to the address helpers
+  // threw out of the handler on a PUBLIC endpoint.
+  const p6 = await get(port, '/api/address/position?line1=26+S+10th+St&city=Brooklyn&state[x]=1&zip=11249');
+  ok(p6.status === 200, `an object-valued query parameter is answered, not 500ed (got ${p6.status})`);
+  ok(!/server error/i.test(JSON.stringify(p6.body)), 'and never as a server error');
+
+  // IT SHEDS RATHER THAN QUEUES. This endpoint is public and unauthenticated, and
+  // a position lookup can cost a second of OpenStreetMap's process-wide budget —
+  // so a burst that queued would stall the address autocomplete for everybody.
+  // Past the waiting limit it answers immediately with no position, which is a
+  // truthful answer it already has to be able to give.
+  asked = [];
+  // The provider is held just long enough for the burst to arrive together — on a
+  // TIMER, not released after the await, or the in-flight requests would be
+  // waiting on a promise this test only resolves once they have all answered.
+  answer = () => new Promise((r) => setTimeout(() => r(null), 400));
+  const burst = [];
+  for (let i = 0; i < 20; i++) burst.push(get(port, `/api/address/position?q=${i}+Burst+St,+Trenton,+NJ+08608`));
+  const settled = await Promise.all(burst);
+  ok(settled.every((r) => r.status === 200), 'every request in a burst is answered');
+  const shed = settled.filter((r) => /busy/i.test(String(r.body.why || ''))).length;
+  ok(shed > 0, `a burst sheds rather than queueing without bound (${shed} of 20 shed)`);
+  ok(settled.every((r) => r.body.lat === null), 'and a shed request never claims a position it does not have');
+
+  RG.geocodeProperty = realGeocodeProperty;
   cfg.addressProvider = realProvider;
   server.close();
 

@@ -9,6 +9,7 @@ import ResearchPhoto from '../components/ResearchPhoto.jsx';
 import AddressBox from '../components/AddressBox.jsx';
 import CompMap from '../components/CompMap.jsx';
 import { geoBasisInfo } from '../lib/geoBasis.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* FIND COMPARABLES — start from a PROPERTY, not from six filters typed by hand.
  *
@@ -131,7 +132,11 @@ export default function StaffCompSearch() {
   }
 
   function searchTyped() {
-    apply({ ...subjForm, property_id: undefined, application_id: undefined });
+    // `position_source` says WHICH free service placed the address. It is worth
+    // showing under the field and is not a search filter, so it stays out of the
+    // URL — this screen's query string is a link people paste to each other.
+    const { position_source: _src, ...subject } = subjForm;
+    apply({ ...subject, property_id: undefined, application_id: undefined });
   }
 
   function toggle(row) {
@@ -174,6 +179,7 @@ export default function StaffCompSearch() {
 
   return (
     <div>
+      <ResearchNav />
       <header style={{ marginBottom: 14 }}>
         <div style={{ marginBottom: 8 }}>
           <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Property Research</Link>
@@ -327,7 +333,21 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
       </section>
     );
   }
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  /* A HAND-TYPED TOWN, STATE OR ZIP DROPS THE POSITION TOO.
+     `AddressBox` already clears it when the street line is typed over, but the
+     coordinate belongs to the WHOLE picked set: pick "26 S 10th St, Brooklyn NY",
+     then correct the town to Queens by hand, and the search would have measured
+     its half mile from Brooklyn while filtering Queens — measuring from the wrong
+     place, and reading as "this town is thin". The size/beds/year/condition boxes
+     say nothing about where the property is, so they keep it.
+     FUNCTIONAL, because `AddressBox` reports a pick up to three times as the USPS
+     answer and the position land, and a stale `form` captured by an earlier render
+     would write itself back over whatever was typed in between. */
+  const PLACE_KEYS = ['city', 'state', 'zip'];
+  const set = (k) => (e) => setForm((f) => ({
+    ...f, [k]: e.target.value,
+    ...(PLACE_KEYS.includes(k) ? { lat: '', lng: '', position_source: null } : null),
+  }));
   return (
     <section style={{ ...S.panel, marginBottom: 12 }}>
       <div style={{ marginBottom: 8, color: INK, fontWeight: 600 }}>Describe the property you are valuing</div>
@@ -338,7 +358,7 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
           cannot be measured from, and the field says so. */}
       <AddressBox
         value={form}
-        onChange={(next) => setForm({ ...form, ...next })}
+        onChange={(next) => setForm((f) => ({ ...f, ...next }))}
         label="Address"
         placeholder="26 S 10th St"
         hint="Pick it from the list and the town, state and ZIP fill themselves in — and distance searches become possible."

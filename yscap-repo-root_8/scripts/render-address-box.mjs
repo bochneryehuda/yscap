@@ -80,16 +80,21 @@ const UNPLACEABLE = {
     let positionCalls = 0, compsCalls = [];
     await ctx.route('**/api/address/suggest*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(suggestReply) }));
-    await ctx.route('**/api/address/position*', (route) => {
+    let slowPosition = 0;
+    await ctx.route('**/api/address/position*', async (route) => {
       positionCalls++;
+      // A DELIBERATELY SLOW answer for the late-report race below: the whole point
+      // is that it lands AFTER the officer has typed on.
+      if (slowPosition) await new Promise((r) => setTimeout(r, slowPosition));
       return route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify({ lat: null, lng: null, source: null, why: 'we could not place that address on the map' }) });
     });
-    // USPS is not configured here; answer it explicitly so the pick is not left
-    // waiting on a real call.
+    // USPS is not configured by default, answered explicitly so a pick is never
+    // left waiting on a real call. Steerable, because the CORRECTED case is one of
+    // the two late reports that can overwrite what was typed after the pick.
+    let uspsReply = { configured: false, status: 'not_configured', address: null };
     await ctx.route('**/api/address/verify*', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json',
-        body: JSON.stringify({ configured: false, status: 'not_configured', address: null }) }));
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(uspsReply) }));
     await ctx.route('**/api/research/comps*', (route) => {
       compsCalls.push(new URL(route.request().url()));
       return route.fulfill({ status: 200, contentType: 'application/json',
@@ -222,6 +227,118 @@ const UNPLACEABLE = {
         : await page.locator('xpath=//label[normalize-space(text())="State"]/following-sibling::input[1]').first().inputValue();
       ok(stateVal === 'NY', `${name}: and the state`);
     }
+
+    // ---- 6b. A LATE ANSWER NEVER WIPES WHAT WAS TYPED AFTER THE PICK -------
+    // A pick is reported up to THREE times — on the click, again when USPS
+    // standardises the text, and again when the position lands a second or two
+    // later — and the natural next move is to tab straight on and fill in Living
+    // area, Bedrooms and Year built, which are the next boxes. Each late report
+    // is made from a closure created on the render where the suggestion was
+    // clicked, so a component that spread its captured `value`, or a screen that
+    // merged non-functionally, wrote the PRE-PICK form back over everything typed
+    // since — four fields silently blanked about a second later, with nothing
+    // said. Both halves are pinned here, with a SLOW position lookup and a USPS
+    // answer that corrects the address, so the race is real rather than lucky.
+    suggestReply = UNPLACEABLE;                     // forces a position lookup
+    slowPosition = 900;
+    uspsReply = { configured: true, status: 'corrected',
+      address: { line1: '9 Nowhere Road', unit: '', city: 'Nowheresville', state: 'NJ', zip: '07001', country: 'US' } };
+    await page.goto(`${base}/portal/#/internal/research/comps`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2400);
+    const addr2 = page.locator('input[placeholder="26 S 10th St"]');
+    await addr2.fill('9 Nowhere');
+    await page.waitForTimeout(500);
+    await page.locator('.addr-item').first().click();
+    await page.waitForTimeout(120);                 // type IMMEDIATELY, as a person would
+    await page.locator('input[placeholder="1500"]').fill('2400');
+    await page.locator('input[placeholder="3"]').fill('4');
+    await page.locator('input[placeholder="1962"]').fill('1931');
+    await page.locator('input[placeholder="Piscataway"]').fill('Hoboken');
+    await page.waitForTimeout(1800);                // let BOTH late answers land
+    ok(await page.locator('input[placeholder="1500"]').inputValue() === '2400',
+      'Living area typed after the pick survives the late answers');
+    ok(await page.locator('input[placeholder="3"]').inputValue() === '4', 'Bedrooms survives');
+    ok(await page.locator('input[placeholder="1962"]').inputValue() === '1931', 'Year built survives');
+    // THE TOWN IS THE ONE FIELD THAT CAN LEGITIMATELY MOVE, because USPS is the
+    // authority on the picked address's town. Here it does not: USPS answers in
+    // milliseconds and the officer types over it a beat later, so their word is
+    // the last one — which is the right outcome and the one that was broken. What
+    // must NEVER move it is the slow POSITION answer, which learned a coordinate
+    // and nothing else; that is asserted on its own below with USPS off.
+    ok(await page.locator('input[placeholder="Piscataway"]').inputValue() === 'Hoboken',
+      'a town typed after the USPS answer is the last word and survives both late reports');
+    ok(/USPS verified/i.test(await page.locator('text=/USPS verified/i').first().innerText().catch(() => '')),
+      'and the field says the address was USPS-corrected, so nothing moved silently');
+
+    // The position answer on its own, with USPS off: it may add the coordinate and
+    // touch NOTHING else. This is the half that was introduced by this change, and
+    // the half that had no explanation attached to it at all.
+    uspsReply = { configured: false, status: 'not_configured', address: null };
+    await page.goto(`${base}/portal/#/internal/research/comps`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2400);
+    await page.locator('input[placeholder="26 S 10th St"]').fill('9 Nowhere');
+    await page.waitForTimeout(500);
+    await page.locator('.addr-item').first().click();
+    await page.waitForTimeout(120);
+    await page.locator('input[placeholder="1500"]').fill('1800');
+    await page.locator('input[placeholder="Piscataway"]').fill('Hoboken');
+    await page.waitForTimeout(1500);
+    ok(await page.locator('input[placeholder="1500"]').inputValue() === '1800',
+      'a late POSITION answer leaves the size alone');
+    ok(await page.locator('input[placeholder="Piscataway"]').inputValue() === 'Hoboken',
+      'and leaves a hand-typed town alone — it learned a coordinate, nothing else');
+
+    // ---- 6c. CORRECTING THE TOWN BY HAND DROPS THE POSITION ----------------
+    // The coordinate belongs to the WHOLE picked set, not just the street line.
+    // Pick Brooklyn, correct the town to Queens, and a search that still measured
+    // from Brooklyn would be measuring from the wrong place while filtering the
+    // right one — bounded by the town filter, so it reads as "this town is thin"
+    // rather than as a bug.
+    suggestReply = PLACED; slowPosition = 0;
+    uspsReply = { configured: false, status: 'not_configured', address: null };
+    await page.goto(`${base}/portal/#/internal/research/comps`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2400);
+    const addr3 = page.locator('input[placeholder="26 S 10th St"]');
+    await addr3.fill('26 S 10th');
+    await page.waitForTimeout(500);
+    await page.locator('.addr-item').first().click();
+    await page.waitForTimeout(400);
+    await page.locator('input[placeholder="Piscataway"]').fill('Queens');
+    compsCalls = [];
+    await page.locator('button:has-text("Search")').first().click();
+    await page.waitForTimeout(900);
+    const asked4 = compsCalls[compsCalls.length - 1];
+    ok(asked4 && asked4.searchParams.get('city') === 'Queens', 'the hand-typed town is what is searched');
+    ok(asked4 && !asked4.searchParams.get('lat'),
+      'and the picked position is dropped — never measured from Brooklyn while filtering Queens');
+    ok(asked4 && !asked4.searchParams.get('position_source'),
+      'and which service placed it is not smuggled into the URL as a filter');
+
+    // ---- 7. THE SUGGESTIONS ARE ON THE SCREEN, WHEREVER THE FIELD SITS ----
+    // The menu is portaled to <body> and position:FIXED, so a field low on a tall
+    // page put it below the fold with no way to scroll to it — you could type and
+    // nothing would ever appear. The flip-above logic existed and was dead: the
+    // menu only renders once `place()` has run, so `place()` always measured a
+    // menu that was not in the DOM yet and took its height as 0. The main research
+    // screen is where it bites (the box sits at y≈688 in a 720px window), so that
+    // is where it is pinned.
+    await page.goto(`${base}/portal/#/internal/research`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    await page.locator('input[placeholder="Start typing a property address…"]').fill('26 S 10th');
+    await page.waitForTimeout(600);
+    const geo = await page.evaluate(() => {
+      const m = document.querySelector('.addr-menu');
+      if (!m) return null;
+      const r = m.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight };
+    });
+    ok(!!geo, 'the suggestion menu is in the document');
+    ok(geo && geo.top >= 0 && geo.bottom <= geo.vh,
+      `and it is inside the window (top ${geo && geo.top}, bottom ${geo && geo.bottom}, window ${geo && geo.vh})`);
+    await page.locator('.addr-item').first().click();
+    await page.waitForTimeout(400);
+    ok(await page.locator('xpath=//label[normalize-space(text())="State"]/following-sibling::input[1]').first().inputValue() === 'NY',
+      'and a suggestion down there is genuinely clickable');
 
     ok(errors.length === 0, `no page errors (${errors.slice(0, 3).join(' | ') || 'none'})`);
   } catch (e) {

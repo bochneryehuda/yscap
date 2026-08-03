@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, S, money, sqft, num, day, pct } from '../lib/research.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* ONE APPRAISER — their profile, everything we have ever been told about how to
    reach them, every file they appraised for us, every report of theirs we hold,
@@ -37,6 +38,7 @@ export default function StaffAppraiserDetail() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10 }}>
         <Link to="/internal/research/appraisers" style={{ color: MUTED, fontSize: 13 }}>← Back to Appraisers</Link>
       </div>

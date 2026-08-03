@@ -8,6 +8,7 @@ import {
 } from '../lib/research.js';
 import { TownLookup } from '../components/AddressBox.jsx';
 import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* PROPERTY RESEARCH — the search engine over every property and every comparable
    sale our appraisers have ever put in front of us.
@@ -110,6 +111,7 @@ export default function StaffPropertyResearch() {
 
   return (
     <div>
+      <ResearchNav />
       <header style={{ marginBottom: 14 }}>
         <h1 style={{ margin: '0 0 4px', color: INK }}>Property Research</h1>
         <p style={{ margin: 0, color: MUTED, maxWidth: 760 }}>
@@ -163,9 +165,16 @@ export default function StaffPropertyResearch() {
               an independent filter and would narrow the search twice over. */}
           <TownLookup style={{ marginBottom: 10 }}
             onFill={({ city, state }) => {
-              const next = { city: city || draft.city, state: state || draft.state };
-              setDraft({ ...draft, ...next });
-              apply(next);
+              // FUNCTIONAL, and it only navigates when something actually moved.
+              // `onFill` fires on the pick and AGAIN when USPS confirms the text,
+              // so a stale `draft` would revert a filter typed in between, and an
+              // unconditional `apply` would push two history entries and run two
+              // searches for one pick.
+              setDraft((d) => ({ ...d, city: city || d.city, state: state || d.state }));
+              const next = {};
+              if (city && city !== filters.city) next.city = city;
+              if (state && state !== filters.state) next.state = state;
+              if (Object.keys(next).length) apply(next);
             }} />
 
           <Field label="Address, town or ZIP">
