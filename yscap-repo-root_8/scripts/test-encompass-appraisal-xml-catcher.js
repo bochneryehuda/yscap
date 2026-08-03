@@ -543,10 +543,14 @@ t('a non-url is refused with a plain reason', () => {
   }
 
   t('the sweep PACES its vendor calls instead of bursting', () => {
-    // `apiGet` has no 429/backoff handling, and three other Encompass workers
-    // share this process, this credential and one token cache — so a burst that
-    // trips ICE's rate limit takes them down too. The bulk puller already paces
-    // at 350ms; this matches it rather than inventing a second convention.
+    // `apiGet` has no 429/Retry-After handling, and three other Encompass
+    // workers share this process, this credential and one token cache — so a 429
+    // is an unhandled error to all of them. Say no more than that: what Encompass
+    // enforces is CONCURRENCY, and a sequential walk holds one slot paced or not,
+    // so this pause is not what prevents a 429. It is also per LOAN, not per
+    // request, so it bounds loans/minute and not requests/minute — the 350ms
+    // constant is borrowed from reader.bulkPullAllLoans for consistency, NOT
+    // because the two walks are equally paced.
     assert.strictEqual(paceGaps.length, 2, 'three loans should be three calls');
     for (const gap of paceGaps) {
       assert.ok(gap >= 35, `expected a pause between loans, saw ${gap}ms`);
@@ -557,6 +561,137 @@ t('a non-url is refused with a plain reason', () => {
     assert.ok(secondRan && secondRan.skippedTick !== true,
       'a later tick must run — a stuck flag would wedge the catcher silently');
   });
+
+  // ── a repeating warning is BOUNDED ────────────────────────────────────────
+  // The only behaviour this PR changes, so it is the only thing that can regress.
+  // Both warn paths run on EVERY sweep (`paceMs` is a parameter default, and the
+  // registry check is inside `catchDisabled`), so an unbounded one is 144..1440
+  // identical lines a day — which is how a log stops being read at all.
+  //
+  // Driven through the REAL callers rather than by exporting the helper: what
+  // matters is that the paths people actually hit are bounded.
+  {
+    const origWarn = console.warn;
+    const seen = [];
+    console.warn = (...a) => { seen.push(a.join(' ')); };
+    let sameTwice, thenDifferent, thenBackToFirst;
+    try {
+      process.env.__TEST_XML_WARNONCE = 'nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      envNum('__TEST_XML_WARNONCE', 7);
+      sameTwice = seen.length;
+
+      process.env.__TEST_XML_WARNONCE = 'other-nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      thenDifferent = seen.length;
+
+      process.env.__TEST_XML_WARNONCE = 'nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      thenBackToFirst = seen.length;
+    } finally {
+      console.warn = origWarn;
+      delete process.env.__TEST_XML_WARNONCE;
+    }
+
+    t('the same bad value warns ONCE however often it is re-read', () => {
+      assert.strictEqual(sameTwice, 1,
+        `two reads of one bad value must warn once, saw ${sameTwice}`);
+    });
+
+    t('a DIFFERENT bad value warns again — a second breakage is not swallowed', () => {
+      assert.strictEqual(thenDifferent, 2,
+        `a new bad value must warn, saw ${thenDifferent} total`);
+    });
+
+    t('broken BACK to an already-warned value stays silent, as documented', () => {
+      // Not a bug — the deliberate trade the comment on `warnOnce` states. Pinned
+      // so the comment and the code cannot drift apart: if this ever starts
+      // warning, that comment is the thing to update.
+      assert.strictEqual(thenBackToFirst, 2,
+        `a repeat of an already-warned value must stay quiet, saw ${thenBackToFirst}`);
+    });
+  }
+
+  // ── an unregistered switch key warns once and FAILS OPEN ──────────────────
+  // If the registry entry is ever renamed or dropped, `!switches.on(key)` reads
+  // as "disabled" and the catcher would stop forever in total silence. The guard
+  // keeps it running and says so — but must say so ONCE, not once per sweep.
+  //
+  // The switch module is STUBBED THROUGH require.cache rather than imported, for
+  // one reason that always holds: you cannot make the REAL registry lack the key,
+  // and a registry without the key is the whole state under test.
+  //
+  // Do not read this as "nothing real is loaded" — that was the first version of
+  // this comment and it is only true where `pg` is absent. Wherever node_modules
+  // IS installed (CI), `catchDisabled`'s lazy require has already pulled
+  // switches -> flags -> db -> pg into the cache during the earlier sweep tests,
+  // which is exactly why `savedMod` is truthy and this block RESTORES the real
+  // module rather than deleting the entry. Both paths are handled; only the
+  // claim was wrong.
+  {
+    const KEY = 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED';
+    const swPath = require.resolve(
+      path.join(__dirname, '..', 'src', 'lib', 'integrations', 'switches'));
+    const enc2 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+    const origWarn = console.warn, origConfigured = enc2.configured, origGet = enc2.apiGet;
+    const savedMod = require.cache[swPath];
+    const warns = [];
+    const sweeps = [];
+    try {
+      // BY_KEY present but WITHOUT our key — the exact shape a rename or a
+      // deleted registry entry would leave behind.
+      //
+      // `on: () => false` is REAL, not arbitrary: switches.on() reads BY_KEY and
+      // returns false for a key it does not know. That is the whole reason the
+      // guard exists — `!switches.on(key)` on an unknown key reads as "disabled",
+      // which would stop the catcher forever in silence. Stubbing `true` here
+      // would model a state the real module cannot produce AND would make the
+      // fail-open assertion below vacuous: with the guard deleted the catcher
+      // would keep sweeping anyway, so the test could never catch its removal.
+      // With `false`, deleting the guard turns the catcher off and that assertion
+      // goes red — which is what its name promises.
+      require.cache[swPath] = {
+        id: swPath, filename: swPath, loaded: true, exports: { BY_KEY: {}, on: () => false },
+      };
+      console.warn = (...a) => { warns.push(a.join(' ')); };
+      enc2.configured = () => true;
+      enc2.apiGet = async () => [];
+      for (let i = 0; i < 4; i++) {
+        // eslint-disable-next-line no-await-in-loop
+        sweeps.push(await M.sweepOnce(db, { loans: [{ loanId: 'sw1' }], paceMs: 0 }));
+      }
+    } finally {
+      console.warn = origWarn;
+      enc2.configured = origConfigured;
+      enc2.apiGet = origGet;
+      if (savedMod) require.cache[swPath] = savedMod; else delete require.cache[swPath];
+    }
+    const registryWarns = warns.filter((w) => w.includes('is not in the registry'));
+
+    t('a missing switch entry warns ONCE across many sweeps', () => {
+      assert.strictEqual(registryWarns.length, 1,
+        `four sweeps must warn once about the missing key, saw ${registryWarns.length}`);
+    });
+
+    t('a missing switch entry FAILS OPEN — the catcher keeps sweeping', () => {
+      // Silently not catching is the exact failure this module exists to prevent,
+      // and the env kill switch remains the guaranteed stop.
+      assert.ok(sweeps.every((s) => s && s.disabled !== true),
+        'an unregistered key must not disable the catcher');
+      assert.ok(sweeps.every((s) => s && s.loans === 1),
+        'the sweep must still walk its loans');
+    });
+
+    t('the switch key really is registered today, so that guard stays latent', () => {
+      // Read from SOURCE, not by importing the module — same purity reason as
+      // above. If someone drops this entry the catcher does not break (it fails
+      // open), which is exactly why nothing else would notice: this is the check
+      // that notices.
+      const src = require('fs').readFileSync(swPath, 'utf8');
+      assert.ok(src.includes(KEY),
+        `${KEY} must be in the switch registry — the live on/off control depends on it`);
+    });
+  }
 
   console.log(`test-encompass-appraisal-xml-catcher: ${pass} checks passed`);
 })().catch((e) => { console.error('FAIL (async block):', e && e.message); process.exitCode = 1; });
