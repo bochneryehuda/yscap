@@ -570,7 +570,12 @@ router.get('/comps', async (req, res, next) => {
       const c = stripEmpty(req.query);
       for (const k of ['want', 'relaxable', 'application_id', 'property_id',
         'address', 'gla', 'beds', 'baths_full', 'baths_half', 'year_built',
-        'condition_uad', 'property_type', 'units', 'lat', 'lng']) delete c[k];
+        'condition_uad', 'property_type', 'units', 'lat', 'lng',
+        // `market_area_id` names a SHAPE, not a column. It is resolved to the
+        // properties inside it below and passed as `property_ids`; left here it
+        // would reach `buildQuery` as an unknown key and be silently ignored,
+        // which is a filter the screen claims to have applied and did not.
+        'market_area_id']) delete c[k];
       return c;
     })());
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
@@ -590,6 +595,33 @@ router.get('/comps', async (req, res, next) => {
       if (v === '' || v === '0' || Number(v) === 0) delete filters[k];
     }
     if (subject.id) filters.exclude_property_id = subject.id;
+
+    /* THE DRAWN NEIGHBOURHOOD, IF ONE WAS PICKED — and it is never relaxed.
+     *
+     * A radius is a bad model of a neighbourhood and every appraiser knows it: a
+     * mile in one direction crosses a river or a town line, a mile in another is
+     * the same houses on the same streets. When an officer has drawn the boundary
+     * themselves, that judgement is the most specific thing the search has, so it
+     * is honoured EXACTLY — it never appears on the relaxation ladder, for the
+     * same reason `comp_set` does not. Widening past a boundary a person drew
+     * would answer a different question than the one on screen.
+     *
+     * A shape that names nothing live is a REFUSAL, not a silently-dropped filter:
+     * the screen said the search was cut to a neighbourhood, and answering with
+     * the whole town instead is the class of bug this area exists to close.
+     */
+    let marketArea = null;
+    if (req.query.market_area_id) {
+      marketArea = await resolveMarketArea(String(req.query.market_area_id));
+      if (!marketArea) {
+        return res.json({
+          rows: [], total: 0, subject, refused: 'market_area_not_found',
+          why: 'That market area is not there any more — it may have been archived. Pick another, '
+            + 'or search without one.',
+        });
+      }
+      filters.property_ids = marketArea.ids;      // [] means "it contains none of ours"
+    }
     // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
     // (db/412). A stored subject property has `eff_latitude`; a typed one carries
     // whatever the caller sent as lat/lng. Distance is always computed when we know
@@ -800,6 +832,16 @@ router.get('/comps', async (req, res, next) => {
       // know where your property is yet".
       subject_located: sLat != null && sLng != null,
       radius_dropped: !!(req.query.radius_miles && (sLat == null || sLng == null)),
+      // THE DRAWN BOUNDARY, AND WHAT IT ACTUALLY CUT. Both numbers, because "12 of
+      // the 40 in its bounding box" is a boundary doing real work and "40 of the
+      // 40" means the shape is a rectangle that is cutting nothing — which the
+      // person relying on it should know. `truncated` says the box held more than
+      // one reading holds, so the answer rests on a large sample rather than on
+      // all of it; a silent cap would read as completeness.
+      market_area: marketArea ? {
+        id: marketArea.area.id, name: marketArea.area.name,
+        inArea: marketArea.inArea, inBox: marketArea.inBox, truncated: marketArea.truncated,
+      } : null,
     });
   } catch (e) { next(e); }
 });
@@ -1948,6 +1990,48 @@ router.post('/market-areas/:id/archive', async (req, res, next) => {
 });
 
 /** Which of a market's properties fall inside a drawn area. */
+/**
+ * A DRAWN MARKET AREA, RESOLVED TO THE PROPERTIES INSIDE IT.
+ *
+ * The owner's reason for drawing one in the first place: a mile in one direction
+ * crosses a river, a rail line or a school-district boundary; a mile in another is
+ * the same houses on the same streets. So the boundary decides which comparables
+ * an officer is shown — which means resolving it has to be exact, and it has to be
+ * the SAME exactness everywhere. `market-area.pointInRing` is that one definition
+ * (68 assertions, including a 61x61 grid scan); nothing here re-implements it.
+ *
+ * The box comes first because it is indexed and throws away almost everything;
+ * the exact test then runs on what survives, because the box includes the corners
+ * a drawn shape deliberately cuts off. `truncated` is reported rather than
+ * swallowed — a shape big enough to hit the cap has been answered from a large
+ * sample rather than from all of it, and the screen says so.
+ *
+ * Returns null when the id names no live area, so a caller can tell "the shape
+ * contains nothing" (ids: []) from "there is no such shape" (null). Those are
+ * different answers and must never collapse into one.
+ */
+const MARKET_AREA_SCAN_CAP = 5000;
+async function resolveMarketArea(id) {
+  if (!isUuid(id)) return null;
+  const a = (await db.query('SELECT * FROM market_areas WHERE id=$1 AND archived_at IS NULL', [id])).rows[0];
+  if (!a) return null;
+  const near = (await db.query(
+    `SELECT p.id, p.eff_latitude, p.eff_longitude
+       FROM properties p
+      WHERE p.eff_latitude BETWEEN $1 AND $2
+        AND p.eff_longitude BETWEEN $3 AND $4
+      LIMIT ${MARKET_AREA_SCAN_CAP}`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
+  const ring = Array.isArray(a.ring) ? a.ring : [];
+  const inside = near.filter((p) => MA.pointInRing(p.eff_latitude, p.eff_longitude, ring));
+  return {
+    area: { id: a.id, name: a.name, city: a.city, state: a.state, area_sq_mi: a.area_sq_mi },
+    ids: inside.map((p) => p.id),
+    inBox: near.length,
+    inArea: inside.length,
+    truncated: near.length >= MARKET_AREA_SCAN_CAP,
+  };
+}
+
 router.get('/market-areas/:id/properties', async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });

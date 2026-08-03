@@ -108,6 +108,25 @@ export default function StaffCompSearch() {
     return e;
   }, [q]);
 
+  /* THE NEIGHBOURHOODS SOMEBODY HAS DRAWN FOR THIS TOWN.
+     A radius is a bad model of a neighbourhood — a mile in one direction crosses a
+     river or a town line, a mile in another is the same houses on the same
+     streets — so an officer who has drawn the boundary themselves should be able
+     to cut the comparable search to it. Only shapes for the market being searched
+     are offered; a boundary drawn around a different town is not a choice worth
+     making here. */
+  const [areas, setAreas] = useState([]);
+  useEffect(() => {
+    const st = (d && d.subject && d.subject.state) || q.state || '';
+    const city = (d && d.subject && d.subject.city) || q.city || '';
+    if (!st && !city) { setAreas([]); return; }
+    let live = true;
+    api.marketAreas({ state: st, city })
+      .then((r) => { if (live) setAreas(r.rows || []); })
+      .catch(() => { if (live) setAreas([]); });
+    return () => { live = false; };
+  }, [d, q.state, q.city]);
+
   const run = useCallback(() => {
     if (!canSearch) { setD(null); return; }
     setBusy(true); setErr('');
@@ -219,6 +238,27 @@ export default function StaffCompSearch() {
             onChange={(e) => apply({ sold_within_months: e.target.value })}>
             {MONTHS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
           </select>
+          {/* THE DRAWN BOUNDARY. It is never relaxed by the ladder — a judgement
+              somebody made about where this neighbourhood ends is the most
+              specific thing the search has, and widening past it would answer a
+              different question than the one on screen. It says what it cut, in
+              both numbers: "12 of the 40 nearby" is a boundary doing real work,
+              "40 of the 40" means the shape is a rectangle. */}
+          {areas.length > 0 && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <select style={{ ...S.input, width: 'auto' }} value={q.market_area_id || ''}
+                onChange={(e) => apply({ market_area_id: e.target.value || undefined })}>
+                <option value="">anywhere in the town</option>
+                {areas.map((a) => <option key={a.id} value={a.id}>inside “{a.name}”</option>)}
+              </select>
+              {d && d.market_area && (
+                <span style={{ color: MUTED, fontSize: 12 }}>
+                  {d.market_area.inArea} of the {d.market_area.inBox} nearby are inside it
+                  {d.market_area.truncated ? ' (a large sample, not all of them)' : ''}
+                </span>
+              )}
+            </span>
+          )}
           {/* RENOVATED OR NOT — AND WE DO NOT HAVE TO GUESS. An after-repair
               value has to rest on sales of FINISHED houses, and every other tool
               in this industry leaves you to work that out from a photograph. The

@@ -78,9 +78,23 @@ miles, which is a county"). Still to do:
   what-is-inside). Archived, never deleted: a valuation may rest on a boundary.
 - [x] **A4c** Drawing on the map — **DONE**, verified by CLICKING the map in
   Chromium and reading the saved shape back out of the database.
-- [ ] **A4d** Use it as a comparable-search filter. The route that answers
-  "what is inside this area" exists and cuts correctly (measured: 19 of the 59
-  its bounding box held); wiring it into the comp search itself is what is left.
+- [x] **A4d** **DONE** — a drawn area is a comparable-search filter, and it is
+  never relaxed. `?market_area_id=` on `GET /api/research/comps`, resolved by ONE
+  place (`resolveMarketArea`) that reuses `market-area.pointInRing` rather than
+  re-implementing ray casting in SQL — two answers to "is this house inside that
+  shape" is exactly the kind of disagreement nobody would notice, because the
+  search still returns houses and they still look plausible.
+
+  Four rules, each pinned by `scripts/test-market-area-filter-db.js` (20, in
+  `npm test`) and two of them proven to fail when reverted: the cut is EXACT (a
+  property in the bounding box but outside the drawn ring does not come back — the
+  box is what an index can express, not what the officer drew); the cut happens IN
+  SQL, so the LIMIT and the total stay honest; an area containing NONE of our
+  properties returns nothing rather than the whole town; and the relaxation ladder
+  never widens past a boundary a person drew. An archived or unknown shape is a
+  refusal, never a dropped filter. The answer says what the boundary cut, in both
+  numbers — "12 of the 40 in its bounding box" is a boundary doing real work,
+  "40 of the 40" means the shape is a rectangle.
 
 **Why this matters more than a radius:** a mile in one direction crosses a river,
 a rail line or a school-district boundary; a mile in another is the same houses
