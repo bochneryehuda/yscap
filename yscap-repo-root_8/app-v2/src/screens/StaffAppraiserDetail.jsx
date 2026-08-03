@@ -50,7 +50,11 @@ export default function StaffAppraiserDetail() {
           {a.import_count > 0 && (
             <span style={S.tag}>{num(a.import_count)} report{a.import_count === 1 ? '' : 's'} added by hand</span>
           )}
-          <span style={S.tag}>{num((d.properties || []).length)} propert{(d.properties || []).length === 1 ? 'y' : 'ies'}</span>
+          {/* The server's own count, not the length of a list it capped at 2000. */}
+          <span style={S.tag}>
+            {num((d.totals && d.totals.properties) ?? (d.properties || []).length)}
+            {' '}propert{((d.totals && d.totals.properties) ?? (d.properties || []).length) === 1 ? 'y' : 'ies'}
+          </span>
           {a.first_report_date && <span style={S.tag}>first {day(a.first_report_date)}</span>}
           {a.last_report_date && <span style={S.tag}>last {day(a.last_report_date)}</span>}
         </div>
@@ -162,7 +166,10 @@ export default function StaffAppraiserDetail() {
       {(d.imports || []).length > 0 && (
         <section style={{ ...S.panel, marginTop: 14 }}>
           <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
-            Other reports of theirs we hold ({d.imports.length})
+            Other reports of theirs we hold ({num((d.totals && d.totals.imports) ?? d.imports.length)})
+            {(d.totals && d.totals.imports > d.imports.length) && (
+              <span style={{ color: MUTED, fontWeight: 400, fontSize: 13 }}> — showing the most recent {num(d.imports.length)}</span>
+            )}
           </h2>
           <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
             Reports added straight to the research database — no loan file behind them.
@@ -196,7 +203,7 @@ export default function StaffAppraiserDetail() {
       )}
 
       {/* ---- every property they have ever put in front of us ---- */}
-      <PropertiesSection rows={d.properties || []} />
+      <PropertiesSection rows={d.properties || []} total={d.totals && d.totals.properties} />
     </div>
   );
 }
@@ -205,7 +212,10 @@ export default function StaffAppraiserDetail() {
    of their own report, or as a comparable sale supporting somebody else's value.
    Long lists are the norm here (one busy appraiser can reach a few thousand), so
    the list filters and pages in the browser rather than dumping everything. */
-function PropertiesSection({ rows }) {
+// `total` is the server's real count. `rows` is capped at 2000, and the filter
+// and "Show more" below operate inside whatever survived that cap — so the
+// heading has to say when it is showing a slice rather than everything.
+function PropertiesSection({ rows, total }) {
   const [q, setQ] = useState('');
   const [role, setRole] = useState('');
   const [shown, setShown] = useState(50);
@@ -223,7 +233,10 @@ function PropertiesSection({ rows }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
         <div>
           <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
-            Every property they have shown us ({num(rows.length)})
+            Every property they have shown us ({num(total ?? rows.length)})
+            {(total != null && total > rows.length) && (
+              <span style={{ color: MUTED, fontWeight: 400, fontSize: 13 }}> — showing the {num(rows.length)} most recent</span>
+            )}
           </h2>
           <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
             Their own subject properties and every comparable sale they have used, across all their reports.

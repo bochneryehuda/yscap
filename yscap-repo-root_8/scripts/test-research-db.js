@@ -310,6 +310,78 @@ async function makeAppraisal(appId, o) {
     ok(reno.year_built === 1930 && Number(reno.gla) === 1600,
       'everything that is true either way (size, year built) still rolls up from the same report');
 
+    // (4b) DEPRECIATION IS CONDITION IN DOLLARS, AND MUST OBEY THE SAME RULE.
+    // db/448 added the cost approach without this protection, which produced a
+    // property row reading "condition C5" and "zero physical depreciation,
+    // replacement cost as-if-new" AT THE SAME TIME — not a conservative answer or
+    // an optimistic one, a self-contradicting one. Reproduced here exactly: an
+    // older as-is report states real depreciation, then the renovation report
+    // states none, and the property must keep the as-is figures.
+    // Its own loan file: one non-superseded appraisal per application, and the
+    // warehouse joins these two by ADDRESS, which is the whole point.
+    const asIsApp = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `4 Reno Rd ${sfx}` })])).rows[0].id;
+    const asIsRep = await makeAppraisal(asIsApp, {
+      date: '2019-04-01', asIs: 260000, address: '4 Reno Rd', city: CITY, state: 'NJ', zip: '08854',
+      gla: 1600, beds: 3, condition: 'C5', quality: 'Q4', yearBuilt: '1930',
+      appraiser: 'Dana Reyes', company: 'Reno Appraisals', license: `RG${LIC.slice(-6)}`, licenseState: 'NJ',
+    });
+    await db.query(
+      `UPDATE appraisals SET depreciation_physical=60000, depreciation_total=72000,
+         cost_new_total=300000, depreciated_cost_improvements=228000, dwelling_cost_new=250000,
+         dwelling_sqft=1600, cost_quality_rating='Average', effective_age=40,
+         remaining_economic_life=20, physical_deficiency_note='Roof at end of life.',
+         site_improvements_value=15000, building_status='Existing' WHERE id=$1`, [asIsRep]);
+    await db.query(
+      `UPDATE appraisals SET depreciation_physical=0, depreciation_total=0,
+         cost_new_total=520000, depreciated_cost_improvements=520000, dwelling_cost_new=500000,
+         dwelling_sqft=2100, cost_quality_rating='Good', effective_age=3,
+         remaining_economic_life=57, physical_deficiency_note='None noted.',
+         site_improvements_value=40000, building_status='SubstantiallyComplete' WHERE id=$1`, [A3]);
+    await ingest.ingestAppraisal(D, asIsRep);
+    await ingest.ingestAppraisal(D, A3);          // the RENOVATION report is newest
+    const renoCost = (await db.query(`SELECT * FROM properties WHERE id=$1`, [reno.id])).rows[0];
+    ok(renoCost.condition_uad === 'C5', 'the older as-is report still governs the condition');
+    ok(Number(renoCost.depreciation_physical) === 60000 && Number(renoCost.depreciation_total) === 72000
+      && Number(renoCost.cost_new_total) === 300000
+      && Number(renoCost.depreciated_cost_improvements) === 228000
+      && Number(renoCost.dwelling_cost_new) === 250000,
+    'AND SO DOES ITS DEPRECIATION — the newest report is about a house that does not exist yet, so the '
+      + 'warehouse can no longer report "C5" and "no depreciation" on one row');
+    ok(renoCost.cost_quality_rating === 'Average', 'the cost grade follows the same rule');
+    // …AND SO DO THE YEARS. Physical depreciation IS effective age over total
+    // economic life, and remaining_economic_life comes off the SAME cost node —
+    // protecting the dollars and not the years reproduced the identical
+    // contradiction one column over, which is what the second audit measured.
+    ok(Number(renoCost.effective_age) === 40 && Number(renoCost.remaining_economic_life) === 20,
+      'the AGE and the remaining life obey the after-repair rule too — a 1930 house is not 3 years old '
+      + 'because somebody plans to renovate it');
+    ok(Number(renoCost.dwelling_sqft) === 1600,
+      'and the cost triple stays arithmetically whole — dwelling cost over dwelling feet must not mix '
+      + 'an as-is dollar figure with an after-repair size');
+    ok(renoCost.physical_deficiency_note === 'Roof at end of life.',
+      '"None noted." can never sit beside condition C5 and $60,000 of physical depreciation');
+    // THE OTHER DIRECTION IS A BUG TOO: a false refusal loses a fact we hold.
+    // building_status's three non-Existing values are ONLY ever stated on a
+    // subject-to report — the exact set marked as_repaired — so guarding it made
+    // the column unable to say anything but "Existing".
+    ok(renoCost.building_status === 'SubstantiallyComplete',
+      'the BUILD STATUS is NOT refused — Proposed/UnderConstruction/SubstantiallyComplete are only ever '
+      + 'stated on the very reports the guard would refuse, so guarding it silenced the column entirely');
+    ok(Number(renoCost.site_improvements_value) === 40000,
+      'nor is the site-improvements value — the XML attribute is literally SiteOtherImprovementsAsIsAmount, '
+      + 'an as-is figure by name on any report');
+    const renoObs2 = (await db.query(
+      `SELECT depreciation_physical, cost_new_total FROM property_observations
+        WHERE appraisal_id=$1 AND role='subject'`, [A3])).rows[0];
+    ok(Number(renoObs2.depreciation_physical) === 0 && Number(renoObs2.cost_new_total) === 520000,
+      'while the after-repair figures are still recorded on the observation, dated and marked as such — '
+      + 'refused for the roll-up, never lost');
+    // Put the address back to a single-report state for section 5.
+    await db.query(`UPDATE appraisals SET superseded = true WHERE id=$1`, [asIsRep]);
+    await ingest.ingestAppraisal(D, asIsRep);
+
     // ---- 5. superseded -----------------------------------------------------
     await db.query(`UPDATE appraisals SET superseded = true WHERE id=$1`, [A3]);
     const r3 = await ingest.ingestAppraisal(D, A3);
@@ -325,9 +397,15 @@ async function makeAppraisal(appId, o) {
     // ---- 6. the back-fill --------------------------------------------------
     const bf = await ingest.backfill(D, { limit: 50 });
     ok(bf.scanned >= 0 && bf.failed === 0, 'the back-fill runs clean over the corpus');
+    // DRAIN FIRST, THEN ASSERT IDEMPOTENCE. The sweep is BOUNDED per pass, so on a
+    // database holding more reports than the bound one pass legitimately leaves
+    // work behind. Asserting "a second pass finds nothing" straight after the
+    // first passed on an empty database and FAILED on any seeded one — which is
+    // every CI run after an INGEST_VERSION bump.
+    for (let i = 0; i < 40; i++) { if ((await ingest.backfill(D, { limit: 200 })).scanned === 0) break; }
     const bf2 = await ingest.backfill(D, { limit: 50 });
     ok(bf2.scanned === 0,
-      'and a second pass has nothing left to do — it self-drains instead of re-reading everything every boot');
+      'and once drained it STAYS drained — it does not re-read the whole corpus every boot');
 
     // ---- 7. search ---------------------------------------------------------
     const q = async (f) => (await S.searchProperties(D, Object.assign({ city: CITY }, f))).rows;
@@ -394,6 +472,229 @@ async function makeAppraisal(appId, o) {
     ok(comps.body.rows.every((r) => Array.isArray(r.match_reasons) && r.match_reasons.length),
       'and every score shows its working');
 
+    // A 2-4 UNIT PROPERTY IS COMPARED WITH 2-4 UNIT PROPERTIES — the owner's first
+    // rule, in his own words: "if there's a single family residence obviously all
+    // the compatibles are single families and if it's a 2 to 4 then all the
+    // compatibles are two to 4". The defaults matched on town, sale and SIZE and
+    // never on the kind of building, so a three-family was compared against houses
+    // that merely happened to be about as big: measured over the real corpus, 21%
+    // of the candidates for a 2-4 unit subject were single families.
+    const bandSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'1 Band Way',$3,$4,'07001','Multi 2–4',3,2400,6,1960,600000,CURRENT_DATE - 30)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-subj|${Date.now()}`, 'Band Subject', CITY, 'NJ'])).rows[0].id;
+    const bandHouse = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'2 Band Way',$3,$4,'07001','SFR (1 unit)',1,2300,4,1962,520000,CURRENT_DATE - 40)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-house|${Date.now()}`, 'Band House', CITY, 'NJ'])).rows[0].id;
+    const bandTwin = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'3 Band Way',$3,$4,'07001','Multi 2–4',4,2500,8,1958,660000,CURRENT_DATE - 50)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-twin|${Date.now()}`, 'Band Twin', CITY, 'NJ'])).rows[0].id;
+
+    // A PROPERTY THAT NEVER STATED ITS UNIT COUNT. Without one in the fixture both
+    // `r.units == null` guards below are vacuously true, and deleting either the
+    // `units_unknown_ok` flag or the `OR p.units IS NULL` arm passes the whole
+    // suite while silently dropping every unknown-unit comparable from every
+    // banded search.
+    const bandMystery = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'4 Band Way',$3,$4,'07001',2450,7,1959,640000,CURRENT_DATE - 45)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-mystery|${Date.now()}`, 'Band Mystery', CITY, 'NJ'])).rows[0].id;
+
+    const banded = await call(server, 'GET', `/api/research/comps?property_id=${bandSubj}`, token);
+    ok(banded.status === 200 && banded.body.rows.some((r) => r.id === bandMystery),
+      'a property that never stated its unit count is still offered — missing data is not proof of the wrong kind');
+    ok(banded.status === 200 && banded.body.rows.some((r) => r.id === bandTwin),
+      'a 2-4 unit subject finds the other 2-4 unit sale in its town');
+    ok(banded.body.rows.every((r) => r.id !== bandHouse),
+      'and the single family of almost the same size is NOT offered as its comparable');
+    // …and the ladder must never widen its way past that. The house is close
+    // enough on size and recent enough to be picked up by every rung.
+    // EVERY ROW IS EITHER IN THE BAND OR HAS NO STATED UNIT COUNT — and a row
+    // with no stated count is shown in red as "units not stated", so it is never
+    // passed off as a match. Dropping those instead would turn missing data into
+    // an empty answer that reads as "this town is thin".
+    const inBand = (r) => r.units == null || (Number(r.units) >= 2 && Number(r.units) <= 4);
+    ok((banded.body.ladder || []).length >= 1 && banded.body.rows.every(inBand),
+      'no rung of the relaxation ladder ever relaxes the kind of building');
+    // The reverse: a single family is not offered a three-family either.
+    const houseComps = await call(server, 'GET', `/api/research/comps?property_id=${bandHouse}`, token);
+    ok(houseComps.status === 200
+      && houseComps.body.rows.every((r) => r.units == null || Number(r.units) === 1),
+    'and a single family is only ever compared with single families');
+    ok(houseComps.body.rows.every((r) => r.id !== bandSubj),
+      'the three-family is never offered as a comparable for the house');
+    // A caller may still ask for something else explicitly — this is a default.
+    const widened = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_min=1&units_max=4`, token);
+    ok(widened.status === 200 && widened.body.rows.some((r) => r.id === bandHouse),
+      'an explicit unit range still wins — the band is a default, not a cage');
+    // HALF A RANGE IS STILL AN EXPLICIT INSTRUCTION. The band is spread in as a
+    // default and the query merged over it, so naming ONE bound used to inherit
+    // the band's other one and the two intersected: this asked for `units >= 1`
+    // on a three-family and ran `units >= 1 AND units <= 4`… which is harmless
+    // here, but the mirror case ran `>= 2 AND <= 1` and answered NOTHING at every
+    // rung, with the screen reporting that the town was thin.
+    const halfLow = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandHouse}&units_min=2`, token);
+    ok(halfLow.status === 200 && halfLow.body.rows.some((r) => r.id === bandSubj),
+      'naming only the LOWER bound stands the band down instead of intersecting with it');
+    const halfHigh = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_max=1`, token);
+    ok(halfHigh.status === 200 && halfHigh.body.rows.some((r) => r.id === bandHouse),
+      'and naming only the UPPER bound does too — the answer is never empty because two defaults disagreed');
+    // A VALUE WE OFFER IS A VALUE WE ACCEPT — the same three spellings every
+    // sibling on the query builder takes.
+    const spelled = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_min=2&units_max=4&units_unknown_ok=true`, token);
+    ok(spelled.status === 200 && spelled.body.rows.some((r) => r.id === bandMystery),
+      '`units_unknown_ok=true` works, not only `=1` — the spelling every neighbouring flag accepts');
+    // WHAT NAMES THE SUBJECT IS NOT A FILTER ON THE ANSWER.
+    ok(!Object.prototype.hasOwnProperty.call(banded.body.applied_filters || {}, 'units'),
+      'the typed subject\'s `units` names the subject and never reaches the query');
+
+    // ---- A WORDED RATING IS ACTUALLY FILTERABLE --------------------------
+    // The pure test proves the READER. It proves nothing about the warehouse:
+    // an audit emptied the whole word table and every database suite still
+    // passed, because nothing asserted that a words-only property becomes
+    // findable. UAD was mandated for four forms and the 1025 (2-4 unit) was left
+    // out, so this is most of a 2-4 unit lender's book — 234 of 955 real
+    // properties carry words only.
+    const WORDY = `Wordytown${Date.now().toString(36)}`;
+    // THE READING IS NEVER HAND-WRITTEN INTO THE FIXTURE. An audit emptied the
+    // whole word table and every database suite still passed, because the rank
+    // columns were inserted directly — which tests the SQL and not the reader.
+    // These rows carry only what an appraiser wrote, and `rollupProperty` (the
+    // real production path) computes the rest.
+    const mkWordy = async (street, name, price, cond, qual) => {
+      const pid = (await db.query(
+        `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+           property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+         VALUES ($1,$2,$3,$4,'NJ','07006','SFR (1 unit)',1,1500,3,1960,$5,CURRENT_DATE - 20)
+         RETURNING id`,
+        [`${WORDY.toLowerCase()}|${street}|${Date.now()}${Math.random()}`, name, street, WORDY, price])).rows[0].id;
+      await db.query(
+        `INSERT INTO property_observations (property_id, role, observed_on, address_as_stated,
+           condition_uad, condition_text, quality_uad, quality_text, condition_basis)
+         VALUES ($1,'subject',CURRENT_DATE,$2,$3,$4,$5,$6,'as_is')`,
+        [pid, name, cond.code || null, cond.text || null, qual.code || null, qual.text || null]);
+      await ingest._internals.rollupProperty(db, pid);
+      return pid;
+    };
+    const wordProp = await mkWordy('1 Word Way', 'Word House', 500000,
+      { text: 'Average' }, { text: 'Good' });
+    const codeProp = await mkWordy('2 Word Way', 'Code House', 510000,
+      { code: 'C5' }, { code: 'Q5' });
+
+    const c3best = await S.searchProperties(db, { city: WORDY, state: 'NJ', condition_best: 'C1', condition_worst: 'C4' });
+    ok(c3best.rows.some((r) => r.id === wordProp),
+      'a property rated only in words is FOUND by a condition filter — the whole point of reading them');
+    ok(c3best.rows.every((r) => r.id !== codeProp),
+      'and a C5 property is still correctly excluded, so the filter did not simply stop filtering');
+    const q4best = await S.searchProperties(db, { city: WORDY, state: 'NJ', quality_best: 'Q1', quality_worst: 'Q4' });
+    ok(q4best.rows.some((r) => r.id === wordProp) && q4best.rows.every((r) => r.id !== codeProp),
+      'and QUALITY reads the words too — it was left on the code-only column while condition moved');
+    const listed = c3best.rows.find((r) => r.id === wordProp) || {};
+    ok(listed.condition_rank_low === 3 && listed.condition_rank_high === 4
+      && listed.condition_read_source === 'word',
+    'the reading travels to the screen with its SPAN, so it can show the word and what it reads as');
+    const wordFacets = await S.facets(db, { city: WORDY, state: 'NJ' });
+    ok(wordFacets.conditions_worded === 1,
+      'and the facet list says how many of the answer its code list cannot describe');
+
+    // ---- AN AFTER-REPAIR VALUE RESTS ON RENOVATED SALES ------------------
+    // The appraiser put each comparable on either the as-is grid or the
+    // after-repair grid and the warehouse kept which, so "was this sale
+    // renovated?" is the appraiser's own judgement rather than a guess from a
+    // photograph. Measured on the real corpus: 154 of 955 properties have been
+    // used on an after-repair grid, 144 with a recorded sale, and only 6 appear
+    // on both — the two sets really are different sales.
+    const ARV = `Arvtown${Date.now().toString(36)}`;
+    const arvSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built)
+       VALUES ($1,$2,'1 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1500,3,1960) RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-subj|${Date.now()}`, 'Arv Subject', ARV])).rows[0].id;
+    const arvDone = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date,
+         arv_comp_count, asis_comp_count)
+       VALUES ($1,$2,'2 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1520,3,1961,610000,CURRENT_DATE - 30,2,0)
+       RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-done|${Date.now()}`, 'Arv Renovated', ARV])).rows[0].id;
+    const arvRaw = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date,
+         arv_comp_count, asis_comp_count)
+       VALUES ($1,$2,'3 Arv Way',$3,'NJ','07004','SFR (1 unit)',1,1480,3,1959,430000,CURRENT_DATE - 40,0,3)
+       RETURNING id`,
+      [`${ARV.toLowerCase()}|arv-raw|${Date.now()}`, 'Arv AsIs', ARV])).rows[0].id;
+
+    const arvOnly = await call(server, 'GET',
+      `/api/research/comps?property_id=${arvSubj}&comp_set=arv`, token);
+    ok(arvOnly.status === 200 && arvOnly.body.rows.some((r) => r.id === arvDone)
+      && arvOnly.body.rows.every((r) => r.id !== arvRaw),
+    'asking for renovated sales returns the after-repair-grid sale and not the as-is one');
+    const asIsOnly = await call(server, 'GET',
+      `/api/research/comps?property_id=${arvSubj}&comp_set=as_is`, token);
+    ok(asIsOnly.status === 200 && asIsOnly.body.rows.some((r) => r.id === arvRaw)
+      && asIsOnly.body.rows.every((r) => r.id !== arvDone),
+    'and asking for as-is sales is the mirror of it');
+    const anySale = await call(server, 'GET', `/api/research/comps?property_id=${arvSubj}`, token);
+    ok(anySale.status === 200 && anySale.body.rows.some((r) => r.id === arvDone)
+      && anySale.body.rows.some((r) => r.id === arvRaw),
+    'and with no choice made, both kinds come back — it is never a silent default');
+    // AN EXPLICIT CHOICE IS NEVER RELAXED, even into an empty answer: the officer
+    // asked, and quietly answering a different question is the thing the ladder
+    // is not allowed to do.
+    const noneRenovated = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&comp_set=arv`, token);
+    ok(noneRenovated.status === 200
+      && (noneRenovated.body.ladder || []).every((r) => r.step !== 'any_kind_of_sale'),
+    'a comp set the caller asked for is never relaxed away');
+
+    // ---- THE BAND MUST NEVER LEAVE AN EMPTY SCREEN ----------------------
+    // The band is a default this route supplies: no screen has a units control,
+    // so an officer can neither see it nor lift it. When it is what emptied the
+    // answer, the screen said "we searched as far as the settings allow" — which
+    // was not true. A last rung shows other kinds of building, LABELLED, and it
+    // fires only with nothing in hand.
+    const LONE = `Lonetown${Date.now().toString(36)}`;
+    const loneSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built)
+       VALUES ($1,$2,'1 Lone Way',$3,'NJ','07003','Multi 2–4',3,2400,6,1960) RETURNING id`,
+      [`${LONE.toLowerCase()}|lone-subj|${Date.now()}`, 'Lone Subject', LONE])).rows[0].id;
+    const loneHouse = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'2 Lone Way',$3,'NJ','07003','SFR (1 unit)',1,2350,4,1961,510000,CURRENT_DATE - 30)
+       RETURNING id`,
+      [`${LONE.toLowerCase()}|lone-house|${Date.now()}`, 'Lone House', LONE])).rows[0].id;
+    const lone = await call(server, 'GET', `/api/research/comps?property_id=${loneSubj}`, token);
+    const loneLadder = lone.body.ladder || [];
+    ok(lone.status === 200 && lone.body.rows.some((r) => r.id === loneHouse),
+      'a town holding only the other kind of building answers with it rather than with nothing');
+    ok(lone.body.relaxed_to === 'any_kind_of_building'
+      && loneLadder.some((r) => r.step === 'any_kind_of_building'),
+    'and the answer SAYS it had to leave the subject\'s kind of building to find anything');
+    ok(loneLadder.filter((r) => r.step !== 'any_kind_of_building').every((r) => r.found === 0),
+      'the rung is reached only after every same-kind rung came back empty');
+    // …and it does NOT fire merely because the answer is SHORT. Every other rung
+    // widens until it has six rows; letting this one do that would drop the band
+    // on any subject with five same-kind comps, which is most of them.
+    ok((banded.body.ladder || []).every((r) => r.step !== 'any_kind_of_building'),
+      'a subject that found even one of its own kind never falls back to another kind');
+
     // ---- the valuation flow ----
     const made = await call(server, 'POST', '/api/research/valuations', token,
       { property_id: subj.id, title: 'Test valuation' });
@@ -408,6 +709,63 @@ async function makeAppraisal(appId, o) {
     ok(added.body.grid.value.indicatedValue != null, 'and a value comes back straight away');
     ok(added.body.grid.comps.some((c) => (c.warnings || []).some((w) => w.code === 'not_closed')),
       'the listing among them is flagged as an asking price, not a sale');
+
+    // WHAT THE SUGGESTIONS WERE WORKED OUT FROM IS RECORDED ON THE ORDINARY PATH.
+    // A valuation is BUILT by adding comparables — that call derives the market
+    // rates, writes suggested adjustments onto every comp from them, and used to
+    // leave `market_rates` at `{}`. So the ordinary grid was full of derived
+    // numbers with no record anywhere of what derived them, including after the
+    // valuation was finalized, which is the one moment the column exists for.
+    const ratesOnAdd = added.body.valuation.market_rates || {};
+    ok(Object.keys(ratesOnAdd).length > 0,
+      'ADDING COMPARABLES RECORDS THE RATES IT PRE-FILLED FROM — not just the explicit re-suggest');
+    ok(ratesOnAdd.pricePerSqft !== undefined && ratesOnAdd.glaAdjustmentPerSqft !== undefined,
+      'and the record is the rates themselves, so "where did that adjustment come from" is answerable');
+    // The per-foot adjustment always says WHICH KIND of claim it is — evidence
+    // from our own reports, or the national rule of thumb — because those deserve
+    // very different amounts of trust and the number alone cannot tell them apart.
+    // `|| {}` so this FAILS rather than THROWS on a regression: an unguarded
+    // dereference aborts the whole run and every check after it silently stops.
+    ok(['peer', 'convention', 'none'].includes((ratesOnAdd.glaAdjustmentPerSqft || {}).source),
+      'the size-adjustment rate names its source, so a rule of thumb can never pass for local evidence');
+
+    // A caller asking for the comparables RAW must not blank a record an earlier
+    // pass captured — the suggested lines already on the grid came from it. Re-adds
+    // a comp already on the grid, so the count below is untouched (the insert is
+    // ON CONFLICT DO NOTHING) and this tests only the record.
+    const rawAdd = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id], suggest: false });
+    ok(rawAdd.status === 200 && rawAdd.body.comps.length === 3,
+      'a comparable already on the grid is not added twice');
+    ok(Object.keys(rawAdd.body.valuation.market_rates || {}).length > 0,
+      'adding a comparable WITHOUT suggestions never erases the record of what the grid was pre-filled from');
+
+    // …AND NEITHER DOES A LATER PASS THAT HAS NO MARKET TO READ. Clear the
+    // subject's town and add another comparable: the second pass cannot derive
+    // anything, and writing its refusal over the first pass's rates would destroy
+    // the provenance of the suggested lines already on the grid.
+    await call(server, 'PATCH', `/api/research/valuations/${vid}`, token,
+      { subject: { city: '', state: '' } });
+    const noMarket = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id] });
+    ok(noMarket.status === 200 && (noMarket.body.valuation.market_rates || {}).pricePerSqft !== undefined,
+      'a later pass with no market to read never overwrites the rates an earlier pass captured');
+    // …BUT AN EMPTY RECORD IS STILL FILLED, in all three shapes it can take. A
+    // jsonb `null` is a real stored VALUE rather than an absent one, so
+    // `COALESCE(x,'{}') = '{}'` does not catch it — and rows hold it, because the
+    // previous writer ran JSON.stringify on a null rates object and
+    // `JSON.stringify(null)` is the string "null". Without the type test that row
+    // could never be filled by anything again.
+    await db.query(`UPDATE property_valuations SET market_rates = 'null'::jsonb WHERE id = $1`, [vid]);
+    const refill = await call(server, 'POST', `/api/research/valuations/${vid}/comps`, token,
+      { property_ids: [maple3[0].id] });
+    ok(refill.status === 200 && (refill.body.valuation.market_rates || {}).why != null,
+      'a legacy row holding a jsonb null counts as EMPTY and can still be filled');
+
+    // Put the market back, so nothing downstream is working on a subject this
+    // check quietly emptied.
+    await call(server, 'PATCH', `/api/research/valuations/${vid}`, token,
+      { subject: { city: subj.city, state: subj.state } });
 
     const compRow = added.body.comps.find((c) => c.property_id === maple3[0].id);
     const edited = await call(server, 'PATCH', `/api/research/valuations/${vid}/comps/${compRow.id}`, token,
@@ -442,14 +800,464 @@ async function makeAppraisal(appId, o) {
     const bfDenied = await call(server, 'POST', '/api/research/backfill', token, {});
     ok(bfDenied.status === 403, 'an ordinary officer cannot trigger a corpus-wide back-fill');
 
+    // ---- REGRESSIONS from the 2026-08-03 audit ------------------------------
+    // Each of these FAILS on the code as it stood before that pass.
+
+    // (1) "SOLD AT ANY TIME" MUST ACTUALLY REMOVE THE WINDOW. The route defaults
+    // to 18 months. The screen's "any time" option used to be sent as an EMPTY
+    // value, which the client's query-string builder drops before it reaches the
+    // wire — so the default quietly won and the option did nothing. It is sent as
+    // `0` now. The response echoes the filters it actually applied, so this is
+    // exact rather than inferred from a row count.
+    const subjProp = maple3[0].id;
+    const cDefault = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}`, token);
+    ok(cDefault.status === 200 && Number(cDefault.body.filters.sold_within_months) === 18,
+      'a comp search with no time filter still defaults to the last 18 months');
+    const cAny = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&sold_within_months=0`, token);
+    ok(cAny.status === 200 && cAny.body.filters.sold_within_months === undefined,
+      '"sold at any time" (0) genuinely removes the 18-month window — the option is not a no-op');
+    const cAnyEmpty = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&sold_within_months=`, token);
+    ok(cAnyEmpty.status === 200 && cAnyEmpty.body.filters.sold_within_months === undefined,
+      'and a hand-written empty value still means the same thing');
+
+    // (2) THE COMP SEARCH MUST NOT PIN ITSELF TO "MOST RECENT". Naming a sort in
+    // the route's defaults made search.js's "placed subject → sort by distance"
+    // fallback dead for the only caller that supplies coordinates, so the SQL
+    // LIMIT kept the 60 most recently sold rows and the nearest comps could be
+    // missing entirely. No default sort means the fallback decides.
+    ok(cDefault.body.filters.sort === undefined,
+      'the comp search names no sort of its own, so the nearest-first fallback can apply');
+
+    // (3) A VALUATION'S HEADING SAVES. The PATCH wrote the subject snapshot but
+    // never `subject_address`, which is the column the page header and the
+    // valuations list both read — so a valuation born "Untitled property" stayed
+    // that way however many times the address was typed in.
+    const draftId = dup.body.valuation.id;
+    const named = await call(server, 'PATCH', `/api/research/valuations/${draftId}`, token,
+      { subject: { display_address: '9 Rosewood Ave' } });
+    ok(named.status === 200 && named.body.valuation.subject_address === '9 Rosewood Ave',
+      'typing the subject address on a valuation actually saves it to the heading');
+    const reread = await call(server, 'GET', `/api/research/valuations/${draftId}`, token);
+    ok(reread.body.valuation.subject_address === '9 Rosewood Ave',
+      'and it is still there when the valuation is re-read');
+
+    // (4) MARKING A PAIR "NOT A DUPLICATE" IS PERMANENT, so it is gated like its
+    // two siblings. It was the only warehouse-shape mutation left open to any
+    // staff user.
+    const ndDenied = await call(server, 'POST', '/api/research/duplicates/not-duplicate', token,
+      { property_id: maple3[0].id, other_property_id: subj.property_id || maple3[0].id });
+    ok(ndDenied.status === 403,
+      'an ordinary officer cannot permanently suppress a duplicate pair');
+
+    // (4b) THE RELAXATION LADDER — a comp search says how hard it had to look, and
+    // how much of the town we hold at all, so a thin answer can never read as a
+    // confident one. `filters` is what was ASKED for; `applied_filters` is what
+    // actually ran; they differ exactly when the ladder relaxed something.
+    const lad = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&want=25&relaxable=radius_miles,sold_within_months`, token);
+    ok(lad.status === 200 && Array.isArray(lad.body.ladder) && lad.body.ladder.length >= 1,
+      'a comp search reports every rung it tried');
+    ok(lad.body.ladder.every((s) => typeof s.found === 'number' && s.label),
+      'and each rung says what it looked for and what it found');
+    ok(lad.body.coverage && typeof lad.body.coverage.properties === 'number',
+      'and how many properties we hold in that town at all — the denominator an empty answer needs');
+    ok(lad.body.relaxed_to === 'any_time' || lad.body.ladder.length > 1,
+      'wanting more than the town holds walks the ladder outwards rather than just answering short');
+    ok(lad.body.applied_filters !== undefined && lad.body.filters !== undefined,
+      'what was asked for and what actually ran are BOTH reported');
+    // The ladder's own steering parameters must never reach the query builder.
+    ok(lad.body.filters.want === undefined && lad.body.filters.relaxable === undefined,
+      'the ladder controls are not filters and never leak into the search');
+    // An EXPLICIT choice is never relaxed — only what the screen declared as its default.
+    const strict = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&want=25&sold_within_months=6`, token);
+    ok(strict.status === 200
+      && Number(strict.body.applied_filters.sold_within_months) === 6,
+    'a time window the user actually typed is honoured, never widened underneath them');
+
+    // (4c) WHAT NAMES THE SUBJECT IS NOT A FILTER ON THE ANSWER. `application_id`
+    // selects WHICH property we are finding comps for; `search.js` also reads it
+    // as `EXISTS (… o.application_id = …)`, so leaving it in the filters meant the
+    // loan-file entry point could only ever return the comps that file's OWN
+    // appraisal had already used — and the ladder then dressed the shortfall up as
+    // "we looked as hard as we could, this town is thin".
+    const byApp = await call(server, 'GET', `/api/research/comps?application_id=${appId}&want=25`, token);
+    // THE SAME SUBJECT THROUGH BOTH DOORS. This used to point at an unrelated
+    // maple property, which was a fair proxy while nothing about the subject
+    // narrowed the search — but the defaults now band the answer to the subject's
+    // own kind of building, so two different subjects legitimately return
+    // different totals and the comparison stopped testing what it says it does.
+    const byProp = await call(server, 'GET', `/api/research/comps?property_id=${subj.id}&want=25`, token);
+    ok(byApp.status === 200, 'a comp search can be anchored on a loan file');
+    ok(byApp.body.filters.application_id === undefined && byApp.body.applied_filters.application_id === undefined,
+      'the loan file NAMES the subject — it never becomes a filter on the comparables');
+    ok(byApp.body.total >= byProp.body.total,
+      'so the loan-file door finds at least as much as the same subject by property id');
+    ok(byApp.body.filters.property_id === undefined && byApp.body.filters.gla === undefined,
+      'the other subject selectors are not filters either');
+
+    // (4d) THE COVERAGE COUNT NEVER STATES A FALSE ZERO. A ZIP-only subject used to
+    // be told "we hold no properties at all in that area" because the query keyed
+    // on `state = NULL`. A panel built to stop the tool overstating itself must
+    // never itself be the thing that overstates.
+    const zipOnly = await call(server, 'GET',
+      '/api/research/comps?zip=08854&state=NJ&want=25', token);
+    ok(zipOnly.status === 200 && zipOnly.body.coverage
+      && zipOnly.body.coverage.properties > 0,
+    'a subject named by ZIP still gets a truthful coverage count, not a false zero');
+    const nowhere = await call(server, 'GET', '/api/research/comps?city=&state=&zip=', token);
+    ok(nowhere.status === 200 && nowhere.body.coverage === null,
+      'and with no locality named at all it reports NO coverage rather than zero');
+
+    // (4e) EVERY RUNG STRICTLY WIDENS. A rung that replaced the caller's band could
+    // return FEWER rows than the query before it, under a label that says "wider".
+    const wide = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&sqft_min=100&sqft_max=100000&relaxable=sqft_min,sqft_max&want=25`,
+      token);
+    ok(wide.status === 200 && wide.body.ladder.every((s, i, arr) => i === 0 || s.found >= arr[0].found),
+      'no rung of the ladder ever finds less than the first query did');
+    ok(Number(wide.body.applied_filters.sqft_min) <= 100 && Number(wide.body.applied_filters.sqft_max) >= 100000,
+      'a caller-supplied size band is only ever widened, never replaced with a narrower one');
+
+    // (4f) EVERY FACT THE REPORT STATED CROSSES THE LAST HOP (db/448), and lands on
+    // the CORRECT SIDE. A fact about the PROPERTY rolls up so the search can reach
+    // it; a fact about the REPORT stays on the observation, because rolling
+    // `lender_name` onto a property would let the newest appraisal overwrite a
+    // durable answer with something only ever true of one report.
+    const factsAppId = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `9 Fact Way ${sfx}` })])).rows[0].id;
+    const factsA = (await db.query(
+      `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
+         subject_state, subject_zip, property_tax_amount, property_tax_year, cost_new_total,
+         off_site_improvements, condo_project_name, condo_units_planned, condo_units_sold,
+         condo_developer_control, listing_history, cost_data_source, attachment_type,
+         lender_name, addendum_text, seller_is_owner, superseded)
+       VALUES ($1,'FNM1073','2026-05-02',$2,$3,'NJ','08854', 12345.67, 2025, 310000.00,
+         $4, 'Harbor Point', 120, 40, true,
+         'Listed 3/2018 at $310,000, expired 9/2018.', 'Marshall & Swift 2026', 'Attached',
+         'Other Lender Bank NA', 'Corner lot.', true, false)
+       RETURNING id`,
+      [factsAppId, `9 Fact Way ${sfx}`, CITY, JSON.stringify(['Curb', 'Gutter'])])).rows[0].id;
+    await ingest.ingestAppraisal(D, factsA);
+    const fObs = (await db.query(
+      `SELECT * FROM property_observations WHERE appraisal_id=$1 AND role='subject'`, [factsA])).rows[0];
+    const fProp = (await db.query(`SELECT * FROM properties WHERE id=$1`, [fObs.property_id])).rows[0];
+
+    ok(Number(fObs.property_tax_amount) === 12345.67 && fObs.condo_project_name === 'Harbor Point'
+      && fObs.lender_name === 'Other Lender Bank NA' && fObs.addendum_text === 'Corner lot.',
+    'every db/448 fact the report stated reaches the observation — property AND report facts alike');
+    ok(Number(fProp.property_tax_amount) === 12345.67 && fProp.condo_project_name === 'Harbor Point'
+      && Number(fProp.condo_units_planned) === 120,
+    'and the PROPERTY facts roll up onto the property, where the search can reach them');
+    ok(!('lender_name' in fProp) && !('addendum_text' in fProp) && !('form_version' in fProp),
+      'while the REPORT facts have no property column at all — they can never overwrite a durable answer');
+    // db/450 — the audit's five corrected placements, each proven from the SAME
+    // report. A fact is on the wrong side if it describes a REPORT, a FUTURE
+    // house, or a WHOLE BUILDING, and `properties` claims none of those.
+    ok(fObs.listing_history && fObs.cost_data_source && !('listing_history' in fProp)
+      && !('cost_data_source' in fProp),
+    'the listing note and the cost service stay on the report — the first has no date-qualifier on a '
+      + 'property row, the second names a service, not a house');
+    ok(fObs.condo_units_sold === 40 && fObs.condo_developer_control === true
+      && !('condo_units_sold' in fProp) && !('condo_developer_control' in fProp),
+    'the BUILDING\'s absorption counts stay on the report — filing them per unit gave every condo its '
+      + 'own private, disagreeing copy of the building\'s statistics');
+    ok(Number(fProp.condo_units_planned) === 120 && fProp.condo_project_name === 'Harbor Point',
+      'while what the project was DESIGNED as does roll up — that does not move as it sells out');
+    ok(fObs.attachment_type === 'Attached' && fProp.attachment_type === 'Attached',
+      'the attachment STYLE reaches both sides — db/405 evicted it from property_type so it would '
+      + 'survive, and until now it reached nothing');
+    ok(!('form_version' in fObs) && !('software_vendor' in fObs),
+      'and the two columns nothing has ever been able to fill are gone, rather than shipped empty');
+    // A jsonb column reads back as a JS array; binding it raw is what wiped every
+    // fact off every property in PR #974, so prove it survived the round trip.
+    ok(Array.isArray(fProp.off_site_improvements) && fProp.off_site_improvements.includes('Curb'),
+      'a jsonb fact round-trips through the roll-up instead of throwing on the bind');
+    ok(Number(fProp.rollup_version) === ingest._internals.ROLLUP_VERSION,
+      `the property is stamped at the CURRENT roll-up version (${ingest._internals.ROLLUP_VERSION}) — read from the module, `
+      + 'not hard-coded, so a bump can never leave this asserting a stale number');
+    // THE OTHER VERSION, AND THE DISTINCTION THAT STRANDS A BACK BOOK IF MISSED.
+    // A new PROPERTY column is recomputed FROM the observations, so bumping
+    // ROLLUP_VERSION reaches it. A new OBSERVATION column is read off the REPORT,
+    // and no amount of re-rolling can invent a value that was never written —
+    // the report has to be READ AGAIN. Measured on this database before the fix:
+    // after a full successful re-roll, 4 of the 5 appraisals carrying an
+    // attachment style still had NULL on their property.
+    const ING = require('../src/lib/research/ingest');
+    const staleLog = (await db.query(
+      `SELECT count(*)::int n FROM property_ingest_log
+        WHERE appraisal_id=$1 AND ingest_version >= 2`, [factsA])).rows[0].n;
+    ok(staleLog === 1, 'a freshly ingested report is stamped at the current ingest version');
+    await db.query(`UPDATE property_ingest_log SET ingest_version = 1 WHERE appraisal_id=$1`, [factsA]);
+    const drained = await ING.backfill(D, { limit: 50 });
+    ok(drained.scanned >= 1, 'and a report stamped at an OLDER ingest version is re-READ by the sweep — '
+      + 'which is the only thing that can put a newly-read fact on a report we already hold');
+    // DRAIN BEFORE ASSERTING IDEMPOTENCE. The sweep is BOUNDED per pass, so on a
+    // database holding more reports than the bound, one pass legitimately leaves
+    // work behind — asserting "a second pass finds nothing" straight after the
+    // first made the suite fail on any seeded corpus and pass on an empty one.
+    for (let i = 0; i < 40; i++) { if ((await ING.backfill(D, { limit: 200 })).scanned === 0) break; }
+
+    // …AND THE POINT OF ALL THAT: they are searchable, AND the result says what it
+    // matched on. A filter whose fact has no result column is half a feature — you
+    // could search on the tax bill and get back rows that never state the tax bill.
+    const taxHit = await S.searchProperties(db, { tax_min: 12000, tax_max: 13000, state: 'NJ' });
+    ok(taxHit.rows.some((r) => r.id === fProp.id), 'a property can be found by its tax bill');
+    const taxRow = taxHit.rows.find((r) => r.id === fProp.id);
+    ok(Number(taxRow.property_tax_amount) === 12345.67 && taxRow.condo_project_name === 'Harbor Point'
+      && taxRow.attachment_type === 'Attached',
+    'and the result actually STATES the tax bill, the project and the attachment style');
+    const projHit = await S.searchProperties(db, { condo_project: 'harbor point' });
+    ok(projHit.rows.some((r) => r.id === fProp.id), 'and by the name of its condo project, case-insensitively');
+    // A VALUE WE OFFER IS A VALUE WE ACCEPT. `has_tax` used to take only '1' and
+    // boolean true, so `?has_tax=true` — the spelling all four of its siblings on
+    // this builder accept — silently matched EVERY property.
+    for (const spelling of ['1', 'true', true]) {
+      const hit = await S.searchProperties(db, { has_tax: spelling, state: 'NJ', city: CITY });
+      ok(hit.rows.length > 0 && hit.rows.every((r) => r.property_tax_amount != null),
+        `has_tax=${JSON.stringify(spelling)} filters rather than matching everything`);
+    }
+
+    // (4g) THE MARKET GRID (db/449). The 1004MC states its windows RELATIVELY
+    // ("last 3 months"), which two reports written months apart cannot share an
+    // axis on. Each window is resolved against that report's own effective date
+    // into real dates — that is what turns a pile of reports into a time series.
+    const MK = require('../src/lib/research/market');
+    const mktGrid = {
+      MedianSalesPrice: { prior712: 412000, prior46: 441000, last3: 452500, trend: 'Increasing' },
+      Supply: { prior712: 5.1, prior46: 3.8, last3: 2.5, trend: 'Declining' },
+      TotalSales: { prior712: 88, prior46: 41, last3: 26 },
+      MedianSalesDOM: { prior712: 61, prior46: 44, last3: 29 },
+    };
+    const mktApp = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `2 Market Rd ${sfx}` })])).rows[0].id;
+    const mktA = (await db.query(
+      `INSERT INTO appraisals (application_id, form_type, effective_date, subject_address, subject_city,
+         subject_state, subject_zip, market_trends, nbhd_builtup, nbhd_value_trend, present_land_use,
+         market_conditions_comment, comp_research, superseded)
+       VALUES ($1,'FNM1004','2026-05-01',$2,$3,'NJ','08854',$4,'Over 75%','Increasing',$5,
+         'Market is tightening.', $6, false) RETURNING id`,
+      [mktApp, `2 Market Rd ${sfx}`, CITY, JSON.stringify(mktGrid),
+        JSON.stringify([{ use: 'One-Unit', pct: 85 }]),
+        JSON.stringify({ salesCount: 26, salesLow: 380000, salesHigh: 610000, listingsCount: 9 })])).rows[0].id;
+    const mktOut = await ingest.ingestAppraisal(D, mktA);
+    ok(mktOut.market === 1 && mktOut.marketPeriods === 3,
+      'a report carrying a 1004MC grid files one market read with all three windows');
+
+    const mObs = (await db.query(`SELECT * FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0];
+    const mPer = (await db.query(
+      `SELECT * FROM market_periods WHERE observation_id=$1 ORDER BY period_start`, [mObs.id])).rows;
+    ok(mPer.length === 3 && mPer.every((p) => p.period_start && p.period_end),
+      'every window is stored with REAL dates, never the form\'s relative wording');
+    ok(mPer[0].period_start === '2025-05-01' && mPer[2].period_end === '2026-05-01',
+      'and they are anchored on the report\'s own effective date, covering the full prior year');
+    ok(mPer[0].period_end === mPer[1].period_start && mPer[1].period_end === mPer[2].period_start,
+      'the three windows are contiguous and non-overlapping, so stacked reports never double-count');
+    ok(mObs.trends && mObs.trends.Supply === 'Declining' && mObs.nbhd_builtup === 'Over 75%'
+      && Array.isArray(mObs.present_land_use),
+    'the appraiser\'s trend conclusions and the page-1 neighbourhood read land with it');
+    // db/450 — this column was declared `text` and written through a string
+    // helper, so a jsonb source object stored the literal "[object Object]" on
+    // every single row. The type is what makes the value readable.
+    ok(mObs.comp_research && typeof mObs.comp_research === 'object'
+      && mObs.comp_research.salesCount === 26 && mObs.comp_research.salesHigh === 610000,
+    'the appraiser\'s OWN researched sales bracket round-trips as real JSON, not as "[object Object]"');
+    // AND IT SURVIVES THE NEXT DEPLOY. `migrate-boot` runs every numbered file's
+    // FULL TEXT on every boot, so a bare `DROP COLUMN IF EXISTS` + `ADD COLUMN IF
+    // NOT EXISTS` pair is NOT idempotent — the column always exists, so the DROP
+    // always fires and the populated jsonb column is re-added empty, with nothing
+    // to repopulate it. Measured before the guard: one ensureSchema() took this
+    // exact value to NULL. Re-running the real migration text is the only honest
+    // proof, so that is what this does.
+    await db.query(require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'db', '450_warehouse_fact_placement.sql'), 'utf8'));
+    const mAfterBoot = (await db.query(
+      `SELECT comp_research FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0];
+    ok(mAfterBoot.comp_research && mAfterBoot.comp_research.salesCount === 26,
+      'and it SURVIVES db/450 running again on the next boot — the retype is guarded on the column '
+      + 'still being text, so a deploy can never drop the data it exists to make readable');
+    // The market is about an AREA, so it must never appear on the property row.
+    const mProp = (await db.query(
+      `SELECT * FROM properties WHERE id=$1`, [mObs.property_id])).rows[0];
+    ok(mProp && !('months_supply' in mProp) && !('nbhd_value_trend' in mProp),
+      'and NONE of it is filed on the property — a house never carries its town\'s statistics');
+
+    await ingest.ingestAppraisal(D, mktA);
+    const mAgain = (await db.query(
+      `SELECT count(*)::int AS c FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0].c;
+    ok(mAgain === 1, 're-ingesting a report refreshes its market read rather than duplicating it');
+
+    const series = await MK.summarize(db, { city: CITY, months: 60 });
+    ok(series.months.length >= 3 && series.months.every((m) => m.reports > 0),
+      'the reads assemble into a month-by-month series');
+    ok(typeof series.reports === 'number' && /report count|report/i.test(series.note),
+      'and every answer carries how many REPORTS it averaged — this is opinion data, not a measurement');
+
+    // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
+    // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
+    // forever and the filter underneath silently works inside a truncated set.
+    const aTotals = await call(server, 'GET', `/api/research/appraisers/${appr2[0].id}`, token);
+    ok(aTotals.status === 200 && aTotals.body.totals
+      && typeof aTotals.body.totals.properties === 'number',
+    'the appraiser profile carries the real property total alongside the capped list');
+    ok(aTotals.body.totals.properties >= (aTotals.body.properties || []).length,
+      'and that total is never smaller than the rows it shipped');
+
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3, asIsApp, factsAppId, mktApp]]);
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
     // The warehouse deliberately SURVIVES the files (the observations are SET NULL,
     // not cascaded) — that is the point of a cross-file database, so clean up by key.
+    await db.query(`DELETE FROM market_observations WHERE city = $1`, [CITY]);
     await db.query(`DELETE FROM properties WHERE city = $1`, [CITY]);
+    // -----------------------------------------------------------------
+    // THE AREA'S BASIS — what a stored `gla` is a measure of (db/436 + db/437).
+    //
+    // A gross LIVING area (a 1004 grid) and a gross BUILDING area (a 1025 grid,
+    // and every rent schedule — it includes the stairwells, the shared halls and
+    // the basement) are different measurements of different things, and `gla` is
+    // read blind downstream: the search screen labels it "Gross living area",
+    // sorts on it and divides the sale price by it.
+    //
+    // Two rules, and a post-merge audit proved the first cut of BOTH wrong:
+    //   · an UNRECORDED basis is not a living area. The first comparator demoted
+    //     only the value that SAYS 'gba', so NULL tied with a stated 'gla' and
+    //     won on recency — and the property then recorded NULL for what its own
+    //     number means while outranking a correctly-labelled building area.
+    //   · the basis travels WITH the area or not at all. It was left in the
+    //     generic recency loop, which writes each fact independently, so a rent
+    //     schedule naming a building but stating no area produced 105 property
+    //     rows reading "we do not know the area, but we know it is a building
+    //     area."
+    {
+      const rp = ingest._internals.rollupProperty;
+      const pid = (await db.query(
+        `INSERT INTO properties (address_key, display_address, state)
+         VALUES ('gla-basis-test-' || gen_random_uuid(), '1 Basis Test Rd', 'CT') RETURNING id`)).rows[0].id;
+      const obs = (gla, basis, on) => db.query(
+        `INSERT INTO property_observations (property_id, role, gla, gla_basis, observed_on, adjustments)
+         VALUES ($1,'comparable',$2,$3,$4,'[]'::jsonb)`, [pid, gla, basis, on]);
+      const clear = () => db.query(`DELETE FROM property_observations WHERE property_id=$1`, [pid]);
+      const rolled = async () => (await db.query(
+        `SELECT gla, gla_basis FROM properties WHERE id=$1`, [pid])).rows[0];
+
+      // A LIVING area wins on the merits, whatever the dates say.
+      await obs(5000, 'gba', '2019-01-01'); await obs(6000, 'gla', '2026-01-01');
+      await rp(db, pid);
+      let r = await rolled();
+      ok(Number(r.gla) === 6000 && r.gla_basis === 'gla',
+        `a stated living area wins over a stated building area (${r.gla}/${r.gla_basis})`);
+
+      await clear();
+      await obs(6000, 'gla', '2019-01-01'); await obs(5000, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 6000 && r.gla_basis === 'gla',
+        `…and still wins when the building area is the NEWER reading (${r.gla}/${r.gla_basis})`);
+
+      // An UNRECORDED basis sits between the two: it outranks a stated building
+      // area, and it is recorded as unknown rather than asserted to be living.
+      await clear();
+      await obs(1000, null, '2020-01-01'); await obs(2000, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 1000 && r.gla_basis === null,
+        `an unrecorded basis outranks a stated building area, and stays unrecorded (${r.gla}/${r.gla_basis})`);
+
+      await clear();
+      await obs(3000, 'gla', '2019-01-01'); await obs(4000, null, '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(Number(r.gla) === 3000 && r.gla_basis === 'gla',
+        `but it never outranks a stated LIVING area (${r.gla}/${r.gla_basis})`);
+
+      // A basis may never travel without the area it describes.
+      await clear();
+      await obs(null, 'gba', '2026-01-01');
+      await rp(db, pid);
+      r = await rolled();
+      ok(r.gla == null && r.gla_basis == null,
+        `a basis with no area at all is not written on its own (${r.gla}/${r.gla_basis})`);
+
+      const orphans = (await db.query(
+        `SELECT count(*)::int n FROM properties WHERE gla IS NULL AND gla_basis IS NOT NULL`)).rows[0].n;
+      ok(orphans === 0, `and no property anywhere records a basis with no area (${orphans})`);
+
+      await clear();
+      await db.query(`DELETE FROM properties WHERE id=$1`, [pid]);
+    }
+
+    // ── WHERE DID THAT DISTANCE COME FROM? (db/446) ────────────────────────
+    // `eff_latitude` COALESCEs our own lookup over the appraiser's own
+    // coordinate, and db/412's own comment says the latter is "frequently the
+    // centre of the ZIP". So "0.3 miles away" could be a rooftop measurement, a
+    // ±17-foot estimate trilaterated from the comparables, or a number with no
+    // relationship to the question — all rendered in the same font, with nothing
+    // anywhere saying which.
+    {
+      const BASIS_CITY = `Basisville${sfx}`;
+      // A FRESH SESSION. By the time this block runs the suite has already
+      // revoked the staff user minted at section 8 (the token-version tests), so
+      // reusing that token answers 401 and every assertion below reads as "the
+      // feature is broken" when the only thing broken is the fixture.
+      const basisStaff = (await db.query(
+        `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+         VALUES ($1,'Basis Officer','loan_officer',true,false,'x',0) RETURNING id`,
+        [`res-basis-${sfx}@test.local`])).rows[0].id;
+      const bTok = C.signJwt({ sub: basisStaff, kind: 'staff', role: 'loan_officer', tv: 0 });
+      const mk = async (name, cols, vals) => (await db.query(
+        `INSERT INTO properties (address_key, display_address, street, city, state, zip, ${cols})
+         VALUES ($1,$2,$3,$4,'NJ','07099',${vals}) RETURNING id`,
+        [`${BASIS_CITY.toLowerCase()}|${name}|${Date.now()}${Math.random()}`, name, `${name} St`, BASIS_CITY]
+      )).rows[0].id;
+      // Same spot, four ways of knowing it.
+      const roofId = await mk('Rooftop', 'geo_latitude, geo_longitude, geo_source', "40.700000,-74.000000,'census'");
+      const triId = await mk('Trilaterated', 'geo_latitude, geo_longitude, geo_source', "40.700100,-74.000000,'comp_trilateration'");
+      const apprId2 = await mk('AppraiserSaid', 'latitude, longitude', '40.700200,-74.000000');
+      const nowhereId = await mk('Nowhere', 'gla', '1200');
+
+      const basisOf = async (id) => (await db.query(
+        'SELECT eff_geo_source FROM properties WHERE id=$1', [id])).rows[0].eff_geo_source;
+      ok(await basisOf(roofId) === 'census', 'a looked-up coordinate records WHICH service answered');
+      ok(await basisOf(triId) === 'comp_trilateration',
+        'a position derived from the comparables says so — it is an estimate, however good');
+      ok(await basisOf(apprId2) === 'appraiser',
+        "the appraiser's own coordinate is labelled as theirs, not passed off as a lookup");
+      ok(await basisOf(nowhereId) === null, 'a property with no position has no basis to state');
+
+      // …AND IT REACHES THE SCREEN, which is the whole point — a distance with no
+      // provenance is the defect, not a missing column.
+      const near = `/api/research/properties?state=NJ&city=${encodeURIComponent(BASIS_CITY)}&lat=40.7&lng=-74&radius_miles=5&limit=50`;
+      const all = await call(server, 'GET', near, bTok);
+      const rows = (all.body && all.body.rows) || [];
+      ok(rows.length >= 3, `the radius search finds the placed ones (${rows.length})`);
+      ok(rows.every((r) => r.distance_miles == null || r.eff_geo_source != null),
+        'EVERY row that carries a distance also carries where that distance was measured from');
+
+      // A CALLER CAN REFUSE A BASIS IT DOES NOT TRUST.
+      const strict = await call(server, 'GET', `${near}&exclude_geo_basis=appraiser`, bTok);
+      const sRows = (strict.body && strict.body.rows) || [];
+      ok(sRows.length >= 1 && !sRows.some((r) => r.eff_geo_source === 'appraiser'),
+        'excluding a basis actually excludes it — a ZIP centroid is not a slightly worse answer, '
+        + 'it is an answer to a different question');
+      ok(sRows.some((r) => r.eff_geo_source === 'census'),
+        'and it keeps everything else, rather than emptying the screen');
+      const only = await call(server, 'GET', `${near}&geo_basis=comp_trilateration`, bTok);
+      const oRows = (only.body && only.body.rows) || [];
+      ok(oRows.length === 1 && oRows[0].eff_geo_source === 'comp_trilateration',
+        'and asking for one basis returns only that one');
+      // The default is unchanged — no existing search moves.
+      ok(rows.length >= sRows.length && rows.length >= oRows.length,
+        'with no basis filter every position is still accepted, so nothing existing changes');
+
+      await db.query('DELETE FROM properties WHERE city=$1', [BASIS_CITY]);
+      await db.query('DELETE FROM staff_users WHERE id=$1', [basisStaff]);
+    }
+
     await db.query(`DELETE FROM appraisers WHERE identity_key IN ($1,$2)`, [`lic:NJ:${LIC}`, `lic:NJ:RG${LIC.slice(-6)}`]);
     await db.query(`DELETE FROM appraisers WHERE name_key = $1`, [`dana ${SURNAME.replace('Kessler', 'Whitfield')}`.toLowerCase()]);
   } catch (e) {

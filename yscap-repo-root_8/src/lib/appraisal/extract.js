@@ -13,6 +13,7 @@
 const X = require('./xml');
 const { splitComps } = require('./comp-grid');
 const { derivePropertyCategory } = require('./property-category');
+const UAD = require('./uad-rating');
 
 const CUR_YEAR = 2026; // NOTE: injected constant — the codebase forbids new Date() in date-only paths.
 
@@ -68,14 +69,142 @@ function parseBaths(raw) {
   if (n) return { text: s, full: bf(n[1]), half: 0 };
   return { text: s, full: null, half: null };
 }
+/**
+ * The UAD `full.half` text for a bath count we ADDED UP ourselves.
+ *
+ * Only used when a 1025 grid states its rooms per unit and there is no summary
+ * row to copy — the property's own text has to be composed from the parts, and
+ * it must speak the same notation every other row here uses (2.1 = 2 full + 1
+ * half, NOT a decimal 2.5). Returns null rather than inventing a shape when the
+ * halves would not fit that notation, because a "12.11" nobody can parse back is
+ * worse than no text beside the two numeric columns that are already right.
+ */
+function bathsTextOf(full, half) {
+  // A MISSING FULL COUNT IS NOT ZERO FULL BATHS. Treating null as 0 produced the
+  // text "0.5" from a half count alone, which `parseBaths` reads straight back as
+  // "no full bathrooms" — the text asserting a fact the columns beside it
+  // deliberately refuse to state, and the text is the fabrication.
+  if (full == null) return null;
+  const h = half == null ? 0 : half;
+  return h >= 0 && h <= 9 ? `${full}.${h}` : null;
+}
 
 // ---- enrichment readers (never-guess; db/158) -------------------------------
 // A MISMO Y/N indicator → strict boolean. Blank/other → null (NEVER default false — a missing
 // flag is "unknown", not "no", and truthiness on a stray comment must never read as yes).
 function yn(v) { const s = clean(v); if (!s) return null; if (/^y/i.test(s)) return true; if (/^n/i.test(s)) return false; return null; }
+/**
+ * A Yes/No enum read STRICTLY — the whole word, not its first letter.
+ *
+ * `yn` above matches on the initial letter, which is fine for a field whose only
+ * fillers are Yes and No and wrong for one whose commonest filler is "N/A":
+ * "N/A", "n/a", "None" and "Not Applicable" all begin with an n and all read as
+ * a definite NO. That matters wherever the column's contract is "NULL means the
+ * report did not say — never 'no'" (db/435's rent-control status). Deliberately
+ * a SECOND helper rather than a change to `yn`: every one of its existing
+ * callers reads a genuinely binary GSE indicator, and widening the refusal there
+ * is its own measurement, not a side effect of this one.
+ */
+function yesNoExact(v) {
+  const s = clean(v);
+  if (!s) return null;
+  if (/^(y|yes|true|1)$/i.test(s)) return true;
+  if (/^(n|no|false|0)$/i.test(s)) return false;
+  return null;
+}
 // Store a value ONLY if it exactly matches a known enum set — otherwise null (mirrors the UAD
 // C1-6/Q1-6 discipline). Case-sensitive as MISMO emits, with a case-insensitive fallback match.
 function enumOf(v, set) { const s = clean(v); if (!s) return null; if (set.includes(s)) return s; const hit = set.find((x) => x.toLowerCase() === s.toLowerCase()); return hit || null; }
+// THE VIEW A PROPERTY HAS, in the appraiser's own words where they gave them.
+// UAD writes it as a coded type plus a free-text description used when the code is
+// `Other` — and `Other` is precisely the interesting case (the corpus's own values:
+// Cemetery, Creek, Warehse, Comm). Returning the bare code for those would file the
+// least informative reading of the most informative line, so the description wins
+// when the code is `Other` or absent; otherwise the code is returned as stated.
+// UNRECOGNISED CODES ARE KEPT AS WRITTEN rather than mapped to null — this is a long
+// open GSE list (ResidentialView, CityStreetView, ParkView, WoodsView, WaterView …)
+// and a whitelist here would silently drop every value nobody thought of, which is
+// the trap the worded condition/quality fields already fell into.
+// A PROPERTY HAS AS MANY VIEW (AND LOCATION) FACTORS AS THE APPRAISER LISTED, AND
+// UAD WRITES ONE ELEMENT PER FACTOR — `_SequenceIdentifier="1"`, `"2"`, … The first
+// cut read `X.find(...)`, i.e. the FIRST element only, and the first is almost
+// always the bland one: measured on the real corpus, `ResidentialView` sat in slot
+// 1 while `Other`/"Cem" and `Other`/"Comm" sat in slot 2 and were discarded — so
+// the function dropped exactly the value its own comment says it exists to keep,
+// and "Comm" (cited in the commit that added it) was never once captured. 63 of
+// 769 comparables carry more than one view element and 65 carry more than one
+// location element; on the location side the dropped one is the PRICE-RELEVANT
+// factor — `["Residential","BusyRoad"]` and `["Residential","Commercial"]` both
+// stored plain "Residential".
+//
+// Every factor is kept, in the order the appraiser listed them, joined the way UAD
+// itself writes a multi-factor field ("N;Res;Wds"). Never sorted: the first factor
+// is the appraiser's primary one.
+//
+// A BARE `Other` WITH NO DESCRIPTION IS DROPPED. "Other" is a non-fact — it says
+// only that the list did not fit — and letting it through would beat a real NULL
+// in the roll-up's first-non-null loop and surface as though it described the
+// property.
+//
+// UNRECOGNISED CODES ARE KEPT AS WRITTEN rather than mapped to null — this is a
+// long open GSE list (ResidentialView, CityStreetView, ParkView, WoodsView,
+// WaterView …) and a whitelist here would silently drop every value nobody thought
+// of, which is the trap the worded condition/quality fields already fell into.
+function factorsOf(nodes, codeAttr, otherAttr) {
+  const out = [];
+  for (const n of (nodes || [])) {
+    const code = clean(X.attr(n, codeAttr));
+    const other = otherAttr ? clean(X.attr(n, otherAttr)) : null;
+    // The description wins when the code is `Other` or absent — that is the whole
+    // reason the description exists.
+    const v = (!code || /^other$/i.test(code)) ? other : code;
+    if (!v) continue;                       // a bare `Other`, or an empty element
+    if (!out.includes(v)) out.push(v);      // a repeated factor is stated once
+  }
+  return out.length ? out.join('; ') : null;
+}
+function viewTypeOf(nodes) {
+  return factorsOf(nodes, 'GSEViewType', 'GSEViewTypeOtherDescription');
+}
+function locationTypeOf(nodes) {
+  return factorsOf(nodes, 'GSELocationType', 'GSELocationTypeOtherDescription');
+}
+
+// THE GRID ROW IS THE SAME FACT, WRITTEN IN WORDS — the fallback for the 73 of 152
+// real reports that carry no UAD extension block at all.
+//
+// A Fannie grid has a row per fact (View, Location, Functional Utility, Financing
+// Concessions …), and a non-UAD vendor states its value as the row's own
+// description. Measured over the corpus, that recovers 360 comparables each for
+// the view and the location — the difference between a fact known on 53% of
+// comparables and on all of them.
+//
+// A NUMBER IS NOT A DESCRIPTION. These rows carry an ADJUSTMENT AMOUNT as well as
+// a label, and several vendors put the amount (or a bare separator) in the
+// description slot: the real corpus contains ";0", ";", "0" and "-25000" sitting
+// where a word belongs. Storing those would put "0" in a column a person reads as
+// the property's financing type. So a value is taken only when it contains an
+// actual letter and is not merely a number with punctuation around it.
+const ADJ_JUNK = /^[\s;:,.\-+$()0-9]*$/;
+// AND A LETTER IS NOT ENOUGH ON THE FINANCING ROW. Many vendors use the Financing
+// Concessions line for something else entirely — days on market, the
+// under-contract date, the listing status, the list-to-sale ratio. Measured over
+// the corpus: of 277 comparables newly given a financing type from the grid row,
+// 75 were none of the kind — "None/DOM 3", "Unk -42 DOM", "UCD09/30/2025",
+// "SaleLst96%;0", "Pending;0", "SELLER CONC. $10,000". A letter test alone let
+// every one of them into a column a person reads as how the sale was financed.
+const NOT_FINANCING = /\bDOM\b|\bUCD\b|days?\s*on\s*market|\bLP\s*to\s*SP\b|\bSaleLst\b|\bactive\b|\bpending\b|\bexpired\b|\bwithdrawn\b|\blisting\b|\bconc(ession)?\b|\bprice\b|\d{1,2}\/\d{1,2}\/\d{2,4}|%/i;
+function adjText(adjustments, type, reject) {
+  for (const a of (adjustments || [])) {
+    if (a.type !== type) continue;
+    const d = clean(a.description);
+    if (!d || ADJ_JUNK.test(d)) continue;      // a number, a separator, or nothing
+    if (!/[A-Za-z]/.test(d)) continue;         // belt and braces: no letters, no word
+    if (reject && reject.test(d)) continue;    // a word, but not of this KIND
+    return d;
+  }
+  return null;
+}
 // A neighborhood _HOUSING price is in $THOUSANDS (575 = $575,000). Convert to dollars with a
 // magnitude guard so it can NEVER be confused with a full-dollar amount (a share of the corpus
 // carries these; feeding one into money() would store $575 and mis-scale an ARV check 1000×).
@@ -148,7 +277,26 @@ const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,8}(?!\\d))(?:\\.\\d{2})?';
 // and store it as `definite` (a never-guess violation — audit MAJOR).
 const ASIS_RE = new RegExp('(?<![a-z])as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const ARV_RE = new RegExp('(?<![a-z])(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
-const HYPO_RE = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)|(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
+/**
+ * TWO DIFFERENT SENTENCES, AND ONLY ONE OF THEM OVERRULES THE APPRAISER.
+ *
+ * `HYPO_STRICT` is the real signal: the appraiser SAYS they are valuing the
+ * property under a hypothetical condition — as though work that has not happened
+ * were done. That is an after-repair value however the form's enum is set.
+ *
+ * `HYPO_LOOSE` is "the repairs were completed" in any tense, which reads exactly
+ * the same on a POST-REHAB REFINANCE — the work really is finished, the appraiser
+ * really is valuing the house as it stands, and the report says `AsIs`. Letting
+ * that arm override an explicit `AsIs` threw the as-is value away and stamped
+ * every comparable `arv`, on the single commonest kind of file this lender takes
+ * after a flip. It is still useful where the form says NOTHING, because there the
+ * alternative is a coin flip.
+ *
+ * So: the loose arm INFERS, the strict arm OVERRULES. The appraiser's own
+ * explicit answer is only overturned by the appraiser's own explicit hypothesis.
+ */
+const HYPO_STRICT = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)/i;
+const HYPO_LOOSE = /(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
 
 function mineMoney(re, texts, ceil) {
   const hits = [];
@@ -166,20 +314,41 @@ function valuation(root) {
   const V = X.find(root, 'VALUATION');
   const structured = money(X.attr(V, 'PropertyAppraisedValueAmount'));
   const effDate = normDate(X.attr(V, 'AppraisalEffectiveDate'));
+  // A REPORT CAN STATE MORE THAN ONE BASIS, AND ONLY THE FIRST WAS EVER READ.
+  // Measured across 143 real reports that state one at all: 142 state exactly
+  // one, and ONE states `SubjectToRepairs` AND `AsIs` together — which is
+  // precisely the renovation report that carries two values, the shape this
+  // whole warehouse is built around. Reading only the first is still the right
+  // PRIMARY answer (the after-repair basis is the conservative one and is what
+  // `AS_IS_ONLY` keys on), so the behaviour below is unchanged; what was missing
+  // is any record that the report said both, which is the difference between
+  // "the appraiser gave no as-is opinion" and "we only looked at the first line".
+  const coaAll = X.findAll(root, '_CONDITION_OF_APPRAISAL')
+    .map((n) => clean(X.attr(n, '_Type'))).filter(Boolean);
   const coa = X.find(root, '_CONDITION_OF_APPRAISAL');
   const cond = clean(X.attr(coa, '_Type'));
   const texts = narrativeTexts(root);
-  const hasHypo = texts.some((t) => HYPO_RE.test(t));
+  const hasHypoStrict = texts.some((t) => HYPO_STRICT.test(t));
+  const hasHypo = hasHypoStrict || texts.some((t) => HYPO_LOOSE.test(t));
 
   let basis, basisNote;
   // All three GSE "subject-to" conditions make the appraised value a conditional/as-completed
   // figure (not plain as-is). SubjectToInspection is a real spec enum — include it (audit/spec fix).
   if (cond === 'SubjectToRepairs' || cond === 'SubjectToCompletion' || cond === 'SubjectToInspection') { basis = 'ARV'; basisNote = `condition=${cond}`; }
-  else if (cond === 'AsIs' && hasHypo) { basis = 'ARV'; basisNote = 'condition=AsIs but hypothetical-completion language → ARV'; }
+  // ONLY THE STRICT ARM OVERRULES AN EXPLICIT `AsIs`. "The repairs were
+  // completed" is what a POST-REHAB REFINANCE says — the work is genuinely done
+  // and the appraiser is genuinely valuing the house as it stands — so reading it
+  // as an after-repair report threw the as-is value away and stamped every
+  // comparable `arv`, on the commonest file this lender takes after a flip.
+  else if (cond === 'AsIs' && hasHypoStrict) { basis = 'ARV'; basisNote = 'condition=AsIs but the appraiser states a HYPOTHETICAL condition → ARV'; }
   else if (cond === 'AsIs') { basis = 'ASIS'; basisNote = 'condition=AsIs'; }
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
 
   const out = { appraisedValue: structured, effectiveDate: effDate, conditionOfAppraisal: cond,
+    // Every basis the report stated, in the order it stated them — `cond` is
+    // still the first and still decides. Null when it stated only one, so a
+    // consumer can tell "one basis" from "we looked at one".
+    conditionOfAppraisalAll: coaAll.length > 1 ? coaAll : null,
     basis, // 'ARV' | 'ASIS' — which value the structured PropertyAppraisedValueAmount represents
     arv: null, arvConfidence: 'missing', arvSource: null,
     asIs: null, asIsConfidence: 'missing', asIsSource: null };
@@ -242,12 +411,75 @@ function settledMonth(desc) {
   if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
   return `${yr}-${String(mo).padStart(2, '0')}-01`;
 }
+// THE CONTRACT DATE, out of the same UAD string the settled date comes from.
+//
+// UAD writes a comparable's date of sale as "s06/25;c03/25" — SETTLED June 2025,
+// under CONTRACT March 2025. `settledMonth` above reads the first and throws the
+// second away, and the contract date is the more useful of the two for market
+// work: it is when the price was actually AGREED. A settlement can follow the
+// meeting of minds by months, so a market that moved in between is misread if you
+// only ever have the closing date.
+//
+// Deliberately narrow: it reads ONLY an explicit `c MM/YY` marker. A bare MM/YY
+// with no marker is the settled date in every vendor's output (that is exactly
+// what `settledMonth` falls back to), so guessing there would file a settlement
+// as a contract — silently, on the majority of comps. Null rather than a guess.
+function contractMonth(desc) {
+  // THE `c` MUST BE ITS OWN MARKER, not the tail of a word. Without the boundary,
+  // "Public 06/25" and "Doc 06/25" — a data-source note followed by the SETTLED
+  // date — both matched, filing a settlement as a contract date, which is the one
+  // thing this function's own contract says it will never do. Still matches
+  // "c09/25", "s06/25;c05/25" and "c 03/25".
+  const m = /(?:^|[^A-Za-z])c\s*(\d{1,2})\/(\d{2,4})/i.exec(String(desc || ''));
+  if (!m) return null;
+  const mo = parseInt(m[1], 10);
+  let yr = parseInt(m[2], 10);
+  if (yr < 100) yr = 2000 + yr;
+  if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
+  return `${yr}-${String(mo).padStart(2, '0')}-01`;
+}
+/** The comp's price per foot, WITH the area measure it is per. One decision, so
+ *  the two can never disagree: a 1025 states it per gross BUILDING area, a 1004
+ *  per gross LIVING area, and $150 of each describes a different property. */
+function pricePerArea(c) {
+  const gla = bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8);
+  const gba = bounded(X.attr(c, 'SalesPricePerGrossBuildingAreaAmount'), 1e8);
+  const value = gla != null ? gla : gba;
+  return { pricePerGla: value == null ? null : value,
+    pricePerGlaBasis: gla != null ? 'gla' : (gba != null ? 'gba' : null) };
+}
+
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, glaBasis: null, saleDate: null, conditionUad: null, qualityUad: null,
+  const out = { gla: null, glaBasis: null, saleDate: null, contractDate: null, conditionUad: null, qualityUad: null,
     conditionText: null, qualityText: null, dom: null,
     beds: null, bathsFull: null, bathsHalf: null, baths: null, totalRooms: null,
-    pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
+    units: null, unitMix: null,
+    // PRICE PER FOOT WAS DEAD ON EVERY 2-4 UNIT COMP. A 1025 measures the
+    // building, not the living area, so it writes the SAME fact under a DIFFERENT
+    // attribute — `…PerGrossBuildingArea…` — and only the living-area spelling was
+    // ever read. Same file, one word changed: a 1004 read $154.59 and a 1025 read
+    // null, on an owner-named field.
+    //
+    // The two are NOT interchangeable and the basis has to travel with the number,
+    // exactly as `gla_basis` already does for the area itself (db/409 §7): $150 a
+    // foot of LIVING area and $150 a foot of GROSS BUILDING area describe
+    // different properties, and comparing them silently is a wrong answer. The
+    // living-area spelling wins when a file carries both.
+    // THE BASIS FOLLOWS THE VALUE THAT WAS TAKEN, never the presence of an
+    // attribute. `bounded()` rejects '', 'N/A', '--', 0, negatives and absurd
+    // magnitudes — all of which mean "no value stated" — but attribute PRESENCE
+    // does not, so a grid carrying `…GrossLivingArea=""` beside a real
+    // `…GrossBuildingArea` took the building figure and labelled it living area.
+    // Both field maps warn about exactly those placeholder shapes. `gla_basis`
+    // twelve lines below gets this right by setting value and basis together.
+    ...pricePerArea(c),
+    // THE 2-4 FAMILY MEASURE. Stated per comparable and read by nothing: a 6-bed
+    // triplex and a 6-bed house are not comparable per FOOT, they are comparable
+    // per DOOR (db/430).
+    pricePerUnit: bounded(X.attr(c, 'SalesPricePerUnitAmount'), 1e10),
+    monthlyRent: null, grm: null, ageYears: null,
+    adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
     // The "Other" adjustment's human label lives in _TypeOtherDescription, NOT _Description
@@ -262,25 +494,145 @@ function compGrid(c) {
     // number. Recording it costs nothing and makes the difference visible.
     if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gla'; } }
     else if (t === 'GrossBuildingArea' && d && out.gla == null) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gba'; } }
-    else if (t === 'DateOfSale' && d) out.saleDate = settledMonth(d);
+    else if (t === 'DateOfSale' && d) { out.saleDate = settledMonth(d); out.contractDate = contractMonth(d); }
     // A NON-UAD RATING IS STILL A RATING. The UAD codes stay enum-whitelisted (the
     // review checks compare them and must never see a free-text value), but a vendor
     // that writes "Good" or "Avg-Good" instead of "C3" was having the comparable's
     // condition — the single most important thing about a comp after its price —
     // thrown away entirely. The raw word is kept beside the code, never in place of it.
+    // THE AGE THE GRID ACTUALLY STATES IS A NUMBER OF YEARS. A year built was
+    // derived from it downstream and only that was kept, losing the appraiser's
+    // own figure. Store what was stated; the derived year still sits beside it.
+    else if (t === 'Age' && out.ageYears == null) {
+      const yrs = count((String(d || '').match(/\d+/) || [])[0], 999);
+      if (yrs != null) out.ageYears = yrs;
+    }
     else if (t === 'Condition' && d) { if (UAD_C.test(d)) out.conditionUad = d; else out.conditionText = d; }
     else if (t === 'Quality' && d) { if (UAD_Q.test(d)) out.qualityUad = d; else out.qualityText = d; }
   }
-  // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the single most-missed
-  // grid fact. On a multi-unit file it may repeat per unit; take the first (subject-comparison) row.
-  const ra = X.find(c, 'ROOM_ADJUSTMENT');
-  if (ra) {
-    out.totalRooms = count(X.attr(ra, 'TotalRoomCount'), 99);
-    out.beds = count(X.attr(ra, 'TotalBedroomCount'), 99);
-    const b = parseBaths(X.attr(ra, 'TotalBathroomCount'));
-    out.baths = b.text; out.bathsFull = b.full; out.bathsHalf = b.half;
-    const raAmt = toNum(X.attr(ra, 'RoomAdjustmentAmount'));
-    if (raAmt != null) out.adjustments.push({ type: 'RoomCount', description: null, amount: raAmt });
+  // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the
+  // single most-missed grid fact.
+  //
+  // IT REPEATS PER UNIT ON A 1025, AND TAKING THE FIRST ROW WAS A WRONG ANSWER,
+  // NOT A MISSING ONE. This used to do `X.find(c, 'ROOM_ADJUSTMENT')` — the first
+  // element — which on a 2-4 unit grid is UNIT 1, not the property. Measured end
+  // to end on a three-unit comparable whose grid states 14 rooms / 7 beds / 3
+  // baths: the warehouse stored 5 / 3 / 1. That is worse than NULL, because
+  // `beds` rolls up onto `properties` and `scoreComp` drops an unknown from its
+  // denominator while scoring a wrong number as a confident match — a 7-bedroom
+  // triplex was being offered as a comparable for a 3-bedroom house.
+  //
+  // So read EVERY row. The counts are the PROPERTY's totals; the rows themselves
+  // are the per-unit breakdown, which is a fact we have never stored about a
+  // comparable at all.
+  const raRows = X.findAll(c, 'ROOM_ADJUSTMENT').map((r) => ({
+    rooms: count(X.attr(r, 'TotalRoomCount'), 99),
+    beds: count(X.attr(r, 'TotalBedroomCount'), 99),
+    baths: parseBaths(X.attr(r, 'TotalBathroomCount')),
+    seq: count(X.attr(r, 'UnitSequenceIdentifier'), 99),
+    amount: toNum(X.attr(r, 'RoomAdjustmentAmount')),
+  // A FORM PADS, AND IT PADS WITH ZEROS AS OFTEN AS WITH BLANKS. a la mode and ACI
+  // emit FIXED-LENGTH placeholder rows — the 1025 field map says so in as many
+  // words, and warns "do not count elements to get unit count". `count()` accepts
+  // 0 as a valid count, so a `TotalRoomCount="0"` row survived a null-only filter
+  // and a DUPLEX was filed as a 4-FAMILY, with the fabricated 4 reaching
+  // `properties.units` through ROLLUP_FACTS. A row that states nothing ABOUT a
+  // dwelling — no rooms, no beds, no baths — is not a dwelling.
+  })).filter((r) => (r.rooms || 0) + (r.beds || 0) + (r.baths.full || 0) + (r.baths.half || 0) > 0);
+
+  // THE VENDOR THAT WRITES A TOTAL ROW HAS NOW BEEN SEEN — TWICE. The comment
+  // below says a summary row would have to be observed before it was handled,
+  // and reading 149 real reports out of SharePoint observed it: Class Appraisal
+  // and OneStop emit an UNNUMBERED leading row (the property's totals) and a
+  // trailing empty one, ahead of rows that DO carry `UnitSequenceIdentifier`:
+  //
+  //     <ROOM_ADJUSTMENT TotalRoomCount="4" TotalBedroomCount="2" .../>      <- no seq: the total
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="1" TotalRoomCount="4" .../>
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="2" TotalRoomCount="4" .../>
+  //     <ROOM_ADJUSTMENT UnitSequenceIdentifier="3" TotalRoomCount="2" .../>
+  //
+  // Counting rows made every one of those comparables ONE UNIT TOO MANY, and the
+  // damage was not cosmetic: a conforming 4-unit comparable was labelled
+  // `Multi 5+` — ineligible — and `price_per_unit` was divided by the wrong
+  // denominator. 57 Lincoln St appeared in two reports with two different unit
+  // counts, 3 and 4, for the same physical building.
+  //
+  // The discriminator is STRUCTURAL, not a value heuristic — which is why it is
+  // safe where the removed draft was not. That draft compared COUNTS ("one row
+  // equals the sum of the others") and could not tell a total from a duplex of
+  // two identical units. This asks a different question: does the grid number
+  // its units at all? When ANY row carries a sequence identifier, the appraiser
+  // is numbering the dwellings, and a row WITHOUT one is not a dwelling. When NO
+  // row carries one, nothing is dropped and the old behaviour stands exactly.
+  const numbered = raRows.filter((r) => r.seq != null);
+  const unitRows = numbered.length ? numbered : raRows;
+
+  if (raRows.length) {
+    const sum = (k) => {
+      const vals = unitRows.map((r) => r[k]).filter((v) => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+    };
+    // EVERY ROW IS A UNIT. There is deliberately NO "is one of these a summary
+    // row?" heuristic here, and the first draft's was removed after it failed its
+    // own test on the commonest 2-4 shape there is: a DUPLEX WITH TWO IDENTICAL
+    // UNITS. "One row equals the sum of the others" is trivially true of any two
+    // equal rows, so 5+5 was read as "a total of 5 with one unit" and reported
+    // half the property. At three rows it is still unresolvable — 10/5/5 is
+    // equally "a total of 10 over two units" and "three units totalling 20" — and
+    // no structural signal in MISMO 2.6 distinguishes them.
+    //
+    // The measured shape is one row per unit with no total row, so that is what
+    // this reads. A vendor that writes a total row would need to be SEEN before
+    // it is handled; guessing at one here trades a bug nobody has for a bug
+    // everybody with a duplex would have.
+    const sumBaths = (k) => {
+      const v = unitRows.map((r) => r.baths[k]).filter((x) => x != null);
+      return v.length ? v.reduce((a, b) => a + b, 0) : null;
+    };
+    const one = unitRows.length === 1;
+    out.totalRooms = one ? unitRows[0].rooms : sum('rooms');
+    out.beds = one ? unitRows[0].beds : sum('beds');
+    out.bathsFull = one ? unitRows[0].baths.full : sumBaths('full');
+    out.bathsHalf = one ? unitRows[0].baths.half : sumBaths('half');
+    // A single row keeps the grid's OWN text; a summed one has to be composed,
+    // and it speaks the same UAD full.half notation rather than a decimal.
+    out.baths = one ? unitRows[0].baths.text : bathsTextOf(out.bathsFull, out.bathsHalf);
+    // THE UNIT COUNT IS STATED, NOT INFERRED — but only by a grid that actually
+    // wrote a row per unit. One row proves nothing about how many units there are
+    // (a 1004 has exactly one), so it stays NULL rather than claiming "1".
+    if (unitRows.length > 1) {
+      out.units = unitRows.length;
+      out.unitMix = unitRows.map((r, i) => ({
+        // THE APPRAISER'S OWN UNIT NUMBER when the grid states one. Position is a
+        // guess, and it is wrong exactly when it matters: a grid stating units
+        // 1, 2 and 4 (unit 3 padded out) labelled the unit-4 dwelling "unit 3",
+        // and a grid emitting rows in the order 3, 1, 2 relabelled all three.
+        // This is the fact the owner asked for by name, so it must not be
+        // silently mislabelled.
+        unit: r.seq != null ? r.seq : i + 1, rooms: r.rooms, beds: r.beds,
+        baths_full: r.baths.full, baths_half: r.baths.half, baths: r.baths.text,
+      }));
+    }
+    // The dollar line repeats with the rows; the grid reconciles on their sum.
+    // `unitRows`, NOT `raRows` — THE LAST CONSUMER THE SUMMARY-ROW FIX MISSED.
+    // Class Appraisal and OneStop lead the grid with an UNNUMBERED
+    // `ROOM_ADJUSTMENT` carrying the property's TOTALS, so its
+    // `RoomAdjustmentAmount` is the sum of the per-unit rows beneath it — adding
+    // it to them counts the whole adjustment twice. Measured over the 152 real
+    // reports: 158 comparables carry both an unnumbered and a numbered row, 101
+    // of those unnumbered rows state an amount, and on 45 the two sums differ —
+    // e.g. a grid stating 2500 (total), 2500 (unit 1), 0 (unit 2) stored 5000.
+    const raAmt = unitRows.map((r) => r.amount).filter((v) => v != null);
+    if (raAmt.length) {
+      // AND THE LINE SAYS HOW MANY DWELLINGS IT COVERS. On a 1025 this is a SUM
+      // across 2-4 units, not a figure about one property — measured, 255 of 567
+      // real RoomCount lines span more than one unit. Stored as `spansUnits`, so
+      // a market benchmark can tell a per-property adjustment from a
+      // whole-building total instead of averaging the two into a number that
+      // describes neither. `1` is an ordinary single-dwelling line.
+      out.adjustments.push({ type: 'RoomCount', description: null,
+        amount: raAmt.reduce((a, b) => a + b, 0), spansUnits: raAmt.length });
+    }
   }
   // OTHER_FEATURE_ADJUSTMENT — garage/fireplace/pool/attic/porch extras; a traditional grid shows
   // every adjustment line, and net_adjustment won't reconcile without these.
@@ -288,6 +640,17 @@ function compGrid(c) {
     const d = clean(X.attr(of, 'PropertyFeatureDescription'));
     const amt = toNum(X.attr(of, 'PropertyFeatureAdjustmentAmount'));
     if (d || amt != null) out.adjustments.push({ type: 'OtherFeature', description: d, amount: amt });
+  }
+  // THE COMPARABLE'S OWN RENT AND THE MULTIPLIER THE APPRAISER DERIVED FROM IT.
+  // On a rental-exit loan the GRM IS the comparison — and we stored the subject's
+  // while discarding every comp's, which makes the subject's number impossible to
+  // check against anything (db/430). Read only from the comp's OWN rental block.
+  const mrs = X.find(c, 'MULTIFAMILY_RENTAL_SUMMARY') || X.find(c, 'MULTIFAMILY_RENTAL');
+  if (mrs) {
+    out.monthlyRent = bounded(X.attr(mrs, 'RentalActualGrossMonthlyRentAmount'), 1e8)
+      ?? bounded(X.attr(mrs, 'RentalEstimatedGrossMonthlyRentAmount'), 1e8);
+    out.grm = bounded(X.attr(mrs, 'GrossRentMultiplierFactor')
+      || X.attr(mrs, 'RentalGrossRentMultiplierFactor'), 1e6);
   }
   const cd = X.find(c, 'COMPARISON_DETAIL');
   if (cd) {
@@ -304,6 +667,33 @@ function compGrid(c) {
     const dom = toNum(X.attr(cd, 'GSEDaysOnMarketDescription')); if (dom != null && dom >= 0 && dom < 3000) out.dom = dom;
   }
   return out;
+}
+
+// DAYS ON MARKET, OUT OF THE MLS LINE THE APPRAISER TYPED.
+//
+// `GSEDaysOnMarketDescription` lives on the UAD `COMPARISON_DETAIL` block, and 73
+// of the 152 real reports carry no such block — so on those, days on market was
+// ALWAYS null. It was not missing: those vendors write it into the comparable's
+// own data-source string, which is an MLS reference with the DOM appended
+// ("FLEXMLS# 22526198;DOM 97", "CNYISMLS #S1612499;DOM 6"). 264 comparables
+// gain it, taking the corpus from 397 of 769 to 661.
+//
+// ONLY AN EXPLICIT `DOM` MARKER IS READ. The same string carries an MLS listing
+// number — "#S1612499", "# 22526198" — which is a far larger number sitting
+// right next to it, and a pattern loose enough to take a bare integer would file
+// a listing id as 22,526,198 days on market. The word-boundary before `DOM` also
+// keeps "RANDOM 45" and similar out (there is no boundary inside "RANDOM").
+const DOM_RE = /\bDOM\b[:\s#=]*([0-9]{1,4})\b/i;
+const DOM_WORDS_RE = /\b([0-9]{1,4})\s*days?\s+on\s+(?:the\s+)?market\b/i;
+function domFromText(...parts) {
+  const s = parts.filter(Boolean).join(' ');
+  if (!s) return null;
+  const m = DOM_RE.exec(s) || DOM_WORDS_RE.exec(s);
+  if (!m) return null;
+  const n = toNum(m[1]);
+  // The same ceiling the UAD path uses — a comparable is a SOLD property, so a
+  // four-figure DOM is a typo or a misread, not a listing that sat for a decade.
+  return n != null && n >= 0 && n < 3000 ? n : null;
 }
 // Parse "New Haven, CT 06519" (a comp's PropertyStreetAddress2) → {city,state,zip}. Fallback for
 // the ~1/3 of files that omit the separate PropertyCity/State/PostalCode attrs. Never guessed —
@@ -334,7 +724,25 @@ function saleStatus(c) {
   return 'closed';
 }
 
-function comparables(root) {
+/**
+ * A comparable's year built = the report's effective year minus the age the grid
+ * states. Bounded exactly the way the subject's own year built is bounded, so an
+ * absurd age can never produce an absurd year; either half missing yields null.
+ */
+function builtYearFrom(ageYears, effectiveYear) {
+  // BOTH HALVES ARE REJECTED BEFORE `Number()`. `Number(null)` is 0 — and 0 is
+  // finite — so a `Number.isFinite` guard alone reads a MISSING age as an age of
+  // ZERO and dates the comparable to the report's own year. Measured: every
+  // comparable whose grid states no age came out "built 2026". Same trap the
+  // ClickUp location writer documents for a null coordinate.
+  if (ageYears == null || ageYears === '' || effectiveYear == null || effectiveYear === '') return null;
+  const a = Number(ageYears), y = Number(effectiveYear);
+  if (!Number.isFinite(a) || !Number.isFinite(y)) return null;
+  if (a < 0 || a > 400) return null;
+  return year(String(Math.round(y - a)));
+}
+
+function comparables(root, effectiveYear) {
   const all = X.findAll(root, 'COMPARABLE_SALE');
   const subject0 = all.find((c) => X.attr(c, 'PropertySequenceIdentifier') === '0') || null;
   const comps = [];
@@ -366,10 +774,37 @@ function comparables(root) {
       latitude: geo(X.attr(loc, 'LatitudeNumber'), 90),
       longitude: geo(X.attr(loc, 'LongitudeNumber'), 180),
       saleType: enumOf(X.attr(cd, 'GSESaleType'), ['ArmsLengthSale', 'REOSale', 'EstateSale', 'ShortSale', 'Listing', 'CourtOrderedSale']),
-      financingType: clean(X.attr(cd, 'GSEFinancingType')),
+      // The UAD attribute wins; the grid row fills the blank on a non-UAD report
+      // (307 comparables). NEVER the other way round — the coded value is the
+      // structured one.
+      financingType: clean(X.attr(cd, 'GSEFinancingType'))
+        || adjText(g.adjustments, 'FinancingConcessions', NOT_FINANCING),
+      // FUNCTIONAL UTILITY — how well the layout works ("Conforms", "Average",
+      // "Inferior-2beds"). A real appraisal fact, stated on the grid of every one
+      // of the 769 comparables in the corpus, and read by nothing until now. It
+      // is the appraiser's own words and is stored as such: there is no code for
+      // it, and a whitelist would drop every phrasing nobody anticipated.
+      functionalUtility: adjText(g.adjustments, 'FunctionalUtility'),
+      // THE SELLER'S CONCESSION IS NOT THE APPRAISER'S ADJUSTMENT FOR IT, and the
+      // grid's `SALE_PRICE_ADJUSTMENT` line typed `SalesConcessions` is
+      // deliberately NOT used as a fallback here, even though it is present on 206
+      // comparables where this is null. Measured over the 187 comparables that
+      // state BOTH: they disagree on 12%, and not by rounding — a $15,000
+      // concession beside a ZERO adjustment (the appraiser judged it typical for
+      // the market and adjusted nothing) and a $0 concession beside a −$77,000
+      // adjustment (a concession-typed line carrying something else). Copying the
+      // adjustment across would file "no concession" on a real $15,000 one and
+      // invent a $77,000 one where the report says none — a wrong answer, not a
+      // missing one. Nothing is lost: every adjustment line is already stored
+      // verbatim in `adjustments`.
       compConcession: (() => { const n = toNum(X.attr(cd, 'GSEConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })(),
       priorSaleAmount: psAmt, priorSaleDate: psDate, priorSaleNominal: isNominal(psAmt),
       beds: g.beds, bathsText: g.baths, bathsFull: g.bathsFull, bathsHalf: g.bathsHalf, totalRooms: g.totalRooms,
+      // Stated per unit by a 1025 grid, absent from a 1004 (db/426). Never
+      // inherited from the subject — a comparable's unit count is genuinely not
+      // on most MISMO 2.6 grids, and guessing it would file a duplex as a
+      // single-family every time we appraised one.
+      units: g.units == null ? null : g.units, unitMix: g.unitMix || null,
       // A comp's PropertySalesAmount holds the LIST/asking price on an active or pending listing —
       // NOT a closed sale. The review checks + scoring must not count a listing as a settled comp
       // (it inflates the "closed comps" pool and pollutes the implied-value median with an asking
@@ -394,21 +829,234 @@ function comparables(root) {
       })(),
       netAdjPct: signed(X.attr(c, 'SalePriceTotalAdjustmentNetPercent'), 1e6),    // numeric(8,2), can be < 0
       grossAdjPct: signed(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent'), 1e6), // numeric(8,2)
-      gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate,
+      gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate, contractDate: g.contractDate,
       conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       conditionText: g.conditionText, qualityText: g.qualityText,
-      dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
+      // The basis travels WITH the number: $150 a foot of LIVING area and $150 a
+      // foot of GROSS BUILDING area describe different properties, and a 1025
+      // states the second one.
+      // The UAD figure WINS — it is the structured one. The MLS-line reading is a
+      // fallback for the 73 reports that carry no UAD block at all, never an
+      // override of a value the report stated properly.
+      dom: g.dom != null ? g.dom
+        : domFromText(X.attr(c, 'DataSourceDescription'), X.attr(c, 'DataSourceVerificationDescription')),
+      pricePerGla: g.pricePerGla, pricePerGlaBasis: g.pricePerGlaBasis,
+      pricePerUnit: g.pricePerUnit, monthlyRent: g.monthlyRent, grm: g.grm, ageYears: g.ageYears,
+      // THE YEAR THE COMPARABLE WAS BUILT. The MISMO grid has no element for it —
+      // the Age adjustment states an AGE IN YEARS ("106", "114 yrs"), which is why
+      // mining that row for a 4-digit year came back NULL on every comparable in
+      // the real corpus. The report's own effective date supplies the other half,
+      // so the year is arithmetic, not a guess, and it is left null the moment
+      // either half is missing.
+      yearBuilt: builtYearFrom(g.ageYears, effectiveYear),
+      adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
-      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
-      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
-      locationType: clean(X.attr(X.find(c, 'COMPARISON_LOCATION_DETAIL'), 'GSELocationType')),
+      // …AND WHEN THE UAD BLOCK IS ABSENT, THE GRID ROW STATES IT ANYWAY. 360 of
+      // 769 real comparables carry NO view or location rating, and every one of
+      // them has a View/Location adjustment line whose description says `N;Res;`
+      // or `A;BsySt;` — the same rating, in the UAD short form. `Adverse` is a
+      // real underwriting signal the appraisal tab badges, and it was missing
+      // from nearly half the grid. Read by `uad-rating.js`, which refuses a
+      // relative word ("similar") and refuses a bare FACTOR ("Residential",
+      // "BusyRoad") — naming what you look at is not rating it, and reading
+      // BusyRoad as neutral would manufacture the judgement that matters most.
+      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse'])
+        || UAD.readUadRating(adjText(g.adjustments, 'View')).rating,
+      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse'])
+        || UAD.readUadRating(adjText(g.adjustments, 'Location')).rating,
+      // EVERY location factor, not just the first — see `factorsOf`. The dropped
+      // one was the price-relevant one: 23 of 769 comparables carry a second
+      // element with a DIFFERENT code, and it is the BusyRoad / Commercial.
+      // THE RAW CODE MUST NOT REACH A SCREEN. This fell back to the grid row's
+      // text verbatim, so 136 comparables stored `N;Res;`, `A;BsySt;` and even
+      // `N;Res;2.5%` — a code with the adjustment percentage stuck on — and the
+      // appraisal tab renders that string as the property's "Location". Same
+      // class as a database key reaching a screen: not a missing answer, a
+      // confident unreadable one.
+      locationType: locationTypeOf(X.findAll(c, 'COMPARISON_LOCATION_DETAIL'))
+        || UAD.readUadRating(adjText(g.adjustments, 'Location')).factor,
+      // WHAT THE COMPARABLE LOOKS OUT ON, not just whether the appraiser liked it.
+      // The overall RATING above is a three-way verdict (Beneficial/Neutral/Adverse)
+      // and every vendor that writes it also names the view itself — a comp backing
+      // onto a park and one backing onto a cemetery are both `Adverse`/`Beneficial`
+      // to one appraiser and the opposite to the next, so the rating alone cannot
+      // be re-judged later. `GSEViewTypeOtherDescription` is the appraiser's own
+      // words when the enum is `Other`, which is where the interesting ones live
+      // (measured across the corpus: Cemetery, Creek, Warehse, Comm).
+      // The UAD elements win when the report carries them; the grid's own View row
+      // fills the blank on the 73 reports that do not (360 comparables).
+      viewType: viewTypeOf(X.findAll(c, 'COMPARISON_VIEW_DETAIL'))
+        || UAD.readUadRating(adjText(g.adjustments, 'View')).factor,
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
-      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
+      // A BASEMENT BEDROOM IS NOT A BEDROOM, and Fannie separates them on the form
+      // for exactly that reason. The grid's headline bed/bath counts are ABOVE
+      // grade, so a 3-bed comparable with two more beds downstairs and a 3-bed
+      // comparable with none read identically today — the below-grade area alone
+      // does not say whether that space is finished living space or a boiler room.
+      // Read per comparable from its own COMPARISON_DETAIL; 57 of the 152 real
+      // reports state them.
+      // `count`, NOT `bounded` — ZERO IS THE ANSWER HERE, not the absence of one.
+      // "This basement has no bedrooms" and "the appraiser didn't say" are different
+      // facts about a comparable, and `bounded` (which exists for money and areas)
+      // refuses 0, so every stated zero would have been filed as silence: measured
+      // 31 of 769 comparables carrying a bed count instead of the 115 that state one.
+      belowGradeBeds: count(X.attr(cd, 'GSEBelowGradeBedroomRoomCount'), 100),
+      // AND THE BATH COUNT IS UAD `full.half`, NOT A DECIMAL — "0.1" is no full
+      // baths and one half bath, not a tenth of a bathroom. It goes through the
+      // same decoder the grid's own bath line uses, so the two can never disagree.
+      belowGradeBaths: (() => {
+        const b = parseBaths(X.attr(cd, 'GSEBelowGradeBathroomRoomCount'));
+        // BOTH HALVES OR NEITHER. `parseBaths` bounds the FULL count through an
+        // integer 0–99 guard but takes the half digit raw, so an out-of-range
+        // "999.5" yields {full:null, half:5} — which would store "no full baths
+        // recorded, but five half baths", a shape no report can mean. A pair that
+        // is not whole is not a reading.
+        return b.full == null || b.half == null ? null : { full: b.full, half: b.half, text: b.text };
+      })(),
+      belowGradeRecRooms: count(X.attr(cd, 'GSEBelowGradeRecreationRoomCount'), 100),
+      belowGradeOtherRooms: count(X.attr(cd, 'GSEBelowGradeOtherRoomCount'), 100),
+      // WalkOut / WalkUp / InteriorOnly — the difference between a basement that
+      // can be a legal unit and one that cannot.
+      basementExit: enumOf(X.attr(cd, 'GSEBasementExitType'), ['WalkOut', 'WalkUp', 'InteriorOnly']),
+      // WHERE THIS COMPARABLE CAME FROM — an MLS number, tax records, an exterior
+      // inspection. Only 79 of the 152 real reports carry the UAD extension that
+      // holds `GSEDataSourceDescription`, but 135 state it on the COMPARABLE_SALE
+      // element itself and 145 state how it was VERIFIED — so reading the UAD
+      // attribute alone left the provenance blank on 66 files (43% of the corpus),
+      // which read as "this vendor doesn't say" when the vendor did say.
+      // The order is strongest-first: the UAD attribute is the structured one, the
+      // element's own description is the same fact unstructured, and the
+      // verification description is a statement about the same sale (it is the
+      // fallback, not a peer — "Ext inspection/Assessor records" answers "how do
+      // we know this" rather than "where did it come from").
+      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription'))
+        || clean(X.attr(c, 'DataSourceDescription'))
+        || clean(X.attr(c, 'DataSourceVerificationDescription')),
     });
   }
-  return { comps, subject0 };
+  // A PADDED GRID COLUMN IS NOT A COMPARABLE. Several vendors emit the form's
+  // unused trailing slots as empty `COMPARABLE_SALE` elements — measured across
+  // the real corpus, six of them across four reports, every one with no address,
+  // no price, no area, no beds, no age and no style. Kept, each became an
+  // `appraisal_comparables` row and an entry in the comp counts. (It never
+  // reached the warehouse: an address with no house number yields no property
+  // key and the ingest already skipped it.) A row is dropped only when it states
+  // NONE of the three facts that make a comparable a comparable — anything that
+  // names a property, a price or a size is kept, which is why the ONE genuine
+  // comparable with no unit count (103 George Ave, $130,000, style "DOUBLE
+  // BLOCK") survives and is still counted.
+  return {
+    comps: comps.filter((c) => c.address || c.salePrice != null || c.gla != null),
+    subject0,
+  };
+}
+
+/**
+ * THE RENT SCHEDULE — the second comparable grid, read by nothing until now.
+ *
+ * A small-income appraisal (1025, or a 1004 with a 1007 attached) carries a
+ * whole second grid beside the sales one: `MULTIFAMILY_RENTALS`. Sequence 0 is
+ * the SUBJECT; every sequence after it is a RENTAL comparable — a different
+ * building, with its own address, its own gross monthly rent, its own size, and
+ * a per-unit breakdown the sales grid does not carry (`RENTAL_UNIT` states
+ * SquareFeetCount per dwelling; `ROOM_ADJUSTMENT` never does).
+ *
+ * Measured across 149 real reports: 95 carry the grid, 385 entries (95 subjects
+ * + 290 rental comparables), 354 with an address, 1,474 `RENTAL_UNIT` rows of
+ * which 729 state something and 720 state a square footage. The parser counted
+ * these elements and read nothing out of them.
+ *
+ * A RENT IS NOT A SALE. These properties never enter the sales comparables and
+ * never carry a sale price — what they carry is what somebody is actually
+ * PAYING to live there, which on a 2-4 unit deal is the underwriting.
+ */
+function rentalGrid(root, effectiveYear) {
+  const out = [];
+  // ONE ROW PER SEQUENCE, decided HERE. The sales grid dedupes its own sequence
+  // (`comparables()`); this did not, and the two doors then disagreed about a
+  // repeat — the loan-file door's `ON CONFLICT … DO NOTHING` kept the FIRST while
+  // the upload door's UPSERT kept the LAST. Same report, two answers.
+  const seenSeq = new Set();
+  for (const m of X.findAll(root, 'MULTIFAMILY_RENTAL')) {
+    const seq = clean(X.attr(m, 'PropertySequenceIdentifier'));
+    if (seq != null && seenSeq.has(seq)) continue;
+    if (seq != null) seenSeq.add(seq);
+    const loc = X.find(m, 'LOCATION');
+    // The features are a `_Type`/`_Description` list, exactly like the sales
+    // grid's adjustment lines; read the four every report writes.
+    const feat = {};
+    for (const f of X.findAll(m, 'RENTAL_FEATURE')) {
+      const t = clean(X.attr(f, '_Type')), d = clean(X.attr(f, '_Description'));
+      if (t && d && !feat[t]) feat[t] = d;
+    }
+    // A PADDED UNIT ROW IS NOT A DWELLING — the schedule pads to four on a
+    // duplex, exactly as the sales grid pads its columns. A row that states
+    // nothing about a dwelling is dropped, and the count is what is left.
+    const units = [];
+    for (const u of X.findAll(m, 'RENTAL_UNIT')) {
+      const rooms = count(X.attr(u, 'TotalRoomCount'), 99);
+      const beds = count(X.attr(u, 'TotalBedroomCount'), 99);
+      const baths = parseBaths(X.attr(u, 'TotalBathroomCount'));
+      const sqft = bounded(X.attr(u, 'SquareFeetCount'), 1e6);
+      const rent = bounded(X.attr(u, 'MonthlyRentAmount'), 1e8);
+      // A FORM PADS WITH ZEROS AS OFTEN AS WITH BLANKS — db/426's rule, and this
+      // dropped only the blanks. `count('0', 99)` returns 0, which is not null,
+      // so `TotalRoomCount="0" TotalBedroomCount="0"` survived as a dwelling and
+      // a DUPLEX was filed as a 4-FAMILY. Measured on a real report
+      // (2242 Concord St, Detroit): the rent schedule said 4 units while the
+      // SAME report's sales grid said 2, and the rental row won the roll-up.
+      // A row that states nothing ABOUT a dwelling is not a dwelling.
+      if ((rooms || 0) + (beds || 0) + (baths.full || 0) + (baths.half || 0)
+          + (sqft || 0) + (rent || 0) <= 0) continue;
+      units.push({ unit: clean(X.attr(u, 'UnitSequenceIdentifier')) || String(units.length + 1),
+        rooms, beds, baths_full: baths.full, baths_half: baths.half, baths: baths.text,
+        sqft, monthly_rent: rent });
+    }
+    const ageYears = count((String(feat.Age || '').match(/\d+/) || [])[0], 999);
+    const cq = clean(feat.Condition);
+    const addr = clean(X.attr(loc, 'PropertyStreetAddress'));
+    // The "City, ST ZIP" second line, split the same way the sales grid's is.
+    const city2 = splitCityLine(X.attr(loc, 'PropertyStreetAddress2'));
+    const row = {
+      seq,
+      isSubject: seq === '0',
+      address: addr,
+      city: clean(X.attr(loc, 'PropertyCity')) || city2.city || null,
+      state: upState(X.attr(loc, 'PropertyState')) || city2.state || null,
+      zip: zip(X.attr(loc, 'PropertyPostalCode')) || city2.zip || null,
+      proximity: clean(X.attr(loc, 'ProximityToSubjectDescription')),
+      // numeric(12,2) columns — bounded to 1e8, never money()'s 1e12 ceiling.
+      monthlyRent: bounded(X.attr(m, 'MonthlyRentAmount'), 1e8),
+      rentPerGba: bounded(X.attr(m, 'RentPerGrossBuildingAreaAmount'), 1e6),
+      gba: bounded(X.attr(m, 'GrossBuildingAreaSquareFeetCount'), 1e6),
+      // The enum is Yes/No, and ANYTHING ELSE IS UNANSWERED — db/435's own column
+      // comment says "NULL means the report did not say — never 'no'". Testing
+      // `/^n/i` against the raw attribute broke that on the commonest filler
+      // there is: "N/A", "n/a", "None" and "Not Applicable" all start with an n
+      // and all read as "not rent controlled", which then rolls up onto the
+      // property. Matched whole, through `clean()`, like every other enum here.
+      rentControlled: yesNoExact(X.attr(m, 'RentControlStatusType')),
+      dataSource: clean(X.attr(m, 'DataSourceDescription')),
+      leaseTerms: clean(feat.Lease),
+      utilitiesIncluded: clean(feat.UtilitiesIncluded),
+      locationCode: clean(feat.Location),
+      // The condition line is a UAD code on most vendors and a WORD on the rest
+      // — kept apart exactly as the sales grid keeps them, because the review
+      // checks compare the codes and must never see free text.
+      conditionUad: cq && UAD_C.test(cq) ? cq : null,
+      conditionText: cq && !UAD_C.test(cq) ? cq : null,
+      ageYears,
+      yearBuilt: builtYearFrom(ageYears, effectiveYear),
+      units: units.length || null,
+      unitMix: units.length ? units : null,
+    };
+    // An entry that names no property and states no rent is a padded slot.
+    if (!row.isSubject && !row.address && row.monthlyRent == null) continue;
+    out.push(row);
+  }
+  return out;
 }
 
 // Subject prior sale (for flip / recent-sale detection) — the structured PRIOR_SALES under the
@@ -428,9 +1076,23 @@ function subjectPriorSale(root, subject0) {
   return out;
 }
 
-// ---- subject condition/quality from the seq-0 comp (UAD codes only) ---------
+/**
+ * SUBJECT CONDITION/QUALITY from the seq-0 comp.
+ *
+ * A WORDED RATING IS STILL A RATING, AND THE SUBJECT'S WAS BEING THROWN AWAY.
+ * The UAD whitelist is right to keep `condition_uad` clean — the review checks
+ * compare those codes and must never see free text — but a rating that failed it
+ * was DISCARDED rather than kept beside the code. The comparable path has kept
+ * the word since the non-UAD vendor fix; the subject path never did.
+ *
+ * That is not an edge case, it is the whole 2-4 unit book: UAD was mandated for
+ * exactly four forms — 1004, 1073, 1075 and 2055 — and the **1025 was explicitly
+ * left out**, so on a 2-4 family the grid condition is the appraiser's own words
+ * ("Average", "Avg-Good", "Good"). Dropping them left the single most important
+ * fact about a property after its price simply blank.
+ */
 function subjectCQ(subject0) {
-  const out = { conditionUad: null, qualityUad: null, cqNonUad: false };
+  const out = { conditionUad: null, qualityUad: null, conditionText: null, qualityText: null, cqNonUad: false };
   if (!subject0) return out;
   const cd = X.find(subject0, 'COMPARISON_DETAIL');
   let cRaw = cd ? X.attr(cd, 'GSEOverallConditionType') : null;
@@ -442,9 +1104,55 @@ function subjectCQ(subject0) {
       if (t === 'Quality' && !qRaw) qRaw = d;
     }
   }
-  if (cRaw && UAD_C.test(cRaw)) out.conditionUad = cRaw; else if (cRaw) out.cqNonUad = true;
-  if (qRaw && UAD_Q.test(qRaw)) out.qualityUad = qRaw; else if (qRaw) out.cqNonUad = true;
+  if (cRaw && UAD_C.test(cRaw)) out.conditionUad = cRaw;
+  else if (cRaw) { out.cqNonUad = true; out.conditionText = clean(cRaw); }
+  if (qRaw && UAD_Q.test(qRaw)) out.qualityUad = qRaw;
+  else if (qRaw) { out.cqNonUad = true; out.qualityText = clean(qRaw); }
   return out;
+}
+
+/**
+ * THE AS-IS CONDITION, OUT OF THE APPRAISER'S OWN SENTENCE.
+ *
+ * On a renovation report the grid's condition describes the FINISHED house, so
+ * the roll-up correctly refuses it (`AS_IS_ONLY`) — and those properties are left
+ * with no current condition at all. But the appraiser very often writes both
+ * ratings down in the condition narrative: *"C4 for as-is value. C3 for As
+ * repaired value."* That sentence is the one place the as-is rating exists, and
+ * nothing was reading it.
+ *
+ * STRICT, because a wrong condition grade moves real money (one grade over
+ * 1,500 sq ft at a $12-18/sqft rate is $18,000-27,000 per comp). A code is
+ * returned ONLY when:
+ *   * it sits within a few words of explicit as-is language, AND
+ *   * exactly ONE distinct code is paired that way — two candidates means the
+ *     sentence is ambiguous and we say nothing.
+ * An after-repair pairing is deliberately NOT read: that value is already on the
+ * grid, and mining it would risk filing the finished house's rating as today's.
+ */
+function asIsConditionFromNarrative(text) {
+  const s = clean(text);
+  if (!s) return null;
+  // BY CLAUSE, NOT BY A CHARACTER WINDOW. A fixed ±20 characters reads straight
+  // past the punctuation into the NEXT statement, so "As is the property rates
+  // C4; as repaired C2" saw the repaired basis sitting next to the as-is code and
+  // threw away a perfectly clear reading. A clause is the unit the appraiser
+  // actually writes one basis in.
+  const found = new Set();
+  for (const clause of s.split(/[.;]/)) {
+    if (!/\bas[\s-]*is\b/i.test(clause)) continue;
+    // A clause naming the repaired/complete basis TOO is not usable evidence
+    // either way — one sentence, two bases, no way to tell which code belongs to
+    // which.
+    if (/\bas[\s-]*(?:repaired|complete)/i.test(clause)) continue;
+    const codes = new Set((clause.match(/\bC[1-6]\b/gi) || []).map((x) => x.toUpperCase()));
+    // TWO CODES IN ONE CLAUSE IS AN APPRAISER WHO DID NOT COMMIT — "C4 or C5 as
+    // is depending on the inspection". Neither do we, and the whole read is
+    // abandoned rather than guessing at the first one.
+    if (codes.size > 1) return null;
+    for (const c of codes) found.add(c);
+  }
+  return found.size === 1 ? [...found][0] : null;
 }
 
 // A node is subject-scoped when no COMPARABLE_SALE sits above it (the same tag repeats under each
@@ -564,6 +1272,17 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     const t = X.attr(pa, '_Type');
     if (t === 'PhysicalDeficiency') { o.physical_deficiency = yn(X.attr(pa, '_ExistsIndicator')); o.physical_deficiency_note = capText(X.attr(pa, '_Comment'), 500); }
     else if (t === 'AdverseSiteConditions') o.adverse_site_conditions = yn(X.attr(pa, '_ExistsIndicator'));
+    // THE CONDITION NARRATIVE — present on roughly nine of ten 1025s and read by
+    // nothing until now. It is where an appraiser writes the ratings out in
+    // words, and on a renovation report it is the ONLY place the AS-IS rating
+    // exists at all (the grid states the finished house, which the roll-up
+    // correctly refuses). Kept verbatim as evidence; the strict reader below is
+    // what turns it into a code, and refuses when the sentence is ambiguous.
+    else if (t === 'PropertyCondition') {
+      o.condition_comment = capText(X.attr(pa, '_Comment'), 1000);
+      const asIs = asIsConditionFromNarrative(o.condition_comment);
+      if (asIs) o.condition_uad_as_is = asIs;
+    }
   }
   for (const sf of subjAll(root, 'SITE_FEATURE')) {
     const t = X.attr(sf, '_Type');
@@ -803,7 +1522,15 @@ function detectMismo(xml) {
     || /<(?:[A-Za-z_][\w.-]*:)?MESSAGE[\s>]/.test(s)
     || /mismo\.org\/residential\/2009/i.test(s);
   const uad36 = /\bUAD\s*3\.?6\b/i.test(s) || (isV3 && /uniform\s+residential\s+appraisal\s+report/i.test(s));
-  return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36 };
+  // IS THERE AN APPRAISAL IN HERE AT ALL? A MISMO 3.x envelope is not evidence of
+  // one. Measured on the real corpus: three files rejected as "UAD 3.6 — a 3.6
+  // reader is required" were Encompass **iLAD** loan-application exports carrying
+  // no SALES_COMPARISON and no COMPARABLE element anywhere. Telling somebody a
+  // reader would fix that is wrong twice — the reader would not import it, and
+  // the honest problem (they attached the wrong document) goes unsaid.
+  const isIlad = /\bILAD\b/i.test(s) || /datamodelextension\.org\/Schema\/ILAD/i.test(s);
+  const hasGrid = /<(?:[A-Za-z_][\w.-]*:)?(?:SALES_COMPARISON|COMPARABLE_SALE|SALES_COMPARISON_APPROACH)[\s>/]/i.test(s);
+  return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36, isIlad, hasGrid };
 }
 
 function extract(xml) {
@@ -813,6 +1540,12 @@ function extract(xml) {
     // Give the officer the real reason. A UAD 3.6 / MISMO 3.x file is a KNOWN, named format we
     // don't yet read — say so, rather than a generic "not a REPORT".
     const d = detectMismo(xml);
+    if (!d.hasGrid && (d.isIlad || d.model === '3.x')) {
+      return { ok: false, format: { model: d.model, notAnAppraisal: true, ilad: d.isIlad, ref: d.ref },
+        error: d.isIlad
+          ? 'This file is a loan-application data export (iLAD), not an appraisal report — it contains no comparable sales grid. Please upload the appraisal XML the appraiser delivered.'
+          : 'This file contains no comparable sales grid, so it is not an appraisal report. Please upload the appraisal XML the appraiser delivered.' };
+    }
     if (d.model === '3.x' || d.uad36) {
       return { ok: false, format: { model: '3.x', uad36: true, ref: d.ref },
         error: `This appraisal is in the UAD 3.6 / MISMO 3.x format${d.ref ? ` (reference model ${d.ref})` : ''}. PILOT currently reads UAD 2.6 (MISMO 2.6) appraisals — a 3.6 reader is required, so this file was not imported. Please provide the UAD 2.6 export, or import the PDF.` };
@@ -839,7 +1572,18 @@ function extract(xml) {
   };
   const site = X.find(root, 'SITE');
   const val = valuation(root);
-  const { comps, subject0 } = comparables(root);
+  // THE YEAR TO SUBTRACT A COMPARABLE'S AGE FROM. The effective date is the right
+  // answer and is present on nearly every report — but one corpus file carries
+  // twelve `EffectiveDate` occurrences that this reader does not resolve, and
+  // with no year every comparable on it silently loses its year built. The
+  // report's SIGNED date is within days of its effective date and is a different
+  // element, so it is a safe second reading; the appraiser's own inspection date
+  // is a third. A year is all that is taken from any of them.
+  const reportYear = year((val.effectiveDate || '').slice(0, 4))
+    || year((X.attr(rep, 'AppraiserReportSignedDate') || '').slice(0, 4))
+    || year((X.attr(X.find(root, 'INSPECTION'), 'InspectionDate') || '').slice(0, 4));
+  const { comps, subject0 } = comparables(root, reportYear);
+  const rentals = rentalGrid(root, reportYear);
   // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
   // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
   // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else
@@ -888,10 +1632,26 @@ function extract(xml) {
     floodZone: clean(X.attr(X.find(root, 'FLOOD_ZONE'), 'NFIPFloodZoneIdentifier')),
     conditionUad: cq.conditionUad,
     qualityUad: cq.qualityUad,
+    // The WORD, when the rating is not a UAD code. Kept beside the code, never
+    // instead of it — a 1025 was never brought into UAD, so on the 2-4 book this
+    // is the only rating there is, and it used to be discarded (db/429).
+    conditionText: cq.conditionText,
+    qualityText: cq.qualityText,
     priorSale: subjectPriorSale(root, subject0),
   };
-  // imply units by form when blank (1004/1073 → 1)
-  if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) subject.units = 1;
+  // imply units by form when blank (1004/1073 → 1) — AND SAY WHICH IT WAS.
+  //
+  // The count the appraiser COUNTED and the count the form IMPLIES are two very
+  // different facts, and until now they left this function indistinguishable. The
+  // research warehouse then treated every subject observation as measured ("the
+  // appraiser stood in the building and counted the doors") and let it outrank a
+  // grid-stated count on a comparable — so a form-implied 1 off a 1004 could
+  // overwrite a triplex that another report had actually counted. Recording the
+  // basis costs nothing and makes the roll-up's ranking honest.
+  subject.unitsBasis = subject.units != null ? 'grid' : null;
+  if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) {
+    subject.units = 1; subject.unitsBasis = 'form';
+  }
 
   // THE PROPERTY CATEGORY — single family / 2–4 / condo / townhouse / PUD — derived from the
   // appraisal's OWN evidence (the form, the settled unit count, the ownership signals) and written
@@ -1065,6 +1825,9 @@ function extract(xml) {
     subject, values: val, appraiser, enrich,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
     comparables: comps, units, income, condo, photos, report,
+    // The rent schedule's own grid (2.4): the subject's rental summary at
+    // sequence 0 and every RENTAL comparable after it.
+    rentalComps: rentals,
     compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
       asIsValue: gridSplit.asIsValue, arvValue: gridSplit.arvValue,
       counts: { as_is: comps.filter((c) => c.comp_set === 'as_is').length, arv: comps.filter((c) => c.comp_set === 'arv').length, unknown: comps.filter((c) => c.comp_set === 'unknown').length } },
