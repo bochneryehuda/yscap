@@ -543,10 +543,14 @@ t('a non-url is refused with a plain reason', () => {
   }
 
   t('the sweep PACES its vendor calls instead of bursting', () => {
-    // `apiGet` has no 429/backoff handling, and three other Encompass workers
-    // share this process, this credential and one token cache — so a burst that
-    // trips ICE's rate limit takes them down too. The bulk puller already paces
-    // at 350ms; this matches it rather than inventing a second convention.
+    // `apiGet` has no 429/Retry-After handling, and three other Encompass
+    // workers share this process, this credential and one token cache — so a 429
+    // is an unhandled error to all of them. Say no more than that: what Encompass
+    // enforces is CONCURRENCY, and a sequential walk holds one slot paced or not,
+    // so this pause is not what prevents a 429. It is also per LOAN, not per
+    // request, so it bounds loans/minute and not requests/minute — the 350ms
+    // constant is borrowed from reader.bulkPullAllLoans for consistency, NOT
+    // because the two walks are equally paced.
     assert.strictEqual(paceGaps.length, 2, 'three loans should be three calls');
     for (const gap of paceGaps) {
       assert.ok(gap >= 35, `expected a pause between loans, saw ${gap}ms`);
@@ -557,6 +561,303 @@ t('a non-url is refused with a plain reason', () => {
     assert.ok(secondRan && secondRan.skippedTick !== true,
       'a later tick must run — a stuck flag would wedge the catcher silently');
   });
+
+  // ── a repeating warning is BOUNDED ────────────────────────────────────────
+  // The only behaviour this PR changes, so it is the only thing that can regress.
+  // Both warn paths run on EVERY sweep (`paceMs` is a parameter default, and the
+  // registry check is inside `catchDisabled`), so an unbounded one is 144..1440
+  // identical lines a day — which is how a log stops being read at all.
+  //
+  // Driven through the REAL callers rather than by exporting the helper: what
+  // matters is that the paths people actually hit are bounded.
+  {
+    const origWarn = console.warn;
+    const seen = [];
+    console.warn = (...a) => { seen.push(a.join(' ')); };
+    let sameTwice, thenDifferent, thenBackToFirst;
+    try {
+      process.env.__TEST_XML_WARNONCE = 'nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      envNum('__TEST_XML_WARNONCE', 7);
+      sameTwice = seen.length;
+
+      process.env.__TEST_XML_WARNONCE = 'other-nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      thenDifferent = seen.length;
+
+      process.env.__TEST_XML_WARNONCE = 'nonsense';
+      envNum('__TEST_XML_WARNONCE', 7);
+      thenBackToFirst = seen.length;
+    } finally {
+      console.warn = origWarn;
+      delete process.env.__TEST_XML_WARNONCE;
+    }
+
+    t('the same bad value warns ONCE however often it is re-read', () => {
+      assert.strictEqual(sameTwice, 1,
+        `two reads of one bad value must warn once, saw ${sameTwice}`);
+    });
+
+    t('a DIFFERENT bad value warns again — a second breakage is not swallowed', () => {
+      assert.strictEqual(thenDifferent, 2,
+        `a new bad value must warn, saw ${thenDifferent} total`);
+    });
+
+    t('broken BACK to an already-warned value stays silent, as documented', () => {
+      // Not a bug — the deliberate trade the comment on `warnOnce` states. Pinned
+      // so the comment and the code cannot drift apart: if this ever starts
+      // warning, that comment is the thing to update.
+      assert.strictEqual(thenBackToFirst, 2,
+        `a repeat of an already-warned value must stay quiet, saw ${thenBackToFirst}`);
+    });
+  }
+
+  // ── an unregistered switch key warns once and FAILS OPEN ──────────────────
+  // If the registry entry is ever renamed or dropped, `!switches.on(key)` reads
+  // as "disabled" and the catcher would stop forever in total silence. The guard
+  // keeps it running and says so — but must say so ONCE, not once per sweep.
+  //
+  // The switch module is STUBBED THROUGH require.cache rather than imported, for
+  // one reason that always holds: you cannot make the REAL registry lack the key,
+  // and a registry without the key is the whole state under test.
+  //
+  // Do not read this as "nothing real is loaded" — that was the first version of
+  // this comment and it is only true where `pg` is absent. Wherever node_modules
+  // IS installed (CI), `catchDisabled`'s lazy require has already pulled
+  // switches -> flags -> db -> pg into the cache during the earlier sweep tests,
+  // which is exactly why `savedMod` is truthy and this block RESTORES the real
+  // module rather than deleting the entry. Both paths are handled; only the
+  // claim was wrong.
+  {
+    const KEY = 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED';
+    const swPath = require.resolve(
+      path.join(__dirname, '..', 'src', 'lib', 'integrations', 'switches'));
+    const enc2 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+    const origWarn = console.warn, origConfigured = enc2.configured, origGet = enc2.apiGet;
+    const savedMod = require.cache[swPath];
+    const warns = [];
+    const sweeps = [];
+    try {
+      // BY_KEY present but WITHOUT our key — the exact shape a rename or a
+      // deleted registry entry would leave behind.
+      //
+      // `on: () => false` is REAL, not arbitrary: switches.on() reads BY_KEY and
+      // returns false for a key it does not know. That is the whole reason the
+      // guard exists — `!switches.on(key)` on an unknown key reads as "disabled",
+      // which would stop the catcher forever in silence. Stubbing `true` here
+      // would model a state the real module cannot produce AND would make the
+      // fail-open assertion below vacuous: with the guard deleted the catcher
+      // would keep sweeping anyway, so the test could never catch its removal.
+      // With `false`, deleting the guard turns the catcher off and that assertion
+      // goes red — which is what its name promises.
+      require.cache[swPath] = {
+        id: swPath, filename: swPath, loaded: true, exports: { BY_KEY: {}, on: () => false },
+      };
+      console.warn = (...a) => { warns.push(a.join(' ')); };
+      enc2.configured = () => true;
+      enc2.apiGet = async () => [];
+      for (let i = 0; i < 4; i++) {
+        // eslint-disable-next-line no-await-in-loop
+        sweeps.push(await M.sweepOnce(db, { loans: [{ loanId: 'sw1' }], paceMs: 0 }));
+      }
+    } finally {
+      console.warn = origWarn;
+      enc2.configured = origConfigured;
+      enc2.apiGet = origGet;
+      if (savedMod) require.cache[swPath] = savedMod; else delete require.cache[swPath];
+    }
+    const registryWarns = warns.filter((w) => w.includes('is not in the registry'));
+
+    t('a missing switch entry warns ONCE across many sweeps', () => {
+      assert.strictEqual(registryWarns.length, 1,
+        `four sweeps must warn once about the missing key, saw ${registryWarns.length}`);
+    });
+
+    t('a missing switch entry FAILS OPEN — the catcher keeps sweeping', () => {
+      // Silently not catching is the exact failure this module exists to prevent,
+      // and the env kill switch remains the guaranteed stop.
+      assert.ok(sweeps.every((s) => s && s.disabled !== true),
+        'an unregistered key must not disable the catcher');
+      assert.ok(sweeps.every((s) => s && s.loans === 1),
+        'the sweep must still walk its loans');
+    });
+
+    t('the switch key really is registered today, so that guard stays latent', () => {
+      // Read from SOURCE, not by importing the module — same purity reason as
+      // above. If someone drops this entry the catcher does not break (it fails
+      // open), which is exactly why nothing else would notice: this is the check
+      // that notices.
+      const src = require('fs').readFileSync(swPath, 'utf8');
+      assert.ok(src.includes(KEY),
+        `${KEY} must be in the switch registry — the live on/off control depends on it`);
+    });
+  }
+
+  // ── an appraisal we CANNOT parse is counted and said out loud ─────────────
+  // The post-merge audit's silent-total-failure finding. The skip used to happen
+  // before any counter, and makeTick's log gate is
+  // `resources || captured || failed || errors` — so a tenant whose appraisals
+  // all arrive as UAD 3.6 ZIPs produced all-zeros, which is exactly what a
+  // healthy quiet sweep looks like. The catcher would stop working on the day the
+  // format changed, with nothing anywhere saying so.
+  {
+    const enc3 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+    const origGet = enc3.apiGet, origConfigured = enc3.configured, origErr = console.error;
+    const origPipeline = enc3.pipelineSearch, origLog = console.log;
+    const errs = [];
+    const zipSweepLog = [];
+    let zipSweep;
+    try {
+      console.error = (...a) => { errs.push(a.join(' ')); };
+      console.log = (...a) => { zipSweepLog.push(a.join(' ')); };
+      enc3.configured = () => true;
+      // One appraisal service order carrying ONE resource: the appraisal type
+      // URN on a ZIP package — the exact UAD 3.6 shape the module documents.
+      enc3.apiGet = async (p) => {
+        if (/serviceOrders\/[^/?]+\?/.test(String(p))) {
+          return { response: { resources: [{
+            id: 'zip-1', name: 'AppraisalReport.zip', mimeType: 'application/zip',
+            type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+            location: 'https://skydrive.ellieservices.com/x?validity=zzz', authorization: 'sig',
+          }, {
+            // A SECOND unparsable resource, so the fixture can tell "counted once"
+            // from "counted per resource". Without two of these the error-budget
+            // assertion below is vacuous — errors.length is 1 either way.
+            id: 'zip-2', name: 'Appraiser_License.pdf', mimeType: 'application/pdf',
+            location: 'https://skydrive.ellieservices.com/y?validity=zzz', authorization: 'sig',
+          }] } };
+        }
+        if (/serviceOrders$/.test(String(p))) {
+          return [{ id: 'o-zip', serviceSetup: { category: 'APPRAISAL' } }];
+        }
+        return [];
+      };
+      // THROUGH makeTick, not sweepOnce: makeTick owns the real log gate and the
+      // real log call, which is the half being asserted. It sweeps the pipeline
+      // rather than a supplied list, so the pipeline is stubbed to one loan.
+      enc3.pipelineSearch = async () => [{ loanId: 'zl1', fields: { 'Loan.LoanNumber': 'ZL1' } }];
+      zipSweep = await M._internals.makeTick(db)();
+    } finally {
+      console.error = origErr; console.log = origLog;
+      enc3.apiGet = origGet; enc3.configured = origConfigured;
+      enc3.pipelineSearch = origPipeline;
+    }
+
+    t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
+      assert.strictEqual(zipSweep.otherFormat, 2,
+        `every unparsable appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
+    });
+
+    t('but it spends ONE error slot per sweep, not one per resource', () => {
+      // The substantive behaviour change, and it was unpinned: `errors[]` is ONE
+      // shared 50-slot budget whose first three are printed, and nothing is written
+      // to the ledger for these, so the same resources are re-seen every sweep. Per
+      // resource, a companion PDF beside the XML would burn slots forever and crowd
+      // out a real orders/expand/record failure on another loan.
+      //
+      // Two unparsable resources, ONE error line — that is the whole assertion, and
+      // it is why the fixture above carries a second one.
+      const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, 1,
+        `two unparsable resources must produce ONE error line, saw ${mine.length}: ${JSON.stringify(mine)}`);
+      assert.ok(/first of this sweep/.test(mine[0]),
+        'and it must SAY it is only the first, so the count is not mistaken for the whole story');
+    });
+
+    t('it is never downloaded — the 15-minute window is not spent on it', () => {
+      assert.strictEqual(zipSweep.resources, 0, 'a non-XML resource must not enter the capture path');
+      assert.strictEqual(zipSweep.captured, 0, 'nothing may be captured from a ZIP');
+      assert.strictEqual(zipSweep.failed, 0,
+        'and it must NOT be recorded as a failure — a format we do not handle is not a breakage');
+    });
+
+    t('it ALARMS, so a tenant-wide format change cannot pass unnoticed', () => {
+      assert.ok(errs.some((e) => /does not parse/.test(e)),
+        `expected an alarm naming the unparsable format, saw: ${JSON.stringify(errs).slice(0, 300)}`);
+    });
+
+    t('a ZIP-only sweep is REPORTED, not silent — driven through the real makeTick', () => {
+      // The first version of this test re-wrote the production gate condition into
+      // the test body and asserted on its own copy, so it could only ever pass —
+      // it stayed green with the production gate reverted. Drive `makeTick`, which
+      // owns the real gate and the real log call, and assert on what it prints.
+      assert.ok(!zipSweepLog.some((l) => /"resources":[1-9]/.test(l)),
+        'fixture check: the ZIP sweep must have captured nothing for this to mean anything');
+      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":2/.test(l)),
+        `a sweep whose only finding is an unparsable format must still report it, saw: ${
+          JSON.stringify(zipSweepLog).slice(0, 300)}`);
+    });
+
+    t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {
+      // The comment claimed this for months while nothing read res.type at all.
+      const { isAppraisalResource, APPRAISAL_TYPE_PREFIX } = M._internals;
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V2.6` }), 'V2.6');
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V9.9` }), 'a future version');
+      assert.ok(isAppraisalResource({ type: String(APPRAISAL_TYPE_PREFIX).toUpperCase() + ':X' }),
+        'case must not decide it');
+      assert.ok(!isAppraisalResource({ type: 'urn:ice:epc:partner:title:report:version:V1' }),
+        'a title report is not an appraisal');
+      assert.ok(!isAppraisalResource({}), 'nothing to go on → not an appraisal');
+    });
+
+    t('the NAME fallback is a real backstop, and does not fire on unrelated documents', () => {
+      // The generous half of isAppraisalResource, and the half with a false-
+      // positive cost — so pin both directions.
+      const { isAppraisalResource } = M._internals;
+      assert.ok(isAppraisalResource({ name: 'AppraisalReport.zip' }),
+        'a delivery whose type URN ALSO changed must still be noticed by name');
+      assert.ok(isAppraisalResource({ name: 'appraisal invoice.pdf' }),
+        'a companion document DOES match — that is accepted, and is why the alarm is once per sweep');
+      assert.ok(!isAppraisalResource({ name: 'UCDP_Submission_Summary.pdf' }),
+        'a real sibling document type from a fulfilled order must NOT fire');
+      assert.ok(!isAppraisalResource({ name: '16341496.xml' }),
+        "the XML's own bare-numeric name must not fire it either");
+    });
+
+    t('a typo\'d poll interval falls back and SAYS SO, like every other knob', () => {
+      // Fix 4 shipped with no test, and an envNum-only test would not have caught
+      // that either — start() has to actually USE it. So drive start() and assert
+      // on what it says: reverting it to the raw `Number(process.env…)` read makes
+      // this go red, which is the whole point.
+      const enc4 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+      const warned = [], logged = [];
+      const ow = console.warn, ol = console.log, oc = enc4.configured;
+      let timer = null;
+      try {
+        console.warn = (...a) => { warned.push(a.join(' ')); };
+        console.log = (...a) => { logged.push(a.join(' ')); };
+        enc4.configured = () => true;
+        process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC = 'five minutes';
+        timer = M.start(db);
+      } finally {
+        // Disarm what we CAN, and be precise about what that is: start() arms TWO
+        // timers — the 300s interval it returns, and a 15s first-tick setTimeout it
+        // does NOT return, which therefore survives this cleanup. Neither can leak:
+        // both are unref'd (so neither holds the process open) and this suite
+        // finishes in well under a second, ~14s before the first-tick one could
+        // fire. If it ever did, `encompass.configured` is restored by then and is
+        // false here, so the sweep returns `{disabled:true}` immediately — no
+        // network, no db, no output.
+        if (timer) clearInterval(timer);
+        console.warn = ow; console.log = ol; enc4.configured = oc;
+        delete process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC;
+      }
+      assert.ok(warned.some((w) => /ENCOMPASS_APPRAISAL_XML_POLL_SEC/.test(w)),
+        `a bad poll interval must not be swallowed in silence, saw: ${JSON.stringify(warned)}`);
+      assert.ok(logged.some((l) => /catcher on, sweeping every 300s/.test(l)),
+        `and it must fall back to the 300s default, saw: ${JSON.stringify(logged)}`);
+    });
+
+    t('a plain XML delivery is UNCHANGED by any of this', () => {
+      // The whole risk of the fix is that it alters what gets downloaded.
+      assert.ok(M._internals.isAppraisalXml({ mimeType: 'application/xml', name: 'a.xml' }),
+        'an xml resource is still an xml resource');
+      assert.ok(!M._internals.isAppraisalXml({
+        mimeType: 'application/zip', name: 'x.zip',
+        type: `${M._internals.APPRAISAL_TYPE_PREFIX}:version:V3.6`,
+      }), 'the appraisal URN must NOT make a ZIP look parsable — that would start the ZIP downloads');
+    });
+  }
 
   console.log(`test-encompass-appraisal-xml-catcher: ${pass} checks passed`);
 })().catch((e) => { console.error('FAIL (async block):', e && e.message); process.exitCode = 1; });

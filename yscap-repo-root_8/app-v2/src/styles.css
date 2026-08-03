@@ -3886,3 +3886,101 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media(max-width:720px){
   .flash-dock{left:16px;right:16px;transform:none;width:auto;max-width:none}
 }
+
+/* =====================================================================
+   MODERN ACTION BUTTONS + GROUPED ACTION BAR (owner-directed 2026-08-03:
+   "everything needs to be a little better design … the button is not a nice
+   place, we need every button a little more modern on the recent stuff").
+
+   The draw desk had grown to NINE buttons in one wrapping row, every one of
+   them the same weight and the same border — so "Approve" (real money) read
+   exactly as loud as "Draw packet" (a download), and a lone "Investor
+   delivery" button floated under the card attached to nothing.
+
+   Nothing here changes a button's SIZE (min-height and padding are untouched),
+   so no layout can reflow — it is weight, colour and grouping only.
+   ===================================================================== */
+
+/* A secondary button should recede. 600 was the same weight as the primary. */
+.app .btn.ghost{font-weight:550;background:var(--surface);border-color:var(--border);color:var(--text)}
+.app .btn.ghost:hover{background:var(--surface-soft);border-color:var(--border-strong)}
+
+/* SOFT — a utility action (open a document, export a sheet). Present, quiet,
+   no competing outline. This is what most of that nine-button row should be. */
+.app .btn.soft{background:var(--surface-soft);border-color:transparent;color:var(--text);font-weight:550}
+.app .btn.soft:hover{background:#EAE6DC;border-color:var(--border)}
+.app .btn.soft:disabled:hover{background:var(--surface-soft);border-color:transparent}
+
+/* Keyboard focus was inheriting the browser default (or nothing at all). */
+.app .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
+/* ---- The action bar: actions grouped by what they DO ---- */
+.act-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:12px}
+/* a labelled cluster — "Documents", "This draw" */
+.act-group{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* The eyebrow is used INSIDE a cluster and on its own above a block, so it must not be
+   scoped to a child combinator (that silently left the standalone ones unstyled). */
+.act-label{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--text-soft);font-weight:700;white-space:nowrap}
+.act-group > .act-label{margin-right:2px}
+/* a hairline between clusters so the eye can find the seam */
+.act-sep{width:1px;align-self:stretch;min-height:28px;background:var(--border);margin:0 2px}
+@media(max-width:720px){
+  .act-sep{display:none}
+  .act-bar{gap:8px}
+  .act-group{width:100%}
+  /* the eyebrow gets its own line rather than sharing one with the first button */
+  .act-group > .act-label{width:100%;margin:2px 0 0}
+}
+
+/* ---- A section that OWNS its action, instead of a naked button ---- */
+.act-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);
+  padding:14px 16px;margin-top:12px}
+.act-card > .act-card-head{display:flex;align-items:center;justify-content:space-between;
+  gap:10px;flex-wrap:wrap}
+.act-card .act-card-title{font-weight:700;color:var(--text);font-size:14.5px}
+.act-card .act-card-sub{font-size:13px;color:var(--text-muted);margin-top:3px;line-height:1.45}
+.act-card.is-open{background:var(--surface)}
+/* the money read-out inside an action card */
+.act-figs{display:grid;grid-template-columns:1fr auto;gap:3px 16px;margin-top:12px;max-width:440px}
+.act-figs dt{font-size:13px;color:var(--text-muted)}
+.act-figs dd{font-size:13px;color:var(--text);font-variant-numeric:tabular-nums;text-align:right;margin:0}
+/* ONE continuous rule above the total. Bordering the dt and the dd separately drew two
+   stubs with the column gap showing through the middle — this spans both columns. */
+.act-figs .rule{grid-column:1 / -1;height:1px;background:var(--border);margin:7px 0 4px}
+.act-figs .tot{font-weight:700;color:var(--text)}
+
+/* ---- Segmented choice (pick one of two modes) — replaces two look-alike buttons ---- */
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.seg > button{appearance:none;border:0;background:var(--surface);color:var(--text-muted);
+  font:inherit;font-size:13px;font-weight:600;padding:8px 14px;min-height:36px;cursor:pointer;
+  transition:background .14s ease,color .14s ease}
+.seg > button + button{border-left:1px solid var(--border)}
+.seg > button:hover:not(.on){background:var(--surface-soft);color:var(--text)}
+.seg > button.on{background:var(--primary-soft);color:var(--primary-hover)}
+.seg > button:disabled{opacity:.55;cursor:not-allowed}
+.seg > button:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
+/* On a phone two long option labels wrap to four lines side by side; stacking makes each
+   option one full-width row that reads in a glance. */
+@media(max-width:720px){
+  .seg{width:100%;flex-direction:column}
+  .seg > button{width:100%}
+  .seg > button + button{border-left:0;border-top:1px solid var(--border)}
+}
+
+/* ---- Investor draw-delivery contacts (draw rules screen) ---- */
+.inv-buyer{margin-bottom:14px}
+.inv-buyer > .act-label{display:block;margin-bottom:5px}
+.inv-contact{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+  padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--surface);margin-bottom:6px}
+.inv-contact.off{background:var(--surface-soft);border-style:dashed}
+.inv-contact.off .inv-contact-who b{text-decoration:line-through;color:var(--text-soft)}
+.inv-contact-who{display:flex;flex-direction:column;gap:1px;min-width:0}
+.inv-contact-who b{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-all}
+.inv-contact-meta{font-size:12px;color:var(--text-muted)}
+.inv-add{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+@media(max-width:720px){
+  .inv-contact{align-items:flex-start}
+  .inv-add .input{width:100% !important}
+}

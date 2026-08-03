@@ -19,17 +19,44 @@
  * So the file is reachable ONLY between delivery and delivery+15min, and polling
  * every few minutes catches each one. That is the whole design.
  *
- * ON THE TIMING MARGIN — the honest version. The "~20 seconds for the whole
- * tenant" figure from the research came from a probe script running at
- * concurrency 10. THIS walk is strictly sequential and paced (350ms between
- * loans, matching reader.bulkPullAllLoans), because a burst risks a vendor rate
- * limit that would hit the three other Encompass workers sharing this process
- * and credential. In steady state the 7-day window keeps the list small — this
- * tenant modifies ~6 loans a day, so a tick is ~44 loans, about 45 seconds
- * inside a 300-second interval. A large backlog costs minutes, and if a sweep
- * outruns the interval the in-flight guard skips the next tick and SAYS SO — the
- * cadence degrades loudly, never silently. Watch for "previous sweep still
- * running": that line means the window or the pace needs tuning for this tenant.
+ * ON THE TIMING MARGIN — the honest version. This walk is strictly sequential
+ * and paced: 350ms between LOANS, borrowing the constant from
+ * reader.bulkPullAllLoans. That is NOT the same as "matching" it — see the
+ * pacing note below, and do not import that walk's throughput figures from the
+ * research on the strength of a shared constant. (An earlier draft of this
+ * comment said "matching", and that one word is what produced the same wrong
+ * req/s claim here twice.)
+ *
+ * In steady state the 7-day window keeps the list small — this tenant modifies
+ * ~6 loans a day, so a tick is ~44 loans ≈ 15 seconds of PACING, plus
+ * Encompass's own response time on top. Only the pacing half is arithmetic; the
+ * response time is not measured anywhere here, which is why no wall-clock total
+ * is claimed — the margin inside a 300-second interval is wide, not precise. A
+ * large backlog costs minutes, and if a sweep outruns the interval the in-flight
+ * guard skips the next tick and SAYS SO — the cadence degrades loudly, never
+ * silently. Watch for "previous sweep still running": that line means the window
+ * or the pace needs tuning for this tenant.
+ *
+ * WHAT THE PACING ACTUALLY BUYS — stated precisely, because the obvious claim is
+ * too strong. Encompass's binding limit is CONCURRENCY (30 simultaneous calls
+ * per lender environment, shared with the desktop clients and every other
+ * vendor), not a per-minute quota — see docs/research. A strictly sequential
+ * walk holds ONE slot whether it is paced or not, so the pause does not reduce
+ * our concurrency and would not, on its own, have prevented a 429. What it does
+ * is slow the march — 350ms between LOANS, borrowing the constant from
+ * bulkPullAllLoans so there is one convention rather than two.
+ *
+ * DO NOT RESTATE THAT AS A REQUESTS-PER-SECOND FIGURE, which is a mistake this
+ * comment has already made twice. The research's ≈170 req/min (docs/research,
+ * "Realistic pacing") describes bulkPullAllLoans, where the 350ms sits between
+ * REQUESTS because that walk makes one call per loan. Here it sits between
+ * LOANS, and each loan issues 1 + orders-per-loan GETs back to back with no
+ * pause between them — so our request rate is a MULTIPLE of our loan rate, we
+ * are less conservative than the bulk puller rather than equally so, and the
+ * actual rate is not measured anywhere here. The thing that would genuinely
+ * protect us when a 429 does arrive — honouring Retry-After, backoff with
+ * jitter, reading X-Concurrency-Limit-Remaining — is NOT implemented anywhere
+ * in the Encompass client, and pacing is not a substitute for it.
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -94,6 +121,22 @@ const MAX_TIME_MS = 8.64e15;
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A WARNING NOBODY CAN READ IS NOT A WARNING. `paceMs` is a parameter default, so
+// it is re-read on every sweep — an unbounded warning there is 288 identical
+// lines a day at the default 300s poll (start() clamps the interval to 60..600s,
+// so 144..1440), which is how a log stops being read at all.
+//
+// Keyed on name+VALUE, and be honest about what that means: a setting broken a
+// SECOND time to a DIFFERENT bad value warns again, but broken back to the SAME
+// value it stays silent for the life of the process. That is the deliberate
+// trade — the set is never swept, and a restart clears it.
+const _warnedEnv = new Set();
+function warnOnce(key, msg) {
+  if (_warnedEnv.has(key)) return;
+  _warnedEnv.add(key);
+  console.warn(msg);
+}
+
 /**
  * A tuning knob read from the environment, clamped to something usable. PURE.
  *
@@ -113,11 +156,13 @@ function envNum(name, dflt, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   if (raw == null || String(raw).trim() === '') return dflt;
   const n = Number(raw);
   if (!Number.isFinite(n)) {
-    console.warn(`[encompass-xml] ${name}="${raw}" is not a number — using ${dflt}`);
+    warnOnce(`${name}=${raw}`, `[encompass-xml] ${name}="${raw}" is not a number — using ${dflt}`);
     return dflt;
   }
   const clamped = Math.min(max, Math.max(min, n));
-  if (clamped !== n) console.warn(`[encompass-xml] ${name}=${n} out of range — using ${clamped}`);
+  if (clamped !== n) {
+    warnOnce(`${name}=${n}`, `[encompass-xml] ${name}=${n} out of range — using ${clamped}`);
+  }
   return clamped;
 }
 
@@ -144,7 +189,12 @@ function catchDisabled() {
     // returns all zeros logs nothing. That is the same silent-total-failure the
     // noLink alarm exists to prevent. So the key's EXISTENCE is checked first.
     if (!switches.BY_KEY || !switches.BY_KEY[CATCH_SWITCH_KEY]) {
-      console.warn(`[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
+      // Through warnOnce for the same reason envNum is: this runs on EVERY sweep,
+      // so an unbounded warn here is the same 144..1440 identical lines a day.
+      // Latent while the key is registered — which is exactly when a guard like
+      // this is worth adding, rather than after it has already flooded a log.
+      warnOnce(`switch-missing:${CATCH_SWITCH_KEY}`,
+        `[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
         'staying ON and relying on the env kill switch');
       return false;
     }
@@ -192,14 +242,57 @@ function isAppraisalXml(res) {
   // Likewise an SVG or an XHTML page: both contain "xml", both would pass a
   // "starts with <" byte sniff, and neither is an appraisal.
   if (mime.includes('svg') || mime.includes('xhtml')) return false;
-  // The declared type URN (`urn:ice:epc:partner:appraisal:report:…`, matched as a
-  // PREFIX so a future MISMO/UAD version needs no code change) says WHAT the
-  // resource is, but not what FORMAT it is in: a UAD 3.6 delivery carries that
-  // same type on a ZIP PACKAGE. Downloading that burns part of the 15-minute
-  // window on something that can never parse and leaves a permanent 'failed' row
-  // which every later sweep retries and which reads to an operator as a breakage
-  // rather than "not applicable". So the format decides, for every resource.
+  // FORMAT DECIDES HERE, and ONLY format — this function deliberately does not
+  // look at `res.type`. The declared type URN says WHAT the resource is, not what
+  // FORMAT it arrived in: a UAD 3.6 delivery carries the same appraisal type on a
+  // ZIP PACKAGE. Downloading that burns part of the 15-minute window on something
+  // that can never parse and leaves a permanent 'failed' row which every later
+  // sweep retries and which reads to an operator as a breakage rather than "not
+  // applicable".
+  //
+  // The type URN is read by `isAppraisalResource` below, whose job is the OTHER
+  // question — "was this an appraisal delivery at all?" — which is what makes a
+  // format we cannot parse VISIBLE instead of silent. Keep the two apart: folding
+  // the URN into this test is what would start the ZIP downloads.
   return mime.includes('xml') || /\.xml$/i.test(name);
+}
+
+// The appraisal report type URN, matched as a PREFIX so a future MISMO/UAD
+// version (…:V2.6, …:V3.6, whatever comes next) needs no code change.
+//
+// An earlier version of the comment above claimed this prefix match was already
+// happening inside `isAppraisalXml`. It was not — nothing in this module read
+// `res.type` except to store it. That is now true rather than merely described,
+// and it buys the thing its absence cost: see `otherFormat` at the call site.
+const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
+
+/**
+ * Was this resource an appraisal DELIVERY, whatever format it arrived in? PURE.
+ *
+ * Deliberately generous where `isAppraisalXml` is strict. This one only decides
+ * whether something is worth TELLING SOMEONE about; it never causes a download,
+ * never writes a ledger row and never changes a status.
+ *
+ * BE HONEST ABOUT WHAT A FALSE POSITIVE COSTS — it is not "one log line". The
+ * name fallback matches real companion documents on a fulfilled order
+ * ("Appraisal Invoice.pdf", "Appraiser_License.pdf"), and because nothing is
+ * recorded for one of these the same resource is re-seen on EVERY sweep. So the
+ * cost is a recurring `otherFormat` tick plus, unbounded, a recurring alarm and a
+ * slot out of the shared error budget — which is why the call site fires both of
+ * those exactly ONCE per sweep. With that bound the residual cost really is one
+ * line per sweep that mentions a companion document, and the alarm text says so
+ * rather than claiming nothing is being caught.
+ *
+ * The trade is deliberate in this direction: a false negative is the silence this
+ * exists to break, and the six sibling document types recorded on a real Class
+ * Valuations order (docs/ENCOMPASS-APPRAISAL-XML-DISCOVERY.md) contain no
+ * "apprais" in their type names — so the fallback is a backstop for a delivery
+ * whose type URN ALSO changed, not the primary signal.
+ */
+function isAppraisalResource(res) {
+  if (!res) return false;
+  if (String(res.type || '').toLowerCase().startsWith(APPRAISAL_TYPE_PREFIX)) return true;
+  return /apprais/i.test(String(res.name || ''));
 }
 
 /** Guard the download URL's host. Throws with a plain reason. */
@@ -455,6 +548,14 @@ function statusRankSql(col) {
 async function capture(db, res, meta) {
   const url = res.location || res.url;
   const auth = res.authorization || res.authorizationHeader;
+  // HOISTED OUT OF THE TRY SO THE CATCH CAN SEE IT. Once the bytes are in storage
+  // they are the one thing that cannot be re-fetched — the link dies minutes
+  // later. If the success UPDATE itself throws (connection reset, statement
+  // timeout, deadlock) the catch below would otherwise write 'failed' with no
+  // storage_ref: the blob is orphaned, and a file we genuinely HAVE reads as lost
+  // to every operator and every later sweep. The sibling `rowCount === 0` case
+  // already alarms about exactly that; this closes the throw path beside it.
+  let savedRef = null;
   try {
     // Inside the try: a require that throws must not escape a function whose
     // documented contract is that it never does.
@@ -462,6 +563,7 @@ async function capture(db, res, meta) {
     const buf = await fetchResource(url, auth);
     const digest = sha256(buf);
     const saved = await storage.save(buf, { filename: meta.filename || 'appraisal.xml' });
+    savedRef = saved && saved.ref ? saved.ref : null;
 
     // Feed the research warehouse through the SAME door a hand-uploaded XML uses,
     // so a report filed by the catcher is indistinguishable from one filed by a
@@ -522,9 +624,25 @@ async function capture(db, res, meta) {
       ? `captured ${meta.filename} (${buf.length} bytes) — ${importNote}`
       : `captured ${meta.filename} (${buf.length} bytes)`;
   } catch (e) {
+    // THE BYTES OUTRANK THE ERROR. If we got here AFTER storage.save succeeded,
+    // the download worked and only the bookkeeping failed — so record the ref and
+    // say 'captured', because the file genuinely is in hand and no later sweep
+    // can re-fetch it. Writing 'failed' with a NULL ref here (the old behaviour)
+    // orphaned a real file and told every operator it was lost.
+    //
+    // The alarm is LOUD rather than silent: this path means the ledger write
+    // failed on a file we hold, which is worth a human's attention even though
+    // nothing was lost.
+    if (savedRef) {
+      console.error(`[encompass-xml] ALARM: the bytes for resource ${meta.resourceId} ARE saved at ` +
+        `${savedRef}, but recording the capture threw (${(e && e.message) || e}). ` +
+        'Recording it as captured — the file is in hand, not lost.');
+    }
     await db.query(
       `UPDATE encompass_appraisal_xml
-          SET status = CASE WHEN status='captured' THEN 'captured' ELSE 'failed' END,
+          SET status = CASE WHEN status='captured' OR $3::text IS NOT NULL
+                            THEN 'captured' ELSE 'failed' END,
+              storage_ref = COALESCE(storage_ref, $3),
               error=$2, attempts = attempts + 1
         WHERE resource_id=$1`,
       // NUL-guarded for the same reason: this message quotes the response BODY
@@ -535,13 +653,15 @@ async function capture(db, res, meta) {
       // sweep promoted it to 'expired' — so a file we saw LIVE and tried to fetch
       // ended up reading "only the AMC can supply it". That is exactly the
       // distinction the status ladder exists to protect.
-      [meta.resourceId, t500(String((e && e.message) || e))]
+      [meta.resourceId, t500(String((e && e.message) || e)), savedRef]
     ).then((r) => {
       if (r && r.rowCount === 0) {
         console.error(`[encompass-xml] failure recorded NOTHING for resource ${meta.resourceId} — ledger row not found`);
       }
     }).catch(() => {});
-    return `failed ${meta.filename}: ${(e && e.message) || e}`;
+    return savedRef
+      ? `captured-bookkeeping-failed ${meta.filename}: ${(e && e.message) || e}`
+      : `failed ${meta.filename}: ${(e && e.message) || e}`;
   }
 }
 
@@ -559,19 +679,33 @@ async function capture(db, res, meta) {
 // an AMC's delivery is reflected in `Loan.LastModified`, or a delivery on an
 // otherwise-quiet loan never enters the window and is never even looked at.
 //
-// MEASURED on the live tenant rather than assumed: across 45 real XML deliveries,
-// `Loan.LastModified` was at or after the delivery EVERY time — zero
-// counterexamples. That is the reassuring direction, but it is not proof: the
-// tightest gap was 10 hours, so on these (busy) loans the bump cannot be
-// attributed to the delivery itself rather than to the next thing that touched
-// the file.
+// MEASURED on the live tenant rather than assumed: across 45 real XML
+// deliveries, `Loan.LastModified` was at or after the delivery every time — no
+// counterexample.
+//
+// BE PRECISE ABOUT WHAT THAT IS WORTH, because it is easy to over-read. The
+// failure mode only shows on a QUIET loan — one where the delivery is the last
+// thing that happened. The sample contained none: the SMALLEST gap measured was
+// 10 hours, so every one of the 45 was touched again no sooner than 10 hours
+// after its delivery. (That is a MINIMUM and bounds nothing above it — the
+// largest gaps in the sample are not described by it.) A sample with no quiet
+// loans has NO POWER to detect a failure that only appears on quiet loans, so
+// the absence of that signature is not evidence against it.
+// What the measurement does establish is narrower and still worth having: no
+// delivery was ever recorded AFTER its loan's stamp, which is where a
+// contradiction would have surfaced first.
 //
 // So the window is sized for the case we could NOT rule out. Also measured: the
-// tenant modifies ~6 loans a day, so 7 days is ~44 loans ≈ 45s of paced sweeping
-// inside a 300s interval — a 3.5x safety margin over the 2 days first shipped,
-// for about thirty seconds. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
+// tenant modifies ~6 loans a day, so 7 days is ~44 loans — ~15s of PACING plus
+// Encompass's own response time, well inside a 300s interval. (The pacing half
+// is arithmetic; the response time is not measured here, so treat the margin as
+// wide rather than as a number.) That buys a 3.5x window over the 2 days first
+// shipped for ~11s more pacing (~32 more loans) plus their response time — still
+// far inside the interval. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
 // 1..90 days: below 1 the window is empty, and past ~90 the sweep stops fitting
-// inside its own interval on any real tenant.
+// inside its own interval on any real tenant — that bound is the PACING
+// arithmetic alone (the 500-row cap x 350ms is 175s of a 300s interval, before
+// any response time), which is why it is stated as a limit and not as a duration.
 // The pipeline search is capped and NOT paged; see the alarm at the call site.
 const PIPELINE_LIMIT = 500;
 
@@ -581,7 +715,7 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   paceMs = envNum('ENCOMPASS_APPRAISAL_XML_PACE_MS', 350, { min: 0, max: 10000 }) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
-    skipped: 0, noLink: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
+    skipped: 0, noLink: 0, otherFormat: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
   if (!encompass.configured()) return { ...out, disabled: true, reason: 'encompass not configured' };
@@ -609,9 +743,15 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
       // the wrong place. There is no pagination, and the sort is LastModified
       // DESCENDING — so hitting the cap drops the STALEST loans, which is
       // precisely where a delivery that did not bump `Loan.LastModified` would
-      // be sitting. On this tenant it cannot bite (~44 loans in 7 days needs
-      // ~11x growth to reach 500), but a growing tenant would lose the tail with
-      // nothing anywhere to read.
+      // be sitting.
+      //
+      // In STEADY STATE this tenant is nowhere near it (~44 loans in 7 days
+      // against a 500 cap) — but that "~6 loans a day" is a MEAN, and the cap
+      // turns on the MAXIMUM in any rolling 7-day window. One bulk event (a
+      // tenant-wide field update, a servicing import, a mass folder move) can
+      // modify hundreds of loans in a day with no growth in the business at all,
+      // so "it cannot happen here" would be the same mistake as reading an
+      // average as a guarantee. Hence an alarm rather than an assumption.
       if (Array.isArray(rows) && rows.length >= PIPELINE_LIMIT) {
         pushErr(out, `pipeline returned the full ${PIPELINE_LIMIT}-row cap — older loans in the window were NOT swept; shorten ENCOMPASS_APPRAISAL_XML_SINCE_DAYS or add paging`);
         console.error(`[encompass-xml] ALARM: the pipeline search hit its ${PIPELINE_LIMIT}-row cap. ` +
@@ -646,13 +786,17 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   for (const l of list) {
     // PACE THE VENDOR. A sweep issues 1 + orders-per-loan sequential GETs, so a
     // busy tick is hundreds of calls with no breathing room — and `apiGet` has no
-    // 429/Retry-After handling, so tripping ICE's rate limit would take the THREE
-    // OTHER Encompass workers down with it: the catalog refresh, the per-file
-    // pull and the enrichment pass share this process, this credential and one
-    // module-level token cache. The bulk puller already paces at 350ms for
-    // exactly this reason (reader.bulkPullAllLoans); match it rather than invent
-    // a second convention. Skipped before the FIRST loan so a one-loan sweep
-    // costs nothing.
+    // 429/Retry-After handling, so a 429 is just an unhandled error to every
+    // caller in this process: the catalog refresh, the per-file pull and the
+    // enrichment pass share it, this credential and one module-level token cache.
+    // Read this together with the header and do not over-claim it: what Encompass
+    // enforces is CONCURRENCY, and a sequential walk holds one slot whether it
+    // pauses or not — so the pause slows the march, it is not what prevents the
+    // 429. Note WHAT it bounds: the sleep is per LOAN, and the GETs inside a loan
+    // are unpaced, so it bounds loans per minute and not requests per minute. The
+    // 350ms constant is borrowed from reader.bulkPullAllLoans so there is one
+    // convention rather than two — not because the two walks are equally paced.
+    // Skipped before the FIRST loan so a one-loan sweep costs nothing.
     if (!first) await sleep(paceMs);
     first = false;
     out.loans++;
@@ -672,7 +816,62 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
       const rawResources = ((full || {}).response || {}).resources;
       const resources = Array.isArray(rawResources) ? rawResources : [];
       for (const res of resources) {
-        if (!isAppraisalXml(res)) continue;
+        if (!isAppraisalXml(res)) {
+          // THE SILENT-TOTAL-FAILURE HOLE. Skipping straight to `continue` here
+          // meant an appraisal delivered in a format we cannot parse produced
+          // NOTHING: no ledger row, no counter, and — because makeTick's log gate
+          // is `resources || captured || failed || errors` — not even a log line.
+          // The day this tenant moves to UAD 3.6 (same appraisal type URN, ZIP
+          // package) every sweep would report all zeros, which is exactly what a
+          // healthy quiet sweep looks like. That is the same indistinguishable-
+          // from-normal silence the noLink alarm exists to break.
+          //
+          // NOT downloading it is still right (see isAppraisalXml). Counting it
+          // is what was missing. The counter is in the log gate below, so one of
+          // these makes the sweep speak up.
+          if (isAppraisalResource(res)) {
+            out.otherFormat++;
+            // BOTH the alarm and the error line are ONCE PER SWEEP, and the error
+            // line especially. `errors[]` is ONE shared 50-slot budget for the
+            // whole sweep and only the first three are printed, so a per-resource
+            // push here would crowd out a real `orders …` / `expand …` / `record …`
+            // failure on some other loan and leave it visible only as an
+            // `errorsDropped` tick.
+            //
+            // That is not hypothetical: nothing is written to the ledger for one of
+            // these, so the SAME resource is re-seen and re-counted on EVERY sweep
+            // for as long as its loan stays in the window. Per-resource and
+            // unbounded, an appraiser's licence PDF sitting beside the XML would
+            // burn a slot 288 times a day — which is precisely the failure the
+            // `warnOnce` note above this file describes.
+            if (out.otherFormat === 1) {
+              console.error('[encompass-xml] ALARM: an appraisal-looking resource arrived in a format ' +
+                `this catcher does not parse (${res.mimeType || 'no mime'} / ${res.name || 'no name'}). ` +
+                'It was NOT downloaded. If the XML for this loan was captured, this is most likely a ' +
+                'companion document and is harmless; if the whole tenant reports this and nothing is ' +
+                'being captured, the delivery format has changed and the catcher needs updating.');
+              // NAMES ONLY THE FIRST ONE, and says so. A later resource in the
+              // same sweep — including a genuine ZIP behind a companion PDF — is
+              // reflected only in the `otherFormat` count, which is the accepted
+              // cost of not burning a slot per resource forever.
+              //
+              // Read this line WITH `otherFormat` and `resources` on the same
+              // summary — `resources`, NOT `captured`. A companion document sits
+              // beside a non-zero `resources`: we saw a parsable XML on that order,
+              // whether we captured it just now, SKIPPED it as already ours, or
+              // wrote it off as expired. A format change shows `resources: 0`.
+              //
+              // `captured` is the wrong discriminator and this comment said it
+              // twice: an XML we already hold takes `out.skipped++` at the sighting
+              // check below, so a healthy loan reports `captured: 0` for the whole
+              // week it sits in the window — and the entire historical back book is
+              // legitimately expired. Both would have read as a format change.
+              pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
+                `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — first of this sweep; see otherFormat for the total`);
+            }
+          }
+          continue;
+        }
         out.resources++;
 
         // Read the clock HERE. A sweep walks up to 500 loans sequentially, so a
@@ -810,11 +1009,19 @@ function makeTick(db) {
         // used to log nothing at all — and since the whole historical back book is
         // legitimately expired, that silence is indistinguishable from normal
         // operation. The feature could stop working on day one unnoticed.
-        if (r.resources || r.captured || r.failed || (r.errors || []).length) {
+        // `otherFormat` is in the gate as BELT-AND-SUSPENDERS, and it is honestly
+        // redundant today: the same branch that increments it also calls pushErr,
+        // so `errors.length` is already non-zero and the gate already fires. It is
+        // here so the gate stays correct if that pushErr is ever bounded further or
+        // dropped — the counter is the fact, the error line is incidental. NOT
+        // "crowded out": a full budget means errors.length is 50, which fires the
+        // gate harder, so crowding is the one thing that cannot break it.
+        // Do not read this term as the thing that makes a ZIP-only sweep visible.
+        if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
           console.log('[encompass-xml] sweep:', JSON.stringify({
             loans: r.loans, resources: r.resources, captured: r.captured,
             failed: r.failed, expired: r.expired, skipped: r.skipped,
-            noLink: r.noLink,
+            noLink: r.noLink, otherFormat: r.otherFormat,
             // Both of these are the whole point of counting rather than
             // truncating: printing three errors while silently dropping ten more,
             // or capturing bytes the ledger never recorded, must not look like a
@@ -850,7 +1057,15 @@ function makeTick(db) {
  * is sequential. Raising it past ~10 minutes starts losing files, which is
  * exactly the failure this module exists to prevent.
  */
-function start(db, { intervalSec = Number(process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC || 300) } = {}) {
+// THROUGH envNum LIKE EVERY OTHER KNOB. This was the one tuning value that read
+// its env var raw, so a typo'd poll interval fell back to 300 in SILENCE —
+// against this module's own stated rule that a bad value "falls back to the
+// default and SAYS SO, rather than degrading". The clamp RANGE is unchanged
+// (60..600s) and every valid value behaves identically; the only behaviour that
+// moves is a literal 0/-0/0.0, which the old `|| 300` swallowed to 300 before
+// clamping and which now clamps up to the 60s floor. Neither is a valid setting
+// and 60s is safe, so the change is the silence, not the range.
+function start(db, { intervalSec = envNum('ENCOMPASS_APPRAISAL_XML_POLL_SEC', 300, { min: 60, max: 600 }) } = {}) {
   // Only the ENV kill stops the timer being armed at all. The live switch is
   // deliberately NOT checked here: it is re-read inside every tick (via
   // `sweepOnce`'s own gate), so flipping it off stops the work and flipping it
@@ -875,7 +1090,8 @@ module.exports = {
   sweepOnce,
   // exported for tests
   _internals: {
-    validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE, makeTick,
+    validityOf, isAppraisalXml, isAppraisalResource, APPRAISAL_TYPE_PREFIX,
+    assertStorageHost, STORAGE_HOST_RE, makeTick,
     decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };
