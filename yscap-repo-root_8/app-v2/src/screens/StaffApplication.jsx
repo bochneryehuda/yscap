@@ -35,8 +35,8 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
-import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
@@ -535,11 +535,12 @@ const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name'
    already uses for the Conditions hub (requestConditionsTab/subscribe).
    `CompletenessPanel` is a module-level component with no access to the section's
    own state, and its pills for fields it cannot edit itself (the Social, the
-   co-borrower's email) now point at a SIBLING TAB of the very section they are
-   rendered in — so they need to flip a tab, not navigate anywhere. */
-const appTabSubs = new Set();
-function requestAppDetailTab(tab) { for (const fn of appTabSubs) { try { fn(tab); } catch (_) { /* a dead subscriber never breaks a click */ } } }
-function subscribeAppDetailTab(fn) { appTabSubs.add(fn); return () => appTabSubs.delete(fn); }
+   co-borrower's email) point at a SIBLING TAB of the very section they are
+   rendered in — so they need to flip a tab, not navigate anywhere.
+   It MOVED into FileSections.jsx (2026-08-03) and is imported at the top of this
+   file: components that are not defined here — the e-sign section, the tape
+   export — need the same channel now that Encompass sync is a tab rather than a
+   section, and they cannot import this screen without a cycle. */
 
 /* Application completeness with INLINE editing — click a missing field to enter
    it right there; it saves to the file (and syncs to ClickUp) without a form.
@@ -3764,7 +3765,17 @@ export default function StaffApplication() {
       const target = m[1];
       let inner = null;
       const t = setTimeout(() => {
-        if (target.startsWith('sec-')) { goToSection(target); return; }
+        if (target.startsWith('sec-')) {
+          // A RETIRED address (#sec-encompass) lands on the section that holds
+          // its content, with the right tab already showing. Resolved HERE as
+          // well as in the room resolver because CLASSIC view registers no
+          // resolver at all — every section renders, so the jump would go to an
+          // element that no longer exists and quietly do nothing.
+          const moved = resolveSection(target);
+          if (moved.appTab) requestAppDetailTab(moved.appTab);
+          goToSection(moved.id);
+          return;
+        }
         // Rooms view: the resolver hops to the owning room, opens it and scrolls.
         if (revealAnchor(target)) return;
         // revealAnchor is three-state collapsed into a boolean: `true` means only
@@ -4321,6 +4332,10 @@ export default function StaffApplication() {
     if (t.kind === 'section') {
       requestOpenSection(t.id);
       if (t.tab) requestConditionsTab(t.tab);
+      // A jump at a RETIRED section id (sec-encompass) resolves to the section
+      // that took its content PLUS the tab holding it — open the tab first, so
+      // the scroll lands on the thing the link was actually pointing at.
+      if (t.appTab) requestAppDetailTab(t.appTab);
       setTimeout(() => {
         const el = document.getElementById(t.id);
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -4366,20 +4381,30 @@ export default function StaffApplication() {
   useEffect(() => {
     if (classic) return undefined;
     return setSectionResolver((t) => {
-      const st = stationOf(t.id);
+      // A RETIRED section id is rewritten to where its content lives now (plus
+      // the tab holding it) BEFORE anything else looks at it — the default path
+      // below would call getElementById on an id that no longer renders and
+      // silently do nothing, which is a dead link, not a fallback.
+      const moved = t.kind === 'section' ? resolveSection(t.id) : null;
+      const target = moved && moved.moved ? { ...t, id: moved.id, appTab: moved.appTab } : t;
+      const st = stationOf(target.id);
       if (!st || !stationEnabled(st)) return false;
       if (st === activeStationRef.current) {
         // Right room already — but the target section may be collapsed
         // (unmounted). Take over only for the anchor/tab work goToSection's
         // default path already handles… it does, so decline. The one caller
         // that needs more (open-studio) queues an action explicitly.
-        return false;
+        // A retired id is the exception: there is nothing at its address for
+        // that default path to open or scroll to, so run the rewritten jump here.
+        if (target === t) return false;
+        runReveal(target);
+        return true;
       }
-      pendingRevealRef.current = t;
+      pendingRevealRef.current = target;
       setActiveStation(st);
       return true;
     });
-  }, [classic, stationEnabled]);
+  }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -4594,9 +4619,11 @@ export default function StaffApplication() {
     ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     // Exceptions sits directly under pricing (most exceptions are pricing
-    // exceptions); Encompass sync reads as the room's "advanced" tail.
+    // exceptions). Encompass sync is NOT a section — it is a tab of Application
+    // details, beside the ClickUp comparison it belongs with (owner-directed
+    // 2026-08-03: "it should not be a separate section in the deal"). Listing it
+    // here would put a second door to one screen in the rail.
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
-    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     /* REVIEW & CONDITIONS, in the owner's order (2026-08-02): conditions, track
        record, appraisal and findings, document review, documents. This array is
        what the RAIL reads, so it has to move in lock-step with the JSX order
@@ -5149,23 +5176,18 @@ export default function StaffApplication() {
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      {/* The panel itself moved into Application details → Encompass sync
-          (owner-directed 2026-08-02). This shell stays so every existing deep
-          link, the room rail and the tape screen's "open the Encompass sync"
-          button still land somewhere that takes you there, rather than on a
-          section that silently no longer exists. */}
-      <Section hidden={!show('sec-encompass')} id="sec-encompass" title="Encompass sync" defaultOpen={false}
-        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. It now lives with the ClickUp comparison under Application details.">
-        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="small" style={{ color: '#4B585C' }}>
-            The Encompass comparison now sits beside the ClickUp one, under Application details.
-          </span>
-          <button type="button" className="btn primary small"
-            onClick={() => { setAppDetailTab('encompass'); goToSection('sec-application'); }}>
-            Open Encompass sync
-          </button>
-        </div>
-      </Section>
+      {/* THERE IS NO "Encompass sync" SECTION (owner-directed 2026-08-03: it "is
+          now duplicated also in the application details and it's also a separate
+          section in the deal … it should not be a separate section in the deal").
+          The 2026-08-02 move left a shell here whose only content was a button
+          pointing at the tab — which read as a second Encompass room and is
+          exactly the duplicate the owner is describing. The panel has ONE home:
+          Application details → Encompass sync.
+
+          The ADDRESS `#sec-encompass` is not dead — it is a permanent public
+          address carried by emails already sent, so `RETIRED_SECTION` in
+          lib/stations.js resolves it to that section + that tab. Deleting a
+          section means retiring its id there, never just removing the JSX. */}
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
           conditions, the underwriting conditions, the internal staff conditions +
@@ -5721,10 +5743,12 @@ function TapeExport({ appId }) {
             </div>
           )}
           <div style={{ marginTop: 8 }}>
-            <button type="button" onClick={() => goToSection('sec-encompass')}
-              title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+            {/* The comparison is a TAB of Application details, not a section —
+                ask for the tab, then open the section that holds it. */}
+            <button type="button" onClick={() => { requestAppDetailTab('encompass'); goToSection('sec-application'); }}
+              title="Open the Encompass sync tab, reconcile every field, then come back to export"
               style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-              Open the Encompass section →
+              Open the Encompass sync tab →
             </button>
           </div>
           {/* Escape hatch. Super admin: allow inline (a reason is asked at export). */}

@@ -246,6 +246,47 @@ async function makeAppraisal(appId, o) {
     ok(allContacts.length === 2, 'and the OLD phone number is still in their contact book, not overwritten');
     ok(appr2[0].file_count === 2, 'both files are counted against them');
 
+    // ---- 3b. MERGING FILLS THE GAPS, IT DOES NOT BLANK THEM -----------------
+    // The owner's rule in their own words: "it should add the missing information —
+    // one appraisal had it, the other didn't". A THIRD report on the same house,
+    // NEWER than both, that states the price and the bedrooms and nothing else.
+    // The newest report wins where it SPEAKS; where it is silent, the property must
+    // keep what an older report told us rather than losing it. Getting this backwards
+    // is the obvious way to write a roll-up and it would quietly empty the warehouse
+    // one thin report at a time.
+    const app2b = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
+      [bid, JSON.stringify({ line1: `2b Warehouse Way ${sfx}` })])).rows[0].id;
+    const A2b = await makeAppraisal(app2b, {
+      date: '2026-09-01', appraised: 505000, address: '98 Cedar Rd', city: CITY, state: 'NJ',
+      // A DIFFERENT appraiser on purpose — this is the owner's actual scenario
+      // ("if you find two appraisals with the same comparable"), and it keeps the
+      // appraiser-book assertions above measuring one person.
+      zip: '08854', appraiser: `Dana ${SURNAME.replace('Kessler', 'Whitfield')}`, company: 'Third Look Appraisal LLC',
+      comps: [
+        // The same house a THIRD time — priced and counted, but silent on size,
+        // condition and bedrooms.
+        { seq: '1', address: '12 MAPLE AVE.', city: CITY, state: 'NJ', price: 419000,
+          saleDate: '2026-02-01', set: 'as_is' },
+      ],
+    });
+    ok((await ingest.ingestAppraisal(D, A2b)).ok, 'a third, thinner report on the same house folds in');
+
+    const maple4 = (await db.query(
+      `SELECT * FROM properties WHERE display_address LIKE $1 AND city=$2`, [`%12 Maple Ave%`, CITY])).rows;
+    ok(maple4.length === 1, 'still ONE property — a third spelling does not split it either');
+    ok(maple4[0].observation_count === 3, 'and all three reports are kept as separate observations');
+    ok(Number(maple4[0].gla) === 1410 && maple4[0].beds === 3 && maple4[0].condition_uad === 'C3',
+      'THE FACTS THE NEWEST REPORT DID NOT STATE ARE KEPT FROM THE ONES THAT DID — a thin report never blanks the record');
+
+    // And the reverse direction: a fact only the OLDEST report ever stated must
+    // survive every later report that was silent on it.
+    const oldestOnly = (await db.query(
+      `SELECT o.observed_on, o.gla, o.condition_uad FROM property_observations o
+        WHERE o.property_id = $1 ORDER BY o.observed_on DESC NULLS LAST`, [maple4[0].id])).rows;
+    ok(oldestOnly.length === 3 && oldestOnly[0].gla == null,
+      'the newest observation genuinely stated no size — so the property row is answering from an older one, not from itself');
+
     // ---- 4. the after-repair rule ------------------------------------------
     const app3 = (await db.query(
       `INSERT INTO applications (borrower_id, property_address, loan_type) VALUES ($1,$2,'rtl') RETURNING id`,
@@ -336,8 +377,8 @@ async function makeAppraisal(appId, o) {
     ok(stats.status === 200 && stats.body.properties > 0, 'the stats endpoint answers');
 
     const detail = await call(server, 'GET', `/api/research/properties/${maple3[0].id}`, token);
-    ok(detail.status === 200 && detail.body.observations.length === 2 && detail.body.sales.length >= 1,
-      'the property page shows every report that mentioned it, and its sales');
+    ok(detail.status === 200 && detail.body.observations.length === 3 && detail.body.sales.length >= 1,
+      'the property page shows EVERY report that mentioned it (all three), and its sales');
 
     const aList = await call(server, 'GET', `/api/research/appraisers?q=${SURNAME}`, token);
     ok(aList.status === 200 && aList.body.rows.length === 1, 'the appraiser directory searches by name');
@@ -403,13 +444,14 @@ async function makeAppraisal(appId, o) {
 
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app3]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3]]);
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
     // The warehouse deliberately SURVIVES the files (the observations are SET NULL,
     // not cascaded) — that is the point of a cross-file database, so clean up by key.
     await db.query(`DELETE FROM properties WHERE city = $1`, [CITY]);
     await db.query(`DELETE FROM appraisers WHERE identity_key IN ($1,$2)`, [`lic:NJ:${LIC}`, `lic:NJ:RG${LIC.slice(-6)}`]);
+    await db.query(`DELETE FROM appraisers WHERE name_key = $1`, [`dana ${SURNAME.replace('Kessler', 'Whitfield')}`.toLowerCase()]);
   } catch (e) {
     fail++;
     console.log('FAIL threw:', e && e.stack ? e.stack : e);

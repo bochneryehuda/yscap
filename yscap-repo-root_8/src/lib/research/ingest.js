@@ -696,8 +696,33 @@ async function writeReport(db, { a, comps, link, out }) {
   // ---- the COMPARABLES ---------------------------------------------------
   const compObs = [];
   for (const c of comps) {
+    // A COMPARABLE THAT NAMED NO TOWN INHERITS THE SUBJECT'S — GATED ON THE ZIP.
+    //
+    // The key uses `z<zip>` as the locality when a report gave no city, so the SAME
+    // house filed once with a town and once without keys two different ways and
+    // becomes two properties. This is the single biggest cause of a split: the
+    // parser's own note says about a third of files omit the separate city/state/ZIP
+    // attributes and lean on a "City, ST ZIP" fallback that fails on anything less
+    // tidy than that exact shape.
+    //
+    // The precedent is the line this replaces — the state was already inherited the
+    // same way. It is safe for reasons worth stating, because "never inherit from the
+    // subject" is a real rule in this repo (for property TYPE and UNIT COUNT, which
+    // genuinely differ comp to comp):
+    //   • it is PURE, OFFLINE and DETERMINISTIC — everything it reads is on this one
+    //     report, so the key never depends on what has been ingested before it;
+    //   • a ZIP is filed to one primary mailing city, and the report itself states
+    //     that city for the subject;
+    //   • it is MONOTONE — if the ZIPs differ nothing changes and we are exactly
+    //     where we are today; if they match we produce the same locality the
+    //     city-bearing reports already produce.
+    // A comp outside the subject's ZIP that states no city still keys on its ZIP, and
+    // goes to the duplicate detector (db/419) instead.
+    const compCity = txt(c.city)
+      || (K._internals.zip5(c.zip) && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
+        ? txt(a.subject_city) : null);
     const pid = await upsertProperty(db, {
-      street: c.address, city: c.city, state: c.state || a.subject_state, zip: c.zip,
+      street: c.address, city: compCity, state: c.state || a.subject_state, zip: c.zip,
     });
     if (!pid) {
       out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
