@@ -6,7 +6,7 @@ frozen-pricing rule, the "previous AND future" rule, and the Encompass read-only
 freeze) but nothing about this feature.
 
 Everything described here is **merged to `main`** except where a section says
-otherwise. Migrations `db/409`–`db/414` and `db/416`.
+otherwise. Migrations `db/409`–`db/414` and `db/419`.
 
 ---
 
@@ -184,7 +184,7 @@ an address packed into the street field, inline-vs-field units. Tested by name i
 never blanks. This is the owner's *"add the missing information one appraisal had and
 the other didn't"*, and it is asserted in `test-research-db.js` §3b.
 
-**The ingest closes the biggest split** (db/416 work): a comp that named no **town**
+**The ingest closes the biggest split** (db/419 work): a comp that named no **town**
 used to key on its ZIP while the same house on a town-naming report keyed on the
 town. A comp with no city now inherits the **subject's**, *gated on the ZIPs
 matching*. Pure, offline, deterministic, and monotone — a different ZIP changes

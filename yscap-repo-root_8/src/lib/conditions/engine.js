@@ -157,6 +157,12 @@ async function loadRuleContext(appId) {
     units: num(a.units),
     occupancy: registry.normOccupancy(a.occupancy),
     in_flood_zone: inFloodZone,
+    /* Vesting in an individual's name (owner-directed 2026-08-02). `!!` so it is
+       always concrete — `rules.evalRow` short-circuits a BLANK actual to false
+       before an is_false compare, which would make "not individual" wrongly
+       false on every file that simply has no flag yet. A linked entity WINS:
+       an LLC on the file means it vests in that LLC whatever the flag says. */
+    vesting_is_individual: !!(a.personal_name_purchase && !a.llc_id),
 
     purchase_price: num(a.purchase_price),
     as_is_value: num(a.as_is_value),

@@ -71,15 +71,37 @@ const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8')
     assert(cross.includes(v), `the ClickUp crosswalk knows the employment value ${v}`);
   }
 
-  // THE SURFACE. The owner's "BORROWER profile section" is the panel on the file
-  // overview; an editor that only exists inside the collapsed "Application
-  // details" section is invisible until you go hunting for it.
-  const overview = file.slice(file.indexOf('id="sec-overview"') >= 0 ? 0 : 0,
-    file.indexOf('id="sec-application"'));
-  assert(/<BorrowerProfilePanel borrowerId=\{app\.borrower_id\}/.test(overview),
-    'the BORROWER panel is on the file overview, where the owner was looking');
-  assert(/<BorrowerProfilePanel borrowerId=\{app\.co_borrower_id\}/.test(overview),
+  // THE SURFACE — moved by owner direction 2026-08-02 ("both borrower profiles
+  // under Application Details, side by side"), which REVERSES the 2026-07-27
+  // placement on the file overview.
+  //
+  // The reason the panels were on the overview still matters and is not simply
+  // dropped: "Application details" is collapsed by default, and an editor
+  // nobody can see is how this surface stayed read-only in the first place. So
+  // what is asserted now is the NEW arrangement PLUS the three things that make
+  // it discoverable — the tab, a named way in from the overview, and the
+  // completeness pills landing on the right tab rather than a dead end.
+  const appSection = file.slice(file.indexOf('id="sec-application"'));
+  assert(/<BorrowerProfilePanel borrowerId=\{app\.borrower_id\}/.test(appSection),
+    'the BORROWER panel is under Application details, where the owner asked for it');
+  assert(/<BorrowerProfilePanel borrowerId=\{app\.co_borrower_id\}/.test(appSection),
     'and so is the CO-BORROWER panel');
+  assert(/appDetailTab === 'people'/.test(appSection),
+    'they sit on their own tab, not buried under the deal editor');
+  assert(/className="bprof-pair"/.test(appSection),
+    'the two are laid out side by side (the owner asked for side by side)');
+  // Discoverability, the reason the old placement existed:
+  const overview = file.slice(0, file.indexOf('id="sec-application"'));
+  assert(/setAppDetailTab\('people'\)/.test(overview) && /goToSection\('sec-application'\)/.test(overview),
+    'the overview carries a button that opens that exact tab — the section is collapsed by default');
+  assert(/goTab: 'people'/.test(file),
+    'a completeness pill this panel cannot edit itself lands on the people tab, never a dead end');
+  assert(!/goTo: 'sec-overview',\s*\n\s*hint: 'Add it on the SSN line/.test(file),
+    'and no borrower pill still points at the overview, where the editor no longer is');
+  // ONE mount per person, wherever they live — two editors for one record is
+  // worse than none, and the move is exactly when that could go wrong.
+  assert((file.match(/<BorrowerProfilePanel/g) || []).length === 2,
+    'exactly two profile panels on the file after the move');
 
   // The old read-only rows must be gone, not merely bypassed — leaving them
   // would put an uneditable copy of the same facts right next to the editor.
