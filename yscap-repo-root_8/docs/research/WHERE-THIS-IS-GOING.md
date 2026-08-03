@@ -206,6 +206,56 @@ the SQL already written in `INTERNAL-AVM-ROADMAP.md` §1.7:
 
 ---
 
+## 5b. THE TIME ADJUSTMENT — MEASURED, AND THE ANSWER IS "NOT YET"
+
+The valuation grid already makes a time adjustment. It comes from `timeTrend`: the
+change in median price per foot between the older and newer halves of the comp
+set, capped both as a rate and as a share of the sale price, and it refuses when
+either half is too small. That is honest but crude — it reads a trend off a
+handful of comps.
+
+The obvious upgrade is the **1004MC market grid**, which db/423 turned into real
+dated windows for every report. It looked like the clear next step: a
+purpose-built statement of how a market is moving, from data we already paid for,
+needing no new external feed and no owner authorisation. So before building it,
+it was measured over the same 152-report corpus:
+
+```
+market reads                       145
+distinct ZIPs                       84
+reads carrying trend windows       140
+```
+
+Coverage is excellent. The DISTRIBUTION is the problem:
+
+```
+reads per ZIP     8   6   5   4   3   2   1
+ZIPs              1   1   4   2   6  15  55
+```
+
+**55 of 84 ZIPs are a single report**, and a single report cannot describe a trend
+over time no matter how good its market grid is — one report states its own three
+windows, all measured from one effective date by one person. Only 8 ZIPs carry
+four or more reports, which is the point where stacking them starts to say
+something a comp set does not already say.
+
+So wiring the 1004MC stack into the valuation's time adjustment would REFUSE for
+roughly two-thirds of the markets we work in, and where it did answer it would
+answer from three or four opinions. That is not better than what is already
+there; it is a second thin reading wearing a more official name, and this module's
+governing rule is that a rate we cannot ground is a rate we do not state.
+
+**The honest position:** this becomes worth building when the corpus is deeper in
+the towns we concentrate in — the same condition §6 already names as the real
+goal. It is a function of how many reports we hold per ZIP, not of engineering,
+and the number above is the one to re-measure before anyone builds it. An external
+index (FHFA HPI) remains the alternative, and it is a NEW external integration
+that the owner has not authorised — it should not be requested until the internal
+option is genuinely exhausted, which this measurement shows it is not, because the
+corpus simply has to grow either way.
+
+---
+
 ## 6. THE ONE-PARAGRAPH VERSION
 
 We have built a real, working database of every property, comparable sale and appraiser we have ever
