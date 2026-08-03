@@ -202,7 +202,7 @@ const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Roo
       `INSERT INTO applications (borrower_id, loan_officer_id, ys_loan_number, property_address, status, loan_type)
        VALUES ((SELECT borrower_id FROM applications WHERE id=$1), (SELECT loan_officer_id FROM applications WHERE id=$1),
                $2, '{"oneLine":"9 Unwind Way"}'::jsonb, 'underwriting', 'Purchase') RETURNING id`,
-      [appId, `YSUNW${String(process.pid).slice(-5)}`])).rows[0].id;
+      [appId, `YSUNW${String(Date.now()).slice(-9)}`])).rows[0].id;
     await db.query(
       `INSERT INTO file_orders (application_id, order_type, status, ordered_at, first_response_at)
        VALUES ($1,'insurance','documents_in', now() - interval '9 days', now() - interval '8 days')`, [app2]);
@@ -228,7 +228,7 @@ const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Roo
       `INSERT INTO applications (borrower_id, loan_officer_id, ys_loan_number, property_address, status, loan_type)
        VALUES ((SELECT borrower_id FROM applications WHERE id=$1), (SELECT loan_officer_id FROM applications WHERE id=$1),
                $2, '{"oneLine":"11 Unwind Way"}'::jsonb, 'underwriting', 'Purchase') RETURNING id`,
-      [appId, `YSUNW2${String(process.pid).slice(-4)}`])).rows[0].id;
+      [appId, `YSUNWB${String(Date.now()).slice(-9)}`])).rows[0].id;
     await db.query(
       `INSERT INTO file_orders (application_id, order_type, status, ordered_at, first_response_at)
        VALUES ($1,'insurance','documents_in', now() - interval '9 days', now() - interval '8 days')`, [app3]);
