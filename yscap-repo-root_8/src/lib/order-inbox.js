@@ -33,25 +33,76 @@ const storage = require('./storage');
 const notify = require('./notify');
 const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes');
 const { classifyReturnAttachment } = require('./order-return-filter');
+// The slot vocabulary + the condition each order files into live in ONE place,
+// shared with the Orders desk and the condition's own slot picker (order-slots.js).
+const { CONDITION_CODE } = require('./order-slots');
 
 const DOC_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
-// The real document condition each order files into.
-const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
 const MAX_RETURN_DOCS = 20;
 
-/** The document condition an order files into (rtl_cond_title / rtl_cond_insurance),
-    so a returned doc lands INSIDE the title / insurance condition. Null when the
-    file has no such condition (then the doc is still saved to the file, just
-    unlinked — it stays visible in the Orders desk). */
+/**
+ * The document condition an order files into (rtl_cond_title / rtl_cond_insurance),
+ * so a returned document lands INSIDE the title / insurance condition.
+ *
+ * IT IS CREATED WHEN IT IS MISSING (owner-directed 2026-08-03: "the insurance
+ * order should be tied directly to the insurance condition"). Both templates are
+ * `auto_apply IS NULL` and `applies_loan_type='rtl'`, so they are instantiated by
+ * `generateChecklist` at file creation for an RTL file and by db/051's one-time
+ * back-fill for the statuses it named — and NOWHERE ELSE. Any file outside that
+ * intersection (a non-RTL file the team still orders insurance on, a file created
+ * before the back-fill's status window, a file whose condition a human removed)
+ * took the old `return null` branch: the document was saved to the file with NO
+ * condition, so it showed on the Orders desk and nowhere else, and the condition
+ * it was ordered for went on reading "nothing uploaded". Ordering the thing is the
+ * proof the file needs the condition, so the condition is created rather than the
+ * document orphaned.
+ *
+ * Creation is the repo's guarded one-statement shape (`INSERT … SELECT … WHERE
+ * NOT EXISTS` on application+template — the same guard `closing.js`, `vesting.js`
+ * and `appraisal/desk.js` carry), so a webhook redelivery, or two attachments in
+ * one delivery, can never leave a file with two copies of the condition. It
+ * still returns null (document saved, unattached) when the template is missing
+ * or the insert fails: filing the document is the thing that must never be lost.
+ */
 async function conditionItemFor(applicationId, orderType) {
-  try {
-    const code = CONDITION_CODE[orderType];
+  const code = CONDITION_CODE[orderType];
+  if (!code) return null;
+  const find = async () => {
     const r = await db.query(
       `SELECT id FROM checklist_items
         WHERE application_id=$1 AND template_id=(SELECT id FROM checklist_templates WHERE code=$2)
         ORDER BY created_at ASC LIMIT 1`, [applicationId, code]);
     return r.rows[0] ? r.rows[0].id : null;
+  };
+  try {
+    const found = await find();
+    if (found) return found;
   } catch (_) { return null; }
+  try {
+    // `slots` is read from the TEMPLATE at display time, so it is deliberately
+    // not copied here — the condition picks up the binder/invoice slots for free.
+    await db.query(
+      `INSERT INTO checklist_items
+         (template_id, scope, application_id, label, borrower_label, audience, item_kind,
+          role_scope, phase, category, hint, borrower_hint, is_gate, is_milestone,
+          sort_order, tool_key, field_key, clickup_field_id, tpr_exclude,
+          is_required, status, origin_kind, created_by_kind)
+       SELECT t.id, 'application', $1, t.label, t.borrower_label, t.audience, t.item_kind,
+              COALESCE(t.role_scope,'any'), t.phase, t.category, t.hint, t.borrower_hint,
+              COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+              COALESCE(t.sort_order,100), t.tool_key, t.field_key, t.clickup_field_id,
+              COALESCE(t.tpr_exclude,false),
+              COALESCE(t.is_required,true), 'outstanding', 'auto', 'system'
+         FROM checklist_templates t
+        WHERE t.code = $2 AND t.is_active = true
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                           WHERE ci.application_id = $1 AND ci.template_id = t.id)`,
+      [applicationId, code]);
+    return await find();
+  } catch (e) {
+    console.error('[order-inbox] could not create the', code, 'condition for', applicationId, '-', (e && e.message) || e);
+    return null;
+  }
 }
 
 /**

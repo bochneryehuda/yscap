@@ -49,7 +49,7 @@ import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
-import OrdersPanel from '../components/OrdersPanel.jsx';
+import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
@@ -1370,6 +1370,113 @@ function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
   );
 }
 
+/* WHICH SLOT DOES THIS DOCUMENT BELONG TO?
+   A slot KEEPS EVERY document dropped into it, and the upload path makes each
+   label unique so two files don't display identically — lib/slot-label.js turns
+   the second "Insurance binder" into "Insurance binder (2)". The slot renderer
+   matched on an EXACT label, so that second document fell out of its own slot the
+   moment it was uploaded. Strip the numeric suffix before comparing, which is the
+   one place these two conventions meet. */
+function slotBaseLabel(label) {
+  return String(label || '').replace(/\s*\(\d+\)\s*$/, '').trim();
+}
+function docInSlot(doc, slotLabel) {
+  return slotBaseLabel(doc && doc.slot_label) === String(slotLabel || '');
+}
+
+/* DOCUMENTS ON A SLOTTED CONDITION THAT ARE NOT IN A SLOT (owner-directed
+   2026-08-03).
+   A condition that declares named slots — Insurance declares "Insurance binder"
+   and "Insurance invoice" — used to render ONLY those slots, matching a document
+   to a slot by an exact label compare. So a document sitting on the condition
+   with no slot, or with any other label, was INVISIBLE there: the insurance
+   condition went on saying "not uploaded" while the agent's PDFs were attached to
+   it. That is precisely what a returned order document looks like — it arrives
+   unassigned on purpose, so a human decides what it is.
+   The owner's rule: they land as ordinary documents in the condition, each with a
+   preview, and you choose the slot they belong to — binder, invoice, or leave
+   them here unassigned. Same DocActions as every other document row, so accept /
+   reject / download / replace all work exactly as they do in a slot. */
+function UnslottedConditionDocs({ appId, it, docs, slotLabels, role, onReviewDoc, onDownloadDoc, onPreview, dlBusy, onUploadTo, onChanged }) {
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  if (!docs.length) return null;
+  const assign = async (docId, slot) => {
+    setBusy(docId); setErr('');
+    try { await api.staffSetDocSlot(appId, docId, slot); if (onChanged) await onChanged(); }
+    catch (e) { setErr((e && e.message) || 'Could not file that document into the slot.'); }
+    finally { setBusy(''); }
+  };
+  return (
+    <div style={{ marginTop: 6, borderTop: '1px solid var(--line,#D9D4C8)', paddingTop: 6 }}>
+      <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>
+        Also in this condition ({docs.length}) — not filed into a slot
+      </div>
+      <div className="small" style={{ color: '#4B585C', margin: '2px 0 4px' }}>
+        Documents that came back on the order, or were uploaded without a type. Preview each one and
+        choose the slot it belongs in — or leave it here.
+      </div>
+      {err && <div className="small" role="alert" style={{ color: 'var(--danger)' }}>{err}</div>}
+      {docs.map((d) => {
+        const rs = d.review_status || 'pending';
+        return (
+          <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
+            <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || 'Not assigned'}</span>
+            <span className="small" style={{ flex: 1, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+            <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+            <select className="input" style={{ width: 'auto' }} disabled={busy === d.id}
+              value={slotLabels.includes(slotBaseLabel(d.slot_label)) ? slotBaseLabel(d.slot_label) : ''}
+              title="File this document into one of the condition's slots"
+              onChange={(e) => assign(d.id, e.target.value)}>
+              <option value="">Leave unassigned…</option>
+              {slotLabels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen
+              onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+              onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ORDER STRAIGHT FROM THE CONDITION (owner-directed 2026-08-03: "we should have a
+   small button over there in the condition — order title and order insurance —
+   which should pop up a screen … so you can order directly from the condition to
+   make it easier").
+   Four conditions carry it: the title CONTACT and title DOCUMENTS conditions open
+   the title order, the insurance CONTACT and insurance DOCUMENTS conditions open
+   the insurance order. The button opens the real Orders-desk card in a modal, so
+   the contact, the loan number, the recipients, the send and the documents that
+   came back are all right there — nothing about ordering is reimplemented here. */
+const CONDITION_ORDER_KIND = {
+  rtl_p1_titlec: 'title', rtl_cond_title: 'title',
+  rtl_p1_insc: 'insurance', rtl_cond_insurance: 'insurance',
+};
+const TOOL_ORDER_KIND = { title_contact: 'title', insurance_contact: 'insurance' };
+function orderKindForCondition(it) {
+  return CONDITION_ORDER_KIND[it.template_code] || TOOL_ORDER_KIND[it.tool_key] || null;
+}
+
+function ConditionOrderButton({ appId, it, role, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const kind = orderKindForCondition(it);
+  if (!kind) return null;
+  return (
+    <>
+      <button className="btn ghost small" onClick={() => setOpen(true)}
+        title={`Open the ${kind} order for this file — add the contact, the loan number, and send it, without leaving this condition`}>
+        Order {kind}
+      </button>
+      {open && (
+        <OrderModal appId={appId} kind={kind} canAccept={canComplete(role)}
+          onClose={() => setOpen(false)} onChanged={onChanged} />
+      )}
+    </>
+  );
+}
+
 function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
@@ -1487,9 +1594,13 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                its own drop target so a dropped file lands in the right slot. Every
                slot KEEPS EVERY document dropped in it (owner-directed): uploading a
                second file ADDS it, it never replaces the first. "Replace" is an
-               explicit per-document action; the slot's Upload/drop always adds. */
-            slots.map(slot => {
-              const slotDocs = itemDocs.filter(d => (d.slot_label || '') === slot.label);
+               explicit per-document action; the slot's Upload/drop always adds.
+               Anything on the condition that is NOT in one of these slots is listed
+               underneath by <UnslottedConditionDocs> — never dropped from the
+               screen, which is what hid every returned insurance document. */
+            <>
+            {slots.map(slot => {
+              const slotDocs = itemDocs.filter(d => docInSlot(d, slot.label));
               const addTarget = { itemId: it.id, slot: slot.label };   // no replaceDocumentId → additive
               return (
                 <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'flex-start' }}
@@ -1527,7 +1638,13 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                   </div>
                 </div>
               );
-            })
+            })}
+            <UnslottedConditionDocs appId={appId} it={it} role={role}
+              docs={itemDocs.filter((d) => !slots.some((s) => docInSlot(d, s.label)))}
+              slotLabels={slots.map((s) => s.label)}
+              onReviewDoc={onReviewDoc} onDownloadDoc={onDownloadDoc} onPreview={onPreview}
+              dlBusy={dlBusy} onUploadTo={onUploadTo} onChanged={onChanged} />
+            </>
           ) : (
             /* Free-form: any number of documents, additive (e.g. Title). */
             <>
@@ -1582,6 +1699,16 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {/* Flood condition — order the flood certificate from Encompass (flood only). */}
       {it.template_code === 'rtl_cond_flood' && (
         <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {/* Title / insurance — order it from right here. */}
+      {orderKindForCondition(it) && (
+        <div className="row" style={{ gap: 8, paddingLeft: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+          <ConditionOrderButton appId={appId} it={it} role={role} onChanged={onChanged} />
+          <span className="muted small">
+            Opens the {orderKindForCondition(it)} order — add the contact and the loan number and send it without leaving this condition.
+          </span>
+        </div>
       )}
 
       {it.template_code === 'usps_address_verification' && (
@@ -3316,6 +3443,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
                 <StaffContactEntry appId={appId} toolKey={it.tool_key} current={contactFor(it.tool_key)}
                   onSaved={async () => { await loadContacts(); if (onChanged) await onChanged(); }} />
+              )}
+              {/* Order it straight from the condition — the same modal the internal
+                  rows carry, so the contact you just entered can be used to send
+                  the order without going to the Orders section. */}
+              {orderKindForCondition(it) && (
+                <ConditionOrderButton appId={appId} it={it} role={role} onChanged={onChanged} />
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"

@@ -128,14 +128,74 @@ assert.strictEqual(orderInbox.CONDITION_CODE.title, 'rtl_cond_title', 'title ret
 assert.strictEqual(orderInbox.CONDITION_CODE.insurance, 'rtl_cond_insurance', 'insurance returns file into the insurance (binder+invoice) condition');
 assert.strictEqual(orderInbox.DOC_KIND.title, 'title_order_return');
 assert.strictEqual(orderInbox.DOC_KIND.insurance, 'insurance_order_return');
-// The insurance classification labels must contain the substrings the existing
-// sign-off gate looks for ('binder' AND 'invoice'), so a classified binder+invoice
-// completes the insurance condition with no extra wiring.
-const insSlots = require('../src/lib/orders'); // (already required as `orders`)
-const SLOT_INS = ['Binder', 'Invoice', 'Quote', 'Declaration Page', 'Other'];
-assert.ok(SLOT_INS.some((s) => s.toLowerCase().includes('binder')) && SLOT_INS.some((s) => s.toLowerCase().includes('invoice')),
-  'insurance slots include binder + invoice (matches the sign-off gate)');
-void insSlots;
-ok('returned docs map to the real title/insurance conditions; slots satisfy the sign-off gate');
+ok('returned docs map to the real title/insurance conditions');
 
-console.log(`\n${n} checks passed`);
+/* ---- order slots: ONE vocabulary, shared with the condition ----------------
+   The Orders desk used to keep its OWN list of classification labels ('Binder',
+   'Invoice'), while the insurance CONDITION declares its slots as "Insurance
+   binder" / "Insurance invoice" and the file screen matches a document to a slot
+   by an EXACT label compare. So a classified document was filed correctly and
+   then rendered nowhere on the condition. These checks pin the derivation and the
+   legacy-label acceptance that closed it. */
+const orderSlots = require('../src/lib/order-slots');
+
+assert.strictEqual(orderSlots.CONDITION_CODE.title, 'rtl_cond_title');
+assert.strictEqual(orderSlots.CONDITION_CODE.insurance, 'rtl_cond_insurance');
+
+// slotsFor DERIVES the condition's own slots from the template row. A stub client
+// stands in for the database so this stays a pure test.
+const stubDb = (slots) => ({ query: async () => ({ rows: [{ slots }] }) });
+const throwingDb = { query: async () => { throw new Error('db down'); } };
+
+(async () => {
+  const ins = await orderSlots.slotsFor(
+    stubDb([{ key: 'binder', label: 'Insurance binder' }, { key: 'invoice', label: 'Insurance invoice' }]), 'insurance');
+  assert.deepStrictEqual(ins.conditionSlots, ['Insurance binder', 'Insurance invoice'],
+    "the condition's OWN slot labels are what the desk offers");
+  assert.strictEqual(ins.all[0], 'Insurance binder', 'condition slots come first in the picker');
+  assert.ok(ins.all.includes('Quote') && ins.all.includes('Other'),
+    'the descriptive labels the condition has no slot for are still offered');
+  assert.ok(ins.conditionSlots.every((s) => !ins.extraSlots.includes(s)), 'no slot is offered twice');
+  // The sign-off gate matches by lower-case substring, so the derived labels must
+  // still satisfy it — otherwise a classified binder+invoice would stop clearing
+  // the condition.
+  assert.ok(ins.conditionSlots.some((s) => s.toLowerCase().includes('binder'))
+         && ins.conditionSlots.some((s) => s.toLowerCase().includes('invoice')),
+    'insurance slots include binder + invoice (matches the sign-off gate)');
+  ok('order slots are DERIVED from the condition template, condition slots first');
+
+  // An admin renaming a slot must carry through to the desk with no code change.
+  const renamed = await orderSlots.slotsFor(stubDb([{ key: 'binder', label: 'Hazard binder' }]), 'insurance');
+  assert.deepStrictEqual(renamed.conditionSlots, ['Hazard binder'], 'a renamed slot flows through');
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('Binder', renamed.all), { ok: true, slot: 'Hazard binder' },
+    'a legacy "Binder" still lands in the renamed binder slot');
+
+  // An unreadable template must NOT report "this condition has no slots" — that
+  // would silently turn the binder/invoice picker into free text.
+  const down = await orderSlots.slotsFor(throwingDb, 'insurance');
+  assert.deepStrictEqual(down.conditionSlots, ['Insurance binder', 'Insurance invoice'],
+    'an unreadable template falls back to the seeded slots, never to none');
+
+  // Title is free-form: no named slots, only descriptive labels.
+  const title = await orderSlots.slotsFor(stubDb(null), 'title');
+  assert.deepStrictEqual(title.conditionSlots, [], 'the title condition declares no named slots');
+  assert.ok(title.all.includes('CPL'), 'title still offers its descriptive labels');
+  ok('a renamed slot flows through; an unreadable template falls back; title stays free-form');
+})().then(() => {
+  /* ---- canonicalizeSlot: the whole truth table (pure) ---- */
+  const ALLOWED = ['Insurance binder', 'Insurance invoice', 'Quote', 'Other'];
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('', ALLOWED), { ok: true, slot: null }, 'empty clears the slot');
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot(null, ALLOWED), { ok: true, slot: null }, 'null clears the slot');
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('Insurance binder', ALLOWED), { ok: true, slot: 'Insurance binder' });
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('  insurance INVOICE ', ALLOWED), { ok: true, slot: 'Insurance invoice' },
+    'matching is case- and whitespace-insensitive');
+  // THE BUG THIS MODULE EXISTS FOR: the label the old desk wrote must land in the
+  // condition's own slot, stored with the condition's spelling.
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('Binder', ALLOWED), { ok: true, slot: 'Insurance binder' });
+  assert.deepStrictEqual(orderSlots.canonicalizeSlot('Invoice', ALLOWED), { ok: true, slot: 'Insurance invoice' });
+  assert.strictEqual(orderSlots.canonicalizeSlot('Something else', ALLOWED).ok, false, 'an unknown label is refused, never stored as free text');
+  assert.strictEqual(orderSlots.canonicalizeSlot('Binder', []).ok, false, 'with nothing allowed, nothing is guessed');
+  ok('canonicalizeSlot: clears, matches loosely, maps the legacy labels, refuses the unknown');
+
+  console.log(`\n${n} checks passed`);
+}).catch((e) => { console.error(e); process.exit(1); });

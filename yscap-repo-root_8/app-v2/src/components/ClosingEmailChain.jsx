@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import EmailCenter from './EmailCenter.jsx';
+import DocPreview from './DocPreview.jsx';
+import { api, saveBlob } from '../lib/api.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    THE CLOSING EMAIL CHAIN — the file's own closing address + the whole attorney
@@ -121,12 +123,80 @@ export function ChainAddress({ chain, emptyHint }) {
   );
 }
 
-/* Everything the system has put on the chain, and everything that came back. */
-export function ChainHistory({ appId, chain, onDownload }) {
+/* THE CLOSING EMAIL CHAIN'S OWN DOCUMENT BOX (owner-directed 2026-08-03: "all of
+   the documents from both of the closing email chains … go in the special box for
+   the closing email chain documents", each with a preview button).
+   BOTH chains land here and that is not a coincidence: the closing-prep request we
+   send to the lender's closing attorney carries this file's `closing+<token>@`
+   address as its Reply-To, and the attorney is asked in the body to keep that same
+   address on the new chain they start with title and the settlement agent. So a
+   reply to OUR email and a message on THEIR chain both carry the one address, and
+   both are filed here as the file's closing correspondence.
+   It is deliberately OUT of the collapsed history: these are the documents the
+   closing runs on, and having to open a chain log to discover they exist is how
+   they get missed. */
+export function ChainDocuments({ chain, onDownload }) {
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const [dlBusy, setDlBusy] = useState('');
+  if (!chain) return null;
+  const docs = chain.documents || [];
+
+  const download = async (d) => {
+    if (onDownload) return onDownload(d);
+    setDlBusy(d.id);
+    try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
+    catch (_) { /* ignore */ }
+    finally { setDlBusy(''); }
+  };
+
+  return (
+    <div className="panel" style={{ marginTop: 10 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 600, color: INK }}>Closing email chain documents ({docs.length})</div>
+      </div>
+      <div className="small" style={{ color: MUTED, margin: '3px 0 6px' }}>
+        Everything that arrived on this closing's email chain — the attorney's replies to our request and
+        the chain they opened with title and the settlement agent. Its own package on the file, separate
+        from the final executed closing package; nothing here clears a condition on its own.
+      </div>
+      {docs.length === 0 ? (
+        <div className="small" style={{ color: MUTED }}>
+          Nothing yet. Anything emailed to this closing's address lands here by itself.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 4 }}>
+          {docs.map((d) => (
+            <div key={d.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="small" style={{ flex: 1, minWidth: 160, color: INK }}>{d.filename}</span>
+              <span className="small" style={{ color: MUTED }}>{KB(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</span>
+              <button className="btn ghost small" onClick={() => setPreviewDoc(d)} title="Open it here without downloading">Preview</button>
+              <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => download(d)}>
+                {dlBusy === d.id ? '…' : 'Download'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {previewDoc && (
+        <DocPreview
+          title="Closing correspondence"
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => download(previewDoc)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
+    </div>
+  );
+}
+
+/* Everything the system has put on the chain, and everything that came back. The
+   DOCUMENTS moved out to <ChainDocuments> above — they are the thing people come
+   here for, so they no longer sit behind this toggle. */
+export function ChainHistory({ appId, chain }) {
   const [open, setOpen] = useState(false);
   if (!chain) return null;
   const msgs = chain.messages || [];
-  const docs = chain.documents || [];
   return (
     <div style={{ marginTop: 12 }}>
       <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>
@@ -149,25 +219,6 @@ export function ChainHistory({ appId, chain, onDownload }) {
                   {Array.isArray(m.attachments) && m.attachments.length ? ` · ${m.attachments.length} attachment${m.attachments.length === 1 ? '' : 's'}` : ''}
                 </div>
               ))}
-            </div>
-          )}
-          {docs.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div className="small" style={{ fontWeight: 700, color: INK, marginBottom: 4 }}>
-                Closing correspondence saved from this chain ({docs.length})
-              </div>
-              <div className="small" style={{ color: MUTED, marginBottom: 4 }}>
-                Its own package on the file — separate from the final executed closing package.
-              </div>
-              <div style={{ display: 'grid', gap: 4 }}>
-                {docs.map((d) => (
-                  <div key={d.id} className="row" style={{ gap: 8, alignItems: 'center' }}>
-                    <span className="small" style={{ flex: 1, minWidth: 160, color: INK }}>{d.filename}</span>
-                    <span className="small" style={{ color: MUTED }}>{KB(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</span>
-                    <button className="btn ghost small" onClick={() => onDownload(d)}>Download</button>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
           <div className="small" style={{ color: MUTED, marginBottom: 6 }}>
