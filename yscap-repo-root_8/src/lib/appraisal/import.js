@@ -73,6 +73,29 @@ async function importAppraisalTx(db, {
   await db.query(`UPDATE appraisal_findings SET status = 'superseded' WHERE application_id = $1 AND status = 'open'`, [applicationId]);
 
   // 2. insert the appraisal row
+  const cols = appraisalRowFrom(A, { applicationId, sourceXmlDocumentId, pdfDocumentId, importedBy });
+  const keys = Object.keys(cols);
+  const ins = await db.query(
+    `INSERT INTO appraisals (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING id`,
+    keys.map((k) => cols[k]));
+  const appraisalId = ins.rows[0].id;
+
+  return continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds });
+}
+
+/**
+ * SHAPE THE `appraisals` ROW FROM A PARSED REPORT — the one mapping from what the
+ * parser read to what the database stores.
+ *
+ * Factored out of the insert above so a report can be shaped WITHOUT being stored
+ * on a loan file: the research warehouse's standalone XML upload (db/411) has no
+ * application to hang an `appraisals` row on, and builds this exact object in
+ * memory instead. One mapping means the two doors can never learn to disagree
+ * about what a field means — a new column added here reaches both at once.
+ *
+ * PURE: no database, no IO.
+ */
+function appraisalRowFrom(A, { applicationId = null, sourceXmlDocumentId = null, pdfDocumentId = null, importedBy = null } = {}) {
   const s = A.subject, v = A.values, ap = A.appraiser, condo = A.condo || {};
   const fieldsJson = buildFieldsJson(A);
   const cols = {
@@ -123,35 +146,24 @@ async function importAppraisalTx(db, {
   for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities', 'market_trends', 'present_land_use', 'off_site_improvements', 'comp_research']) {
     if (cols[jk] != null) cols[jk] = JSON.stringify(cols[jk]);
   }
-  const keys = Object.keys(cols);
-  const ins = await db.query(
-    `INSERT INTO appraisals (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING id`,
-    keys.map((k) => cols[k]));
-  const appraisalId = ins.rows[0].id;
+  return cols;
+}
+
+/** The rest of the import, once the `appraisals` row exists. */
+async function continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds }) {
+  const v = A.values, ap = A.appraiser;
 
   // 3. comparables (real comps; seq-0 subject is excluded by the parser). Store the full
   //    sales-grid line each comp carries — settled sale date, GLA, UAD condition/quality,
   //    days-on-market, $/GLA, and the itemized adjustments — so the review checks (and the
   //    report grid) have the data. Every field is null when the appraisal didn't carry it.
-  if (A.comparables && A.comparables.length) {
-    for (const c of A.comparables) {
-      await db.query(
-        `INSERT INTO appraisal_comparables
-           (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
-            gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
-            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status,
-            beds, baths, baths_full, baths_half, total_rooms, sale_type, concession_amount, financing_type,
-            prior_sale_amount, prior_sale_date, latitude, longitude,
-            view_rating, location_rating, below_grade_sqft, below_grade_finished_sqft, data_source, location_type)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                 $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
-        [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
-         c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
-         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed',
-         c.beds, c.bathsText, c.bathsFull, c.bathsHalf, c.totalRooms, c.saleType, c.compConcession, c.financingType,
-         c.priorSaleAmount, c.priorSaleDate, c.latitude, c.longitude,
-         c.viewRating, c.locationRating, c.belowGradeSqft, c.belowGradeFinishedSqft, c.compDataSource, c.locationType]);
-    }
+  for (const c of A.comparables || []) {
+    const row = comparableRowFrom(c);
+    const ck = Object.keys(row);
+    await db.query(
+      `INSERT INTO appraisal_comparables (appraisal_id, is_subject, ${ck.join(',')})
+       VALUES ($1, false, ${ck.map((_, i) => '$' + (i + 2)).join(',')})`,
+      [appraisalId, ...ck.map((k) => row[k])]);
   }
 
   // 4. 1025 per-unit rents + the per-unit mix (rooms/beds/baths/sqft) + lease status (db/158
@@ -313,6 +325,38 @@ async function fillFileFacts(db, applicationId, A) {
   }
 }
 
+/**
+ * SHAPE ONE `appraisal_comparables` ROW from a parsed comparable — the sibling of
+ * `appraisalRowFrom`, and the only mapping from a parsed grid line to storage.
+ *
+ * Same reason it exists: the research warehouse's standalone XML upload (db/411)
+ * builds these in memory rather than storing them against a loan file, and the two
+ * doors must read one report identically. PURE: no database, no IO.
+ */
+function comparableRowFrom(c) {
+  return {
+    seq: c.seq, address: c.address, city: c.city, state: c.state, zip: c.zip,
+    proximity: c.proximity, sale_price: c.salePrice, adjusted_price: c.adjustedPrice,
+    gla: c.gla, sale_date: c.saleDate, condition_uad: c.conditionUad, quality_uad: c.qualityUad,
+    // days_on_market is a TEXT column ("21", "45+", "N/A") — the grid writes prose as often as a number.
+    days_on_market: c.dom == null ? null : String(c.dom), price_per_gla: c.pricePerGla,
+    net_adjustment: c.netAdjustment, net_adj_pct: c.netAdjPct, gross_adj_pct: c.grossAdjPct,
+    adjustments: JSON.stringify(c.adjustments || []),
+    comp_set: c.comp_set || 'unknown', sale_status: c.saleStatus || 'closed',
+    beds: c.beds, baths: c.bathsText, baths_full: c.bathsFull, baths_half: c.bathsHalf,
+    total_rooms: c.totalRooms, sale_type: c.saleType, concession_amount: c.compConcession,
+    financing_type: c.financingType,
+    prior_sale_amount: c.priorSaleAmount, prior_sale_date: c.priorSaleDate,
+    latitude: c.latitude, longitude: c.longitude,
+    view_rating: c.viewRating, location_rating: c.locationRating,
+    below_grade_sqft: c.belowGradeSqft, below_grade_finished_sqft: c.belowGradeFinishedSqft,
+    data_source: c.compDataSource, location_type: c.locationType,
+    // The worded condition/quality rating a non-UAD vendor wrote, and which of
+    // the two AREA measures this comp's `gla` actually is (db/409 §7).
+    condition_text: c.conditionText, quality_text: c.qualityText, gla_basis: c.glaBasis,
+  };
+}
+
 // Flatten the parsed appraisal into the {key:{value,source,confidence}} catch-all so nothing is lost.
 function buildFieldsJson(A) {
   const out = {};
@@ -338,4 +382,10 @@ function buildFieldsJson(A) {
   return out;
 }
 
-module.exports = { importAppraisal, _internals: { marketMonthlyRent, fillFileFacts } };
+module.exports = {
+  importAppraisal,
+  // Shared with the research warehouse's standalone XML upload (db/411) so one
+  // report is read the same way whichever door it arrives through.
+  appraisalRowFrom, comparableRowFrom,
+  _internals: { marketMonthlyRent, fillFileFacts },
+};

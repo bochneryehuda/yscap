@@ -62,7 +62,17 @@ function DocumentPreview({ documents, isAssignment }) {
   const [open, setOpen] = useState(false);
   const groups = documents.groups || [];
   const total = groups.reduce((n, g) => n + g.docs.length, 0);
-  const overBudget = documents.totalBytes > documents.budgetBytes;
+  // A package bigger than one email is SPLIT across the closing chain, not trimmed.
+  // So the question the card answers is "how many emails?", not "what gets left off?".
+  // Only the documents in `willSkip` are genuinely not going.
+  const skipBytes = (documents.willSkip || []).reduce((n, d) => n + (Number(d.size_bytes) || 0), 0);
+  const sendBytes = Math.max(0, (documents.totalBytes || 0) - skipBytes);
+  const budget = Number(documents.budgetBytes) || 0;
+  const partsNeeded = budget > 0 ? Math.max(1, Math.ceil(sendBytes / budget)) : 1;
+  // A tab still running yesterday's bundle has no `maxParts`; treat that as "no cap
+  // to warn about" rather than warning on every multi-part package.
+  const partCap = Number(documents.maxParts) || 0;
+  const overParts = partCap > 0 && partsNeeded > partCap;
   // An assignment set is only "missing" on a deal that IS an assignment.
   const missing = (documents.missing || []).filter((m) => !(m.key === 'assignment' && !isAssignment));
   const ins = documents.insurance || {};
@@ -77,6 +87,14 @@ function DocumentPreview({ documents, isAssignment }) {
           {open ? 'Hide the list' : 'Show the list'}
         </button>
       </div>
+
+      {partsNeeded > 1 && (
+        <div className="small" style={{ color: MUTED, marginTop: 3 }}>
+          That is more than one email can carry, so it goes out as{' '}
+          <b style={{ color: INK }}>{partsNeeded} emails</b> on the same closing chain — the attorney gets
+          everything, in order, in one conversation.
+        </div>
+      )}
 
       {documents.termSheetExecuted
         ? <div className="small" style={{ color: MUTED, marginTop: 3 }}>
@@ -130,21 +148,26 @@ function DocumentPreview({ documents, isAssignment }) {
           <b style={{ color: INK }}>These cannot be attached:</b>
           <ul style={{ margin: '3px 0 0 18px', padding: 0, color: MUTED }}>
             {(documents.willSkip || []).map((d, i) => (
-              <li key={i} className="small">{d.filename} — {d.reason === 'too large to email' ? 'too big to email on its own' : 'we have no stored copy of it'}</li>
+              <li key={i} className="small">
+                {d.filename} — {d.reason === 'too large to email'
+                  ? `bigger than one whole email on its own (${KB(documents.budgetBytes)} is the most one can carry)`
+                  : 'we have no stored copy of it'}
+              </li>
             ))}
           </ul>
           <div className="small" style={{ color: MUTED, marginTop: 3 }}>
-            The email names them so the attorney knows to ask, but it is better to send them another way.
+            Everything else still goes, across as many emails as it takes. The email names these so the
+            attorney knows to ask — send them a smaller copy, or split the file, if you need them there now.
           </div>
         </div>
       )}
 
-      {overBudget && (
+      {overParts && (
         <div className="notice err" style={{ marginTop: 8 }}>
-          <b>These documents add up to more than one email can carry ({KB(documents.budgetBytes)}).</b>
+          <b>These documents need more than the {partCap} emails we will send.</b>
           <div className="small" style={{ marginTop: 3 }}>
-            The largest ones will be left off — the email names every one it could not attach, and
-            after sending you will see exactly which. Send anyway, or trim the biggest files first.
+            The last ones will be left off — the email names every one it could not attach, and after
+            sending you will see exactly which. Send anyway, or trim the biggest files first.
           </div>
         </div>
       )}
@@ -224,10 +247,17 @@ export default function ClosingPrepCard({ appId }) {
         note,
       });
       const skipped = r.skipped || [];
+      const failed = r.partsFailed || [];
+      const parts = Number(r.parts) || 1;
       setMsg({
-        tone: skipped.length ? 'warn' : 'ok',
-        text: `Sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''} with ${(r.attached || []).length} document${(r.attached || []).length === 1 ? '' : 's'} attached.`
-          + (skipped.length ? ` ${skipped.length} could not be attached — the email names them: ${skipped.map((s) => `${s.filename} (${s.reason})`).join('; ')}.` : ''),
+        tone: (skipped.length || failed.length) ? 'warn' : 'ok',
+        text: `Sent to ${(r.sent_to || []).join(', ')}${r.cc && r.cc.length ? ` (cc ${r.cc.length})` : ''} with ${(r.attached || []).length} document${(r.attached || []).length === 1 ? '' : 's'} attached`
+          + (parts > 1 ? `, across ${parts} emails on the closing chain.` : '.')
+          + (skipped.length ? ` ${skipped.length} could not be attached — the email names them: ${skipped.map((s) => `${s.filename} (${s.reason})`).join('; ')}.` : '')
+          // Part 1 has already gone out naming every document, so a part that did not
+          // follow must be said out loud — otherwise the attorney is short files the
+          // email promised and nobody here knows.
+          + (failed.length ? ` ${failed.length} of the follow-on emails did not send — these documents did NOT reach the attorney: ${failed.map((f) => f.files.join(', ')).join('; ')}. Re-send to try again.` : ''),
       });
       setNote('');
       load();

@@ -120,13 +120,84 @@ function slotFrom(formText, imageText) {
   const caption = attrOf(imageText, '_CaptionComment');
   const contentType = attrOf(formText, 'AppraisalReportContentType');
   const otherDesc = attrOf(formText, 'TypeOtherDescription');
+  // The FORM's own name ("Photo Comparables 4-5-6") is what disambiguates a
+  // per-block photo ordinal — see compSeqFromSlot below.
+  const formName = attrOf(formText, 'AppraisalReportContentName');
   // FORM content type first (present on every vendor that emits metadata), then the identifier.
   let group = FORM_GROUP[norm(contentType)] || null;
   if (group === null && norm(contentType) === 'other') group = groupFromIdentifier(identifier) || (norm(otherDesc) === 'map' ? 'map' : 'other');
   if (group === null) group = groupFromIdentifier(identifier);
   if (group === null) group = 'other';
   const subjectFront = group === 'subject' && isSubjectFront(identifier);
-  return { identifier, caption, contentType, group, subjectFront, photo: !!(GROUPS[group] || GROUPS.other).photo };
+  return { identifier, caption, contentType, formName, group, subjectFront, photo: !!(GROUPS[group] || GROUPS.other).photo };
+}
+
+/**
+ * WHICH COMPARABLE IS THIS A PHOTO OF? — from the appraiser's own slot label.
+ *
+ * Two numbering schemes exist in the wild and they disagree:
+ *   • `Sales Comp 7 - Photo` (Appraise-It) — numbered GLOBALLY, never reset. The
+ *     number in the identifier IS the comp number.
+ *   • `ComparablePhoto1..3` (ClickFORMS/ACI) — RESET to 1 inside every SalePhotos
+ *     block, and the block is named by the FORM ("Photo Comparables 4-5-6"). The
+ *     real comp number is the block's first number plus the ordinal minus one.
+ *
+ * When the identifier is block-relative and the FORM name carries no number, the
+ * ordinal is AMBIGUOUS — comp 2 of which block? — and this returns null rather
+ * than guess. The same discipline as labelPhotos: a photo pinned to the wrong
+ * house is worse than a photo with no house.
+ *
+ * @returns {number|null} the 1-based comparable number
+ */
+function compSeqFromSlot(slot) {
+  if (!slot || slot.group !== 'comparable') return null;
+  const id = String(slot.identifier || '');
+  const n = /(\d+)/.exec(norm(id));
+  if (!n) return null;
+  const ordinal = parseInt(n[1], 10);
+  if (!(ordinal > 0 && ordinal < 100)) return null;
+  const key = norm(id);
+  // A GLOBAL scheme names the comp directly ("salescomp7photo", "salecomp4").
+  if (/^(salescomp|salecomp|comparablesale)\d+/.test(key)) return ordinal;
+  // A BLOCK-RELATIVE scheme ("comparablephoto2") needs the block's offset.
+  const first = /(\d+)/.exec(String(slot.formName || ''));
+  if (!first) return null;
+  const offset = parseInt(first[1], 10);
+  if (!(offset > 0 && offset < 100)) return null;
+  return offset + ordinal - 1;
+}
+
+/**
+ * The comparable a photo's CAPTION names, matched by address.
+ *
+ * The corpus research calls this the only RELIABLE cross-check, and it is: a comp
+ * photo's caption is the comp's own address ("322 Howard Ave/New Haven, CT 06519"),
+ * so it identifies the property directly instead of relying on an ordinal that two
+ * vendors number two different ways. Tried FIRST; the ordinal is the fallback.
+ *
+ * Address comparison goes through the research warehouse's own key, so "the same
+ * address" means exactly one thing across this whole system.
+ *
+ * @param {string} caption
+ * @param {Array<{seq,address,city,state,zip}>} comps
+ * @returns {string|null} the matching comp's `seq`
+ */
+function compSeqFromCaption(caption, comps) {
+  const cap = String(caption == null ? '' : caption).trim();
+  if (!cap || !Array.isArray(comps) || !comps.length) return null;
+  let K;
+  try { K = require('../research/property-key'); } catch (_) { return null; }
+  // Captions separate the street from the locality with '/' as often as with ','.
+  const key = K.propertyKey(cap.replace(/\s*\/\s*/g, ', '));
+  if (!key) return null;
+  let hit = null;
+  for (const c of comps) {
+    const ck = K.propertyKey({ street: c.address, city: c.city, state: c.state, zip: c.zip });
+    if (!ck || ck !== key) continue;
+    if (hit) return null;                 // two comps with one address — refuse to pick
+    hit = c;
+  }
+  return hit ? String(hit.seq) : null;
 }
 
 /**
@@ -231,6 +302,8 @@ function labelPhotos(photos, slots) {
       category: categoryFor(slot),
       caption: slot.caption || null,
       identifier: slot.identifier || null,
+      formName: slot.formName || null,
+      compSeq: compSeqFromSlot(slot),
       // A slot the XML calls a map/sketch/exhibit is NOT a photograph, whatever the pixels said —
       // the appraiser's own label beats our inference when we have it.
       kind: slot.photo ? 'photo' : 'graphic',
@@ -257,5 +330,6 @@ function heroIndex(photos) {
 
 module.exports = {
   photoSlots, embeddedImages, labelPhotos, heroIndex, sniffImageMime, categoryFor,
+  compSeqFromSlot, compSeqFromCaption,
   _internals: { slotFrom, groupFromIdentifier, isSubjectFront, attrOf, imageMimeOf, GROUPS },
 };

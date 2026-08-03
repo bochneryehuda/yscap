@@ -154,10 +154,19 @@ function EventRow({ e, expanded, onToggle, last }) {
 
 /* Hand the reader the whole thing as a file. An audit log you cannot take away
    with you is not much use to an auditor. */
-function exportCsv(rows, title) {
+function exportCsv(rows, title, all) {
   const cell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""').replace(/\r?\n/g, ' ⏎ ')}"`;
   const head = ['When (exact)', 'Who', 'Role', 'Acting for', 'What happened', 'Detail', 'Category', 'Recorded by', 'Entity', 'Entity id', 'IP'];
-  const body = rows.map((e) => [exact(e.at), who(e), e.actor_role || '', e.impersonator || '',
+  // THE COMPLETENESS WARNINGS ALWAYS RIDE, whatever the reader filtered to.
+  // Exporting the FILTERED rows is right — you take away what you were looking
+  // at — but the server's "this log is INCOMPLETE / TRUNCATED / PARTIAL" rows
+  // carry a category like any other row, so a category chip, an actor or a
+  // search term silently dropped them. The file then read as a complete record
+  // of the file when it was nothing of the kind, with no way for the person
+  // holding it to tell. A filter may hide events; it may never hide the fact
+  // that events are missing.
+  const meta = (all || []).filter((e) => e.source === 'meta' && !rows.includes(e));
+  const body = [...meta, ...rows].map((e) => [exact(e.at), who(e), e.actor_role || '', e.impersonator || '',
     e.verb || '', e.label || '', catOf(e), e.source || '', e.entity_type || '', e.entity_id || '', e.ip || ''].map(cell).join(','));
   const blob = new Blob([[head.map(cell).join(','), ...body].join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -259,7 +268,7 @@ export default function ActivityFeed({ fetcher, title = 'Activity', limit = 15, 
         </span>
         {audit && rows.length > 0 && (
           <button type="button" className="btn ghost small" title="Download exactly what is shown, as a spreadsheet"
-            onClick={() => exportCsv(filtered, title)}>Export</button>
+            onClick={() => exportCsv(filtered, title, rows)}>Export</button>
         )}
       </div>
 

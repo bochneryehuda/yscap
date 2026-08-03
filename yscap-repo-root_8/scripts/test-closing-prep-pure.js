@@ -361,6 +361,80 @@ assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_
     assert(r.totalBytes <= r.budget, 'the budget is never exceeded');
   } finally { storage.read = realRead; }
 
+  /* ───── 8b. A PACKAGE TOO BIG FOR ONE EMAIL IS SPLIT, NOT TRIMMED ───────────
+     Owner-reported 2026-08-02: "I can't order closing prep and it needs to attach
+     one document … if it's too big we need to find a solution." An 18-document,
+     16.7 MB package with one appraisal over the old 10 MB single-attachment
+     ceiling silently left that document behind and told the attorney to ask for
+     it. Every assertion here fails on the pre-fix single-message packer. */
+  {
+    const storage2 = require('../src/lib/storage');
+    const realRead2 = storage2.read;
+    const MB = 1024 * 1024;
+    const SIZES = { big: 4 * MB, small: 1 * MB, huge: 30 * MB };
+    storage2.read = async (ref) => Buffer.alloc(SIZES[ref] || 1024, 1);
+    try {
+      const docs = [
+        { filename: 'termsheet.pdf', storage_ref: 'big', group: 'term_sheet', size_bytes: SIZES.big },
+        { filename: 'contract.pdf', storage_ref: 'big', group: 'contract', size_bytes: SIZES.big },
+        { filename: 'oa.pdf', storage_ref: 'big', group: 'llc', size_bytes: SIZES.big },
+        { filename: 'binder.pdf', storage_ref: 'small', group: 'insurance', size_bytes: SIZES.small },
+      ];
+      // A 5 MB per-message budget: 4 + 1 documents cannot ride together.
+      const p = await cp.packAttachments(docs, { budget: 5 * MB, parts: 6 });
+      assert(p.partCount === 3, `a 13 MB package on a 5 MB budget goes out as 3 emails — got ${p.partCount}`);
+      assert(p.attached.length === 4 && p.skipped.length === 0,
+        'EVERY document is sent — nothing is dropped for being over the size of one email');
+      assert(p.parts[0].attachments[0].filename === 'termsheet.pdf',
+        'the first email still leads with the term sheet — priority order is kept across the split');
+      assert(p.parts.every((part) => part.totalBytes <= 5 * MB), 'no single email is over the budget');
+      assert(p.attached.every((d) => d.part >= 1), 'each document records which email it went on');
+
+      // A filename that collides must stay unique ACROSS parts, or the attorney
+      // cannot tell two `scan.pdf` apart just because they arrived separately.
+      const dup = await cp.packAttachments([
+        { filename: 'scan.pdf', storage_ref: 'big', group: 'contract', groupLabel: 'Purchase contract', size_bytes: SIZES.big },
+        { filename: 'scan.pdf', storage_ref: 'big', group: 'llc', groupLabel: 'Entity documents', size_bytes: SIZES.big },
+      ], { budget: 5 * MB, parts: 6 });
+      assert(dup.partCount === 2
+        && dup.parts[0].attachments[0].filename !== dup.parts[1].attachments[0].filename,
+        'two documents with one filename stay distinguishable even on different emails');
+
+      // A document bigger than a WHOLE email is the only size still left behind —
+      // and it says exactly that, rather than "over the email size limit".
+      const over = await cp.packAttachments([
+        { filename: 'ok.pdf', storage_ref: 'small', group: 'contract', size_bytes: SIZES.small },
+        { filename: 'monster.pdf', storage_ref: 'huge', group: 'llc', size_bytes: SIZES.huge },
+      ], { budget: 5 * MB, parts: 6 });
+      assert(over.attached.length === 1 && over.skipped.length === 1
+        && over.skipped[0].reason === 'too large to email',
+        'a document bigger than one whole email is named with the true reason');
+
+      // THE PART CAP MUST NEVER TRUNCATE SILENTLY. (4 + 1 MB ride together; the two
+      // remaining 4 MB documents cannot, and are named.)
+      const capped = await cp.packAttachments(docs, { budget: 5 * MB, parts: 1 });
+      assert(capped.partCount === 1 && capped.attached.length === 2 && capped.skipped.length === 2
+        && capped.skipped.every((s) => s.reason === 'over the email size limit'),
+        'what does not fit inside the part cap is REPORTED, never dropped in silence');
+
+      // The single-message helper still behaves exactly as it always did, so the
+      // executed-term-sheet path that uses it is untouched.
+      const one = await cp.buildAttachments(docs, { budget: 5 * MB });
+      assert(one.attachments.length === 2 && one.skipped.length === 2,
+        'buildAttachments is still one message — the callers that send exactly one are unchanged');
+
+      // The manifest names the whole package and says where the rest of it is.
+      const body = cp.buildClosingPrepEmail(DATA, PKG_FULL, {
+        attach: { attachments: p.parts[0].attachments, attached: p.attached, skipped: [], partCount: 3 },
+      });
+      assert(/3 emails on this same chain/.test(body.text),
+        'the first email tells the attorney the rest is coming, so a short attachment count never reads as missing documents');
+      const part2 = cp.buildAttachmentPartEmail(DATA, { part: 2, of: 3, files: ['contract.pdf'] });
+      assert(/documents 2 of 3/i.test(part2.subject) && /part 2/i.test(part2.text),
+        'a follow-on email says which part it is, in the subject and the body');
+    } finally { storage2.read = realRead2; }
+  }
+
   /* ─────────────────────────── 9. the send blockers ────────────────────────── */
   const emptyPkg = { counts: { term_sheet: 0 }, missing: [], groups: {}, ordered: [] };
   assert(cp.blockers(null, emptyPkg).includes('file'), 'no file → blocked');
@@ -412,15 +486,25 @@ assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_
   }
 
   // (d) WHAT CANNOT BE ATTACHED IS KNOWN BEFORE THE SEND, not reported after it.
+  //     The ceiling is now "bigger than one whole email" rather than a hard-coded
+  //     10 MB — a package over the budget is SPLIT, so only a document that cannot
+  //     fit a message even alone is still left behind (owner-reported 2026-08-02).
   {
+    const one = cp.attachBudgetRawBytes();
     const skips = cp.predictSkips([
-      { id: 1, filename: 'survey.pdf', storage_ref: 'r1', size_bytes: 12 * 1024 * 1024 },
+      { id: 1, filename: 'survey.pdf', storage_ref: 'r1', size_bytes: one + 1 },
       { id: 2, filename: 'gone.pdf', storage_ref: null, size_bytes: 10 },
       { id: 3, filename: 'fine.pdf', storage_ref: 'r3', size_bytes: 1000 },
     ]);
     assert(skips.length === 2 && skips.some((x) => x.reason === 'too large to email')
       && skips.some((x) => x.reason === 'no stored copy'),
       'an oversized document and one with no stored copy are named BEFORE the send');
+    assert(skips.every((s) => 'size_bytes' in s),
+      'each carries its size, so the card can subtract it before counting emails');
+    assert(one > 10 * 1024 * 1024,
+      'the old hard-coded 10 MB single-attachment ceiling is gone — the owner’s 10–15 MB appraisal now goes');
+    assert(cp.predictSkips([{ id: 4, filename: 'appraisal.pdf', storage_ref: 'r4', size_bytes: 12 * 1024 * 1024 }]).length === 0,
+      'a 12 MB document — refused outright before — is now attachable');
   }
 
   // (e) A TIMEOUT IS NOT A REJECTION. Resend aborts at 15s and the default package is

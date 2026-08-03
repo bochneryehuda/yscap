@@ -61,6 +61,14 @@ function Timeline({ events }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
             <strong style={{ color: TONE_COLOR[e.tone] || INK, fontSize: 13 }}>{e.title}</strong>
             {e.actor && <span style={{ color: MUTED, fontSize: 12 }}>by {e.actor}</span>}
+            {/* An action taken inside a borrower-view session records under the
+                BORROWER's identity. Naming only the actor would tell the reader
+                a borrower did something a staff member did. */}
+            {e.impersonator && (
+              <span style={{ color: '#B3261E', fontSize: 12, fontWeight: 600 }}>
+                — actually {e.impersonator}, signed in as them
+              </span>
+            )}
             <span style={{ flex: 1 }} />
             <span style={{ color: MUTED, fontSize: 11, whiteSpace: 'nowrap' }}>{when(e.at) || 'time not recorded'}</span>
           </div>
@@ -219,6 +227,9 @@ export default function DocumentDossier({ docId }) {
                 <span style={{ color: MUTED, minWidth: 150 }}>{when(a.at)}</span>
                 <span style={{ color: a.denied ? 'var(--danger,#B3261E)' : INK, flex: 1, minWidth: 180 }}>
                   <strong>{a.who}</strong>{a.role ? ` (${String(a.role).replace(/_/g, ' ')})` : ''} — {a.what}
+                  {a.impersonator && (
+                    <span style={{ color: '#B3261E', fontWeight: 600 }}> — actually {a.impersonator}, signed in as them</span>
+                  )}
                 </span>
                 {a.ip && <span style={{ color: MUTED }}>{a.ip}</span>}
               </div>
