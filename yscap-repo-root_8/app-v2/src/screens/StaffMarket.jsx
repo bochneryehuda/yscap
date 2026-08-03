@@ -183,11 +183,103 @@ export default function StaffMarket() {
           {reports && reports.rows && reports.rows.length > 0 && <BehindIt rows={reports.rows} />}
         </>
       )}
+
+      {/* OUTSIDE the charts' own gate, deliberately. What appraisers SAID about a
+          market and what they DID on their grids are two different corpora, and a
+          town can be rich in one and empty in the other — measured, 55 of our 84
+          ZIPs carry a single market read, while Trenton alone holds 71 size
+          adjustments. Gating this on the charts would hide the adjustment evidence
+          in precisely the towns where the market grid is thinnest. */}
+      {named && <WhatAppraisersAdjust where={{ city: q.city, state: q.state, zip: q.zip, months }} />}
     </div>
   );
 }
 
 /* THE SAMPLE SIZE, STATED BEFORE ANY NUMBER IS READ. */
+/* WHAT APPRAISERS AROUND HERE ACTUALLY ADJUST.
+
+   The charts above are what appraisers SAID about this market — their own
+   neighbourhood grids, stacked. This is what they DID: every size adjustment
+   they wrote, divided by the size difference they wrote it for. It is the one
+   corpus no data vendor has, because it comes out of reports we paid for.
+
+   `GET /api/research/rates` has answered this since the warehouse shipped and no
+   screen ever called it, so the only way to ask "what is a foot worth here" was
+   to start a valuation and read it off the grid. This is the direct question, on
+   the screen that already asks the neighbouring one.
+
+   TWO FEET, NEVER MIXED. A 1004 states living area and a 1025 states gross
+   building area, and the two are measured and shown apart (db/443) — several of
+   our own towns hold their evidence almost entirely on the 2-4 unit side.
+
+   REFUSALS ARE SHOWN. "Too few adjustments here to say" is the honest answer and
+   the useful one: it tells an officer the number they are about to type has no
+   local backing, which a blank space does not. */
+function WhatAppraisersAdjust({ where }) {
+  const [r, setR] = useState(null);
+  const [why, setWhy] = useState('');
+  useEffect(() => {
+    let live = true;
+    setR(null); setWhy('');
+    api.researchRates(where)
+      .then((d) => { if (!live) return; setR(d.rates || null); setWhy(d.why || ''); })
+      .catch(() => { if (live) setWhy('could not be worked out'); });
+    return () => { live = false; };
+  }, [where.city, where.state, where.zip, where.months]);
+
+  if (!r && !why) return null;
+  const psf = r && r.pricePerSqft;
+  const living = r && r.glaAdjustmentPerSqft;
+  const building = r && r.glaAdjustmentPerSqftGba;
+  const Rate = ({ label, rate, peerOnly }) => {
+    if (!rate) return null;
+    const peer = rate.source === 'peer';
+    if (peerOnly && !peer) return null;
+    return (
+      <div style={{ minWidth: 210, flex: '1 1 210px' }}>
+        <div style={{ color: MUTED, fontSize: 12, fontWeight: 700, textTransform: 'uppercase' }}>{label}</div>
+        {rate.value != null ? (
+          <>
+            <div style={{ fontSize: 22, fontWeight: 700, color: INK }}>
+              ${rate.value}<span style={{ fontSize: 13, fontWeight: 400, color: MUTED }}> a sq ft</span>
+            </div>
+            {rate.low != null && rate.high != null && (
+              <div style={{ color: MUTED, fontSize: 12 }}>most between ${rate.low} and ${rate.high}</div>
+            )}
+            {peer && <span style={{ ...S.tag, borderColor: '#2F7F86', color: '#2F7F86', marginTop: 4 }}>
+              from our own reports</span>}
+            {rate.source === 'convention' && <span style={{ ...S.tag, borderColor: GOLD, color: GOLD, marginTop: 4 }}>
+              national rule of thumb</span>}
+          </>
+        ) : <div style={{ fontSize: 14, color: MUTED, marginTop: 4 }}>too few here to say</div>}
+        <div style={{ color: MUTED, fontSize: 12, marginTop: 4, lineHeight: 1.45 }}>{rate.basis || rate.why}</div>
+      </div>
+    );
+  };
+
+  return (
+    <section style={{ ...S.panel, marginTop: 14 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>What appraisers here actually adjust</h2>
+      <p style={{ margin: '0 0 12px', color: MUTED, fontSize: 13, maxWidth: 780, lineHeight: 1.5 }}>
+        The charts above are what appraisers <b style={{ color: INK }}>said</b> about this market. This is
+        what they <b style={{ color: INK }}>did</b> — every size adjustment they wrote on a grid, divided by
+        the size difference they wrote it for. It comes out of reports we paid for, so no data service has it.
+      </p>
+      {why && !r && <div style={{ color: MUTED, fontSize: 13 }}>{why}</div>}
+      {r && (
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
+          <Rate label="A square foot sells for" rate={psf} />
+          <Rate label="Adjusted per square foot" rate={living} />
+          <Rate label="On 2–4 unit sales" rate={building} peerOnly />
+        </div>
+      )}
+      {r && r.distressedNote && (
+        <div style={{ marginTop: 10, color: GOLD, fontSize: 13, lineHeight: 1.5 }}>{r.distressedNote}</div>
+      )}
+    </section>
+  );
+}
+
 function Caveat({ totalReports, thin, months, note }) {
   return (
     <section style={{ ...S.panel, marginBottom: 12, borderColor: GOLD, background: '#FCFAF4' }}>

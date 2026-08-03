@@ -181,6 +181,17 @@ const RATES = {
     ok(/only gave a ZIP|same point on the map|one with a unit number/i.test(body),
       'property: it says WHY the two were paired');
 
+    // ---- 3b. What appraisers here actually adjust ------------------------
+    // It answers from the ADJUSTMENT corpus, not the market grid, so it must
+    // render on a named market even when there is no 1004MC data at all — which
+    // is the state of most towns we hold.
+    body = await visit('/internal/research/market?city=Rendertown&state=NJ');
+    noCrash(body, 'market');
+    ok(/What appraisers here actually adjust/i.test(body),
+      'market: the adjustment-corpus panel renders even with no market-grid data');
+    ok(/too few here to say|a sq ft/i.test(body),
+      'market: it answers with a rate or an honest refusal, never a blank');
+
     // ---- 4. The unit count + property type on the comp search ------------
     body = await visit('/internal/research/comps?city=Rendertown&state=NJ');
     noCrash(body, 'comp search');
