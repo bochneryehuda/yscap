@@ -202,6 +202,32 @@ async function continueImportTx(db, { A, appraisalId, applicationId, f, today, t
       [appraisalId, u.seq, u.actualRent, u.marketRent, u.rooms, u.beds, u.baths, u.sqft, u.leaseStatus]);
   }
 
+  // 4b. THE RENT SCHEDULE'S OWN GRID (db/435). The subject's rental summary at
+  //     sequence 0 plus every RENTAL comparable after it — 290 real properties
+  //     with in-place rents across the corpus, and the only place a COMPARABLE's
+  //     per-unit square footage is ever stated.
+  for (const rc of A.rentalComps || []) {
+    await db.query(
+      `INSERT INTO appraisal_rental_comparables
+         (appraisal_id, seq, is_subject, address, city, state, zip, proximity,
+          monthly_rent, rent_per_gba, gba_sqft, rent_controlled, data_source,
+          lease_terms, utilities_included, location_code,
+          condition_uad, condition_text, age_years, year_built, units, unit_mix)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       ON CONFLICT (appraisal_id, COALESCE(seq, '')) DO NOTHING`,
+      [appraisalId, rc.seq, !!rc.isSubject, rc.address, rc.city, rc.state, rc.zip, rc.proximity,
+        rc.monthlyRent, rc.rentPerGba, rc.gba, rc.rentControlled, rc.dataSource,
+        rc.leaseTerms, rc.utilitiesIncluded, rc.locationCode,
+        rc.conditionUad, rc.conditionText, rc.ageYears,
+        Number.isFinite(Number(rc.yearBuilt)) && rc.yearBuilt != null && rc.yearBuilt !== ''
+          ? Math.trunc(Number(rc.yearBuilt)) : null,
+        rc.units,
+        // jsonb — serialized here for the same reason `unit_mix` is everywhere
+        // else: binding a JS array raw makes node-postgres send a Postgres array
+        // literal (#974).
+        rc.unitMix ? JSON.stringify(rc.unitMix) : null]);
+  }
+
   // 5. photo manifest (pixels come later from the PDF)
   const pm = A.photos || {};
   if (pm.embeddedPdf) {

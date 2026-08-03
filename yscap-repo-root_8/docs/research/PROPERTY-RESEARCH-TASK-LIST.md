@@ -206,7 +206,50 @@ throw away.
 - [x] **2.3 The stated AGE in years** — stored as `age_years`; the year built is
   now derived from it plus the report's effective date instead of being mined out
   of it with a regex that could never match (db/432)
-- [ ] **2.4 The whole rental-comp grid — the biggest remaining unread block.**
+- [x] **2.4 The whole rental-comp grid** (db/435). Done, and it is the biggest
+  single addition the warehouse has had: the rent schedule is a SECOND comparable
+  grid, and the parser counted its elements and read nothing out of them.
+  Measured on the 152-file real corpus, importing every one end to end:
+
+  | | before | after |
+  |---|---|---|
+  | reports that import at all | 144 of 152 | **149 of 152** (only the 3 iLAD non-appraisals refuse) |
+  | rental comparables in the warehouse | 0 | **286** |
+  | properties whose ACTUAL rent we know | 0 | **172** |
+  | properties with per-unit SQUARE FOOTAGE | 0 | **295** |
+  | market observations filed | 139 | **144** |
+
+  Each rental comparable carries its address, gross monthly rent, gross building
+  area, rent per foot, rent-control status, condition, year built and a per-unit
+  breakdown with **rooms, beds, baths, square footage and the rent for each
+  unit**. A re-import of the whole corpus duplicates nothing.
+
+  **Three pre-existing defects fell out of running real files through the
+  importer for the first time**, and each cost a whole report:
+  - **A median of 6.5 days broke the entire warehouse write.** Four 1004MC
+    columns are `integer`, and a median over an even-sized sample is fractional.
+    Postgres refused the INSERT, and because the caller's catch had no SAVEPOINT
+    the refusal aborted the transaction — so the subject, the whole sales grid
+    and the roll-ups were lost, and the report was refused with a message about a
+    transaction. 5 of 152 reports, on the values 6.5, 16.5 and 100.5.
+  - **"Best-effort" inside a transaction is not what a bare catch does.** Three
+    blocks (the market grid, the roll-up loop, and the new rent schedule) now go
+    through `bestEffort`, which attempts a SAVEPOINT — because `writeReport` is
+    called BOTH inside a caller's transaction (the upload door) and on the pool
+    directly (the loan-file door), and `SAVEPOINT` outside a transaction is
+    itself an error. Opening one unconditionally broke the loan-file door; not
+    opening one loses the report. The helper handles both.
+- [x] **2.4b Per-unit SQUARE FOOTAGE for a COMPARABLE.** A sales comparable's
+  unit mix is mined from `ROOM_ADJUSTMENT`, which states rooms, beds and baths
+  and **never** an area — 353 sales comparables carry a mix and not one carried a
+  square footage. On 62 of them the appraiser described the same building in
+  BOTH grids of the same report, so `mergeUnitAreas` carries the area (and the
+  per-unit rent) across, matched on the appraiser's own unit numbers and keyed on
+  the property the warehouse already dedupes on. It only ever FILLS a blank, and
+  refuses on any disagreement — a different number of dwellings, a repeated unit
+  number, or a unit number on one side missing from the other — because putting
+  unit 3's area on unit 2 is worse than leaving it blank.
+- [ ] ~~**2.4 The whole rental-comp grid — the biggest remaining unread block.**~~
   `MULTIFAMILY_RENTALS` / `RENTAL_UNIT` / `RENTAL_FEATURE` are present in **91 of
   149 parsed files** and read for nothing but a count. Measured: **267
   `MULTIFAMILY_RENTAL` entries** (the subject at sequence 0 plus ~3 rental
@@ -216,10 +259,7 @@ throw away.
   breakdown. That is roughly 200 additional real properties with real in-place
   rents, sitting in files we already hold. For a 2–4 unit lender this is the
   single richest thing left in the XML.
-- [ ] **2.4b Per-unit SQUARE FOOTAGE for a COMPARABLE.** The subject has it; a
-  comparable's `unit_mix` comes from `ROOM_ADJUSTMENT`, which states rooms, beds
-  and baths but no area. `RENTAL_UNIT` has the area — joining the two would
-  complete the owner's per-unit ask on both sides of the grid.
+
 - [ ] **2.5 ACI's `COMPARABLE_LISTING`** — absent from the parser entirely
 - [ ] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback
 - [ ] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them

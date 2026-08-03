@@ -684,6 +684,93 @@ function comparables(root, effectiveYear) {
   };
 }
 
+/**
+ * THE RENT SCHEDULE — the second comparable grid, read by nothing until now.
+ *
+ * A small-income appraisal (1025, or a 1004 with a 1007 attached) carries a
+ * whole second grid beside the sales one: `MULTIFAMILY_RENTALS`. Sequence 0 is
+ * the SUBJECT; every sequence after it is a RENTAL comparable — a different
+ * building, with its own address, its own gross monthly rent, its own size, and
+ * a per-unit breakdown the sales grid does not carry (`RENTAL_UNIT` states
+ * SquareFeetCount per dwelling; `ROOM_ADJUSTMENT` never does).
+ *
+ * Measured across 149 real reports: 95 carry the grid, 385 entries (95 subjects
+ * + 290 rental comparables), 354 with an address, 1,474 `RENTAL_UNIT` rows of
+ * which 729 state something and 720 state a square footage. The parser counted
+ * these elements and read nothing out of them.
+ *
+ * A RENT IS NOT A SALE. These properties never enter the sales comparables and
+ * never carry a sale price — what they carry is what somebody is actually
+ * PAYING to live there, which on a 2-4 unit deal is the underwriting.
+ */
+function rentalGrid(root, effectiveYear) {
+  const out = [];
+  for (const m of X.findAll(root, 'MULTIFAMILY_RENTAL')) {
+    const seq = clean(X.attr(m, 'PropertySequenceIdentifier'));
+    const loc = X.find(m, 'LOCATION');
+    // The features are a `_Type`/`_Description` list, exactly like the sales
+    // grid's adjustment lines; read the four every report writes.
+    const feat = {};
+    for (const f of X.findAll(m, 'RENTAL_FEATURE')) {
+      const t = clean(X.attr(f, '_Type')), d = clean(X.attr(f, '_Description'));
+      if (t && d && !feat[t]) feat[t] = d;
+    }
+    // A PADDED UNIT ROW IS NOT A DWELLING — the schedule pads to four on a
+    // duplex, exactly as the sales grid pads its columns. A row that states
+    // nothing about a dwelling is dropped, and the count is what is left.
+    const units = [];
+    for (const u of X.findAll(m, 'RENTAL_UNIT')) {
+      const rooms = count(X.attr(u, 'TotalRoomCount'), 99);
+      const beds = count(X.attr(u, 'TotalBedroomCount'), 99);
+      const baths = parseBaths(X.attr(u, 'TotalBathroomCount'));
+      const sqft = bounded(X.attr(u, 'SquareFeetCount'), 1e6);
+      const rent = bounded(X.attr(u, 'MonthlyRentAmount'), 1e8);
+      if (rooms == null && beds == null && baths.full == null && sqft == null && rent == null) continue;
+      units.push({ unit: clean(X.attr(u, 'UnitSequenceIdentifier')) || String(units.length + 1),
+        rooms, beds, baths_full: baths.full, baths_half: baths.half, baths: baths.text,
+        sqft, monthly_rent: rent });
+    }
+    const ageYears = count((String(feat.Age || '').match(/\d+/) || [])[0], 999);
+    const cq = clean(feat.Condition);
+    const addr = clean(X.attr(loc, 'PropertyStreetAddress'));
+    // The "City, ST ZIP" second line, split the same way the sales grid's is.
+    const city2 = splitCityLine(X.attr(loc, 'PropertyStreetAddress2'));
+    const row = {
+      seq,
+      isSubject: seq === '0',
+      address: addr,
+      city: clean(X.attr(loc, 'PropertyCity')) || city2.city || null,
+      state: upState(X.attr(loc, 'PropertyState')) || city2.state || null,
+      zip: zip(X.attr(loc, 'PropertyPostalCode')) || city2.zip || null,
+      proximity: clean(X.attr(loc, 'ProximityToSubjectDescription')),
+      // numeric(12,2) columns — bounded to 1e8, never money()'s 1e12 ceiling.
+      monthlyRent: bounded(X.attr(m, 'MonthlyRentAmount'), 1e8),
+      rentPerGba: bounded(X.attr(m, 'RentPerGrossBuildingAreaAmount'), 1e6),
+      gba: bounded(X.attr(m, 'GrossBuildingAreaSquareFeetCount'), 1e6),
+      // The enum is Yes/No; anything else is left unanswered rather than guessed.
+      rentControlled: /^y/i.test(String(X.attr(m, 'RentControlStatusType') || '')) ? true
+        : (/^n/i.test(String(X.attr(m, 'RentControlStatusType') || '')) ? false : null),
+      dataSource: clean(X.attr(m, 'DataSourceDescription')),
+      leaseTerms: clean(feat.Lease),
+      utilitiesIncluded: clean(feat.UtilitiesIncluded),
+      locationCode: clean(feat.Location),
+      // The condition line is a UAD code on most vendors and a WORD on the rest
+      // — kept apart exactly as the sales grid keeps them, because the review
+      // checks compare the codes and must never see free text.
+      conditionUad: cq && UAD_C.test(cq) ? cq : null,
+      conditionText: cq && !UAD_C.test(cq) ? cq : null,
+      ageYears,
+      yearBuilt: builtYearFrom(ageYears, effectiveYear),
+      units: units.length || null,
+      unitMix: units.length ? units : null,
+    };
+    // An entry that names no property and states no rent is a padded slot.
+    if (!row.isSubject && !row.address && row.monthlyRent == null) continue;
+    out.push(row);
+  }
+  return out;
+}
+
 // Subject prior sale (for flip / recent-sale detection) — the structured PRIOR_SALES under the
 // seq-0 subject comp, plus the has-prior-sale flag from SALES_COMPARISON/RESEARCH/SUBJECT.
 function subjectPriorSale(root, subject0) {
@@ -1208,6 +1295,7 @@ function extract(xml) {
     || year((X.attr(rep, 'AppraiserReportSignedDate') || '').slice(0, 4))
     || year((X.attr(X.find(root, 'INSPECTION'), 'InspectionDate') || '').slice(0, 4));
   const { comps, subject0 } = comparables(root, reportYear);
+  const rentals = rentalGrid(root, reportYear);
   // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
   // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
   // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else
@@ -1449,6 +1537,9 @@ function extract(xml) {
     subject, values: val, appraiser, enrich,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
     comparables: comps, units, income, condo, photos, report,
+    // The rent schedule's own grid (2.4): the subject's rental summary at
+    // sequence 0 and every RENTAL comparable after it.
+    rentalComps: rentals,
     compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
       asIsValue: gridSplit.asIsValue, arvValue: gridSplit.arvValue,
       counts: { as_is: comps.filter((c) => c.comp_set === 'as_is').length, arv: comps.filter((c) => c.comp_set === 'arv').length, unknown: comps.filter((c) => c.comp_set === 'unknown').length } },

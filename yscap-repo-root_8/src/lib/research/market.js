@@ -36,6 +36,8 @@ const METRIC_COLUMN = Object.freeze({
   MedianSalesToListRatio: 'median_sale_to_list_pct',
 });
 const METRIC_COLUMNS = Object.freeze(Object.values(METRIC_COLUMN));
+/** The `integer` columns of db/423 — a fractional value has to be rounded to fit. */
+const INT_COLUMNS = new Set(['total_sales', 'total_listings', 'median_sale_dom', 'median_list_dom']);
 
 /**
  * THE THREE WINDOWS, non-overlapping and contiguous backwards from the report's
@@ -109,7 +111,18 @@ function gridToPeriods(marketTrends) {
     for (const label of ['last3', 'prior46', 'prior712']) {
       const v = cell[label];
       if (v == null || !Number.isFinite(Number(v))) continue;
-      (out.periods[label] || (out.periods[label] = {}))[col] = Number(v);
+      // A MEDIAN OF AN EVEN-SIZED SAMPLE IS FRACTIONAL, and four of these columns
+      // are `integer`. A perfectly ordinary "median days on market: 6.5" made
+      // Postgres refuse the whole INSERT — and because the caller's catch had no
+      // SAVEPOINT, that refusal aborted the transaction and cost the report its
+      // ENTIRE warehouse write: subject, sales grid, rent schedule and roll-ups.
+      // Measured on the real corpus: 5 of 152 reports, on values 6.5, 16.5 and
+      // 100.5. Rounded to the column, because a day count is a whole number of
+      // days and half a day either way is not a fact anybody acts on; the
+      // fractional medians that matter (price, absorption) are numeric columns
+      // and are untouched.
+      (out.periods[label] || (out.periods[label] = {}))[col] = INT_COLUMNS.has(col)
+        ? Math.round(Number(v)) : Number(v);
     }
   }
   return out;
