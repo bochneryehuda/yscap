@@ -3817,3 +3817,27 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .dsh-num{font-size:26px}
   .dsh-hero .dsh-num{font-size:32px}
 }
+
+/* ---- transient action toast (components/FlashToast.jsx) -------------------
+   A confirmation for a row action used to render as a `notice` banner at the
+   TOP of the page, so acting on a row far down a list shoved everything below
+   it down ~58px and back up again when it cleared (owner-reported 2026-08-03:
+   "the entire screen gives a blink and it moves like it takes me somewhere
+   else"). The dock is FIXED, so a confirmation can never move what the user is
+   reading — and it lands in the same spot however far down they clicked.
+   Bottom-centred: `.content` already reserves 104px of bottom padding, and the
+   top of the screen belongs to the sticky topbar. */
+.flash-dock{position:fixed;left:50%;transform:translateX(-50%);z-index:1200;
+  bottom:calc(24px + env(safe-area-inset-bottom));
+  width:max-content;max-width:min(560px,calc(100vw - 32px));
+  background:var(--surface,#fff);border-radius:var(--radius-sm);
+  box-shadow:0 14px 40px rgba(23,35,38,.24)}
+.flash-dock .notice{margin:0;display:flex;align-items:flex-start;gap:12px}
+.flash-dock .flash-text{min-width:0;overflow-wrap:anywhere}
+/* colour:inherit keeps the × on the notice's own dark ink, never a --ink* token */
+.flash-x{background:none;border:0;padding:0 1px;margin-left:auto;flex:none;cursor:pointer;
+  font-size:17px;line-height:1.25;color:inherit;opacity:.55}
+.flash-x:hover{opacity:1}
+@media(max-width:720px){
+  .flash-dock{left:16px;right:16px;transform:none;width:auto;max-width:none}
+}
