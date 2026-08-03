@@ -117,7 +117,11 @@ export default function PricingStudio() {
       )}
       <div className="toolsheet-body scroll">
         <div className="toolsheet-inner">
-          {ready && <TermSheetStudio ref={studioRef} prefill={prefill} showAdmin={false} provenance="borrower_portal" />}
+          {/* adminCapable={false}: this is the BORROWER's own pricing screen, so
+              the admin zone is removed from the embedded document rather than
+              merely hidden — a CSS hide leaves the markup/origination inputs one
+              deleted style rule away from being read and edited. */}
+          {ready && <TermSheetStudio ref={studioRef} prefill={prefill} showAdmin={false} adminCapable={false} provenance="borrower_portal" />}
         </div>
       </div>
     </div>
