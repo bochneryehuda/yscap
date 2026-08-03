@@ -98,6 +98,12 @@ app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120
 // open the pricing controls). The password check moved off the browser, so the
 // only remaining attack is guessing — rate-limit it hard. Staff type it once.
 app.use('/api/pricing-admin', rateLimit({ bucket: 'pricing-admin', windowMs: 60000, max: 10 }));
+// The studio quote (issue #7). The term-sheet tool re-prices as the visitor
+// types, so this is chatty BY DESIGN — the limit is set for a person working a
+// deal (the page debounces), not for someone walking the guideline space. It
+// answers ONE priced deal per call and never the tables behind it, which is
+// strictly less than today, where the page downloads the whole book.
+app.use('/api/pricing', rateLimit({ bucket: 'pricing-quote', windowMs: 60000, max: 240 }));
 
 // A PER-USER API answer must never be STORED by the browser.
 //
@@ -325,6 +331,10 @@ app.get('/api/pricing-defaults', async (req, res) => {
 // with the PUBLIC routes and deliberately unauthenticated: the password is the
 // credential, so a staffer on a shared term-sheet link can still open the panel.
 app.use('/api/pricing-admin', require('./routes/pricing-admin'));
+// Studio quote (see src/routes/pricing-quote.js). Public for the same reason
+// the marketing term sheet is public — an anonymous visitor prices a deal — and
+// deliberately mounted with the other public routes.
+app.use('/api/pricing', require('./routes/pricing-quote'));
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
