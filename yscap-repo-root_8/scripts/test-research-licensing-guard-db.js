@@ -86,6 +86,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       ok(typeof settled.at === 'string', 'stamping WHEN it asked, so a stale answer is visible');
       ok(G._internals.FRESH_MS <= 5 * 60 * 1000,
         `the answer expires quickly enough to be worth trusting (${G._internals.FRESH_MS}ms)`);
+      // A refresh that never settles would freeze the verdict for the life of the
+      // process, and "expires after a minute" would quietly stop being true.
+      ok(G._internals.PROBE_TIMEOUT_MS > 0 && G._internals.PROBE_TIMEOUT_MS <= 30000,
+        `and a refresh that hangs gives up rather than freezing the answer (${G._internals.PROBE_TIMEOUT_MS}ms)`);
     }
 
     // ---- C..E: THE DESTRUCTIVE HALF, INSIDE ONE TRANSACTION -------------
@@ -146,6 +150,41 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const nv = await G.checkGeoLicensing(client);
       ok(nv.ok === false && nv.present === false,
         'and one added NOT VALID — which applies to no existing row — is not reported as installed either');
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* THE IMPOSTORS THAT MENTION THE RIGHT WORDS AND PROTECT NOTHING. Checking
+         only that the definition NAMES geo_source and google passes all three of
+         these — the first is the rule INVERTED, and the second is the realistic
+         accident: somebody tidies the pattern and drops the wildcards, so the
+         value the app actually writes walks straight through. */
+      /* The INVERTED rule refuses every NON-Google source, so on a warehouse with
+         real rows Postgres will not even accept it — which is a pleasing fact and
+         a broken test. Blanking geo_source inside this transaction (it is
+         nullable, and every rule here allows NULL) lets each impostor be created
+         AND VALIDATED for real, so what is being proven is the deparsed
+         definition and nothing else. It rolls back with everything else. */
+      await client.query('UPDATE properties SET geo_source = NULL');
+      const IMPOSTORS = [
+        [`CHECK (geo_source IS NULL OR lower(geo_source) LIKE '%google%')`,
+          'the rule INVERTED (LIKE where NOT LIKE belongs) is not protection'],
+        [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE 'google')`,
+          'wildcards dropped — so google_places, the value we actually write, would pass'],
+        [`CHECK (geo_source IS NOT NULL OR 'google' <> 'x')`,
+          'a predicate that is always true, wearing both words'],
+      ];
+      for (const [body, why] of IMPOSTORS) {
+        await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
+        const imp = await G.checkGeoLicensing(client);
+        ok(imp.ok === false && imp.present === false, why);
+        await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      }
+      // And the REAL one still reads as installed — an over-strict check that
+      // false-alarms on the genuine article would be its own kind of broken.
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
+      ok((await G.checkGeoLicensing(client)).ok === true,
+        'while the genuine rule, re-created by hand, still reads as installed');
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
     }
 
     // ---- G. RESTORED, and the constraint itself still bites --------------

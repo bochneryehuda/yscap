@@ -212,6 +212,44 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
     ok(/only punctuation/i.test(r.problems[0].why) && /clear it completely/i.test(r.problems[0].why),
       `and the refusal says what to do instead: ${r.problems[0].why}`);
   }
+  // A TEXT fact gets the SAME answer — the first cut guarded only numbers, and
+  // the text branch then STORED the punctuation. A property type of "$" is not
+  // blank and not refused, it is a STATED fact: the panel stops printing "what
+  // kind of property is not stated", and every comparable scores zero on a type
+  // match against a dollar sign. That is the one fact the owner said may never
+  // be unknown, quietly filled with a typo.
+  for (const punct of ['$', ',', ' , ', '$ ,']) {
+    const r = SF.cleanCorrections({ property_type: punct });
+    ok(r.values.property_type === undefined && r.problems.length === 1,
+      `${JSON.stringify(punct)} is REFUSED on a TEXT fact too — never stored as the property type`);
+  }
+  // A refusal is CAPPED. Uncapped, this came back twice in one 400 — once joined
+  // into `error` and again in `problems` — so a pasted run of punctuation turned
+  // a large request into a far larger response.
+  {
+    const r = SF.cleanCorrections({ gla: '$'.repeat(100000) });
+    ok(r.problems.length === 1 && r.problems[0].why.length < 200,
+      `a huge punctuation paste is refused with a SHORT message (${r.problems[0].why.length} chars)`);
+  }
+  // The invisible characters a real paste carries. The SOFT HYPHEN is the one a
+  // PDF copy produces, and the first cut missed it — so it refused with
+  // `"" is not a number`: a complaint quoting a character that renders as empty.
+  for (const inv of ['\u00AD', '\u200E', '\u200F', '\u2062', '\u180E', '\u00AD\u200E']) {
+    const r = SF.cleanCorrections({ gla: inv });
+    ok(r.problems.length === 0 && r.values.gla === null,
+      `${JSON.stringify(inv)} renders as nothing, so it is a BLANK — never a refusal about nothing`);
+  }
+  // And an invisible character is never STORED into a text value: it would make
+  // the confirmed value differ from the same words typed cleanly, so the
+  // confirmation reads stale the instant it is made.
+  {
+    const r = SF.cleanCorrections({ property_type: '\u200BSingle Family' });
+    ok(r.values.property_type === 'Single Family',
+      `a pasted zero-width space is stripped from a stored value (${JSON.stringify(r.values.property_type)})`);
+    ok(SF.sameFactValue('property_type', r.values.property_type, 'Single Family'),
+      'so it compares equal to the same words typed by hand — the confirmation is not born stale');
+  }
+
   // The same, on the fact the owner cares about most.
   {
     const r = SF.cleanCorrections({ units: '$' });

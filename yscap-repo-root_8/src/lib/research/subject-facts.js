@@ -79,10 +79,18 @@ const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
  * somebody chose, not something a stray keystroke did on their behalf. The
  * refusal names what to do instead.
  */
-const INVISIBLE_RE = /[​-‍⁠﻿]/g;
+/* The characters that render as NOTHING and are not whitespace, so `.trim()`
+   leaves them behind. The SOFT HYPHEN (U+00AD) leads the list deliberately: it is
+   the single most common artifact of copying out of a PDF — the exact scenario
+   this exists for — and the first cut of this class missed it, along with the
+   left/right marks a Word or web paste carries routinely. `​-‏` covers
+   the zero-width trio plus both directional marks in one range. */
+const INVISIBLE_RE = /[­᠎​-‏⁠-⁤﻿]/g;
 const visible = (v) => String(v).replace(INVISIBLE_RE, '').trim();
 /** What is left once the currency sign and thousands commas come off. */
 const strippedForNumber = (v) => visible(v).replace(/[$,]/g, '');
+/** Nothing but punctuation and space — visible, so never blanked; never an answer either. */
+const punctuationOnly = (s) => s.replace(/[$,\s]/g, '') === '';
 const num = (v) => {
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -91,7 +99,11 @@ const num = (v) => {
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 };
-const txt = (v) => { const s = v == null ? '' : String(v).trim(); return s === '' ? null : s; };
+/* Through `visible()`, not a bare trim: a paste of "​Single Family" is not
+   blank and must not be, but STORING the zero-width space makes the value differ
+   from "Single Family" for `sameFactValue` — so the confirmation reads stale the
+   instant it is made, and the type matches no comparable. */
+const txt = (v) => { const s = v == null ? '' : visible(v); return s === '' ? null : s; };
 
 /**
  * THE FACTS, IN THE ORDER THEY MATTER — and the order is not arbitrary.
@@ -353,19 +365,28 @@ function cleanCorrections(input) {
     // do not know". A box the person can SEE something in is never blanked for
     // them; see `visible()`.
     if (raw === null || visible(raw) === '') { out[k] = null; continue; }
+    /* PUNCTUATION IS ITS OWN ANSWER, FOR EVERY KIND OF FACT — and it has to sit
+       ABOVE the kind branch, because the first cut guarded only numbers and the
+       text branch then took the third and worst option: it STORED it. A property
+       type of "$" is not blank and not refused, it is a stated fact — so
+       `factsToConfirm` reads the type as answered, the panel stops printing the
+       red "what kind of property is not stated" line, and every comparable scores
+       zero on a type match against a dollar sign. `property_type` is one of the
+       two facts the owner said may never be unknown on a comparable.
+       Interior whitespace counts as nothing here too, or "$," and "$ ," — the
+       same typo with a stray space — would get two different answers. */
+    const shown = visible(raw);
+    if (punctuationOnly(shown)) {
+      problems.push({ key: k, label: f.label,
+        // CAPPED, like every other refusal here. Uncapped, a pasted 100,000-character
+        // run of "$" came back twice in one 400 — as `error` and again in `problems`.
+        why: `that box has only punctuation ("${shown.slice(0, 40)}") in it — clear it completely to say we do not know` });
+      continue;
+    }
     if (f.kind === 'int') {
       const n = num(raw);
       if (n == null || !Number.isFinite(n)) {
-        // PUNCTUATION IS ITS OWN ANSWER. `"$" is not a number` is true and
-        // useless: the person is staring at a box they think is empty. Say what
-        // it holds, and say the one thing that clears the fact on purpose.
-        // Interior whitespace counts as nothing here too, or "$," and "$ ," —
-        // the same typo with a stray space — would get two different answers.
-        const shown = visible(raw);
-        problems.push({ key: k, label: f.label,
-          why: shown.replace(/[$,\s]/g, '') === ''
-            ? `that box has only punctuation ("${shown}") in it — clear it completely to say we do not know`
-            : `"${shown.slice(0, 40)}" is not a number` });
+        problems.push({ key: k, label: f.label, why: `"${shown.slice(0, 40)}" is not a number` });
         continue;
       }
       if (n < 0) { problems.push({ key: k, label: f.label, why: 'that cannot be negative' }); continue; }

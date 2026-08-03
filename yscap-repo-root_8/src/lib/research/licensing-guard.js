@@ -65,10 +65,25 @@ async function checkGeoLicensing(dbc) {
         WHERE c.conrelid = to_regclass($1)::oid
           AND c.conname = $2 AND c.contype = 'c' AND c.convalidated
         LIMIT 1`, [TABLE, CONSTRAINT]);
-    // Both halves of db/458's predicate must still be in it.
+    /* THE PREDICATE ITSELF, NOT A SMELL TEST. Asking only whether the definition
+       MENTIONS `geo_source` and `google` passes three constraints that protect
+       nothing — proven against real Postgres:
+         · `NOT LIKE` typed as `LIKE`      — the rule INVERTED: it would then
+           refuse every non-Google source and admit every Google one
+         · `NOT LIKE 'google'`             — wildcards dropped, so the value the
+           app actually writes (`google_places`) sails straight through
+         · `geo_source IS NOT NULL OR …`   — always true
+       The middle one is the realistic accident: somebody "tidies" the pattern.
+       So the WILDCARDED NEGATIVE MATCH is what is checked. Postgres deparses
+       `NOT LIKE` as the operator `!~~`, which is why a `/not like/i` regex would
+       find nothing — the real definition reads
+       `CHECK (((geo_source IS NULL) OR (lower(geo_source) !~~ '%google%'::text)))`.
+       Matching the operator rather than the whole string keeps this working if a
+       future Postgres major deparses the surrounding parentheses differently. */
+    const def = String((r.rows[0] || {}).def || '');
     present = r.rows.length > 0
-      && /geo_source/i.test(r.rows[0].def || '')
-      && /google/i.test(r.rows[0].def || '');
+      && /geo_source/i.test(def)
+      && /!~~\s*'%google%'/i.test(def);
   } catch (e) {
     // We could not ask. That is NOT the same as "it is fine".
     const why = (db.describeError ? db.describeError(e) : e.message);
@@ -119,7 +134,11 @@ async function checkGeoLicensing(dbc) {
    after it recovered. So the snapshot now EXPIRES. */
 let last = null;
 const FRESH_MS = 60 * 1000;
+const PROBE_TIMEOUT_MS = 10 * 1000;
 let refreshing = null;
+/* Bumped whenever the slot is cleared, so a refresh that was in flight at the
+   time can tell it has been superseded and stay silent. */
+let refreshEpoch = 0;
 
 /** Run the check and say so in the log. Returns the result; never throws. */
 async function assertGeoLicensing(dbc) {
@@ -143,10 +162,24 @@ async function assertGeoLicensing(dbc) {
 function health() {
   const stale = !last || (Date.now() - last.atMs) > FRESH_MS;
   if (stale && !refreshing) {
-    refreshing = checkGeoLicensing()
-      .then((res) => { last = { ...res, at: new Date().toISOString(), atMs: Date.now() }; })
+    /* A REFRESH THAT NEVER SETTLES WOULD FREEZE THE ANSWER FOREVER. node-postgres
+       sets no statement_timeout, so a query blocked behind an ACCESS EXCLUSIVE
+       lock — or on a dead socket — waits indefinitely; `refreshing` would stay
+       non-null for the life of the process and "expires after a minute" would
+       quietly stop being true. This repo has been burned by exactly that class
+       before (see sharepoint-backup's DB_OP_TIMEOUT_MS). The timer is `unref`'d
+       so it can never hold the process open. */
+    const epoch = ++refreshEpoch;
+    const mine = Promise.race([
+      checkGeoLicensing(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), PROBE_TIMEOUT_MS).unref()),
+    ])
+      // A refresh whose slot was reset out from under it must NOT publish: it
+      // would overwrite a newer verdict with a stale one wearing a fresh stamp.
+      .then((res) => { if (epoch === refreshEpoch) last = { ...res, at: new Date().toISOString(), atMs: Date.now() }; })
       .catch(() => { /* keep the previous answer; never throw on a health path */ })
-      .finally(() => { refreshing = null; });
+      .finally(() => { if (refreshing === mine) refreshing = null; });
+    refreshing = mine;
   }
   if (!last) {
     return { ok: false, checked: false,
@@ -158,5 +191,11 @@ function health() {
 
 module.exports = {
   checkGeoLicensing, assertGeoLicensing, health, CONSTRAINT, TABLE,
-  _internals: { FRESH_MS, reset: () => { last = null; refreshing = null; } },
+  _internals: {
+    FRESH_MS,
+    PROBE_TIMEOUT_MS,
+    // TEST ONLY. Bumping the epoch is what makes it safe: an in-flight refresh
+    // cannot be cancelled, so it is instead forbidden from publishing.
+    reset: () => { last = null; refreshing = null; refreshEpoch++; },
+  },
 };
