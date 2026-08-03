@@ -49,6 +49,7 @@ const { formatRefusalCounts } = require('../lib/appraisal/import');
 // a warehouse holding several appraisals of one property can compute.
 const { findConflicts } = require('../lib/research/conflicts');
 const VAR = require('../lib/research/variance');
+const ADJ = require('../lib/research/adjustment-corpus');
 
 router.use(requireAuth, requireStaff);
 
@@ -787,6 +788,111 @@ router.get('/comps', async (req, res, next) => {
 });
 
 /** The subject property of a loan file, as the warehouse knows it. */
+// ---------------------------------------------------------------------------
+// WHAT OUR OWN APPRAISERS CHARGE — the adjustment corpus (item 5.3)
+// ---------------------------------------------------------------------------
+// ~9x more adjustment evidence than sale evidence, and until now nothing read a
+// line of it. Every gate, refusal and wording lives in `research/adjustment-corpus`.
+//
+// GROUPED BY BASIS, NEVER POOLED. A 1004 states gross LIVING area and a 1025
+// states gross BUILDING area; both land in this table with their own
+// `unit_delta_basis`, and averaging the two produces a dollars-per-foot figure
+// about no measurable thing. They are answered as separate markets, always.
+//
+// `?appraisal_id=` additionally places THAT report among the others — the actual
+// deliverable, and the only form of this that is defensible: not "the rate should
+// have been X" but "you used X, and here is what our other reports used".
+router.get('/adjustment-rates', async (req, res, next) => {
+  try {
+    const state = txt(req.query.state);
+    const city = txt(req.query.city);
+    let scopeAppraisal = null;
+    if (isUuid(req.query.appraisal_id)) {
+      scopeAppraisal = (await db.query(
+        'SELECT id, subject_state, subject_city FROM appraisals WHERE id = $1',
+        [req.query.appraisal_id])).rows[0] || null;
+      if (!scopeAppraisal) return res.status(404).json({ error: 'not found' });
+    }
+    const useState = state || (scopeAppraisal && scopeAppraisal.subject_state) || null;
+    const useCity = city || (scopeAppraisal && scopeAppraisal.subject_city) || null;
+    if (!useState && !useCity) {
+      // A NATIONWIDE RATE IS NOT A RATE. The same refusal the valuation screen
+      // makes: "what our appraisers charge" is only meaningful about a market.
+      return res.status(400).json({ error: 'name a state or a city — a nationwide rate is about nowhere' });
+    }
+
+    // A LADDER, CITY FIRST — and it says which rung answered.
+    //
+    // A city is the right market for "what do our appraisers charge here", and in
+    // most cities we hold too little to say. Falling silently back to the state
+    // would report a state-wide habit as a local one; refusing outright would
+    // waste evidence we have. So both are tried, in order, and the scope that
+    // produced the answer is returned with it — the same honesty the comparable
+    // search's relaxation ladder already applies.
+    const fetchFor = async (scope) => {
+      const params = [];
+      const where = ['a.unit_delta IS NOT NULL'];
+      const P = (v) => { params.push(v); return '$' + params.length; };
+      if (scope.state) where.push(`a.state = ${P(String(scope.state).toUpperCase())}`);
+      if (scope.city) where.push(`lower(a.city) = ${P(String(scope.city).toLowerCase())}`);
+      return (await db.query(
+        `SELECT a.amount, a.unit_delta, a.unit_delta_basis, a.line_type,
+                o.appraisal_id, o.appraiser_id
+           FROM property_adjustments a
+           JOIN property_observations o ON o.id = a.observation_id
+          WHERE ${where.join(' AND ')}
+          LIMIT 5000`, params)).rows;
+    };
+
+    const rungs = [];
+    if (useCity) rungs.push({ state: useState, city: useCity, label: useState ? `${useCity}, ${useState}` : useCity });
+    if (useState) rungs.push({ state: useState, city: null, label: `all of ${useState}` });
+
+    const summarize = (lines) => {
+      const byBasis = new Map();
+      for (const r of lines) {
+        const k = r.unit_delta_basis || 'unknown';
+        if (!byBasis.has(k)) byBasis.set(k, []);
+        byBasis.get(k).push(r);
+      }
+      return [...byBasis].map(([basis, rowsOf]) => {
+        const summary = ADJ.summarizeRates(rowsOf);
+        let thisReport = null;
+        if (scopeAppraisal) {
+          // The rate THIS report used, from its own lines in the same basis —
+          // their MEDIAN, because one grid states several and they are one
+          // opinion, not several.
+          const mine = rowsOf
+            .filter((l) => String(l.appraisal_id) === String(scopeAppraisal.id))
+            .map((l) => ADJ.rateOf(l)).filter((v) => v.rate != null).map((v) => v.rate)
+            .sort((x, y) => x - y);
+          if (mine.length) thisReport = ADJ.compareRate(mine[Math.floor((mine.length - 1) / 2)], summary);
+        }
+        return { basis, line_types: [...new Set(rowsOf.map((l) => l.line_type).filter(Boolean))],
+          summary, thisReport };
+      }).sort((a, b) => (b.summary.n || 0) - (a.summary.n || 0));
+    };
+
+    const tried = [];
+    let markets = [];
+    let answeredAt = null;
+    for (const rung of rungs) {
+      const m = summarize(await fetchFor(rung));
+      tried.push({ scope: rung.label, answered: m.some((x) => x.summary.available) });
+      if (m.some((x) => x.summary.available)) { markets = m; answeredAt = rung.label; break; }
+      // Keep the narrowest attempt's refusals, so an unanswered request still
+      // says what was actually there rather than an empty array.
+      if (!markets.length) markets = m;
+    }
+
+    res.json({ state: useState, city: useCity || null,
+      appraisal_id: scopeAppraisal ? scopeAppraisal.id : null,
+      // WHICH market actually answered, and every rung that was tried — a
+      // state-wide habit reported as a local one is the failure this prevents.
+      scope: answeredAt, tried, markets });
+  } catch (e) { next(e); }
+});
+
 // ---------------------------------------------------------------------------
 // WHAT OUR OWN FILES SAY ABOUT AN APPRAISER'S VALUE
 // ---------------------------------------------------------------------------

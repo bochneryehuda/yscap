@@ -462,9 +462,19 @@ never attempted. Everything in this phase costs about $10, one time.
   negative rate (the adjustment running against the difference) and one over
   $500/unit are refused as data errors. `compareRate` never says what the rate
   SHOULD have been — only where this report sits. `test-adjustment-corpus-pure`
-  (43 assertions) in `npm test`. STILL TO DO: a route and a screen, and the
-  non-per-unit line types (a bathroom, a garage) which need a count rather than a
-  measured delta.
+  (43 assertions) in `npm test`. **WIRED**: `GET /api/research/adjustment-rates`
+  (by `state`/`city`, or by `appraisal_id` to place THAT report among the others).
+  Two things it does that matter: the bases are answered SEPARATELY and never
+  pooled — a 1004 states gross LIVING area and a 1025 gross BUILDING area, and a
+  dollars-per-foot figure averaged across the two is about no measurable thing —
+  and it walks a LADDER, city first then state, returning which rung answered and
+  every rung it tried, because reporting a state-wide habit as a local one is the
+  failure that matters here. Verified live: a real Glassboro report was too thin
+  at city level, fell back to all of NJ, and reads *"This report used $40 a square
+  foot. 42 of our reports (16 appraisers) used a median of $50; half of them
+  between $40 and $50. 43 more saw the same difference and adjusted nothing."*
+  STILL TO DO: a screen, and the non-per-unit line types (a bathroom, a garage)
+  which need a count rather than a measured delta.
 - [ ] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin
