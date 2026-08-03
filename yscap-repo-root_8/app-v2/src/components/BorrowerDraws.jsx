@@ -185,24 +185,16 @@ function EligibilityCard({ e, appId, onChanged }) {
         </div>
       </div>
 
+      {/* One bullet style, two tones (owner-directed 2026-08-03) — these were two copies of the
+          same hand-drawn dot built from inline styles. */}
       {e.blocking && e.blocking.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {e.blocking.map((b, i) => (
-            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
-              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--warning, #b8860b)' }} />
-              <span className="small" style={{ color: 'var(--text-muted)' }}>{b}</span>
-            </div>
-          ))}
+        <div className="dd-notes">
+          {e.blocking.map((b, i) => <div key={i} className="dd-note warn">{b}</div>)}
         </div>
       )}
       {e.next_steps && e.next_steps.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {e.next_steps.map((s, i) => (
-            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
-              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--gold, #ae8746)' }} />
-              <span className="small" style={{ color: 'var(--text-muted)' }}>{s}</span>
-            </div>
-          ))}
+        <div className="dd-notes">
+          {e.next_steps.map((s, i) => <div key={i} className="dd-note next">{s}</div>)}
         </div>
       )}
 
@@ -299,7 +291,7 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
           </div>
           <textarea className="small" rows={2} value={note} onChange={(ev) => setNote(ev.target.value)}
             placeholder="Anything your team should know about this draw (optional)" style={{ width: '100%', marginTop: 8 }} maxLength={500} />
-          <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+          <div className="act-bar" style={{ alignItems: 'center' }}>
             <span className="small" style={{ fontWeight: 700 }}>Total: {usd2(totalCents)}</span>
             {overLine && <span className="small" style={{ color: 'var(--warning, #b8860b)' }}>“{overLine.name}” only has {usd2(overLine.remaining_cents)} left.</span>}
             <span style={{ flex: 1 }} />
@@ -339,19 +331,25 @@ function MediaStrip({ line }) {
   );
 }
 
-/* One button that opens the whole-project inspection report (every draw in one branded PDF). */
+/* One button that opens the whole-project inspection report (every draw in one branded PDF).
+   Uses the shared `.act-card` (owner-directed 2026-08-03) — a section that OWNS its action, with
+   the title and the one-line explanation on the left and the button on the right. The hand-rolled
+   flex row it replaced had no `flex:1` on the text block, so the button broke onto its own line at
+   ordinary widths and ended up floating under the sentence. */
 function ProjectReportButton({ appId }) {
   const [err, setErr] = useState('');
   return (
-    <div className="dd-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-      <div>
-        <div style={{ fontWeight: 700, color: 'var(--text)' }}>Full inspection report</div>
-        <div className="dd-sub" style={{ marginTop: 1 }}>Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
-        {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4, fontWeight: 600 }}>{err}</div>}
+    <div className="act-card">
+      <div className="act-card-head">
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div className="act-card-title">Full inspection report</div>
+          <div className="act-card-sub">Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
+          {err && <div className="act-card-sub" style={{ color: 'var(--danger)', fontWeight: 600 }}>{err}</div>}
+        </div>
+        <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
+          Download PDF
+        </button>
       </div>
-      <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
-        Download full report (PDF)
-      </button>
     </div>
   );
 }
@@ -440,19 +438,24 @@ function FindingCard({ finding, appId, onChanged }) {
       </div>
 
       {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 8, fontWeight: 600 }}>{err}</div>}
-      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+      {/* DECISIONS FIRST, THEN THE DOCUMENT (owner-directed 2026-08-03). Accepting the results
+          releases money and disputing opens a review — "Download report" merely opens a PDF, and
+          all three used to sit shoulder to shoulder in one row of identical buttons. The download
+          is now a quiet `soft` action behind a hairline, so the two real choices stand alone. */}
+      <div className="act-bar">
         {canAct && mode !== 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={accept}>Accept results</button>}
         {canAct && mode !== 'dispute' && <button className="btn btn-sm ghost" onClick={() => setMode('dispute')}>Dispute an item</button>}
         {mode === 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={submitDispute}>Submit dispute</button>}
         {mode === 'dispute' && <button className="btn btn-sm ghost" onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
         {/* the borrower's OWN branded inspection report (PDF) — always available once findings exist */}
-        {mode !== 'dispute' && (
-          <button className="btn btn-sm ghost" disabled={busy}
+        {mode !== 'dispute' && (<>
+          {canAct && <span className="act-sep" aria-hidden="true" />}
+          <button className="btn btn-sm soft" disabled={busy}
             title="A PILOT-branded PDF of your draw inspection — the schedule of values, what was approved, the inspector’s notes and photos."
             onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, finding.sitewire_draw_id, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
             Download report (PDF)
           </button>
-        )}
+        </>)}
       </div>
     </div>
   );

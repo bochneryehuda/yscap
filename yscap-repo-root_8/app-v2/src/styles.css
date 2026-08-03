@@ -3984,3 +3984,22 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .inv-contact{align-items:flex-start}
   .inv-add .input{width:100% !important}
 }
+
+/* ---- Borrower draw notes (blocking reasons / next steps) ----
+   Two blocks were hand-drawing the same bullet with inline styles; one class, two tones. */
+.dd-notes{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.dd-note{display:flex;gap:9px;align-items:flex-start;font-size:13px;
+  color:var(--text-muted);line-height:1.5}
+.dd-note::before{content:'';flex:0 0 auto;width:6px;height:6px;border-radius:999px;
+  margin-top:6px;background:var(--text-soft)}
+.dd-note.warn::before{background:var(--warning,#b8860b)}
+.dd-note.next::before{background:var(--gold,#ae8746)}
+
+/* On a phone a long card title wraps and the status pill was left floating over it — the header
+   row has no wrap rule, so the two children fought for one line. Let the header wrap and let the
+   title block keep a sensible minimum, so the pill drops cleanly underneath instead. */
+@media(max-width:720px){
+  .dd-card-h{flex-wrap:wrap;align-items:flex-start;row-gap:6px}
+  .dd-card-h > .row{flex:1 1 200px;min-width:0}
+  .dd-card-h h3{font-size:17px;line-height:1.25}
+}
