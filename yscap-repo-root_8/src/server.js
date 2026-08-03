@@ -93,6 +93,11 @@ app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 // #75 guest chat is magic-link (key) authenticated + public — rate-limit it.
 app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
 app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120 })); // autocomplete is chatty
+// The pricing-admin unlock is a PASSWORD door with no login in front of it
+// (owner-directed: staff working from a shared term-sheet link must be able to
+// open the pricing controls). The password check moved off the browser, so the
+// only remaining attack is guessing — rate-limit it hard. Staff type it once.
+app.use('/api/pricing-admin', rateLimit({ bucket: 'pricing-admin', windowMs: 60000, max: 10 }));
 
 // --- API ---
 // The DEPLOYED V2 bundle hash, read from the portal's index.html on disk (the
@@ -270,12 +275,32 @@ app.use('/api/roster', require('./routes/roster'));   // public team roster (sit
 // portal studio read these live so a company-wide fee/markup change reaches
 // every not-yet-registered term sheet. Never 500s the site (empty → the tool
 // keeps its literals).
+//
+// WHY THE MARKUP IS STILL IN THIS RESPONSE (audited 2026-08-03; do not "fix" it
+// by deleting the field). The static tool computes the borrower NOTE RATE in the
+// browser — `syncAdminMarkup()` pushes these percentages into the frozen engines
+// via YSP/GSP/SVP.setMarkup() on every recompute — so the number has to reach the
+// page or the quoted rate is wrong. Dropping it here would NOT make it secret
+// either: the same figures are compiled into the shipped engines (MARKUP = 0.005)
+// and into termsheet.js's own `CO` literals. All it would do is sever the owner's
+// central control (Pricing Admin Center → every new term sheet), which is the one
+// thing this endpoint exists for. The real fix is moving quoting server-side so
+// only the OUTPUT rate crosses the wire; until then:
+//   • `private` (not `public`) so CDNs, proxies and crawlers can't store and
+//     re-serve the margin — the browser still caches it for 60s, so the tool is
+//     exactly as fast as before.
+//   • noindex so it can never turn up in a search result.
 app.get('/api/pricing-defaults', async (req, res) => {
   try {
     const d = await require('./lib/pricing-settings').load();
-    res.set('Cache-Control', 'public, max-age=60').json(d);
+    res.set('X-Robots-Tag', 'noindex');
+    res.set('Cache-Control', 'private, max-age=60').json(d);
   } catch (e) { res.set('Cache-Control', 'no-store').json({}); }
 });
+// Pricing-admin unlock (see src/routes/pricing-admin.js). Deliberately mounted
+// with the PUBLIC routes and deliberately unauthenticated: the password is the
+// credential, so a staffer on a shared term-sheet link can still open the panel.
+app.use('/api/pricing-admin', require('./routes/pricing-admin'));
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
