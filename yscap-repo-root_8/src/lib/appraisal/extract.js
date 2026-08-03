@@ -564,6 +564,12 @@ function saleStatus(c) {
  * absurd age can never produce an absurd year; either half missing yields null.
  */
 function builtYearFrom(ageYears, effectiveYear) {
+  // BOTH HALVES ARE REJECTED BEFORE `Number()`. `Number(null)` is 0 — and 0 is
+  // finite — so a `Number.isFinite` guard alone reads a MISSING age as an age of
+  // ZERO and dates the comparable to the report's own year. Measured: every
+  // comparable whose grid states no age came out "built 2026". Same trap the
+  // ClickUp location writer documents for a null coordinate.
+  if (ageYears == null || ageYears === '' || effectiveYear == null || effectiveYear === '') return null;
   const a = Number(ageYears), y = Number(effectiveYear);
   if (!Number.isFinite(a) || !Number.isFinite(y)) return null;
   if (a < 0 || a > 400) return null;

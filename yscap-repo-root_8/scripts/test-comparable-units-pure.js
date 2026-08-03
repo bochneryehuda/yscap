@@ -358,12 +358,30 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   }
 
   // --- the year built the grid never states ---
-  const { _internals } = require('../src/lib/appraisal/extract');
   ok(comparableRowFrom({ ageYears: 106, yearBuilt: '1920' }, 'FNM1004').year_built === 1920,
     'the year built rides the comparable row (db/432)');
   ok(comparableRowFrom({ ageYears: 106 }, 'FNM1004').year_built == null,
     'and stays null when the report gave no effective date to subtract the age from');
-  void _internals;
+
+  // A MISSING AGE IS NOT AN AGE OF ZERO. `Number(null)` is 0, and 0 is finite, so
+  // a Number.isFinite guard alone dated every comparable whose grid states no age
+  // to the report's own year -- measured as "built 2026" across the corpus, and
+  // caught by CI. An age the grid really DOES state as 0 is new construction and
+  // must still come through.
+  const yb = (rows, eff) => {
+    const xml = '<?xml version="1.0"?><VALUATION_RESPONSE><REPORT AppraisalFormType="FNM1004">'
+      + '<VALUATION' + (eff ? ' AppraisalEffectiveDate="' + eff + '"' : '') + '/><PROPERTY><SALES_COMPARISON>'
+      + '<COMPARABLE_SALE PropertySequenceIdentifier="1" PropertySalesAmount="500000">'
+      + '<LOCATION PropertyStreetAddress="1 Age Rd" PropertyCity="Newark" PropertyState="NJ"/>'
+      + rows + '</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>';
+    const c = (extract(xml).comparables || [])[0];
+    return c ? c.yearBuilt : undefined;
+  };
+  const AGE = (d) => '<SALE_PRICE_ADJUSTMENT _Type="Age" _Description="' + d + '" _Amount="0"/>';
+  ok(yb('', '2026-05-01') == null, 'no Age line at all: the year built stays NULL, not the report year');
+  ok(yb(AGE('60'), '2026-05-01') === '1966', 'a stated age of 60 on a 2026 report is 1966');
+  ok(yb(AGE('0'), '2026-05-01') === '2026', 'and a stated age of ZERO is real new construction, not a missing value');
+  ok(yb(AGE('60'), null) == null, 'with no effective date there is nothing to subtract the age from');
 }
 
 // ---------------------------------------------------------------------------
