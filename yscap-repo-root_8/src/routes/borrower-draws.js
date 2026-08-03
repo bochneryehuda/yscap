@@ -21,6 +21,7 @@ const db = require('../db');
 const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
+const APPROVAL = require('../sitewire/approval');   // the ONE wording for what is netted out
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
@@ -118,17 +119,25 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
     for (const l of rollup.lines) l.label = scrub(l.label);
-    // borrower-safe: loadRollup folds our internal per-draw economics onto each draw (our fee, net
-    // release, fee kind, release date, the released flag). NEVER expose the fee or net wired to the
-    // borrower — strip them from the response even though the UI doesn't render them (they'd still
-    // be visible in the network payload). The borrower keeps requested/approved/status/number.
+    // THE BORROWER SEES WHAT THEY WILL ACTUALLY BE PAID (owner-directed 2026-08-03: "yes add the
+    // released amount to the borrower screen too"). Their own PDF report has shown the draw fee and
+    // the net since the earlier fee ruling; the SCREEN still said only "the inspector approved
+    // $25,000" and never the $24,701 that lands in their account — so the two surfaces disagreed
+    // about the one number they care about most. The per-draw money now rides through.
+    //
+    // TWO THINGS ARE STILL STRIPPED, and they are a different kind of secret:
+    //   · `fee_kind`        — describes OUR fee schedule (which inspection tier priced this draw),
+    //                         not their money. Nothing on their screen needs it.
+    //   · `net_explanation` — the rollup builds the STAFF sentence ("… = $24,701 net release",
+    //                         plus a note about the fee becoming final when the release is
+    //                         recorded). It is replaced below with the BORROWER wording from the
+    //                         same one definition, so their screen and their PDF can never phrase
+    //                         the same deduction differently.
+    // `rollup.fees` — our fee income ACROSS the project — stays deleted below and always will be.
     if (Array.isArray(rollup.draws)) {
       rollup.draws = rollup.draws.map((d) => {
-        // `fee_projected` / `retainage_held_cents` / `net_explanation` arrived with the 2026-08-03
-        // approval-ladder work and carry the same secret as the fee itself — net_explanation spells
-        // the fee out in a sentence. Strip everything that describes OUR cut, not just the number.
-        const { fee_cents, fee_kind, fee_projected, net_release_cents, retainage_held_cents,
-          net_explanation, released, release_date, ...safe } = d;
+        const { fee_kind, net_explanation, ...safe } = d;
+        safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
         return safe;
       });
     }
