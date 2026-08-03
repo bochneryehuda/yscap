@@ -183,15 +183,55 @@ const stated = (t, p) => (Math.round(distMi(t, p) / 0.01) * 0.01).toFixed(2);
     // still hand it BOTH of its reports rather than half of them.
     await db.query('UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL, geo_source=NULL, '
       + 'geo_precision=NULL WHERE id=$1', [pTwo]);
+    // 6 — THE LIMIT COUNTS PROPERTIES, NOT (property, report) PAIRS, and the
+    // assertion has to be able to tell those apart. `scanned === 1` under a
+    // limit of 1 cannot: a pair-limited query also returns one row and also
+    // scans one property. What separates them is the RATIO on a fixture where a
+    // property owns two reports — pairs strictly exceed properties, so a
+    // pair-counted pass would scan FEWER properties than there are.
+    await db.query('UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL, geo_source=NULL, '
+      + 'geo_precision=NULL WHERE id = ANY($1::uuid[])', [[pTwo]]);
+    const mine = [pGood, pThin, pTwo];
+    const pairs = Number((await db.query(
+      `SELECT count(*)::int n FROM property_observations
+        WHERE role='subject' AND appraisal_id IS NOT NULL AND property_id = ANY($1::uuid[])`,
+      [mine])).rows[0].n);
+    const props = Number((await db.query(
+      `SELECT count(DISTINCT property_id)::int n FROM property_observations
+        WHERE role='subject' AND appraisal_id IS NOT NULL AND property_id = ANY($1::uuid[])`,
+      [mine])).rows[0].n);
+    ok(pairs > props, `the fixture genuinely distinguishes the two (${pairs} pairs over ${props} properties)`);
+
     const rOne = await PS.placeSubjectsOnce(db, { limit: 1 });
-    ok(rOne.scanned === 1, 'a limit of 1 scans exactly ONE property, not one (property, report) row');
+    ok(rOne.scanned === 1, 'a limit of 1 scans exactly ONE property');
+    // …and the property that owns TWO reports is still placed from the BETTER of
+    // them, which only a property-limited query can do: a pair-limited one can
+    // hand it a single report, place it from the worse fit, and — because the
+    // write is fill-only — never look again.
+    await PS.placeSubjectsOnce(db, { limit: 1000 });
+    const gOne = await readGeo(pTwo);
+    const oneFt = gOne.geo_latitude == null ? Infinity
+      : distMi(TWO, { lat: Number(gOne.geo_latitude), lng: Number(gOne.geo_longitude) }) * 5280;
+    ok(oneFt < 200, `and it saw BOTH of that property's reports (${oneFt.toFixed(0)} feet off)`);
 
     // 7 — SELF-DRAINING.
     const r2 = await PS.placeSubjectsOnce(db, { limit: 1000 });
     const gGood2 = await readGeo(pGood);
     ok(Number(gGood2.geo_latitude) === Number(gGood.geo_latitude),
       'a second pass does not move a position it already wrote');
-    ok(!r2.reasons || typeof r2.reasons === 'object', 'and it still reports cleanly');
+    // A SECOND PASS FINDS NOTHING LEFT TO DO — self-draining. `typeof r2.reasons
+    // === 'object'` was the assertion here and it can never fail: `reasons` is
+    // initialised to `{}` on the first line of the function.
+    // SELF-DRAINING, asserted on THIS test's own rows: the database is shared with
+    // every other suite that ran against it, so a global `placed === 0` is not a
+    // statement about this code. What is: a placed property is no longer a
+    // CANDIDATE, which is what makes the queue shrink.
+    const stillCandidate = Number((await db.query(
+      `SELECT count(*)::int n FROM properties
+        WHERE id = ANY($1::uuid[]) AND latitude IS NULL AND longitude IS NULL
+          AND geo_latitude IS NULL AND geo_longitude IS NULL`, [[pGood, pTwo]])).rows[0].n);
+    ok(stillCandidate === 0,
+      'a placed property is no longer a candidate — every success permanently leaves the queue');
 
     // 8 — AN ERROR IS REPORTED, NOT SWALLOWED. This is the guard that would have
     // caught the `buildWholeLoanContext` class: a query that stops matching the

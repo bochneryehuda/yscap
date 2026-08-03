@@ -8,6 +8,12 @@
  * enough comparables with real coordinates and stated distances to fix that
  * subject's position** (median residual 17 feet, worst 67).
  *
+ * THE NUMBER THIS PASS REPORTS IS DIFFERENT, AND IT IS THE ONE TO QUOTE. It works
+ * per PROPERTY, not per report: **91 of the 132 are placed, 41 refused** — 37 of
+ * those because the only report naming them carries fewer than three usable
+ * comparables (`too_few`), and 4 by the mirror test. "98 of 102" is true about
+ * reports and would read as a promise about properties.
+ *
  * Free, offline, out of reports we already paid for.
  *
  * FOUR RULES, and none of them is decoration:

@@ -340,7 +340,10 @@ never attempted. Everything in this phase costs about $10, one time.
   corpus: **every one of the 132 subjects we have lent on was unplaced** (the
   property the loan is secured against was the one nothing could find on a map),
   102 reports carry three or more usable comparables, and **98 of them resolve —
-  median residual 17 feet, worst 67**. Free and offline, out of reports already
+  median residual 17 feet, worst 67**. Per PROPERTY, which is what the boot pass
+  reports, that is **91 of the 132**: 37 subjects appear only on a report with
+  fewer than three usable comparables. Both numbers are true and they answer
+  different questions, so neither travels alone. Free and offline, out of reports already
   paid for, which is why the paid geocoder (3.1/3.2) is a nice-to-have rather
   than a blocker. The refusals are the design: below three circles it refuses,
   it refuses past a quarter-mile residual, and THE MIRROR (comparables strung

@@ -16,7 +16,6 @@
  *
  * DB-gated. Run: DATABASE_URL=... node scripts/test-comparable-reparse-db.js
  */
-if (!process.env.DATABASE_URL) { console.log('SKIP test-comparable-reparse-db (no DATABASE_URL)'); process.exit(0); }
 process.env.JWT_SECRET = 'x';
 const db = require('../src/db');
 const storage = require('../src/lib/storage');
@@ -56,6 +55,16 @@ if (dupNames.length) {
 } else {
   console.log(`PASS REPARSED is duplicate-free (${reparsedNames.length} columns)`);
 }
+
+// THE SKIP COMES AFTER THE STRUCTURAL CHECK, ON PURPOSE. It used to sit at the
+// top of the file, so the one assertion here that needs NO database — the
+// duplicate-free read of `REPARSED`, which is the guard for the defect that
+// made this sweep repair nothing — was gated behind having one.
+if (!process.env.DATABASE_URL) {
+  console.log('SKIP test-comparable-reparse-db DB half (no DATABASE_URL)');
+  process.exit(structuralOk ? 0 : 1);
+}
+
 
 (async () => {
   try {

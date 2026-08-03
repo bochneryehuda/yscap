@@ -819,8 +819,25 @@ function identityLines(c) {
     // building type and never counts the doors).
     typeUnknown: !c.property_type,
     unitsUnknown: units == null,
-    where: IDENTITY_SOURCE[c.identity_source] || null,
+    where: sourceWords(c.identity_source),
   };
+}
+// A COMPOUND SOURCE STILL HAS TO RENDER, and the row must never vanish because
+// of one. When a comparable's TYPE and COUNT come from two different places the
+// server says so as `"form + records"` — honest, and unknown to the six-key map
+// above, so `IDENTITY_SOURCE[…] || null` returned null and the `ident.where &&`
+// gate below DELETED the whole "Type / units" row. That is the owner's first
+// requirement being erased by the change written to protect it: before, the row
+// read "Multi 2–4 · 3 units — from our own records for this address"; after, it
+// read nothing at all. Split, word each half, and fall back to the raw string
+// rather than to nothing — a source we cannot phrase is still a source.
+function sourceWords(src) {
+  if (!src) return null;
+  if (IDENTITY_SOURCE[src]) return IDENTITY_SOURCE[src];
+  const parts = String(src).split('+').map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 2) return String(src);
+  const said = parts.map((p) => IDENTITY_SOURCE[p] || p);
+  return `${said.slice(0, -1).join(', ')}, and ${said[said.length - 1]}`;
 }
 
 function CompRow({ c }) {
@@ -834,7 +851,13 @@ function CompRow({ c }) {
   const ident = identityLines(c);
   const compFacts = [
     ident.where && ['Type / units', `${ident.type} · ${ident.units} — ${ident.where}`],
-    c.view_rating && ['View', c.view_rating],
+    // THE THING AND THE VERDICT, like Location on the next line. This showed the
+    // RATING only — so of 769 corpus comparables, all 769 carry a `view_type`
+    // and only 409 carry a rating, and the other 360 rendered NO View row at
+    // all. The exact mirror of the property screen's gap, one line above the
+    // Location row that already gets it right.
+    (c.view_rating || c.view_type) && ['View',
+      [c.view_rating, c.view_type ? human(c.view_type) : null].filter(Boolean).join(' · ')],
     (c.location_rating || c.location_type) && ['Location', [c.location_rating, c.location_type ? human(c.location_type) : null].filter(Boolean).join(' · ')],
     c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
     c.data_source && ['Source', c.data_source],

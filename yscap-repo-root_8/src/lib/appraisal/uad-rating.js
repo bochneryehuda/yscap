@@ -108,6 +108,28 @@ const RELATIVE = /^(similar|same|equal|superior|inferior|comparable)\b/i;
 // keeps a highway number attached to its highway.
 const ADJUSTMENT = /[+-]?\s?(?:\$\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?%)\s?$/;
 
+// …AND THE REGEX ALONE IS NOT ENOUGH, WHICH THE FIRST FIX GOT WRONG. `collapse`
+// bounds a WHITESPACE run; a trailing DIGIT run is untouched, and the pattern is
+// unanchored at the start, so `\d[\d,]*` is retried at every offset. Measured
+// through the real `extract()` path with `N;Res;<N digits>x`: 8,000 digits took
+// 0.9 s, 20,000 took 5.8 s, 50,000 took **34.9 SECONDS** — a 301 KB file against
+// a 20 MB upload ceiling. Requiring the `$`/`%` marker even INTRODUCED a case the
+// old pattern answered in O(n): a bare digit run used to match immediately.
+//
+// So the strip runs over a WINDOW, not the whole cell. A real adjustment amount
+// is under twenty characters (`-$1,234,567.89 %` is eighteen), so only the tail
+// can hold one, and the work becomes constant whatever the cell's length. If the
+// digits run PAST the window the value is not an amount at all — it is garbage —
+// and it is left alone rather than truncated, so nothing is ever half-stripped.
+const AMOUNT_TAIL = 48;
+function stripAmount(s) {
+  if (s.length <= AMOUNT_TAIL) return s.replace(ADJUSTMENT, '');
+  const cut = s.length - AMOUNT_TAIL;
+  const head = s.slice(0, cut);
+  if (/[\d,]$/.test(head)) return s;          // the run continues past the window
+  return head + s.slice(cut).replace(ADJUSTMENT, '');
+}
+
 const clean = (v) => String(v == null ? '' : v).trim();
 // The appraiser's own text is kept VERBATIM as `original`; this is the copy the
 // parser reads, so collapsing runs here changes nothing anybody is shown.
@@ -125,7 +147,7 @@ function readUadRating(text) {
   // anything is read, so `N;Res;2.5%` is a code and not an unknown string.
   // Read from the COLLAPSED copy — `raw` stays the appraiser's own text and is
   // what `original` returns.
-  let body = collapse(raw).replace(ADJUSTMENT, '').trim().replace(/[;,]\s*$/, '');
+  let body = stripAmount(collapse(raw)).trim().replace(/[;,]\s*$/, '');
   if (!body) body = collapse(raw);
 
   // A SLASH SEPARATES, like a semicolon. Every slash cell in the real corpus is a
@@ -157,7 +179,7 @@ function readUadRating(text) {
   // and passed through when we do not. A part that is only an adjustment amount
   // is dropped rather than shown as a place you can look at.
   const factors = rest
-    .map((p) => p.replace(ADJUSTMENT, '').trim())
+    .map((p) => stripAmount(p).trim())
     .filter((p) => p && !RELATIVE.test(p))
     .map((p) => FACTOR_CODE[p.toLowerCase().replace(/[^a-z]/g, '')] || p);
 
@@ -166,7 +188,7 @@ function readUadRating(text) {
   // would manufacture "BusyRoad" as neutral too — the one that matters.
   if (!rating && parts.length) {
     const asFactor = parts
-      .map((p) => p.replace(ADJUSTMENT, '').trim())
+      .map((p) => stripAmount(p).trim())
       .filter(Boolean)
       .map((p) => FACTOR_CODE[p.toLowerCase().replace(/[^a-z]/g, '')] || p);
     return { rating: null, factor: asFactor.join('; ') || null, source: 'factor', original: raw,
@@ -176,4 +198,5 @@ function readUadRating(text) {
   return { rating, factor: factors.join('; ') || null, source, original: raw, why: null };
 }
 
-module.exports = { readUadRating, _internals: { RATING_CODE, FACTOR_CODE, RELATIVE, ADJUSTMENT } };
+module.exports = { readUadRating,
+  _internals: { RATING_CODE, FACTOR_CODE, RELATIVE, ADJUSTMENT, stripAmount, AMOUNT_TAIL } };

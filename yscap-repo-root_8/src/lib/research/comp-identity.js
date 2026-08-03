@@ -210,11 +210,29 @@ async function attachCompIdentity(rows, opts = {}) {
     const typeRank = has(pick.type) ? pick.rank : rankOfBasis(r.identity_basis);
     const unitsRank = has(pick.units) ? pick.rank : rankOfBasis(r.identity_basis);
 
-    if (PT.unitsContradictType(nextType, nextUnits)) {
+    // AN ATTACHMENT STYLE IS NOT A CATEGORY, and asking whether it contradicts a
+    // count runs it through `propertyTypeKey`, which maps /detached/ to
+    // `sfr` — the confident wrong answer `label()` above refuses to make. A
+    // `SemiDetached` comparable genuinely counted at 2 units would have had one
+    // of its two facts NULLED by the guard meant to protect them.
+    const styled = PC.isAttachmentStyle && PC.isAttachmentStyle(nextType);
+    if (!styled && PT.unitsContradictType(nextType, nextUnits)) {
       // The better-sourced one survives; a tie keeps the COUNT, because a count
       // is a measurement and a category is a reading of one.
       if (typeRank > unitsRank) { r.property_type = nextType; r.units = null; r.identity_source = typeFrom; }
-      else { r.units = nextUnits; r.property_type = null; r.identity_source = unitsFrom; }
+      else {
+        // …AND THE SURVIVING COUNT NAMES ITS OWN TYPE where it can, rather than
+        // leaving the row half-blank. Nulling the type to resolve a
+        // contradiction satisfies the letter of "never show two facts that
+        // disagree" and breaks the rule it serves — every comparable must state
+        // BOTH. Two-to-four dwellings can only be a 2-4 family; ONE dwelling is
+        // a house, a condo, a townhouse or a PUD, so `typeFromUnits` returns
+        // null there and the type honestly stays unknown.
+        r.units = nextUnits;
+        const named = PT.typeFromUnits(nextUnits);
+        r.property_type = named;
+        r.identity_source = unitsFrom;
+      }
       continue;
     }
 

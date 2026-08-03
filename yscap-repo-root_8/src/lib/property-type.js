@@ -262,6 +262,27 @@ function unitBandFor(raw) {
  * Do a property type and a unit count CONTRADICT each other? Only ever true when
  * both are known AND the type carries a band — an unknown is never a conflict.
  */
+/**
+ * THE COUNT NAMES THE TYPE — but only where it does so unambiguously.
+ *
+ * Derived by INVERTING `UNIT_BAND`, so there is one table and the two directions
+ * cannot drift. Two dwellings can only be a 2-4 family and five can only be a
+ * 5+; ONE dwelling is a house, a condo, a townhouse or a PUD, so a count of one
+ * names nothing and returns null rather than guessing the commonest.
+ *
+ * `import.js` already states the same rule in words ("THE COUNT NAMES THE TYPE
+ * WHENEVER THE COUNT IS KNOWN"); this is it as a function, so a caller holding a
+ * count is never forced to discard it for want of a category.
+ */
+function typeFromUnits(units) {
+  const n = Number(units);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const hits = Object.entries(UNIT_BAND)
+    .filter(([, b]) => n >= b.minUnits && n <= b.maxUnits)
+    .map(([k]) => k);
+  return hits.length === 1 ? (LABEL_OF[hits[0]] || null) : null;
+}
+
 function unitsContradictType(type, units) {
   const band = unitBandFor(type);
   const n = Number(units);
@@ -347,6 +368,7 @@ module.exports = {
   unitsFromDesignStyle,
   unitBandFor,
   unitsContradictType,
+  typeFromUnits,
   propertyTypeKey,
   propertyTypeCompareKey,
   propertyTypesEquivalent,

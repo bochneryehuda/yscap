@@ -161,18 +161,36 @@ ok(R('superior view').rating === null && R('superior').rating === null,
 // them is a near miss. It runs on the function AND on the exported regex, because
 // the regex being safe on its own is what protects any future caller.
 {
-  const PAD = ' '.repeat(20000);
+  // BOTH PADDINGS. The first cut of this test padded with SPACES only, and passed
+  // while a trailing DIGIT run was still quadratic — 50,000 digits cost 34.9
+  // SECONDS through the real parse path, because `collapse` bounds a whitespace
+  // run and nothing bounded a digit run. A guard that tests one shape of the bug
+  // is a guard that ships the other.
+  const PADS = [[' ', 'spaces'], ['1', 'digits'], [',', 'commas'], ['$', 'dollars']];
   const took = (fn) => { const t = process.hrtime.bigint(); fn(); return Number(process.hrtime.bigint() - t) / 1e6; };
   // Both worst cases: a run that ends in an adjustment amount (so the strip
   // actually fires) and one that ends in a non-match (so it fails at every
   // offset, which is what the cubic version choked on).
-  const AMOUNT = `N;Res;${PAD}2.5%`;
-  const NOMATCH = `N;Res;${PAD}x`;
-  const fnMs = Math.max(took(() => R(AMOUNT)), took(() => R(NOMATCH)));
+  let fnMs = 0, worstPad = '';
+  for (const [ch, name] of PADS) {
+    const pad = ch.repeat(20000);
+    const ms = Math.max(took(() => R(`N;Res;${pad}2.5%`)), took(() => R(`N;Res;${pad}x`)));
+    if (ms > fnMs) { fnMs = ms; worstPad = name; }
+  }
+  const AMOUNT = `N;Res;${' '.repeat(20000)}2.5%`;
+  const NOMATCH = `N;Res;${' '.repeat(20000)}x`;
+  // The exported regex is only ever handed a bounded window by `stripAmount`, so
+  // it is timed on the whitespace shape it is genuinely responsible for.
   const reMs = Math.max(took(() => _internals.ADJUSTMENT.test(AMOUNT)),
     took(() => _internals.ADJUSTMENT.test(NOMATCH)));
-  ok(fnMs < 250, `20,000 characters of padding is read in ${fnMs.toFixed(1)} ms — a cell from an `
-    + 'uploaded file can never hang the server');
+  ok(fnMs < 250, `20,000 characters of padding is read in ${fnMs.toFixed(1)} ms (worst: ${worstPad}) `
+    + '— a cell from an uploaded file can never hang the server');
+  // …and the WINDOW is what makes that true, not the regex: a digit run that
+  // continues past it is left alone rather than half-stripped.
+  ok(_internals.stripAmount(`N;Res;${'1'.repeat(200)}`) === `N;Res;${'1'.repeat(200)}`,
+    'a number too long to be an adjustment amount is left whole, never truncated');
+  ok(_internals.stripAmount('N;Res;2.5%') === 'N;Res;',
+    'while a real amount inside the window still comes off');
   ok(reMs < 250, `and the regex ITSELF is linear (${reMs.toFixed(1)} ms), so a future caller that `
     + 'reaches for it directly is safe too');
   ok(R(AMOUNT).rating === 'Neutral' && R(AMOUNT).factor === 'Residential',

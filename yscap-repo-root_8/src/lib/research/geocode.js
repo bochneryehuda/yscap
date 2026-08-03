@@ -224,12 +224,20 @@ async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
     const rows = (await db.query(
       `SELECT id, street, unit, city, state, zip, display_address, observation_count
          FROM properties
-        WHERE geo_latitude IS NULL
+        WHERE (geo_latitude IS NULL OR geo_source = 'comp_trilateration')
           AND geo_attempts < $2
           AND street IS NOT NULL
         ORDER BY geo_attempted_at NULLS FIRST, observation_count DESC
         LIMIT $1`, [Math.min(2000, Math.max(1, limit)), MAX_ATTEMPTS])).rows;
 
+    // A DERIVED POSITION IS STILL A GAP. `place-subjects` fills `geo_latitude`
+    // from the comparables around a property (median 17 ft, and still an
+    // ESTIMATE with a quarter-mile refusal ceiling), so a plain
+    // `geo_latitude IS NULL` queue removed all 90 of those properties from
+    // rooftop geocoding FOREVER — an estimate permanently displacing a
+    // measurement, which is the exact inversion of this module's own rule.
+    // They are re-offered here, and the UPDATE below overwrites: a real
+    // address match beats a derived one, every time.
     for (const p of rows) {
       out.looked++;
       let hit = null;

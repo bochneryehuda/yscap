@@ -27,8 +27,9 @@
  *     The reflection is actually COMPUTED and scored, not guessed at with an
  *     angle threshold: measured on the real corpus, every borderline set fits its
  *     stated distances to within 2–107 feet, so a residual test would have waved
- *     all of them through. Of 102 reports, 98 resolve and 4 are genuinely
- *     ambiguous.
+ *     all of them through. Of 102 REPORTS, 98 resolve and 4 are genuinely
+ *     ambiguous — which is 91 of the 132 PROPERTIES, the number
+ *     `place-subjects` reports; the rest have fewer than three usable points.
  *   · It REPORTS ITS RESIDUAL and refuses when the circles genuinely disagree. A
  *     stated distance is rounded to a hundredth of a mile and an appraiser's
  *     coordinate is their own, so a small residual is expected; a large one means
@@ -216,6 +217,16 @@ function trilaterate(points, opts = {}) {
  */
 function proximityMiles(text) {
   const t = String(text == null ? '' : text).trim();
+  // A WRITTEN FRACTION IS REFUSED, NOT READ AS ITS DENOMINATOR. The pattern below
+  // takes the number nearest the unit, so "1/2 mile" came back as TWO — four
+  // times the real distance, in the direction that widens a search and drags a
+  // least-squares fit. Reading it properly is possible and is deliberately not
+  // done: this module's rule is that an unclear proximity is refused rather than
+  // interpreted, and a refusal costs one comparable while a silent 4× error
+  // costs the position. Zero occurrences in the real corpus (all 769 proximity
+  // strings match `^[0-9.]+ *mi` and none contains a slash), so this is a guard
+  // against the first vendor that writes one, not a repair.
+  if (/\d\s*\/\s*\d/.test(t)) return null;
   const m = /(\d+(?:\.\d+)?|\.\d+)\s*(?:mi\b|mile)/i.exec(t);
   if (!m) return null;
   const n = Number(m[1]);
