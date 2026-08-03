@@ -67,7 +67,11 @@
       i = h.indexOf("?");
       if (i >= 0) { q = h.slice(i + 1); h = h.slice(0, i); }
       var sp; try { sp = new URLSearchParams(q); } catch (e) { sp = new URLSearchParams(); }
-      sp.set("lo", CODE);
+      // An href that ALREADY names an officer wins. The home page's team cards
+      // are built by enhanceHomeCards() as `suite.html?lo=<that officer>`, and
+      // propagateLinks() runs straight after — stamping the CURRENT officer over
+      // them would point every card on the page at the same person.
+      if (!sp.get("lo")) sp.set("lo", CODE);
       return h + "?" + sp.toString() + hash;
     },
     phone: function (o) { return (o && (o.direct || o.cell)) || ""; },
@@ -138,9 +142,74 @@
           '<a href="mailto:' + esc(o.email) + '">' + esc(o.email) + '</a>' +
         '</span>' +
       '</div>';
+    /* ---- where the bar goes -------------------------------------------
+       Three page shapes, and only one of them used to work everywhere:
+
+       (a) a static `.topbar` in normal flow (the tools) -> put the bar right
+           after it. Unchanged.
+       (b) NO .topbar and a header that is `position:fixed` -- the HOME PAGE
+           and the legal pages, whose header is `.nav`. A fixed header is out
+           of the document flow and paints OVER the top of <body>, so the
+           fallback below dropped the bar underneath an opaque nav where
+           nobody could see it. That is why the home page was the one page
+           that never showed the officer (owner-reported 2026-08-03). A fixed
+           header can only carry the bar by HOLDING it, so the bar is mounted
+           inside the header, directly under the nav row and above the mobile
+           menu, and the page is pushed down by the height it added.
+       (c) anything else (a `position:sticky` header, or no header at all) ->
+           the bar goes at the top of <body>. A sticky header does not overlay
+           its own initial position, so the bar is visible there. Unchanged.
+       ------------------------------------------------------------------- */
     var tb = document.querySelector(".topbar");
-    if (tb && tb.parentNode) tb.parentNode.insertBefore(bar, tb.nextSibling);
-    else document.body.insertBefore(bar, document.body.firstChild);
+    if (tb && tb.parentNode) { tb.parentNode.insertBefore(bar, tb.nextSibling); return; }
+
+    var fx = fixedHeader();
+    if (fx) {
+      bar.className = "lo-bar lo-bar-fixed";
+      var firstRow = fx.firstElementChild;
+      fx.insertBefore(bar, firstRow ? firstRow.nextSibling : null);
+      offsetForFixedBar(bar);
+      return;
+    }
+
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+
+  // The page's own header, when it is taken out of the flow (position:fixed).
+  function fixedHeader() {
+    var cands = document.querySelectorAll("header, .nav, .site-header");
+    for (var i = 0; i < cands.length; i++) {
+      var pos = "";
+      try { pos = window.getComputedStyle(cands[i]).position; } catch (e) { pos = ""; }
+      if (pos === "fixed") return cands[i];
+    }
+    return null;
+  }
+
+  // A fixed header that now carries the bar is taller, so everything it paints
+  // over has to move down by exactly that much -- the page content (body
+  // padding) and the landing point of every in-page #anchor (scroll padding).
+  // Measured, never hard-coded: the bar wraps to two lines on a phone, and it
+  // grows again when the web fonts land.
+  function offsetForFixedBar(bar) {
+    var html = document.documentElement;
+    var basePad = 0, baseScroll = 0;
+    try {
+      basePad = parseFloat(window.getComputedStyle(document.body).paddingTop);
+      baseScroll = parseFloat(window.getComputedStyle(html).scrollPaddingTop);
+    } catch (e) {}
+    if (!isFinite(basePad)) basePad = 0;
+    if (!isFinite(baseScroll)) baseScroll = 0;   // "auto" -> 0
+
+    function apply() {
+      var h = bar.offsetHeight || 0;
+      document.body.style.paddingTop = (basePad + h) + "px";
+      html.style.scrollPaddingTop = (baseScroll + h) + "px";
+    }
+    apply();
+    window.addEventListener("resize", apply);
+    window.addEventListener("load", apply);
+    if (window.ResizeObserver) { try { new window.ResizeObserver(apply).observe(bar); } catch (e) {} }
   }
 
   function run() {
