@@ -53,6 +53,13 @@ const ALLOWLIST = new Set([
   // and generates the entity's own document slots. Not an AI path: PILOT only ever SUGGESTS the
   // button, and nothing here runs without a human's click (src/routes/underwriting.js entity-adopt).
   'src/lib/underwriting/entity-adopt.js',
+  // A title / insurance vendor replies to an order a HUMAN placed, and the reply's
+  // attachments are filed onto that order's own condition. When the file does not
+  // carry that condition yet the fixed, vetted template (rtl_cond_title /
+  // rtl_cond_insurance, db/051) is instantiated so the document is never orphaned.
+  // Not an AI path: nothing here runs unless a staffer sent the order and the
+  // vendor answered it; no model chooses the template, the condition or the moment.
+  'src/lib/order-inbox.js',
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
   'src/lib/product-registration.js', // product registration -> first-class conditions row (db/022)
