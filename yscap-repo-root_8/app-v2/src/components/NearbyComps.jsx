@@ -87,7 +87,10 @@ export default function NearbyComps({ propertyId, subjectAddress }) {
             <option value="12">Sold in 12 months</option>
             <option value="18">Sold in 18 months</option>
             <option value="36">Sold in 3 years</option>
-            <option value="">Any time</option>
+            {/* 0, not "" — an empty value is dropped by the query-string builder
+                and never reaches the server, so the 18-month default would win
+                and this option would do nothing. */}
+            <option value="0">Any time</option>
           </select>
         </div>
       </div>

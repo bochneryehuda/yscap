@@ -308,7 +308,10 @@ function buildQuery(input = {}) {
 
   const sortKey = SORTS[str(f.sort)] ? str(f.sort) : (lat != null && lng != null ? 'distance' : 'recent_sale');
   const limit = Math.min(MAX_LIMIT, Math.max(1, Math.round(num(f.limit) || DEFAULT_LIMIT)));
-  const page = Math.max(1, Math.round(num(f.page) || 1));
+  // CLAMPED, because the offset is interpolated into the SQL rather than bound:
+  // `?page=1e21` stringifies as "2.5e+22" and Postgres answers "bigint out of
+  // range" (or a syntax error for a larger exponent) — a plain 500 from a URL.
+  const page = Math.min(1e6, Math.max(1, Math.trunc(num(f.page) || 1)));
   return {
     where: where.length ? 'WHERE ' + where.join('\n  AND ') : '',
     params, distanceSelect, sort: SORTS[sortKey], sortKey, limit, offset: (page - 1) * limit, page,
@@ -357,9 +360,19 @@ async function searchProperties(db, filters = {}) {
  */
 async function facets(db, filters = {}) {
   const b = buildQuery(Object.assign({}, filters, { page: 1, limit: 1 }));
+  // EVERY BOUND PARAMETER MUST BE REFERENCED BY THE SQL, or Postgres refuses the
+  // whole statement ("bind message supplies 3 parameters, but prepared statement
+  // requires 1"). With a lat/lng but no positive radius, `buildQuery` binds the
+  // two coordinates for the DISTANCE expression while the WHERE only gets an
+  // `IS NOT NULL` pair — so a facets query built from `b.where` alone left two
+  // placeholders dangling and threw. The route catches that and returns
+  // `facets: null`, so the entire filter sidebar just vanished with no error
+  // anywhere. Carrying the distance select into the CTE references them again.
+  // (Same class as the `viewerScope()` bug CLAUDE.md records.)
+  const dist = b.distanceSelect ? `, ${b.distanceSelect}` : '';
   const sql = `
     WITH hits AS (
-      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.property_type, p.last_sale_price
+      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.property_type, p.last_sale_price${dist}
         FROM properties p
         ${b.where}
     )

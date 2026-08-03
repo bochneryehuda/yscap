@@ -319,6 +319,14 @@ async function runAppraisalImport(args) {
   // THE As-Is READ runs on EVERY import, not only when the data file was silent (owner-directed
   // 2026-07-28) — a definite XML As-Is still has to be compared with what the file currently says.
   fireAsIsRead(appId, pdfB64, importedBy);
+  // RETIRE WHAT THIS IMPORT REPLACED, FIRST. A corrected re-import supersedes the
+  // previous report, and `ingestAppraisal` takes a superseded report's
+  // observations back out — but only when it is called for that report's own id.
+  // Nothing called it: this line fires for the NEW appraisal, and the corpus
+  // back-fill skips any report whose ledger already reads `ok`. So the old grid
+  // stayed in the warehouse alongside the new one and every property on it
+  // counted twice.
+  for (const oldId of (out.supersededIds || [])) fireResearchIngest(oldId, 'superseded by re-import');
   // The XML goes along: it may CARRY the photos, and it names the ones mined from the PDF.
   fireResearchIngest(out.appraisalId, 'import');
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy, xml);

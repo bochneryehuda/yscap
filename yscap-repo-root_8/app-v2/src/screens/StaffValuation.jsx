@@ -422,7 +422,8 @@ function CompPicker({ valuationId, subject, onClose, onAdded }) {
             <option value="12">Last 12 months</option>
             <option value="18">Last 18 months</option>
             <option value="36">Last 3 years</option>
-            <option value="">Any time</option>
+            {/* 0, not "" — see NearbyComps: an empty value never reaches the server. */}
+            <option value="0">Any time</option>
           </select>
           <button className="btn ghost small" onClick={search}>Search</button>
         </div>

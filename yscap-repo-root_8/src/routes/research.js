@@ -239,7 +239,13 @@ router.get('/appraisers/:id', async (req, res, next) => {
               count(*)::int                                            AS times_seen,
               count(*) FILTER (WHERE o.role = 'subject')::int           AS as_subject,
               count(*) FILTER (WHERE o.role = 'comparable')::int        AS as_comparable,
-              max(o.observed_on)                                        AS last_observed_on
+              max(o.observed_on)                                        AS last_observed_on,
+              -- THE REAL TOTAL, so the screen can say "showing 2000 of 2731"
+              -- instead of presenting a capped array's length as the whole truth.
+              -- A busy appraiser hits the cap and the page then reads "2000
+              -- properties" forever, and the filter and Show-more underneath it
+              -- operate inside a set the user was never told was truncated.
+              count(*) OVER ()::int                                     AS total_properties
          FROM property_observations o
          JOIN properties p ON p.id = o.property_id
         WHERE o.appraiser_id = $1
@@ -254,7 +260,8 @@ router.get('/appraisers/:id', async (req, res, next) => {
     const imports = await db.query(
       `SELECT i.id, i.filename, i.form_type, i.effective_date, i.status,
               i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
-              i.subject_property_id, i.comparables_seen, i.observations_written, i.created_at
+              i.subject_property_id, i.comparables_seen, i.observations_written, i.created_at,
+              count(*) OVER ()::int AS total_imports
          FROM research_imports i
         WHERE i.appraiser_id = $1 AND i.status = 'ok'
         ORDER BY i.effective_date DESC NULLS LAST, i.created_at DESC
@@ -262,7 +269,14 @@ router.get('/appraisers/:id', async (req, res, next) => {
 
     res.json({ appraiser: a, contacts: contacts.rows, licenses: licenses.rows,
       files: files.rows, imports: imports.rows, properties: properties.rows,
-      work: work.rows[0] || {} });
+      work: work.rows[0] || {},
+      // The counts BEFORE the caps above, so the screen never presents a
+      // truncated array's length as a total.
+      totals: {
+        properties: properties.rows[0] ? properties.rows[0].total_properties : 0,
+        imports: imports.rows[0] ? imports.rows[0].total_imports : 0,
+        files: files.rows.length,   // uncapped query — its length IS the total
+      } });
   } catch (e) { next(e); }
 });
 
@@ -280,6 +294,16 @@ async function ratesFor(query) {
   const where = ["o.role = 'comparable'", "COALESCE(o.sale_status,'closed') = 'closed'",
     'o.sale_price IS NOT NULL'];
   const P = (v) => { params.push(v); return '$' + params.length; };
+  // A MARKET HAS TO BE NAMED. Every geographic predicate below is appended only
+  // when supplied, so with none of them the WHERE degrades to the three base
+  // clauses and the rates are derived from sales in EVERY state — then offered as
+  // a pre-filled "$/sq ft around here". A valuation started from the search
+  // screen's "New valuation" button has an empty subject, which is exactly that
+  // case. The engine's own rule is that "what is a square foot worth" has no
+  // answer without saying where, so refuse rather than answer nationally.
+  if (!txt(query.state) && !txt(query.city) && !txt(query.zip)) {
+    return { rates: null, why: 'no market was named — set the subject’s town or state first, then the rates can be worked out from sales there' };
+  }
   const state = txt(query.state);
   if (state) where.push(`p.state = ${P(state.toUpperCase())}`);
   const city = txt(query.city);
@@ -304,9 +328,13 @@ async function ratesFor(query) {
 
 router.get('/rates', async (req, res, next) => {
   try {
-    const { rates } = await ratesFor(req.query);
-    res.json({ rates, market: { state: txt(req.query.state), city: txt(req.query.city),
-      zip: txt(req.query.zip), months: req.query.months || null } });
+    const { rates, why } = await ratesFor(req.query);
+    // `why` says WHY there is no answer — the engine already refuses a rate on too
+    // small a sample and states its reason; "no market was named" is the same kind
+    // of honest refusal and must travel the same way.
+    res.json({ rates, why: why || null,
+      market: { state: txt(req.query.state), city: txt(req.query.city),
+        zip: txt(req.query.zip), months: req.query.months || null } });
   } catch (e) { next(e); }
 });
 
@@ -349,14 +377,32 @@ router.get('/comps', async (req, res, next) => {
       sold_within_months: 18,
       sqft_min: subject.gla ? Math.round(subject.gla * 0.6) : undefined,
       sqft_max: subject.gla ? Math.round(subject.gla * 1.6) : undefined,
-      limit: 60, sort: 'recent_sale',
+      // NO `sort` DEFAULT ON PURPOSE. The screen's promise is "every sale within
+      // the distance you pick, NEAREST FIRST", and the SQL `LIMIT` decides which
+      // rows survive before anything is re-ranked in JS. Naming a sort here made
+      // `search.js`'s own "placed subject → sort by distance" fallback dead for
+      // the only caller that supplies coordinates, so the 60 most RECENTLY SOLD
+      // rows in the circle were taken and the genuinely nearest comps could be
+      // absent from the answer entirely. Leaving it unset lets that fallback pick
+      // `distance` when the subject is placed and `recent_sale` when it is not.
+      // A caller that asks for a specific sort still wins — this is only a default.
+      limit: 60,
     }, stripEmpty(req.query));
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
-    // which arrives as an EMPTY `sold_within_months` — and `stripEmpty` drops an
-    // empty value, so the 18-month default above would quietly win and the option
-    // would do nothing. An empty value that was actually SENT means "no limit".
+    // which must beat the 18-month default above — otherwise the option silently
+    // does nothing, which is exactly the bug this comment used to only half-fix.
+    //
+    // "No limit" arrives as `0`, NOT as an empty string. The client's query-string
+    // builder drops an empty value before it reaches the wire (`qs()` skips
+    // `v === ''`), so a `''` the route carefully looked for was never actually
+    // sent and the default won anyway. `0` survives the builder, survives
+    // `stripEmpty`, and `search.js` already declines to add a window clause for a
+    // non-positive month count — so it means the same thing all the way down.
+    // The empty form is still honoured for any caller that hand-writes the URL.
     for (const k of ['sold_within_months', 'radius_miles']) {
-      if (Object.prototype.hasOwnProperty.call(req.query, k) && req.query[k] === '') delete filters[k];
+      if (!Object.prototype.hasOwnProperty.call(req.query, k)) continue;
+      const v = req.query[k];
+      if (v === '' || v === '0' || Number(v) === 0) delete filters[k];
     }
     if (subject.id) filters.exclude_property_id = subject.id;
     // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
@@ -533,7 +579,16 @@ router.patch('/valuations/:id', async (req, res, next) => {
     if (b.purpose !== undefined && ['as_is', 'arv', 'research'].includes(b.purpose)) sets.push(`purpose = ${P(b.purpose)}`);
     if (b.reconciliation_note !== undefined) sets.push(`reconciliation_note = ${P(txt(b.reconciliation_note))}`);
     if (b.subject !== undefined && b.subject && typeof b.subject === 'object') {
-      sets.push(`subject_snapshot = ${P(JSON.stringify(subjectSnapshot(Object.assign({}, v.subject_snapshot, b.subject))))}`);
+      const merged = subjectSnapshot(Object.assign({}, v.subject_snapshot, b.subject));
+      sets.push(`subject_snapshot = ${P(JSON.stringify(merged))}`);
+      // THE HEADING IS ITS OWN COLUMN, so the snapshot alone is not enough. The
+      // page header and the valuations list both read `subject_address`; a
+      // valuation started from the search screen is born "Untitled property", and
+      // without this the address the user types into the Subject block updated the
+      // summary three rows below the heading while the heading itself stayed
+      // "Untitled property" forever — a 200 that did not save what was on screen.
+      const addr = txt(merged.display_address);
+      if (addr) sets.push(`subject_address = ${P(addr)}`);
     }
     if (!sets.length) return res.json(await loadValuation(req.params.id));
     await db.query(`UPDATE property_valuations SET ${sets.join(', ')}, updated_at = now() WHERE id = $1`, params);
@@ -584,9 +639,18 @@ router.post('/valuations/:id/comps', async (req, res, next) => {
       // The comp's own most recent COMPARABLE observation carries the report-level
       // facts the roll-up does not (which grid it was on, how far it was from that
       // report's subject, what the appraiser adjusted). Stored with the snapshot.
+      // A CLOSED OBSERVATION IS PREFERRED OVER A MORE RECENT LISTING. The snapshot
+      // lets the observation's own sale figures beat the roll-up, so taking the
+      // newest comparable observation regardless of status put an ASKING price on
+      // a property whose actual closed sale we hold: the grid then valued off the
+      // asking price, and the same comp was down-weighted by half and warned
+      // about as "an asking price, not a proven sale". A listing still wins when
+      // it is all we have ever seen of that house.
+      // (`sale_status IS NULL` means closed — db/157.)
       const o = (await db.query(
         `SELECT * FROM property_observations WHERE property_id=$1 AND role='comparable'
-          ORDER BY observed_on DESC NULLS LAST, created_at DESC LIMIT 1`, [pid])).rows[0] || {};
+          ORDER BY (COALESCE(sale_status,'closed') = 'closed') DESC,
+                   observed_on DESC NULLS LAST, created_at DESC LIMIT 1`, [pid])).rows[0] || {};
       const snapshot = compSnapshot(p, o);
       const suggested = rates ? V.suggestAdjustments(v.subject_snapshot, snapshot, rates, { today: todayNY() }) : [];
       const adj = V.normalizeAdjustments(suggested);
@@ -597,8 +661,16 @@ router.post('/valuations/:id/comps', async (req, res, next) => {
            adjusted_price, net_adjustment, gross_adjustment, net_adj_pct, gross_adj_pct, distance_miles)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (valuation_id, COALESCE(property_id::text, id::text)) DO NOTHING`,
+        // THE COLUMN STORES THE PRICE THE GRID ACTUALLY COMPUTED FROM — the
+        // snapshot's. Storing the roll-up's `last_sale_price` here instead made the
+        // two legitimately different numbers: `adjusted_price` is derived from the
+        // snapshot, `loadValuation` re-merges this column over it, and the screen
+        // then showed an adjusted price that did not equal its own sale price plus
+        // its own adjustment lines. They must be one number or they will drift.
         [req.params.id, pid, o.id || null, o.appraisal_id || null, ++order,
-         JSON.stringify(snapshot), p.last_sale_price, p.last_sale_date,
+         JSON.stringify(snapshot),
+         snapshot.sale_price != null ? snapshot.sale_price : p.last_sale_price,
+         snapshot.sale_date || p.last_sale_date,
          JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
          a.netAdjPct, a.grossAdjPct, null]);
     }
@@ -635,8 +707,16 @@ function compSnapshot(p, o) {
     });
     // The OBSERVATION's own sale figures beat the roll-up when they exist: they are
     // what that report actually stated about this sale.
-    if (o.sale_price != null) out.sale_price = o.sale_price;
-    if (o.sale_date) out.sale_date = String(o.sale_date).slice(0, 10);
+    //
+    // A LISTING IS NOT A SALE. An active/pending observation's price is an ASKING
+    // price, and the roll-up deliberately files it as `last_list_price` with
+    // `last_sale_price` left NULL. Copying it into the snapshot's `sale_price`
+    // would put an asking price into the grid as though it were a settled sale —
+    // the same rule the warehouse enforces one layer down. The status still
+    // travels, so the grid can flag it.
+    const closed = (o.sale_status || 'closed') === 'closed';
+    if (closed && o.sale_price != null) out.sale_price = o.sale_price;
+    if (closed && o.sale_date) out.sale_date = String(o.sale_date).slice(0, 10);
     if (o.sale_status) out.sale_status = o.sale_status;
     if (o.gla != null) out.gla = o.gla;
     if (o.condition_uad) out.condition_uad = o.condition_uad;
@@ -672,7 +752,12 @@ router.patch('/valuations/:id/comps/:compId', async (req, res, next) => {
        a.grossAdjustment, a.netAdjPct, a.grossAdjPct, weight,
        b.included === undefined ? c.included : !!b.included,
        b.note === undefined ? c.note : txt(b.note), JSON.stringify(snapshot),
-       snapshot.sale_price == null ? c.sale_price : snapshot.sale_price,
+       // ONLY WHEN THE REQUEST ACTUALLY SET A PRICE. Writing the snapshot's price
+       // whenever it was non-null meant any unrelated edit — adding a note,
+       // reordering — silently republished the snapshot figure into the column the
+       // grid computes from, so a stale snapshot price could move the whole
+       // valuation on a keystroke that had nothing to do with money.
+       b.sale_price !== undefined ? snapshot.sale_price : c.sale_price,
        b.comp_order === undefined ? c.comp_order : (parseInt(b.comp_order, 10) || c.comp_order)]);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
@@ -854,9 +939,16 @@ router.post('/duplicates/merge', async (req, res, next) => {
   }
 });
 
-/** "I checked — these are two different houses." Stops the pair coming back. */
+/** "I checked — these are two different houses." Stops the pair coming back.
+ *
+ * `platform_setup`, like its two siblings (`/duplicates/merge`, `/backfill`).
+ * This is a PERMANENT suppression: once a pair is marked, the detector stops
+ * offering it, so getting it wrong hides a real duplicate from everyone for
+ * good and the warehouse quietly counts one house as two forever. It was the
+ * only warehouse-shape mutation left ungated. */
 router.post('/duplicates/not-duplicate', async (req, res, next) => {
   try {
+    if (!can(req.actor, 'platform_setup')) return res.status(403).json({ error: 'You do not have access to that.' });
     const M = require('../lib/research/property-merge');
     const b = req.body || {};
     if (!isUuid(b.property_id) || !isUuid(b.other_property_id)) {

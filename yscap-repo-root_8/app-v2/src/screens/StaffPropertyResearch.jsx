@@ -175,12 +175,12 @@ export default function StaffPropertyResearch() {
               onBlur={() => { if (draft.city !== filters.city) apply({ city: draft.city }); }} />
           </Field>
 
-          <MinMax label="Sale price" lo="price_min" hi="price_max" draft={draft} setDraft={setDraft} apply={apply} money />
-          <MinMax label="Living area (sq ft)" lo="sqft_min" hi="sqft_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Bedrooms" lo="beds_min" hi="beds_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Bathrooms" lo="baths_min" hi="baths_max" draft={draft} setDraft={setDraft} apply={apply} step="0.5" />
-          <MinMax label="Year built" lo="year_min" hi="year_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Units" lo="units_min" hi="units_max" draft={draft} setDraft={setDraft} apply={apply} />
+          <MinMax label="Sale price" lo="price_min" hi="price_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} money />
+          <MinMax label="Living area (sq ft)" lo="sqft_min" hi="sqft_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Bedrooms" lo="beds_min" hi="beds_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Bathrooms" lo="baths_min" hi="baths_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} step="0.5" />
+          <MinMax label="Year built" lo="year_min" hi="year_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Units" lo="units_min" hi="units_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
 
           <Field label="Sold between">
             <Row>
@@ -336,18 +336,24 @@ function Field({ label, children }) {
 function Row({ children }) {
   return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>{children}</div>;
 }
-function MinMax({ label, lo, hi, draft, setDraft, apply, step }) {
+// `filters` is the APPLIED state and is what blur must compare against. Testing
+// `draft[lo] !== undefined` was always true — every key exists on the draft — so
+// merely tabbing through the sidebar applied all six pairs, pushing a history
+// entry and re-running the search each time. Twelve fields meant twelve pushes
+// and Back became unusable. The `q` and `city` inputs above always guarded this
+// way; these did not.
+function MinMax({ label, lo, hi, draft, setDraft, apply, filters, step }) {
   return (
     <Field label={label}>
       <Row>
         <input style={S.input} inputMode="numeric" step={step} placeholder="min" value={draft[lo]}
           onChange={(e) => setDraft({ ...draft, [lo]: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') apply({ [lo]: draft[lo] }); }}
-          onBlur={() => { if (draft[lo] !== undefined) apply({ [lo]: draft[lo] }); }} />
+          onBlur={() => { if (draft[lo] !== filters[lo]) apply({ [lo]: draft[lo] }); }} />
         <input style={S.input} inputMode="numeric" step={step} placeholder="max" value={draft[hi]}
           onChange={(e) => setDraft({ ...draft, [hi]: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') apply({ [hi]: draft[hi] }); }}
-          onBlur={() => { if (draft[hi] !== undefined) apply({ [hi]: draft[hi] }); }} />
+          onBlur={() => { if (draft[hi] !== filters[hi]) apply({ [hi]: draft[hi] }); }} />
       </Row>
     </Field>
   );

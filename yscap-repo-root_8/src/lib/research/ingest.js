@@ -364,7 +364,12 @@ async function rollupProperty(db, propertyId) {
     arv_comp_count: comps.filter((o) => o.comp_set === 'arv').length,
     asis_comp_count: comps.filter((o) => o.comp_set === 'as_is').length,
     observation_count: obs.length,
-    first_observed_on: obs.length ? obs[obs.length - 1].observed_on : null,
+    // THE EARLIEST DATE WE ACTUALLY HAVE, not the last row in the list. `obs` is
+    // ordered `observed_on DESC NULLS LAST`, so the final element is an UNDATED
+    // observation whenever one exists — and one undated report made a property
+    // that we have known about for years report "first seen: never".
+    first_observed_on: obs.reduce((min, o) => (
+      o.observed_on && (!min || o.observed_on < min) ? o.observed_on : min), null),
     last_observed_on: obs.length ? obs[0].observed_on : null,
   };
   // The APN can arrive on a later report; treat it as fill-only like the address.
@@ -404,20 +409,32 @@ async function rollupProperty(db, propertyId) {
 // SALES
 // ---------------------------------------------------------------------------
 /** Record a transaction. Silently ignores anything without a date (never guesses one). */
-async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId }) {
+async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId, importId }) {
   const d = dateOnly(date);
   if (!propertyId || !d) return 0;
   const amount = K.num(price, { min: 1, max: 1e10 });
   await db.query(
+    // `source_import_id` was in the table and in every caller's arguments, and was
+    // neither destructured above nor listed here — so an UPLOADED report's sales
+    // carried no provenance at all. That matters because retiring a duplicate
+    // upload deletes its observations, which SET-NULLs `source_observation_id`:
+    // without the import id there is then nothing left saying where the sale came
+    // from.
     `INSERT INTO property_sales (property_id, sale_date, sale_price, sale_type, sale_status, source,
-                                 source_appraisal_id, source_observation_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                                 source_appraisal_id, source_observation_id, source_import_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (property_id, sale_date, COALESCE(sale_price, -1)) DO UPDATE SET
        sale_type   = COALESCE(property_sales.sale_type, EXCLUDED.sale_type),
-       sale_status = COALESCE(property_sales.sale_status, EXCLUDED.sale_status),
+       -- A CLOSED SALE WINS. The old COALESCE meant the FIRST status ever written
+       -- stuck forever, so a subject's contract recorded as pending could never
+       -- become closed even when a later report stated the settled sale outright —
+       -- the price stayed filed as an asking price for good.
+       sale_status = CASE WHEN EXCLUDED.sale_status = 'closed' THEN 'closed'
+                          ELSE COALESCE(property_sales.sale_status, EXCLUDED.sale_status) END,
        last_seen_at = now(),
        times_seen  = property_sales.times_seen + 1`,
-    [propertyId, d, amount, txt(type), txt(status), source, appraisalId || null, observationId || null]);
+    [propertyId, d, amount, txt(type), txt(status), source, appraisalId || null, observationId || null,
+      importId || null]);
   return 1;
 }
 
@@ -425,7 +442,18 @@ async function recordSale(db, { propertyId, date, price, type, status, source, a
 // PHOTOS
 // ---------------------------------------------------------------------------
 // Which stored photo categories describe the SUBJECT of the report.
-const SUBJECT_PHOTO = new Set(['subject', 'subject_front', 'interior', 'rental', 'photo']);
+//
+// `'photo'` IS DELIBERATELY NOT HERE. It is the generic category the desk stores
+// when the XML carried no photo metadata to name the slots with — which is the
+// majority of files — so treating it as "subject" handed the COMPARABLES'
+// photographs to the subject property: the subject's gallery showed other
+// people's houses, `photo_count` and the has-photos filter were inflated, and
+// the comparables showed none. An unnamed photograph is matched by its CAPTION
+// (which routinely carries the comp's address) and otherwise attached to the
+// subject only when it is the FIRST picture in the report — the subject front
+// shot is first on every residential form — rather than pinned to the wrong
+// house, which is this module's own stated rule for the comparable side.
+const SUBJECT_PHOTO = new Set(['subject', 'subject_front', 'interior', 'rental']);
 
 /**
  * Link this report's stored photos to the properties they show.
@@ -464,6 +492,32 @@ async function linkPhotos(db, appraisalId, { comps = null, subjectPropertyId = n
   const bySeq = new Map();
   for (const c of compRows) { const n = digits(c.comp_seq); if (n) bySeq.set(n, c); }
 
+  // ADDRESSES FOR THE CAPTION MATCH. A photo caption on a report with no photo
+  // metadata is usually the comparable's own address, which identifies it far
+  // more reliably than an ordinal two vendors number two different ways. The
+  // matcher is `photo-meta.compSeqFromCaption` — the SAME one the appraisal desk
+  // uses — so "the same address" means one thing across the whole system. It
+  // wants `{seq, address, city, state, zip}`, and the observation rows carry only
+  // ids, so the properties are joined in here. Best-effort: a failure just leaves
+  // the caption unmatched.
+  let capComps = [];
+  try {
+    const ids = compRows.map((c) => c.property_id).filter(Boolean);
+    if (ids.length) {
+      const addrs = (await db.query(
+        `SELECT id, street, city, state, zip FROM properties WHERE id = ANY($1::uuid[])`, [ids])).rows;
+      const byId = new Map(addrs.map((a) => [a.id, a]));
+      capComps = compRows.filter((c) => c.comp_seq && byId.has(c.property_id)).map((c) => {
+        const a = byId.get(c.property_id);
+        return { seq: c.comp_seq, address: a.street, city: a.city, state: a.state, zip: a.zip };
+      });
+    }
+  } catch (e) { capComps = []; }
+  const captionSeq = (caption) => {
+    if (!caption || !capComps.length) return null;
+    try { return require('../appraisal/photo-meta').compSeqFromCaption(caption, capComps); } catch (_) { return null; }
+  };
+
   const compPhotos = photos.filter((p) => p.category === 'comparable');
   const aligned = compPhotos.length > 0 && compPhotos.length === compRows.length;
 
@@ -471,7 +525,19 @@ async function linkPhotos(db, appraisalId, { comps = null, subjectPropertyId = n
   for (let i = 0; i < photos.length; i++) {
     const ph = photos[i];
     let propertyId = null, observationId = null, isPrimary = false;
-    if (SUBJECT_PHOTO.has(ph.category) || (!ph.category && i === 0)) {
+    // AN UNNAMED PHOTOGRAPH: try to read the comparable's address out of its own
+    // caption before assuming anything. `desk.js` already writes that caption, and
+    // on a report with no photo metadata it is the only thing distinguishing the
+    // subject's pictures from the comparables'.
+    const unnamed = !ph.category || ph.category === 'photo';
+    let capTarget = null;
+    if (unnamed) {
+      const seq = digits(ph.comp_seq) || digits(ph.identifier) || digits(captionSeq(ph.caption));
+      if (seq) capTarget = bySeq.get(seq) || null;
+    }
+    if (capTarget) {
+      propertyId = capTarget.property_id; observationId = capTarget.id; isPrimary = true;
+    } else if (SUBJECT_PHOTO.has(ph.category) || (unnamed && i === 0)) {
       propertyId = subjectId;
       isPrimary = ph.category === 'subject_front' || (ph.sequence === 0 && ph.category !== 'comparable');
     } else if (ph.category === 'comparable') {
@@ -1050,6 +1116,13 @@ async function backfill(db, { limit = 500, force = false, onProgress = null } = 
          LEFT JOIN property_ingest_log l ON l.appraisal_id = a.id
         WHERE $2::boolean OR l.appraisal_id IS NULL
            OR (l.status NOT IN ('ok','skipped')) OR l.ingest_version < $3
+           -- A REPORT THAT HAS SINCE BEEN SUPERSEDED BUT IS STILL LOGGED ok is
+           -- still IN the warehouse, counting its whole grid a second time beside
+           -- the report that replaced it. The import now re-ingests what it
+           -- retires, so this only has to catch the ones already stranded — but it
+           -- is what heals the back book, and it costs nothing once they are done
+           -- (retiring stamps the ledger skipped, so each is picked up once).
+           OR (a.superseded AND l.status = 'ok')
         ORDER BY COALESCE(a.effective_date, a.report_signed_date, a.imported_at::date) ASC, a.imported_at ASC
         LIMIT $1`, [Math.min(Math.max(1, limit), 5000), !!force, INGEST_VERSION])).rows;
   } catch (e) {

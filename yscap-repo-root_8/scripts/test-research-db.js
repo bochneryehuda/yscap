@@ -442,6 +442,65 @@ async function makeAppraisal(appId, o) {
     const bfDenied = await call(server, 'POST', '/api/research/backfill', token, {});
     ok(bfDenied.status === 403, 'an ordinary officer cannot trigger a corpus-wide back-fill');
 
+    // ---- REGRESSIONS from the 2026-08-03 audit ------------------------------
+    // Each of these FAILS on the code as it stood before that pass.
+
+    // (1) "SOLD AT ANY TIME" MUST ACTUALLY REMOVE THE WINDOW. The route defaults
+    // to 18 months. The screen's "any time" option used to be sent as an EMPTY
+    // value, which the client's query-string builder drops before it reaches the
+    // wire — so the default quietly won and the option did nothing. It is sent as
+    // `0` now. The response echoes the filters it actually applied, so this is
+    // exact rather than inferred from a row count.
+    const subjProp = maple3[0].id;
+    const cDefault = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}`, token);
+    ok(cDefault.status === 200 && Number(cDefault.body.filters.sold_within_months) === 18,
+      'a comp search with no time filter still defaults to the last 18 months');
+    const cAny = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&sold_within_months=0`, token);
+    ok(cAny.status === 200 && cAny.body.filters.sold_within_months === undefined,
+      '"sold at any time" (0) genuinely removes the 18-month window — the option is not a no-op');
+    const cAnyEmpty = await call(server, 'GET', `/api/research/comps?property_id=${subjProp}&sold_within_months=`, token);
+    ok(cAnyEmpty.status === 200 && cAnyEmpty.body.filters.sold_within_months === undefined,
+      'and a hand-written empty value still means the same thing');
+
+    // (2) THE COMP SEARCH MUST NOT PIN ITSELF TO "MOST RECENT". Naming a sort in
+    // the route's defaults made search.js's "placed subject → sort by distance"
+    // fallback dead for the only caller that supplies coordinates, so the SQL
+    // LIMIT kept the 60 most recently sold rows and the nearest comps could be
+    // missing entirely. No default sort means the fallback decides.
+    ok(cDefault.body.filters.sort === undefined,
+      'the comp search names no sort of its own, so the nearest-first fallback can apply');
+
+    // (3) A VALUATION'S HEADING SAVES. The PATCH wrote the subject snapshot but
+    // never `subject_address`, which is the column the page header and the
+    // valuations list both read — so a valuation born "Untitled property" stayed
+    // that way however many times the address was typed in.
+    const draftId = dup.body.valuation.id;
+    const named = await call(server, 'PATCH', `/api/research/valuations/${draftId}`, token,
+      { subject: { display_address: '9 Rosewood Ave' } });
+    ok(named.status === 200 && named.body.valuation.subject_address === '9 Rosewood Ave',
+      'typing the subject address on a valuation actually saves it to the heading');
+    const reread = await call(server, 'GET', `/api/research/valuations/${draftId}`, token);
+    ok(reread.body.valuation.subject_address === '9 Rosewood Ave',
+      'and it is still there when the valuation is re-read');
+
+    // (4) MARKING A PAIR "NOT A DUPLICATE" IS PERMANENT, so it is gated like its
+    // two siblings. It was the only warehouse-shape mutation left open to any
+    // staff user.
+    const ndDenied = await call(server, 'POST', '/api/research/duplicates/not-duplicate', token,
+      { property_id: maple3[0].id, other_property_id: subj.property_id || maple3[0].id });
+    ok(ndDenied.status === 403,
+      'an ordinary officer cannot permanently suppress a duplicate pair');
+
+    // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
+    // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
+    // forever and the filter underneath silently works inside a truncated set.
+    const aTotals = await call(server, 'GET', `/api/research/appraisers/${appr2[0].id}`, token);
+    ok(aTotals.status === 200 && aTotals.body.totals
+      && typeof aTotals.body.totals.properties === 'number',
+    'the appraiser profile carries the real property total alongside the capped list');
+    ok(aTotals.body.totals.properties >= (aTotals.body.properties || []).length,
+      'and that total is never smaller than the rows it shipped');
+
     // ---- cleanup -----------------------------------------------------------
     await db.query(`DELETE FROM property_valuations WHERE id IN ($1,$2)`, [vid, dup.body.valuation.id]);
     await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, app2, app2b, app3]]);

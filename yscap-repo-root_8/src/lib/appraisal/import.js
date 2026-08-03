@@ -69,7 +69,18 @@ async function importAppraisalTx(db, {
   // BOTH survive as superseded=false → multiple "current" appraisals + doubled open findings. The
   // lock makes the second import WAIT here, then supersede the first's now-committed row correctly.
   await db.query(`SELECT id FROM applications WHERE id = $1 FOR UPDATE`, [applicationId]);
-  await db.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [applicationId]);
+  // WHICH reports this import retires, by id. The research warehouse has to be
+  // TOLD — `ingestAppraisal` retires a superseded report, but only when it is
+  // called for that report's own id, and nothing was calling it: the import
+  // fires the warehouse for the NEW appraisal only, and the corpus back-fill
+  // skips any report whose ledger already reads `ok`. So a corrected re-import
+  // left the old grid's observations standing beside the new one and every
+  // property on it counted twice — comp counts, the ARV/as-is split, the
+  // appraiser's totals and the photo count all doubled.
+  const supersededIds = (await db.query(
+    `UPDATE appraisals SET superseded = true
+      WHERE application_id = $1 AND superseded = false
+      RETURNING id`, [applicationId])).rows.map((r) => r.id);
   await db.query(`UPDATE appraisal_findings SET status = 'superseded' WHERE application_id = $1 AND status = 'open'`, [applicationId]);
 
   // 2. insert the appraisal row
@@ -80,7 +91,7 @@ async function importAppraisalTx(db, {
     keys.map((k) => cols[k]));
   const appraisalId = ins.rows[0].id;
 
-  return continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds });
+  return continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds, supersededIds });
 }
 
 /**
@@ -150,7 +161,7 @@ function appraisalRowFrom(A, { applicationId = null, sourceXmlDocumentId = null,
 }
 
 /** The rest of the import, once the `appraisals` row exists. */
-async function continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds }) {
+async function continueImportTx(db, { A, appraisalId, applicationId, f, today, thresholds, supersededIds = [] }) {
   const v = A.values, ap = A.appraiser;
 
   // 3. comparables (real comps; seq-0 subject is excluded by the parser). Store the full
@@ -265,6 +276,10 @@ async function continueImportTx(db, { A, appraisalId, applicationId, f, today, t
     needsAsIsCondition: !(v.asIs != null && v.asIsConfidence === 'definite'),
     blocksCtc: sum.blocksCtc,
     warnings: A.warnings || [],
+    // The reports this import retired. The caller re-ingests each one so the
+    // research warehouse takes their observations back out — see the comment on
+    // the supersede UPDATE above.
+    supersededIds,
   };
 }
 

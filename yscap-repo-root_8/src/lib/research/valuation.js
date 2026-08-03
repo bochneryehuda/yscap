@@ -148,9 +148,18 @@ function adjustComp(comp, adjustments) {
 function normalizeAdjustments(adjustments) {
   const out = [];
   if (!adjustments) return out;
+  // A GRID LINE HAS TO FIT ITS COLUMN. `adjusted_price` is numeric(14,2) and
+  // `net_adj_pct` is numeric(8,2) — so the PERCENTAGE overflows an order of
+  // magnitude before the money does. A pasted 5000000000 on a $300,000 comp made
+  // Postgres answer 22003 and the route had no catch, which reads to the user as
+  // "PILOT is broken", not "that number is too big". A line this size is a paste
+  // accident, never a real adjustment, so it is DROPPED like an unknown key
+  // rather than clamped to a number nobody typed.
+  const MAX_ADJ = 1e9;
   const push = (key, amount, note, source) => {
     const a = num(amount);
     if (a == null || a === 0) return;
+    if (!Number.isFinite(a) || Math.abs(a) > MAX_ADJ) return;
     if (!GRID_KEYS.has(key)) return;      // an unknown line is dropped, never silently summed
     out.push({ key, label: labelOf(key), amount: a, note: note || null, source: source || 'user' });
   };
@@ -228,7 +237,12 @@ function compWarnings(subject, comp, adj, { today = null } = {}) {
 function setWarnings(subject, comps, { today = null } = {}) {
   const w = [];
   const T = THRESHOLDS;
-  const usable = comps.filter((c) => c.adjustedPrice != null);
+  // THE SAME SET THE VALUE IS COMPUTED FROM — `reconcile` filters switched-off
+  // comps and this did not, so warnings described rows that were not in the
+  // answer. Concretely: four comps with three switched off produced a value
+  // resting on ONE comp and NO "too few comps" warning, and `finalize` gates on
+  // the value's own comp count, so that valuation could be finished clean.
+  const usable = comps.filter((c) => c.adjustedPrice != null && c.include !== false);
   const closed = usable.filter((c) => (c.sale_status || 'closed') === 'closed');
   if (closed.length < T.minClosedComps) {
     w.push({ code: 'too_few_comps', severity: closed.length === 0 ? 'fatal' : 'warning',

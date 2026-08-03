@@ -6,6 +6,7 @@ import {
   conditionLabel, qualityLabel, COMP_SET_LABEL,
 } from '../lib/research.js';
 import NearbyComps from '../components/NearbyComps.jsx';
+import ResearchPhoto from '../components/ResearchPhoto.jsx';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -25,8 +26,19 @@ export default function StaffPropertyDetail() {
 
   useEffect(() => {
     setData(null); setErr('');
-    api.researchProperty(id).then(setData).catch((e) => setErr(e.message || 'Could not load that property'));
-  }, [id]);
+    api.researchProperty(id).then(setData).catch((e) => {
+      // THIS PROPERTY WAS MERGED INTO ANOTHER ROW. The server deliberately answers
+      // 301 with `merged_into` so a bookmarked or emailed link says where the
+      // property went instead of reading as data loss — but nothing was reading
+      // it, so the page showed the user the single word "merged". Follow it, and
+      // replace the history entry so Back does not bounce off the dead id.
+      if (e && e.status === 301 && e.data && e.data.merged_into) {
+        nav(`/internal/research/property/${e.data.merged_into}`, { replace: true });
+        return;
+      }
+      setErr(e.message || 'Could not load that property');
+    });
+  }, [id, nav]);
 
   async function valueThis() {
     setBusy(true);
@@ -51,7 +63,7 @@ export default function StaffPropertyDetail() {
 
       <header style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
         {hero && (
-          <img src={api.researchPhotoUrl(hero.document_id)} alt={p.display_address}
+          <ResearchPhoto documentId={hero.document_id} alt={p.display_address}
             onClick={() => setShot(hero)}
             style={{ width: 240, height: 170, objectFit: 'cover', borderRadius: 10, cursor: 'zoom-in',
               border: '1px solid #E4DECF' }} />
@@ -92,6 +104,9 @@ export default function StaffPropertyDetail() {
           )}
         </div>
       </header>
+
+      {/* ---- valuations already built on this property ---- */}
+      <PriorValuations propertyId={id} />
 
       {/* ---- comparable sales near it ---- */}
       <NearbyComps propertyId={id} subjectAddress={p.display_address} />
@@ -152,7 +167,7 @@ export default function StaffPropertyDetail() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {photos.map((ph) => (
               <figure key={ph.id} style={{ margin: 0, width: 150 }}>
-                <img src={api.researchPhotoUrl(ph.document_id)} alt={ph.caption || 'Property photo'}
+                <ResearchPhoto documentId={ph.document_id} alt={ph.caption || 'Property photo'}
                   onClick={() => setShot(ph)}
                   style={{ width: 150, height: 110, objectFit: 'cover', borderRadius: 8,
                     border: '1px solid #E4DECF', cursor: 'zoom-in' }} />
@@ -214,11 +229,58 @@ export default function StaffPropertyDetail() {
         <div onClick={() => setShot(null)} role="dialog" aria-label="Photo"
           style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,0.85)', zIndex: 900,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out', padding: 24 }}>
-          <img src={api.researchPhotoUrl(shot.document_id)} alt={shot.caption || 'Property photo'}
+          <ResearchPhoto documentId={shot.document_id} alt={shot.caption || 'Property photo'}
             style={{ maxWidth: '95%', maxHeight: '90%', borderRadius: 8 }} />
         </div>
       )}
     </div>
+  );
+}
+
+/* VALUATIONS ALREADY BUILT ON THIS PROPERTY.
+ *
+ * Without this there is no way back to one. "Value this property" creates a
+ * valuation and navigates to it; after that the only route back was browser
+ * history, so twenty minutes of grid work disappeared from the UI the moment
+ * anyone clicked away. `GET /valuations?property_id=` already returned
+ * everything needed and had no caller anywhere in the app.
+ *
+ * Self-hiding: a property nobody has valued shows nothing at all. */
+function PriorValuations({ propertyId }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.valuations({ property_id: propertyId })
+      .then((d) => { if (alive) setRows(d.rows || []); })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, [propertyId]);
+
+  if (!rows || !rows.length) return null;
+  return (
+    <section style={{ ...S.panel, marginBottom: 14 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>Valuations built on this property ({rows.length})</h2>
+      <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+        Grids somebody has built here before. Open one to carry on where they left off.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((v) => (
+          <Link key={v.id} to={`/internal/research/valuation/${v.id}`}
+            style={{ display: 'flex', gap: 12, alignItems: 'baseline', flexWrap: 'wrap',
+              padding: '8px 10px', border: '1px solid #E4DECF', borderRadius: 8, textDecoration: 'none' }}>
+            <strong style={{ color: INK }}>{v.title || v.subject_address || 'Untitled valuation'}</strong>
+            {v.indicated_value != null && <span style={{ color: INK }}>{money(v.indicated_value)}</span>}
+            {v.confidence_label && <span style={S.tag}>{v.confidence_label}</span>}
+            {v.status === 'final' && <span style={S.tag}>final</span>}
+            <span style={{ color: MUTED, fontSize: 12 }}>
+              {num(v.comp_count)} comp{v.comp_count === 1 ? '' : 's'}
+              {v.created_by_name ? ` · ${v.created_by_name}` : ''}
+              {v.updated_at ? ` · ${day(v.updated_at)}` : ''}
+            </span>
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }
 

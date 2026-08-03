@@ -1078,7 +1078,11 @@ export const api = {
   researchStats:       () => req('GET', '/api/research/stats'),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
   researchProperty:    (id) => req('GET', `/api/research/properties/${id}`),
-  researchPhotoUrl:    (documentId) => `/api/research/photos/${documentId}`,
+  // A photo is fetched with the Bearer token like every other binary on this
+  // platform, NEVER pointed at from an <img src>. A browser image request sends
+  // no Authorization header, so an API path in `src` is a guaranteed 401 — see
+  // components/ResearchPhoto.jsx, which turns this into an object URL.
+  researchPhotoBlob:   (documentId) => download(`/api/research/photos/${documentId}`),
   researchAppraisers:  (f) => req('GET', '/api/research/appraisers' + qs(f)),
   researchAppraiser:   (id) => req('GET', `/api/research/appraisers/${id}`),
   researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
