@@ -452,6 +452,13 @@ export const api = {
   // no new inquiry; and the borrower profile's credit history across all their files.
   staffCreditReuse:   (id, b) => req('POST', `/api/staff/applications/${id}/credit/reuse`, b),
   staffBorrowerCredit:(borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/credit`),
+  // Sign the credit condition off on a report obtained ELSEWHERE (owner-directed
+  // 2026-08-03): upload the PDF onto the condition, then request an exception an
+  // admin approves. `itemId` names WHICH credit condition (a file can carry the
+  // file-level one and a co-borrower's own).
+  creditWaiverGet:    (id, q) => req('GET', `/api/staff/applications/${id}/credit-waiver${q && q.itemId ? `?itemId=${encodeURIComponent(q.itemId)}` : (q && q.scope ? `?scope=${encodeURIComponent(q.scope)}` : '')}`),
+  creditWaiverRequest:(id, b) => req('POST', `/api/staff/applications/${id}/credit-waiver`, b),
+  creditWaiverRemove: (id, q) => req('DELETE', `/api/staff/applications/${id}/credit-waiver${q && q.itemId ? `?itemId=${encodeURIComponent(q.itemId)}` : (q && q.scope ? `?scope=${encodeURIComponent(q.scope)}` : '')}`),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`

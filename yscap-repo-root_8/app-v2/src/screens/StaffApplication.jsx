@@ -1564,7 +1564,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         // `field_key` tells it WHICH credit condition this is: the file-level one, or
         // a co-borrower's own ('cob_credit') — which shows that borrower's report
         // only, instead of repeating the whole file's credit section twice.
-        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} />
+        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} itemId={it.id} />
       )}
 
       {/* The typed answer, for the conditions that ARE a typed answer — the note

@@ -88,6 +88,12 @@ const TYPE_META = {
     defaultPolicy: () => 'The appraisal condition needs the XML data file, the PDF report, and a successful MISMO import.',
     requestedChange: () => <>Accept this appraisal with <b>no XML data file</b> — the PDF report is still required and the ARV + As-Is were entered by hand. Approving lets the appraisal condition be signed off without the XML.</>,
   },
+  credit_import_waiver: {
+    chip: 'Credit — no import',
+    jumpHash: '#sec-conditions', jumpLabel: 'Jump to the conditions',
+    defaultPolicy: () => 'The credit condition needs a report IMPORTED on the file — that files the PDF + the data file and reads the scores. A PDF on its own is not enough.',
+    requestedChange: () => <>Sign the <b>credit report condition</b> off on a report obtained <b>somewhere else</b>, with <b>no credit imported or re-pulled</b> here. The PDF is uploaded on the condition and still has to be <b>accepted</b>; approving this lets the condition be signed off without an import, and the accepted PDF ships in the TPR export and the SharePoint sync like any other document.</>,
+  },
   encompass_mismatch: {
     chip: 'Encompass exception',
     /* `sec-encompass` is a RETIRED address (the comparison is a tab of
