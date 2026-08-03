@@ -243,6 +243,15 @@ console.log('\n14. the editor never shows a "how many" the card is not using');
   ok(shown(undefined) === 30 && compile.periodN({}) === 30,
     'a card with no "how many" reads 30 on both sides — not the new-card default');
   ok(shown(1.5) === 1, 'and a stored 1.5 reads as the 1 day it really runs');
+
+  // …AND THAT THE EDITOR STILL CALLS THEM. The checks above prove the two definitions
+  // agree with the server; they say nothing about the lines that use them, so reverting
+  // either call site reproduces the original defect with this section still green. Both
+  // regressions were real, so both sites are pinned.
+  ok(/n:\s*effectiveN\(d\.period\.n\)/.test(src),
+    'the card being OPENED is seeded from what it runs, not from the new-card default');
+  ok(/NEEDS_N\.includes\(kind\)\s*&&\s*!nOk\(period\.n\)/.test(src),
+    'and the period dropdown re-seeds on that same shared rule');
 }
 
 console.log(`\ndashboards-pure: ${pass} passed, ${fail} failed`);
