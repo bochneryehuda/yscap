@@ -36,12 +36,15 @@
  * vendor), not a per-minute quota — see docs/research. A strictly sequential
  * walk holds ONE slot whether it is paced or not, so the pause does not reduce
  * our concurrency and would not, on its own, have prevented a 429. What it does
- * reduce is the request RATE and the duty cycle inside a sweep (~2.9 -> ~1.4
- * req/s here), which is cheap insurance and matches the posture the research
- * recommends and that bulkPullAllLoans already follows. The thing that would
- * genuinely protect us when a 429 does arrive — honouring Retry-After, backoff
- * with jitter, reading X-Concurrency-Limit-Remaining — is NOT implemented
- * anywhere in the Encompass client, and pacing is not a substitute for it.
+ * is put a CEILING on the request RATE: 350ms between loans caps a sweep at
+ * ≈170 requests/minute at concurrency 1 — the exact posture the research
+ * recommends and that bulkPullAllLoans already follows (docs/research,
+ * "Realistic pacing"). How far that is BELOW the unpaced rate depends on
+ * Encompass's own response time, which is not measured here, so no before/after
+ * figure is claimed. The thing that would genuinely protect us when a 429 does
+ * arrive — honouring Retry-After, backoff with jitter, reading
+ * X-Concurrency-Limit-Remaining — is NOT implemented anywhere in the Encompass
+ * client, and pacing is not a substitute for it.
  *
  * A WEBHOOK WOULD ALSO WORK AND IS DELIBERATELY NOT USED. Subscribing to the
  * ServiceOrder events means `POST /webhook/v1/subscriptions` — a WRITE to
@@ -106,6 +109,21 @@ const MAX_TIME_MS = 8.64e15;
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A WARNING NOBODY CAN READ IS NOT A WARNING. `paceMs` is a parameter default, so
+// it is re-read on every sweep — an unbounded warning there is 288 identical
+// lines a day, which is how a log stops being read at all.
+//
+// Keyed on name+VALUE, and be honest about what that means: a setting broken a
+// SECOND time to a DIFFERENT bad value warns again, but broken back to the SAME
+// value it stays silent for the life of the process. That is the deliberate
+// trade — the set is never swept, and a restart clears it.
+const _warnedEnv = new Set();
+function warnOnce(key, msg) {
+  if (_warnedEnv.has(key)) return;
+  _warnedEnv.add(key);
+  console.warn(msg);
+}
+
 /**
  * A tuning knob read from the environment, clamped to something usable. PURE.
  *
@@ -120,17 +138,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *     ANYTHING from a single typo.
  * So a bad value falls back to the default and SAYS SO, rather than degrading.
  */
-// Said ONCE per bad value, not once per read. `paceMs` is a parameter default,
-// so it is re-read on every sweep — an unbounded warning there is 288 identical
-// lines a day, which is how a log stops being read at all. Keyed on name+value
-// so a corrected setting warns again if it is broken a second time.
-const _warnedEnv = new Set();
-function warnOnce(key, msg) {
-  if (_warnedEnv.has(key)) return;
-  _warnedEnv.add(key);
-  console.warn(msg);
-}
-
 function envNum(name, dflt, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const raw = process.env[name];
   if (raw == null || String(raw).trim() === '') return dflt;
@@ -169,7 +176,12 @@ function catchDisabled() {
     // returns all zeros logs nothing. That is the same silent-total-failure the
     // noLink alarm exists to prevent. So the key's EXISTENCE is checked first.
     if (!switches.BY_KEY || !switches.BY_KEY[CATCH_SWITCH_KEY]) {
-      console.warn(`[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
+      // Through warnOnce for the same reason envNum is: this runs on EVERY sweep,
+      // so an unbounded warn here is 288 identical lines a day. Latent while the
+      // key is registered — which is exactly when a guard like this is worth
+      // adding, rather than after it has already flooded a log.
+      warnOnce(`switch-missing:${CATCH_SWITCH_KEY}`,
+        `[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
         'staying ON and relying on the env kill switch');
       return false;
     }
@@ -590,10 +602,12 @@ async function capture(db, res, meta) {
 //
 // BE PRECISE ABOUT WHAT THAT IS WORTH, because it is easy to over-read. The
 // failure mode only shows on a QUIET loan — one where the delivery is the last
-// thing that happened. The sample contained none: the tightest gap measured was
-// 10 hours, so every one of the 45 had been re-touched within half a day. A
-// sample with no quiet loans has NO POWER to detect a failure that only appears
-// on quiet loans, so the absence of that signature is not evidence against it.
+// thing that happened. The sample contained none: the SMALLEST gap measured was
+// 10 hours, so every one of the 45 was touched again no sooner than 10 hours
+// after its delivery. (That is a MINIMUM and bounds nothing above it — the
+// largest gaps in the sample are not described by it.) A sample with no quiet
+// loans has NO POWER to detect a failure that only appears on quiet loans, so
+// the absence of that signature is not evidence against it.
 // What the measurement does establish is narrower and still worth having: no
 // delivery was ever recorded AFTER its loan's stamp, which is where a
 // contradiction would have surfaced first.
@@ -684,13 +698,15 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   for (const l of list) {
     // PACE THE VENDOR. A sweep issues 1 + orders-per-loan sequential GETs, so a
     // busy tick is hundreds of calls with no breathing room — and `apiGet` has no
-    // 429/Retry-After handling, so tripping ICE's rate limit would take the THREE
-    // OTHER Encompass workers down with it: the catalog refresh, the per-file
-    // pull and the enrichment pass share this process, this credential and one
-    // module-level token cache. The bulk puller already paces at 350ms for
-    // exactly this reason (reader.bulkPullAllLoans); match it rather than invent
-    // a second convention. Skipped before the FIRST loan so a one-loan sweep
-    // costs nothing.
+    // 429/Retry-After handling, so a 429 is just an unhandled error to every
+    // caller in this process: the catalog refresh, the per-file pull and the
+    // enrichment pass share it, this credential and one module-level token cache.
+    // Read this together with the header and do not over-claim it: what Encompass
+    // enforces is CONCURRENCY, and a sequential walk holds one slot whether it
+    // pauses or not — so the pause is a rate CEILING, not what prevents the 429.
+    // The bulk puller already paces at 350ms (reader.bulkPullAllLoans); match it
+    // rather than invent a second convention. Skipped before the FIRST loan so a
+    // one-loan sweep costs nothing.
     if (!first) await sleep(paceMs);
     first = false;
     out.loans++;
