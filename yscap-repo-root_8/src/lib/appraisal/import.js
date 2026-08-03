@@ -43,6 +43,92 @@ async function importAppraisal(db, args) {
   return importAppraisalTx(db, args);
 }
 
+/**
+ * File a refused appraisal XML so the UAD 3.6 exposure can be COUNTED (db/438).
+ *
+ * THE THREE KINDS ARE KEPT APART ON PURPOSE. `uad_3_6` is the one that matters —
+ * a real appraisal in the format we cannot read — and today it is ZERO across the
+ * 152 real reports in hand. `not_appraisal` is somebody attaching an Encompass
+ * iLAD loan-application export instead of the appraisal, which is a different
+ * problem with a different answer (no reader would fix it); all three of today's
+ * refusals are that. Counting them together would bury the number that matters
+ * inside the number that does not.
+ *
+ * Never throws — the caller has already decided to refuse, and this only records.
+ */
+async function recordFormatRefusal(db, { applicationId, documentId, importedBy, xml, format, reason }) {
+  const fmt = format || {};
+  const kind = fmt.uad36 ? 'uad_3_6' : (fmt.notAnAppraisal ? 'not_appraisal' : 'unreadable');
+  let filename = null;
+  if (documentId) {
+    try {
+      const d = await db.query('SELECT filename FROM documents WHERE id=$1', [documentId]);
+      filename = d.rows[0] ? d.rows[0].filename : null;
+    } catch (_) { /* the name is a nicety, never the point */ }
+  }
+  await db.query(
+    `INSERT INTO appraisal_format_refusals
+       (application_id, document_id, kind, model, reference_model, filename, size_bytes, reason, refused_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [applicationId || null, documentId || null, kind,
+      fmt.model || null, fmt.ref || null, filename,
+      xml == null ? null : Math.min(Buffer.byteLength(String(xml), 'utf8'), 2147483647),
+      reason == null ? null : String(reason).slice(0, 2000),
+      importedBy || null]);
+}
+
+/**
+ * `recordFormatRefusal`, made unable to hurt its caller.
+ *
+ * The SAVEPOINT is the whole point. `importAppraisalTx` is normally handed a
+ * transaction client, and a statement that fails inside a transaction aborts it —
+ * so without this, an old database missing db/438's table would take the COMMIT
+ * down with it and a refusal would surface as a 500. Opening a savepoint on a
+ * plain pool connection is itself an error (25P01), so that is caught too and the
+ * work simply runs unprotected, which is safe there because there is no
+ * transaction to poison.
+ */
+async function bestEffortRefusal(db, args) {
+  let held = false;
+  try { await db.query('SAVEPOINT format_refusal'); held = true; } catch (_) { /* not in a transaction */ }
+  try {
+    await recordFormatRefusal(db, args);
+    if (held) await db.query('RELEASE SAVEPOINT format_refusal');
+  } catch (_) {
+    if (held) {
+      try { await db.query('ROLLBACK TO SAVEPOINT format_refusal'); } catch (__) { /* tx already gone */ }
+      try { await db.query('RELEASE SAVEPOINT format_refusal'); } catch (__) { /* ditto */ }
+    }
+  }
+}
+
+/**
+ * How many appraisals we have had to turn away, and of which kind — the answer to
+ * "is the 2 November 2026 format change here yet?". Never throws; a reporting
+ * surface must never be the thing that breaks a page.
+ */
+async function formatRefusalCounts(db, { sinceDays = 365 } = {}) {
+  try {
+    const r = await db.query(
+      `SELECT kind, count(*)::int AS n, max(refused_at) AS latest,
+              count(*) FILTER (WHERE refused_at > now() - interval '30 days')::int AS last_30
+         FROM appraisal_format_refusals
+        WHERE refused_at > now() - ($1 || ' days')::interval
+        GROUP BY kind ORDER BY n DESC`, [String(sinceDays)]);
+    const by = {}; for (const row of r.rows) by[row.kind] = row;
+    return {
+      ok: true,
+      // The headline. Above zero means real appraisals are already arriving in a
+      // format the desk cannot read, and the reader is no longer optional.
+      uad36: (by.uad_3_6 || { n: 0, last_30: 0, latest: null }),
+      notAppraisal: (by.not_appraisal || { n: 0, last_30: 0, latest: null }),
+      unreadable: (by.unreadable || { n: 0, last_30: 0, latest: null }),
+      mandatoryFrom: '2026-11-02',
+      reads: 'UAD 2.6 (MISMO 2.6)',
+    };
+  } catch (_) { return { ok: false }; }
+}
+
 async function importAppraisalTx(db, {
   applicationId, xml, importedBy = null,
   sourceXmlDocumentId = null, pdfDocumentId = null,
@@ -50,7 +136,30 @@ async function importAppraisalTx(db, {
 }) {
   if (!applicationId) throw new Error('applicationId required');
   const A = extract(xml);
-  if (!A.ok) return { ok: false, error: A.error || 'could not parse appraisal XML' };
+  if (!A.ok) {
+    // REMEMBER WHAT WE COULD NOT READ. UAD 3.6 / MISMO 3.x becomes MANDATORY for
+    // Fannie and Freddie appraisals on 2 NOVEMBER 2026 and PILOT reads UAD 2.6 —
+    // from that date the desk stops working on new reports. The parser already
+    // recognises the format and refuses it with an honest message, but the
+    // refusal was a sentence shown to one officer and then thrown away, so
+    // nobody could answer "how many did we turn away last month?" — the only
+    // question that says whether the exposure is still theoretical.
+    //
+    // AWAITED, INSIDE A SAVEPOINT — not fire-and-forget. Two traps this repo has
+    // already been bitten by, both live here: `db` is usually a TRANSACTION
+    // CLIENT that the caller COMMITs the moment this returns, so an un-awaited
+    // query races the commit and the release; and a failed statement inside a
+    // transaction ABORTS it, so a bare try/catch cannot contain one — every later
+    // statement, including the COMMIT, would fail. A savepoint contains it, and
+    // the whole thing is swallowed: recording a refusal may never change the
+    // refusal, and must never turn a clear "we cannot read this format" into a
+    // server error.
+    await bestEffortRefusal(db, {
+      applicationId, documentId: sourceXmlDocumentId, importedBy,
+      xml, format: A.format, reason: A.error,
+    });
+    return { ok: false, error: A.error || 'could not parse appraisal XML' };
+  }
 
   // Load the file row if not supplied (for findings + overwrite-shield).
   let f = file;
@@ -690,12 +799,19 @@ function buildFieldsJson(A) {
 //     the comparable's data-source string ("FLEXMLS# 22526198;DOM 97"). 264
 //     comparables gain it, 397 of 769 -> 660. 7 was claimed by the commit
 //     immediately before this one, so a report stamped 7 must be re-read.
-const COMP_PARSE_VERSION = 8;
+// 9 — the VIEW and LOCATION readers took only the FIRST of what UAD writes as one
+//     element per factor, so the adverse factor — the one that moves a price —
+//     was the one dropped: "Residential" stored where the grid said
+//     "Residential; BusyRoad", and the appraiser's own "Cem" / "Comm" discarded
+//     behind a bland "ResidentialView". Every stored comparable was read that
+//     way, so they all have to be re-read.
+const COMP_PARSE_VERSION = 9;
 
 module.exports = {
   importAppraisal,
   // Shared with the research warehouse's standalone XML upload (db/411) so one
   // report is read the same way whichever door it arrives through.
   appraisalRowFrom, comparableRowFrom, COMP_PARSE_VERSION,
+  recordFormatRefusal, formatRefusalCounts,
   _internals: { marketMonthlyRent, fillFileFacts },
 };

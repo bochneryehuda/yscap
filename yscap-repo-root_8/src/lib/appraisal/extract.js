@@ -124,12 +124,49 @@ function enumOf(v, set) { const s = clean(v); if (!s) return null; if (set.inclu
 // open GSE list (ResidentialView, CityStreetView, ParkView, WoodsView, WaterView …)
 // and a whitelist here would silently drop every value nobody thought of, which is
 // the trap the worded condition/quality fields already fell into.
-function viewTypeOf(node) {
-  if (!node) return null;
-  const code = clean(X.attr(node, 'GSEViewType'));
-  const other = clean(X.attr(node, 'GSEViewTypeOtherDescription'));
-  if (!code || /^other$/i.test(code)) return other || code || null;
-  return code;
+// A PROPERTY HAS AS MANY VIEW (AND LOCATION) FACTORS AS THE APPRAISER LISTED, AND
+// UAD WRITES ONE ELEMENT PER FACTOR — `_SequenceIdentifier="1"`, `"2"`, … The first
+// cut read `X.find(...)`, i.e. the FIRST element only, and the first is almost
+// always the bland one: measured on the real corpus, `ResidentialView` sat in slot
+// 1 while `Other`/"Cem" and `Other`/"Comm" sat in slot 2 and were discarded — so
+// the function dropped exactly the value its own comment says it exists to keep,
+// and "Comm" (cited in the commit that added it) was never once captured. 63 of
+// 769 comparables carry more than one view element and 65 carry more than one
+// location element; on the location side the dropped one is the PRICE-RELEVANT
+// factor — `["Residential","BusyRoad"]` and `["Residential","Commercial"]` both
+// stored plain "Residential".
+//
+// Every factor is kept, in the order the appraiser listed them, joined the way UAD
+// itself writes a multi-factor field ("N;Res;Wds"). Never sorted: the first factor
+// is the appraiser's primary one.
+//
+// A BARE `Other` WITH NO DESCRIPTION IS DROPPED. "Other" is a non-fact — it says
+// only that the list did not fit — and letting it through would beat a real NULL
+// in the roll-up's first-non-null loop and surface as though it described the
+// property.
+//
+// UNRECOGNISED CODES ARE KEPT AS WRITTEN rather than mapped to null — this is a
+// long open GSE list (ResidentialView, CityStreetView, ParkView, WoodsView,
+// WaterView …) and a whitelist here would silently drop every value nobody thought
+// of, which is the trap the worded condition/quality fields already fell into.
+function factorsOf(nodes, codeAttr, otherAttr) {
+  const out = [];
+  for (const n of (nodes || [])) {
+    const code = clean(X.attr(n, codeAttr));
+    const other = otherAttr ? clean(X.attr(n, otherAttr)) : null;
+    // The description wins when the code is `Other` or absent — that is the whole
+    // reason the description exists.
+    const v = (!code || /^other$/i.test(code)) ? other : code;
+    if (!v) continue;                       // a bare `Other`, or an empty element
+    if (!out.includes(v)) out.push(v);      // a repeated factor is stated once
+  }
+  return out.length ? out.join('; ') : null;
+}
+function viewTypeOf(nodes) {
+  return factorsOf(nodes, 'GSEViewType', 'GSEViewTypeOtherDescription');
+}
+function locationTypeOf(nodes) {
+  return factorsOf(nodes, 'GSELocationType', 'GSELocationTypeOtherDescription');
 }
 // A neighborhood _HOUSING price is in $THOUSANDS (575 = $575,000). Convert to dollars with a
 // magnitude guard so it can NEVER be confused with a full-dollar amount (a share of the corpus
@@ -764,7 +801,10 @@ function comparables(root, effectiveYear) {
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
       viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
       locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
-      locationType: clean(X.attr(X.find(c, 'COMPARISON_LOCATION_DETAIL'), 'GSELocationType')),
+      // EVERY location factor, not just the first — see `factorsOf`. The dropped
+      // one was the price-relevant one: 23 of 769 comparables carry a second
+      // element with a DIFFERENT code, and it is the BusyRoad / Commercial.
+      locationType: locationTypeOf(X.findAll(c, 'COMPARISON_LOCATION_DETAIL')),
       // WHAT THE COMPARABLE LOOKS OUT ON, not just whether the appraiser liked it.
       // The overall RATING above is a three-way verdict (Beneficial/Neutral/Adverse)
       // and every vendor that writes it also names the view itself — a comp backing
@@ -773,7 +813,7 @@ function comparables(root, effectiveYear) {
       // be re-judged later. `GSEViewTypeOtherDescription` is the appraiser's own
       // words when the enum is `Other`, which is where the interesting ones live
       // (measured across the corpus: Cemetery, Creek, Warehse, Comm).
-      viewType: viewTypeOf(X.find(c, 'COMPARISON_VIEW_DETAIL')),
+      viewType: viewTypeOf(X.findAll(c, 'COMPARISON_VIEW_DETAIL')),
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
       // A BASEMENT BEDROOM IS NOT A BEDROOM, and Fannie separates them on the form
@@ -787,14 +827,19 @@ function comparables(root, effectiveYear) {
       // "This basement has no bedrooms" and "the appraiser didn't say" are different
       // facts about a comparable, and `bounded` (which exists for money and areas)
       // refuses 0, so every stated zero would have been filed as silence: measured
-      // 31 of 769 comparables carrying a bed count instead of the 211 that state one.
+      // 31 of 769 comparables carrying a bed count instead of the 115 that state one.
       belowGradeBeds: count(X.attr(cd, 'GSEBelowGradeBedroomRoomCount'), 100),
       // AND THE BATH COUNT IS UAD `full.half`, NOT A DECIMAL — "0.1" is no full
       // baths and one half bath, not a tenth of a bathroom. It goes through the
       // same decoder the grid's own bath line uses, so the two can never disagree.
       belowGradeBaths: (() => {
         const b = parseBaths(X.attr(cd, 'GSEBelowGradeBathroomRoomCount'));
-        return b.full == null && b.half == null ? null : { full: b.full, half: b.half, text: b.text };
+        // BOTH HALVES OR NEITHER. `parseBaths` bounds the FULL count through an
+        // integer 0–99 guard but takes the half digit raw, so an out-of-range
+        // "999.5" yields {full:null, half:5} — which would store "no full baths
+        // recorded, but five half baths", a shape no report can mean. A pair that
+        // is not whole is not a reading.
+        return b.full == null || b.half == null ? null : { full: b.full, half: b.half, text: b.text };
       })(),
       belowGradeRecRooms: count(X.attr(cd, 'GSEBelowGradeRecreationRoomCount'), 100),
       belowGradeOtherRooms: count(X.attr(cd, 'GSEBelowGradeOtherRoomCount'), 100),

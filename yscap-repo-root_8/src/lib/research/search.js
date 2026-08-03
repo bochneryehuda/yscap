@@ -343,6 +343,18 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,
   p.view_rating, p.location_rating,
+  -- WHAT THE PROPERTY LOOKS OUT ON AND WHAT IS DOWNSTAIRS (db/437), by the same
+  -- rule as the block below: these were read, rolled up and then reachable by
+  -- nothing. view_type is the FACT ("Cem", "Comm", a park) beside view_rating,
+  -- which is one appraiser's Beneficial/Neutral/Adverse verdict on it — the
+  -- verdict cannot be re-judged later and the fact can. The below-grade counts are
+  -- deliberately NOT folded into beds / baths_full: those are the ABOVE-grade
+  -- figures the grid states, and the whole reason the form separates them is that
+  -- a basement bedroom is not a bedroom.
+  p.view_type, p.basement_exit, p.below_grade_beds,
+  p.below_grade_baths_full, p.below_grade_baths_half,
+  p.below_grade_rec_rooms, p.below_grade_other_rooms,
+  p.below_grade_sqft, p.below_grade_finished_sqft,
   p.sfha, p.fema_flood_zone, p.flood_zone, p.property_rights, p.occupancy_status,
   p.has_adu, p.attic, p.basement_finished_pct, p.lot_shape, p.market_rent, p.unit_mix,
   -- A FILTER WITHOUT A COLUMN IS HALF A FEATURE: you could search on the tax bill

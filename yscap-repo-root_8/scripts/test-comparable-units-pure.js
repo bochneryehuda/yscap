@@ -540,6 +540,11 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   ok(b20 && b20.full === 2 && b20.half === 0, '"2.0" is two full baths and no half');
   ok(bg('GSEBelowGradeBathroomRoomCount="0.0"').belowGradeBaths.full === 0,
     'and a stated 0.0 survives — the same zero trap as the bedrooms');
+  // BOTH HALVES OR NEITHER: the full count is bounded to 0-99 and the half digit
+  // is not, so an out-of-range value would otherwise store "no full baths
+  // recorded, but five half baths" — a shape no report can mean.
+  ok(bg('GSEBelowGradeBathroomRoomCount="999.5"').belowGradeBaths === null,
+    'a pair that is not whole is not a reading');
 
   ok(bg('GSEBasementExitType="WalkOut"').basementExit === 'WalkOut', 'the basement exit type is read');
   ok(bg('GSEBasementExitType="Nonsense"').basementExit === null,
@@ -559,6 +564,34 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
     'and "Other" yields the appraiser\'s own word, which is the informative case');
   ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="WoodsView"/>').viewType === 'WoodsView',
     'a code outside any whitelist is kept verbatim — the GSE list is long and open');
+
+  // UAD WRITES ONE ELEMENT PER FACTOR, and the first is the bland one. Reading
+  // only the first dropped exactly the value this exists to keep: on the real
+  // corpus `ResidentialView` sat in slot 1 while the appraiser's own "Cem" and
+  // "Comm" sat in slot 2 and were discarded.
+  ok(view('<COMPARISON_VIEW_DETAIL _SequenceIdentifier="1" GSEViewType="ResidentialView"/>'
+    + '<COMPARISON_VIEW_DETAIL _SequenceIdentifier="2" GSEViewType="Other" GSEViewTypeOtherDescription="Cem"/>')
+    .viewType === 'ResidentialView; Cem',
+  'EVERY view factor is kept, in the appraiser\'s own order — not just the first');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="Other"/>').viewType === null,
+    'a bare "Other" with no description is a non-fact and is refused — it would beat a real NULL in the roll-up');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="Other" GSEViewTypeOtherDescription="N/A"/>').viewType === null,
+    'and so is "Other" with a placeholder description');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="Other"/><COMPARISON_VIEW_DETAIL GSEViewType="ParkView"/>')
+    .viewType === 'ParkView',
+  'a bare "Other" beside a real factor drops only itself');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="ParkView"/><COMPARISON_VIEW_DETAIL GSEViewType="ParkView"/>')
+    .viewType === 'ParkView', 'a repeated factor is stated once');
+
+  // THE SAME BUG, THE SAME ROOT, ON LOCATION — and here the dropped factor is the
+  // price-relevant one. 23 of 769 real comparables carry a second location
+  // element with a different code, and it is the BusyRoad / Commercial.
+  ok(view('<COMPARISON_LOCATION_DETAIL _SequenceIdentifier="1" GSELocationType="Residential"/>'
+    + '<COMPARISON_LOCATION_DETAIL _SequenceIdentifier="2" GSELocationType="BusyRoad"/>')
+    .locationType === 'Residential; BusyRoad',
+  'the adverse location factor survives — it used to be dropped for the bland one');
+  ok(view('<COMPARISON_LOCATION_DETAIL GSELocationType="Residential"/>').locationType === 'Residential',
+    'a single location factor is unchanged');
   ok(view('').viewType === null, 'no view element states no view');
   // The rating and the type are different facts and must not overwrite each other.
   const v2 = view('<COMPARISON_VIEW_OVERALL_RATING GSEViewOverallRatingType="Adverse"/>'

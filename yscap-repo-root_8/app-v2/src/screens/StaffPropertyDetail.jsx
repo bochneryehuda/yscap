@@ -146,6 +146,31 @@ export default function StaffPropertyDetail() {
           <Fact k="Lot shape" v={p.lot_shape} />
           <Fact k="Lot dimensions" v={p.lot_dimensions} />
           <Fact k="Basement finished" v={p.basement_finished_pct == null ? null : `${Number(p.basement_finished_pct)}%`} />
+          {/* db/437 — WHAT IS ACTUALLY DOWN THERE, beside how big it is. The
+              bedroom and bathroom counts above are the ABOVE-grade ones the
+              appraisal grid states, and the form separates them because a
+              basement bedroom is not a bedroom — 800 finished feet is two
+              bedrooms or it is a boiler room, and only these say which. A stated
+              ZERO is shown: "no bedrooms down there" is an answer, and it reads
+              differently from a blank. */}
+          <Fact k="Basement rooms" v={(() => {
+            const bits = [];
+            if (p.below_grade_beds != null) bits.push(`${p.below_grade_beds} bed${p.below_grade_beds === 1 ? '' : 's'}`);
+            if (p.below_grade_baths_full != null || p.below_grade_baths_half != null) {
+              const f = p.below_grade_baths_full || 0; const h = p.below_grade_baths_half || 0;
+              bits.push(`${f}${h ? `.${h}` : ''} bath${f === 1 && !h ? '' : 's'}`);
+            }
+            if (p.below_grade_rec_rooms) bits.push(`${p.below_grade_rec_rooms} rec`);
+            if (p.below_grade_other_rooms) bits.push(`${p.below_grade_other_rooms} other`);
+            return bits.length ? bits.join(' · ') : null;
+          })()} />
+          <Fact k="Basement exit" v={p.basement_exit === 'WalkOut' ? 'Walk-out'
+            : p.basement_exit === 'WalkUp' ? 'Walk-up'
+              : p.basement_exit === 'InteriorOnly' ? 'Inside only' : p.basement_exit} />
+          <Fact k="Below-grade area" v={p.below_grade_sqft ? sqft(p.below_grade_sqft) : null} />
+          {/* The view RATING beside it is one appraiser's verdict; this is the
+              thing itself, and every factor they listed, not just the first. */}
+          <Fact k="View" v={p.view_type} />
           <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />
           <Fact k="Extra dwelling unit" v={p.has_adu === true ? 'Yes' : (p.has_adu === false ? 'No' : null)} />
           <Fact k="Heating fuel" v={p.heating_fuel} />
