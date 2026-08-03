@@ -264,9 +264,17 @@ app.get('/api/health', async (req, res) => {
     // `ok:false` means the database-level rule that keeps a Google-sourced coordinate
     // out of the permanent property warehouse (db/455) is not confirmed installed.
     // A licensing control, so it is reported rather than assumed.
+    //
+    // DELIBERATELY ONLY THE VERDICT. This endpoint is PUBLIC (see the storage and
+    // backup blocks above, scrubbed for the same reason), and the guard's own
+    // `why` carries a database error verbatim — host, port, role name — plus a
+    // count of violating rows. "The licensing control is OFF and 37 rows breach
+    // it" is a sentence for the boot log and for staff, not for anonymous callers.
     researchGeoLicensing: (() => {
-      try { return require('./lib/research/licensing-guard').health(); }
-      catch (e) { return { ok: false, checked: false, why: e.message }; }
+      try {
+        const h = require('./lib/research/licensing-guard').health();
+        return { ok: !!h.ok, checked: !!h.checked, at: h.at || null };
+      } catch (_e) { return { ok: false, checked: false, at: null }; }
     })(),
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
@@ -644,8 +652,11 @@ if (require.main === module) {
         // is right for a schema change and wrong for a CONTROL. Ask the database
         // out loud whether the Google-coordinate licensing rule (db/455) is
         // actually installed, so it can never be silently absent. Reports only;
-        // never blocks the boot.
-        await require('./lib/research/licensing-guard').assertGeoLicensing();
+        // never blocks the boot — and its OWN try/catch, because a throw from the
+        // `require` itself would otherwise skip bootstrapAdmin() and every boot
+        // backfill queued after it.
+        try { await require('./lib/research/licensing-guard').assertGeoLicensing(); }
+        catch (e) { console.error('[research] licensing check could not run:', e.message); }
         await bootstrapAdmin();   // opt-in: seeds first admin when ADMIN_EMAIL/PASSWORD set
         // One-shot: ensure every active/closed RTL file (imported or manual) has
         // its full condition set + internal checklist. Idempotent + marker-guarded,

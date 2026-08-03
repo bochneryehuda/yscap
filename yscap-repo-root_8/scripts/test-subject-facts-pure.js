@@ -188,10 +188,35 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
   // 200 and a "checked by a person" badge, on a grid with no size, room or
   // condition adjustment behind it. Reachable from the panel by clearing the box
   // with a space instead of a backspace.
-  for (const blank of ['   ', '\t', '$', ',', ' , ', '  $  ']) {
+  //
+  // WHAT COUNTS AS BLANK IS WHAT THE PERSON SEES AS BLANK. Whitespace, yes —
+  // including the zero-width space a paste out of a web page or a PDF carries,
+  // which `.trim()` does NOT remove (U+200B is category Cf, not Zs) and which
+  // would otherwise refuse with `"" is not a number`: a complaint about nothing
+  // at all, quoting a character that renders as empty.
+  for (const blank of ['   ', '\t', '\n', ' ', '​', ' ​ ', '﻿']) {
     const r = SF.cleanCorrections({ gla: blank });
     ok(r.problems.length === 0 && r.values.gla === null,
       `${JSON.stringify(blank)} is a BLANK, not a living area of zero`);
+  }
+  // PUNCTUATION IS NOT BLANK, AND CLEARING A FACT IS NOT A TYPO'S DECISION TO
+  // MAKE. A "$" or a "," is something the person can SEE in the box. Reading it
+  // as "we do not know" would DELETE a fact they never asked to delete — and on
+  // `units` that is not cosmetic: with no unit count the comparable search stops
+  // filtering by units at all, which is the one thing the owner asked can never
+  // happen. So it is refused, and the refusal says how to clear it on purpose.
+  for (const punct of ['$', ',', ' , ', '  $  ', '$ ,']) {
+    const r = SF.cleanCorrections({ gla: punct });
+    ok(r.values.gla === undefined && r.problems.length === 1,
+      `${JSON.stringify(punct)} is REFUSED — it never silently clears the living area`);
+    ok(/only punctuation/i.test(r.problems[0].why) && /clear it completely/i.test(r.problems[0].why),
+      `and the refusal says what to do instead: ${r.problems[0].why}`);
+  }
+  // The same, on the fact the owner cares about most.
+  {
+    const r = SF.cleanCorrections({ units: '$' });
+    ok(r.values.units === undefined && r.problems.length === 1,
+      'a stray character can never clear how many units a property has');
   }
   // A fat-fingered space becoming a plausible wrong number is worse than a
   // refusal, because nobody looks twice at a plausible number.

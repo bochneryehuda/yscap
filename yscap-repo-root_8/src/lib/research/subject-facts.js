@@ -62,14 +62,27 @@
  * in digits, so the shape is checked rather than left to the coercion.
  */
 const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
-/* THE ONE PREPARATION, so `num()` and the blank test can never disagree about
-   what an empty box is. `cleanCorrections` used to test blankness with a plain
-   `.trim()`, which does not remove the currency sign or the thousands comma this
-   strips — so a box cleared down to "$" or "," fell through to the number branch
-   and came back as `"$" is not a number`: a REFUSAL, raised against an answer
-   nobody gave. Reachable from the panel by selecting "1,200" and typing over all
-   of it but the comma. */
-const strippedForNumber = (v) => String(v).trim().replace(/[$,]/g, '');
+/**
+ * EMPTY MEANS WHAT THE PERSON CAN SEE IS EMPTY — and nothing more.
+ *
+ * `.trim()` already removes the space, the tab, the non-breaking space, the BOM
+ * and the ideographic space. It does NOT remove the ZERO-WIDTH SPACE (U+200B is
+ * category Cf, not Zs) or its neighbours, which a paste out of a web page or a
+ * PDF carries far more often than any of those — and a box holding one LOOKS
+ * empty while refusing with `"​" is not a number`, which renders on screen as
+ * `"" is not a number`: a complaint about nothing at all.
+ *
+ * SO INVISIBLE IS BLANK, AND VISIBLE IS NOT. A "$" or a "," left in the box is
+ * something the person can SEE, so it is a typo to point at — never a licence to
+ * DELETE a fact they never asked to delete. Clearing `units` is a real answer
+ * ("we do not know") with real consequences downstream, and it must be something
+ * somebody chose, not something a stray keystroke did on their behalf. The
+ * refusal names what to do instead.
+ */
+const INVISIBLE_RE = /[​-‍⁠﻿]/g;
+const visible = (v) => String(v).replace(INVISIBLE_RE, '').trim();
+/** What is left once the currency sign and thousands commas come off. */
+const strippedForNumber = (v) => visible(v).replace(/[$,]/g, '');
 const num = (v) => {
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -335,15 +348,24 @@ function cleanCorrections(input) {
       problems.push({ key: k, label: f.label, why: 'that is not something this field holds' });
       continue;
     }
-    // BLANK IS BLANK, however it is spelled. A box cleared with a space instead of
-    // a backspace — or down to the currency sign or the comma it was typed with —
-    // is "we do not know", not a living area of zero and not a thing to argue
-    // with. Judged by the SAME preparation `num()` uses, so the two agree.
-    if (raw === null || strippedForNumber(raw) === '') { out[k] = null; continue; }
+    // BLANK IS BLANK, however it is spelled — a box cleared with a space instead
+    // of a backspace, or holding only characters that render as nothing, is "we
+    // do not know". A box the person can SEE something in is never blanked for
+    // them; see `visible()`.
+    if (raw === null || visible(raw) === '') { out[k] = null; continue; }
     if (f.kind === 'int') {
       const n = num(raw);
       if (n == null || !Number.isFinite(n)) {
-        problems.push({ key: k, label: f.label, why: `"${String(raw).slice(0, 40)}" is not a number` });
+        // PUNCTUATION IS ITS OWN ANSWER. `"$" is not a number` is true and
+        // useless: the person is staring at a box they think is empty. Say what
+        // it holds, and say the one thing that clears the fact on purpose.
+        // Interior whitespace counts as nothing here too, or "$," and "$ ," —
+        // the same typo with a stray space — would get two different answers.
+        const shown = visible(raw);
+        problems.push({ key: k, label: f.label,
+          why: shown.replace(/[$,\s]/g, '') === ''
+            ? `that box has only punctuation ("${shown}") in it — clear it completely to say we do not know`
+            : `"${shown.slice(0, 40)}" is not a number` });
         continue;
       }
       if (n < 0) { problems.push({ key: k, label: f.label, why: 'that cannot be negative' }); continue; }
