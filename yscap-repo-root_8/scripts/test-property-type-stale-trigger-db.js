@@ -58,7 +58,13 @@ const R = require('path').resolve(__dirname, '..');
   // ---- 1. the SQL twins must agree with the JS module ----------------------
   // A drift here is the whole bug class coming back: the trigger and the app
   // layer would disagree about what "the same property type" means.
+  // 1004D IS IN THIS LIST ON PURPOSE. The SQL and the JS drifted for a whole
+  // release precisely because no sample carried that spelling: db/432 taught the
+  // JS that the Appraisal UPDATE form proves nothing, and db/322's SQL twin went
+  // on answering "sfr" — so every boot rewrote a 1400-1402-Stratford two-family
+  // to "SFR (1 unit)" and audited it as a repair. This assertion is the guard.
   const SAMPLES = ['FNM1025', 'FNM 1025', 'fnm-1025', '1025', 'FNM1004', 'FNM1073', 'URAR', '2055',
+    'FNM1004D', 'fnm 1004d', '1004D', '1004-d', 'FNM1004C', '1004c',
     'Multi 2–4', 'Multi 2-4', 'multi_2_4', '2-4 Family', 'Duplex', 'Triplex',
     'SFR (1 unit)', 'sfr', 'Single Family', 'Detached', 'Multi 5+', 'multi_5_plus',
     'Condo', 'Co-Op', 'Townhouse', 'PUD', 'Mixed use', 'New Construction', '', null];

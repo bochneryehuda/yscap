@@ -54,10 +54,15 @@ import StaffVendors from './screens/StaffVendors.jsx';
 import StaffDashboards from './screens/StaffDashboards.jsx';
 import StaffDashboard from './screens/StaffDashboard.jsx';
 import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
+import StaffCompSearch from './screens/StaffCompSearch.jsx';
+import StaffMarket from './screens/StaffMarket.jsx';
+import StaffAdjustments from './screens/StaffAdjustments.jsx';
 import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';
 import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
 import StaffValuation from './screens/StaffValuation.jsx';
+import StaffCompReportScreen from './screens/StaffCompReportScreen.jsx';
+import StaffQuickAnswer from './screens/StaffQuickAnswer.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
@@ -205,10 +210,17 @@ export default function App() {
           {/* Research desk — every staff role, no per-file scoping (owner-directed:
               "make it available for all the staff users to see all the things"). */}
           <Route path="/internal/research" element={<StaffPrivate><StaffPropertyResearch /></StaffPrivate>} />
+          {/* Subject-anchored comp search: start from a property, a loan file, or a typed address. */}
+          <Route path="/internal/research/comps" element={<StaffPrivate><StaffCompSearch /></StaffPrivate>} />
+          {/* What the appraisers themselves said about a town's market, month by month. */}
+          <Route path="/internal/research/market" element={<StaffPrivate><StaffMarket /></StaffPrivate>} />
+          <Route path="/internal/research/adjustments" element={<StaffPrivate><StaffAdjustments /></StaffPrivate>} />
           <Route path="/internal/research/property/:id" element={<StaffPrivate><StaffPropertyDetail /></StaffPrivate>} />
           <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
           <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />
+          <Route path="/internal/research/quick" element={<StaffPrivate><StaffQuickAnswer /></StaffPrivate>} />
           <Route path="/internal/research/valuation/:id" element={<StaffPrivate><StaffValuation /></StaffPrivate>} />
+          <Route path="/internal/research/valuation/:id/report" element={<StaffPrivate><StaffCompReportScreen /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />
           <Route path="/internal/pipeline-shadow" element={<StaffPrivate><StaffPipelineShadow /></StaffPrivate>} />
