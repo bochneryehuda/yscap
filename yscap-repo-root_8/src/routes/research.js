@@ -101,7 +101,16 @@ router.get('/properties/:id', async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
     const p = (await db.query(`SELECT * FROM properties WHERE id=$1`, [req.params.id])).rows[0];
-    if (!p) return res.status(404).json({ error: 'not found' });
+    if (!p) {
+      // A MERGED PROPERTY'S LINK MUST NOT DIE. A bookmarked or emailed property page
+      // whose row was folded into another one answers with where it went, rather
+      // than a bare "not found" that reads as data loss.
+      try {
+        const to = await require('../lib/research/property-merge').survivorOf(db, req.params.id);
+        if (to) return res.status(301).json({ error: 'merged', merged_into: to });
+      } catch (_) { /* the redirect is a courtesy; the 404 below is still the truth */ }
+      return res.status(404).json({ error: 'not found' });
+    }
     const [obs, sales, photos] = await Promise.all([
       db.query(
         `SELECT o.*, ap.name AS appraiser_name, ap.company AS appraiser_company,
@@ -796,6 +805,67 @@ router.post('/backfill', async (req, res, next) => {
     const out = await ingest.backfill(db, { limit, force: !!(req.body && req.body.force) });
     await audit(req.actor.id, 'research_backfill', null, out);
     res.json({ ...out, status: await ingest.ingestStatus(db) });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// TWO ROWS, ONE HOUSE — the duplicates the address key cannot fold (db/416)
+// ---------------------------------------------------------------------------
+/**
+ * The owner's rule is that the same comparable on two appraisals must never become
+ * two properties. The address key already folds two SPELLINGS of one address, and
+ * the roll-up already merges the facts — so this covers only what the key cannot
+ * reach on its own, and it is ADVISORY: nothing here is ever merged without a person
+ * saying so. Folding two DIFFERENT houses corrupts every price-per-foot reading in
+ * the warehouse and no re-ingest undoes it, which is far worse than a duplicate.
+ */
+router.get('/duplicates', async (req, res, next) => {
+  try {
+    const M = require('../lib/research/property-merge');
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const propertyId = isUuid(req.query.property_id) ? req.query.property_id : null;
+    res.json({ rows: await M.findDuplicates(db, { propertyId, limit }) });
+  } catch (e) { next(e); }
+});
+
+/**
+ * Merge one property into another. Gated on `platform_setup` like the other two
+ * doors on this router that change the shape of the warehouse — it DELETES a row,
+ * which is the most destructive thing anyone can do in here.
+ */
+router.post('/duplicates/merge', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'platform_setup')) return res.status(403).json({ error: 'You do not have access to that.' });
+    const M = require('../lib/research/property-merge');
+    const b = req.body || {};
+    if (!isUuid(b.survivor_id) || !isUuid(b.merged_id)) {
+      return res.status(400).json({ error: 'Two properties are needed: which one stays, and which one is folded into it.' });
+    }
+    const out = await M.mergeProperties(db, b.survivor_id, b.merged_id,
+      { cause: txt(b.cause) || 'manual', by: req.actor.id });
+    await audit(req.actor.id, 'research_property_merge', b.survivor_id, out);
+    res.json(out);
+  } catch (e) {
+    // A merge refuses rather than half-completes; the reason is worth reading.
+    if (/no longer exists|merged into itself|does not know what to do/i.test((e && e.message) || '')) {
+      return res.status(409).json({ error: e.message });
+    }
+    next(e);
+  }
+});
+
+/** "I checked — these are two different houses." Stops the pair coming back. */
+router.post('/duplicates/not-duplicate', async (req, res, next) => {
+  try {
+    const M = require('../lib/research/property-merge');
+    const b = req.body || {};
+    if (!isUuid(b.property_id) || !isUuid(b.other_property_id)) {
+      return res.status(400).json({ error: 'Two properties are needed.' });
+    }
+    await M.markNotDuplicate(db, b.property_id, b.other_property_id,
+      { reason: txt(b.reason), by: req.actor.id });
+    await audit(req.actor.id, 'research_property_not_duplicate', b.property_id, { other: b.other_property_id });
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 
