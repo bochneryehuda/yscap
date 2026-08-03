@@ -414,5 +414,40 @@ function corpus(n, f) {
     'each group publishes its median size, so the confound is visible even when it passes');
 }
 
+// ---- AN ASKING PRICE IS NOT A SALE -------------------------------------------
+// `reconcile` halves a listing's weight, but a half-weighted listing in a small
+// set still carries a lot — a recent, well-matched one was measured at 36% of the
+// total — and it counts in FULL toward the median, the range and the price per
+// foot, which are plain unweighted statistics over the same rows. The value is
+// still produced; the reader is told how much of it is an asking price.
+{
+  const subject = { gla: 1500, beds: 3, baths_full: 2 };
+  const comps = [
+    { sale_price: 400000, gla: 1500, sale_date: '2026-06-01', sale_status: 'closed', adjustedPrice: 400000, grossAdjPct: 5 },
+    { sale_price: 410000, gla: 1500, sale_date: '2026-05-01', sale_status: 'closed', adjustedPrice: 410000, grossAdjPct: 5 },
+    { sale_price: 520000, gla: 1500, sale_date: '2026-07-01', sale_status: 'active', adjustedPrice: 520000, grossAdjPct: 2 },
+  ];
+  const r = V.reconcile(subject, comps, { today: TODAY });
+  ok(typeof r.listingWeightPct === 'number' && r.listingWeightPct > 0,
+    'the answer REPORTS what share of its weight is an asking price rather than a sale');
+  ok(r.listingWeightPct < 100, 'and that share is a percentage of the whole, not a count');
+  const w = V.setWarnings(subject, comps, { today: TODAY });
+  const flag = w.find((x) => x.code === 'listings_in_the_answer');
+  ok(flag && flag.severity === 'warning', 'and a third of the set being unsold raises a warning');
+  ok(flag && /ASKING/.test(flag.text) && /lead the market/.test(flag.text),
+    'which says plainly that an asking price is not what anybody paid');
+
+  // All closed → no flag, and nothing rests on an asking price.
+  const allClosed = comps.map((c) => Object.assign({}, c, { sale_status: 'closed' }));
+  const r2 = V.reconcile(subject, allClosed, { today: TODAY });
+  ok(r2.listingWeightPct === 0, 'a set of closed sales reports a zero share');
+  ok(!V.setWarnings(subject, allClosed, { today: TODAY }).some((x) => x.code === 'listings_in_the_answer'),
+    'and raises no listing warning');
+  // A SWITCHED-OFF listing is not in the answer, so it must not be counted in it.
+  const off = comps.map((c) => (c.sale_status === 'active' ? Object.assign({}, c, { include: false }) : c));
+  ok(V.reconcile(subject, off, { today: TODAY }).listingWeightPct === 0,
+    'a comparable the user switched OFF carries none of the answer');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

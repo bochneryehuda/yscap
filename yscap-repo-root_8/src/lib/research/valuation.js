@@ -248,6 +248,23 @@ function setWarnings(subject, comps, { today = null } = {}) {
     w.push({ code: 'too_few_comps', severity: closed.length === 0 ? 'fatal' : 'warning',
       text: `Only ${closed.length} closed sale${closed.length === 1 ? '' : 's'} — an opinion of value normally rests on at least ${T.minClosedComps}.` });
   }
+  // AN ASKING PRICE IS NOT A SALE. `reconcile` already halves a listing's weight,
+  // but a half-weighted listing in a small set still carries a lot — a recent,
+  // well-matched one was measured at 36% of the total — and it counts in FULL
+  // toward the median, the range and the price per foot, which are plain
+  // unweighted statistics over the same rows. The value is still produced (rule 2
+  // of this engine: never hide a weak answer, show it wearing its caveats); the
+  // reader is simply told how much of it is what somebody is asking.
+  const open = usable.filter((c) => c.sale_status && c.sale_status !== 'closed');
+  if (open.length && usable.length) {
+    const share = Math.round((open.length / usable.length) * 100);
+    if (share >= 25) {
+      w.push({ code: 'listings_in_the_answer', severity: 'warning',
+        text: `${open.length} of the ${usable.length} comparables ${open.length === 1 ? 'is' : 'are'} still `
+          + `for sale or under contract — about ${share}% of this answer rests on what somebody is ASKING, `
+          + 'not on what anybody paid. Asking prices lead the market on the way up and lag it on the way down.' });
+    }
+  }
   // BRACKETING: a defensible value has comps ABOVE and BELOW the subject on the
   // things that drive price. Without it the answer is an extrapolation.
   const sg = num(subject && subject.gla);
@@ -312,6 +329,16 @@ function reconcile(subject, comps, opts = {}) {
     return w > 0 ? w : 0.0001;
   });
   const wsum = weights.reduce((a, b) => a + b, 0);
+  // HOW MUCH OF THIS ANSWER IS AN ASKING PRICE. A listing is halved above, but a
+  // half-weighted listing in a small set still carries a lot: with three comps a
+  // recent, well-matched listing was measured carrying 36% of the total — and it
+  // counts in FULL toward the median, the range and the price per foot, which are
+  // plain unweighted statistics over the same rows. A number resting a third on
+  // what somebody is ASKING is a different claim from one resting on what people
+  // PAID, and the reader has to be told which they are looking at.
+  const openWeight = usable.reduce((acc, c, i) =>
+    acc + ((c.sale_status && c.sale_status !== 'closed') ? weights[i] : 0), 0);
+  const listingWeightPct = wsum > 0 ? round((openWeight / wsum) * 100, 0.1) : 0;
   const prices = usable.map((c) => c.adjustedPrice);
   const weighted = wsum > 0 ? usable.reduce((acc, c, i) => acc + c.adjustedPrice * weights[i], 0) / wsum : null;
   const mid = median(prices);
@@ -334,6 +361,9 @@ function reconcile(subject, comps, opts = {}) {
     method,
     indicatedValue: round(raw, roundTo),
     indicatedValueRaw: raw,
+    // What share of the weighted answer is an ASKING price rather than a sale.
+    listingWeightPct,
+
     weightedAverage: round(weighted, roundTo),
     median: round(mid, roundTo),
     mean: round(mean, roundTo),

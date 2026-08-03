@@ -665,11 +665,24 @@ function parseAddressParts(v) {
 function houseMatches(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
-  // A range covers its endpoints: "27-29 Tuscany Ter" IS "27 Tuscany Ter",
-  // "218-222 Skillman" IS "218 Skillman" (one building, written two ways).
+  // A HYPHEN IS NOT ALWAYS A RANGE, AND READING IT AS ONE MERGED REAL HOMES.
+  // In Queens, the Bronx, much of Philadelphia and Hawaii, a hyphenated house
+  // number is ONE number — the prefix is the nearest cross-street — so "150-25
+  // 78th Rd" and "150-99 78th Rd" are two different houses that merely share a
+  // prefix. Matching on ANY shared endpoint made them the same address, and so
+  // were "61-20 Grand Ave" and "20-61 Grand Ave". This comparer gates USPS
+  // stamping and the closing of sync reviews, and its whole stated discipline is
+  // to UNDER-match — so a review about one property could be closed by another.
+  //
+  // The range case this exists for always has a BARE number on one side ("27-29
+  // Tuscany Ter" IS "27 Tuscany Ter"; "218-222 Skillman" IS "218 Skillman" — one
+  // building written two ways). Two hyphenated numbers that are not identical are
+  // simply two different houses, and no arithmetic can tell a genuine span from a
+  // Queens number: "27-29" and "61-63" are the same shape.
+  const A = String(a), B = String(b);
+  if (A.includes('-') && B.includes('-')) return false;
   const ends = (x) => String(x).split('-').filter(Boolean);
-  const ea = ends(a), eb = ends(b);
-  return ea.some((v) => eb.includes(v));
+  return ends(A).some((v) => ends(B).includes(v));
 }
 
 /**

@@ -188,6 +188,35 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
     console.log('  ~~ SKIP address review-close DB test (no DATABASE_URL)');
   }
 
+  // ── A HYPHEN IS NOT ALWAYS A RANGE ────────────────────────────────────────
+  // In Queens, the Bronx, much of Philadelphia and Hawaii a hyphenated house
+  // number is ONE number — the prefix is the nearest cross-street. Matching on
+  // any shared endpoint made "150-25 78th Rd" and "150-99 78th Rd" the same
+  // address: two different homes. This comparer gates USPS stamping and the
+  // CLOSING of sync reviews, and its whole discipline is to UNDER-match, so the
+  // over-match could close a review about one property using another.
+  for (const [a, b, why] of [
+    ['150-25 78th Rd, Queens, NY 11367', '150-99 78th Rd, Queens, NY 11367', 'two Queens houses sharing a prefix'],
+    ['150-25 78th Rd, Queens, NY 11367', '150-26 78th Rd, Queens, NY 11367', 'next door in Queens'],
+    ['61-20 Grand Ave, Queens, NY 11378', '20-61 Grand Ave, Queens, NY 11378', 'the same digits, reversed'],
+  ]) {
+    ok(!ADDR.sameAddress(a, b), `two hyphenated numbers are two houses (${why}):\n     A: ${a}\n     B: ${b}`);
+    ok(!ADDR.sameAddress(b, a), 'and it is symmetric: ' + why);
+  }
+  // …while the case the range logic EXISTS for is untouched: one building
+  // written two ways, which always has a BARE number on one side.
+  for (const [a, b] of [
+    ['27-29 Main St, Newark, NJ 07103', '27 Main St, Newark, NJ 07103'],
+    ['27-29 Main St, Newark, NJ 07103', '29 Main St, Newark, NJ 07103'],
+    ['218-222 Skillman Ave, Brooklyn, NY 11211', '218 Skillman Ave, Brooklyn, NY 11211'],
+  ]) {
+    ok(ADDR.sameAddress(a, b), `a range still covers its own endpoint: ${a} / ${b}`);
+  }
+  ok(!ADDR.sameAddress('27-29 Main St, Newark, NJ 07103', '31 Main St, Newark, NJ 07103'),
+    'and a number outside the range is still a different house');
+  ok(ADDR.sameAddress('150-25 78th Rd, Queens, NY 11367', '150-25 78th Road, Queens, NY 11367'),
+    'an identical hyphenated number still matches through the ordinary spelling rules');
+
   console.log(`same-address comparison: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
