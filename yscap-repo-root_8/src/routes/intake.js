@@ -357,11 +357,12 @@ async function siteIntake(p, opts = {}) {
       try {
         const entityName = String(p.entityName || p.eName || '').trim();
         if (entityName) {
-          const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, entityName]);
-          const llcId = ex.rows[0] ? ex.rows[0].id
-            : (await db.query(`INSERT INTO llcs (borrower_id, llc_name, ein, formation_state) VALUES ($1,$2,$3,$4) RETURNING id`,
-                [borrowerId, entityName, (p.eEin || p.entityEin || null), (p.eState || p.entityState || null)])).rows[0].id;
-          await require('../lib/vesting').setVestingLlc(appId, llcId, { source: 'intake' });
+          await require('../lib/vesting').setVestingLlcByName(appId, entityName, {
+            source: 'intake',
+            // Only used when the entity is genuinely NEW — a name the borrower
+            // already has keeps its own details (never overwritten by a re-type).
+            fields: { ein: (p.eEin || p.entityEin || null), formationState: (p.eState || p.entityState || null) },
+          });
         }
       } catch (vestErr) { console.error('[intake] vesting wiring failed:', db.describeError(vestErr)); }
     }
