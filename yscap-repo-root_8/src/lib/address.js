@@ -11,16 +11,35 @@ function stateAbbr(s) { if (!s) return ''; s = s.trim(); if (s.length === 2 && S
 
 // The keyword must be a whole word (\b on BOTH sides) so an abbreviation like
 // "Fl" never matches inside a longer street name; plus a bare "#unit" form.
+// A bare house number — 12, 12A, 27-29, 12/14. Used by splitUnit's street-name
+// guard AND by the parser, so it is declared above both (const is not hoisted).
+const isHouseNumber = (t) => /^\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?$/.test(String(t || '').trim());
+
 const UNIT_RE = /\b(?:apt|apartment|unit|ste|suite|fl|floor|rm|room|bldg|building|lot|trlr|trailer|dept|department)\b\.?\s*#?\s*([A-Za-z0-9-]+)|#\s*([A-Za-z0-9-]+)/i;
 
-/** Pull an apartment/suite token out of a street string. Returns { line1, unit }. */
+/**
+ * Pull an apartment/suite token out of a street string. Returns { line1, unit }.
+ *
+ * A STREET WHOSE NAME IS A UNIT KEYWORD MUST NOT BE EATEN. "5 Building Rd" and
+ * "5 Room Rd" both matched `\b(building|room)\b\s*(\S+)`, so the STREET NAME went
+ * into `unit` and `line1` came back as the bare house number "5" — and every
+ * property on either road collapsed to one key, `5|rd|newark|nj`. Two different
+ * streets merged into one property, which is the single worst thing this
+ * codebase's address handling can do.
+ *
+ * `withoutUnit` has carried exactly this guard since 2026-07-27 and documents the
+ * same failure; it belongs HERE, at the split itself, so every caller inherits it
+ * rather than each one re-discovering the trap. If the split leaves nothing but a
+ * house number, the keyword was part of the street name and no unit was found.
+ */
 function splitUnit(street) {
   const s = String(street || '').trim();
   const m = s.match(UNIT_RE);
   if (!m) return { line1: s, unit: '' };
   const unit = (m[0].replace(/^#/, '# ').trim());
   const line1 = (s.slice(0, m.index) + s.slice(m.index + m[0].length)).replace(/\s*,\s*$/, '').replace(/\s{2,}/g, ' ').trim().replace(/,\s*$/, '');
-  return { line1: line1 || s, unit };
+  if (!line1 || isHouseNumber(line1)) return { line1: s, unit: '' };
+  return { line1, unit };
 }
 
 // county is captured for underwriting but is intentionally NOT part of the
@@ -119,7 +138,6 @@ const STREET_SUFFIXES = {
   point: 'Pt', pt: 'Pt', crescent: 'Cres', cres: 'Cres', gardens: 'Gdns', gdns: 'Gdns',
 };
 const wordKey = (t) => String(t || '').toLowerCase().replace(/[.,]/g, '');
-const isHouseNumber = (t) => /^\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?$/.test(String(t || '').trim());
 
 /**
  * "26 South 10th Street" -> "26 S 10th St". Abbreviates the trailing street

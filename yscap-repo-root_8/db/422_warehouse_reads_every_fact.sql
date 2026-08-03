@@ -84,11 +84,9 @@ ALTER TABLE properties            ADD COLUMN IF NOT EXISTS depreciation_external
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS depreciation_total numeric(14,2);
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS depreciation_total numeric(14,2);
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS cost_data_source text;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS cost_data_source text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS cost_quality_rating text;
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS cost_quality_rating text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS listing_history text;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS listing_history text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS building_status text;
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS building_status text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS off_site_improvements jsonb;
@@ -108,15 +106,10 @@ ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_project_type te
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_units_planned integer;
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_units_planned integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_units_completed integer;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_units_completed integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_units_sold integer;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_units_sold integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_units_rented integer;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_units_rented integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_units_for_sale integer;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_units_for_sale integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_owner_occupied integer;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_owner_occupied integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_total_phases integer;
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_total_phases integer;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_parking_spaces integer;
@@ -128,13 +121,9 @@ ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_commercial_spac
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_management_type text;
 ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_management_type text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_developer_control boolean;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_developer_control boolean;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condo_concentrated_ownership boolean;
-ALTER TABLE properties            ADD COLUMN IF NOT EXISTS condo_concentrated_ownership boolean;
 
 -- ── REPORT facts: on the observation ONLY. Never roll these up. ────────────
-ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS form_version text;
-ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS software_vendor text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS appraisal_purpose text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS appraisal_purpose_other text;
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS uspap_report_type text;
@@ -166,3 +155,24 @@ CREATE INDEX IF NOT EXISTS idx_properties_tax_amount
 CREATE INDEX IF NOT EXISTS idx_properties_condo_project
   ON properties(lower(condo_project_name)) WHERE condo_project_name IS NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- ELEVEN COLUMNS THIS FILE USED TO ADD ARE GONE — AND REMOVING THEM HERE IS THE
+-- FIX, not tidying.
+--
+-- `migrate-boot` runs every numbered file's FULL TEXT on EVERY boot. So an ADD
+-- here and a DROP in db/424 do not settle: db/422 re-adds what db/424 removed,
+-- db/424 removes it again, and the pair CHURNS ELEVEN COLUMNS PER BOOT. A dropped
+-- column keeps its `pg_attribute` slot forever, and Postgres allows 1600 per
+-- table — so the loop is a countdown. MEASURED on a database this branch had been
+-- booted against: 1,476 dropped attributes on `properties` and 328 on
+-- `property_observations` — exactly 9 and 2 per boot over 164 boots — and
+-- `properties` had reached attnum 1600, so the next migration failed with
+-- "tables can have at most 1600 columns" and the table was permanently dead.
+--
+-- The nine `properties` columns (the condo absorption counts, the listing note,
+-- the cost service) and the two dead `property_observations` columns
+-- (`form_version` / `software_vendor`, which nothing has ever been able to fill)
+-- are simply never created now. db/424 KEEPS its DROPs so a database where the
+-- old version of this file already ran is still cleaned up once — after which
+-- both files are stable no-ops. `check-migrations` now refuses this shape.
+-- ---------------------------------------------------------------------------

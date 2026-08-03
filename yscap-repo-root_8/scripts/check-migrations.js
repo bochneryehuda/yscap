@@ -109,6 +109,52 @@ for (const f of files) {
   }
 }
 
+// ---- N. AN ADD IN ONE FILE AND A DROP IN A LATER ONE IS A COUNTDOWN (HARD) ---
+// `migrate-boot` runs every numbered file's FULL TEXT on EVERY boot, so the pair
+// never settles: the earlier file re-ADDs what the later one DROPPED, the later
+// one DROPs it again, and each round burns a permanent `pg_attribute` slot.
+// Postgres allows 1600 per table, so it is a countdown to that table dying with
+// "tables can have at most 1600 columns" — and nothing warns you on the way.
+//
+// MEASURED before this check existed: db/422 added 11 columns db/424 removed, and
+// a database this branch had been booted against carried 1,476 dropped attributes
+// on `properties` and 328 on `property_observations` — exactly 9 and 2 per boot
+// over 164 boots — with `properties` sitting at attnum 1600, permanently dead.
+//
+// THE FIX IS ALWAYS THE SAME: stop CREATING the column in the earlier file. The
+// later file keeps its DROP so a database that already ran the old version is
+// cleaned up once, after which both are stable no-ops.
+{
+  const added = new Map();   // "table.column" -> file that creates it
+  const addRe = /ALTER\s+TABLE\s+(?:ONLY\s+)?(\w+)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi;
+  const dropRe = /ALTER\s+TABLE\s+(?:ONLY\s+)?(\w+)\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?(\w+)/gi;
+  for (const f of files) {
+    const sql = fs.readFileSync(path.join(DB_DIR, f), 'utf8');
+    // A DROP inside a DO-block guarded on the column's current TYPE is the
+    // sanctioned retype (db/424's comp_research): it fires once and then never
+    // again, so it does not churn. Only an unguarded top-level DROP counts.
+    const guardedRetype = /DO\s+\$\$[\s\S]*?DROP\s+COLUMN[\s\S]*?END\s+\$\$/i.test(sql);
+    let m;
+    dropRe.lastIndex = 0;
+    while ((m = dropRe.exec(sql))) {
+      const key = `${m[1].toLowerCase()}.${m[2].toLowerCase()}`;
+      const creator = added.get(key);
+      if (creator && creator !== f && !guardedRetype) {
+        hardErrors++;
+        fail(`${f} DROPs ${key}, which ${creator} CREATES — every boot re-adds and re-drops it, `
+          + 'burning a permanent column slot each time (1600 per table, then that table is dead). '
+          + `Remove the ADD from ${creator} instead; keep the DROP here to clean up databases that `
+          + 'already ran the old version.');
+      }
+    }
+    addRe.lastIndex = 0;
+    while ((m = addRe.exec(sql))) {
+      const key = `${m[1].toLowerCase()}.${m[2].toLowerCase()}`;
+      if (!added.has(key)) added.set(key, f);
+    }
+  }
+}
+
 console.log(`Checked ${files.length} numbered migrations (highest number: ${maxNum}, next free: ${maxNum + 1}).`);
 if (hardErrors) console.error(`\n${hardErrors} hard error(s).`);
 if (warnings) console.warn(`${warnings} warning(s).`);

@@ -620,6 +620,15 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // RE-KEY THE WAREHOUSE BEFORE ANYTHING ELSE TOUCHES IT. `address_key` IS a
+        // property's identity, so a change to how it is computed does not fail
+        // loudly — it silently MINTS A DUPLICATE the next time a report arrives
+        // about a house we already hold. Runs ahead of the research back-fill for
+        // that reason. Bounded per boot, self-draining, never throws.
+        require('./lib/research/rekey').rekeyOnce(require('./db'))
+          .then((r) => (r.rekeyed || r.merged || r.errors.length)
+            && console.log('[boot] property re-key:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] property re-key failed:', e.message));
         // THE ONLY THING THAT HEALS A PARSER BUG ON A REPORT ALREADY IMPORTED.
         // Re-ingesting the warehouse cannot: it reads the STORED comparable rows,
         // which are the ones the parser wrote wrong. Re-parses the source XML and
