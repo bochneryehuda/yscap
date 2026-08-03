@@ -394,6 +394,22 @@ function buildQuery(input = {}) {
       where.push('p.eff_latitude IS NOT NULL AND p.eff_longitude IS NOT NULL');
     }
   }
+  // HOW THE POSITION WAS ESTABLISHED (db/446), as a filter — because a distance
+  // measured from a ZIP centroid is not a worse answer than one measured from a
+  // rooftop, it is a number about a different question. A caller who cares says
+  // which bases it will accept; the default accepts all of them, so no existing
+  // search changes. Named rather than scored on purpose: ranking them on one
+  // scale would invite a threshold nobody can justify, and the honest statement
+  // is the source itself.
+  const geoBasis = list(f.geo_basis);
+  if (geoBasis) where.push(`p.eff_geo_source = ANY(${P(geoBasis)})`);
+  const notGeoBasis = list(f.exclude_geo_basis);
+  // NULL is not a basis to exclude — a property with no position at all is
+  // already excluded by every distance predicate, and `<> ANY` would silently
+  // drop it from a NON-distance search too.
+  if (notGeoBasis) {
+    where.push(`(p.eff_geo_source IS NULL OR NOT (p.eff_geo_source = ANY(${P(notGeoBasis)})))`);
+  }
 
   const sortKey = SORTS[str(f.sort)] ? str(f.sort) : (lat != null && lng != null ? 'distance' : 'recent_sale');
   const limit = Math.min(MAX_LIMIT, Math.max(1, Math.round(num(f.limit) || DEFAULT_LIMIT)));
@@ -410,7 +426,17 @@ function buildQuery(input = {}) {
 // The columns the result list renders. Explicit, so adding a column to
 // `properties` never silently widens every search payload.
 const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state, p.zip, p.county,
-  p.latitude, p.longitude, p.eff_latitude, p.eff_longitude, p.geo_source, p.property_type, p.property_category, p.units, p.year_built, p.gla,
+  p.latitude, p.longitude, p.eff_latitude, p.eff_longitude, p.geo_source,
+  -- WHERE THE POSITION CAME FROM (db/446). eff_latitude COALESCEs our own lookup
+  -- over the appraiser's own coordinate, and db/412's own comment says the
+  -- latter is "frequently the centre of the ZIP" -- so "0.3 miles away" can be a
+  -- rooftop measurement, a 17-foot-median estimate trilaterated from the
+  -- comparables, or a number with no relationship to the question, all rendered
+  -- in the same font. This column is WHICH, generated from the same columns
+  -- eff_latitude reads so it can never disagree with them.
+  -- (No backticks in here: this is a SQL comment inside a JS template literal,
+  -- and one backtick ends the string. See the note in CLAUDE.md.)
+  p.eff_geo_source, p.property_type, p.property_category, p.units, p.year_built, p.gla,
   p.beds, p.baths_full, p.baths_half, p.baths_text, p.baths_total, p.total_rooms,
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,

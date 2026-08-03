@@ -332,10 +332,45 @@ never attempted. Everything in this phase costs about $10, one time.
 - [ ] **3.2 Geocodio as the backfill fallback** — $1/1,000, true US rooftop,
   permanent storage, and it returns census tract + school district in the same
   call. Nominatim cannot do a bulk backfill under its own policy.
-- [ ] **3.3 The appraiser's OWN stated proximity is parsed and used for nothing**
-  — 42 of 77 comps carry "0.35 miles NE"
-- [ ] **3.4 `distance_basis` provenance** — `eff_*` silently COALESCEs in a
-  coordinate db/412 itself calls "frequently the centre of the ZIP"
+- [x] **3.3 The appraiser's OWN stated proximity is parsed and used for nothing**
+  — 42 of 77 comps carry "0.35 miles NE". **DONE**, and it turned out to be worth
+  far more than a display field: three stated distances from three comparables
+  whose coordinates we DO have determine the subject's own position.
+  `src/lib/research/trilaterate.js` + `place-subjects.js`. Measured on the real
+  corpus: **every one of the 132 subjects we have lent on was unplaced** (the
+  property the loan is secured against was the one nothing could find on a map),
+  102 reports carry three or more usable comparables, and **98 of them resolve —
+  median residual 17 feet, worst 67**. Free and offline, out of reports already
+  paid for, which is why the paid geocoder (3.1/3.2) is a nice-to-have rather
+  than a blocker. The refusals are the design: below three circles it refuses,
+  it refuses past a quarter-mile residual, and THE MIRROR (comparables strung
+  along one road leave a second answer reflected across it) is COMPUTED and
+  scored rather than guessed at with an angle threshold — because every
+  borderline set in the corpus fits its stated distances to within 2–107 feet, so
+  a residual test would have accepted all four with total confidence. The write
+  is fill-only and stamped `geo_source='comp_trilateration'`; an estimate is
+  never allowed to look like a measurement. `proximityMiles` refuses "2 blocks"
+  and "same street" rather than guessing, and refuses an implausible 120 miles.
+  `test-trilaterate-pure.js` + `test-place-subjects-db.js`.
+- [x] **3.4 `distance_basis` provenance** — `eff_*` silently COALESCEs in a
+  coordinate db/412 itself calls "frequently the centre of the ZIP". **DONE**
+  (`db/446`), and 3.3 made it urgent rather than tidy: there are now FOUR things
+  the coordinate under a distance can be — our own rooftop lookup, a position
+  trilaterated from the comparables (±17 ft median), the appraiser's own
+  coordinate at unknown precision, and `mixed` (a latitude from one source and a
+  longitude from another, which the two independent COALESCEs make expressible).
+  A ZIP centroid is a mile from the house, so a distance computed from one is not
+  a worse answer, it is an answer to a different question — and it was rendered
+  in exactly the same font. `properties.eff_geo_source` is GENERATED from the
+  same columns `eff_*` reads, so it can never disagree with the coordinate it
+  describes; the search returns it on every row; `geo_basis` / `exclude_geo_basis`
+  let a caller refuse one; and the comp search greys the distance and says
+  "rough — appraiser's own coordinate" instead of stating it flatly. Deliberately
+  a NAMED SOURCE and not a quality score: ranking them on one scale invites a
+  threshold nobody can justify. Note it cuts both ways — the trilateration's
+  known points ARE the appraisers' own coordinates, and three circles drawn
+  around three ZIP centroids could not agree to seventeen feet, so the residual
+  is itself a measurement saying those coordinates are real on this corpus.
 - [x] **3.5 The bounding box is not a superset of the circle** (short 5.9 ft at 1
   mile, 59 ft at 10) — `1.001 · r / (69.0932 · cos φ)`. The `cos(lat)` scaling
   itself is correct; verified across seven latitudes. **FIXED**, and the root was

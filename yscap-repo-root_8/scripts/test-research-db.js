@@ -1191,6 +1191,73 @@ async function makeAppraisal(appId, o) {
       await db.query(`DELETE FROM properties WHERE id=$1`, [pid]);
     }
 
+    // ── WHERE DID THAT DISTANCE COME FROM? (db/446) ────────────────────────
+    // `eff_latitude` COALESCEs our own lookup over the appraiser's own
+    // coordinate, and db/412's own comment says the latter is "frequently the
+    // centre of the ZIP". So "0.3 miles away" could be a rooftop measurement, a
+    // ±17-foot estimate trilaterated from the comparables, or a number with no
+    // relationship to the question — all rendered in the same font, with nothing
+    // anywhere saying which.
+    {
+      const BASIS_CITY = `Basisville${sfx}`;
+      // A FRESH SESSION. By the time this block runs the suite has already
+      // revoked the staff user minted at section 8 (the token-version tests), so
+      // reusing that token answers 401 and every assertion below reads as "the
+      // feature is broken" when the only thing broken is the fixture.
+      const basisStaff = (await db.query(
+        `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+         VALUES ($1,'Basis Officer','loan_officer',true,false,'x',0) RETURNING id`,
+        [`res-basis-${sfx}@test.local`])).rows[0].id;
+      const bTok = C.signJwt({ sub: basisStaff, kind: 'staff', role: 'loan_officer', tv: 0 });
+      const mk = async (name, cols, vals) => (await db.query(
+        `INSERT INTO properties (address_key, display_address, street, city, state, zip, ${cols})
+         VALUES ($1,$2,$3,$4,'NJ','07099',${vals}) RETURNING id`,
+        [`${BASIS_CITY.toLowerCase()}|${name}|${Date.now()}${Math.random()}`, name, `${name} St`, BASIS_CITY]
+      )).rows[0].id;
+      // Same spot, four ways of knowing it.
+      const roofId = await mk('Rooftop', 'geo_latitude, geo_longitude, geo_source', "40.700000,-74.000000,'census'");
+      const triId = await mk('Trilaterated', 'geo_latitude, geo_longitude, geo_source', "40.700100,-74.000000,'comp_trilateration'");
+      const apprId2 = await mk('AppraiserSaid', 'latitude, longitude', '40.700200,-74.000000');
+      const nowhereId = await mk('Nowhere', 'gla', '1200');
+
+      const basisOf = async (id) => (await db.query(
+        'SELECT eff_geo_source FROM properties WHERE id=$1', [id])).rows[0].eff_geo_source;
+      ok(await basisOf(roofId) === 'census', 'a looked-up coordinate records WHICH service answered');
+      ok(await basisOf(triId) === 'comp_trilateration',
+        'a position derived from the comparables says so — it is an estimate, however good');
+      ok(await basisOf(apprId2) === 'appraiser',
+        "the appraiser's own coordinate is labelled as theirs, not passed off as a lookup");
+      ok(await basisOf(nowhereId) === null, 'a property with no position has no basis to state');
+
+      // …AND IT REACHES THE SCREEN, which is the whole point — a distance with no
+      // provenance is the defect, not a missing column.
+      const near = `/api/research/properties?state=NJ&city=${encodeURIComponent(BASIS_CITY)}&lat=40.7&lng=-74&radius_miles=5&limit=50`;
+      const all = await call(server, 'GET', near, bTok);
+      const rows = (all.body && all.body.rows) || [];
+      ok(rows.length >= 3, `the radius search finds the placed ones (${rows.length})`);
+      ok(rows.every((r) => r.distance_miles == null || r.eff_geo_source != null),
+        'EVERY row that carries a distance also carries where that distance was measured from');
+
+      // A CALLER CAN REFUSE A BASIS IT DOES NOT TRUST.
+      const strict = await call(server, 'GET', `${near}&exclude_geo_basis=appraiser`, bTok);
+      const sRows = (strict.body && strict.body.rows) || [];
+      ok(sRows.length >= 1 && !sRows.some((r) => r.eff_geo_source === 'appraiser'),
+        'excluding a basis actually excludes it — a ZIP centroid is not a slightly worse answer, '
+        + 'it is an answer to a different question');
+      ok(sRows.some((r) => r.eff_geo_source === 'census'),
+        'and it keeps everything else, rather than emptying the screen');
+      const only = await call(server, 'GET', `${near}&geo_basis=comp_trilateration`, bTok);
+      const oRows = (only.body && only.body.rows) || [];
+      ok(oRows.length === 1 && oRows[0].eff_geo_source === 'comp_trilateration',
+        'and asking for one basis returns only that one');
+      // The default is unchanged — no existing search moves.
+      ok(rows.length >= sRows.length && rows.length >= oRows.length,
+        'with no basis filter every position is still accepted, so nothing existing changes');
+
+      await db.query('DELETE FROM properties WHERE city=$1', [BASIS_CITY]);
+      await db.query('DELETE FROM staff_users WHERE id=$1', [basisStaff]);
+    }
+
     await db.query(`DELETE FROM appraisers WHERE identity_key IN ($1,$2)`, [`lic:NJ:${LIC}`, `lic:NJ:RG${LIC.slice(-6)}`]);
     await db.query(`DELETE FROM appraisers WHERE name_key = $1`, [`dana ${SURNAME.replace('Kessler', 'Whitfield')}`.toLowerCase()]);
   } catch (e) {

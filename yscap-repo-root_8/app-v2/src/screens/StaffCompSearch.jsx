@@ -6,6 +6,7 @@ import {
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
+import { geoBasisInfo } from '../lib/geoBasis.js';
 
 /* FIND COMPARABLES — start from a PROPERTY, not from six filters typed by hand.
  *
@@ -405,7 +406,23 @@ function CompRow({ r, checked, onToggle }) {
         </Link>
         <div style={{ color: MUTED, fontSize: 12, marginTop: 2 }}>
           {[r.city, r.state].filter(Boolean).join(', ')}
-          {r.distance_miles != null && <> · <b style={{ color: INK }}>{Number(r.distance_miles).toFixed(2)} mi away</b></>}
+          {/* THE DISTANCE, AND WHERE IT WAS MEASURED FROM (db/446). The coordinate
+              underneath can be a rooftop lookup, a position worked out from the
+              comparables (about 20 feet), or the appraiser's own — and db/412's
+              own comment says those are "frequently the centre of the ZIP". A
+              ZIP centroid is a mile from the house, so that distance is not a
+              worse answer, it is an answer to a different question. It used to
+              be rendered in exactly the same font as a rooftop measurement. */}
+          {r.distance_miles != null && (() => {
+            const b = geoBasisInfo(r.eff_geo_source);
+            return (
+              <> · <b style={{ color: b && !b.trusted ? '#8A5A00' : INK }} title={b ? b.detail : undefined}>
+                {Number(r.distance_miles).toFixed(2)} mi away
+              </b>
+              {b && !b.trusted && <span style={{ color: '#8A5A00' }} title={b.detail}> (rough — {b.label})</span>}
+              </>
+            );
+          })()}
           {/* How OUR appraisers have used this house before — the thing no MLS
               can tell you. These are per-property totals on the roll-up, not a
               per-observation field. */}
