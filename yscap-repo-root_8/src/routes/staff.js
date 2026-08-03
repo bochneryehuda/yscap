@@ -4535,6 +4535,179 @@ router.post('/applications/:id/credit/reuse', async (req, res) => {
   }
 });
 
+// ── CREDIT IMPORT WAIVER — sign the condition off on a report from ELSEWHERE ──
+// Owner-directed 2026-08-03: "they got a credit report from somewhere else and
+// they don't want to reissue — first the PDF upload slot on the document, then
+// they can request an exception to get the condition signed off without importing
+// credit." The PDF itself rides the ORDINARY staff document door (so it dedupes,
+// reopens the condition's evidence, pushes the condition status to ClickUp,
+// mirrors to SharePoint and lands in the TPR export like every other document);
+// these three routes only own the WAIVER. The rule they bend is enforced in ONE
+// place — lib/credit/waiver.js — which the sign-off gate reads.
+
+// Which credit condition on this file the caller means. A file can carry two
+// (the file-level one and a co-borrower's own, field_key 'cob_credit'), so the
+// item is named explicitly; `scope=co` resolves the co-borrower's for the client.
+async function creditConditionItem(appId, { itemId, scope }) {
+  if (itemId) {
+    const r = await db.query(
+      `SELECT ci.id, ci.field_key FROM checklist_items ci
+         JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.id=$1 AND ci.application_id=$2 AND t.code='rtl_cond_credit'`, [itemId, appId]);
+    return r.rows[0] || null;
+  }
+  const marker = require('../lib/credit/co-condition').CO_CREDIT_MARKER;
+  const co = scope === 'co';
+  const r = await db.query(
+    `SELECT ci.id, ci.field_key FROM checklist_items ci
+       JOIN checklist_templates t ON t.id=ci.template_id
+      WHERE ci.application_id=$1 AND t.code='rtl_cond_credit'
+        AND COALESCE(ci.field_key,'') ${co ? '=' : '<>'} $2
+      ORDER BY ci.created_at LIMIT 1`, [appId, marker]);
+  return r.rows[0] || null;
+}
+
+const LE_CREDIT_REASONS = require('../lib/loan-exceptions').CREDIT_IMPORT_WAIVER_REASONS;
+
+router.get('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const item = await creditConditionItem(req.params.id, {
+      itemId: typeof req.query.itemId === 'string' ? req.query.itemId : null,
+      scope: req.query.scope,
+    });
+    if (!item) return res.json({ itemId: null, waiver: null, exception: null, documents: [], reasons: LE_CREDIT_REASONS });
+    const creditWaiver = require('../lib/credit/waiver');
+    const w = await creditWaiver.loadWaiver(item.id);
+    let exception = null;
+    if (w.exceptionId) {
+      exception = (await db.query(
+        `SELECT id, status, reason_code, reason_note, exception_seq, decided_at, decision_note
+           FROM loan_exceptions WHERE id=$1`, [w.exceptionId])).rows[0] || null;
+    }
+    // The reports a HUMAN filed here — everything the importer did not file itself.
+    // Same predicate the waiver judges on, so the list and the gate can never
+    // describe different documents.
+    const documents = (await db.query(
+      `SELECT id, filename, content_type, size_bytes, created_at,
+              COALESCE(review_status,'pending') AS review_status, slot_label
+         FROM documents
+        WHERE checklist_item_id=$1 AND is_current=true AND ${creditWaiver.UPLOADED_REPORT_SQL('')}
+        ORDER BY created_at`, [item.id])).rows;
+    res.json({
+      itemId: item.id,
+      waiver: w.present ? w : null,
+      exception,
+      documents,
+      reasons: LE_CREDIT_REASONS,
+      canRequest: true,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const LE = require('../lib/loan-exceptions');
+  const reason = String(b.reason || '').trim();
+  if (!LE.isReasonCodeFor('credit_import_waiver', reason)) {
+    return res.status(400).json({ error: 'Pick a reason for signing this off without importing credit.' });
+  }
+  const note = b.note ? String(b.note).slice(0, 2000) : null;
+  if (!note) return res.status(400).json({ error: 'Add a short note explaining where the credit report came from — it goes to an admin for approval.' });
+
+  const app = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+  const item = await creditConditionItem(req.params.id, { itemId: b.itemId, scope: b.scope });
+  if (!item) return res.status(404).json({ error: 'this file has no credit report condition' });
+
+  // THE PDF COMES FIRST — the owner's own order ("first we need to have the PDF
+  // upload slot on the document and THEN they can request an exception"). An
+  // exception with nothing behind it is an exception to clear the condition on
+  // nothing, and it is the reviewing admin who would be left guessing what they
+  // are approving. Accepting it is the reviewer's separate step; the gate then
+  // requires that acceptance before the waiver counts.
+  const uploaded = (await db.query(
+    `SELECT count(*)::int AS n FROM documents
+      WHERE checklist_item_id=$1 AND is_current=true
+        AND ${require('../lib/credit/waiver').UPLOADED_REPORT_SQL('')}`, [item.id])).rows[0];
+  if (!uploaded || !uploaded.n) {
+    return res.status(409).json({ error: 'Upload the credit report PDF on this condition first — an exception is a request to sign off on THAT report, so it has to be on the file before it can be approved.' });
+  }
+
+  const client = await db.getClient();
+  let exceptionRow = null;
+  try {
+    await client.query('BEGIN');
+    exceptionRow = await LE.requestCreditImportWaiver(client, {
+      appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      compensatingFactors: LE.sanitizeCompensatingFactors(b.compensatingFactors),
+    });
+    await client.query(
+      `INSERT INTO credit_import_waivers
+         (checklist_item_id, application_id, reason, note, exception_id, requested_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (checklist_item_id) DO UPDATE SET
+         reason=$3, note=$4, exception_id=$5, requested_by=$6, updated_at=now()`,
+      [item.id, req.params.id, reason, note, exceptionRow ? exceptionRow.id : null, req.actor.id]);
+    // Nudge the condition so it reads "in progress", not outstanding — the same
+    // courtesy the appraisal no-XML waiver does. Never a clear: only the sign-off
+    // gate decides that, and only once the exception is approved.
+    await client.query(
+      `UPDATE checklist_items SET status=CASE WHEN status='outstanding' THEN 'received' ELSE status END, updated_at=now()
+        WHERE id=$1`, [item.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[credit-waiver] save failed:', e && e.message);
+    return res.status(500).json({ error: 'could not save the exception request' });
+  } finally { client.release(); }
+
+  await audit(req, 'credit_import_waiver', 'application', req.params.id,
+    { reason, itemId: item.id, exceptionId: exceptionRow ? exceptionRow.id : null });
+  try {
+    const ctx = await notify.fileContext(req.params.id);
+    await notify.notifyAdmins({
+      type: 'credit_import_exception', title: 'Credit report from elsewhere — exception needs approval',
+      body: `A credit report was uploaded${ctx ? ` on ${ctx.label}` : ''} instead of being imported (reason: ${reason.replace(/_/g, ' ')}). Approving it lets the credit condition be signed off without re-pulling credit. Approve or deny it on the Exceptions screen.`,
+      applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+      meta: ctx ? ctx.meta : undefined,
+    });
+  } catch (_) { /* best-effort */ }
+  res.json({ ok: true, itemId: item.id, exception: exceptionRow ? { id: exceptionRow.id, status: exceptionRow.status } : null });
+});
+
+router.delete('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const item = await creditConditionItem(req.params.id, {
+      itemId: typeof req.query.itemId === 'string' ? req.query.itemId : null,
+      scope: req.query.scope,
+    });
+    if (!item) return res.status(404).json({ error: 'this file has no credit report condition' });
+    const w = (await db.query(
+      `SELECT exception_id FROM credit_import_waivers WHERE checklist_item_id=$1`, [item.id])).rows[0];
+    if (w && w.exception_id) {
+      // A still-OPEN request is withdrawn. A row an admin already DECIDED is
+      // never rewritten as "withdrawn" — that would erase the fact a decision
+      // was made — so it is CLEARED (archived) with a note instead. Without
+      // this, removing the waiver left an 'approved' credit exception standing
+      // on the register for a file that no longer has one.
+      const LE = require('../lib/loan-exceptions');
+      try {
+        const withdrawn = await LE.withdrawException(w.exception_id, req.actor.id);
+        if (!withdrawn) {
+          await LE.clearException(w.exception_id, req.actor.id,
+            'The credit-import waiver was removed from the file — the condition needs an imported report again.');
+        }
+      } catch (_) { /* best-effort: the waiver row still goes, which is what the gate reads */ }
+    }
+    await db.query(`DELETE FROM credit_import_waivers WHERE checklist_item_id=$1`, [item.id]);
+    await audit(req, 'credit_import_waiver_removed', 'application', req.params.id, { itemId: item.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // The file's AUDIT LOG (staff see everything, including internal).
 // `?requests=1` adds the HTTP request-level layer — one line per call that
 // touched this file. It is opt-in because it is enormous and mostly page
@@ -6254,7 +6427,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       // only one of the three with no owner and no history — so it showed "nobody
       // assigned" on the desk and in the overdue nudge (which could then never
       // reach the assignee tier), and its timeline was empty while orders placed
-      // BEFORE this shipped had a 'placed' line from db/455's back-fill. Old rows
+      // BEFORE this shipped had a 'placed' line from db/457's back-fill. Old rows
       // being better recorded than new ones is the drift these two calls close.
       await orderTracking.ensureAssignee(appId, 'attorney');
       await orderTracking.recordEvent({
@@ -7134,6 +7307,19 @@ async function signOffGate(itemId, actor) {
   // their own (marked) condition (the default "pull both" files both reports here,
   // so signing it off attests to both). Report↔borrower is credit_reports.borrower_id.
   if (isCredit) {
+    // THE ONE RECORDED WAY THROUGH (owner-directed 2026-08-03): a current report
+    // obtained ELSEWHERE, uploaded onto this condition and ACCEPTED, with an
+    // admin-approved exception on the register — "the admin should sign off the
+    // condition even if they didn't reissue the credit". Both halves are required
+    // and the shared predicate FAILS CLOSED, so nothing below is weakened for a
+    // file without one: the import rule stands exactly as it did.
+    const creditWaiver = require('../lib/credit/waiver');
+    const waiver = await creditWaiver.loadWaiver(itemId);
+    if (waiver.effective) return null;
+    // A waiver that was asked for but isn't counting yet must SAY WHY. Otherwise
+    // the officer who already requested the exception is told only "import the
+    // credit report", which reads as though the request never happened.
+    const waiverNote = creditWaiver.pendingReason(waiver);
     const af = (await db.query(
       'SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [item.application_id])).rows[0] || {};
     const need = [];
@@ -7156,7 +7342,7 @@ async function signOffGate(itemId, actor) {
       if (!imported) {
         const isCo = af.co_borrower_id && String(bid) === String(af.co_borrower_id);
         const who = isCo ? 'the co-borrower’s ' : (need.length > 1 ? 'the primary borrower’s ' : '');
-        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.`;
+        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.${waiverNote ? ` ${waiverNote}` : ' If the report came from somewhere else and you are not re-pulling it, upload the PDF here and request an exception.'}`;
       }
     }
     return null;
