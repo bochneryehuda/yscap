@@ -4003,3 +4003,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .dd-card-h > .row{flex:1 1 200px;min-width:0}
   .dd-card-h h3{font-size:17px;line-height:1.25}
 }
+
+/* ---- What the borrower actually receives on a draw (owner-directed 2026-08-03) ---- */
+.dd-payout{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-top:12px;
+  padding:12px 14px;border:1px solid var(--primary-border);border-radius:var(--radius);
+  background:var(--primary-soft)}
+.dd-payout-k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--primary-hover);font-weight:700}
+.dd-payout-v{font-family:var(--serif);font-size:26px;line-height:1.1;font-weight:600;
+  color:var(--text);font-variant-numeric:tabular-nums;margin-top:3px}
+.dd-payout-why{flex:1 1 220px;min-width:200px;font-size:13px;line-height:1.5;color:var(--text-muted)}
+@media(max-width:720px){.dd-payout{gap:8px}.dd-payout-why{flex-basis:100%}}

@@ -54,6 +54,9 @@ export default function BorrowerDraws({ appId }) {
 
   const proj = rollup && rollup.project ? rollup.project : null;
   const pct = proj ? Math.max(0, Math.min(100, Number(proj.pct_complete) || 0)) : 0;
+  // The per-draw money, keyed by draw, so a result card can show what actually reaches the
+  // borrower. Read from the rollup — the SAME source their downloadable report is built from.
+  const drawMoney = new Map(((rollup && rollup.draws) || []).map((d) => [String(d.sitewire_draw_id), d]));
 
   return (
     <div className="dd-wrap">
@@ -95,8 +98,12 @@ export default function BorrowerDraws({ appId }) {
 
       {rollup && Array.isArray(rollup.draws) && rollup.draws.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto' }}>
-          <table className="dd-table" style={{ minWidth: 420 }}>
-            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th></tr></thead>
+          <table className="dd-table" style={{ minWidth: 520 }}>
+            {/* WHAT YOU RECEIVE (owner-directed 2026-08-03) — the approved figure is what the
+                inspector signed off; this is the money that actually reaches the borrower, after
+                the draw fee. It comes straight off the rollup, the same source their PDF report is
+                built from, so the two can never quote different numbers. */}
+            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
             <tbody>
               {rollup.draws.map((d) => {
                 const s = DRAW_STATUS[d.status] || { label: d.status, cls: 'sw-insp' };
@@ -106,6 +113,7 @@ export default function BorrowerDraws({ appId }) {
                     <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : s.cls)}>{s.label}</span></td>
                     <td className="num">{usd2(d.requested_cents)}</td>
                     <td className="num">{usd2(d.approved_cents)}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>{d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
                   </tr>
                 );
               })}
@@ -120,7 +128,10 @@ export default function BorrowerDraws({ appId }) {
       {/* Eligibility preview + the in-PILOT composer (physical files) or the Sitewire hand-off */}
       {eligibility && <EligibilityCard e={eligibility} appId={appId} onChanged={load} />}
 
-      {findings.map((f) => <FindingCard key={f.id} finding={f} appId={appId} onChanged={load} />)}
+      {findings.map((f) => (
+        <FindingCard key={f.id} finding={f} appId={appId} onChanged={load}
+          money={drawMoney.get(String(f.sitewire_draw_id)) || null} />
+      ))}
     </div>
   );
 }
@@ -354,7 +365,7 @@ function ProjectReportButton({ appId }) {
   );
 }
 
-function FindingCard({ finding, appId, onChanged }) {
+function FindingCard({ finding, appId, onChanged, money }) {
   const [mode, setMode] = useState(null); // null | 'dispute'
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -390,6 +401,21 @@ function FindingCard({ finding, appId, onChanged }) {
         {finding.status === 'accepted' && !finding.released && finding.wire_due_at ? ` Your release is expected by ${new Date(finding.wire_due_at).toLocaleDateString('en-US')}.` : ''}
         {finding.released ? ' Your funds have been released.' : ''}
       </div>
+
+      {/* THE NUMBER THEY ACTUALLY CARE ABOUT (owner-directed 2026-08-03). The card used to state
+          only what the inspector approved, so the borrower had to open the PDF to learn that
+          $24,701 — not $25,000 — was landing in their account. The figure and the sentence both
+          come from the server (the rollup + approval.netExplanation's borrower wording), so this
+          screen, their report and the email can never phrase the same deduction differently. */}
+      {money && money.net_release_cents != null && (
+        <div className="dd-payout">
+          <div>
+            <div className="dd-payout-k">{money.released ? 'Released to you' : 'You receive'}</div>
+            <div className="dd-payout-v">{usd2(money.net_release_cents)}</div>
+          </div>
+          {money.net_explanation && <div className="dd-payout-why">{money.net_explanation}</div>}
+        </div>
+      )}
 
       {/* Visual step tracker — inspection → results → your acceptance → funds released */}
       <DrawStepper finding={finding} />
