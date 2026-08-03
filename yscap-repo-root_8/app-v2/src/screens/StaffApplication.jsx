@@ -35,8 +35,8 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
-import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
@@ -407,21 +407,38 @@ function isFixHoldStrategy(app) {
    somewhere else" (the address picker, the secure SSN flow) so we only hint. */
 const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
-  // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
-  // for application completeness. Filled from the Vesting entity (LLC) section
-  // above OR from the Term Sheet Studio's entity-name field on register.
-  /* VESTING — satisfied by an entity OR by the file being in an individual's
-     name (owner-directed 2026-08-02). It used to check only for an LLC, so a
+  /* Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
+     for application completeness.
+
+     SATISFIED BY AN ENTITY OR BY THE FILE BEING IN AN INDIVIDUAL'S NAME
+     (owner-directed 2026-08-02). It used to check only for an LLC, so a
      personal-name purchase carried a "Subject-property LLC" pill that could
      NEVER be filled: there is no entity to link, by definition. The file could
      therefore never read complete. Answering it with the individual choice is
      correct — the question is "what does this vest in?", and "an individual" is
      a real answer, which the non-owner-occupied affidavit condition then
-     documents (db/408). */
+     documents (db/408).
+
+     AND IT IS FILLED IN RIGHT HERE, like every other pill (owner-directed
+     2026-08-03: "this missing stuff doesn't have the plus button like everywhere
+     else … you can't fill in the vesting LLC over there"). It was the ONE pill
+     with no `+` — a dead grey chip naming another section — even though the LLC
+     name is the single most ordinary thing an officer types. Typing it
+     resolves-or-creates that entity on the borrower's PROFILE (a name they
+     already have is reused) and routes through the vesting chokepoint, so the
+     LLC condition and its three document slots open on the file straight away.
+     It saves through the file's one vesting door rather than complete-fields:
+     `applications.llc_id` is a LINK to the borrower's entity, never a text
+     column, and a name written into a column would be a name with no documents
+     behind it. Individual vesting still lives in the Vesting entity section —
+     it is a sign-off (it waives the LLC condition), not a field to type. */
   { key: 'entity_name',
     label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
     ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
-    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or mark the file as vesting in an individual\'s name.' },
+    type: 'entity', placeholder: 'Acme Holdings LLC',
+    postEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting-llc'),
+    postBody: (v) => ({ entityName: v }),
+    hint: 'The LLC taking title — type the name. Individual vesting is set in the Vesting entity section.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -518,11 +535,12 @@ const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name'
    already uses for the Conditions hub (requestConditionsTab/subscribe).
    `CompletenessPanel` is a module-level component with no access to the section's
    own state, and its pills for fields it cannot edit itself (the Social, the
-   co-borrower's email) now point at a SIBLING TAB of the very section they are
-   rendered in — so they need to flip a tab, not navigate anywhere. */
-const appTabSubs = new Set();
-function requestAppDetailTab(tab) { for (const fn of appTabSubs) { try { fn(tab); } catch (_) { /* a dead subscriber never breaks a click */ } } }
-function subscribeAppDetailTab(fn) { appTabSubs.add(fn); return () => appTabSubs.delete(fn); }
+   co-borrower's email) point at a SIBLING TAB of the very section they are
+   rendered in — so they need to flip a tab, not navigate anywhere.
+   It MOVED into FileSections.jsx (2026-08-03) and is imported at the top of this
+   file: components that are not defined here — the e-sign section, the tape
+   export — need the same channel now that Encompass sync is a tab rather than a
+   section, and they cannot import this screen without a cycle. */
 
 /* Application completeness with INLINE editing — click a missing field to enter
    it right there; it saves to the file (and syncs to ClickUp) without a form.
@@ -532,6 +550,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [note, setNote] = useState('');
   const fields = fieldsProp || [...APP_COMPLETENESS_FIELDS(app), ...BORROWER_COMPLETENESS_FIELDS(app, borrower)];
   // Note-buyer picker: load every note buyer available in ClickUp (+ known + on
   // file) so a 'notebuyer' field renders a datalist. Only fetched when the panel
@@ -545,20 +564,49 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
     api.get('/api/staff/note-buyers').then((r) => { if (live) setNbOpts((r && r.noteBuyers) || []); }).catch(() => {});
     return () => { live = false; };
   }, [hasNoteBuyer]);
+  /* Vesting-entity picker: the borrower's OWN entities, offered as a datalist so
+     the LLC they already have is reused rather than re-typed slightly
+     differently and created twice. The server matches by name either way — this
+     is the convenience, not the guard. Fetched only when the pill is genuinely
+     missing, so a complete file makes no extra call. */
+  const [entOpts, setEntOpts] = useState([]);
+  const entListId = useMemo(() => 'ent-dl-' + Math.random().toString(36).slice(2), []);
+  const needsEntity = fields.some((f) => f.type === 'entity' && !f.ok);
+  const entBorrowerId = (app && app.borrower_id) || null;
+  useEffect(() => {
+    if (!needsEntity || !entBorrowerId) return;
+    let live = true;
+    api.staffBorrowerLlcs(entBorrowerId)
+      .then((r) => { if (live) setEntOpts((Array.isArray(r) ? r : []).map((l) => l && l.llc_name).filter(Boolean)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [needsEntity, entBorrowerId]);
   const done = fields.filter((x) => x.ok).length;
   const missing = fields.filter((x) => !x.ok);
-  const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
+  const start = (f) => { setEditing(f.key); setVal(''); setErr(''); setNote(''); };
   async function save(f) {
     if (val === '' || val == null) return;
     // #90: a FICO must be a real 3-digit score in range — never save junk.
     if (f.type === 'fico' && !ficoValid(val)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setNote('');
     // A field may post to its OWN endpoint/body (e.g. the loan number goes to the
-    // dedicated /loan-number entry that enforces format + cross-file uniqueness).
+    // dedicated /loan-number entry that enforces format + cross-file uniqueness,
+    // and the vesting LLC to the file's one vesting door).
     const ep = f.postEndpoint ? f.postEndpoint(endpoint) : endpoint;
     const body = f.postBody ? f.postBody(val) : { [f.key]: val };
-    try { await api.post(ep, body); setEditing(null); setVal(''); await onSaved(); }
-    catch (e) { setErr(e.message || 'Could not save'); }
+    try {
+      const r = await api.post(ep, body);
+      setEditing(null); setVal('');
+      // Say what actually happened to the borrower's profile — a name that
+      // already existed there was LINKED, not created, and the two are different
+      // things to anyone chasing that entity's documents.
+      if (f.type === 'entity' && r && r.entityName) {
+        setNote(r.existed
+          ? `Linked ${r.entityName} — the entity the borrower already had, with its documents.`
+          : `${r.entityName} saved to the borrower’s profile and linked — its document slots are ready.`);
+      }
+      await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
   return (
@@ -569,6 +617,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
         <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{fields.length} complete</span>
       </div>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      {note && <div className="notice ok" style={{ marginBottom: 8 }}>{note}</div>}
       {missing.length === 0
         ? <p className="muted small">Everything the application asks for has been provided.</p>
         : (
@@ -583,6 +632,11 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                   : f.type === 'notebuyer'
                   ? <input className="input" style={{ maxWidth: 200 }} autoFocus list={nbListId}
                       type="text" placeholder="Pick or type a note buyer…" value={val}
+                      onChange={(e) => setVal(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && save(f)} />
+                  : f.type === 'entity'
+                  ? <input className="input" style={{ maxWidth: 260 }} autoFocus list={entListId}
+                      type="text" maxLength={160} placeholder={f.placeholder || 'LLC name…'} value={val}
                       onChange={(e) => setVal(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />
                   : <input className="input" style={{ maxWidth: 170 }} autoFocus
@@ -608,13 +662,18 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
               )
             ) : (
               <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
-                onClick={() => start(f)} title="Click to enter it now">+ {f.label}</button>
+                onClick={() => start(f)} title={f.hint || 'Click to enter it now'}>+ {f.label}</button>
             ))}
           </div>
         )}
       {hasNoteBuyer && (
         <datalist id={nbListId}>
           {nbOpts.map((o) => <option key={o.value || o.label} value={o.label} />)}
+        </datalist>
+      )}
+      {needsEntity && (
+        <datalist id={entListId}>
+          {entOpts.map((n) => <option key={n} value={n} />)}
         </datalist>
       )}
     </div>
@@ -3706,7 +3765,17 @@ export default function StaffApplication() {
       const target = m[1];
       let inner = null;
       const t = setTimeout(() => {
-        if (target.startsWith('sec-')) { goToSection(target); return; }
+        if (target.startsWith('sec-')) {
+          // A RETIRED address (#sec-encompass) lands on the section that holds
+          // its content, with the right tab already showing. Resolved HERE as
+          // well as in the room resolver because CLASSIC view registers no
+          // resolver at all — every section renders, so the jump would go to an
+          // element that no longer exists and quietly do nothing.
+          const moved = resolveSection(target);
+          if (moved.appTab) requestAppDetailTab(moved.appTab);
+          goToSection(moved.id);
+          return;
+        }
         // Rooms view: the resolver hops to the owning room, opens it and scrolls.
         if (revealAnchor(target)) return;
         // revealAnchor is three-state collapsed into a boolean: `true` means only
@@ -4263,6 +4332,10 @@ export default function StaffApplication() {
     if (t.kind === 'section') {
       requestOpenSection(t.id);
       if (t.tab) requestConditionsTab(t.tab);
+      // A jump at a RETIRED section id (sec-encompass) resolves to the section
+      // that took its content PLUS the tab holding it — open the tab first, so
+      // the scroll lands on the thing the link was actually pointing at.
+      if (t.appTab) requestAppDetailTab(t.appTab);
       setTimeout(() => {
         const el = document.getElementById(t.id);
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -4308,20 +4381,30 @@ export default function StaffApplication() {
   useEffect(() => {
     if (classic) return undefined;
     return setSectionResolver((t) => {
-      const st = stationOf(t.id);
+      // A RETIRED section id is rewritten to where its content lives now (plus
+      // the tab holding it) BEFORE anything else looks at it — the default path
+      // below would call getElementById on an id that no longer renders and
+      // silently do nothing, which is a dead link, not a fallback.
+      const moved = t.kind === 'section' ? resolveSection(t.id) : null;
+      const target = moved && moved.moved ? { ...t, id: moved.id, appTab: moved.appTab } : t;
+      const st = stationOf(target.id);
       if (!st || !stationEnabled(st)) return false;
       if (st === activeStationRef.current) {
         // Right room already — but the target section may be collapsed
         // (unmounted). Take over only for the anchor/tab work goToSection's
         // default path already handles… it does, so decline. The one caller
         // that needs more (open-studio) queues an action explicitly.
-        return false;
+        // A retired id is the exception: there is nothing at its address for
+        // that default path to open or scroll to, so run the rewritten jump here.
+        if (target === t) return false;
+        runReveal(target);
+        return true;
       }
-      pendingRevealRef.current = t;
+      pendingRevealRef.current = target;
       setActiveStation(st);
       return true;
     });
-  }, [classic, stationEnabled]);
+  }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -4536,9 +4619,11 @@ export default function StaffApplication() {
     ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     // Exceptions sits directly under pricing (most exceptions are pricing
-    // exceptions); Encompass sync reads as the room's "advanced" tail.
+    // exceptions). Encompass sync is NOT a section — it is a tab of Application
+    // details, beside the ClickUp comparison it belongs with (owner-directed
+    // 2026-08-03: "it should not be a separate section in the deal"). Listing it
+    // here would put a second door to one screen in the rail.
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
-    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     /* REVIEW & CONDITIONS, in the owner's order (2026-08-02): conditions, track
        record, appraisal and findings, document review, documents. This array is
        what the RAIL reads, so it has to move in lock-step with the JSX order
@@ -5091,23 +5176,18 @@ export default function StaffApplication() {
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      {/* The panel itself moved into Application details → Encompass sync
-          (owner-directed 2026-08-02). This shell stays so every existing deep
-          link, the room rail and the tape screen's "open the Encompass sync"
-          button still land somewhere that takes you there, rather than on a
-          section that silently no longer exists. */}
-      <Section hidden={!show('sec-encompass')} id="sec-encompass" title="Encompass sync" defaultOpen={false}
-        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. It now lives with the ClickUp comparison under Application details.">
-        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="small" style={{ color: '#4B585C' }}>
-            The Encompass comparison now sits beside the ClickUp one, under Application details.
-          </span>
-          <button type="button" className="btn primary small"
-            onClick={() => { setAppDetailTab('encompass'); goToSection('sec-application'); }}>
-            Open Encompass sync
-          </button>
-        </div>
-      </Section>
+      {/* THERE IS NO "Encompass sync" SECTION (owner-directed 2026-08-03: it "is
+          now duplicated also in the application details and it's also a separate
+          section in the deal … it should not be a separate section in the deal").
+          The 2026-08-02 move left a shell here whose only content was a button
+          pointing at the tab — which read as a second Encompass room and is
+          exactly the duplicate the owner is describing. The panel has ONE home:
+          Application details → Encompass sync.
+
+          The ADDRESS `#sec-encompass` is not dead — it is a permanent public
+          address carried by emails already sent, so `RETIRED_SECTION` in
+          lib/stations.js resolves it to that section + that tab. Deleting a
+          section means retiring its id there, never just removing the JSX. */}
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
           conditions, the underwriting conditions, the internal staff conditions +
@@ -5675,10 +5755,12 @@ function TapeExport({ appId }) {
             </div>
           )}
           <div style={{ marginTop: 8 }}>
-            <button type="button" onClick={() => goToSection('sec-encompass')}
-              title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+            {/* The comparison is a TAB of Application details, not a section —
+                ask for the tab, then open the section that holds it. */}
+            <button type="button" onClick={() => { requestAppDetailTab('encompass'); goToSection('sec-application'); }}
+              title="Open the Encompass sync tab, reconcile every field, then come back to export"
               style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-              Open the Encompass section →
+              Open the Encompass sync tab →
             </button>
           </div>
           {/* Escape hatch. Super admin: allow inline (a reason is asked at export). */}

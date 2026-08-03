@@ -90,6 +90,10 @@ const TYPE_META = {
   },
   encompass_mismatch: {
     chip: 'Encompass exception',
+    /* `sec-encompass` is a RETIRED address (the comparison is a tab of
+       Application details now) — kept deliberately, because the file screen
+       resolves it to that section WITH the Encompass tab open, which plain
+       `#sec-application` would not do. See RETIRED_SECTION in lib/stations.js. */
     jumpHash: '#sec-encompass', jumpLabel: 'Jump to Encompass sync',
     defaultPolicy: () => 'Every field must match the Encompass loan copy before the term sheet can be issued.',
     requestedChange: () => <>A <b>super-admin excepted an Encompass field</b> that does not match (or has no data on one side) so it no longer holds the term sheet. This is the record of that grant — it was decided on the Encompass sync panel. The note names the field and both values.</>,

@@ -87,6 +87,22 @@ jobs:
   # instead of failing, so this workflow is safe to merge before the hook exists.
   # Render's own health check (/api/health) still gates the actual go-live, so a
   # deploy that boots unhealthy is not switched into production.
+  #
+  # THREE SERVICES, NOT ONE (2026-08-03). This job published only the WEB service,
+  # so the two BACKUP CRON services (ys-capital-backup, ys-capital-backup-verify)
+  # never received a merged fix: their Auto-Deploy is Off in the dashboard by
+  # design — a nightly job must not redeploy itself mid-run — and nothing else
+  # triggered them. That is not hypothetical. PR #973 fixed `PG_MAJOR=17` against
+  # a PostgreSQL 18.4 server, a defect that would have stopped every backup dead;
+  # it landed on main and the running images kept whatever pg_dump they were last
+  # manually built with. A backup job silently running month-old code is the exact
+  # failure this whole system exists to prevent, so "merged to main" now reaches
+  # the backup jobs too.
+  #
+  # Each hook is INDEPENDENT and OPTIONAL: an unset secret skips with a notice
+  # (same contract as the web hook), and one service failing to deploy does not
+  # stop the others being asked — the loop records the failure and fails the job
+  # at the end, so a broken backup hook is loud without also blocking the site.
   # ---------------------------------------------------------------------------
   deploy:
     # test-db added 2026-07-23 after its soak went green (task #195): a DB-layer
@@ -95,22 +111,45 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Render deploy
+      - name: Trigger Render deploys
         env:
-          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          # The website.
+          HOOK_WEB: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          # The nightly off-site backup (Docker cron, Dockerfile.backup).
+          HOOK_BACKUP: ${{ secrets.RENDER_BACKUP_DEPLOY_HOOK_URL }}
+          # The weekly restore drill (same image, different command).
+          HOOK_BACKUP_VERIFY: ${{ secrets.RENDER_BACKUP_VERIFY_DEPLOY_HOOK_URL }}
         run: |
-          if [ -z "$HOOK" ]; then
-            echo "::notice::RENDER_DEPLOY_HOOK_URL is not set — skipping auto-publish."
-            echo "Add it under Settings → Secrets and variables → Actions to turn on automatic publishing."
-            exit 0
+          set -u
+          failed=0
+          triggered=0
+
+          publish() {
+            name="$1"; secret_name="$2"; hook="$3"
+            if [ -z "$hook" ]; then
+              echo "::notice::$secret_name is not set — skipping $name."
+              echo "  Add it under Settings → Secrets and variables → Actions to publish $name automatically."
+              return 0
+            fi
+            echo "Asking Render to publish $name…"
+            code=$(curl -sS --retry 4 --retry-all-errors --max-time 30 \
+                   -w '%{http_code}' -o /tmp/render_resp.json -X POST "$hook" || echo "000")
+            echo "  Render responded HTTP $code"
+            cat /tmp/render_resp.json 2>/dev/null || true
+            echo ""
+            case "$code" in
+              200|201|202) echo "::notice::$name deploy triggered successfully."; triggered=$((triggered+1)) ;;
+              *) echo "::error::$name deploy hook failed (HTTP $code)."; failed=$((failed+1)) ;;
+            esac
+          }
+
+          echo "Tests passed on main — publishing…"
+          publish "the website"          "RENDER_DEPLOY_HOOK_URL"                "$HOOK_WEB"
+          publish "the nightly backup"   "RENDER_BACKUP_DEPLOY_HOOK_URL"         "$HOOK_BACKUP"
+          publish "the weekly restore drill" "RENDER_BACKUP_VERIFY_DEPLOY_HOOK_URL" "$HOOK_BACKUP_VERIFY"
+
+          echo "Deploys triggered: $triggered; failed: $failed"
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$failed Render deploy hook(s) failed — see above."
+            exit 1
           fi
-          echo "Tests passed on main — asking Render to publish the site…"
-          code=$(curl -sS --retry 4 --retry-all-errors --max-time 30 \
-                 -w '%{http_code}' -o /tmp/render_resp.json -X POST "$HOOK" || echo "000")
-          echo "Render responded HTTP $code"
-          cat /tmp/render_resp.json 2>/dev/null || true
-          echo ""
-          case "$code" in
-            200|201|202) echo "::notice::Render deploy triggered successfully." ;;
-            *) echo "::error::Render deploy hook failed (HTTP $code)."; exit 1 ;;
-          esac

@@ -19,6 +19,9 @@
  *     opts.force       (default false) force the heavy condition re-eval even when
  *                      the LLC doc checklist already existed (HTTP routes / repair)
  *
+ *   setVestingLlcByName(appId, name, opts) -> { …the above, llcId, entityName, existed }
+ *     A typed NAME is the same thing as a picked entity (see below).
+ *
  * Guards:
  *   • Never changes a Clear-to-Close / funded / declined / withdrawn file (the
  *     vesting entity is frozen at CTC, mirroring the HTTP routes).
@@ -28,6 +31,9 @@
 const db = require('../db');
 
 const LOCKED = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
+// An entity name is one line of text. Collapsed and capped so a pasted line
+// break or an accidental 4,000-character paste can't become a company name.
+const MAX_ENTITY_NAME = 160;
 
 async function setVestingLlc(appId, llcId, opts = {}) {
   const { allowChange = true, source = 'staff', push = true, actor = null } = opts;
@@ -116,4 +122,68 @@ async function runWiring(appId, llcId, source, push, { force = false, actor = nu
   }
 }
 
-module.exports = { setVestingLlc, ensureLlcCondition };
+/* A TYPED ENTITY NAME IS THE SAME THING AS A PICKED ONE (owner-directed
+   2026-08-03: "you can't fill in the vesting LLC over there … once you put an
+   LLC name just set up and save that LLC name into the profile like it's doing
+   regularly with any LLC name").
+
+   FIVE doors already turned a typed name into the file's vesting entity — the
+   staff new-file form, the staff register, the borrower's own create + register,
+   and the public intake — and every one of them had hand-rolled its own
+   `SELECT … lower(llc_name) … else INSERT INTO llcs`. Three of those copies
+   skipped `llc.findOrCreateLlc` (the repo's documented create-an-entity
+   chokepoint) and its unique-index race recovery, and two never built the
+   entity's document slots, so which door you came through decided whether the
+   borrower's profile got a real, uploadable entity or a bare name. That is why
+   this lives here: the completeness panel is the SIXTH door, and it must not be
+   a sixth copy.
+
+   A name the borrower already has is REUSED — never duplicated, never rejected
+   — so typing the entity they set up on their last loan links that one, with its
+   documents and verification intact. */
+function cleanEntityName(name) {
+  return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, MAX_ENTITY_NAME);
+}
+
+// Resolve-or-create ONE entity on a borrower's profile. Returns { id, existed }
+// (or null for an unusable name), so a caller can say honestly whether it made a
+// new entity or linked one the borrower already had.
+async function resolveEntityByName(borrowerId, name, fields = {}) {
+  const llcName = cleanEntityName(name);
+  if (!borrowerId || !llcName) return null;
+  const { id, existed } = await require('./llc').findOrCreateLlc(borrowerId, { ...fields, llcName });
+  // A brand-new entity gets its three document slots immediately, so the
+  // borrower has somewhere to upload the moment the name is on the file. An
+  // existing entity keeps its own (never rebuilt, never clobbered).
+  if (!existed) {
+    try { await require('../routes/borrower').generateLlcChecklist(id); } catch (_) { /* best-effort */ }
+  }
+  return { id, existed };
+}
+
+async function setVestingLlcByName(appId, name, opts = {}) {
+  const entityName = cleanEntityName(name);
+  if (!appId || !entityName) return { changed: false, reason: 'missing_args' };
+  const app = (await db.query(
+    `SELECT id, borrower_id, llc_id, status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+  if (!app) return { changed: false, reason: 'not_found' };
+  if (!app.borrower_id) return { changed: false, reason: 'no_borrower' };
+  /* The freeze is checked BEFORE the entity is created, not only inside
+     setVestingLlc: on a Clear-to-Close / funded file the link would be refused
+     after the fact and the borrower's profile would be left carrying an entity
+     nobody asked for and nothing points at. Re-typing the name the file ALREADY
+     vests in is a no-op, so it still passes (setVestingLlc's own
+     already_linked repair path). */
+  if (LOCKED.includes(app.status)) {
+    const same = app.llc_id && (await db.query(
+      `SELECT 1 FROM llcs WHERE id=$1 AND lower(btrim(llc_name))=lower(btrim($2))`,
+      [app.llc_id, entityName])).rows[0];
+    if (!same) return { changed: false, reason: 'locked' };
+  }
+  const resolved = await resolveEntityByName(app.borrower_id, entityName, opts.fields);
+  if (!resolved) return { changed: false, reason: 'missing_args' };
+  const out = await setVestingLlc(appId, resolved.id, opts);
+  return { ...out, llcId: resolved.id, entityName, existed: resolved.existed };
+}
+
+module.exports = { setVestingLlc, setVestingLlcByName, resolveEntityByName, ensureLlcCondition, cleanEntityName };
