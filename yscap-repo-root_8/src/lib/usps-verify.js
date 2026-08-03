@@ -192,17 +192,24 @@ async function cachePut(db, hash, input, out) {
  *   { db }        — a pg client/pool for the cache (defaults to the shared pool)
  *   { noCache }   — skip the cache read (always hit USPS); still writes the cache
  *   { force }     — verify even past the rate cap (backfill uses its own pacing)
+ *   { cacheOnly } — answer from the cache or not at all; NEVER calls USPS. For a
+ *                   background pass that must be free: a lookup we have already
+ *                   paid for is reused, and a miss reports 'not_cached' so the
+ *                   caller can skip the row instead of spending the hourly quota.
  *
  * Returns (never throws):
  *   { configured, status, address, dpv, changed, cached, source }
- *   status ∈ 'verified' | 'corrected' | 'unverified' | 'not_configured' | 'rate_limited' | 'error'
+ *   status ∈ 'verified' | 'corrected' | 'unverified' | 'not_configured' | 'rate_limited' | 'error' | 'not_cached'
  *   address = the USPS-standardized canonical address (or null when none)
  */
 async function standardize(addressInput, opts = {}) {
   const input = normInput(addressInput || {});
   const base = { configured: configured(), status: 'unverified', address: null, dpv: null, changed: false, cached: false, source: 'usps', input };
 
-  if (!base.configured) return { ...base, status: 'not_configured' };
+  // A cache-only read is a read of OUR OWN records, so it does NOT need USPS keys:
+  // a lookup already paid for stays usable if the credentials are rotated or absent
+  // (which is what lets the previous-files repair run on any deploy).
+  if (!base.configured && !opts.cacheOnly) return { ...base, status: 'not_configured' };
   if (!input.line1 || !input.state) return { ...base, status: 'unverified' };   // not enough to match on
 
   const db = opts.db || require('../db');
@@ -212,6 +219,7 @@ async function standardize(addressInput, opts = {}) {
     const hit = await cacheGet(db, hash);
     if (hit) return { ...base, status: hit.status, address: hit.standardized || null, dpv: hit.dpv || null, changed: hit.status === 'corrected', cached: true };
   }
+  if (opts.cacheOnly) return { ...base, status: 'not_cached' };
 
   if (!opts.force && !underRateCap()) return { ...base, status: 'rate_limited' };
 
