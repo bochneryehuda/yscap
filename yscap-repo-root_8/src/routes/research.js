@@ -41,6 +41,7 @@ const S = require('../lib/research/search');
 const MARKET = require('../lib/research/market');
 const FLIPS = require('../lib/research/flips');
 const V = require('../lib/research/valuation');
+const QA = require('../lib/research/quick-answer');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
@@ -1752,6 +1753,99 @@ router.get('/imports', async (req, res, next) => {
         ORDER BY i.created_at DESC
         LIMIT ${P(limit)}`, params);
     res.json({ rows: r.rows, total: r.rows.length ? r.rows[0].total : 0 });
+  } catch (e) { next(e); }
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * QUICK ANSWER — an address, a few basics, and roughly what properties like
+ * that have been coming in at. BUILT TO REFUSE (see lib/research/quick-answer).
+ *
+ * It reuses `searchProperties`, so the quick answer and the full comparable
+ * search can never disagree about which properties match — a second, "simpler"
+ * query here would drift from the real one within a release and the two screens
+ * would quietly contradict each other about the same town.
+ * ─────────────────────────────────────────────────────────────────────────── */
+router.get('/quick', async (req, res, next) => {
+  try {
+    const today = todayNY();
+    let subject = null;
+    if (isUuid(req.query.property_id)) {
+      subject = (await db.query('SELECT * FROM properties WHERE id=$1', [req.query.property_id])).rows[0] || null;
+    } else if (isUuid(req.query.application_id)) {
+      subject = await subjectForApplication(req.query.application_id);
+    }
+    if (!subject) {
+      subject = {
+        display_address: txt(req.query.address), city: txt(req.query.city), state: txt(req.query.state),
+        zip: txt(req.query.zip), gla: K.num(req.query.gla),
+        condition_uad: txt(req.query.condition_uad), property_type: txt(req.query.property_type),
+        units: K.int(req.query.units, { max: 999 }),
+        latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
+      };
+    }
+    // A QUICK ANSWER STILL NEEDS A MARKET. Nationwide is about nowhere — the same
+    // refusal the adjustment rates and the market rates already make.
+    const lat = K.num(subject.eff_latitude != null ? subject.eff_latitude : subject.latitude);
+    const lng = K.num(subject.eff_longitude != null ? subject.eff_longitude : subject.longitude);
+    if (!subject.city && !subject.state && !(lat != null && lng != null)) {
+      return res.status(400).json({ error: 'name a town, a state or a position — a nationwide answer is about nowhere' });
+    }
+
+    const months = Math.min(60, Math.max(3, K.int(req.query.months, { max: 60 }) || 18));
+    const radiusMiles = K.num(req.query.radius_miles) || (lat != null && lng != null ? 1 : null);
+    // The owner's own unit bands: one, two-to-four, five-plus. A subject whose
+    // count we do not know bands nothing rather than guessing.
+    const u = K.int(subject.units, { max: 999 });
+    const band = !u || u < 1 ? {}
+      : u === 1 ? { units_min: 1, units_max: 1, units_unknown_ok: '1' }
+        : u <= 4 ? { units_min: 2, units_max: 4, units_unknown_ok: '1' }
+          : { units_min: 5, units_unknown_ok: '1' };
+
+    const filters = Object.assign({
+      state: subject.state, city: subject.city,
+      has_sale: '1', sale_status: 'closed', sold_within_months: months,
+      sqft_min: subject.gla ? Math.round(subject.gla * 0.75) : undefined,
+      sqft_max: subject.gla ? Math.round(subject.gla * 1.25) : undefined,
+      condition: subject.condition_uad || undefined,
+      limit: 200,
+    }, band,
+    (lat != null && lng != null && radiusMiles) ? { lat, lng, radius_miles: radiusMiles } : {});
+
+    const found = await S.searchProperties(db, filters);
+
+    /* HOW MANY WE HOLD THERE AT ALL — so a refusal can say "3 of the 40 we hold
+       nearby" instead of a bare "not enough". Without a denominator, "we found
+       almost nothing" reads as a broken search rather than as thin coverage,
+       which is the single most misread thing on every screen in this build. */
+    let heldNearby = null;
+    try {
+      const wide = Object.assign({}, filters, {
+        sold_within_months: undefined, has_sale: undefined, sale_status: undefined,
+        sqft_min: undefined, sqft_max: undefined, condition: undefined, limit: 1,
+      });
+      heldNearby = (await S.searchProperties(db, wide)).total;
+    } catch (_) { heldNearby = null; }   // a missing denominator is never fatal
+
+    const answer = QA.quickAnswer({
+      rows: found.rows, today, heldNearby,
+      asked: {
+        radiusMiles: (lat != null && lng != null && radiusMiles) ? radiusMiles : null,
+        city: subject.city, state: subject.state, months,
+        units: u || null, propertyType: subject.property_type || null,
+        glaMin: filters.sqft_min || null, glaMax: filters.sqft_max || null,
+        condition: subject.condition_uad || null,
+      },
+    });
+    res.json({
+      subject: {
+        display_address: subject.display_address, city: subject.city, state: subject.state,
+        units: u || null, gla: subject.gla || null, property_type: subject.property_type || null,
+        condition_uad: subject.condition_uad || null, placed: lat != null && lng != null,
+      },
+      answer,
+      matched: found.rows.slice(0, 25),
+      disclaimer: V.DISCLAIMER,
+    });
   } catch (e) { next(e); }
 });
 

@@ -503,11 +503,37 @@ never attempted. Everything in this phase costs about $10, one time.
 
 ## PHASE 5 — THE FEATURES THAT MAKE IT WORTH COPYING
 
-- [ ] **5.1 Quick-answer mode**, built to refuse. *"In the 9 appraisals we hold
-  within 1 mile in the last 18 months, 1-unit houses 1,200–1,900 sqft in C4 came
-  in between $385,000 and $470,000 — median $428k. 7 of 9 were as-is grids. Most
-  recent 3 months ago."* Never a point estimate; always the denominator; always
-  the recency span; refuse below 5 matches; the empty state blames our coverage.
+- [x] **5.1 Quick-answer mode**, built to refuse — **DONE**
+  (`src/lib/research/quick-answer.js`, `GET /api/research/quick`, screen
+  `/internal/research/quick`). Live on the real corpus: *"In the 18 properties we
+  hold in Trenton in the last 60 months, 1-unit 1,125–1,875 sqft came in between
+  $148,000 and $300,000 — median $248k. 13 of the 18 that say were as-is grids.
+  Most recent 2 months ago. They span 17 months."*
+  **THIS IS THE MOST DANGEROUS SURFACE IN THE BUILD and the shape of the answer
+  is the safety feature.** A figure beside an address is read as a valuation
+  however much small print sits under it. So the RANGE is the headline — measured
+  on the rendered page at 30px against the median's 15px, asserted, because the
+  ordering is the whole point; the denominator sits NEXT to the number rather
+  than in a footnote and leads the sentence; the recency span is always stated;
+  and below five matches there is **no range, no median and no number of any
+  kind**. A refusal renders as prominently as an answer, in the same place, or
+  the screen reads as broken rather than as honest.
+  **THE EMPTY STATE BLAMES OUR COVERAGE, with a number.** "3 of the 40 we hold in
+  the area at all" rather than a bare "not enough", and a town we have never lent
+  in says outright that no change to the search will help — telling somebody to
+  widen a search that cannot help is the most common lie a thin-data screen
+  tells. It reuses `searchProperties` rather than a second "simpler" query, so
+  the quick answer and the full comparable search can never contradict each other
+  about the same town.
+  **CAUGHT ON REAL DATA BEFORE IT SHIPPED:** the as-is tally read `comp_set`,
+  which lives on the OBSERVATION — a property row does not carry one — so every
+  row came back null and it reported *"0 of 18 were as-is grids"*. Not a missing
+  answer but a confident wrong one, claiming all eighteen were after-repair grids
+  when we had not looked. It now reads the property's own `asis_comp_count` /
+  `arv_comp_count`, counts only the rows that STATE it, names that denominator
+  ("13 of the 18 that say"), and stays silent entirely when none of them do.
+  Tests: `scripts/test-quick-answer-pure.js` (76 assertions) + the rendered
+  screen.
 - [x] **5.2 ARV mode.** Every source in the industry says an ARV must come from
   renovated comps and then leaves you to guess which sales were renovated. **We
   do not guess — the appraiser told us which grid each comp sat on.**
