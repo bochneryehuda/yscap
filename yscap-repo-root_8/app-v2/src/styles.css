@@ -3699,29 +3699,99 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    width, so nothing here is a bare word.
    Text colours are explicit hex: `var(--ink)` is a LIGHT paper colour in this
    stylesheet despite the name, and using it for text renders white-on-white. */
-.dsh-heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:14px}
-.dsh-body{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.dsh-slot{min-width:0}
+/* ONE grid for the whole dashboard. The hero row used to be
+   `repeat(auto-fit,minmax(210px,1fr))` while the body was a fixed 4 columns, so the two
+   resolved to DIFFERENT column counts at the same width (5 tracks vs 4 at 1440px, 3 vs 4
+   at 1100px) — the hero cards lined up with nothing below them, and at 1100px a fourth
+   hero was orphaned on a row of its own. Both grids are now the same 4 columns and break
+   together, so every card edge in the page sits on one rhythm. */
+.dsh-heroes,.dsh-body{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.dsh-heroes{margin-bottom:14px}
+/* `dense` lets a narrow card backfill the gap a wide one leaves behind rather than
+   stranding an empty column mid-page. It only ever moves a card EARLIER into a hole. */
+.dsh-body{grid-auto-flow:row dense}
+.dsh-slot{min-width:0;display:flex}
 .dsh-w-one{grid-column:span 1}
 .dsh-w-two{grid-column:span 2}
 .dsh-w-full{grid-column:1/-1}
-.dsh-card{padding:14px 16px;border-radius:12px;min-width:0;display:flex;flex-direction:column}
+/* THE UNEVEN-CARD BUG, and why `margin:0` is load-bearing: `.panel + .panel{margin-top:18px}`
+   (the stacked-panel rule near the top of this file) also matched every card after the
+   first INSIDE these grids. In a grid that margin pushes the item down within its track
+   AND is subtracted from the stretch height — so heroes 2..n rendered 18px lower and 18px
+   shorter than hero 1. Same story for the tiles on the dashboards index. `height:100%`
+   is the other half: a grid item stretches, but the card inside `.dsh-slot` did not, so
+   cards sharing a row ended at different depths.
+   SPECIFICITY MATTERS HERE: `.panel + .panel` is (0,2,0), so a bare `.dsh-card` (0,1,0)
+   loses to it no matter how far down this file it sits. `.panel.dsh-card` ties at (0,2,0)
+   and wins on order. Written the short way the margin survived, and because `height:100%`
+   then forced every card to its track height anyway, the cards came out the SAME height
+   but each pushed 18px below its own row — which looks identical to the original bug. */
+.panel.dsh-card,.panel.dsh-tile{margin:0}
+.dsh-card{padding:16px 18px;border-radius:12px;min-width:0;width:100%;height:100%;
+  display:flex;flex-direction:column}
+/* Hero hierarchy is a firmer border plus the larger number in `.dsh-hero .dsh-num`, and
+   deliberately NOT a background tint: these cards sit on the cream page, so tinting moves
+   them TOWARDS the background, and a vertical gradient reads differently on a 150px card
+   than on a 260px one — the row stops looking like a set. */
 .dsh-card.dsh-hero{border-color:var(--border-strong)}
 .dsh-card-bad{border-color:#E4BDB8;background:#FCF6F5}
-.dsh-card-h{display:flex;align-items:baseline;gap:8px;font-size:13px}
+.dsh-card-h{display:flex;align-items:baseline;gap:8px;font-size:13px;min-height:20px}
 .dsh-card-h b{font-weight:650;color:#141B22}
+.dsh-sub{color:#4B585C;margin-top:1px}
+/* The headline number. Sized here rather than inline so a hero and a body card differ by
+   one rule instead of a ternary in the component. */
+.dsh-num{font-weight:600;line-height:1.05;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+  color:#141B22;font-size:28px;margin-top:10px}
+.dsh-hero .dsh-num{font-size:36px}
+.dsh-num-u{font-size:13px;color:#4B585C;font-weight:400}
+.dsh-figure{border:0;background:none;padding:0;text-align:left;width:100%;color:inherit}
+.dsh-note{color:#4B585C;margin-top:3px}
 .dsh-bar:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.dsh-explain-t{align-self:flex-start}
+/* An empty card should read as a quiet "nothing here", not as a wall of white with one
+   sentence floating at the top of it. */
+.dsh-empty{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:64px;
+  margin:10px 0 0;padding:12px;border:1px dashed var(--line);border-radius:8px;
+  color:#6B7378;font-size:12.5px;text-align:center}
+/* `margin-top:auto` is what lines the footers of a row of cards up with each other: it
+   pushes the toggle to the bottom of the flex column whatever the content above it is.
+   The component must NOT set an inline margin-top here or it wins over this. */
+.dsh-explain-t{align-self:flex-start;margin-top:auto;padding:10px 0 0}
 .dsh-explain{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-size:12.5px;color:#3F4A52}
 .dsh-explain>div{display:flex;gap:8px;padding:2px 0}
 .dsh-k{flex:0 0 116px;color:#6B7378;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
-.dsh-tile{padding:14px 16px;border-radius:12px;display:block}
+.dsh-tile{padding:16px 18px;border-radius:12px;height:100%;display:flex;flex-direction:column}
 .dsh-tile:hover{border-color:var(--gold)}
+.dsh-tile-h{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}
+.dsh-tile-h b{color:#141B22}
+.dsh-tile-d{color:#4B585C;margin:0 0 8px}
+/* Pinned to the bottom so "14 cards · the default for admin" sits on one line across the
+   row however long the description above it runs. */
+.dsh-tile-m{color:#4B585C;margin-top:auto;padding-top:6px}
 .dsh-editor h4{margin:18px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
-.dsh-ed-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+/* The four steps of the editor carried 2, 2, 3 and 3 fields through an `auto-fit` grid,
+   so each step chose its own column width and no two fields lined up down the form. A
+   fixed 3-column rhythm (with a span-2 for the fields that need the room) means every
+   control in the editor shares one set of gridlines. */
+.dsh-ed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:end}
+.dsh-ed-wide{grid-column:span 2}
 .dsh-ed-preview{margin-top:16px;padding:12px 14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px}
-@media (max-width:1080px){.dsh-body{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .dsh-w-two,.dsh-w-full{grid-column:1/-1}}
-@media (max-width:720px){.dsh-body{grid-template-columns:1fr}
+/* 1280, not the 1080 this block used to break at. The console sidebar eats ~300px, so the
+   breakpoint is ~300px wider than the content it governs: at a 1100px window four columns
+   came out ~200px each and the headline numbers and footer links wrapped. Below this the
+   whole page steps to two columns TOGETHER, so a 4-card hero row becomes a tidy 2×2 that
+   still shares its gridlines with everything under it. */
+@media (max-width:1280px){
+  .dsh-heroes,.dsh-body{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dsh-w-two,.dsh-w-full{grid-column:1/-1}
+  .dsh-ed-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dsh-ed-wide{grid-column:span 2}
+}
+@media (max-width:720px){
+  .dsh-heroes,.dsh-body{grid-template-columns:1fr}
   .dsh-w-one,.dsh-w-two,.dsh-w-full{grid-column:1/-1}
-  .dsh-k{flex-basis:92px}}
+  .dsh-ed-grid{grid-template-columns:1fr}
+  .dsh-ed-wide{grid-column:span 1}
+  .dsh-k{flex-basis:92px}
+  .dsh-num{font-size:26px}
+  .dsh-hero .dsh-num{font-size:32px}
+}
