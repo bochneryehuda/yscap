@@ -130,5 +130,25 @@ ok(ID.contactKey('phone', '(973) 555-1212') === ID.contactKey('phone', '+1 973-5
 ok(ID.contactKey('email', 'John@Acme.Test') === ID.contactKey('email', 'john@acme.test'),
   'email case does not create a second contact');
 
+/* THE INHERITED TOWN IS A FALLBACK, NEVER THE CITY ITSELF.
+   A comparable that named no city inherits the subject's, gated on the ZIPs
+   matching — but a town the comparable WROTE inside its own packed address line
+   must always win, or the house is filed under the wrong town and the split the
+   inheritance exists to close is created instead. */
+const PACKED = '12 Oak St, Newark, NJ 07103';
+ok(K.propertyKey({ street: PACKED, city: null, fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||newark|nj',
+'a town written inside the comparable\'s own address line BEATS the inherited one');
+ok(K.propertyKey({ street: '12 Oak St', city: null, fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||irvington|nj',
+'with no town of its own, the inherited town is still used — the split stays closed');
+ok(K.propertyKey({ street: PACKED, city: 'Harrison', fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||harrison|nj',
+'an explicitly stated city beats both the packed line and the inherited town');
+ok(K.propertyKey({ street: '12 Oak St', city: null, state: 'NJ', zip: '07103' })
+   === '12 oak st||z07103|nj',
+'and with no inheritance offered at all, nothing changes — it still keys on the ZIP');
+
+
 console.log(`test-research-property-key: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

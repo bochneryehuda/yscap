@@ -352,7 +352,8 @@ function comparableRowFrom(c) {
   return {
     seq: c.seq, address: c.address, city: c.city, state: c.state, zip: c.zip,
     proximity: c.proximity, sale_price: c.salePrice, adjusted_price: c.adjustedPrice,
-    gla: c.gla, sale_date: c.saleDate, condition_uad: c.conditionUad, quality_uad: c.qualityUad,
+    gla: c.gla, sale_date: c.saleDate, contract_date: c.contractDate,
+    condition_uad: c.conditionUad, quality_uad: c.qualityUad,
     // days_on_market is a TEXT column ("21", "45+", "N/A") — the grid writes prose as often as a number.
     days_on_market: c.dom == null ? null : String(c.dom), price_per_gla: c.pricePerGla,
     net_adjustment: c.netAdjustment, net_adj_pct: c.netAdjPct, gross_adj_pct: c.grossAdjPct,

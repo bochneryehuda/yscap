@@ -330,7 +330,16 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   p.has_adu, p.attic, p.basement_finished_pct, p.lot_shape, p.market_rent, p.unit_mix,
   p.last_sale_price, p.last_sale_date, p.last_sale_type, p.last_sale_status, p.last_list_price,
   p.sale_count, p.subject_count, p.comp_count, p.arv_comp_count, p.asis_comp_count,
-  p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on`;
+  p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on,
+  -- THE PICTURE, so a comp list can show the house rather than a grey box. A
+  -- scalar subquery rather than a join: joining property_photos would multiply
+  -- the property row per photo and corrupt both the LIMIT and every facet count
+  -- (the same trap the arv/asis comp counts are denormalized to avoid). Indexed
+  -- by idx_property_photos_property, and only runs for the rows on the page.
+  (SELECT pp.document_id FROM property_photos pp
+    WHERE pp.property_id = p.id
+    ORDER BY pp.is_primary DESC, pp.sequence NULLS LAST
+    LIMIT 1) AS primary_photo_document_id`;
 
 /** Run a search. Returns { rows, total, page, limit, pages }. */
 async function searchProperties(db, filters = {}) {

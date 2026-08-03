@@ -491,6 +491,32 @@ async function makeAppraisal(appId, o) {
     ok(ndDenied.status === 403,
       'an ordinary officer cannot permanently suppress a duplicate pair');
 
+    // (4b) THE RELAXATION LADDER — a comp search says how hard it had to look, and
+    // how much of the town we hold at all, so a thin answer can never read as a
+    // confident one. `filters` is what was ASKED for; `applied_filters` is what
+    // actually ran; they differ exactly when the ladder relaxed something.
+    const lad = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&want=25&relaxable=radius_miles,sold_within_months`, token);
+    ok(lad.status === 200 && Array.isArray(lad.body.ladder) && lad.body.ladder.length >= 1,
+      'a comp search reports every rung it tried');
+    ok(lad.body.ladder.every((s) => typeof s.found === 'number' && s.label),
+      'and each rung says what it looked for and what it found');
+    ok(lad.body.coverage && typeof lad.body.coverage.properties === 'number',
+      'and how many properties we hold in that town at all — the denominator an empty answer needs');
+    ok(lad.body.relaxed_to === 'any_time' || lad.body.ladder.length > 1,
+      'wanting more than the town holds walks the ladder outwards rather than just answering short');
+    ok(lad.body.applied_filters !== undefined && lad.body.filters !== undefined,
+      'what was asked for and what actually ran are BOTH reported');
+    // The ladder's own steering parameters must never reach the query builder.
+    ok(lad.body.filters.want === undefined && lad.body.filters.relaxable === undefined,
+      'the ladder controls are not filters and never leak into the search');
+    // An EXPLICIT choice is never relaxed — only what the screen declared as its default.
+    const strict = await call(server, 'GET',
+      `/api/research/comps?property_id=${subjProp}&want=25&sold_within_months=6`, token);
+    ok(strict.status === 200
+      && Number(strict.body.applied_filters.sold_within_months) === 6,
+    'a time window the user actually typed is honoured, never widened underneath them');
+
     // (5) THE APPRAISER PROFILE REPORTS REAL TOTALS, not the length of a list the
     // SQL capped — otherwise a busy appraiser's page reads "2000 properties"
     // forever and the filter underneath silently works inside a truncated set.

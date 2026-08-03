@@ -818,11 +818,19 @@ async function writeReport(db, { a, comps, link, out }) {
     //     city-bearing reports already produce.
     // A comp outside the subject's ZIP that states no city still keys on its ZIP, and
     // goes to the duplicate detector (db/419) instead.
-    const compCity = txt(c.city)
-      || (K._internals.zip5(c.zip) && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
-        ? txt(a.subject_city) : null);
+    // The inherited town is a FALLBACK, never the city itself. `normalizeParts`
+    // re-parses a packed address line ("12 Oak St, Newark, NJ 07103") for the
+    // pieces it does not already hold, and handing it an inherited town filled
+    // that slot first — so a comparable that WROTE its own town inside its own
+    // address line was filed under the subject's town instead, creating exactly
+    // the split this inheritance exists to close. `fallbackCity` is applied last,
+    // after both the explicit element and the packed-line parse.
+    const inheritedCity = K._internals.zip5(c.zip)
+      && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
+      ? txt(a.subject_city) : null;
     const pid = await upsertProperty(db, {
-      street: c.address, city: compCity, state: c.state || a.subject_state, zip: c.zip,
+      street: c.address, city: txt(c.city), fallbackCity: inheritedCity,
+      state: c.state || a.subject_state, zip: c.zip,
     });
     if (!pid) {
       out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
@@ -882,7 +890,10 @@ async function writeReport(db, { a, comps, link, out }) {
       net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
       adjustments: JSON.stringify(c.adjustments || []),
       appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
-      contract_date: null,
+      // WHEN THE PRICE WAS AGREED (db/420). Distinct from the settled date above,
+      // and NULL on anything imported before we started reading it — which means
+      // 'unknown', never 'same as the settled date'.
+      contract_date: dateOnly(c.contract_date),
       facts: JSON.stringify({}),
     });
     compObs.push({ id: obs.id, property_id: pid, comp_seq: txt(c.seq) });

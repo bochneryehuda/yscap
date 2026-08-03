@@ -52,6 +52,7 @@ import StaffVendors from './screens/StaffVendors.jsx';
 // The research desk: the property / comparable / appraiser database (db/409) and
 // the build-your-own valuation grid (db/410).
 import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
+import StaffCompSearch from './screens/StaffCompSearch.jsx';
 import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';
 import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
@@ -203,6 +204,8 @@ export default function App() {
           {/* Research desk — every staff role, no per-file scoping (owner-directed:
               "make it available for all the staff users to see all the things"). */}
           <Route path="/internal/research" element={<StaffPrivate><StaffPropertyResearch /></StaffPrivate>} />
+          {/* Subject-anchored comp search: start from a property, a loan file, or a typed address. */}
+          <Route path="/internal/research/comps" element={<StaffPrivate><StaffCompSearch /></StaffPrivate>} />
           <Route path="/internal/research/property/:id" element={<StaffPrivate><StaffPropertyDetail /></StaffPrivate>} />
           <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
           <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />

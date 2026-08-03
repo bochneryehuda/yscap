@@ -443,6 +443,7 @@ export default function StaffLayout({ children }) {
         {/* The research desk (owner-directed 2026-08-02). Every staff role — it holds
             addresses, property facts and recorded sale prices, and no borrower data. */}
         <NavLink className="sb-link" to="/internal/research" title="Property Research — every property and comparable sale our appraisers have ever shown us, searchable by town, price, size, bedrooms, condition and sale date. Pick the sales you like and build your own valuation from them."><NavIcon name="pipeline" />Property Research</NavLink>
+        <NavLink className="sb-link" to="/internal/research/comps" title="Find comparables for a property — name the house you are valuing and the search fills itself in from it. Says how hard it had to look and how much of that town we hold."><NavIcon name="pipeline" />Find comparables</NavLink>
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

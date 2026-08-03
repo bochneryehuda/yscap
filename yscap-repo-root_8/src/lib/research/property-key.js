@@ -70,6 +70,14 @@ function normalizeParts(input) {
   if (typeof input === 'string') src = { street: input };
   let street = collapse(src.street || src.line1 || src.address || '');
   let city = collapse(src.city || '');
+  // A town we are INFERRING rather than reading — today, the subject's town lent
+  // to a comparable that named none (gated on the ZIPs matching, see ingest.js).
+  // It is applied LAST, after the packed-street parse below, because a town the
+  // comparable actually WROTE — even buried inside its own address line — must
+  // always beat one we inherited. Passing it as `city` put it in front of that
+  // parse and filed the house in the wrong town, creating the very split the
+  // inheritance exists to close.
+  const fallbackCity = collapse(src.fallbackCity || '');
   let state = collapse(src.state || '');
   let zip = collapse(src.zip || src.postal_code || '');
   let unit = collapse(src.unit || '');
@@ -93,6 +101,9 @@ function normalizeParts(input) {
     const s = ADDR.splitUnit(street);
     if (s.unit) { unit = s.unit; street = s.line1; }
   }
+  // LAST: the inferred town, only if nothing we READ produced one — not the
+  // explicit element, not the packed address line.
+  if (!city && fallbackCity) city = fallbackCity;
   return {
     street: ADDR.abbreviateStreet(street) || street,
     unit,

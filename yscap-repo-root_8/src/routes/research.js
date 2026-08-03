@@ -387,7 +387,13 @@ router.get('/comps', async (req, res, next) => {
       // `distance` when the subject is placed and `recent_sale` when it is not.
       // A caller that asks for a specific sort still wins — this is only a default.
       limit: 60,
-    }, stripEmpty(req.query));
+      // `want` and `relaxable` steer the LADDER, not the SQL — strip them so they
+      // never reach the query builder or show up as filters in the response.
+    }, (() => {
+      const c = stripEmpty(req.query);
+      delete c.want; delete c.relaxable;
+      return c;
+    })());
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
     // which must beat the 18-month default above — otherwise the option silently
     // does nothing, which is exactly the bug this comment used to only half-fix.
@@ -419,7 +425,65 @@ router.get('/comps', async (req, res, next) => {
       // dropped and the answer SAYS the subject has not been placed yet.
       delete filters.radius_miles;
     }
-    const page = await S.searchProperties(db, filters);
+    // THE RELAXATION LADDER — and it SAYS which rung produced the answer.
+    //
+    // A comp search that quietly returns three rows looks identical to one that
+    // searched a market we have barely touched. So instead of one query, this
+    // walks from the tightest sensible search outwards until it has enough to
+    // work with, and reports every rung it tried and what each one found. The
+    // screen can then say "nothing within a mile; nothing within two; here are
+    // four in the town" instead of "4 properties" with no denominator.
+    //
+    // A caller that asked for something explicitly is never overridden: the rungs
+    // only ever relax filters the DEFAULTS supplied, and `askedFor` freezes
+    // anything that came in on the query string.
+    // WHAT THE CALLER EXPLICITLY ASKED FOR is never relaxed. A screen that sends
+    // its OWN defaults (so its controls cannot lie about what ran) names them in
+    // `relaxable`, and those come back off this list — otherwise a default would
+    // be indistinguishable from a deliberate choice and the ladder could never
+    // widen anything.
+    const askedFor = new Set(Object.keys(req.query || {}));
+    for (const k of String(req.query.relaxable || '').split(',')) {
+      const key = k.trim();
+      if (key) askedFor.delete(key);
+    }
+    const want = Math.max(1, Math.min(25, K.int(req.query.want, { max: 25 }) || 6));
+    const RUNGS = [
+      { id: 'as_asked', label: 'as asked', relax: () => ({}) },
+      { id: 'wider_size', label: 'a wider size range',
+        relax: (f) => (subject.gla && !askedFor.has('sqft_min') && !askedFor.has('sqft_max')
+          ? { sqft_min: Math.round(subject.gla * 0.4), sqft_max: Math.round(subject.gla * 2.2) } : null) },
+      { id: 'longer_window', label: 'a longer time window',
+        relax: (f) => (!askedFor.has('sold_within_months') && f.sold_within_months
+          ? { sold_within_months: 36 } : null) },
+      { id: 'wider_radius', label: 'a wider distance',
+        relax: (f) => (f.radius_miles && !askedFor.has('radius_miles')
+          ? { radius_miles: Math.min(10, Number(f.radius_miles) * 3) } : null) },
+      { id: 'whole_town', label: 'the whole town, any distance',
+        relax: (f) => (f.radius_miles && !askedFor.has('radius_miles') ? { radius_miles: undefined } : null) },
+      { id: 'any_time', label: 'any time',
+        relax: (f) => (!askedFor.has('sold_within_months') && f.sold_within_months
+          ? { sold_within_months: undefined } : null) },
+    ];
+
+    let active = Object.assign({}, filters);
+    let page = null;
+    const ladder = [];
+    let usedRung = 'as_asked';
+    for (const rung of RUNGS) {
+      const change = rung.relax(active);
+      if (rung.id !== 'as_asked' && !change) continue;      // nothing left to relax on this rung
+      if (change) {
+        for (const [k, v] of Object.entries(change)) {
+          if (v === undefined) delete active[k]; else active[k] = v;
+        }
+      }
+      page = await S.searchProperties(db, active);
+      ladder.push({ step: rung.id, label: rung.label, found: page.total });
+      usedRung = rung.id;
+      if (page.total >= want) break;
+    }
+
     const ranked = page.rows.map((c) => {
       const s = V.scoreComp(subject, c, { today });
       // `coverage` travels WITH the score, always. They say different things — the
@@ -427,8 +491,33 @@ router.get('/comps', async (req, res, next) => {
       // knew — and a screen showing one without the other overstates its confidence.
       return Object.assign({}, c, { match_score: s.score, match_coverage: s.coverage, match_reasons: s.parts });
     }).sort((a, b) => b.match_score - a.match_score);
+
+    // HOW MUCH OF THIS MARKET WE HOLD AT ALL. Without it an empty answer reads as
+    // "your filters are too tight" when the truth is usually "we have never lent
+    // in this town". Cheap: one count, no joins.
+    let coverage = null;
+    try {
+      const c = (await db.query(
+        `SELECT count(*)::int AS properties,
+                count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale
+           FROM properties
+          WHERE state = $1 AND ($2::text IS NULL OR lower(city) = lower($2))`,
+        [subject.state || null, subject.city || null])).rows[0];
+      coverage = { town: subject.city || null, state: subject.state || null,
+        properties: c ? c.properties : 0, with_sale: c ? c.with_sale : 0 };
+    } catch (_) { coverage = null; }
+
     res.json({
-      subject, rows: ranked, total: page.total, filters,
+      subject, rows: ranked, total: page.total,
+      // `filters` is WHAT WAS ASKED FOR — the defaults with the caller's query on
+      // top, before the ladder touched anything. `applied_filters` is what the
+      // search that produced these rows actually ran with. They differ exactly
+      // when the ladder had to relax something, and `relaxed_to` names the rung.
+      filters, applied_filters: active,
+      // WHICH RUNG ANSWERED, and everything tried on the way — so the screen can
+      // be honest about how hard it had to look.
+      relaxed_to: usedRung, ladder, wanted: want,
+      coverage,
       // Distance is only real when BOTH ends are placed. Saying so is the whole
       // difference between "there is nothing within half a mile" and "we do not
       // know where your property is yet".

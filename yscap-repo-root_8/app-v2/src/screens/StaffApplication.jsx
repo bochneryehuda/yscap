@@ -5209,6 +5209,18 @@ export default function StaffApplication() {
             appraisal-documents waiver, so entering on either side shows "already
             entered — confirm" on the other. */}
         <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
+        {/* FIND COMPARABLES FOR THIS FILE, without leaving it and re-typing the
+            subject from memory. The comp search takes an application id and reads
+            the subject off the file, so this works whether or not an appraisal has
+            been imported yet. */}
+        <div style={{ margin: '0 0 12px' }}>
+          <Link className="btn ghost small" to={`/internal/research/comps?application_id=${id}`}>
+            Find comparables for this property →
+          </Link>
+          <span style={{ color: '#4B585C', fontSize: 12, marginLeft: 10 }}>
+            Searches every comparable sale our own appraisals have shown us.
+          </span>
+        </div>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 

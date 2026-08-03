@@ -242,9 +242,31 @@ function settledMonth(desc) {
   if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
   return `${yr}-${String(mo).padStart(2, '0')}-01`;
 }
+// THE CONTRACT DATE, out of the same UAD string the settled date comes from.
+//
+// UAD writes a comparable's date of sale as "s06/25;c03/25" — SETTLED June 2025,
+// under CONTRACT March 2025. `settledMonth` above reads the first and throws the
+// second away, and the contract date is the more useful of the two for market
+// work: it is when the price was actually AGREED. A settlement can follow the
+// meeting of minds by months, so a market that moved in between is misread if you
+// only ever have the closing date.
+//
+// Deliberately narrow: it reads ONLY an explicit `c MM/YY` marker. A bare MM/YY
+// with no marker is the settled date in every vendor's output (that is exactly
+// what `settledMonth` falls back to), so guessing there would file a settlement
+// as a contract — silently, on the majority of comps. Null rather than a guess.
+function contractMonth(desc) {
+  const m = /c\s*(\d{1,2})\/(\d{2,4})/i.exec(String(desc || ''));
+  if (!m) return null;
+  const mo = parseInt(m[1], 10);
+  let yr = parseInt(m[2], 10);
+  if (yr < 100) yr = 2000 + yr;
+  if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
+  return `${yr}-${String(mo).padStart(2, '0')}-01`;
+}
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, glaBasis: null, saleDate: null, conditionUad: null, qualityUad: null,
+  const out = { gla: null, glaBasis: null, saleDate: null, contractDate: null, conditionUad: null, qualityUad: null,
     conditionText: null, qualityText: null, dom: null,
     beds: null, bathsFull: null, bathsHalf: null, baths: null, totalRooms: null,
     pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
@@ -262,7 +284,7 @@ function compGrid(c) {
     // number. Recording it costs nothing and makes the difference visible.
     if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gla'; } }
     else if (t === 'GrossBuildingArea' && d && out.gla == null) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gba'; } }
-    else if (t === 'DateOfSale' && d) out.saleDate = settledMonth(d);
+    else if (t === 'DateOfSale' && d) { out.saleDate = settledMonth(d); out.contractDate = contractMonth(d); }
     // A NON-UAD RATING IS STILL A RATING. The UAD codes stay enum-whitelisted (the
     // review checks compare them and must never see a free-text value), but a vendor
     // that writes "Good" or "Avg-Good" instead of "C3" was having the comparable's
@@ -394,7 +416,7 @@ function comparables(root) {
       })(),
       netAdjPct: signed(X.attr(c, 'SalePriceTotalAdjustmentNetPercent'), 1e6),    // numeric(8,2), can be < 0
       grossAdjPct: signed(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent'), 1e6), // numeric(8,2)
-      gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate,
+      gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate, contractDate: g.contractDate,
       conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       conditionText: g.conditionText, qualityText: g.qualityText,
       dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
