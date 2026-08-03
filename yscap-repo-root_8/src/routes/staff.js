@@ -5995,6 +5995,30 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
 router.post('/applications/:id/closing-prep/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // Declared at ROUTE scope, not inside the try, so the outer catch can unwind a
+  // claim taken before something threw — packAttachments and recipientsFor both
+  // can, and an unreleased claim erases the order's whole age.
+  let claimToken = null;
+  let claimPrev = null;
+  const releaseClaim = async () => {
+    if (!claimToken) return;
+    const token = claimToken;
+    claimToken = null;                 // once only, whichever path gets here first
+    try {
+      if (claimPrev) {
+        await db.query(
+          `UPDATE file_orders SET ordered_at = $3::timestamptz, updated_at = now()
+            WHERE application_id=$1 AND order_type='attorney' AND ordered_at::text = $2`,
+          [appId, token, claimPrev.ordered_at || null]);
+      } else {
+        // There was no row before this attempt — the claim minted it, so remove it
+        // rather than leaving a phantom 'ordered' attorney order nobody placed.
+        await db.query(
+          `DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'
+             AND ordered_at::text = $2 AND COALESCE(send_count,0) = 0`, [appId, token]);
+      }
+    } catch (_) { /* best effort — never turn a send failure into a 500 */ }
+  };
   try {
     const data = await closingPrep.getClosingPrepData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
@@ -6010,7 +6034,9 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
-      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      // `ordered_at` is selected because it is the snapshot the claim below has to
+      // be able to put back — this order's AGE is that column.
+      `SELECT status, ordered_at FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
@@ -6029,16 +6055,33 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
        the second click matches no row and is refused. A send that then fails leaves
        the stamp a few seconds early on an order that was already placed, which the
        next successful send overwrites anyway. */
-    if (existing && force) {
+    if (force) {
+      // The snapshot to put back if the send does not happen. Read BEFORE the
+      // claim, because the claim overwrites it.
+      claimPrev = existing || null;
       const claim = await db.query(
-        `UPDATE file_orders SET ordered_at = now(), updated_at = now()
-          WHERE application_id=$1 AND order_type='attorney'
-            AND (ordered_at IS NULL OR ordered_at < now() - interval '10 seconds')
-          RETURNING id`, [appId]);
+        `INSERT INTO file_orders (application_id, order_type, status, ordered_at, ordered_by, updated_at)
+         VALUES ($1, 'attorney', 'ordered', now(), $2, now())
+         ON CONFLICT (application_id, order_type) DO UPDATE
+            SET ordered_at = now(), updated_at = now()
+          WHERE COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds'
+         -- ::text, never the timestamp: Postgres now() is microsecond precision and
+         -- a JS Date is millisecond, so a token round-tripped through one comes back
+         -- a fraction early and matches nothing — which would make the release below
+         -- silently do nothing.
+         RETURNING id, ordered_at::text AS claim_token`, [appId, req.actor.id]);
       if (!claim.rows[0]) {
         return res.status(409).json({ error: 'That closing-prep request has just gone out — give it a moment before sending it again.', code: 'too_soon' });
       }
+      claimToken = claim.rows[0].claim_token;
     }
+    /* PUT THE CLOCK BACK when the send does not happen — see releaseClaim above.
+       The claim stamps `ordered_at = now()`, which is what makes it atomic and what
+       makes an unreleased claim dangerous: this order's age IS that column, so a
+       failed re-send left a twelve-day-late order looking freshly placed, dropped
+       it off the desk's Late tab and silenced the overdue nudge for another whole
+       SLA window. Its title/insurance sibling has always unwound this way and its
+       test pins it; only the claim half had been copied across. */
 
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
     const note = String((req.body && req.body.note) || '').trim().slice(0, 4000);
@@ -6074,14 +6117,22 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
     });
     if (!sent.ok) {
+      // Nothing went out, so the clock goes back to what it was.
+      await releaseClaim();
       const msg = sent.reason === 'no_recipient' ? 'There is nowhere to send this.'
         : sent.reason === 'no_thread' ? 'Could not open the closing email chain for this file.'
           : 'Could not send the closing-prep request.';
       return res.status(500).json({ error: msg, code: sent.reason });
     }
     if (sent.skipped) {
+      await releaseClaim();
       return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
+    // THE EMAIL HAS GONE. From here the claim must never be unwound — a throw
+    // further down (a failed part, a bookkeeping error, the response itself) would
+    // otherwise hand the outer catch a release that rewinds the clock on an order
+    // outside counsel has already received.
+    claimToken = null;
 
     // THE REST OF THE PACKAGE, onto the same conversation. Sent AFTER part 1 has
     // landed, so a part can never arrive before the request that explains it — and
@@ -6176,7 +6227,14 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       skipped: attach.skipped.map((d) => ({ filename: d.filename, reason: d.reason })),
       partsFailed,
     });
-  } catch (e) { res.status(500).json({ error: 'Could not send the closing-prep request.' }); }
+  } catch (e) {
+    // A throw between the claim and the send — packAttachments and recipientsFor
+    // both can — must not leave the order's age erased by a request that sent
+    // nothing. `releaseClaim` is a no-op once the send has succeeded, because the
+    // token is cleared the first time it runs.
+    await releaseClaim();
+    res.status(500).json({ error: 'Could not send the closing-prep request.' });
+  }
 });
 
 // A human follow-up ON THE SAME CHAIN. Never the first contact.
