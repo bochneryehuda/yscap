@@ -470,6 +470,11 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
         body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
         lines: ['Questions about this draw? Just reply to this email — your whole loan team is on it.'],
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
+        // The desk's own in-app row, in the desk's voice — the email above is one message and
+        // keeps the borrower's subject, but the team's feed should not read as if the file were
+        // theirs. Same facts, stated for the reader who is working the loan.
+        staffTitle: 'Draw funds released',
+        staffBody: `Draw #${row.number == null ? '—' : row.number} for ${addr}: ${usd2(net)} net was released by the administrator${feeSum ? ` (fees ${usd2(feeSum)})` : ''}. Recorded in the money ledger automatically.`,
       }).catch(() => {});
     } else {
       // No borrower-facing wire (fully absorbed by fees/markup) — the desk still needs to know.

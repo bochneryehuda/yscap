@@ -1059,7 +1059,17 @@ async function notifyAppThread(appId, opts = {}) {
   // A null entry means the message was HELD (muted category, loan-officer gate) — also not a send.
   const rows = (Array.isArray(borrowerIds) ? borrowerIds : []).filter(Boolean).length;
   const emailed = mailable && rows > 0;
-  const staff = await notifyAppStaff(appId, { ...shared, inAppOnly: emailed });
+  // ONE EMAIL, TWO VOICES. The email is genuinely a single message and carries a single subject —
+  // the borrower's, since they are the addressee. But the STAFF IN-APP ROW is a different artifact
+  // with a different reader: the desk's feed reading "YOUR construction draw has been released" is
+  // written in the borrower's voice about the desk's own file. So a caller may pass `staffTitle` /
+  // `staffBody` for the rows the team sees. Absent, the shared wording is used unchanged.
+  const staff = await notifyAppStaff(appId, {
+    ...shared,
+    ...(opts.staffTitle ? { title: opts.staffTitle } : {}),
+    ...(opts.staffBody ? { body: opts.staffBody } : {}),
+    inAppOnly: emailed,
+  });
   return { borrowers: rows, staff, emailedTogether: emailed };
 }
 

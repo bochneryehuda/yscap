@@ -40,6 +40,12 @@ stub(path.join(SRC, 'db'), {
 stub(path.join(SRC, 'lib', 'notify'), {
   notifyAppBorrowers: async (appId, o) => { notes.push({ to: 'borrower', appId, ...o }); return []; },
   notifyAppStaff: async (appId, o) => { notes.push({ to: 'staff', appId, ...o }); return []; },
+  // ONE email addressed to the borrower with the draw team on a visible Cc (owner-directed
+  // 2026-08-03). It is recorded as reaching the BORROWER — which is what it does, and what the
+  // assertions below mean by "the borrower is told" — and NOT as a separate staff send, because
+  // there is no longer a second email. That distinction is the point of the change: the staff
+  // counts asserted further down must stay at zero on a borrower announcement.
+  notifyAppThread: async (appId, o) => { notes.push({ to: 'borrower', looped: 'team', appId, ...o }); return { borrowers: 1, staff: [], emailedTogether: true }; },
 });
 // resolveFilePlatform is consulted only for the dormant markup knob — keep it inert.
 stub(path.join(SRC, 'sitewire', 'routing'), { resolveFilePlatform: async () => ({ platform: 'trustpoint', rule: {} }) });
@@ -99,8 +105,15 @@ async function releaseGate() {
   assert.ok(/\$10,437\.50/.test(borrower.body), 'the borrower sees the stated net, not approved−fees');
   // owner-directed: the draw number rides the SUBJECT (the template builds `title · file tag`)
   assert.ok(/#1/.test(borrower.title), `the subject names which draw it is — got "${borrower.title}"`);
-  assert.ok(Array.isArray(borrower.bccExtra) && borrower.bccExtra.includes('draws@yscapgroup.com'),
-    'the draw desk is looped in on the borrower release email');
+  // The draw desk + officer loop-in MOVED from a per-call-site `bccExtra` to a VISIBLE Cc applied
+  // centrally for every 'draws' notification (owner-directed 2026-08-03: one email, everybody on
+  // it, so a reply reaches them all). This suite stubs `notify` wholesale, so it can no longer see
+  // that list — it is added inside the module this stub replaces. What it CAN still prove, and
+  // what actually guarantees the loop-in now, is that the release goes out through the THREAD
+  // helper rather than a bare borrower fan-out. The recipients themselves are asserted live, on
+  // the real wire payload, by test-draw-email-db.js (B3/B4/B5) and test-draw-loop-in-db.js.
+  assert.strictEqual(borrower.looped, 'team',
+    'the release is announced through notifyAppThread, which is what loops the draw desk + officer in');
 
   // (e) A stale wire (older than the go-forward window) records but stays silent.
   reset();

@@ -128,6 +128,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       WHERE application_id=$1 AND recipient_kind='staff' AND type='draw_findings' AND email_status='sent'`, [app])).rows[0].n;
   eq('B11 and NOT a second email each', staffEmailed, 0);
 
+  // ONE EMAIL, TWO VOICES. The email is a single message and keeps the borrower's subject — but
+  // the desk's in-app feed should not read "YOUR construction draw" about the desk's own file.
+  outbox.length = 0;
+  await notify.notifyAppThread(app, {
+    type: 'draw', title: 'Your construction draw has been released', body: 'on its way to you',
+    staffTitle: 'Draw funds released', staffBody: 'net was released by the administrator',
+    applicationId: app,
+  });
+  await sleep(900);
+  const staffRow = (await db.query(
+    `SELECT title, body FROM notifications
+      WHERE application_id=$1 AND recipient_kind='staff' AND type='draw' ORDER BY created_at DESC LIMIT 1`, [app])).rows[0];
+  const borrRow = (await db.query(
+    `SELECT title FROM notifications
+      WHERE application_id=$1 AND recipient_kind='borrower' AND type='draw' ORDER BY created_at DESC LIMIT 1`, [app])).rows[0];
+  eq('B12 the desk\'s in-app row is written in the desk\'s voice', staffRow && staffRow.title, 'Draw funds released');
+  ok('B13 while the borrower keeps theirs', borrRow && /Your construction draw/.test(borrRow.title));
+  eq('B14 and it is still ONE email', outbox.length, 1);
+  ok('B15 whose subject is the borrower\'s', /Your construction draw/.test(String(outbox[0] && outbox[0].subject)));
+
   // ================================================ C. the fallback — an event never goes dark
   outbox.length = 0;
   // A borrower with NO email address on file — the realistic "nobody to address" case (the column
