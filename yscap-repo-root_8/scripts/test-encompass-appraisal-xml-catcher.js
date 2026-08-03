@@ -460,6 +460,28 @@ t('a non-url is refused with a plain reason', () => {
     assert.strictEqual(badStamp.expired, 1, 'an unreadable stamp is treated as unknown → not downloaded');
   });
 
+  // ── the pipeline cap is never silent ──────────────────────────────────────
+  let capped, uncapped;
+  enc.configured = () => true;
+  const origSearch2 = enc.pipelineSearch;
+  try {
+    enc.apiGet = async () => [];
+    enc.pipelineSearch = async () => Array.from({ length: 500 }, (_, i) => ({ loanId: `g${i}` }));
+    capped = await M.sweepOnce(db, { paceMs: 0 });
+    enc.pipelineSearch = async () => Array.from({ length: 44 }, (_, i) => ({ loanId: `g${i}` }));
+    uncapped = await M.sweepOnce(db, { paceMs: 0 });
+  } finally { enc.apiGet = origGet; enc.configured = origConfigured; enc.pipelineSearch = origSearch2; }
+
+  t('hitting the pipeline row cap is REPORTED, never silent', () => {
+    // There is no paging and the sort is LastModified DESCENDING, so the cap
+    // drops the STALEST loans — precisely where a delivery that did not bump
+    // LastModified would sit. Losing the tail must never be invisible.
+    assert.ok((capped.errors || []).some((e) => /cap/.test(e)),
+      'a full result set must say the window was truncated');
+    assert.strictEqual((uncapped.errors || []).length, 0,
+      'an ordinary result set must NOT warn');
+  });
+
   t('a resource with no download link raises the ALARM', () => {
     assert.strictEqual(noLink.noLink, 1, 'the missing link must be counted');
     assert.ok((noLink.errors || []).some((e) => /location|authorization/.test(e)),

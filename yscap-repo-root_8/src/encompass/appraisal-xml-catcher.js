@@ -572,6 +572,9 @@ async function capture(db, res, meta) {
 // for about thirty seconds. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
 // 1..90 days: below 1 the window is empty, and past ~90 the sweep stops fitting
 // inside its own interval on any real tenant.
+// The pipeline search is capped and NOT paged; see the alarm at the call site.
+const PIPELINE_LIMIT = 500;
+
 const DEFAULT_SINCE_DAYS = envNum('ENCOMPASS_APPRAISAL_XML_SINCE_DAYS', 7, { min: 1, max: 90 });
 
 async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, skewMs = 60000, log = false,
@@ -601,7 +604,19 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
         // live files could sit outside it.
         sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
         fields: ['Loan.Guid', 'Loan.LoanNumber'],
-      }, { limit: 500 });
+      }, { limit: PIPELINE_LIMIT });
+      // THE CAP IS SILENT UNLESS WE SAY SO, and the truncation lands in exactly
+      // the wrong place. There is no pagination, and the sort is LastModified
+      // DESCENDING — so hitting the cap drops the STALEST loans, which is
+      // precisely where a delivery that did not bump `Loan.LastModified` would
+      // be sitting. On this tenant it cannot bite (~44 loans in 7 days needs
+      // ~11x growth to reach 500), but a growing tenant would lose the tail with
+      // nothing anywhere to read.
+      if (Array.isArray(rows) && rows.length >= PIPELINE_LIMIT) {
+        pushErr(out, `pipeline returned the full ${PIPELINE_LIMIT}-row cap — older loans in the window were NOT swept; shorten ENCOMPASS_APPRAISAL_XML_SINCE_DAYS or add paging`);
+        console.error(`[encompass-xml] ALARM: the pipeline search hit its ${PIPELINE_LIMIT}-row cap. ` +
+          'The window is larger than one sweep can carry, so the oldest loans in it are being dropped.');
+      }
       // Read the row through reader.js's OWN helpers rather than a narrower copy.
       // A live pipeline response on 2026-07-26 came back without a `Loan.Guid`,
       // which is why `_rowGuid` accepts six spellings; a private two-spelling
