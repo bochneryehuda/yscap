@@ -178,27 +178,58 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           'a CAPITALISED pattern against lower() — always true, and it is not reported as installed'],
         [`CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%Google%')`,
           'nor is a mixed-case one'],
+        /* THE SECOND WAY THIS WAS GOT THROUGH. Every one of these CONTAINS the
+           genuine clause verbatim and is defeated by what sits beside it, so a
+           SUBSTRING test called all six installed while the database accepted
+           `google_places`. `… OR true` is the realistic accident: db/458 will not
+           apply while rows already violate it, and widening the predicate is the
+           quickest way to get the deploy through. */
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR true)`,
+          'the genuine clause with OR true bolted on is not protection'],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR (geo_source IS NOT NULL))`,
+          'nor with an always-true disjunct wearing the column name'],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR (1=1))`,
+          'nor with 1=1'],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR (latitude IS NULL))`,
+          'nor with an "exemption" that swallows the whole rule'],
+        [`CHECK (NOT (geo_source IS NOT NULL AND lower(geo_source) NOT LIKE '%google%'))`,
+          'nor the same words re-arranged into the opposite meaning'],
+        [`CHECK (CASE WHEN false THEN (lower(geo_source) NOT LIKE '%google%') ELSE true END)`,
+          'nor the clause parked in a branch that is never taken'],
       ];
       let n = 0;
       for (const [body, why] of IMPOSTORS) {
         await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
         const imp = await G.checkGeoLicensing(client);
         ok(imp.ok === false && imp.present === false, why);
+        // The definitive path the app actually uses at boot, on the admin page and
+        // on the health refresh must agree. It asks the database instead of reading
+        // the constraint's text, so it is the one that cannot be out-written.
+        const beh = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(beh.ok === false && beh.present === false,
+          '  …and the behavioural check refuses it too');
         /* AND PROVE IT IS REALLY NO PROTECTION, rather than merely that a string
            did not match a pattern. Asserting only the guard's verdict is exactly
            how the capitalised case slipped through the previous round: the regex
            was checked, the DATABASE never was. If this INSERT is refused the
            constraint genuinely does protect the warehouse and calling it an
-           impostor would be the bug. */
+           impostor would be the bug.
+           INSIDE A SAVEPOINT: a refusal here is precisely the regression this
+           assertion exists to catch, and an un-savepointed failed INSERT ABORTS the
+           transaction — so the DROP below would throw, control would jump to the
+           outer catch, and the remaining impostors plus every later assertion would
+           silently never run. It would still exit non-zero, but reporting the wrong
+           error and a quietly reduced assertion count. */
         const key = `nj|impostor${++n}|${sfx}`;
+        await client.query('SAVEPOINT imp');
         let accepted = true;
         try {
           await client.query(
             `INSERT INTO properties (address_key, display_address, city, state, geo_source)
              VALUES ($1,'x','y','NJ','google_places')`, [key]);
         } catch (_) { accepted = false; }
+        await client.query('ROLLBACK TO SAVEPOINT imp');
         ok(accepted, `  …and the database really does accept a Google coordinate under it`);
-        if (accepted) await client.query('DELETE FROM properties WHERE address_key = $1', [key]);
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
       }
       // And the REAL one still reads as installed — an over-strict check that
@@ -207,6 +238,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
       ok((await G.checkGeoLicensing(client)).ok === true,
         'while the genuine rule, re-created by hand, still reads as installed');
+      ok((await G.checkGeoLicensing(client, { verifyWrite: true })).ok === true,
+        'and the behavioural check confirms the genuine rule too — no false alarm');
+      /* THE PROBE LEAVES NOTHING BEHIND. It INSERTs to find out, so if its own
+         SAVEPOINT ever stopped unwinding, the warehouse would quietly grow a junk
+         property per health refresh — once a minute, forever. */
+      ok((await client.query(
+        `SELECT count(*)::int n FROM properties WHERE address_key LIKE 'licensing-probe|%'`
+      )).rows[0].n === 0, 'and the behavioural probe leaves no row behind');
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
     }
 

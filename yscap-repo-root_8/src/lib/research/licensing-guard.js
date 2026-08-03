@@ -45,10 +45,81 @@ const TABLE = 'properties';
    database's own guarantee — the one that also covers a hand-run migration, a
    psql session, or an import script nobody reviewed. */
 
-/** Is the constraint installed? `{ ok, checked, present, offenders, why }` — never throws. */
-async function checkGeoLicensing(dbc) {
+/* THE EXACT PREDICATE db/458 INSTALLS, as Postgres deparses it. Compared WHOLE,
+   because a substring test passes anything that merely CONTAINS the right clause
+   and is defeated by what sits around it — `… OR true`, `… OR geo_source IS NOT
+   NULL`, `NOT (… AND …)`, a `CASE` that never reaches it. All six were proven
+   against real Postgres to report "installed" under a substring test while the
+   database happily ACCEPTED `geo_source='google_places'`. `\(+`/`\)+` absorb the
+   redundant parentheses Postgres adds; the whitespace is normalised first. */
+const EXACT_DEF =
+  /^CHECK \(+\(geo_source IS NULL\) OR \(lower\(geo_source\) !~~ '%google%'::text\)\)+$/;
+
+/* What the app actually writes, plus the casing that the first version of this
+   guard let through. A rule that refuses one and admits the other is not a rule. */
+const PROBE_SOURCES = ['google_places', 'GOOGLE'];
+
+/**
+ * DOES THE DATABASE ACTUALLY REFUSE A GOOGLE COORDINATE?
+ *
+ * The only question that matters, asked the only way that cannot be fooled: try to
+ * store one and see. Reading the constraint's TEXT is a proxy — it has already
+ * been wrong twice (an `/i` flag that made a `'%GOOGLE%'` pattern read as
+ * installed; a substring match that read six neutered constraints as installed) —
+ * and it goes stale the day a Postgres major deparses anything differently. A
+ * refused INSERT is the property itself.
+ *
+ * ATTRIBUTED, not just refused: Postgres names the constraint that rejected the
+ * row, so "something else happened to stop it" can never read as "our rule works".
+ *
+ * REQUIRES A CLIENT ALREADY INSIDE A TRANSACTION — never the pool. `pool.query`
+ * hands out a different connection per call, so a BEGIN there would leave the
+ * INSERT running outside any transaction and COMMIT a junk row into the warehouse.
+ * Each attempt sits inside its own SAVEPOINT so a refusal (the expected, healthy
+ * answer) does not abort the caller's transaction.
+ *
+ * Returns `{ tested, refused, by }`. `tested:false` means we could not ask — a
+ * read-only replica, a role without INSERT, a statement timeout — and the caller
+ * must fall back rather than read it as "not refused", which would be a false
+ * alarm about a control that is actually on.
+ */
+async function verifyRefusesGoogle(client) {
+  for (const value of PROBE_SOURCES) {
+    try { await client.query('SAVEPOINT geo_licensing_probe'); }
+    catch (_) { return { tested: false, refused: null, by: null }; }
+    let err = null;
+    try {
+      await client.query(
+        `INSERT INTO ${TABLE} (address_key, display_address, geo_source)
+         VALUES ($1, $2, $3)`,
+        [`licensing-probe|${Date.now()}|${Math.random()}`, 'licensing probe', value]);
+    } catch (e) { err = e; }
+    // Undo it either way: on success the row must never survive, and on refusal
+    // this is what lets the caller's transaction carry on.
+    try { await client.query('ROLLBACK TO SAVEPOINT geo_licensing_probe'); }
+    catch (_) { return { tested: false, refused: null, by: null }; }
+
+    if (!err) return { tested: true, refused: false, by: null };      // stored it — definitive
+    if (err.code !== '23514') return { tested: false, refused: null, by: null }; // could not ask
+    if (err.constraint !== CONSTRAINT) {
+      // Refused, but by something else. That is not evidence about OUR rule.
+      return { tested: false, refused: null, by: err.constraint || null };
+    }
+  }
+  return { tested: true, refused: true, by: CONSTRAINT };
+}
+
+/**
+ * Is the constraint installed? `{ ok, checked, present, offenders, why }` — never throws.
+ *
+ * `opts.verifyWrite` promises that `dbc` is a client ALREADY INSIDE A TRANSACTION,
+ * which unlocks the definitive behavioural probe above. It is opt-in precisely
+ * because it is unsafe on the pool, and this function is also called with one.
+ */
+async function checkGeoLicensing(dbc, opts) {
   const db = dbc || require('../../db');
   let present;
+  let neutered = false;
   try {
     /* KEYED ON THE TABLE THE APP ACTUALLY WRITES TO, AND ON A CONSTRAINT THAT
        ACTUALLY MEANS SOMETHING. `to_regclass` resolves `properties` through the
@@ -74,27 +145,36 @@ async function checkGeoLicensing(dbc) {
            app actually writes (`google_places`) sails straight through
          · `geo_source IS NOT NULL OR …`   — always true
        The middle one is the realistic accident: somebody "tidies" the pattern.
-       So the WILDCARDED NEGATIVE MATCH is what is checked. Postgres deparses
-       `NOT LIKE` as the operator `!~~`, which is why a `/not like/i` regex would
-       find nothing — the real definition reads
+       Postgres deparses `NOT LIKE` as the operator `!~~`, which is why a
+       `/not like/i` regex would find nothing — the real definition reads
        `CHECK (((geo_source IS NULL) OR (lower(geo_source) !~~ '%google%'::text)))`.
-       Matching the operator rather than the whole string keeps this working if a
-       future Postgres major deparses the surrounding parentheses differently. */
-    const def = String((r.rows[0] || {}).def || '');
-    /* CASE-SENSITIVE, AND PINNED TO `lower(...)`. The first attempt at this check
-       carried an `/i` flag, which re-opened the very hole it was written to close:
-       the constraint case-FOLDS the column, so a pattern written `'%GOOGLE%'` can
-       never match anything and the rule is always true — and `/i` reported it as
-       installed. Proven: with that constraint in place, `geo_source='google_places'`
-       INSERTed successfully while the guard answered ok:true. Requiring the pattern
-       to be lower-case AND to sit against `lower(geo_source)` ties the two halves
-       together, so neither can be "tidied" independently.
-       This is deliberately strict: a correct rule written some OTHER way (ILIKE,
-       strpos, a regex operator) reads as NOT installed. That is a false alarm
-       rather than a false all-clear, and db/458 re-applies this exact text on every
-       boot — so the strictness costs nothing and the laxity cost everything. */
-    present = r.rows.length > 0
-      && /lower\(geo_source\)\s*!~~\s*'%google%'/.test(def);
+
+       MATCHED WHOLE, not as a substring, and CASE-SENSITIVELY. Both laxities have
+       already shipped and both re-opened the exact hole this closes: an `/i` flag
+       made a `'%GOOGLE%'` pattern — which, against a case-FOLDED column, can never
+       match anything — read as installed; and a substring test read `… OR true`
+       and five other neutered variants as installed while the database accepted
+       `geo_source='google_places'`. Pinning the pattern lower-case AND against
+       `lower(geo_source)` ties the two halves together so neither can be "tidied"
+       independently, and anchoring the whole string means nothing can be bolted on
+       beside it.
+       Deliberately strict: a correct rule written some OTHER way (ILIKE, strpos, a
+       regex operator), or the same rule deparsed differently by a future Postgres,
+       reads as NOT installed. That is a false alarm rather than a false all-clear,
+       db/458 re-applies this exact text on every boot, and the behavioural probe
+       below overrules it whenever it can actually be asked. */
+    const def = String((r.rows[0] || {}).def || '').replace(/\s+/g, ' ').trim();
+    present = r.rows.length > 0 && EXACT_DEF.test(def);
+
+    /* AND WHERE WE CAN, WE ASK THE DATABASE RATHER THAN READ ITS MIND. The
+       behavioural probe is authoritative in BOTH directions when it runs: it
+       catches a constraint whose text we cannot parse but which does refuse
+       (no false alarm), and — the case that matters — one that wears the right
+       name over a predicate that refuses nothing. */
+    if (r.rows.length > 0 && opts && opts.verifyWrite) {
+      const v = await verifyRefusesGoogle(db);
+      if (v.tested) { present = v.refused; neutered = !v.refused; }
+    }
   } catch (e) {
     // We could not ask. That is NOT the same as "it is fine".
     const why = (db.describeError ? db.describeError(e) : e.message);
@@ -119,6 +199,19 @@ async function checkGeoLicensing(dbc) {
      a falsy zero told somebody "db/458 did not apply, check the migrate log" when
      the truth is "we could not look". Saying we do not know is the one thing this
      module promises never to get wrong. */
+  /* A CONSTRAINT WEARING THE RIGHT NAME OVER A PREDICATE THAT REFUSES NOTHING is a
+     different problem from a missing one, and it needs its own words: db/458 DID
+     apply at some point, so "check the [migrate] log for its FAILED line" would
+     send somebody looking at a log that says the migration succeeded. */
+  if (neutered) {
+    return { ok: false, checked: true, present: false, offenders,
+      why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does not refuse a `
+        + 'Google-sourced coordinate — the database accepted one when asked. The constraint has been '
+        + 'altered since db/458 installed it. Restore it (re-run db/458) and check who changed it; '
+        + 'until then nothing at the database level stops a Google coordinate being stored '
+        + 'permanently in the property warehouse.' };
+  }
+
   const head = `the Google-coordinate rule (${CONSTRAINT}) is NOT installed`;
   const why = offenders == null
     ? `${head}, and the rows in violation could NOT be counted — so the reason it cannot apply is `
@@ -169,7 +262,9 @@ async function probeBounded() {
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL statement_timeout = ${PROBE_TIMEOUT_MS}`);
-    return await checkGeoLicensing(client);
+    // Inside a transaction on a dedicated client — so the behavioural probe is
+    // safe here, and ONLY here.
+    return await checkGeoLicensing(client, { verifyWrite: true });
   } catch (e) {
     return { ok: false, checked: false, present: null, offenders: null,
       why: `could not confirm the Google-coordinate rule is installed: ${e.message}` };
@@ -180,10 +275,22 @@ async function probeBounded() {
   }
 }
 
-/** Run the check and say so in the log. Returns the result; never throws. */
+/**
+ * Run the check and say so in the log. Returns the result; never throws.
+ *
+ * WITH NO `dbc` THIS GOES THROUGH THE BOUNDED PROBE, and that is not a detail.
+ * `app.listen` has already fired by the time this runs, so the process is serving
+ * traffic while the boot chain continues behind it — and `pg_get_constraintdef`
+ * DOES block on an `ACCESS EXCLUSIVE` lock on `properties` (measured: 3002ms under
+ * a 3s timeout, where `to_regclass` alone returns in 1ms). A `VACUUM FULL`, an
+ * `ALTER TABLE`, or a stuck migration holding that lock would hang this call
+ * forever on the pool, and `bootstrapAdmin()` and every boot backfill queued
+ * after it would never run. Postgres enforcing the limit is what bounds it.
+ * Going through the same path also means boot gets the behavioural probe.
+ */
 async function assertGeoLicensing(dbc) {
   let res;
-  try { res = await checkGeoLicensing(dbc); }
+  try { res = dbc ? await checkGeoLicensing(dbc) : await probeBounded(); }
   catch (e) { res = { ok: false, checked: false, present: null, offenders: null, why: e.message }; }
   /* Bump the epoch as we publish, so a `health()` probe that was already in flight
      cannot land afterwards and overwrite this answer with an older verdict wearing
@@ -218,7 +325,21 @@ function health() {
        so that is a real way to take the app down.
        `SET LOCAL` inside a transaction makes POSTGRES cancel the statement, so the
        query genuinely ends and the client goes back to the pool; and being LOCAL it
-       cannot leak the setting onto a recycled connection. */
+       cannot leak the setting onto a recycled connection.
+
+       WHAT THIS STILL DOES NOT COVER, stated plainly because the first version of
+       this comment claimed the whole class was closed: `statement_timeout` is
+       enforced by the SERVER, so it needs the server to have RECEIVED the query.
+       On a half-open socket it never does, and with the query already written it
+       is TCP retransmission that gives up — about 15 minutes on Linux defaults.
+       (`keepAlive` would not shorten it; keepalives only probe an IDLE socket, and
+       this one has data in flight.) For that window the single-flight slot stays
+       taken and the verdict is frozen at whatever it last said. That is bounded
+       and self-healing rather than the permanent connection leak it replaced, and
+       it is VISIBLE: the snapshot carries its own `at`, so the API-Health page's
+       "Last checked" simply stops advancing. Do not "fix" it by clearing the slot
+       on a timer — that lets probes stack on a dead server and re-creates the
+       exhaustion this design exists to prevent. */
     const epoch = ++refreshEpoch;
     const mine = probeBounded()
       // A refresh whose slot was reset out from under it must NOT publish: it
@@ -237,10 +358,12 @@ function health() {
 }
 
 module.exports = {
-  checkGeoLicensing, assertGeoLicensing, health, CONSTRAINT, TABLE,
+  checkGeoLicensing, assertGeoLicensing, probeBounded, health, CONSTRAINT, TABLE,
   _internals: {
     FRESH_MS,
     PROBE_TIMEOUT_MS,
+    EXACT_DEF,
+    verifyRefusesGoogle,
     // TEST ONLY. Bumping the epoch is what makes it safe: an in-flight refresh
     // cannot be cancelled, so it is instead forbidden from publishing.
     reset: () => { last = null; refreshing = null; refreshEpoch++; },

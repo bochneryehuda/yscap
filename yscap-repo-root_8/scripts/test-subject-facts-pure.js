@@ -234,10 +234,31 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
   // The invisible characters a real paste carries. The SOFT HYPHEN is the one a
   // PDF copy produces, and the first cut missed it — so it refused with
   // `"" is not a number`: a complaint quoting a character that renders as empty.
-  for (const inv of ['\u00AD', '\u200E', '\u200F', '\u2062', '\u180E', '\u00AD\u200E']) {
+  // EVERY code point the class covers, not a sample of the ones it started with:
+  // the class was widened to the bidi controls (U+061C, U+202A-E, U+2066-9), and every
+  // character the original loop tested was ALREADY matched by the narrower version —
+  // so reverting the widening left the suite fully green, which is no guard at all.
+  for (const inv of [
+    '\u00AD', '\u200E', '\u200F', '\u2062', '\u180E', '\u00AD\u200E',
+    '\u061C', '\u202A', '\u202D', '\u202E', '\u2060', '\u2066', '\u2069', '\uFEFF',
+    '\u202A\u200B\u2069',
+  ]) {
     const r = SF.cleanCorrections({ gla: inv });
     ok(r.problems.length === 0 && r.values.gla === null,
       `${JSON.stringify(inv)} renders as nothing, so it is a BLANK — never a refusal about nothing`);
+  }
+  // …and the class sweeps ONLY invisibles. A character that RENDERS must survive, or
+  // widening the pattern would start silently eating real text — far worse than the
+  // defect it was widened to fix. U+2065 sits between two covered ranges and is
+  // deliberately NOT in the class.
+  for (const [visible, label] of [
+    ['A\u2065B', 'an unassigned code point between the covered ranges'],
+    ['A\u00B1B', 'a plus-minus sign'],
+    ['A\u3000B', 'an ideographic space'],
+  ]) {
+    const r = SF.cleanCorrections({ property_type: visible });
+    ok(typeof r.values.property_type === 'string' && r.values.property_type.length === 3,
+      `${label} is NOT swept away as invisible (${JSON.stringify(r.values.property_type)})`);
   }
   // And an invisible character is never STORED into a text value: it would make
   // the confirmed value differ from the same words typed cleanly, so the
@@ -252,6 +273,11 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
     const PT = SF.FACTS.find((x) => x.key === 'property_type');
     ok(SF.sameFactValue(PT, r.values.property_type, 'Single Family'),
       'so it compares equal to the same words typed by hand — the confirmation is not born stale');
+    // …and it is a real comparison, not a function that says yes. Without this the
+    // line above holds for any two equal strings and asserts nothing about the
+    // comparison at all.
+    ok(SF.sameFactValue(PT, 'Single Family', 'Condo') === false,
+      'and two genuinely different property types still compare as CHANGED');
   }
 
   // PUNCTUATION MEANS PUNCTUATION, not the two marks the number reader strips. A
@@ -274,9 +300,23 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
   // warning nobody can act on and only re-confirming can clear.
   {
     const addr = '12 Elm St\u200B';
-    const st = SF.confirmationStale({ display_address: addr }, { __address: addr });
+    /* THE THIRD ARGUMENT IS THE WHOLE TEST. `confirmationStale` returns
+       `{stale:false, changed:[]}` immediately when `confirmedAt` is falsy \u2014 BEFORE
+       it looks at a single fact \u2014 so a two-argument call passes identically on the
+       broken code, on the fixed code, and on two completely unrelated addresses.
+       Proven: with the address fix reverted, this now FAILS with
+       `was "12 Elm St\u200B", is now "12 Elm St"`. */
+    const AT = '2026-08-03T00:00:00Z';
+    const st = SF.confirmationStale({ display_address: addr }, { __address: addr }, AT);
     ok(st.stale === false && st.changed.length === 0,
-      'an address carrying an invisible character does not report itself as changed');
+      `an address carrying an invisible character does not report itself as changed (${
+        JSON.stringify(st.changed)})`);
+    // And the same call DOES notice a real move, so the line above is a result and
+    // not an early return wearing one.
+    const moved = SF.confirmationStale(
+      { display_address: '99 Oak Ave' }, { __address: addr }, AT);
+    ok(moved.stale === true && moved.changed.length === 1,
+      'while re-pointing the subject at a different address IS reported as stale');
   }
 
   // The same, on the fact the owner cares about most.
