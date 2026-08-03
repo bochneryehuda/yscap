@@ -4933,6 +4933,59 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
     }
 
+    // A reply typed in a TITLE or INSURANCE order thread goes TO THE VENDOR — the
+    // title company or the insurance agent — on that order's own thread.
+    //
+    // Exactly the same trap the closing branch above exists to close, and it was
+    // still wide open here: without this, answering a title company's question fell
+    // through to the default fan-out below, which includes the BORROWER. So
+    // lender-to-vendor correspondence went to the borrower, and the vendor — the one
+    // person the message was written for — never received it and went on waiting.
+    // Recipients come from the order's own contact + the CC footing the order was
+    // placed with, never from the request body.
+    if (isOrderKind(String((req.body && req.body.scope) || ''))) {
+      const kind = String(req.body.scope);
+      const row = (await db.query(
+        `SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+      // FAIL CLOSED, like the closing branch. Falling through would send a vendor
+      // reply to the borrower — the exact outcome this branch exists to prevent — so
+      // a scope the file cannot honour is refused, never redirected.
+      if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+        return res.status(400).json({ error: `Place the ${kind} order first — there is no vendor thread to reply on yet.`, code: 'not_ordered' });
+      }
+      const data = await orders.getOrderData(appId);
+      if (!data) return res.status(404).json({ error: 'not found' });
+      if (!data.vendors[kind] || !data.vendors[kind].email) {
+        return res.status(400).json({ error: `The ${kind === 'title' ? 'title company' : 'insurance agent'} contact is missing, so there is no one to reply to.`, code: 'contact' });
+      }
+      // THE SAME ADDRESS GATE THE FOLLOW-UP DOOR USES. A reply re-states the property
+      // details, so two doors to one action (write to this vendor about this order)
+      // must agree — otherwise the Email Center becomes the way around a gate that
+      // exists so a vendor never receives an unverified address.
+      if (data.uspsGate && !data.uspsImported) {
+        return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before writing to the ${kind === 'title' ? 'title company' : 'insurance agent'}, so they never get an unverified address.`, code: 'usps' });
+      }
+      const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
+      const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
+      const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const sent = await orders.sendOrderMail({
+        appId, kind, data, to, cc, replyTo, built,
+        fromName: meRow.full_name || meRow.email,
+        type: `${kind}_followup`,
+      });
+      if (!sent.ok && !sent.ambiguous) {
+        return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
+      }
+      // A reply IS a follow-up on this order — record it as one so the aging clock
+      // and the desk's "last chased" both reflect that somebody wrote to the vendor.
+      await db.query(
+        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
+          WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+      try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
+      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc });
+      return res.json({ ok: true, sent_to: to, cc });
+    }
+
     // Recipient set: an explicit list (validated as file parties) or the default
     // fan-out = borrower(s) + active assignees, minus the acting staffer.
     const partyRows = await db.query(
@@ -5019,6 +5072,32 @@ const { orderReplyTo } = require('../lib/file-address');
 const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
 
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
+
+/**
+ * WHO IS ON THIS ORDER'S THREAD — ONE definition (owner-directed 2026-07-31: title
+ * defaults OFF, insurance ON, and a per-order choice always wins).
+ *
+ * Precedence: an explicit choice from the panel checkbox → the choice already
+ * stored on this order (`file_orders.meta.ccBorrower`) → the file's loan officer's
+ * own default. Every door that writes to a vendor must resolve it the SAME way, or
+ * the borrower silently joins or leaves the conversation halfway through it — this
+ * was hand-copied into `place` and `followup`, and a third copy in the Email Center
+ * reply is exactly how those two would have drifted apart.
+ *
+ * Never throws: an unreadable LO setting falls through to the type default.
+ */
+async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
+  if (explicit != null) return !!explicit;
+  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccBorrower != null) return !!storedMeta.ccBorrower;
+  let loCcSetting = false;
+  try {
+    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+    if (lo.rows[0] && lo.rows[0].loan_officer_id) {
+      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+    }
+  } catch (_) { /* the type default stands */ }
+  return orders.ccBorrowerDefault(kind, loCcSetting);
+}
 
 // The whole Orders section for a file: both orders' state, whether each can be
 // placed (blockers), the vendor on file, and the returned documents waiting to be
@@ -5142,6 +5221,11 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
 
     const existing = (await db.query(`SELECT status, send_count, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
+    // A pre-check, kept so the common case answers fast and with the right wording.
+    // It is NOT the guard — the CLAIM below is (see the transaction), because this
+    // read and the write that followed it were a read-then-write with a whole email
+    // send in between: two clicks (or a double-submit) both read 'not_ordered', both
+    // sent, and the vendor received the order twice.
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
     }
@@ -5150,40 +5234,87 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     // panel checkbox → prior stored choice on this order → the file's LO's own
     // default (title: off unless the officer's setting turns it on; insurance:
     // on). The choice is persisted so follow-ups reuse it.
-    let ccBorrower = null;
-    if (req.body && req.body.ccBorrower != null) ccBorrower = !!req.body.ccBorrower;
-    else if (existing && existing.meta && typeof existing.meta === 'object' && existing.meta.ccBorrower != null) ccBorrower = !!existing.meta.ccBorrower;
-    if (ccBorrower == null) {
-      let loCcSetting = false;
-      try {
-        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
-      } catch (_) { /* off */ }
-      ccBorrower = orders.ccBorrowerDefault(kind, loCcSetting);
-    }
+    const ccBorrower = await ccBorrowerFor(appId, kind, {
+      explicit: req.body && req.body.ccBorrower != null ? req.body.ccBorrower : null,
+      storedMeta: existing && existing.meta,
+    });
 
     const built = orders.buildOrderEmail(kind, data, {});
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
-    await email.sendMail({
-      to, cc,
-      subject: built.subject, html: built.html, text: built.text,
-      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
-      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
-      _ctx: { applicationId: appId, type: `${kind}_order`, audience: 'staff' },
-    });
     const vendor = data.vendors[kind];
-    await db.query(
-      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
-       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
-       ON CONFLICT (application_id, order_type)
-       DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
-                     vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
-                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
-                     meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()`,
-      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
-       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower]);
-    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower });
+
+    // CLAIM FIRST, SEND SECOND — inside ONE transaction, which is what makes an
+    // order exactly-once. Three defects lived in the old "send, then record" shape:
+    //   · a second click while the first send was in flight passed the pre-check
+    //     above and sent the order to the vendor a SECOND time (the claim's
+    //     conditional ON CONFLICT now serializes them — the loser blocks on the
+    //     row, re-reads 'ordered', matches no row and answers 409);
+    //   · a bookkeeping failure AFTER the email went reported "Could not send the
+    //     order", so an operator re-sent one the vendor already had;
+    //   · a send the provider never accepted was still recorded as 'ordered'.
+    // With the claim first, a failed send ROLLS IT BACK, so nothing is recorded that
+    // did not happen and nothing that happened goes unrecorded.
+    const client = await db.getClient();
+    let sendRes = null;
+    try {
+      await client.query('BEGIN');
+      const claim = await client.query(
+        `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
+         VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
+         ON CONFLICT (application_id, order_type)
+         DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
+                       vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
+                       ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
+                       meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
+           -- The real guard. A re-send is a deliberate, explicit act (force), so it
+           -- is the only way past an order that is already live.
+           WHERE file_orders.status IN ('not_ordered','cancelled') OR $9::boolean
+         RETURNING id`,
+        [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+         (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower, !!force]);
+      if (!claim.rows[0]) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+      }
+      sendRes = await orders.sendOrderMail({
+        appId, kind, data, to, cc, replyTo, built,
+        fromName: meRow.full_name || meRow.email,
+        type: `${kind}_order`,
+      });
+      if (!sendRes.ok && !sendRes.ambiguous) {
+        // Nothing reached the vendor: unwind the claim so the order reads
+        // "not ordered" — which is the truth — and the next attempt can claim it.
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
+      }
+      // An AMBIGUOUS send is committed on purpose: the provider may well have
+      // delivered it, and reverting would invite the re-send that double-orders.
+      await client.query('COMMIT');
+      client.release();
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* the release is what matters */ }
+      try { client.release(); } catch (_) { /* already released */ }
+      // The email either never went (the claim threw first) or its outcome is
+      // reported by sendRes — sendOrderMail never throws, so reaching here with a
+      // successful send means the COMMIT itself failed. Say so honestly rather than
+      // "could not send", which is what makes somebody re-send.
+      if (sendRes && (sendRes.ok || sendRes.ambiguous)) {
+        return res.status(500).json({
+          error: 'The order was sent to the vendor, but we could not record it on the file. Do NOT re-send — check the Email Center, and tell an administrator.',
+          code: 'recorded_failed', sent_to: to, cc,
+        });
+      }
+      return res.status(500).json({ error: 'Could not send the order.' });
+    }
+    // Audit and the response are AFTER the commit and are best-effort — a failure
+    // here must never report a placed order as failed.
+    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (sendRes.ambiguous) {
+      return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc, ccBorrower });
+    }
     res.json({ ok: true, sent_to: to, cc, ccBorrower });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
@@ -5213,29 +5344,28 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // off). An order placed BEFORE this existed has no stored choice — fall to
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
-    const storedCc = row.meta && typeof row.meta === 'object' && row.meta.ccBorrower != null ? !!row.meta.ccBorrower : null;
-    let fuCc = storedCc;
-    if (fuCc == null) {
-      let loCcSetting = false;
-      try {
-        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
-      } catch (_) { /* off */ }
-      fuCc = orders.ccBorrowerDefault(kind, loCcSetting);
-    }
+    const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
-    await email.sendMail({
-      to, cc,
-      subject: built.subject, html: built.html, text: built.text,
-      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
-      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
-      _ctx: { applicationId: appId, type: `${kind}_followup`, audience: 'staff' },
+    // THE PROVIDER'S ANSWER DECIDES (orders.sendOrderMail). A bare send recorded a
+    // follow-up the vendor never received whenever email was off or the API key had
+    // rotated — so `last_followup_at` moved, the aging clock reset, and the order
+    // looked chased. On this desk a false "we chased them" is worse than an error.
+    const sendRes = await orders.sendOrderMail({
+      appId, kind, data, to, cc, replyTo, built,
+      fromName: meRow.full_name || meRow.email,
+      type: `${kind}_followup`,
     });
+    if (!sendRes.ok && !sendRes.ambiguous) {
+      return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
+    }
+    // An ambiguous send counts: the provider may have delivered it, and NOT
+    // recording it would have the desk telling somebody to chase again immediately.
     await db.query(
       `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
         WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
-    await audit(req, 'order_followup', 'application', appId, { kind, to: to.length });
+    try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* sent either way */ }
+    if (sendRes.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc });
     res.json({ ok: true, sent_to: to, cc });
   } catch (e) { res.status(500).json({ error: 'Could not send the follow-up.' }); }
 });

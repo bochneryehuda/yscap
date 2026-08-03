@@ -33,28 +33,28 @@ const KIND_LABEL = { title: 'Title', insurance: 'Insurance' };
 
 /* Has this order actually been placed? Mirrors the server's own live-order test
    (routes/orders + closing-prep.orderIsLive): anything other than "not ordered"
-   or "cancelled" means it is out. Used only to decide which sub-section starts
-   open, so an unreadable value simply reads as not placed — the safe direction,
-   since an un-placed order is the one with work to do. */
-function isPlaced(order) {
+   or "cancelled" means it is out. Exported so the file's rail badges read the
+   status the SAME way the panel does — a second hand-typed status list is how a
+   badge ends up disagreeing with the card right beside it. An unreadable value
+   reads as not placed, the safe direction: an un-placed order is the one with
+   work to do. */
+export function isPlaced(order) {
   const s = order && order.status;
   return !!s && s !== 'not_ordered' && s !== 'cancelled';
 }
 
-/* One of the three order types, as its own collapsible section (owner-directed
-   2026-08-02). Native <details> for the same reason AppraisalPanel uses it: the
-   browser owns the open/closed state, so nothing here can bounce the reader. */
-function OrderSection({ label, open, children }) {
-  return (
-    <details className="panel" open={open} style={{ padding: 0 }}>
-      <summary style={{
-        cursor: 'pointer', padding: '12px 16px', fontWeight: 700,
-        color: '#141B22', listStyle: 'revert',
-      }}>{label}</summary>
-      <div style={{ padding: '0 16px 16px' }}>{children}</div>
-    </details>
-  );
-}
+/* THE THREE ORDERS ARE THREE REAL SECTIONS OF THE FILE NOW (owner-directed
+   2026-08-03: "once we click on orders by the left side we should also have the
+   three options over there right away"), so this panel no longer draws its own
+   collapsible boxes — StaffApplication renders it once per order type inside the
+   file's own <Section>, which is what puts all three in the left rail.
+
+   The inner <details> that used to live here is deliberately GONE rather than
+   ported. It took `open={!isPlaced(order)}` — a DERIVED prop — so the instant an
+   order sent, `isPlaced` flipped, React re-rendered with open=false, and the
+   section slammed shut on the "sent to <vendor>" confirmation the person had just
+   asked for. A derived open-state prop can only ever behave that way; removing the
+   derivation is what removes the class, not a longer-lived useState around it. */
 const CONTACT_TYPE = { title: 'title_company', insurance: 'insurance_agent' };
 const CONTACT_ASK = { title: 'title company', insurance: 'insurance agent' };
 
@@ -558,46 +558,107 @@ export function OrderModal({ appId, kind, canAccept = false, onClose, onChanged 
   );
 }
 
-export default function OrdersPanel({ appId, canAccept = false }) {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState('');
+/* ── ONE FETCH FOR THE THREE ORDER SECTIONS ─────────────────────────────────
+   Orders is three sibling sections now, so this panel is mounted up to three
+   times on one screen — and they are three views of ONE payload. Left alone,
+   that is three identical round trips every time the room is opened, three
+   copies of the state, and — the part that actually bit — no way for one card's
+   action to refresh the others: placing the title order left the insurance card
+   and the closing card showing a file that had already moved on.
 
-  const load = useCallback(() => {
-    setErr('');
-    api.staffOrders(appId).then(setData).catch(e => setErr((e && e.message) || 'Could not load orders.'));
-  }, [appId]);
-  useEffect(() => { load(); }, [load]);
+   So the request lives here, keyed by file, with the mounted cards as
+   subscribers: one request however many cards are showing, and ANY card's
+   onChanged refreshes all of them. The cache is dropped when the last subscriber
+   for a file unmounts, so switching files never serves a stale payload. */
+const orderSubs = new Map();     // appId -> Set<forceRender>
+const orderCache = new Map();    // appId -> { data, err, loading }
+const orderInflight = new Set(); // appId currently being fetched
 
-  if (err) return <div className="notice err">{err}</div>;
+function emitOrders(appId) {
+  const subs = orderSubs.get(appId);
+  if (subs) subs.forEach((fn) => { try { fn(); } catch (_) { /* a dead subscriber must not stop the rest */ } });
+}
+
+function loadOrders(appId, { force = false } = {}) {
+  if (!appId) return;
+  // A second card mounting in the same tick joins the request already in flight
+  // rather than starting its own. An explicit refresh (force) always re-asks.
+  if (orderInflight.has(appId) && !force) return;
+  orderInflight.add(appId);
+  const prev = orderCache.get(appId) || {};
+  orderCache.set(appId, { ...prev, loading: true });
+  emitOrders(appId);
+  api.staffOrders(appId)
+    .then((data) => { orderCache.set(appId, { data, err: '', loading: false }); })
+    // Keep the last good payload on a failed refresh: blanking three cards
+    // because one refresh hiccupped loses work in progress for no gain.
+    .catch((e) => { orderCache.set(appId, { data: prev.data || null, err: (e && e.message) || 'Could not load orders.', loading: false }); })
+    .then(() => { orderInflight.delete(appId); emitOrders(appId); });
+}
+
+function useOrders(appId) {
+  const [, bump] = useState(0);
+  const rerender = useCallback(() => bump((n) => n + 1), []);
+  useEffect(() => {
+    if (!appId) return undefined;
+    let subs = orderSubs.get(appId);
+    if (!subs) { subs = new Set(); orderSubs.set(appId, subs); }
+    subs.add(rerender);
+    if (!orderCache.has(appId)) loadOrders(appId);
+    return () => {
+      subs.delete(rerender);
+      if (!subs.size) { orderSubs.delete(appId); orderCache.delete(appId); }
+    };
+  }, [appId, rerender]);
+  const st = orderCache.get(appId) || { data: null, err: '', loading: true };
+  const reload = useCallback(() => loadOrders(appId, { force: true }), [appId]);
+  return { data: st.data, err: st.err, loading: st.loading, reload };
+}
+
+/** Refresh every mounted order card for a file — exported so a sibling card
+    (the closing-prep card, a condition's order button) can say "this changed"
+    without knowing who else is on screen. */
+export function refreshOrders(appId) { loadOrders(appId, { force: true }); }
+
+/**
+ * `only` names ONE order type ('title' | 'insurance' | 'closing') so the file can
+ * render each in its own <Section> — which is what gives each one a rail entry, a
+ * deep link and its own badge. Omitting it renders all three stacked, which is
+ * what the order modal and any non-file host still want.
+ */
+export default function OrdersPanel({ appId, canAccept = false, only = null }) {
+  const { data, err, reload } = useOrders(appId);
+
+  if (err && !data) return <div className="notice err">{err}</div>;
   if (!data) return <p className="muted small">Loading orders…</p>;
 
+  const vendorOrder = (kind) => (
+    <>
+      {/* The loan number prints in the mortgage clause, so it is THIS order's
+          blocker — shown in the section that is blocked by it, not once at the
+          top of a page the reader may never scroll to. */}
+      {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={reload} />}
+      <OrderCard appId={appId} kind={kind} order={data.orders[kind]} file={data.file}
+        canAccept={canAccept} onChanged={reload} />
+    </>
+  );
+
+  if (only === 'title') return vendorOrder('title');
+  if (only === 'insurance') return vendorOrder('insurance');
+  // The attorney closing-prep order. Its own card + its own routes — the
+  // recipients, the document package and the closing email chain share nothing
+  // with a title/insurance vendor order.
+  if (only === 'closing') return <ClosingPrepCard appId={appId} onChanged={reload} />;
+
   return (
-    <div>
-      <p className="muted small" style={{ marginTop: 0 }}>
-        Order title and insurance from here, and send the closing attorney the file for closing prep.
-        Each order emails its recipient with the right people copied and comes back to its own thread —
-        the documents they send back land below.
-      </p>
-      {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={load} />}
-      {/* THREE SEPARATE SECTIONS, one per order type (owner-directed 2026-08-02:
-          "under the orders three separate sections for all 3 different order
-          types that we currently have"). Each opens and closes on its own so you
-          can sit on the one you are working; an order that has NOT been placed
-          yet starts open, because that is the one with something to do. */}
-      <div style={{ display: 'grid', gap: 14 }}>
-        <OrderSection label="Title" open={!isPlaced(data.orders.title)}>
-          <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={load} />
-        </OrderSection>
-        <OrderSection label="Insurance" open={!isPlaced(data.orders.insurance)}>
-          <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={load} />
-        </OrderSection>
-        {/* The attorney closing-prep order. Its own card + its own routes — the
-            recipients, the document package and the closing email chain share
-            nothing with a title/insurance vendor order. */}
-        <OrderSection label="Attorney closing prep" open>
-          <ClosingPrepCard appId={appId} />
-        </OrderSection>
-      </div>
+    <div style={{ display: 'grid', gap: 18 }}>
+      {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={reload} />}
+      <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Title</h3>
+        <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={reload} /></div>
+      <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Insurance</h3>
+        <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={reload} /></div>
+      <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Attorney closing prep</h3>
+        <ClosingPrepCard appId={appId} onChanged={reload} /></div>
     </div>
   );
 }

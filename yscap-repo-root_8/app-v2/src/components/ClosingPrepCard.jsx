@@ -224,7 +224,11 @@ function Recipients({ recipients, team, contacts, extra, setExtra, disabled }) {
   );
 }
 
-export default function ClosingPrepCard({ appId }) {
+/* `onChanged` lets the card tell whoever hosts it that the closing order moved —
+   the Orders panel refreshes the sibling title/insurance cards and the section
+   badges off it. Without it the three order sections each held their own copy of
+   the file and only the one you touched was ever right. */
+export default function ClosingPrepCard({ appId, onChanged = null }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
@@ -243,6 +247,11 @@ export default function ClosingPrepCard({ appId }) {
       .catch((e) => setErr((e && e.message) || 'Could not load closing prep.'));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
+  /* Reload THIS card and tell the host the order moved, so the sibling order
+     sections and the section badges stop showing a file that has moved on.
+     Deliberately not folded into `load` itself: that also runs on mount, and
+     announcing a change nobody made would cost a round trip on every render. */
+  const reload = useCallback(() => { load(); if (onChanged) onChanged(); }, [load, onChanged]);
 
   const download = async (d) => {
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
@@ -271,7 +280,7 @@ export default function ClosingPrepCard({ appId }) {
           + (failed.length ? ` ${failed.length} of the follow-on emails did not send — these documents did NOT reach the attorney: ${failed.map((f) => f.files.join(', ')).join('; ')}. Re-send to try again.` : ''),
       });
       setNote('');
-      load();
+      reload();
     } catch (e) {
       if (e && e.status === 409) setMsg({ tone: 'warn', text: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: true });
       else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the closing-prep request.' });
@@ -286,7 +295,7 @@ export default function ClosingPrepCard({ appId }) {
         extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       });
       setMsg({ tone: 'ok', text: `Follow-up sent on the closing chain to ${(r.sent_to || []).join(', ')}.` });
-      setFollowMsg(''); setFollowOpen(false); load();
+      setFollowMsg(''); setFollowOpen(false); reload();
     } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the follow-up.' }); }
     finally { setBusy(''); }
   };
@@ -294,7 +303,7 @@ export default function ClosingPrepCard({ appId }) {
   const cancel = async (reopen) => {
     if (!reopen && !window.confirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.')) return;
     setBusy('cancel'); setMsg(null);
-    try { await api.staffCancelClosingPrep(appId, reopen); load(); }
+    try { await api.staffCancelClosingPrep(appId, reopen); reload(); }
     catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
     finally { setBusy(''); }
   };

@@ -2755,6 +2755,21 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .ec-wrap:not(.mobile-reader) .ec-pane{ display:none; }
   .ec-back{ display:inline-flex; align-items:center; justify-content:center; }
 }
+/* THE SAME SINGLE-PANE LAYOUT, DECIDED BY THE CONTAINER (owner-reported
+   2026-08-03: "now it's very squeezed when you open it up"). The rules above ask
+   the WINDOW how wide it is, so an Email Center embedded inside an order section
+   on a big monitor kept a two-pane grid in a 782px box — leaving the reading pane
+   372px, which the fit-to-width pass then scaled every email into at 62%. The
+   component measures its own box and sets .ec-narrow (see EC_TWO_PANE_MIN); the
+   behaviour is identical to the phone's, because on a narrow box it is the right
+   behaviour for the same reason. Keep the two blocks in step. */
+.ec-wrap.ec-narrow .ec-split{ grid-template-columns:1fr; }
+.ec-wrap.ec-narrow .ec-list{ max-height:none; }
+.ec-wrap.ec-narrow.mobile-reader .ec-list{ display:none; }
+.ec-wrap.ec-narrow:not(.mobile-reader) .ec-pane{ display:none; }
+.ec-wrap.ec-narrow .ec-back{ display:inline-flex; align-items:center; justify-content:center; }
+/* Full screen is a real, labelled action — never a mystery glyph beside Refresh. */
+.ec-bigbtn{ flex:none; white-space:nowrap; }
 
 /* ── Email Center: read/unread, star, compose, resend, load-more, animations ── */
 .ec-item{ position:relative; }

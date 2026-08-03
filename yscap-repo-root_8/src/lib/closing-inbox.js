@@ -214,7 +214,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
           + `They are saved in the file's Closing correspondence.`,
         applicationId,
         subjectTag: ctx ? ctx.subjectTag : '',
-        link: `/internal/app/${applicationId}#sec-orders`,
+        link: `/internal/app/${applicationId}#sec-order-closing`,
         ctaLabel: 'Open the closing chain',
         inAppOnly: true,
       });

@@ -725,10 +725,9 @@ async function processReceivedEvent(event) {
   // ---- returned documents (#orders): save the vendor's attachments back onto
   // the order(s) as UNASSIGNED documents for the team to classify. Runs AFTER the
   // auto-reply return (an auto-ack never files docs) and is IDEMPOTENT across
-  // webhook redeliveries via an appResults marker — the 120s doc-dedup window is
-  // not enough when a retryable failure redelivers minutes later, so a persisted
-  // per-order 'saved' marker (like appResults[appId]==='forwarded') is what
-  // guarantees no double-filing. Best-effort — the reply still forwards regardless.
+  // webhook redeliveries via an appResults marker — a persisted per-order 'saved'
+  // marker (like appResults[appId]==='forwarded') is what guarantees no
+  // double-filing. Best-effort — the reply still forwards regardless.
   if (orderRefs.length && Array.isArray(full.attachments) && full.attachments.length) {
     const pending = orderRefs.filter((ref) => appResults['__order_' + ref.orderType] !== 'saved');
     if (pending.length) {
@@ -738,18 +737,83 @@ async function processReceivedEvent(event) {
         // title package (11+ files, or big binders under the Graph budget) may drop
         // the overflow from the returned-docs save — say so (the reply + all files
         // still forward to the team, who can pull the rest from the original).
-        if (orderAtts.length < full.attachments.length) {
-          console.warn(`[order-inbox] ${full.attachments.length - orderAtts.length} of ${full.attachments.length} returned attachment(s) exceeded the retrieval caps and were not filed to the order (they still forwarded to the team).`);
+        const shortfall = Math.max(0, full.attachments.length - orderAtts.length);
+        if (shortfall) {
+          console.warn(`[order-inbox] ${shortfall} of ${full.attachments.length} returned attachment(s) exceeded the retrieval caps and were not filed to the order (they still forwarded to the team).`);
         }
         if (orderAtts.length) {
           const orderInbox = require('./order-inbox');
           for (const ref of pending) {
             try {
-              await orderInbox.saveReturnedDocs({
+              const res = await orderInbox.saveReturnedDocs({
                 applicationId: ref.applicationId, orderType: ref.orderType,
                 attachments: orderAtts, fromEmail,
               });
-              appResults['__order_' + ref.orderType] = 'saved';   // persisted below → a redelivery skips it
+              // THE MARKER IS WRITTEN ONLY WHEN A RETRY HAS NOTHING LEFT TO RECOVER.
+              //
+              // The marker's job is to stop a webhook redelivery double-filing; it is
+              // the ONLY thing that did. Writing it unconditionally — which is what it
+              // used to do, because saveReturnedDocs swallowed every attachment error
+              // and structurally could not throw — meant a storage or database blip on
+              // attachment 2 of 3 lost that document permanently: the order was marked
+              // handled and every redelivery skipped this block. Silent, with nothing
+              // on the file to show a title commitment had ever arrived.
+              //
+              // Withholding it used to be worse, and the reason is worth keeping: with
+              // dedupe limited to `doc-dedup`'s 120-SECOND window, a redelivery minutes
+              // later re-filed everything. `order-inbox.alreadyFiled` removes that
+              // constraint — dedupe is now on the CONTENT HASH with no window, so
+              // re-running this block is idempotent however much later it happens.
+              //
+              // So the marker follows the ONE question that matters: can a retry still
+              // get us anything?
+              //   · failedTransient > 0 → yes. Leave it unmarked; the redelivery
+              //     re-files only what is genuinely missing.
+              //   · a retrieval-cap shortfall → NO, and this is the trap to keep in
+              //     mind: `retrieveAttachmentsSafe` caps DETERMINISTICALLY, so an
+              //     11-document title package yields the SAME first 10 on every
+              //     attempt. The overflow is unreachable by any retry, so blocking the
+              //     marker on it would block it forever. A human asks the vendor to
+              //     resend — the only thing that can actually retrieve it.
+              //   · failedPermanent (bytes that will not decode, an empty attachment)
+              //     → NO, for the same reason.
+              // Either way the shortfall is REPORTED, never silent.
+              if (res.failedTransient) {
+                console.warn(`[order-inbox] ${res.failedTransient} returned ${ref.orderType} attachment(s) for ${ref.applicationId} hit a storage/database failure — leaving the order unmarked so a redelivery retries them (already-filed documents are matched by content hash and will not duplicate).`);
+              } else {
+                appResults['__order_' + ref.orderType] = 'saved';   // persisted below → a redelivery skips it
+              }
+              if (res.failed || shortfall) {
+                // ONLY ASK A HUMAN TO CHASE WHAT A RETRY CANNOT RECOVER. Telling the
+                // team to ask the title company to resend a document the system is
+                // about to re-file by itself is both noise and, once it lands, untrue.
+                const humanMustAsk = res.failedPermanent + shortfall;
+                const onFile = res.saved + res.deduped;
+                const sigNote = res.skipped ? ` (${res.skipped} email-signature image${res.skipped === 1 ? ' was' : 's were'} ignored on purpose.)` : '';
+                const what = ref.orderType === 'title' ? 'title' : 'insurance';
+                console.warn(`[order-inbox] ${res.failed + shortfall} of ${full.attachments.length} returned ${what} attachment(s) were NOT filed for ${ref.applicationId} (${res.failedPermanent} unrecoverable, ${res.failedTransient} retryable, ${shortfall} over the retrieval caps).`);
+                try {
+                  await require('./notify').notifyAppStaff(ref.applicationId, humanMustAsk ? {
+                    type: 'order_docs_in',
+                    title: `${humanMustAsk} ${what} document${humanMustAsk === 1 ? '' : 's'} did not save`,
+                    body: `${onFile} of ${full.attachments.length} document(s) from the ${what} order were filed. ${humanMustAsk} could not be — ask the ${what === 'title' ? 'title company' : 'insurance agent'} to send ${humanMustAsk === 1 ? 'it' : 'them'} again, as a reply on the same email.`
+                      + (res.failedTransient ? ` (A further ${res.failedTransient} hit a temporary problem on our side; the system is retrying ${res.failedTransient === 1 ? 'that one' : 'those'} on its own.)` : '') + sigNote,
+                    applicationId: ref.applicationId,
+                    link: `/internal/app/${ref.applicationId}#sec-order-${ref.orderType}`,
+                    ctaLabel: 'Open the loan file',
+                    inAppOnly: false,
+                  } : {
+                    // Nothing for a person to do yet — say so, but never silently.
+                    type: 'order_docs_in',
+                    title: `${res.failedTransient} ${what} document${res.failedTransient === 1 ? '' : 's'} did not save yet`,
+                    body: `${onFile} of ${full.attachments.length} document(s) from the ${what} order were filed. ${res.failedTransient} hit a temporary problem on our side and ${res.failedTransient === 1 ? 'is' : 'are'} being retried automatically — no need to chase the vendor unless ${res.failedTransient === 1 ? 'it' : 'they'} still ${res.failedTransient === 1 ? 'does' : 'do'} not appear.` + sigNote,
+                    applicationId: ref.applicationId,
+                    link: `/internal/app/${ref.applicationId}#sec-order-${ref.orderType}`,
+                    ctaLabel: 'Open the loan file',
+                    inAppOnly: true,
+                  });
+                } catch (_) { /* the filing is what matters */ }
+              }
             } catch (_) { /* leave unmarked so a redelivery retries this order */ }
           }
         }

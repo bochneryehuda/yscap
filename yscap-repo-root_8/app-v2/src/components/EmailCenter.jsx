@@ -122,12 +122,42 @@ function RecipientRoster({ row }) {
   );
 }
 
+/* How tall an email body may render before we stop reserving room for it. It is a
+   runaway guard, not a layout choice, so it is deliberately far beyond any real
+   email — the old 6000 here against a 3600 clip on the collapse wrapper meant a
+   long thread was cut off mid-sentence with no scrollbar and nothing to say so. */
+const MAX_BODY_PX = 20000;
+/* What the open animation counts up to. A max-height transition needs a real
+   number, and one big enough for every email would make the reveal instant — so
+   this stays modest and the ceiling is dropped once the animation is over. */
+const OPEN_ANIM_PX = 3600;
+/* Below this CONTAINER width the list and the reader stop sharing the row.
+   260px list + 14px gap + a 600px email is 874, so anything under ~900 was
+   scaling the email down to fit — measured at 62% in the embedded order panel,
+   which is the owner's "very squeezed when you open it up". The existing phone
+   rules already do single-pane-with-a-back-button properly, so this reuses them
+   rather than inventing a second narrow layout. */
+const EC_TWO_PANE_MIN = 900;
+
 /* ---- one message in the conversation (collapsible) ---- */
 function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) {
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
+  /* The open animation is a max-height transition, so it needs a NUMBER to
+     animate to — and that number was also the permanent ceiling, which silently
+     truncated any email taller than it. Once the animation is done the ceiling is
+     dropped entirely, so a long email is simply as tall as it is. */
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (!expanded) { setSettled(false); return undefined; }
+    // A timer rather than onTransitionEnd: that event does not fire at all when
+    // the reader prefers reduced motion, or when a re-render interrupts the
+    // animation — and either would leave the email clipped for good.
+    const t = setTimeout(() => setSettled(true), 400);
+    return () => clearTimeout(t);
+  }, [expanded]);
   const frameRef = useRef(null);
   const wrapRef = useRef(null);
   const loadedFor = useRef(null);
@@ -165,7 +195,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
     frame.style.height = naturalH + 'px';
     frame.style.transformOrigin = 'top left';
     frame.style.transform = ratio < 1 ? `scale(${ratio})` : 'none';
-    wrap.style.height = Math.min(6000, Math.round(naturalH * ratio) + 4) + 'px';
+    wrap.style.height = Math.min(MAX_BODY_PX, Math.round(naturalH * ratio) + 4) + 'px';
   }, []);
   // Re-fit when the reader width changes (opening/closing the large popup, window resize).
   useEffect(() => {
@@ -213,7 +243,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
         </div>
         <span className={`ec-chev${expanded ? ' up' : ''}`} aria-hidden="true">⌄</span>
       </button>
-      <div className="ec-msg-collapse" style={{ maxHeight: expanded ? 3600 : 0 }}>
+      <div className="ec-msg-collapse" style={{ maxHeight: expanded ? (settled ? 'none' : OPEN_ANIM_PX) : 0 }}>
         {expanded ? (
           <div className="ec-msg-open">
             <div className="ec-msg-meta">
@@ -333,6 +363,27 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
   const [read, setRead] = useState(() => loadJSON(READ_KEY, {}));
   const [stars, setStars] = useState(() => loadJSON(STAR_KEY, {}));
   const searchRef = useRef(null);
+  /* IS THERE ROOM FOR TWO PANES *HERE*? — measured on this component's own box,
+     not on the viewport. The phone breakpoint asks `@media (max-width:820px)`,
+     which is a question about the WINDOW, so an Email Center embedded in an order
+     section on a 1440px monitor kept the two-pane grid inside a 782px box: the
+     reading pane came out 372px wide and every email was scaled to 62% to fit.
+     A container query would express this too, but `container-type` also makes the
+     element a containing block for positioned descendants, and this component
+     already owns a ResizeObserver — so it measures. */
+  const wrapRef = useRef(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => setNarrow((el.clientWidth || 0) < EC_TWO_PANE_MIN);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // `big` is a dependency because the overlay re-parents this element: without
+    // it the reader stays single-pane inside a 1320px popup.
+  }, [big]);
 
   const load = useCallback((append) => {
     setErr(''); setRefreshing(true);
@@ -458,7 +509,7 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
   }
 
   const main = (
-    <div className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}${big ? ' big' : ''}`}>
+    <div ref={wrapRef} className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}${big ? ' big' : ''}${narrow ? ' ec-narrow' : ''}`}>
       {globalMode && stats ? (
         <div className="ec-stats">
           <div className="ec-stat"><span className="ec-stat-n">{stats.total}</span><span className="ec-stat-l">total</span></div>
@@ -477,7 +528,13 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
         </div>
         {unreadCount ? <button className="ec-textbtn" onClick={markAllRead} title="Mark all as read">Mark all read</button> : null}
         {!globalMode ? <button className="btn primary small" onClick={() => { setComposing(true); setMobileReader(true); }}>＋ New email</button> : null}
-        {!globalMode && !big ? <button className="ec-refresh" onClick={() => setBig(true)} title="Open the Email Center in a large window" aria-label="Open large">⤢</button> : null}
+        {/* A LABEL, NOT A GLYPH. This has opened full screen since it shipped, but
+            as a bare ⤢ styled identically to the ⟳ beside it — so nobody found it,
+            and the chain read as something that could only ever be squeezed. */}
+        {!globalMode && !big ? (
+          <button className="btn ghost small ec-bigbtn" onClick={() => setBig(true)}
+            title="Open this email chain full screen (Esc to come back)">⤢ Full screen</button>
+        ) : null}
         <button className="ec-refresh" onClick={() => load(false)} title="Refresh" aria-label="Refresh">{refreshing ? '…' : '⟳'}</button>
       </div>
 

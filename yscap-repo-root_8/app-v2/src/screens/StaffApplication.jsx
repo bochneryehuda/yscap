@@ -4700,7 +4700,19 @@ export default function StaffApplication() {
     return [n ? `${plural(n, 'item')} still open here` : null,
       notes ? `${plural(notes, 'PILOT note')} to read` : null];
   };
-  const nOrdersToAssign = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length;
+  /* WHAT CAME BACK ON EACH ORDER AND STILL NEEDS A HUMAN. Per order type now that
+     each is its own section — a badge on "Title" must count title returns, not the
+     whole desk's. The room badge is still the sum, so the rail reads the same
+     total it always did. A returned document with no slot_label is one nobody has
+     said what it IS yet, which is the work. */
+  const nReturnsToAssign = (kind) => docs.filter(d =>
+    d.doc_kind === `${kind}_order_return` && !d.slot_label && d.is_current !== false).length;
+  const nTitleToAssign = nReturnsToAssign('title');
+  const nInsToAssign = nReturnsToAssign('insurance');
+  const nOrdersToAssign = nTitleToAssign + nInsToAssign;
+  // The attorney chain needs no classification (closing-inbox files its documents
+  // on no condition and no slot), so its section counts what ARRIVED instead.
+  const nClosingDocs = docs.filter(d => d.doc_kind === 'closing_correspondence' && d.is_current !== false).length;
   const summaries = {
     /* THE PAYOFF — a refinance-only section, so both of these are computed from
        the file's own row through the shared mirror in lib/payoff.js (pinned
@@ -4734,7 +4746,9 @@ export default function StaffApplication() {
       app.status === 'funded' ? 'Funded' : app.closer_id ? 'Closer assigned' : 'No closer assigned yet',
       ...openHere('sec-closing')),
     'sec-esign': line(...openHere('sec-esign')),
-    'sec-orders': line(nOrdersToAssign ? `${plural(nOrdersToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-title': line(nTitleToAssign ? `${plural(nTitleToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-insurance': line(nInsToAssign ? `${plural(nInsToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-closing': line(nClosingDocs ? `${plural(nClosingDocs, 'document')} on the closing chain` : 'Nothing on the closing chain yet'),
     // The header badge already carries the file COUNT, so the line must not
     // repeat it — a summary that echoes the badge is noise. It speaks only when
     // it has something the count cannot say.
@@ -4769,11 +4783,16 @@ export default function StaffApplication() {
     // "& exports" is gone with the exports themselves (owner-directed 2026-08-02:
     // "that section should just be called Documents").
     { id: 'sec-documents', label: 'Documents', group: 'Review & conditions', badge: badges.documents.short },
-    // Orders is its own room now, so it gets its own group rather than sharing
-    // one with signing. Same count the section's own summary line uses — derived
-    // once above, so the rail and the header can't drift the way the badges once did.
-    { id: 'sec-orders', label: 'Orders (title, insurance & closing prep)', group: 'Orders',
-      badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
+    /* THE THREE ORDERS ARE THREE SECTIONS (owner-directed 2026-08-03), which is
+       what puts them in the rail under Orders — the spoke list only renders for a
+       room with more than one section, so the single combined section showed
+       nothing at all beneath "Orders". Each carries the same count its own summary
+       line uses, derived once above so the rail and the header cannot drift. */
+    { id: 'sec-order-title', label: 'Title', group: 'Orders',
+      badge: nTitleToAssign ? `${nTitleToAssign} to assign` : '' },
+    { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
+      badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
+    { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
     // Closing — the closer's desk. Shown to closers/admins always, and to the
@@ -5455,9 +5474,25 @@ export default function StaffApplication() {
           called "Documents & exports". */}
       </Section>
 
-      <Section hidden={!show('sec-orders')} id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
-        info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
-      <OrdersPanel appId={id} canAccept={canComplete(role)} />
+      {/* ONE SECTION PER ORDER (owner-directed 2026-08-03). They open by DEFAULT,
+          unlike the single combined section they replace: landing in the Orders
+          room and finding three collapsed headers is the very "go into orders and
+          then see the 3 options" the split is meant to end. A collapsed Section
+          unmounts its children, so the panel's shared store (OrdersPanel) still
+          makes this ONE request for the file however many of them are showing. */}
+      <Section hidden={!show('sec-order-title')} id="sec-order-title" summary={summaries['sec-order-title']} title="Title"
+        info="Order title from the title company on the file. The order emails them with the borrower, loan officer and processor copied, tracks its own thread, and files what they send back onto the title condition for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="title" />
+      </Section>
+
+      <Section hidden={!show('sec-order-insurance')} id="sec-order-insurance" summary={summaries['sec-order-insurance']} title="Insurance"
+        info="Order insurance from the agent on the file. The order emails them with the borrower, loan officer and processor copied, tracks its own thread, and files the binder and invoice they send back onto the insurance condition for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="insurance" />
+      </Section>
+
+      <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
+        info="Send the closing attorney the file for closing prep, with the package of documents attached. Everything that goes back and forth on that chain — from the attorney, title, the settlement agent — files here as the file's closing correspondence.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="closing" />
       </Section>
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
