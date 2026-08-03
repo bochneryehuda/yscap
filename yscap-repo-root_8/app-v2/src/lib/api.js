@@ -1146,6 +1146,7 @@ export const api = {
   // The 1004MC market grid, rolled up by month across every report we hold for a
   // town. Small numbers of reports per month, so the screen shows the count too.
   researchMarket:        (f) => req('GET', '/api/research/market' + qs(f)),
+  researchAdjustmentRates: (f) => req('GET', '/api/research/adjustment-rates' + qs(f)),
   researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
   researchFlips:         (f) => req('GET', '/api/research/flips' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),

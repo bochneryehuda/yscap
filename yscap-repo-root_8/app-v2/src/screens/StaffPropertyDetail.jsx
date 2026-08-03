@@ -7,6 +7,7 @@ import {
 } from '../lib/research.js';
 import NearbyComps from '../components/NearbyComps.jsx';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
+import { uadWords } from '../lib/uadWords.js';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -190,12 +191,16 @@ export default function StaffPropertyDetail() {
               left; the screen was only ever reading half of it. `similar` and
               `INFERIOR` are gone for good and should be: they say how this
               compared with THAT report's subject, which is not a location. */}
-          <Fact k="View" v={[p.view_type, p.view_rating].filter(Boolean).join(' · ') || null} />
+          {/* …and a value the UAD reader REFUSED is still the raw grid cell
+              ("N;Res;"), so it is never printed as if it were words — see
+              `lib/uadWords`. */}
+          <Fact k="View" v={p.view_type || p.view_rating ? uadWords(p.view_rating, p.view_type) : null} />
           {/* The price-relevant half of the same fix — "Residential; BusyRoad".
               24 corpus comparables gain a second location factor against 10 on
               the view side, and it reached no screen at all. `Adverse` is the
               one an underwriter needs and it was the most invisible of all. */}
-          <Fact k="Location" v={[p.location_type, p.location_rating].filter(Boolean).join(' · ') || null} />
+          <Fact k="Location"
+            v={p.location_type || p.location_rating ? uadWords(p.location_rating, p.location_type) : null} />
           {/* db/439 — the appraiser's own words for whether the layout works. */}
           <Fact k="Functional utility" v={p.functional_utility} />
           <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />

@@ -217,6 +217,25 @@ async function geocodeProperty(p, { providers = PROVIDERS } = {}) {
  * placed — otherwise the same unplaceable addresses would be re-asked on every boot
  * forever and the sweep would never reach the rest.
  */
+/**
+ * WHO IS STILL OWED A ROOFTOP LOOKUP — ONE DEFINITION, because the sweep and the
+ * two counters that report on it drifted apart the moment the queue widened.
+ *
+ * A derived position is still a gap: `place-subjects` fills `geo_latitude` from
+ * the comparables around a property (median 17 ft, and still an ESTIMATE with a
+ * quarter-mile refusal ceiling), so a plain `geo_latitude IS NULL` queue removed
+ * all 90 of those properties from rooftop geocoding FOREVER — an estimate
+ * permanently displacing a measurement, the exact inversion of this module's own
+ * rule. The queue was widened to re-offer them and the counters were not, so the
+ * boot log and the admin panel reported the sweep 88 rows further along than it
+ * was, and could print "remaining: 0" with 90 rows still being re-asked. The
+ * predicate now lives in one place and every reader uses it. `$1` is
+ * `MAX_ATTEMPTS`, so a caller must bind it in that position.
+ */
+const QUEUE_SQL = `(geo_latitude IS NULL OR geo_source = '${require('./place-subjects').SOURCE}')
+          AND geo_attempts < $1
+          AND street IS NOT NULL`;
+
 async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
   const out = { looked: 0, placed: 0, unplaceable: 0, wrongProperty: 0, errors: 0, remaining: 0 };
   if (process.env.RESEARCH_GEOCODE_DISABLED === '1') { out.disabled = true; return out; }
@@ -224,11 +243,17 @@ async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
     const rows = (await db.query(
       `SELECT id, street, unit, city, state, zip, display_address, observation_count
          FROM properties
-        WHERE (geo_latitude IS NULL OR geo_source = 'comp_trilateration')
-          AND geo_attempts < $2
-          AND street IS NOT NULL
-        ORDER BY geo_attempted_at NULLS FIRST, observation_count DESC
-        LIMIT $1`, [Math.min(2000, Math.max(1, limit)), MAX_ATTEMPTS])).rows;
+        WHERE ${QUEUE_SQL}
+        -- A PROPERTY WITH NO POSITION AT ALL GOES FIRST. Ordering on
+        -- geo_attempted_at alone inverted the priority: place-subjects never
+        -- stamps an attempt, so every trilaterated row -- which already HAS a
+        -- usable position -- sorted ahead of every genuinely unplaced one that
+        -- had been tried before. On a realistic later boot that put 89
+        -- already-placed rows in the first 120, spending the courtesy-paced
+        -- lookup budget re-checking properties we can already find while
+        -- hundreds with nothing waited behind them.
+        ORDER BY (geo_latitude IS NOT NULL), geo_attempted_at NULLS FIRST, observation_count DESC
+        LIMIT $2`, [MAX_ATTEMPTS, Math.min(2000, Math.max(1, limit))])).rows;
 
     // A DERIVED POSITION IS STILL A GAP. `place-subjects` fills `geo_latitude`
     // from the comparables around a property (median 17 ft, and still an
@@ -267,27 +292,38 @@ async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
       if (PACE_MS > 0) await sleep(PACE_MS);
     }
 
+    // THE SAME PREDICATE THE QUEUE USES, or this reports the sweep as further
+    // along than it is and can say "remaining: 0" while rows are still queued.
     out.remaining = (await db.query(
-      `SELECT count(*)::int n FROM properties
-        WHERE geo_latitude IS NULL AND geo_attempts < $1 AND street IS NOT NULL`, [MAX_ATTEMPTS])).rows[0].n;
+      `SELECT count(*)::int n FROM properties WHERE ${QUEUE_SQL}`, [MAX_ATTEMPTS])).rows[0].n;
   } catch (e) {
     out.error = (e && e.message) || String(e);
   }
   return out;
 }
 
-/** How far along the placing is — for the screen and for the admin panel. */
+/**
+ * How far along the placing is — for the screen and for the admin panel.
+ *
+ * `looked_up` counts what a GEOCODER placed, and `trilaterated` is reported
+ * beside it rather than folded into it: a position worked out from the
+ * comparables around a house is an estimate that is still owed a rooftop
+ * lookup, so counting it as looked-up would report the sweep as finished on
+ * rows it is still re-asking. `still_to_do` uses the queue's own predicate for
+ * the same reason.
+ */
 async function geocodeStatus(db) {
   try {
     const r = (await db.query(
       `SELECT count(*)::int                                                       AS properties,
               count(*) FILTER (WHERE eff_latitude IS NOT NULL)::int               AS placed,
-              count(*) FILTER (WHERE geo_latitude IS NOT NULL)::int               AS looked_up,
+              count(*) FILTER (WHERE geo_latitude IS NOT NULL
+                               AND geo_source IS DISTINCT FROM $2)::int           AS looked_up,
+              count(*) FILTER (WHERE geo_source = $2)::int                        AS trilaterated,
               count(*) FILTER (WHERE geo_latitude IS NULL AND latitude IS NOT NULL)::int AS from_appraisal,
               count(*) FILTER (WHERE geo_latitude IS NULL AND geo_attempts >= $1)::int   AS gave_up,
-              count(*) FILTER (WHERE geo_latitude IS NULL AND geo_attempts < $1
-                               AND street IS NOT NULL)::int                       AS still_to_do
-         FROM properties`, [MAX_ATTEMPTS])).rows[0];
+              count(*) FILTER (WHERE ${QUEUE_SQL})::int                           AS still_to_do
+         FROM properties`, [MAX_ATTEMPTS, require('./place-subjects').SOURCE])).rows[0];
     return r;
   } catch (_) { return null; }
 }

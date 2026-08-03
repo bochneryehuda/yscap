@@ -4,15 +4,21 @@
  * Measured on the real corpus: **every one of the 132 subject properties is
  * unplaced**, because appraisers give coordinates for their comparables and not
  * for the subject — so the property the loan is secured against is the one no
- * radius search, no map and no distance can find. And **98 of 102 reports carry
+ * radius search, no map and no distance can find. And **97 of 102 reports carry
  * enough comparables with real coordinates and stated distances to fix that
- * subject's position** (median residual 17 feet, worst 67).
+ * subject's position** (median residual 17 feet, worst 73).
  *
  * THE NUMBER THIS PASS REPORTS IS DIFFERENT, AND IT IS THE ONE TO QUOTE. It works
- * per PROPERTY, not per report: **91 of the 132 are placed, 41 refused** — 37 of
+ * per PROPERTY, not per report: **90 of the 132 are placed, 42 refused** — 37 of
  * those because the only report naming them carries fewer than three usable
- * comparables (`too_few`), and 4 by the mirror test. "98 of 102" is true about
+ * comparables (`too_few`), and 5 by the mirror test. "97 of 102" is true about
  * reports and would read as a promise about properties.
+ *
+ * Both figures are MEASURED, by running this pass over a clone of the warehouse —
+ * never estimated and never carried over from an earlier draft. They were stated
+ * one too high in five places at once because they were copied between comments
+ * rather than re-read off a run; if you change what this pass does, re-measure
+ * and correct all of them together.
  *
  * Free, offline, out of reports we already paid for.
  *

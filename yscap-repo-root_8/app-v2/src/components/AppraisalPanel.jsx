@@ -5,6 +5,7 @@ import { fmtDate } from '../lib/dates.js';
 // and had already drifted — this one said "Fatal" for the same finding the
 // escalations screen called something else. See lib/findings-vocab.js.
 import { FINDING_SEVERITY as SEV, severityCount } from '../lib/findings-vocab.js';
+import { uadWords } from '../lib/uadWords.js';
 
 /* The PILOT property report. Imports the appraisal XML (staff), renders the property profile
    built from it — hero + value story, photo gallery, collateral snapshot, comparable sales — and
@@ -464,6 +465,9 @@ function human(v) {
     .replace(/(\d+)\s*Percent/i, '$1%').replace(/Percent/i, '%')
     .trim();
 }
+// A stored View/Location value is sometimes still the appraisal's raw UAD cell.
+// The rule, and why the row stays rather than printing it, is in `lib/uadWords`.
+const said = (rating, type) => uadWords(rating, type, human);
 const chip = (label, tone) => (
   <span key={label} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, padding: '2px 9px', borderRadius: 999, marginRight: 6, marginBottom: 6,
     background: tone === 'bad' ? 'rgba(180,72,60,.10)' : tone === 'warn' ? 'rgba(174,135,70,.12)' : tone === 'good' ? 'rgba(63,122,91,.10)' : 'var(--paper,#F6F3EC)',
@@ -797,14 +801,24 @@ function SourceDocs({ a }) {
 // reviewer deciding whether to trust "1 unit" on a row needs to know whether an
 // appraiser wrote it down or we worked it out. The server decides (see
 // research/comp-identity); this only words it.
+// EVERY VALUE THE SERVER CAN EMIT NEEDS A LINE HERE. `comp-identity.js` also
+// emits the bare `'stated'`, which was missing — so it rendered as the naked
+// word "stated", and inside a compound as "…, and stated".
 const IDENTITY_SOURCE = {
   subject: 'the report states it for the subject',
+  stated: 'stated on the report',
   grid: "stated on the appraiser's own grid",
   form: 'the report form only compares this kind of dwelling',
   style: 'read from the design style stated',
   price: 'read from the per-unit pricing stated',
   records: 'from our own records for this address, not from this report',
 };
+// A PLAIN OBJECT ANSWERS `__proto__` AND `constructor` WITH SOMETHING TRUTHY,
+// which a template literal then renders as "[object Object]". Not reachable from
+// any value the server sends today, and one `hasOwn` is cheaper than relying on
+// that staying true.
+const identityPhrase = (k) => (Object.prototype.hasOwnProperty.call(IDENTITY_SOURCE, k)
+  ? IDENTITY_SOURCE[k] : null);
 // The two facts, in the words used everywhere else in the system, with an
 // unknown SAYING SO — a blank reads as "ordinary", which is the misreading the
 // owner's first requirement exists to prevent.
@@ -833,10 +847,13 @@ function identityLines(c) {
 // rather than to nothing — a source we cannot phrase is still a source.
 function sourceWords(src) {
   if (!src) return null;
-  if (IDENTITY_SOURCE[src]) return IDENTITY_SOURCE[src];
+  const one = identityPhrase(src);
+  if (one) return one;
   const parts = String(src).split('+').map((x) => x.trim()).filter(Boolean);
   if (parts.length < 2) return String(src);
-  const said = parts.map((p) => IDENTITY_SOURCE[p] || p);
+  const said = parts.map((p) => identityPhrase(p) || p);
+  // Two items join with a plain "and" — "A, and B" reads as a truncated list.
+  if (said.length === 2) return `${said[0]} and ${said[1]}`;
   return `${said.slice(0, -1).join(', ')}, and ${said[said.length - 1]}`;
 }
 
@@ -850,15 +867,21 @@ function CompRow({ c }) {
   // has adjustments OR any of these facts.
   const ident = identityLines(c);
   const compFacts = [
-    ident.where && ['Type / units', `${ident.type} · ${ident.units} — ${ident.where}`],
+    // THE ROW IS NEVER GATED ON THE SOURCE. `ident.where &&` deleted it exactly
+    // when a comparable stated NEITHER fact — `identity_source` is null only
+    // when there was nothing to read — which is precisely the row where the
+    // owner's first requirement bites: "there shouldn't be a possibility that
+    // you should see a comparable that doesn't have how many units it is and
+    // what property type it is". `identityLines` always produces words, and an
+    // unknown SAYING SO is the whole point; only the source clause is optional.
+    ['Type / units', `${ident.type} · ${ident.units}${ident.where ? ` — ${ident.where}` : ''}`],
     // THE THING AND THE VERDICT, like Location on the next line. This showed the
     // RATING only — so of 769 corpus comparables, all 769 carry a `view_type`
     // and only 409 carry a rating, and the other 360 rendered NO View row at
     // all. The exact mirror of the property screen's gap, one line above the
     // Location row that already gets it right.
-    (c.view_rating || c.view_type) && ['View',
-      [c.view_rating, c.view_type ? human(c.view_type) : null].filter(Boolean).join(' · ')],
-    (c.location_rating || c.location_type) && ['Location', [c.location_rating, c.location_type ? human(c.location_type) : null].filter(Boolean).join(' · ')],
+    (c.view_rating || c.view_type) && ['View', said(c.view_rating, c.view_type)],
+    (c.location_rating || c.location_type) && ['Location', said(c.location_rating, c.location_type)],
     c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
     c.data_source && ['Source', c.data_source],
   ].filter(Boolean);
@@ -1494,7 +1517,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
               <KV rows={[
                 ['Lot size', or(a.lot_area), a.lot_dimensions || null],
                 a.lot_shape && ['Lot shape', a.lot_shape],
-                a.view_rating && ['View', a.view_rating],
+                a.view_rating && ['View', said(a.view_rating, null)],
                 // Property rights — surfaced only to FLAG the exception (nearly always FeeSimple).
                 a.property_rights && a.property_rights !== 'FeeSimple' && ['Property rights',
                   <span style={{ color: 'var(--crit,#B4483C)' }}>{human(a.property_rights)}</span>],

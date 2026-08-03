@@ -178,37 +178,68 @@ const stated = (t, p) => (Math.round(distMi(t, p) / 0.01) * 0.01).toFixed(2);
     ok(twoFt < 200, `and from the report that FITS BEST, not whichever came back first `
       + `(${twoFt.toFixed(0)} feet off)`);
 
-    // 6 — THE LIMIT COUNTS PROPERTIES, NOT (property, report) PAIRS. `pTwo` owns
-    // two of the rows a pair-counted query would return, so a limit of 1 must
-    // still hand it BOTH of its reports rather than half of them.
-    await db.query('UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL, geo_source=NULL, '
-      + 'geo_precision=NULL WHERE id=$1', [pTwo]);
-    // 6 — THE LIMIT COUNTS PROPERTIES, NOT (property, report) PAIRS, and the
-    // assertion has to be able to tell those apart. `scanned === 1` under a
-    // limit of 1 cannot: a pair-limited query also returns one row and also
-    // scans one property. What separates them is the RATIO on a fixture where a
-    // property owns two reports — pairs strictly exceed properties, so a
-    // pair-counted pass would scan FEWER properties than there are.
-    await db.query('UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL, geo_source=NULL, '
-      + 'geo_precision=NULL WHERE id = ANY($1::uuid[])', [[pTwo]]);
-    const mine = [pGood, pThin, pTwo];
-    const pairs = Number((await db.query(
-      `SELECT count(*)::int n FROM property_observations
-        WHERE role='subject' AND appraisal_id IS NOT NULL AND property_id = ANY($1::uuid[])`,
-      [mine])).rows[0].n);
-    const props = Number((await db.query(
-      `SELECT count(DISTINCT property_id)::int n FROM property_observations
-        WHERE role='subject' AND appraisal_id IS NOT NULL AND property_id = ANY($1::uuid[])`,
-      [mine])).rows[0].n);
-    ok(pairs > props, `the fixture genuinely distinguishes the two (${pairs} pairs over ${props} properties)`);
-
+    // 6 — THE QUEUE YIELDS EACH PROPERTY ONCE, NOT EACH (property, report) PAIR.
+    //
+    // THIS ASSERTION HAS TO BE ABLE TO FAIL, and three earlier attempts at it
+    // could not — which is the same failure this file exists to prevent, one
+    // level up. `scanned === 1` under a limit of 1 cannot tell the two apart: a
+    // pair-limited query also returns one row and also scans one property.
+    // Comparing a pair COUNT to a property count asserts a fact about the
+    // FIXTURE, which no change to the code can falsify. And re-reading the
+    // placement after an UNLIMITED pass cannot fail either, because an unlimited
+    // pair-limited query still returns every one of a property's reports.
+    //
+    // What separates them is that a pair-counted queue hands the SAME property
+    // back more than once. So: an unlimited pass must scan exactly as many rows
+    // as there are unplaced properties (a pair-counted one would scan the larger
+    // PAIR count), and every row it scans must be settled — placed or refused —
+    // because a second visit to an already-placed property settles nothing (the
+    // write is fill-only, so `rowCount` is 0 and neither counter moves).
+    //
+    // Both are measured against the pass's OWN predicate over the whole table,
+    // so the fixture's own rows are not special-cased.
     const rOne = await PS.placeSubjectsOnce(db, { limit: 1 });
     ok(rOne.scanned === 1, 'a limit of 1 scans exactly ONE property');
-    // …and the property that owns TWO reports is still placed from the BETTER of
-    // them, which only a property-limited query can do: a pair-limited one can
-    // hand it a single report, place it from the worse fit, and — because the
-    // write is fill-only — never look again.
-    await PS.placeSubjectsOnce(db, { limit: 1000 });
+
+    // THE TWO-REPORT PROPERTY GOES BACK IN THE QUEUE *AFTER* THAT PASS, not
+    // before: a limit of 1 takes whichever property sorts first, and if that is
+    // this one it is placed again and the fixture stops distinguishing anything.
+    await db.query('UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL, geo_source=NULL, '
+      + 'geo_precision=NULL WHERE id=$1', [pTwo]);
+
+    // MEASURED IMMEDIATELY BEFORE THE PASS THAT IS COMPARED TO IT. A refused
+    // property stays unplaced and is offered again by the very next pass, so
+    // summing `scanned` across two passes counts it twice and the comparison
+    // fails on correct code — which is how the first cut of this assertion went.
+    // Both counts run over the WHOLE table, using the pass's own predicate, so
+    // rows another suite left unplaced are counted on both sides and cannot
+    // skew it either way.
+    const QUEUE_WHERE = `p.latitude IS NULL AND p.longitude IS NULL
+        AND p.geo_latitude IS NULL AND p.geo_longitude IS NULL
+        AND EXISTS (SELECT 1 FROM property_observations o
+                     WHERE o.property_id = p.id AND o.role='subject' AND o.appraisal_id IS NOT NULL)`;
+    const props = Number((await db.query(
+      `SELECT count(*)::int n FROM properties p WHERE ${QUEUE_WHERE}`)).rows[0].n);
+    const pairs = Number((await db.query(
+      `SELECT count(*)::int n FROM property_observations o JOIN properties p ON p.id = o.property_id
+        WHERE o.role='subject' AND o.appraisal_id IS NOT NULL AND ${QUEUE_WHERE}`)).rows[0].n);
+    // The precondition, stated as a precondition rather than dressed up as a
+    // result: without a property owning two reports there is nothing to detect.
+    ok(pairs > props && props < 1000,
+      `the fixture genuinely distinguishes the two (${pairs} pairs over ${props} properties)`);
+
+    const rAll = await PS.placeSubjectsOnce(db, { limit: 1000 });
+    ok(rAll.scanned === props,
+      `the queue hands back one row per PROPERTY (${rAll.scanned} scanned for ${props} properties; `
+      + `a pair-counted query would have handed back ${pairs})`);
+    ok(rAll.placed + rAll.refused === rAll.scanned,
+      'and every property it scanned was settled exactly once — a repeated property would be '
+      + 'scanned and settle nothing, because the write is fill-only');
+
+    // …and the property that owns TWO reports is placed from the BETTER of them,
+    // which only a property-limited queue can do: a pair-limited one can hand it
+    // a single report, place it from the worse fit, and — because the write is
+    // fill-only — never look again.
     const gOne = await readGeo(pTwo);
     const oneFt = gOne.geo_latitude == null ? Infinity
       : distMi(TWO, { lat: Number(gOne.geo_latitude), lng: Number(gOne.geo_longitude) }) * 5280;

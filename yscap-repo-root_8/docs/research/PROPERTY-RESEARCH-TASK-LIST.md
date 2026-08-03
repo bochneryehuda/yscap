@@ -353,9 +353,9 @@ never attempted. Everything in this phase costs about $10, one time.
   `src/lib/research/trilaterate.js` + `place-subjects.js`. Measured on the real
   corpus: **every one of the 132 subjects we have lent on was unplaced** (the
   property the loan is secured against was the one nothing could find on a map),
-  102 reports carry three or more usable comparables, and **98 of them resolve —
-  median residual 17 feet, worst 67**. Per PROPERTY, which is what the boot pass
-  reports, that is **91 of the 132**: 37 subjects appear only on a report with
+  102 reports carry three or more usable comparables, and **97 of them resolve —
+  median residual 17 feet, worst 73**. Per PROPERTY, which is what the boot pass
+  reports, that is **90 of the 132**: 37 subjects appear only on a report with
   fewer than three usable comparables. Both numbers are true and they answer
   different questions, so neither travels alone. Free and offline, out of reports already
   paid for, which is why the paid geocoder (3.1/3.2) is a nice-to-have rather
@@ -485,7 +485,19 @@ never attempted. Everything in this phase costs about $10, one time.
   so the two sides can never disagree about what "enough evidence" means on the
   same grid. Live on NJ, 21 usable markets: porch $3,000, garage $6,000, finished
   basement $10,000, condition $25,000 — and Age REFUSES on 4 rates against 300
-  zeros, which is itself the finding. STILL TO DO: a screen.
+  zeros, which is itself the finding. **The screen is done too** —
+  `app-v2/src/screens/StaffAdjustments.jsx` at `/internal/research/adjustments`
+  ("What we charge" in the nav). One row per market, and each row is a RANGE
+  rather than a bar: a rule from the first quartile to the third with a dot at
+  the median, because a bar says *"this is the number"* and a range says *"half
+  of them were in here"*, which is what the data supports. The per-unit markets
+  ($/sq ft) and the flat ones ($ a line) get their OWN axis each — putting $50
+  and $25,000 on one scale makes every small one invisible and compares nothing.
+  The COUNTS are real columns and never a footnote (lines, reports, appraisers),
+  because a median with no counts is the indefensible claim wearing the
+  defensible one's clothes; a market that REFUSED still gets a row, or the screen
+  would look complete when it is not. Rendered against the real corpus: 27 rows,
+  21 with a median, the rest stating their refusal in words.
 - [ ] ~~**5.3 THE ADJUSTMENT CORPUS.**~~ Measured 599 adjustment lines against 62
   distinct sales — **9.7×**, confirming the claim on live data. It changes the
   claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin

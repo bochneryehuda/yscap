@@ -27,8 +27,8 @@
  *     The reflection is actually COMPUTED and scored, not guessed at with an
  *     angle threshold: measured on the real corpus, every borderline set fits its
  *     stated distances to within 2–107 feet, so a residual test would have waved
- *     all of them through. Of 102 REPORTS, 98 resolve and 4 are genuinely
- *     ambiguous — which is 91 of the 132 PROPERTIES, the number
+ *     all of them through. Of 102 REPORTS, 97 resolve and 5 are genuinely
+ *     ambiguous — which is 90 of the 132 PROPERTIES, the number
  *     `place-subjects` reports; the rest have fewer than three usable points.
  *   · It REPORTS ITS RESIDUAL and refuses when the circles genuinely disagree. A
  *     stated distance is rounded to a hundredth of a mile and an appraiser's
