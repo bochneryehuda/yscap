@@ -96,13 +96,21 @@ export function nextStep(it, { role, docs } = {}) {
   // A completer's step is the sign-off. If a document is still sitting
   // unreviewed we say so rather than leaving them to guess which of the three
   // finish-sounding buttons comes first.
+  //
+  // Since 2026-08-03 that is no longer advice, it is the RULE the server
+  // enforces: a condition cannot be signed off while any document on it is
+  // still waiting for a decision, and it cannot be signed off on documents
+  // nobody accepted. So the hint says what will actually happen — a button that
+  // promises something the server refuses is worse than no hint at all.
   if (completer) {
     const waiting = pendingDocs(docs).length;
     return { key: 'signoff', label: 'Sign off', tone: 'primary',
       patch: { signedOff: true },
-      title: 'Sign off = the whole condition is complete. This is what removes it from the list for everyone.',
+      title: waiting
+        ? 'Every document has to be accepted, rejected or deleted before this can be signed off.'
+        : 'Sign off = the whole condition is complete. This is what removes it from the list for everyone.',
       hint: waiting
-        ? `Accept the ${waiting === 1 ? 'document' : `${waiting} documents`} above first, then sign off — signing off clears this condition for everyone.`
+        ? `${waiting === 1 ? 'One document is' : `${waiting} documents are`} still waiting for a decision. Accept, reject or delete ${waiting === 1 ? 'it' : 'each one'} first — a condition can't be signed off over a document nobody has decided on.`
         : 'Signing off clears this condition for everyone.' };
   }
 
@@ -135,12 +143,25 @@ export function nextStep(it, { role, docs } = {}) {
 }
 
 /* THE DOCUMENT ROW's one next step. Same idea, one line down: a document that
-   nobody has reviewed wants Accept; everything else about it is secondary. */
+   nobody has reviewed wants Accept; everything else about it is secondary.
+
+   A NON-COMPLETER GETS REJECT (owner-directed 2026-08-03: "an officer should
+   also have the option to reject certain documents and stuff like that"). They
+   already could — the server has always let anyone on the file reject, and the
+   button was in the More menu — but a loan officer looking at a wrong document
+   saw NO action at all on the row, so the option may as well not have existed.
+   It is deliberately a GHOST button, not a primary one: rejecting is never the
+   expected next step, it is the one they need when something is wrong. Accept
+   stays completer-only; the server enforces both. */
 export function docNextStep(doc, { role } = {}) {
   const rs = (doc && doc.review_status) || 'pending';
-  if (!canComplete(role)) return null;          // only a completer can accept
+  if (!canComplete(role)) {
+    if (rs !== 'pending') return null;          // already decided — nothing to do
+    return { key: 'reject', label: 'Reject', tone: 'ghost', action: 'reject',
+      title: 'Send this document back with a reason — anyone on the file can reject. Accepting is the processor’s step.' };
+  }
   if (rs === 'accepted') return null;           // nothing forward left to do
-  return { key: 'accept', label: 'Accept', tone: 'primary',
+  return { key: 'accept', label: 'Accept', tone: 'primary', action: 'accept',
     title: rs === 'rejected'
       ? 'Accept this document after all'
       : 'Accept this document — the condition stays open until it is signed off' };

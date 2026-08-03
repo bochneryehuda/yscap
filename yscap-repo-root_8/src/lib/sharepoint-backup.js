@@ -12,14 +12,22 @@
  *    new documents mirror within seconds; the interval sweep retries failures
  *    and performs the first-run FULL HISTORY BACKFILL (oldest-first, so version
  *    history replays in true chronological order).
- *  • VERSION FOLDERS: when a document supersedes previously-mirrored ones for
- *    the same condition (the portal's is_current/slot supersede signal), the
- *    condition folder is versioned exactly as the owner specified: on the FIRST
- *    replacement, create "Version 1", move the OLD portal-uploaded copies into
- *    it, create "Version 2" and put the new document there; later replacements
- *    just add "Version 3", "Version 4", … The ONLY items ever moved are the
- *    portal's own mirror copies (verified against documents.sharepoint_backup_ref
- *    AND the expected-parent check in sp.moveOwnItem).
+ *  • THREE SHELVES per category folder (owner-directed 2026-08-03, REPLACING the
+ *    old "the live set migrates into the newest Version-N folder" flow):
+ *
+ *        Insurance/                        accepted + current — what ships
+ *        Insurance/Waiting for review/     nobody has decided on it yet
+ *        Insurance/Old Versions/           rejected, and superseded older copies
+ *        Insurance/Old Versions/Version 1/ one folder per shelving batch
+ *
+ *    EVERYTHING is still saved — the owner's rule is "even though it gets
+ *    rejected, we should always still save copies in folders". A document is
+ *    mirrored within seconds of upload, long before review, so its shelf is
+ *    decided by `lib/sharepoint-shelf.js` and it is MOVED by `refileOnce` when
+ *    the verdict arrives. The ONLY items ever moved are the portal's own mirror
+ *    copies (verified against documents.sharepoint_backup_ref AND the
+ *    expected-parent check in sp.moveOwnItem), so a copy a human moved or
+ *    renamed is left exactly where they put it, permanently.
  *  • ONE-WAY & NO-DELETE: never reads document bytes from SharePoint, never
  *    deletes anything, never touches human-curated files (docs/SHAREPOINT-POLICY.md).
  *  • A SharePoint problem NEVER breaks an upload: everything here is
@@ -33,6 +41,7 @@ const db = require('../db');
 const storage = require('./storage');
 const sp = require('./sharepoint');
 const map = require('./sharepoint-map');
+const shelves = require('./sharepoint-shelf');   // which shelf a document sits on
 const { sniffKind, expectedKind } = require('./upload-bytes');
 
 const MAX_ATTEMPTS = 8;            // per-document retry cap (interval sweeps retry)
@@ -281,6 +290,7 @@ let _interval = null;
 let _verifyInterval = null;
 let _sloInterval = null;
 let _livenessInterval = null;      // dead-man's-switch watchdog interval
+let _refileInterval = null;        // shelf re-filing sweep (accepted/waiting/old)
 let _startedAtMs = 0;              // when start() ran — so a worker that never produced a first heartbeat is still judged
 let _lastPass = null;              // stats for /api/health
 
@@ -430,6 +440,9 @@ const ENRICH_SELECT = `
            d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
            d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
            d.sharepoint_integrity, d.sharepoint_item_size,
+           -- WHICH SHELF (db/425): the review state decides it, and the recorded
+           -- value is what the re-file sweep compares against.
+           d.review_status, d.sharepoint_shelf,
            d.checklist_item_id, d.llc_id, d.created_at,
            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
            COALESCE(d.application_id, ci.application_id)                        AS app_id,
@@ -652,149 +665,23 @@ async function upsertConditionState(stateKey, scopeKey, folderId, folderName, ve
     [stateKey, scopeKey, folderId, folderName, version]);
 }
 
-// Would mirroring `row` supersede docs already mirrored at the CURRENT version
-// of its condition? (The trigger for a Version-N bump.) Matches the portal's
-// slot semantics: a slotted upload supersedes its slot; an unslotted one
-// supersedes across the condition.
-async function isSupersedeEvent(row, stateKey, currentVersion, conditionFolderId) {
-  // NOTE: every param pushed MUST be referenced in the SQL — Postgres rejects
-  // a statement with an unreferenced parameter ("could not determine data type
-  // of parameter $N"), so each branch builds its own exact parameter list.
-  const params = [row.id, currentVersion];
-  let where;
-  if (KIND_STREAM.has(row.doc_kind)) {
-    // Streams the routes supersede by DOC KIND (app-wide term sheets,
-    // borrower-wide photo IDs) — checklist attachment is ignored on BOTH sides
-    // so an item-attached copy and a plain copy share one stream, exactly like
-    // the routes' own supersede UPDATEs.
-    if (row.app_id && row.doc_kind !== 'photo_id') {
-      params.push(row.app_id, row.doc_kind);
-      where = `m.application_id::text = $3::text AND m.doc_kind = $4`;
-    } else {
-      params.push(row.borrower_id, row.doc_kind);
-      where = `COALESCE(m.borrower_id::text,'') = COALESCE($3::text,'') AND m.doc_kind = $4`;
-    }
-  } else if (row.checklist_item_id) {
-    params.push(row.checklist_item_id);
-    where = 'm.checklist_item_id = $3';
-  } else if (row.app_id) {
-    // kind-scoped on a file: match on the APP alone (a borrower-uploaded and a
-    // staff-saved term sheet on the same file share one version stream even
-    // though their raw borrower_id differs). llc/track-record NULL-ness
-    // participates so unrelated categories never trip each other's counter.
-    params.push(row.app_id, row.doc_kind || '', row.source_type || '');
-    where = `m.checklist_item_id IS NULL
-             AND m.application_id::text = $3::text
-             AND COALESCE(m.doc_kind,'')    = $4
-             AND COALESCE(m.source_type,'') = $5
-             AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
-             AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
-  } else {
-    // kind-scoped with no file: the borrower anchors the match.
-    params.push(row.borrower_id, row.doc_kind || '', row.source_type || '');
-    where = `m.checklist_item_id IS NULL
-             AND m.application_id IS NULL
-             AND COALESCE(m.borrower_id::text,'') = COALESCE($3::text,'')
-             AND COALESCE(m.doc_kind,'')    = $4
-             AND COALESCE(m.source_type,'') = $5
-             AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
-             AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
-  }
-  params.push(row.slot_label);
-  const slotIdx = params.length;
-  // Same-folder guard for the version-0 case: a supersede only counts when the
-  // superseded mirror copy actually lives in THIS stream's condition folder.
-  // Without it, a pre-relocation copy sitting in an OLD category folder (e.g.
-  // 'Term Sheet' before the Unsigned split) would phantom-bump the NEW folder
-  // to Version 2 with an empty Version 1 and nothing movable.
-  let folderGuard = '';
-  if (currentVersion === 0 && conditionFolderId) {
-    params.push(conditionFolderId);
-    folderGuard = `AND m.sharepoint_parent_id = $${params.length}`;
-  }
-  const { rows } = await db.query(
-    `SELECT 1 FROM documents m
-      WHERE m.id <> $1
-        AND m.sharepoint_backup_ref IS NOT NULL
-        AND m.sharepoint_version = $2
-        AND m.is_current = false
-        AND ${where}
-        AND ($${slotIdx}::text IS NULL OR m.slot_label IS NOT DISTINCT FROM $${slotIdx}::text)
-        ${folderGuard}
-      LIMIT 1`, params);
-  return rows.length > 0;
-}
-
-// The first-replacement shuffle: create "Version 1", move OUR mirror copies
-// from the condition-folder root into it. Only items recorded in
-// documents.sharepoint_backup_ref are touched, and sp.moveOwnItem refuses any
-// item whose current parent isn't the condition folder we created.
-// NOTE (owner-designed): ALL of the portal's root copies move — including a
-// still-current doc of another slot ("move in all the old documents in the
-// version 1 folder"). The freshest set always lives in the HIGHEST Version
-// folder; a still-current doc parked in Version 1 simply hasn't changed since.
-async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) {
-  // Same rule as isSupersedeEvent: every pushed param must be referenced, and
-  // the stream (kind vs item) is selected identically.
-  let where, params;
-  if (KIND_STREAM.has(row.doc_kind)) {
-    if (row.app_id && row.doc_kind !== 'photo_id') {
-      where = `application_id::text = $1::text AND doc_kind = $2`;
-      params = [row.app_id, row.doc_kind];
-    } else {
-      where = `COALESCE(borrower_id::text,'') = COALESCE($1::text,'') AND doc_kind = $2`;
-      params = [row.borrower_id, row.doc_kind];
-    }
-  } else if (row.checklist_item_id) {
-    where = 'checklist_item_id = $1';
-    params = [row.checklist_item_id];
-  } else if (row.app_id) {
-    where = `checklist_item_id IS NULL
-             AND application_id::text = $1::text
-             AND COALESCE(doc_kind,'')    = $2
-             AND COALESCE(source_type,'') = $3
-             AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
-             AND (track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
-    params = [row.app_id, row.doc_kind || '', row.source_type || ''];
-  } else {
-    where = `checklist_item_id IS NULL
-             AND application_id IS NULL
-             AND COALESCE(borrower_id::text,'') = COALESCE($1::text,'')
-             AND COALESCE(doc_kind,'')    = $2
-             AND COALESCE(source_type,'') = $3
-             AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
-             AND (track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
-    params = [row.borrower_id, row.doc_kind || '', row.source_type || ''];
-  }
-  const olds = (await db.query(
-    `SELECT id, sharepoint_backup_ref FROM documents
-      WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_version = 0
-        AND sharepoint_parent_id = $${params.length + 1} AND ${where}`,
-    [...params, conditionFolder.id])).rows;
-  // Nothing movable (e.g. a human relocated every root copy): no empty
-  // "Version 1" is created and the caller skips the bump entirely.
-  if (!olds.length) return null;
-  const v1 = await sp.ensureChildFolder(driveId, conditionFolder.id, 'Version 1');
-  for (const old of olds) {
-    const { itemId } = sp.parseRef(old.sharepoint_backup_ref);
-    try {
-      await sp.moveOwnItem(driveId, itemId, v1.id, { expectedParentId: conditionFolder.id });
-      await db.query('UPDATE documents SET sharepoint_version=1, sharepoint_parent_id=$2 WHERE id=$1', [old.id, v1.id]);
-    } catch (e) {
-      // Distinguish "a human intervened" (item gone, or no longer where our
-      // records say — leave it alone forever, never force) from a TRANSIENT
-      // failure (throttle/network — rethrow so this document's pass fails and
-      // the whole shuffle retries later with consistent bookkeeping).
-      const humanIntervened = e.status === 404 || e.status === 412 || e.graphCode === 'itemNotFound'
-        || /moveOwnItem refused/.test(e.message || '');
-      if (!humanIntervened) throw e;
-      console.warn(`[sp-sync] version shuffle skipped for doc ${old.id} (human intervention): ${e.message}`);
-      await db.query('UPDATE documents SET sharepoint_version=1 WHERE id=$1', [old.id]);
-    }
-    await sleep(PACING_MS);
-  }
-  return v1;
-}
+// THE SUPERSEDE/VERSION-SHUFFLE MACHINERY THAT USED TO LIVE HERE IS RETIRED
+// (owner-directed 2026-08-03). It answered "does this new document supersede one
+// already mirrored at the current version?" by re-deriving the portal's own slot
+// semantics in SQL — one branch per stream shape — and then MIGRATED the live set
+// down into an ever-deeper Version-N folder, leaving the category folder empty.
+//
+// Two things replace it, and both are simpler. WHERE a document lives is now
+// decided by its own review state (lib/sharepoint-shelf.js), so the live set
+// stays at the top of the category folder where somebody browsing the file will
+// actually find it. WHEN a copy moves is decided by `refileOnce` below, which
+// asks the direct question — is this copy still on the right shelf? — instead of
+// reconstructing a supersede event: a superseded document is simply one whose
+// `is_current` went false, which needs no stream matching at all.
+//
+// `sharepoint_condition_state` is kept and still records the category folder id
+// per stream (the sweep reads it to find where a document's shelves are), and
+// `current_version` now counts SHELVING BATCHES rather than live version folders.
 
 // The web export tools PREPEND the property address (Scope of Work) or the
 // borrower name (term sheet, track record) to every generated filename — e.g.
@@ -860,7 +747,7 @@ function stripPathEchoes(filename, row) {
 // "uploaded" and "recorded" used to re-upload a "(id)" duplicate on every
 // retry — now the earlier successful copy is ADOPTED. Only a genuinely
 // different same-named file uniquifies (append-only, nothing overwritten).
-async function uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha, nameSuffix, pathBudget }) {
+async function uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha, nameSuffix, pathBudget, shelf }) {
   const localQx = sp.quickXorHash(bytes);
   // Drop the redundant address/borrower echo the export tools bake into the
   // filename BEFORE sanitizing (keeps the SharePoint/OneDrive path short enough
@@ -955,6 +842,11 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
         sharepoint_skipped_reason = NULL,
         sharepoint_version = $4,
         sharepoint_parent_id = $5,
+        -- WHICH SHELF the copy is filed on (db/425). COALESCE keeps a re-mirror
+        -- into an existing folder (the corrupt-copy replacement path, which
+        -- passes no shelf) from blanking what the row already records — the
+        -- copy did not move, so its shelf did not change.
+        sharepoint_shelf = COALESCE($8, sharepoint_shelf),
         sharepoint_backup_attempts = sharepoint_backup_attempts + 1,
         sharepoint_backup_attempted_at = now(),
         sha256 = $6,
@@ -963,7 +855,8 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
         sharepoint_integrity = 'ok'
       WHERE id = $1`,
     [row.id, sp.makeRef(driveId, up.item.id), up.item.webUrl || null, version, parentId,
-     contentSha, up.item && up.item.size != null ? Number(up.item.size) : bytes.length]);
+     contentSha, up.item && up.item.size != null ? Number(up.item.size) : bytes.length,
+     shelf || null]);
 
   // METADATA ID STAMP (roadmap R1) — best-effort, gated, never affects the
   // mirror (bytes are already uploaded + recorded above). Stamps Pilot identity
@@ -1196,52 +1089,59 @@ async function mirrorRowInner(row, scopeKey) {
   const conditionFolder = await map.resolveConditionFolder(driveId, target.syncFolderId, categoryPath);
   const stateKey = stateKeyFor(row, scopeKey);
 
-  let version = 0;
+  // ─── WHICH SHELF (owner-directed 2026-08-03) ───────────────────────────────
+  // The category folder holds the ACCEPTED, current set — the same documents the
+  // TPR export ships, so opening the folder answers "what goes out?". Everything
+  // else is still saved, on a shelf that says what it is: "Waiting for review"
+  // for a document nobody has decided on, "Old Versions" for a rejected or
+  // superseded one. A human upload is mirrored within seconds, long before
+  // anyone has reviewed it, so nearly every one lands on "Waiting for review"
+  // and is MOVED up by `refileOnce` when the verdict arrives.
+  //
+  // This REPLACES the old rule that the live document migrated INTO the newest
+  // Version-N folder and left the category root empty. The live document now
+  // always sits at the top; the Version folders are where old copies are
+  // grouped, and they live under "Old Versions". Existing Version-N folders at
+  // the category root are NOT moved or renamed (the no-move policy stands) —
+  // they simply stop being where new documents go.
+  const shelf = shelves.shelfFor(row);
+  // A document that is ALREADY old the first time we mirror it (a history
+  // backfill replaying supersedes, or one rejected before the mirror caught up)
+  // goes into the "Old Versions" folder ITSELF, not its own Version subfolder.
+  // Minting a Version folder per historical document is precisely the
+  // "Version 47" explosion this file already fought once. The Version grouping
+  // is created by `refileOnce`, which shelves a whole batch at a time.
+  const version = 0;
   let parentId = conditionFolder.id;
 
-  // Regen-kind snapshots NEVER version-shuffle (the Version-47 fix): each
-  // surviving snapshot lands in the category folder root under its dated name.
-  // Everything else keeps the owner's Version-1/Version-2 supersede flow.
+  // RECORD THE CATEGORY FOLDER for every non-regen stream, whatever shelf this
+  // document lands on. `refileOnce` reads it to find the folder a document's
+  // shelves are siblings inside — without it the sweep would have to re-resolve
+  // the whole officer/borrower/address chain, or walk the item's parents in
+  // Graph, for every document it moves.
   if (!isRegenKind(row.doc_kind)) {
     let state = await getConditionState(stateKey);
-    // A version counter is only meaningful WITHIN one condition folder. If the
-    // scope re-resolved into a different tree (Unfiled→officer upgrade, human
-    // reorganization + stale-cache heal), the new folder starts a fresh stream
-    // at version 0 — otherwise the first doc there would land alone in a
-    // phantom "Version N" folder with N climbing forever.
-    if (state && state.folder_id && state.folder_id !== conditionFolder.id) state = null;
-    if (!state) {
-      state = { current_version: 0 };
-      await upsertConditionState(stateKey, scopeKey, conditionFolder.id, category, 0);
-    }
-    version = state.current_version;
+    // Only meaningful WITHIN one condition folder: if the scope re-resolved into
+    // a different tree (Unfiled→officer upgrade, a human reorganisation + stale
+    // cache heal), the stream starts again in the new folder.
+    if (state && state.folder_id !== conditionFolder.id) state = null;
+    if (!state) await upsertConditionState(stateKey, scopeKey, conditionFolder.id, category, 0);
+  }
 
-    // Version bump on supersede (the owner's Version-1/Version-2 flow).
-    if (await isSupersedeEvent(row, stateKey, version, conditionFolder.id)) {
-      let bump = true;
-      if (version === 0) {
-        const v1 = await shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder);
-        if (!v1) bump = false;   // nothing movable — don't start at a phantom Version 2
-      }
-      if (bump) {
-        version = version === 0 ? 2 : version + 1;
-        await upsertConditionState(stateKey, scopeKey, conditionFolder.id, category, version);
-      }
-    }
-
-    // Where this document lands: condition root before any versioning, else the
-    // current Version-N folder.
-    if (version > 0) {
-      const vf = await sp.ensureChildFolder(driveId, conditionFolder.id, `Version ${version}`);
-      parentId = vf.id;
-    }
+  const shelfSegments = shelves.shelfPath(shelf, version);
+  for (const seg of shelfSegments) {
+    parentId = (await sp.ensureChildFolder(driveId, parentId, seg)).id;
   }
 
   // Path budget: total decoded path must stay under SharePoint's ~400-char
-  // limit; leave headroom for "/Version NN/" and uniquifier suffixes.
-  const usedLen = String(`${target.fullPath}/${category}`).length + 14;
+  // limit; leave headroom for the uniquifier suffix. The shelf segments are part
+  // of the path now, so they are counted — "Old Versions/Version 12/" is 24
+  // characters that would otherwise silently eat the filename's allowance and
+  // push a deep chain over the limit, which fails that upload forever.
+  const shelfLen = shelfSegments.length ? shelfSegments.join('/').length + 1 : 0;
+  const usedLen = String(`${target.fullPath}/${category}`).length + shelfLen + 14;
   const up = await uploadAndRecord({
-    row, driveId, parentId, version, bytes, contentSha,
+    row, driveId, parentId, version, bytes, contentSha, shelf: shelf.key,
     pathBudget: Math.max(24, 395 - usedLen) });
 
   // A successful mirror vacates any open "mirror failed" review row for this
@@ -1252,7 +1152,11 @@ async function mirrorRowInner(row, scopeKey) {
       note: `auto-closed — the document mirrored successfully to ${target.fullPath}/${category}` });
   } catch (_) { /* best-effort */ }
 
-  return { webUrl: up.item.webUrl, path: `${target.fullPath}/${category}${version ? `/Version ${version}` : ''}` };
+  return {
+    webUrl: up.item.webUrl,
+    path: `${target.fullPath}/${category}${shelfSegments.length ? `/${shelfSegments.join('/')}` : ''}`,
+    shelf: shelf.key,
+  };
 }
 
 // ROOT of "why does a document get stuck?" (owner-directed 2026-07-17): the
@@ -1643,6 +1547,174 @@ async function verifyRow(row) {
   return sourceSuspect ? 'source-suspect' : 'ok';
 }
 
+/* ══════════════════════ RE-FILING: the shelf a copy lives on ════════════════
+ * Owner-directed 2026-08-03. A document is mirrored within seconds of upload —
+ * long before anyone has reviewed it — so its shelf is not knowable at mirror
+ * time. Nearly every human upload therefore lands on "Waiting for review" and
+ * has to MOVE when the verdict arrives:
+ *
+ *   accepted        → up into the category folder (what the TPR export ships)
+ *   rejected        → down into "Old Versions"
+ *   superseded      → down into "Old Versions/Version N" (grouped per batch)
+ *
+ * NOTHING IS EVER DELETED — this only ever re-files, through `sp.moveOwnItem`,
+ * which refuses any item whose current parent is not where our records say. So a
+ * copy a human has moved or renamed is left exactly where they put it, forever.
+ *
+ * The sweep asks ONE indexed question — "which mirrored documents are on the
+ * wrong shelf?" — which is why db/425 stores the shelf on the row rather than
+ * re-deriving it from SharePoint. A row mirrored before db/425 records NULL and
+ * is simply worked out and filed like any other mismatch, so the back book gets
+ * tidied a few documents per pass with no separate migration.
+ */
+const REFILE_BATCH = Math.max(1, parseInt(process.env.SHAREPOINT_REFILE_BATCH || '40', 10) || 40);
+let _lastRefile = null;
+
+/** Documents whose mirrored copy is on the wrong shelf. The shelf comparison is
+    done in JS (ONE definition — `shelves.shelfFor`), so the SQL only narrows to
+    rows that COULD be wrong: it can never disagree with the predicate.
+
+    It selects through the SHARED `ENRICH_SELECT`, and that is load-bearing rather
+    than tidiness: the sweep has to resolve `stateKeyFor(row, scopeKeyFor(row))` to
+    the SAME key the mirror recorded the category folder under, and that key runs
+    through `categoryFor` — which reads the checklist item's label, the template
+    code, the LLC name and the track-record address. A hand-written SELECT that
+    omits any of them silently categorises the document differently, the state
+    lookup misses, and every affected row is skipped as `no_category_folder`
+    forever. Same rule the enrichment's own header states: what the batch sees and
+    what the mirror saw must not drift. */
+async function refileBatch(limit) {
+  const { rows } = await db.query(
+    `${ENRICH_SELECT}
+      WHERE d.sharepoint_backup_ref IS NOT NULL
+        AND d.sharepoint_parent_id IS NOT NULL
+        AND d.sharepoint_backed_up_at IS NOT NULL
+        -- Never move a copy whose integrity is in question: it is about to be
+        -- replaced by the verify/mirror path, and moving it mid-flight would
+        -- leave the replacement and the original on different shelves.
+        AND (d.sharepoint_integrity IS NULL OR d.sharepoint_integrity NOT LIKE 'mismatch%')
+        AND (
+          d.sharepoint_shelf IS NULL
+          OR d.sharepoint_shelf IS DISTINCT FROM CASE
+               WHEN COALESCE(d.is_current, true) = false THEN 'old'
+               WHEN COALESCE(d.review_status,'pending') = 'accepted' THEN 'live'
+               WHEN COALESCE(d.review_status,'pending') = 'pending'  THEN 'waiting'
+               ELSE 'old' END
+        )
+      ORDER BY d.sharepoint_backed_up_at
+      LIMIT $1`, [limit]);
+  return rows;
+}
+
+/**
+ * Move ONE document's mirror copy onto the shelf it now belongs on.
+ * Returns 'moved' | 'skipped:<why>'. NEVER throws for a human's intervention —
+ * that is recorded and the row is stamped so the sweep stops re-trying it.
+ */
+async function refileRow(row) {
+  const shelf = shelves.shelfFor(row);
+  if (shelves.onShelf(row.sharepoint_shelf, shelf)) return 'skipped:already';
+
+  const scopeKey = scopeKeyFor(row);
+  if (!scopeKey) return 'skipped:no_scope';
+  const stateKey = stateKeyFor(row, scopeKey);
+  const state = await getConditionState(stateKey);
+  // The category folder is the parent the shelves are siblings inside. Without a
+  // recorded one we cannot place the document without re-resolving the whole
+  // officer/borrower/address chain, which is far too expensive per document —
+  // and the NEXT ordinary mirror of that stream records it, so this self-heals.
+  if (!state || !state.folder_id) return 'skipped:no_category_folder';
+
+  const { driveId, itemId } = sp.parseRef(row.sharepoint_backup_ref);
+
+  // Old copies are GROUPED — one "Version N" folder per shelving batch, which is
+  // what makes "old versions and old old versions" readable instead of one flat
+  // pile. The counter is bumped ONCE per stream per pass (see refileOnce), and
+  // passed in so every document in the batch shares the folder.
+  let version = 0;
+  if (shelf.key === shelves.SHELF.OLD.key) version = row.__shelfVersion || 0;
+
+  let parentId = state.folder_id;
+  for (const seg of shelves.shelfPath(shelf, version)) {
+    parentId = (await sp.ensureChildFolder(driveId, parentId, seg)).id;
+  }
+  if (parentId === row.sharepoint_parent_id) {
+    // Already in the right place — only our bookkeeping was behind (a legacy row).
+    await db.query('UPDATE documents SET sharepoint_shelf=$2 WHERE id=$1', [row.id, shelf.key]);
+    return 'skipped:already';
+  }
+
+  try {
+    const moved = await sp.moveOwnItem(driveId, itemId, parentId, { expectedParentId: row.sharepoint_parent_id });
+    await db.query(
+      `UPDATE documents SET sharepoint_parent_id=$2, sharepoint_shelf=$3,
+              sharepoint_version=$4,
+              sharepoint_web_url=COALESCE($5, sharepoint_web_url)
+        WHERE id=$1`,
+      [row.id, parentId, shelf.key, version, (moved && moved.webUrl) || null]);
+    return 'moved';
+  } catch (e) {
+    // A HUMAN moved, renamed or deleted this copy — their arrangement wins,
+    // permanently. Stamp the shelf we WANTED so the sweep stops re-asking (it
+    // would otherwise re-read the same item from Graph on every pass forever),
+    // and record why on the row so the state is explainable.
+    const humanIntervened = e.status === 404 || e.status === 412 || e.graphCode === 'itemNotFound'
+      || /moveOwnItem refused/.test(e.message || '');
+    if (!humanIntervened) throw e;      // transient/throttle — retry next pass
+    await db.query(
+      `UPDATE documents SET sharepoint_shelf=$2,
+              sharepoint_skipped_reason=$3
+        WHERE id=$1`,
+      [row.id, shelf.key,
+       `left where a human put it — not re-filed to "${shelf.folder || 'the category folder'}" (${String(e.message).slice(0, 120)})`]);
+    return 'skipped:human';
+  }
+}
+
+/** One re-filing pass. Bounded, paced, never throws. */
+async function refileOnce({ limit = REFILE_BATCH } = {}) {
+  if (!enabled()) return { skipped: true };
+  let rows;
+  try { rows = await withTimeout(refileBatch(limit), DB_OP_TIMEOUT_MS, 're-file selection timed out (DB lock?)'); }
+  catch (e) { console.warn('[sp-refile] selection error:', e.message); return { errors: 1 }; }
+
+  // GROUP the old-bound documents by stream and bump each stream's counter ONCE,
+  // so a supersede event's whole set lands in ONE "Version N" folder rather than
+  // one folder per document (the "Version 47" explosion this file fought before).
+  const bumped = new Map();
+  for (const row of rows) {
+    if (shelves.shelfFor(row).key !== shelves.SHELF.OLD.key) continue;
+    const scopeKey = scopeKeyFor(row);
+    if (!scopeKey) continue;
+    const stateKey = stateKeyFor(row, scopeKey);
+    if (!bumped.has(stateKey)) {
+      const st = await getConditionState(stateKey);
+      if (!st || !st.folder_id) continue;
+      const next = Number(st.current_version || 0) + 1;
+      await upsertConditionState(stateKey, scopeKey, st.folder_id, st.folder_name || '', next);
+      bumped.set(stateKey, next);
+    }
+    row.__shelfVersion = bumped.get(stateKey);
+  }
+
+  const stats = { scanned: rows.length, moved: 0, skipped: 0, errors: 0 };
+  for (const row of rows) {
+    try {
+      const r = await withTimeout(refileRow(row), VERIFY_ATTEMPT_TIMEOUT_MS, 're-file attempt timed out');
+      if (r === 'moved') stats.moved++; else stats.skipped++;
+    } catch (e) {
+      stats.errors++;
+      console.warn(`[sp-refile] doc ${row.id}: ${e.message}`);
+    }
+    await sleep(PACING_MS);
+  }
+  _lastRefile = { at: new Date().toISOString(), ...stats };
+  if (stats.moved || stats.errors) {
+    console.log(`[sp-refile] pass: scanned ${stats.scanned}, moved ${stats.moved}, skipped ${stats.skipped}, errors ${stats.errors}`);
+  }
+  return stats;
+}
+
 /** One integrity-audit pass over a batch of mirrored documents. */
 async function verifyOnce({ limit = VERIFY_BATCH, seq = 0 } = {}) {
   if (!enabled()) return { skipped: true };
@@ -1984,6 +2056,17 @@ function start() {
   if (_verifyInterval.unref) _verifyInterval.unref();
   const vboot = setTimeout(() => drainVerify().catch((e) => console.warn('[sp-verify] boot audit error:', e.message)), 60000);
   if (vboot.unref) vboot.unref();
+  // RE-FILING (owner-directed 2026-08-03): move a mirror copy onto the shelf its
+  // review state now says it belongs on — accepted up into the category folder,
+  // rejected/superseded down into "Old Versions". It runs on the SAME cadence as
+  // the mirror sweep because it is the second half of the same job: the mirror
+  // files a document before anyone has reviewed it, and this puts it where the
+  // verdict says once there is one. Bounded per pass, so the back book drains
+  // gradually rather than in one Graph storm. Never throws.
+  _refileInterval = setInterval(() => refileOnce().catch(() => {}), ms);
+  if (_refileInterval.unref) _refileInterval.unref();
+  const rboot = setTimeout(() => refileOnce().catch((e) => console.warn('[sp-refile] boot pass error:', e.message)), 120000);
+  if (rboot.unref) rboot.unref();
   // Backlog SLO watchdog (R4): check on the same cadence as the sweep; notifies
   // admins once per breach episode. First check ~90s after boot (let the boot
   // drain make progress first so we don't page on a normal cold-start backlog).
@@ -2005,6 +2088,7 @@ function stop() {
   if (_verifyInterval) { clearInterval(_verifyInterval); _verifyInterval = null; }
   if (_sloInterval) { clearInterval(_sloInterval); _sloInterval = null; }
   if (_livenessInterval) { clearInterval(_livenessInterval); _livenessInterval = null; }
+  if (_refileInterval) { clearInterval(_refileInterval); _refileInterval = null; }
   if (_kickTimer) { clearTimeout(_kickTimer); _kickTimer = null; }
 }
 
@@ -2021,6 +2105,9 @@ function health() {
     stalled: lastAgeSec != null && lastAgeSec > heartbeatGraceSec(),
     heartbeatGraceSec: heartbeatGraceSec(),
     verify: { running: _verifyRunning, lastPass: _lastVerify, quickXorTrusted: _qxTrusted },
+    // The shelf sweep — visible on the health probe so "why is this still in
+    // Waiting for review?" is answerable without reading logs.
+    refile: { lastPass: _lastRefile },
   };
 }
 
@@ -2544,6 +2631,9 @@ async function checkDrainLiveness() {
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
+  // shelf re-filing (owner-directed 2026-08-03) — exported for the admin
+  // trigger and the DB test; see lib/sharepoint-shelf.js for the rule.
+  refileOnce, refileRow, refileBatch,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   classifyMirrorError, forceAttemptDoc,
   neverAttemptedStrays, pendingBatch, explainExclusion, enrichedRowById,

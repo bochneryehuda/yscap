@@ -173,15 +173,29 @@ function propertyTypeProblem(v) {
  * These three mappings are the forms' own definitions (mirrored in
  * src/lib/appraisal/extract.js and docs/appraisal-xml/field-validation-rules.md):
  *   1004 URAR                        → single family, 1 unit
+ *   1004C Manufactured Home          → single family, 1 unit (one dwelling)
  *   1025 Small Residential Income    → 2–4 unit
  *   1073 Individual Condominium      → condo
  * Any other form number is NOT mapped (a 2055/216/1007 says nothing definite
  * about the category), so it stays unrepaired rather than guessed.
+ *
+ * **A 1004D IS NOT A 1004, AND READING IT AS ONE MANUFACTURES A WRONG FACT.**
+ * The 1004D is the *Appraisal Update and/or Completion Report* — a follow-up
+ * form attached to whatever the ORIGINAL appraisal was: a 1004, a **1025**, a
+ * 1073 or a 2055. It states nothing about the property's category or its unit
+ * count. Measured on the real corpus: the 1004D on 1400-1402 Stratford (a
+ * two-family — the address is a two-number range) was read as a 1004, so the
+ * subject and all three comparables were stored as `units=1, SFR (1 unit)`
+ * while the appraiser's own grid said "2 Family" on every line. A confident
+ * wrong answer is worse than an absent one, so `1004d` is deliberately absent
+ * from this map and the callers fall through to a source that actually knows
+ * (the grid's stated units, then the appraiser's own design-style words).
  */
 function guessFromFormCode(raw) {
   if (!isAppraisalFormCode(raw)) return null;
   const s = String(raw).trim().toLowerCase().replace(/[\s._\-/]+/g, '');
-  if (/1004[cd]?$/.test(s)) return 'sfr';
+  if (/1004d$/.test(s)) return null;
+  if (/1004c?$/.test(s)) return 'sfr';
   if (/1025$|(^|[a-z])72$/.test(s)) return 'multi_2_4';
   if (/1073a?$|(^|[a-z])465$/.test(s)) return 'condo';
   return null;
@@ -219,11 +233,142 @@ function appraisalFormExpectation(raw) {
   return u ? { propertyKey: key, label: LABEL_OF[key] || key, minUnits: u.minUnits, maxUnits: u.maxUnits } : null;
 }
 
+/**
+ * HOW MANY DWELLINGS A PROPERTY TYPE IMPLIES — or null when it implies nothing.
+ *
+ * Derived from THIS file's vocabulary rather than restated somewhere else,
+ * because the two facts are shown side by side on every comparable row and a
+ * disagreement between them is the one thing a reader cannot recover from:
+ * "Multi 2–4 · 1 unit" is not a partial answer, it is a confident wrong one, and
+ * the owner's requirement is that every comparable state both.
+ *
+ * `mixed_use` is deliberately absent — a mixed-use building has whatever count
+ * it has, and claiming a band for it would manufacture a contradiction rather
+ * than catch one. `multi_5_plus` has no ceiling.
+ */
+const UNIT_BAND = Object.freeze({
+  sfr: { minUnits: 1, maxUnits: 1 },
+  condo: { minUnits: 1, maxUnits: 1 },
+  townhouse: { minUnits: 1, maxUnits: 1 },
+  pud: { minUnits: 1, maxUnits: 1 },
+  multi_2_4: { minUnits: 2, maxUnits: 4 },
+  multi_5_plus: { minUnits: 5, maxUnits: Infinity },
+});
+function unitBandFor(raw) {
+  const key = propertyTypeKey(raw);
+  return (key && UNIT_BAND[key]) || null;
+}
+/**
+ * Do a property type and a unit count CONTRADICT each other? Only ever true when
+ * both are known AND the type carries a band — an unknown is never a conflict.
+ */
+/**
+ * THE COUNT NAMES THE TYPE — but only where it does so unambiguously.
+ *
+ * Derived by INVERTING `UNIT_BAND`, so there is one table and the two directions
+ * cannot drift. Two dwellings can only be a 2-4 family and five can only be a
+ * 5+; ONE dwelling is a house, a condo, a townhouse or a PUD, so a count of one
+ * names nothing and returns null rather than guessing the commonest.
+ *
+ * `import.js` already states the same rule in words ("THE COUNT NAMES THE TYPE
+ * WHENEVER THE COUNT IS KNOWN"); this is it as a function, so a caller holding a
+ * count is never forced to discard it for want of a category.
+ */
+function typeFromUnits(units) {
+  const n = Number(units);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const hits = Object.entries(UNIT_BAND)
+    .filter(([, b]) => n >= b.minUnits && n <= b.maxUnits)
+    .map(([k]) => k);
+  return hits.length === 1 ? (LABEL_OF[hits[0]] || null) : null;
+}
+
+function unitsContradictType(type, units) {
+  const band = unitBandFor(type);
+  const n = Number(units);
+  if (!band || !Number.isFinite(n) || n <= 0) return false;
+  return n < band.minUnits || n > band.maxUnits;
+}
+
+/**
+ * HOW MANY DWELLINGS THE APPRAISER'S OWN DESIGN-STYLE WORDS STATE — or null.
+ *
+ * The MISMO 2.6 comparable grid carries no per-comp unit element, but the
+ * `DesignStyle` / `DesignAppeal` adjustment ROW carries the appraiser's own
+ * description of that comparable, and on a small-income property it names the
+ * count outright. Measured across the real corpus: "2 Family", "3 FAMILY",
+ * "3-PLEX", "4-PLEX", "Duplex", "DT2.5;2 Family". That is a STATED fact about
+ * that comparable, not an inference, which is why it outranks dividing the sale
+ * price by the price per unit.
+ *
+ * IT REFUSES FAR MORE THAN IT ACCEPTS, ON PURPOSE. Two shapes in the corpus
+ * would each turn a single-family comparable into a two-unit one:
+ *   · **"1/2 Duplex"** (9 comps, all on 1004s) — appraiser shorthand for ONE
+ *     SIDE of a two-unit building, i.e. a one-dwelling semi-detached house. A
+ *     bare /duplex/ match would have doubled every one of them.
+ *   · **"DOUBLE BLOCK"** — north-eastern Pennsylvania for a semi-detached pair,
+ *     used by different appraisers to mean the whole building OR one side. It
+ *     is left unanswered rather than guessed; on a 1025 the form still proves
+ *     the property is 2–4, so the category survives and only the exact count
+ *     stays blank. An honest blank beats a confident wrong number.
+ * Everything decorative — Colonial, Ranch, Townhouse, Row, Garden Apt, Cape —
+ * says nothing about a count and returns null.
+ */
+// A HALF-DUPLEX IS ONE DWELLING, however it is spelled. The separator between
+// the fraction and the word may be a hyphen as easily as a space, the fraction
+// can trail the word ("Duplex - 1/2", "Duplex (1/2)"), and it need not stand on
+// a word boundary at all ("AT1/2 Duplex" is a real UAD design code). Each of
+// those spellings would otherwise be read as TWO units — the single most
+// damaging false positive this reader can produce, because on the corpus every
+// half-duplex comparable sits on a 1004 and is a single-family house.
+const HALF = '(?:1\\s*[/⁄]\\s*2|½|half)';
+const DUP = '(?:duplex|double)';
+const STYLE_HALF = new RegExp(`(?:${HALF}[\\s-]*(?:of\\s+)?(?:a\\s+)?${DUP}|${DUP}[\\s\\-(]*${HALF})`, 'i');
+// A RANGE IS NOT A COUNT. "2-4 Family" is the appraisers' own phrase for the
+// small-income CATEGORY and appears verbatim in the corpus; reading it as "4"
+// would put a made-up door count on a comparable that never stated one.
+const NUMWORD = '(?:one|two|three|four|five|six)';
+const STYLE_RANGE = new RegExp(
+  `(?:\\d|${NUMWORD})\\s*(?:-|–|—|\\bto\\b)\\s*(?:\\d|${NUMWORD})\\s*[-\\s]?\\s*(?:fam(?:ily|ilies)?|plex|unit)`, 'i');
+const STYLE_WORD_N = Object.freeze({ two: 2, three: 3, four: 4, duplex: 2, triplex: 3, fourplex: 4, quadplex: 4 });
+function unitsFromDesignStyle(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return null;
+  if (STYLE_HALF.test(s)) return null;
+  if (STYLE_RANGE.test(s)) return null;
+  // "2 Family" / "3-FAMILY" / "12 Fam". TWO digits are captured, not one — a
+  // single-digit capture read a 12-family as a DUPLEX, silently, which is worse
+  // than not reading it: `band` would have refused 12 outright.
+  // A DECIMAL is refused: "2.5 Family" is two-and-a-half STORIES in the UAD
+  // design code ("DT2.5;2 Family"), and taking the digit after the point turned
+  // it into five dwellings.
+  let m = /(?<![\d.])(\d{1,2})(?!\s*[.,]\s*\d)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
+  if (m) return band(+m[1]);
+  // "3-PLEX" / "4 PLEX" / "6PLEX"
+  m = /(?<![\d.])(\d{1,2})(?!\s*[.,]\s*\d)\s*[-\s]?\s*plex\b/i.exec(s);
+  if (m) return band(+m[1]);
+  // "Two Family" / "Three-Family"
+  m = /\b(two|three|four)\s*[-\s]?\s*fam(?:ily|ilies)?\b/i.exec(s);
+  if (m) return band(STYLE_WORD_N[m[1].toLowerCase()]);
+  // Bare "Duplex" / "Triplex" / "Fourplex" — the half-duplex guard above already ran.
+  m = /\b(duplex|triplex|fourplex|quadplex)\b/i.exec(s);
+  if (m) return band(STYLE_WORD_N[m[1].toLowerCase()]);
+  return null;
+}
+// 2 to 8 dwellings. A count outside that is not refused because it is
+// impossible — it is refused because a design-style STRING is not where a
+// 12-unit building's door count would ever be stated reliably.
+function band(n) { return Number.isInteger(n) && n >= 2 && n <= 8 ? n : null; }
+
 module.exports = {
   PROPERTY_TYPES,
   LABEL_OF,
   isAppraisalFormCode,
   appraisalFormExpectation,
+  unitsFromDesignStyle,
+  unitBandFor,
+  unitsContradictType,
+  typeFromUnits,
   propertyTypeKey,
   propertyTypeCompareKey,
   propertyTypesEquivalent,

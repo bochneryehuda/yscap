@@ -1116,13 +1116,41 @@ export const api = {
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
   researchStats:       () => req('GET', '/api/research/stats'),
+  // How many appraisals we had to turn away, and in what format (db/438). UAD 3.6
+  // becomes MANDATORY for Fannie/Freddie appraisals on 2 November 2026 and PILOT
+  // reads UAD 2.6, so this count going above zero is the deadline arriving early
+  // — which is only useful if somebody can see it.
+  appraisalFormats:    (f) => req('GET', '/api/research/appraisal-formats' + qs(f)),
+  // TWO ROWS, ONE HOUSE (db/419). The detection is ADVISORY by design — "nothing
+  // here is ever merged without a person saying so" — which needs a door for the
+  // person to say it through. There was none, so the pairs were found and then
+  // nobody could answer them either way.
+  // How much of the warehouse is placed on the map. A property with no
+  // coordinates is INVISIBLE to a "within N miles" search, silently — so the
+  // count is a disclosure, not plumbing.
+  researchGeocodeStatus: () => req('GET', '/api/research/geocode/status'),
+  researchDuplicates:  (f) => req('GET', '/api/research/duplicates' + qs(f)),
+  researchMergeProps:  (b) => req('POST', '/api/research/duplicates/merge', b),
+  researchNotDup:      (b) => req('POST', '/api/research/duplicates/not-duplicate', b),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
   researchProperty:    (id) => req('GET', `/api/research/properties/${id}`),
-  researchPhotoUrl:    (documentId) => `/api/research/photos/${documentId}`,
+  // A photo is fetched with the Bearer token like every other binary on this
+  // platform, NEVER pointed at from an <img src>. A browser image request sends
+  // no Authorization header, so an API path in `src` is a guaranteed 401 — see
+  // components/ResearchPhoto.jsx, which turns this into an object URL.
+  researchPhotoBlob:   (documentId) => download(`/api/research/photos/${documentId}`),
   researchAppraisers:  (f) => req('GET', '/api/research/appraisers' + qs(f)),
   researchAppraiser:   (id) => req('GET', `/api/research/appraisers/${id}`),
   researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
   researchComps:       (f) => req('GET', '/api/research/comps' + qs(f)),
+  // The 1004MC market grid, rolled up by month across every report we hold for a
+  // town. Small numbers of reports per month, so the screen shows the count too.
+  researchMarket:        (f) => req('GET', '/api/research/market' + qs(f)),
+  researchAdjustmentRates: (f) => req('GET', '/api/research/adjustment-rates' + qs(f)),
+  researchQuick:         (f) => req('GET', '/api/research/quick' + qs(f)),
+  researchVariance:      (f) => req('GET', '/api/research/variance' + qs(f)),
+  researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
+  researchFlips:         (f) => req('GET', '/api/research/flips' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
   // Upload appraisal data files straight into the research database. `files` is
   // [{filename, xml}] — the screen sends a big drop in size-bounded batches,

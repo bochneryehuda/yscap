@@ -108,7 +108,20 @@ export default function ResearchImportPanel({ onDone }) {
         if (!payload.length) continue;
         const d = await api.researchImportXml({ files: payload });
         const s = d.summary || {};
-        for (const k of Object.keys(running)) running[k] += Number(s[k] || 0);
+        // Accumulate over the KNOWN NUMERIC KEYS, not over `running`'s own keys —
+        // `running` also carries the non-numeric fields below, and `+=` on a note
+        // string would concatenate NaN onto it.
+        for (const k of Object.keys(EMPTY_SUM)) running[k] += Number(s[k] || 0);
+        // NOTHING IS SILENTLY DROPPED — this panel's own first rule. The server
+        // caps a batch and reports the overflow as `dropped` + a plain-language
+        // `note`; neither is a key on EMPTY_SUM, so both used to be thrown away
+        // and the summary could never show them. Batches are sized by BYTES, so
+        // the cap is genuinely reachable: ~240 × 50 KB files land in one batch
+        // and 140 of them were discarded without a word.
+        if (Number(s.dropped)) {
+          running.dropped = Number(running.dropped || 0) + Number(s.dropped);
+          if (s.note) running.note = s.note;
+        }
         all.push(...(d.results || []));
         if (!alive.current) return;
         setProgress({ done: Math.min(all.length, files.length), total: files.length });

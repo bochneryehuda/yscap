@@ -49,10 +49,15 @@ const eq = (a, b, what) => { assert.strictEqual(a, b, `${what} — got ${JSON.st
   // THE CASE THE OWNER REPORTED: a document is uploaded and now three buttons
   // all sound final. The next step is still sign-off, but the hint must say
   // the document comes first.
+  // Since 2026-08-03 the hint is not advice — the server REFUSES a sign-off over
+  // a document nobody has decided on — so it must name all three ways out
+  // (accept, reject, delete), not only accepting.
   const withPending = { role: 'processor', docs: [{ review_status: 'pending' }] };
   eq(nextStep(open, withPending).key, 'signoff', 'still sign-off with a document waiting');
-  ok(/accept the document above first/i.test(nextStep(open, withPending).hint),
-    'the hint names accepting the document as the step before sign-off');
+  ok(/accept, reject or delete it first/i.test(nextStep(open, withPending).hint),
+    'the hint names every way to decide the document before sign-off');
+  ok(/waiting for a decision/i.test(nextStep(open, withPending).hint),
+    'and says plainly that the document is what is holding it up');
   ok(/2 documents/.test(nextStep(open, { role: 'processor', docs: [{}, {}] }).hint),
     'two waiting documents are counted, and pluralised');
   ok(!/accept/i.test(nextStep(open, { role: 'processor', docs: [{ review_status: 'accepted' }] }).hint),
@@ -105,9 +110,23 @@ const eq = (a, b, what) => { assert.strictEqual(a, b, `${what} — got ${JSON.st
     'an accepted document has no forward step');
   eq(docNextStep({ review_status: 'rejected' }, { role: 'processor' }).key, 'accept',
     'a rejected document can still be accepted after all');
-  eq(docNextStep({ review_status: 'pending' }, { role: 'loan_officer' }), null,
-    'a loan officer is not offered Accept — only a completer may accept');
+  // A loan officer is never offered Accept — but they ARE offered Reject
+  // (owner-directed 2026-08-03). Before this they saw NO action on a document
+  // row at all, so "an officer should also have the option to reject" was true
+  // on the server and invisible on the screen.
+  eq(docNextStep({ review_status: 'pending' }, { role: 'loan_officer' }).key, 'reject',
+    'a loan officer is offered Reject on a document nobody has decided on');
+  eq(docNextStep({ review_status: 'pending' }, { role: 'loan_officer' }).action, 'reject',
+    'and the row fires the reject action, not accept');
+  eq(docNextStep({ review_status: 'pending' }, { role: 'loan_officer' }).tone, 'ghost',
+    'rejecting is never the EXPECTED next step, so it is never the primary button');
+  eq(docNextStep({ review_status: 'accepted' }, { role: 'loan_officer' }), null,
+    'an already-decided document offers a non-completer nothing');
+  eq(docNextStep({ review_status: 'rejected' }, { role: 'loan_officer' }), null,
+    'a rejected document is decided — a non-completer cannot un-reject it');
   eq(docNextStep(null, { role: 'processor' }).key, 'accept', 'a missing document is safe');
+  eq(docNextStep({ review_status: 'pending' }, { role: 'processor' }).action, 'accept',
+    'a completer’s row still fires accept');
 
   // ---- every step is renderable ----------------------------------------
   for (const role of ['processor', 'loan_officer', 'closer', 'super_admin']) {

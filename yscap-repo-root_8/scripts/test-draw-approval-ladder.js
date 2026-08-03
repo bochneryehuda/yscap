@@ -248,6 +248,11 @@ const ROLLUP = rollupMod.computeRollup({
   ok('E5 the fee is shown as a deduction', text.includes('draw processing fee'));
   ok('E6 the netting is explained', /netted|deducted/i.test(text));
   ok('E7 the budget table offers "Available", not the pre-draw "Remaining"', text.includes('Available'));
+  // THE RELEASE IS ITS OWN HEADLINE NUMBER (owner-directed 2026-08-03) — the one question everybody
+  // opens the PDF to answer is what actually moves, so it sits beside the approval, not in a list.
+  ok('E7a the hero picks out the release as its own figure', text.includes('TO BE RELEASED AFTER THIS DRAW'));
+  ok('E7b …and prints the net amount', text.includes('$24,701'));
+  ok('E7c …naming the deduction that produced the gap', /after the \$299 draw fee/.test(text));
   // The crosswalk join is the fix: the four "Unit N - Roof" lines roll into the one "Roof" budget
   // row, so they no longer dangle underneath the table as work drawn against nothing budgeted.
   const unitRows = (text.match(/Unit \d - Roof/g) || []).length;
@@ -269,6 +274,8 @@ const ROLLUP = rollupMod.computeRollup({
   ok('E10 the borrower copy shows the draw processing fee', /draw processing fee/i.test(text));
   ok('E10b …and the arithmetic that produces their wire', /\$25,000/.test(text) && /\$24,701/.test(text));
   ok('E10c …in words they can act on', /wired to you/i.test(text));
+  ok('E10d the borrower hero picks out what they will actually receive', /TO BE RELEASED TO YOU/.test(text));
+  ok('E10e …as its own number, not buried in a list', text.includes('$24,701'));
   ok('E11 the borrower copy never shows our fee income across the project',
     !/OUR DRAW FEES ON THIS PROJECT/i.test(text) && !/Charged so far/i.test(text) && !/Expected on draws/i.test(text));
   ok('E12 the borrower copy scrubs the capital-partner name', !text.includes('Fidelis'));
@@ -292,6 +299,30 @@ const ROLLUP = rollupMod.computeRollup({
   const m = APPROVAL.drawMoney({ draw: DRAW, requests: REQUESTS, findingLines: FINDING_LINES, feeCents: 29900 });
   ok('F3 the money model does produce every one of those keys (the list is not stale)',
     LENDER_ONLY.filter((k) => k in m).length >= 4);
+}
+
+{
+  // A draw whose money has actually gone out reads in the PAST tense, on both copies.
+  const app = { loanNo: 'YSCAP258134591', address: '195-197 Parrish St', csz: 'Wilkes-Barre, PA 18702', borrowerName: 'David Schweitzer' };
+  const done = {
+    number: 1, status: 'approved', approval_stage: 'released', released: true, release_date: '2026-08-05',
+    requested_cents: 2500000, approved_cents: 2500000, final_approved_cents: 2500000, not_approved_cents: 0,
+    fee_cents: 29900, fee_projected: false, retainage_held_cents: 0, net_release_cents: 2470100,
+    lines: [{ name: 'Unit 1 - Roof', sow_line_key: 'cat:roof', requested_cents: 625000, approved_cents: 625000, not_approved_cents: 0, photos: [] }],
+  };
+  const staff = report.buildDrawReport({ app, rollup: ROLLUP, sections: [done], scope: 'draw', mode: 'staff' }).toString('latin1');
+  const bor = report.buildDrawReport({ app, rollup: ROLLUP, sections: [done], scope: 'draw', mode: 'borrower' }).toString('latin1');
+  ok('E14 a released draw says RELEASED, not "to be released"', /RELEASED/.test(staff) && !/TO BE RELEASED/.test(staff));
+  ok('E14b the borrower copy too', /RELEASED TO YOU/.test(bor) && !/TO BE RELEASED/.test(bor));
+  ok('E14c and the projection caveat is gone once it is real', !/standard draw fee for this file/.test(staff));
+
+  // A whole-project report has no hero, so it answers the same question in its own band.
+  const proj = report.buildDrawReport({ app, rollup: ROLLUP, sections: [done], scope: 'project', mode: 'staff' }).toString('latin1');
+  ok('E15 the whole-project report reports money released', /Money released/i.test(proj));
+  ok('E15b …how much reached the borrower', /Released to the borrower so far/.test(proj) && proj.includes('$24,701'));
+  const projB = report.buildDrawReport({ app, rollup: ROLLUP, sections: [done], scope: 'project', mode: 'borrower' }).toString('latin1');
+  ok('E15c the borrower project report shows their releases but not our fee total',
+    /Released to the borrower so far/.test(projB) && !/Draw fees netted out/.test(projB));
 }
 
 console.log(fail ? `\n${fail} FAILED, ${pass} passed` : `\nAll ${pass} draw approval-ladder / inspection-evidence checks passed.`);

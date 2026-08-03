@@ -78,7 +78,7 @@ function shapeReport(A) {
   a.id = null;
   a.application_id = null;
   const comps = (A.comparables || []).map((c) => {
-    const row = comparableRowFrom(c);
+    const row = comparableRowFrom(c, A.formType);
     // In the database `adjustments` is jsonb and reads back as an array; the ingest
     // mines a comp's year built / lot / style out of those lines, so it must be one.
     if (typeof row.adjustments === 'string') {
@@ -87,7 +87,26 @@ function shapeReport(A) {
     row.id = null;
     return row;
   });
-  return { a, comps };
+  // THE RENT SCHEDULE (db/435), shaped for the same writer. The upload door has
+  // no `appraisals` row for the ingest to read these back from, so it hands them
+  // over the way it hands over the sales comparables. Column names, not the
+  // parser's camelCase — `writeReport` reads a database row.
+  const rentals = (A.rentalComps || []).filter((r) => !r.isSubject).map((r) => ({
+    seq: r.seq, is_subject: false,
+    address: r.address, city: r.city, state: r.state, zip: r.zip, proximity: r.proximity,
+    monthly_rent: r.monthlyRent, rent_per_gba: r.rentPerGba, gba_sqft: r.gba,
+    rent_controlled: r.rentControlled, data_source: r.dataSource,
+    lease_terms: r.leaseTerms, utilities_included: r.utilitiesIncluded, location_code: r.locationCode,
+    condition_uad: r.conditionUad, condition_text: r.conditionText,
+    age_years: r.ageYears,
+    year_built: Number.isFinite(Number(r.yearBuilt)) && r.yearBuilt != null && r.yearBuilt !== ''
+      ? Math.trunc(Number(r.yearBuilt)) : null,
+    units: r.units,
+    // Already an array here (the parser's own shape) — `bindable()` in the
+    // ingest handles both that and the string a database read returns.
+    unit_mix: r.unitMix,
+  }));
+  return { a, comps, rentals };
 }
 
 /**
@@ -198,7 +217,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
     return fail(A && A.error ? A.error : 'This file is not an appraisal data file we can read.');
   }
 
-  const { a, comps } = shapeReport(A);
+  const { a, comps, rentals } = shapeReport(A);
   const observedOn = dateOnly(a.effective_date) || dateOnly(a.report_signed_date) || dateOnly(a.inspection_date);
   out.subjectAddress = a.subject_address || null;
   out.appraiserName = a.appraiser_name || null;
@@ -235,7 +254,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   // own connection; a caller inside its own transaction keeps ownership.
   const runner = async (client) => {
     const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], appraiserId: null };
-    await ingest.writeReport(client, { a, comps, link: { importId }, out: w });
+    await ingest.writeReport(client, { a, comps, rentals, link: { importId }, out: w });
     return w;
   };
 

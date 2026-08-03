@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
-  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel,
+  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel, conditionRead,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
@@ -129,11 +129,14 @@ export default function StaffPropertyResearch() {
                 {num(stats.pending)} still being read in — the numbers grow as it works through them.
               </span>
             )}
+            <MapCoverage />
           </div>
         )}
       </header>
 
       {err && <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A', marginBottom: 12 }}>{err}</div>}
+
+      <FormatWatch />
 
       {/* Feed the database by hand — one report or a whole folder. Re-reads the
           headline counts when it finishes, so the numbers above move with it. */}
@@ -175,12 +178,12 @@ export default function StaffPropertyResearch() {
               onBlur={() => { if (draft.city !== filters.city) apply({ city: draft.city }); }} />
           </Field>
 
-          <MinMax label="Sale price" lo="price_min" hi="price_max" draft={draft} setDraft={setDraft} apply={apply} money />
-          <MinMax label="Living area (sq ft)" lo="sqft_min" hi="sqft_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Bedrooms" lo="beds_min" hi="beds_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Bathrooms" lo="baths_min" hi="baths_max" draft={draft} setDraft={setDraft} apply={apply} step="0.5" />
-          <MinMax label="Year built" lo="year_min" hi="year_max" draft={draft} setDraft={setDraft} apply={apply} />
-          <MinMax label="Units" lo="units_min" hi="units_max" draft={draft} setDraft={setDraft} apply={apply} />
+          <MinMax label="Sale price" lo="price_min" hi="price_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} money />
+          <MinMax label="Living area (sq ft)" lo="sqft_min" hi="sqft_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Bedrooms" lo="beds_min" hi="beds_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Bathrooms" lo="baths_min" hi="baths_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} step="0.5" />
+          <MinMax label="Year built" lo="year_min" hi="year_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
+          <MinMax label="Units" lo="units_min" hi="units_max" draft={draft} setDraft={setDraft} apply={apply} filters={filters} />
 
           <Field label="Sold between">
             <Row>
@@ -330,24 +333,103 @@ export default function StaffPropertyResearch() {
   );
 }
 
+/* HOW MUCH OF THIS IS ON THE MAP.
+
+   A property with no coordinates is INVISIBLE to a "within N miles" search — not
+   excluded with a reason, just absent — so a distance search over a warehouse
+   that is 60% placed silently answers about 60% of it. That is a disclosure, not
+   plumbing, and it belongs beside the other counts rather than on an admin page
+   nobody opens.
+
+   SILENT WHEN EVERYTHING IS PLACED, because "100% placed" is noise. */
+function MapCoverage() {
+  const [g, setG] = useState(null);
+  useEffect(() => { api.researchGeocodeStatus().then(setG).catch(() => {}); }, []);
+  if (!g || !g.properties) return null;
+  const missing = Number(g.properties) - Number(g.placed || 0);
+  if (!(missing > 0)) return null;
+  return (
+    <span style={{ color: GOLD }} title="A search by distance can only see properties that have been placed on the map.">
+      {num(g.placed)} of {num(g.properties)} placed on the map — a search by distance cannot see the other {num(missing)}
+    </span>
+  );
+}
+
+/* THE APPRAISALS WE COULD NOT READ, AND WHY IT IS A DATE ON A CALENDAR.
+
+   PILOT reads UAD 2.6 appraisals. UAD 3.6 becomes MANDATORY for Fannie Mae and
+   Freddie Mac appraisals on 2 November 2026, and we read none of them — from
+   that day a report in the new format brings back no comparables, no value, no
+   findings and nothing into this database.
+
+   db/438 was built so that exposure could be COUNTED instead of assumed, in its
+   own words "the first UAD 3.6 file to arrive is the signal that the reader has
+   to be built, and it should not have to be noticed by accident". Nothing showed
+   the count, so it was going to be noticed by accident. This is where somebody
+   sees it.
+
+   SILENT WHEN THERE IS NOTHING TO SAY. Zero refusals is the ordinary state and
+   does not deserve a panel on a search screen; the two kinds are kept apart
+   because they have different answers — a new-format appraisal means the reader
+   must be built, a wrong attachment means somebody attached the wrong document. */
+function FormatWatch() {
+  const [d, setD] = useState(null);
+  useEffect(() => { api.appraisalFormats({ days: 365 }).then(setD).catch(() => {}); }, []);
+  if (!d) return null;
+  const newFormat = (d.uad36 && d.uad36.n) || 0;
+  const wrongDoc = (d.notAppraisal && d.notAppraisal.n) || 0;
+  const other = (d.unreadable && d.unreadable.n) || 0;
+  if (!newFormat && !wrongDoc && !other) return null;
+  return (
+    <div className="card" style={{ marginBottom: 12, borderColor: newFormat ? '#B4423A' : '#E4DECF' }}>
+      <div style={{ fontWeight: 700, color: newFormat ? '#B4423A' : INK }}>
+        {newFormat > 0
+          ? `${num(newFormat)} appraisal${newFormat === 1 ? '' : 's'} arrived in the new format we cannot read yet`
+          : 'Appraisals we could not read'}
+      </div>
+      <div style={{ color: MUTED, fontSize: 13, marginTop: 4, maxWidth: 780, lineHeight: 1.5 }}>
+        {newFormat > 0 && (
+          <>PILOT reads the older appraisal format. The industry moves to a new one on{' '}
+            <b style={{ color: INK }}>2 November 2026</b>, and these reports are already in it — so nothing
+            from them reached this database. This needs to be built before that date.{' '}
+          </>
+        )}
+        {wrongDoc > 0 && (
+          <>{num(wrongDoc)} file{wrongDoc === 1 ? ' was' : 's were'} not an appraisal at all —
+            somebody attached the wrong document, which no reader would fix.{' '}
+          </>
+        )}
+        {other > 0 && <>{num(other)} could not be read for some other reason.{' '}</>}
+        {newFormat === 0 && <>No new-format appraisals have arrived yet.</>}
+      </div>
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return <div style={{ marginBottom: 10 }}><label style={S.label}>{label}</label>{children}</div>;
 }
 function Row({ children }) {
   return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>{children}</div>;
 }
-function MinMax({ label, lo, hi, draft, setDraft, apply, step }) {
+// `filters` is the APPLIED state and is what blur must compare against. Testing
+// `draft[lo] !== undefined` was always true — every key exists on the draft — so
+// merely tabbing through the sidebar applied all six pairs, pushing a history
+// entry and re-running the search each time. Twelve fields meant twelve pushes
+// and Back became unusable. The `q` and `city` inputs above always guarded this
+// way; these did not.
+function MinMax({ label, lo, hi, draft, setDraft, apply, filters, step }) {
   return (
     <Field label={label}>
       <Row>
         <input style={S.input} inputMode="numeric" step={step} placeholder="min" value={draft[lo]}
           onChange={(e) => setDraft({ ...draft, [lo]: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') apply({ [lo]: draft[lo] }); }}
-          onBlur={() => { if (draft[lo] !== undefined) apply({ [lo]: draft[lo] }); }} />
+          onBlur={() => { if (draft[lo] !== filters[lo]) apply({ [lo]: draft[lo] }); }} />
         <input style={S.input} inputMode="numeric" step={step} placeholder="max" value={draft[hi]}
           onChange={(e) => setDraft({ ...draft, [hi]: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') apply({ [hi]: draft[hi] }); }}
-          onBlur={() => { if (draft[hi] !== undefined) apply({ [hi]: draft[hi] }); }} />
+          onBlur={() => { if (draft[hi] !== filters[hi]) apply({ [hi]: draft[hi] }); }} />
       </Row>
     </Field>
   );
@@ -376,8 +458,15 @@ function PropertyCard({ p, checked, onToggle }) {
         </div>
         <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {p.condition_uad && <span style={S.tag} title={conditionLabel(p.condition_uad)}>{p.condition_uad}</span>}
-          {!p.condition_uad && p.condition_text && <span style={S.tag}>{p.condition_text}</span>}
+          {/* A WORDED RATING NOW MATCHES A CONDITION FILTER (db/444), so the row
+              has to say that the grade was READ from the appraiser's word rather
+              than given as a code — otherwise a property returned by "C3 or
+              better" shows a bare "Average" and nothing explains why it is here. */}
+          {!p.condition_uad && p.condition_text && <span style={S.tag}>{conditionRead(p)}</span>}
           {p.quality_uad && <span style={S.tag}>{p.quality_uad}</span>}
+          {!p.quality_uad && p.quality_text && p.quality_read_source === 'word' && (
+            <span style={S.tag}>{p.quality_text} (reads as Q{p.quality_rank_read})</span>
+          )}
           {p.arv_comp_count > 0 && <span style={{ ...S.tag, borderColor: GOLD, color: GOLD }}>Used as an ARV comp ×{p.arv_comp_count}</span>}
           {p.asis_comp_count > 0 && <span style={{ ...S.tag }}>Used as an as-is comp ×{p.asis_comp_count}</span>}
           {p.subject_count > 0 && <span style={{ ...S.tag, borderColor: '#2F7F86', color: '#2F7F86' }}>Our own file ×{p.subject_count}</span>}
