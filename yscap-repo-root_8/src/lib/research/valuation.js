@@ -510,14 +510,20 @@ function deriveMarketRates(obs, opts = {}) {
         low: peerGba.q1 == null ? null : round(num(peerGba.q1), 1),
         high: peerGba.q3 == null ? null : round(num(peerGba.q3), 1),
         n: peerGba.n, source: 'peer', basis_of: 'gba',
-        basis: `what appraisers in this market actually adjusted on 2-4 unit grids, across ${peerGba.n} size adjustments measured on gross building area` }
+        // WHERE IT CAME FROM, IN THE SENTENCE ITSELF. The rate may have been
+        // measured one rung out from the subject's own town, and "$28 a foot in
+        // Newark" and "$28 a foot across New Jersey" are different claims — only
+        // one of them true. `where` is the scope the corpus actually answered at.
+        scope: peerGba.scope || null, relaxed: !!peerGba.relaxed,
+        basis: `what appraisers ${peerGba.where || 'in this market'} actually adjusted on 2-4 unit grids, across ${peerGba.n} size adjustments measured on gross building area` }
     : null;
   out.glaAdjustmentPerSqft = peerUsable
     ? { value: round(num(peer.median), 1),
         low: peer.q1 == null ? null : round(num(peer.q1), 1),
         high: peer.q3 == null ? null : round(num(peer.q3), 1),
         n: peer.n, source: 'peer',
-        basis: `what appraisers in this market actually adjusted, across ${peer.n} size adjustments on reports we paid for` }
+        scope: peer.scope || null, relaxed: !!peer.relaxed,
+        basis: `what appraisers ${peer.where || 'in this market'} actually adjusted, across ${peer.n} size adjustments on reports we paid for` }
     : out.pricePerSqft.value == null ? { value: null, source: 'none', why: out.pricePerSqft.why }
       : { value: round(out.pricePerSqft.value * 0.4, 1),
         low: round(out.pricePerSqft.value * 0.25, 1), high: round(out.pricePerSqft.value * 0.5, 1),
@@ -764,8 +770,18 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
   // hand-built `{value:null}` would be "matched" and the comparable would lose
   // its size line altogether rather than falling back — the one asymmetry in the
   // pick, and the fallback is the whole reason the other branch exists.
+  //
+  // AND ZERO IS NOT A USABLE VALUE HERE, which is the same hole left half-shut:
+  // `!= null` is true for 0, and a rate of 0 is then falsy at the size-line guard
+  // below, so the comparable loses its size line entirely rather than falling
+  // back to the living-area rate. `deriveMarketRates` cannot emit one (it guards
+  // `median > 0`), but `market_rates` is STORED as jsonb and read back, so the
+  // predicate has to match the contract rather than rely on the producer. This
+  // is deliberately NOT the general rule that a zero rate is a refusal — a
+  // derived rate of exactly 0 stays meaningful elsewhere; it is this pick, where
+  // 0 can only come from a value the engine would never have written.
   const gbaRate = rates && rates.glaAdjustmentPerSqftGba;
-  const matched = !subjectGba && compGba && gbaRate && num(gbaRate.value) != null;
+  const matched = !subjectGba && compGba && gbaRate && num(gbaRate.value) > 0;
   const rate = matched ? rates.glaAdjustmentPerSqftGba : (rates && rates.glaAdjustmentPerSqft) || null;
   const sqftRate = rate ? num(rate.value) : null;
   const sg = num(subject && subject.gla), cg = num(comp && comp.gla);

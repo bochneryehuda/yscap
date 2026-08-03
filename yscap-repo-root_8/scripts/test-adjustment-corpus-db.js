@@ -198,6 +198,39 @@ if (!process.env.DATABASE_URL) {
     const nowhereRate = await ingest.adjustmentRate(db, { city: 'Nowheresville', state: 'ZZ', months: 6000 });
     ok(!nowhereRate.ok, 'and it refuses in a market we have never lent in');
 
+    // ---- THE GEOGRAPHIC LADDER ----------------------------------------
+    // Splitting the two feet left most towns holding fewer than eight adjustments
+    // of the measure their own comparables are written in: of the 29 real markets
+    // holding ANY building-area adjustment, 9 clear the floor in their own town
+    // and 19 more clear it at the state. Refusing those 19 sends them to a
+    // national rule of thumb while we hold dozens of real local adjustments one
+    // rung out.
+    const tight = await ingest.adjustmentRate(db, { city: 'Emptyborough', state: 'NJ', months: 6000 });
+    ok(!tight.ok, 'a town of its own with nothing in it still refuses when nobody asked to relax');
+    const relaxed = await ingest.adjustmentRate(db,
+      { city: 'Emptyborough', state: 'NJ', months: 6000, relax: true });
+    ok(relaxed.ok && relaxed.n === 10,
+      `asked to relax, it steps out to the state and answers (n=${relaxed.n})`);
+    ok(relaxed.scope === 'state' && relaxed.relaxed === true,
+      'and it FLAGS that it widened, so a caller that forgets to print the scope can still tell');
+    ok(/across NJ/.test(relaxed.where || '') && /across NJ/.test(relaxed.of || ''),
+      'the sentence itself names the scope — "$40 in Emptyborough" and "$40 across NJ" are different claims');
+    ok((relaxed.tried || []).length === 2 && relaxed.tried[0].n === 0 && relaxed.tried[1].n === 10,
+      'every rung it tried comes back with what each found');
+    // NARROWEST FIRST — a town that can answer for itself always does.
+    const ownTown = await ingest.adjustmentRate(db,
+      { city: 'Paterson', state: 'NJ', months: 6000, relax: true });
+    ok(ownTown.ok && ownTown.scope === 'city' && ownTown.relaxed === false,
+      'a town that clears the floor by itself is never widened past itself');
+    // AND IT NEVER LEAVES THE STATE. A nationwide median of appraiser adjustments
+    // describes no market anyone lends in — which is exactly what `ratesFor`
+    // already refuses to derive.
+    const otherState = await ingest.adjustmentRate(db,
+      { city: 'Emptyborough', state: 'ZZ', months: 6000, relax: true });
+    ok(!otherState.ok, 'it stops at the state line rather than answering from every market we hold');
+    ok(/Emptyborough/.test(otherState.reason || '') && /across ZZ/.test(otherState.reason || ''),
+      'and the refusal names every rung it tried, so "why is there no rate" needs no second look');
+
     // THE BACK-FILL REACHES ROWS WRITTEN BEFORE db/441 — and then STOPS. The
     // first arm only picks observations with NO rows, so nulling a column could
     // never bring one back; and an observation whose sizes are too close yields a

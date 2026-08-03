@@ -498,7 +498,21 @@ async function makeAppraisal(appId, o) {
        RETURNING id`,
       [`${CITY.toLowerCase()}|band-twin|${Date.now()}`, 'Band Twin', CITY, 'NJ'])).rows[0].id;
 
+    // A PROPERTY THAT NEVER STATED ITS UNIT COUNT. Without one in the fixture both
+    // `r.units == null` guards below are vacuously true, and deleting either the
+    // `units_unknown_ok` flag or the `OR p.units IS NULL` arm passes the whole
+    // suite while silently dropping every unknown-unit comparable from every
+    // banded search.
+    const bandMystery = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'4 Band Way',$3,$4,'07001',2450,7,1959,640000,CURRENT_DATE - 45)
+       RETURNING id`,
+      [`${CITY.toLowerCase()}|band-mystery|${Date.now()}`, 'Band Mystery', CITY, 'NJ'])).rows[0].id;
+
     const banded = await call(server, 'GET', `/api/research/comps?property_id=${bandSubj}`, token);
+    ok(banded.status === 200 && banded.body.rows.some((r) => r.id === bandMystery),
+      'a property that never stated its unit count is still offered — missing data is not proof of the wrong kind');
     ok(banded.status === 200 && banded.body.rows.some((r) => r.id === bandTwin),
       'a 2-4 unit subject finds the other 2-4 unit sale in its town');
     ok(banded.body.rows.every((r) => r.id !== bandHouse),
@@ -524,6 +538,62 @@ async function makeAppraisal(appId, o) {
       `/api/research/comps?property_id=${bandSubj}&units_min=1&units_max=4`, token);
     ok(widened.status === 200 && widened.body.rows.some((r) => r.id === bandHouse),
       'an explicit unit range still wins — the band is a default, not a cage');
+    // HALF A RANGE IS STILL AN EXPLICIT INSTRUCTION. The band is spread in as a
+    // default and the query merged over it, so naming ONE bound used to inherit
+    // the band's other one and the two intersected: this asked for `units >= 1`
+    // on a three-family and ran `units >= 1 AND units <= 4`… which is harmless
+    // here, but the mirror case ran `>= 2 AND <= 1` and answered NOTHING at every
+    // rung, with the screen reporting that the town was thin.
+    const halfLow = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandHouse}&units_min=2`, token);
+    ok(halfLow.status === 200 && halfLow.body.rows.some((r) => r.id === bandSubj),
+      'naming only the LOWER bound stands the band down instead of intersecting with it');
+    const halfHigh = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_max=1`, token);
+    ok(halfHigh.status === 200 && halfHigh.body.rows.some((r) => r.id === bandHouse),
+      'and naming only the UPPER bound does too — the answer is never empty because two defaults disagreed');
+    // A VALUE WE OFFER IS A VALUE WE ACCEPT — the same three spellings every
+    // sibling on the query builder takes.
+    const spelled = await call(server, 'GET',
+      `/api/research/comps?property_id=${bandSubj}&units_min=2&units_max=4&units_unknown_ok=true`, token);
+    ok(spelled.status === 200 && spelled.body.rows.some((r) => r.id === bandMystery),
+      '`units_unknown_ok=true` works, not only `=1` — the spelling every neighbouring flag accepts');
+    // WHAT NAMES THE SUBJECT IS NOT A FILTER ON THE ANSWER.
+    ok(!Object.prototype.hasOwnProperty.call(banded.body.applied_filters || {}, 'units'),
+      'the typed subject\'s `units` names the subject and never reaches the query');
+
+    // ---- THE BAND MUST NEVER LEAVE AN EMPTY SCREEN ----------------------
+    // The band is a default this route supplies: no screen has a units control,
+    // so an officer can neither see it nor lift it. When it is what emptied the
+    // answer, the screen said "we searched as far as the settings allow" — which
+    // was not true. A last rung shows other kinds of building, LABELLED, and it
+    // fires only with nothing in hand.
+    const LONE = `Lonetown${Date.now().toString(36)}`;
+    const loneSubj = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built)
+       VALUES ($1,$2,'1 Lone Way',$3,'NJ','07003','Multi 2–4',3,2400,6,1960) RETURNING id`,
+      [`${LONE.toLowerCase()}|lone-subj|${Date.now()}`, 'Lone Subject', LONE])).rows[0].id;
+    const loneHouse = (await db.query(
+      `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+         property_type, units, gla, beds, year_built, last_sale_price, last_sale_date)
+       VALUES ($1,$2,'2 Lone Way',$3,'NJ','07003','SFR (1 unit)',1,2350,4,1961,510000,CURRENT_DATE - 30)
+       RETURNING id`,
+      [`${LONE.toLowerCase()}|lone-house|${Date.now()}`, 'Lone House', LONE])).rows[0].id;
+    const lone = await call(server, 'GET', `/api/research/comps?property_id=${loneSubj}`, token);
+    const loneLadder = lone.body.ladder || [];
+    ok(lone.status === 200 && lone.body.rows.some((r) => r.id === loneHouse),
+      'a town holding only the other kind of building answers with it rather than with nothing');
+    ok(lone.body.relaxed_to === 'any_kind_of_building'
+      && loneLadder.some((r) => r.step === 'any_kind_of_building'),
+    'and the answer SAYS it had to leave the subject\'s kind of building to find anything');
+    ok(loneLadder.filter((r) => r.step !== 'any_kind_of_building').every((r) => r.found === 0),
+      'the rung is reached only after every same-kind rung came back empty');
+    // …and it does NOT fire merely because the answer is SHORT. Every other rung
+    // widens until it has six rows; letting this one do that would drop the band
+    // on any subject with five same-kind comps, which is most of them.
+    ok((banded.body.ladder || []).every((r) => r.step !== 'any_kind_of_building'),
+      'a subject that found even one of its own kind never falls back to another kind');
 
     // ---- the valuation flow ----
     const made = await call(server, 'POST', '/api/research/valuations', token,

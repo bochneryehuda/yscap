@@ -68,7 +68,9 @@ export default function NearbyComps({ propertyId, subjectAddress }) {
         <div>
           <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>Comparable sales near this property</h2>
           <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
-            Every sale in the database within the distance you pick, nearest first, with how far each one is.
+            Every sale of the same kind of building within the distance you pick, nearest first, with how far
+            each one is. If there are none of the same kind, other kinds are shown rather than nothing — each
+            row says which it is.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -117,10 +119,11 @@ export default function NearbyComps({ propertyId, subjectAddress }) {
       {!busy && rows.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: withDistance.length >= 2 ? 'minmax(0,1fr) 260px' : '1fr', gap: 16, alignItems: 'start' }}>
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 740 }}>
               <thead><tr>
                 <th style={S.th}></th>
                 <th style={S.th}>How far</th><th style={S.th}>Property</th>
+                <th style={S.th}>Type / units</th>
                 <th style={S.th}>Sold</th><th style={S.th}>Price</th>
                 <th style={S.th}>Size</th><th style={S.th}>Beds</th>
                 <th style={S.th}>Condition</th><th style={S.th}>Match</th>
@@ -141,6 +144,20 @@ export default function NearbyComps({ propertyId, subjectAddress }) {
                       <Link to={`/internal/research/property/${c.id}`} style={{ color: INK, fontWeight: 600 }}>
                         {c.display_address}
                       </Link>
+                    </td>
+                    {/* THE OWNER'S FIRST REQUIREMENT: no comparable anywhere in
+                        the system without its property type and its unit count.
+                        This table is on every property page and showed neither,
+                        and it matters more here than anywhere — the search bands
+                        to the subject's kind of building but falls back to any
+                        kind rather than leave an empty screen, so a row here can
+                        legitimately be a different kind and must say which. */}
+                    <td style={{ ...S.cell, color: (c.property_type && c.units != null) ? undefined : '#B4423A' }}>
+                      <div style={{ fontWeight: 600 }}>{c.property_type || 'type not stated'}</div>
+                      <div style={{ fontSize: 11.5 }}>
+                        {c.units == null ? 'units not stated'
+                          : `${c.units} unit${Number(c.units) === 1 ? '' : 's'}`}
+                      </div>
                     </td>
                     <td style={S.cell}>{saleMonth(c.last_sale_date)}</td>
                     <td style={S.cell}>{money(c.last_sale_price)}</td>

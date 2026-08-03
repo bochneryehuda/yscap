@@ -159,7 +159,14 @@ function buildQuery(input = {}) {
   // that was only ever somebody's comparable usually turns up as a SUBJECT
   // elsewhere and the roll-up fills it in. The screens render an unknown count in
   // red as "units not stated", so nothing is passed off as known.
-  const unitsUnknownOk = f.units_unknown_ok === '1' || f.units_unknown_ok === true;
+  // ACCEPTS THE SAME THREE SPELLINGS as every sibling on this builder — the
+  // identical hole `has_tax` had forty lines below, written again. It took only
+  // `'1'` and boolean true, so `?units_min=2&units_max=4&units_unknown_ok=true`
+  // silently dropped every unknown-unit comparable: the exact loss the flag
+  // exists to prevent, in the direction that empties a screen. A value we offer
+  // is a value we accept.
+  const unitsUnknownOk = f.units_unknown_ok === true || f.units_unknown_ok === 'true'
+    || f.units_unknown_ok === '1';
   const unitClauses = [];
   if (unitsMin != null) unitClauses.push(`p.units >= ${P(unitsMin)}`);
   if (unitsMax != null) unitClauses.push(`p.units <= ${P(unitsMax)}`);

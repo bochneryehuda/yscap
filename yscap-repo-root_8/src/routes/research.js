@@ -394,7 +394,11 @@ async function ratesFor(query) {
   // below its own sample floor and the convention takes over, so a thin market
   // degrades to exactly what it did before.
   const window = Number.isFinite(months) && months > 0 ? months : 36;
-  const peerGlaRate = await ingest.adjustmentRate(db, { basis: 'sqft', state, city, zip, months: window });
+  // AND IT STEPS OUT ONE RUNG AT A TIME WHEN THE TOWN IS TOO THIN (`relax`).
+  // Never past the state — a nationwide median of appraiser adjustments describes
+  // no market anyone lends in, which is the very thing the guard above refuses.
+  // The answer says where it came from and the screen prints it.
+  const peerGlaRate = await ingest.adjustmentRate(db, { basis: 'sqft', state, city, zip, months: window, relax: true });
   // AND THE 2-4 UNIT POPULATION, asked for by name. db/443 split the corpus by
   // which foot each adjustment was measured on, which was right and left the
   // building-area half unreachable: 8 of the 18 markets that cleared the sample
@@ -402,7 +406,7 @@ async function ratesFor(query) {
   // for living area dropped those towns to the national rule of thumb while we
   // held twenty real local adjustments in each. The suggester picks per
   // comparable; the two are never blended.
-  const peerGlaRateGba = await ingest.adjustmentRate(db, { basis: 'sqft_gba', state, city, zip, months: window });
+  const peerGlaRateGba = await ingest.adjustmentRate(db, { basis: 'sqft_gba', state, city, zip, months: window, relax: true });
   return { rows: r.rows,
     rates: V.deriveMarketRates(r.rows, { today: todayNY(), peerGlaRate, peerGlaRateGba }) };
 }
@@ -478,9 +482,22 @@ router.get('/comps', async (req, res, next) => {
     // DEFAULTS THAT MAKE THE FIRST ANSWER USEFUL, all overridable from the query.
     // Same city, sold in the last 18 months, within a third to triple the subject's
     // size, and never the subject itself.
+    // A CALLER WHO NAMES EITHER BOUND OWNS BOTH. The band is spread in as a
+    // DEFAULT and the caller's query is merged over it, so naming only one bound
+    // used to inherit the band's other one and the two intersected: a 1-unit
+    // subject asked for `units_min=2` ran `units >= 2 AND units <= 1` and
+    // answered NOTHING, at every rung of the ladder, with the screen reporting
+    // that the town was thin. Half a range is still an explicit instruction, and
+    // the route's own rule is that a caller who asked for something explicitly is
+    // never overridden — so the band stands down entirely rather than completing
+    // a range nobody asked for.
+    const namedUnits = ['units_min', 'units_max'].some((k) => {
+      const v = req.query[k];
+      return v != null && String(v).trim() !== '';
+    });
     const filters = Object.assign({
       state: subject.state, city: subject.city,
-      ...(unitBand(subject.units) || {}),
+      ...((namedUnits ? null : unitBand(subject.units)) || {}),
       has_sale: '1', sale_status: 'closed',
       sold_within_months: 18,
       sqft_min: subject.gla ? Math.round(subject.gla * 0.6) : undefined,
@@ -511,7 +528,7 @@ router.get('/comps', async (req, res, next) => {
       const c = stripEmpty(req.query);
       for (const k of ['want', 'relaxable', 'application_id', 'property_id',
         'address', 'gla', 'beds', 'baths_full', 'baths_half', 'year_built',
-        'condition_uad', 'property_type', 'lat', 'lng']) delete c[k];
+        'condition_uad', 'property_type', 'units', 'lat', 'lng']) delete c[k];
       return c;
     })());
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
@@ -604,6 +621,36 @@ router.get('/comps', async (req, res, next) => {
       { id: 'any_time', label: 'any time',
         relax: (f) => (!askedFor.has('sold_within_months') && f.sold_within_months
           ? { sold_within_months: undefined } : null) },
+      // THE LAST RUNG, AND IT IS ONLY EVER REACHED WITH NOTHING IN HAND.
+      //
+      // The unit band is a DEFAULT this route supplied, not something the officer
+      // typed — there is no units control on any of the three screens that call
+      // this, and there is no way to clear it from the UI. So when the band is
+      // what emptied the answer, the screen said "we searched as far as the
+      // settings allow and still found nothing", which was untrue: it stopped at
+      // a filter the officer never set, cannot see and cannot lift.
+      //
+      // Measured over the real corpus: this fires for 1 of 132 lent-on subjects
+      // and 17 of 955 properties — the towns where we hold houses and the subject
+      // is a three-family. Showing those houses, LABELLED as a different kind of
+      // building, is strictly better than an empty screen next to a coverage line
+      // saying we hold nineteen properties in that town.
+      //
+      // Same-kind ALWAYS wins: this rung cannot be reached while any earlier one
+      // found anything, and it stands down the moment the caller named a unit
+      // range themselves. It is monotone like every other rung — it only ever
+      // removes a predicate.
+      //
+      // IT FIRES ONLY ON AN EMPTY ANSWER, not merely a short one. Every other rung
+      // keeps widening until it has `want` (6) rows, and letting this one do that
+      // would drop the band on any subject with five same-kind comps — which is
+      // most of them — and quietly undo the whole thing. `best` is the best rung
+      // so far; nothing found means nothing found.
+      { id: 'any_kind_of_building', label: 'any kind of building',
+        relax: (f) => ((best && best.total > 0) || namedUnits
+          || (f.units_min == null && f.units_max == null)
+          ? null
+          : { units_min: undefined, units_max: undefined, units_unknown_ok: undefined }) },
     ];
 
     let active = Object.assign({}, filters);

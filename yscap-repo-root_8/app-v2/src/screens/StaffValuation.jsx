@@ -718,6 +718,19 @@ function CompPicker({ valuationId, subject, onClose, onAdded }) {
                 onChange={() => setSel((s) => { const n = new Set(s); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })} />
               <div>
                 <div style={{ color: INK, fontWeight: 600, fontSize: 14 }}>{r.display_address}</div>
+                {/* THE OWNER'S FIRST REQUIREMENT, at the moment of CHOOSING. The
+                    grid states both facts once a comparable is on it — but this
+                    is where the officer decides which ones to put there, and it
+                    stated neither, so the choice was made blind. It matters here
+                    especially: the search bands to the subject's kind of building
+                    and falls back to any kind rather than leave an empty list, so
+                    a row here can legitimately be a different kind of building. */}
+                <div style={{ fontSize: 12, fontWeight: 600,
+                  color: (r.property_type && r.units != null) ? INK : '#B4423A' }}>
+                  {[r.property_type || 'type not stated',
+                    r.units != null ? `${r.units} unit${Number(r.units) === 1 ? '' : 's'}` : 'units not stated',
+                  ].join(' · ')}
+                </div>
                 <div style={{ color: MUTED, fontSize: 12 }}>
                   {[r.gla && sqft(r.gla), r.beds != null && `${r.beds} bed`,
                     (r.baths_full != null || r.baths_half != null) && `${baths(r)} bath`,

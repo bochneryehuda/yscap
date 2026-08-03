@@ -623,8 +623,21 @@ function corpus(n, f) {
   const fellFromHollow = glaLine(building, hollow);
   ok(fellFromHollow && fellFromHollow.amount === 18000,
     'a 2-4 unit rate that refused falls back to the living-area rate rather than dropping the line');
-  ok(/BUILDING area and the rate is measured on LIVING area/.test(fellFromHollow.note),
+  // GUARDED, because this is the assertion that FAILS on the unfixed code: an
+  // unguarded `.note` there throws a TypeError and takes the whole suite down
+  // before the summary line, so the regression it exists to catch reads as a
+  // crashed runner rather than as a failing check.
+  ok(/BUILDING area and the rate is measured on LIVING area/.test((fellFromHollow || {}).note || ''),
     '…and says so, exactly as a market with no 2-4 unit rate at all does');
+  // AND A RATE OF ZERO IS NOT A MATCH EITHER — the same hole, left half-shut.
+  // `!= null` is true for 0, and 0 is then falsy at the size-line guard, so the
+  // line disappears instead of falling back. `deriveMarketRates` guards
+  // `median > 0` and cannot emit one, but `market_rates` is stored as jsonb and
+  // read back, so the predicate must match the contract, not the producer.
+  const zeroed = { ...both, glaAdjustmentPerSqftGba: { value: 0, n: 9, source: 'peer' } };
+  const fellFromZero = glaLine(building, zeroed);
+  ok(fellFromZero && fellFromZero.amount === 18000,
+    'a stored 2-4 unit rate of $0 falls back too, rather than silently dropping the size line');
 }
 
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);

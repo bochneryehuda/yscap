@@ -809,45 +809,107 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
  * REFUSES rather than answers thinly, on the same rule as everything else here: a
  * rate is a number people will price a deal against, and a median of four
  * adjustments is noise wearing the clothes of an answer. Never throws.
+ *
+ * AND WHEN THE TOWN IS TOO THIN IT SAYS SO AND STEPS OUT — but only if asked
+ * (`relax`), and never past the state line.
+ *
+ * Splitting the two feet (db/443) was correct and it left most towns holding
+ * fewer than eight adjustments of the measure their own comparables are written
+ * in. Measured over the real corpus: of the 29 markets that hold ANY
+ * building-area adjustment, 9 clear the floor in their own town (New Haven 24,
+ * Wilkes-Barre 22, Scranton 19, Trenton 18, Elizabeth 11, Pittston 10, Irvington
+ * 8, Roselle 8, Jersey City 8) and 19 more clear it at the state (Newark 5 of
+ * 73 in NJ, Bridgeport 3 of 27 in CT, Rochester 2 of 14 in NY). Refusing all 19
+ * sends them to a national rule of thumb while we hold dozens of real local
+ * adjustments one rung out — which is a worse answer, not a more careful one.
+ *
+ * THREE RULES, and none of them is decoration:
+ *   · The ladder is walked NARROWEST FIRST and STOPS at the first rung that
+ *     clears the floor, so a town that can answer for itself always does.
+ *   · IT NEVER LEAVES THE STATE. A nationwide median of appraiser adjustments
+ *     describes no market anyone is lending in — `ratesFor` already refuses to
+ *     derive rates with no market named, and a ladder that widened to "every
+ *     market we hold" would walk straight back into it.
+ *   · EVERY RUNG TRIED IS RETURNED, and the answer SAYS WHERE IT CAME FROM
+ *     (`where`), because "$28 a foot in Newark" and "$28 a foot across New
+ *     Jersey" are different claims and only one of them is true. The caller
+ *     prints `where`; it must never keep saying "in this market".
+ *
+ * Without `relax` the behaviour is exactly what it was: one scope, one answer.
  */
-async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample } = {}) {
+async function rateAtScope(db, { basis, months, rung }) {
+  const p = [String(basis), String(months)];
+  const where = ['unit_delta_basis = $1', 'amount IS NOT NULL', 'amount <> 0',
+    'unit_delta IS NOT NULL', 'unit_delta <> 0',
+    "observed_on > (now() - ($2 || ' months')::interval)::date"];
+  // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
+  // Springfield NJ and Springfield OH answered together as one "market" with a
+  // median describing neither — and a zip scope ignored a contradicting state
+  // outright rather than refusing it. Every supplied part now narrows.
+  if (rung.zip) { p.push(String(rung.zip)); where.push(`zip = $${p.length}`); }
+  else if (rung.city) { p.push(String(rung.city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
+  if (rung.state) { p.push(String(rung.state).toUpperCase()); where.push(`state = $${p.length}`); }
+  // A NEGATIVE RATE IS A MISREAD, NOT A MARKET. It means the adjustment pointed
+  // the opposite way to the size difference — zero of 468 real ones do — so it
+  // is excluded rather than averaged in, where two of them would drag a median
+  // that people price against.
+  const r = await db.query(
+    `SELECT count(*)::int AS n,
+            percentile_cont(0.5)  WITHIN GROUP (ORDER BY amount / unit_delta) AS median,
+            percentile_cont(0.25) WITHIN GROUP (ORDER BY amount / unit_delta) AS q1,
+            percentile_cont(0.75) WITHIN GROUP (ORDER BY amount / unit_delta) AS q3
+       FROM property_adjustments
+      WHERE ${where.join(' AND ')} AND (amount / unit_delta) > 0 AND (amount / unit_delta) < 500`, p);
+  return r.rows[0] || { n: 0 };
+}
+
+// The rungs, narrowest first, and the plain words for each. A rung is only built
+// from a value the caller actually supplied, so nothing is ever invented.
+function rateRungs({ state, city, zip }) {
+  const st = state ? String(state).toUpperCase() : null;
+  const rungs = [];
+  if (zip) rungs.push({ scope: 'zip', zip, state: st, where: `in ZIP ${zip}${st ? `, ${st}` : ''}` });
+  if (city) rungs.push({ scope: 'city', city, state: st, where: `in ${city}${st ? `, ${st}` : ''}` });
+  if (st) rungs.push({ scope: 'state', state: st, where: `across ${st}` });
+  if (!rungs.length) rungs.push({ scope: 'any', where: 'across every market we hold' });
+  return rungs;
+}
+
+async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample, relax = false } = {}) {
   // Same guard as the benchmark: a null or NaN floor must not open the gate.
   const floor = Number.isFinite(Number(minSample)) && Number(minSample) > 0 ? Math.floor(Number(minSample)) : 8;
   try {
-    const p = [String(basis), String(months)];
-    const where = ['unit_delta_basis = $1', 'amount IS NOT NULL', 'amount <> 0',
-      'unit_delta IS NOT NULL', 'unit_delta <> 0',
-      "observed_on > (now() - ($2 || ' months')::interval)::date"];
-    // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
-    // Springfield NJ and Springfield OH answered together as one "market" with a
-    // median describing neither — and a zip scope ignored a contradicting state
-    // outright rather than refusing it. Every supplied part now narrows.
-    if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
-    else if (city) { p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
-    if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
-    // A NEGATIVE RATE IS A MISREAD, NOT A MARKET. It means the adjustment pointed
-    // the opposite way to the size difference — zero of 468 real ones do — so it
-    // is excluded rather than averaged in, where two of them would drag a median
-    // that people price against.
-    const r = await db.query(
-      `SELECT count(*)::int AS n,
-              percentile_cont(0.5)  WITHIN GROUP (ORDER BY amount / unit_delta) AS median,
-              percentile_cont(0.25) WITHIN GROUP (ORDER BY amount / unit_delta) AS q1,
-              percentile_cont(0.75) WITHIN GROUP (ORDER BY amount / unit_delta) AS q3
-         FROM property_adjustments
-        WHERE ${where.join(' AND ')} AND (amount / unit_delta) > 0 AND (amount / unit_delta) < 500`, p);
-    const row = r.rows[0] || { n: 0 };
-    if (!row.n || row.n < floor) {
-      return { ok: false, n: row.n || 0, minSample: floor, basis,
-        reason: `only ${row.n || 0} usable adjustment${row.n === 1 ? '' : 's'} in this market — too few to state a rate` };
+    const all = rateRungs({ state, city, zip });
+    // WITHOUT `relax`, ONE RUNG — and it is the same one the single-scope query
+    // has always used (the narrowest supplied, narrowed again by the state), so
+    // every existing caller is byte-identical.
+    const rungs = relax ? all : all.slice(0, 1);
+    const tried = [];
+    for (const rung of rungs) {
+      const row = await rateAtScope(db, { basis, months, rung });
+      tried.push({ scope: rung.scope, where: rung.where, n: row.n || 0 });
+      if (!row.n || row.n < floor) continue;
+      return { ok: true, n: row.n, basis, months,
+        scope: rung.scope, where: rung.where, tried,
+        // A widened answer is FLAGGED, not merely describable — a caller that
+        // forgets to print `where` must still be able to tell.
+        relaxed: rung.scope !== all[0].scope,
+        median: Number(row.median), q1: Number(row.q1), q3: Number(row.q3),
+        // The wording NAMES the measure, so a building-area rate can never be read
+        // as a living-area one on the strength of the sentence beside it.
+        of: basis === 'sqft_gba'
+          ? `dollars per square foot of gross BUILDING area of difference, as appraisers ${rung.where} actually adjusted`
+          : `dollars per square foot of living area of difference, as appraisers ${rung.where} actually adjusted` };
     }
-    return { ok: true, n: row.n, basis, months,
-      median: Number(row.median), q1: Number(row.q1), q3: Number(row.q3),
-      // The wording NAMES the measure, so a building-area rate can never be read
-      // as a living-area one on the strength of the sentence beside it.
-      of: basis === 'sqft_gba'
-        ? 'dollars per square foot of gross BUILDING area of difference, as appraisers in this market actually adjusted'
-        : 'dollars per square foot of living area of difference, as appraisers in this market actually adjusted' };
+    // The refusal names EVERY rung, so "why is there no rate?" is answered by the
+    // refusal itself rather than by a second look at the data.
+    const last = tried[tried.length - 1] || { n: 0, where: 'in this market' };
+    const detail = tried.length > 1
+      ? tried.map((t) => `${t.n} ${t.where}`).join(', ')
+      : `${last.n} usable adjustment${last.n === 1 ? '' : 's'} ${last.where}`;
+    return { ok: false, n: last.n, minSample: floor, basis, tried,
+      scope: null, where: last.where,
+      reason: `only ${detail} — too few to state a rate` };
   } catch (_) { return { ok: false, basis, reason: 'could not read the adjustment corpus' }; }
 }
 
@@ -2484,5 +2546,6 @@ module.exports = {
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal, bindable,
+    rateRungs, rateAtScope,
     ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank, writeAdjustments, unitDeltaFor },
 };
