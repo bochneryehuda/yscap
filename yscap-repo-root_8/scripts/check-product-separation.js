@@ -241,6 +241,22 @@ function checkImports(allow, files) {
     const lt = isLtFile(f);
     if (lt) ltCount++;
     const scan = scanJs(fs.readFileSync(f, 'utf8'));
+
+    // A dynamic require — require(path.join(…)) or a template literal — points
+    // somewhere this gate cannot see. It is a live idiom in RTL code and stays
+    // allowed there, but Long-Term starts at zero, so it never gets to open a
+    // door nobody can look through.
+    if (lt) {
+      const DYN = /\brequire\s*\(\s*(?!['"])/g;
+      let d;
+      while ((d = DYN.exec(scan.code))) {
+        if (scan.inString(d.index)) continue;
+        fail(from, 'Long-Term code uses a dynamic require() — the gate cannot see where it points.',
+          'Name the module with a plain string so the separation can be checked. A computed path is the one import shape that could reach RTL code invisibly.');
+        break;
+      }
+    }
+
     for (const spec of importsOf(scan)) {
       if (!spec.startsWith('.') && !spec.startsWith('/')) continue;   // npm package / node builtin — shared plumbing
       const abs = resolveFrom(f, spec);
@@ -397,6 +413,12 @@ function checkSql(allow) {
       if (declaredLtMigration && !isLtName(table)) {
         fail(where, `A Long-Term migration creates the table "${table}", which is not named lt_*.`,
           'Every Long-Term table must be named lt_* — the whole separation, in the database and in this gate, keys off that prefix.');
+      }
+      // A Long-Term-sounding table that misses the prefix would be invisible to
+      // every SQL rule here, wherever it was declared.
+      if (!isLtName(table) && /^(long_?term|lt[^_a-z])/i.test(table)) {
+        fail(where, `Table "${table}" is named for Long-Term but does not use the lt_ prefix.`,
+          'Rename it lt_… — every schema rule in this gate keys off that prefix, so a Long-Term table without it is unprotected.');
       }
       const open = sql.indexOf('(', CREATE_TABLE.lastIndex);
       if (open === -1) continue;

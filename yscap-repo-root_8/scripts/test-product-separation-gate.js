@@ -205,6 +205,19 @@ scenario('a Long-Term screen that only uses its own code passes', (app) => {
   write(app, 'app-v2/src/longterm/LtPipeline.jsx', "import { list } from './api.js';\nimport React from 'react';\n");
 }, 'pass');
 
+scenario('a dynamic require() inside Long-Term FAILS', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "const path = require('node:path');\nconst mod = require(path.join(__dirname, '..', '..', 'lib', 'crypto.js'));\n");
+}, 'fail', 'dynamic require');
+
+scenario('a template-literal require inside Long-Term FAILS', (app) => {
+  write(app, 'src/longterm/lib/loan.js', 'const mod = require(`../../lib/${name}.js`);\n');
+}, 'fail', 'dynamic require');
+
+scenario('RTL keeps its dynamic requires (a live idiom there)', (app) => {
+  write(app, 'src/lib/esign/pdf.js', "const path = require('node:path');\nconst mod = require(path.join(__dirname, 'x.js'));\n");
+}, 'pass');
+
 // ---- 7. the crossing that needs no import ----------------------------------
 scenario('Long-Term reading an RTL table in raw SQL FAILS', (app) => {
   write(app, 'src/longterm/lib/loan.js',
@@ -341,6 +354,14 @@ scenario('a Long-Term function firing on an RTL table FAILS', (app) => {
 scenario('a Long-Term migration creating a table not named lt_ FAILS', (app) => {
   write(app, 'db/515_lt_loans.sql', 'CREATE TABLE IF NOT EXISTS longterm_loans (id uuid PRIMARY KEY);\n');
 }, 'fail', 'not named lt_');
+
+scenario('a Long-Term-sounding table without the prefix FAILS wherever it is declared', (app) => {
+  write(app, 'db/517_loans.sql', 'CREATE TABLE IF NOT EXISTS long_term_loans (id uuid PRIMARY KEY);\n');
+}, 'fail', 'does not use the lt_ prefix');
+
+scenario('an ordinary RTL table name is not mistaken for Long-Term', (app) => {
+  write(app, 'db/518_rtl.sql', 'CREATE TABLE IF NOT EXISTS loan_terms (id uuid PRIMARY KEY);\n');
+}, 'pass');
 
 scenario('SQL inside a comment does not trip the gate', (app) => {
   write(app, 'db/516_comment.sql',
