@@ -94,6 +94,30 @@ app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
 app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120 })); // autocomplete is chatty
 
+// A PER-USER API answer must never be STORED by the browser.
+//
+// Express answers a GET with an ETag and no Cache-Control, which makes these
+// responses heuristically cacheable in the browser's PRIVATE cache (a shared
+// cache would refuse them because the request carries Authorization — a private
+// one is allowed to keep them). The browser then revalidates with If-None-Match,
+// and on a 304 it hands JavaScript the STORED response's HEADERS, not the 304's.
+// Two things followed from that, both owner-reported:
+//   • the stored response's `X-Refresh-Token` (see the sliding session in
+//     src/auth/index.js) was replayed on every later 304 and overwrote the LIVE
+//     token with the one minted in some earlier session. Once that replayed
+//     token aged past its 30-day life the next request answered `bad_token` and
+//     the SPA signed the user out — seconds after they signed in, on a correct
+//     password. It is also why "it works after I clear my site data" kept being
+//     the only cure: clearing the cache drops the poisoned entry.
+//   • on a shared device the cache could serve one person's JSON to the next.
+// `no-store` ends both. It is a DEFAULT, not a law: the deliberately public
+// endpoints (/api/roster, /api/address, /api/pricing-defaults) set their own
+// Cache-Control inside their handlers, which run after this and win.
+app.use(['/api', '/auth'], (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // --- API ---
 // The DEPLOYED V2 bundle hash, read from the portal's index.html on disk (the
 // file changes atomically on deploy). Cached ~60s. The stale-build watchdog in
