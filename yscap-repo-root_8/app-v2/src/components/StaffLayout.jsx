@@ -19,6 +19,7 @@ const ROLE_LABEL = {
    presentational — inherit .sb-link colour (muted → ink on hover, gold when
    active). */
 const NAV_ICON = {
+  dashboards: <><path d="M3.6 16.5a9 9 0 1 1 16.8 0" /><path d="m12 13 4.2-3.6" /><circle cx="12" cy="13" r="1.4" /></>,
   pipeline: <><rect x="3" y="4" width="4" height="16" rx="1" /><rect x="10" y="4" width="4" height="11" rx="1" /><rect x="17" y="4" width="4" height="7" rx="1" /></>,
   tasks: <><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="m8.5 12 2.2 2.2 4.8-4.7" /></>,
   workflow: <><circle cx="6" cy="7" r="2.2" /><circle cx="18" cy="7" r="2.2" /><circle cx="12" cy="17" r="2.2" /><path d="M8.2 7h7.6M6.6 9.1 11 14.8M17.4 9.1 13 14.8" /></>,
@@ -442,6 +443,7 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
         {/* The research desk (owner-directed 2026-08-02). Every staff role — it holds
             addresses, property facts and recorded sale prices, and no borrower data. */}
+        <NavLink className="sb-link" to="/internal/dashboards" title="Dashboards — how the business is doing, and the place to build your own. Every card shows exactly which files it counts, and clicking a number opens them."><NavIcon name="dashboards" />Dashboards</NavLink>
         <NavLink className="sb-link" to="/internal/research" title="Property Research — every property and comparable sale our appraisers have ever shown us, searchable by town, price, size, bedrooms, condition and sale date. Pick the sales you like and build your own valuation from them."><NavIcon name="pipeline" />Property Research</NavLink>
 
         <div className="sb-sec">Files</div>

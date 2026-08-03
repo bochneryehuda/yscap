@@ -337,6 +337,11 @@ app.use('/api/appraisal', require('./routes/appraisal'));
 // addresses, property characteristics and recorded sale prices, no borrower data —
 // so the router applies requireAuth + requireStaff itself and does NOT scope per file.
 app.use('/api/research', require('./routes/research'));
+// Dashboards: the KPI screen every staff member lands on, and the builder they use to make
+// their own. Staff-only as a whole router; every card's query is scoped to the CALLER's
+// files inside the compiler (src/lib/dashboards/compile.js), so a shared dashboard shares
+// the question and never the answer.
+app.use('/api/dashboards', require('./routes/dashboards'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
 // underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
@@ -644,6 +649,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
           .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
+        // The dashboards every staff member lands on are ordinary rows, so they are seeded
+        // rather than hardcoded — which is what makes them inspectable and forkable. Keyed
+        // on slug, so this reaches EXISTING staff on the next boot, not only new ones, and
+        // a dashboard an admin has since edited is left exactly as they left it.
+        require('./lib/dashboards/seed').seedDefaults()
+          .catch((e) => console.error('[boot] dashboard seed failed:', e.message));
         // Previous-files fix (owner-reported 2026-08-02): galleries extracted before photographs
         // were told apart from the form's own artwork are stored in raw page order, so the
         // appraiser's signature outranks the subject front photo and shows as the property's main

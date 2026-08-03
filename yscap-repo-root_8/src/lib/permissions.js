@@ -154,7 +154,33 @@ const assigneeExistsSql = (alias, p) =>
   `EXISTS (SELECT 1 FROM application_assignees aa` +
   ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)`;
 
+// THE definition of "which files may this staffer see". It lived as a const inside
+// src/routes/staff.js and was byte-copied here (unchanged) when the Dashboards build
+// needed it too — a lib may not require a route, and re-inlining the five-way predicate
+// is exactly how a scope silently loses a branch (CLAUDE.md: never hand-roll
+// `loan_officer_id=$1`, it drops delegation, assistants and open hand-offs).
+// staff.js now delegates to this, so there is still ONE definition, and
+// scripts/test-dashboards-db.js pins the two to the same string.
+//
+// A staffer reaches a file when ANY of these is true:
+//   1. they are the primary loan officer,           2. they are the primary processor,
+//   3. the file's officer is on their delegation list (staff_users.visible_officer_ids),
+//   4. they are an active assignee (primary or full-access assistant, db/103),
+//   5. a workflow hand-off was routed to them and is still open/in-progress (db/212).
+//
+// `${alias}.id` must be selectable, and `p` is the acting staff-id param PLACEHOLDER —
+// a function, not a fixed string, because a see_all_files caller drops this clause
+// entirely and a hardcoded `$1` would leave an unreferenced parameter, which Postgres
+// rejects outright (42P18).
+const visibleOfficersSql = (alias, p) =>
+  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR ${assigneeExistsSql(alias, p)}` +
+  ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
+  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
   defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
+  visibleOfficersSql,
 };
