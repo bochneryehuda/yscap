@@ -1,0 +1,242 @@
+# PROPERTY RESEARCH — THE BUILD LIST
+
+**Owner-directed, 2026-08-03.** The ask, in the owner's words: type a subject
+property address, enter its details, and the system finds similar comparables
+itself — by real map distance, not "same city". Filter by size, sale date,
+distance, condition. Pick comps into a report, adjust them, and print a branded
+PILOT comparable report with full detail on every comp, in several layouts. Plus
+a quick mode: an address and a few basics, and roughly what properties like that
+have been appraising at lately.
+
+Four research agents and two pre-merge audits produced this. Their full findings:
+
+| Document | What it answers |
+|---|---|
+| `COMP-REPORT-COMPETITIVE-RESEARCH.md` | 28 competing products, what to copy, what not to |
+| `COMPARABLE-XML-COVERAGE-AUDIT.md` | Every fact in the XML we do and don't read |
+| `GEO-AND-DATA-API-RESEARCH.md` | Geocoding, true distance, dedupe, which APIs to buy |
+| `CONDITION-AND-REPORT-RESEARCH.md` | Condition vocabularies, adjustments, the report, the legal line |
+
+---
+
+## THE ONE RULE THAT GOVERNS EVERY ITEM
+
+**Never fabricate.** A fact the report did not state stays NULL — never inferred
+from the subject, never defaulted, never guessed by a vendor's API. Where we
+cannot answer, we say what we cannot answer and why. Three of the defects fixed
+on the way here were wrong ANSWERS rather than missing ones, and every one of
+them was more expensive than silence:
+
+* a 2–4 unit comparable's bedroom count read unit 1's, so a 7-bedroom triplex
+  scored as a strong comp for a 3-bedroom house;
+* an after-repair report's depreciation rolled onto the property, so a row read
+  "condition C5" and "no wear, replacement cost as-new" at the same time;
+* a time adjustment read 3.95%/month off sales bunched into one month, and
+  pre-filled +$190,750 on a $400,000 comp.
+
+**And the coverage sentence that has to appear on every screen and every report:**
+this warehouse holds only properties that appeared in an appraisal *we* paid for
+— roughly 7% of a town. A thin answer is almost always a statement about our
+coverage, not about the user's filters.
+
+---
+
+## DONE (this session)
+
+- [x] Market screen — months of supply, median price, days on market by month, with the sample size drawn as a first-class part of every reading
+- [x] db/424 — five wrong fact placements corrected; after-repair money can no longer roll onto a property
+- [x] db/424 idempotency — the migration was wiping its own column on every boot
+- [x] `INGEST_VERSION` — the lever that actually back-fills a newly-read fact, which `ROLLUP_VERSION` cannot
+- [x] `AS_IS_ONLY` corrected in **both** directions — three facts joined it, two provably wrong entries left it
+- [x] db/426 — a 2–4 unit comparable's rooms/beds/baths, and the per-unit breakdown
+- [x] The time-trend rate + dollar ceilings
+
+---
+
+## PHASE 1 — STOP BEING WRONG
+
+Correctness first. Every item is a measured wrong answer or a fact we hold and
+throw away.
+
+- [ ] **1.1 Price per square foot is dead on every 2–4 unit comp.**
+  `SalesPricePerGrossBuildingAreaAmount` appears nowhere in `extract.js`. Same
+  file, one attribute renamed: a 1004 reads $154.59, a 1025 reads null.
+- [ ] **1.2 A comparable's garage is structurally always NULL.**
+  `ADJ_TYPES.garage` looks for `garage`/`carport`; MISMO 2.6 writes
+  `Parking`/`CarStorage`. Neither matches.
+- [ ] **1.3 A post-rehab refinance appraisal is mis-read as after-repair.**
+  `HYPO_RE`'s second arm does not require the word "hypothetical", so *"All
+  repairs were completed in 2024"* flips an **explicit `AsIs`** report to ARV:
+  the as-is value is dropped and every comp is stamped `arv`. Split the pattern;
+  let only the hypothetical arm override an explicit AsIs.
+- [ ] **1.4 A subject's worded condition is unrecoverable.** The UAD whitelist
+  drops "Good"/"Avg-Good" and `appraisals` has no `condition_text` column, so
+  every non-UAD subject rating is lost — and the 1025 was never brought into
+  UAD, so that is the whole 2–4 book. Recoverable for free: 73 of 137
+  observations carry a `Condition` adjustment line whose description IS the
+  rating.
+- [ ] **1.5 The condition NARRATIVE is never read.**
+  `PROPERTY_ANALYSIS[_Type="PropertyCondition"]/@_Comment` is present on ~9 of 10
+  1025s and routinely says *"C4 as-is, C3 as repaired"* — the one place the AS-IS
+  rating on a renovation file is written down, which is exactly what `AS_IS_ONLY`
+  currently leaves those properties without.
+- [ ] **1.6 A subject that cannot be keyed is dropped SILENTLY.** `writeReport`
+  wraps it in `if (subjectId)` with no `else`, while a comparable is counted with
+  a reason. That defeats the ledger's stated purpose.
+- [ ] **1.7 `appraisal_comparables.property_type` is written by nothing** (0 of
+  83). Either fill it from a stated fact or drop the column — a column nothing
+  writes reads as "the report didn't say" when the truth is "we never looked".
+- [ ] **1.8 The geocoder accepts a match that changed the street.** Census
+  returns `26 10TH ST` for `26 S 10th St` — directional dropped, `precision:
+  'address'`, and it is the identical coordinate it returns for a different
+  house. `address.geocodeRewriteIsSafe` exists, was written after exactly this
+  incident, and `research/geocode.js` never calls it.
+- [ ] **1.9 Three dedupe COLLISIONS — different properties, one key.** Two ZIPs
+  on one street with no city; `Suite 5` = `Apt 5` = `Bldg 5` = `Lot 5` = `#5`;
+  and `5 Building Rd` / `5 Room Rd` collapsing because `splitUnit` eats a street
+  whose name is a unit keyword (`address.withoutUnit()` already has the fix).
+- [ ] **1.10 Seven dedupe SPLITS — one property, several keys.** Bare unit,
+  spaced unit, ordinals (`15 Ave` ≠ `15th Ave`), borough vs county, one ZIP with
+  two town names, suffix synonyms, fractional house numbers.
+- [ ] **1.11 `sameAddress` reads a hyphen as a range**, so every Queens address
+  over-matches: `150-25 78th Rd` = `150-99 78th Rd`. That comparer gates USPS
+  stamps and review closing, and its stated discipline is to UNDER-match.
+- [ ] **1.12 `perBath` is confounded by size** and returns **$86,940 for one
+  bathroom** — while the identical confound pointing the other way is correctly
+  refused, and the message blames the sample when 73 sales is not small.
+- [ ] **1.13 An active listing carries 36% of the weight** into the indicated
+  value, the median, the high and the price-per-foot. An asking price is not a
+  sale.
+- [ ] **1.14 Distressed sales are neither filtered nor selectable.** 8 REO
+  alongside 8 arm's-length drops the median $/sqft to $217.
+
+## PHASE 2 — READ EVERYTHING THE XML ALREADY CONTAINS
+
+- [ ] **2.1 Per-unit data for the SUBJECT reaches the warehouse** (it is read but
+  `unit_mix` is on 5 of 126 observations); per-unit square footage for both sides
+- [ ] **2.2 `SalesPricePerUnitAmount`**, and the comp's monthly rent + GRM
+- [ ] **2.3 The stated AGE in years** — store what the grid says, stop computing a year from it
+- [ ] **2.4 The whole rental-comp grid** — `extract()` emits only a count today
+- [ ] **2.5 ACI's `COMPARABLE_LISTING`** — absent from the parser entirely
+- [ ] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback
+- [ ] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them
+- [ ] **2.8 13 columns go NULL on any vendor without the UAD `COMPARISON_DETAIL` block** — find the fallbacks
+- [ ] **2.9 Only the FIRST `_CONDITION_OF_APPRAISAL` is read**, though the field map records files carrying both
+
+## PHASE 3 — THE MAP AND THE ADDRESS
+
+Measured: **0 properties have ever been placed by a real geocoder.** 77% were
+never attempted. Everything in this phase costs about $10, one time.
+
+- [ ] **3.1 Turn on the geocoder that is already written** — US Census (free, no
+  key, batch 10k, unrestricted permanent storage) as primary, routed through
+  `geocodeRewriteIsSafe` (item 1.8)
+- [ ] **3.2 Geocodio as the backfill fallback** — $1/1,000, true US rooftop,
+  permanent storage, and it returns census tract + school district in the same
+  call. Nominatim cannot do a bulk backfill under its own policy.
+- [ ] **3.3 The appraiser's OWN stated proximity is parsed and used for nothing**
+  — 42 of 77 comps carry "0.35 miles NE"
+- [ ] **3.4 `distance_basis` provenance** — `eff_*` silently COALESCEs in a
+  coordinate db/412 itself calls "frequently the centre of the ZIP"
+- [ ] **3.5 The bounding box is not a superset of the circle** (short 5.9 ft at 1
+  mile, 59 ft at 10) — `1.001 · r / (69.0932 · cos φ)`. The `cos(lat)` scaling
+  itself is correct; verified across seven latitudes.
+- [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — free, and it is
+  the second identity signal item 1.9 needs
+- [ ] **3.7 THE MAP.** Subject pin, numbered comp pins, radius rings,
+  click-to-select. MapLibre + OSM, no tile bill.
+
+## PHASE 4 — THE REPORT
+
+- [ ] **4.1 The branded PILOT comparable report.** Twelve sections, one full page
+  per comp. `jsPDF` is already vendored — no new dependency.
+- [ ] **4.2 Four layouts from one data model** — one-pager / standard / full /
+  grid-only. **The disclaimer scales; the honesty does not:** no layout may drop
+  the confidence label, the range, the comp count, or the blank-adjustment
+  sentence.
+- [ ] **4.3 The legal line, exactly.** USPAP attaches to an *appraiser*
+  performing an *appraisal*, so this is not one — **but no licensed appraiser on
+  staff or contract may operate this tool.** "Evaluation" is a regulated word we
+  may never use. Call it an **internal value indication**. It may never size a
+  loan.
+- [ ] **4.4 Every blank adjustment line, and why it is blank**, as a required
+  sentence — not an empty cell
+- [ ] **4.5 Photos in the report.** `property_photos` is currently 0 rows; ship
+  an honest placeholder rather than a broken box.
+
+## PHASE 5 — THE FEATURES THAT MAKE IT WORTH COPYING
+
+- [ ] **5.1 Quick-answer mode**, built to refuse. *"In the 9 appraisals we hold
+  within 1 mile in the last 18 months, 1-unit houses 1,200–1,900 sqft in C4 came
+  in between $385,000 and $470,000 — median $428k. 7 of 9 were as-is grids. Most
+  recent 3 months ago."* Never a point estimate; always the denominator; always
+  the recency span; refuse below 5 matches; the empty state blames our coverage.
+- [ ] **5.2 ARV mode.** Every source in the industry says an ARV must come from
+  renovated comps and then leaves you to guess which sales were renovated. **We
+  do not guess — the appraiser told us which grid each comp sat on.**
+  `comp_set`/`arv_comp_count` exist, are indexed, and are unexposed. This is the
+  fix-and-flip lender's core question and it is nearly free.
+- [ ] **5.3 THE ADJUSTMENT CORPUS.** Measured 599 adjustment lines against 62
+  distinct sales — **9.7×**, confirming the claim on live data. It changes the
+  claim from *"a bathroom is worth $12,000 in Paterson"* (indefensible on thin
+  data, and the arithmetic returns negatives) to *"this report used $18/sqft; the
+  other 40 reports in this county used $45–70"* — which is what Fannie's own
+  Collateral Underwriter does, and it is defensible because it is a claim about
+  our appraisers, not about the market. Always publish n, distinct reports,
+  **distinct appraisers**, the IQR (never a σ), and **the count of declines** — an
+  appraiser who saw a 200 sqft gap and adjusted $0 made a judgement, not a rate
+  of zero. Cap any one appraiser at 40%.
+- [ ] **5.4 Show the score's factors, and let a human weight a comp.**
+  `scoreComp.parts[]` and `weight` both exist and are unrendered.
+- [ ] **5.5 Confirm-the-facts step, then instant re-value**
+- [ ] **5.6 Bracketing + QC panel** — `compWarnings` exists, scattered
+- [ ] **5.7 Flip finder** — sold twice in 24 months, the spread, both photos.
+  `property_sales` holds it; the search only ever reads `last_sale_*`.
+- [ ] **5.8 Conflict detection** — two of our own reports disagreeing about one house
+- [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage
+- [ ] **5.10 Defensible time adjustment from contract date + FHFA HPI**
+- [ ] **5.11 Draw and save a market-area polygon**
+
+## PHASE 6 — CONDITION, PROPERLY
+
+**The owner is right that there are two vocabularies, and the reason is not the
+one anybody assumes: the split is by FORM, not by property type.** UAD was
+mandated for exactly four forms — 1004, 1073, 1075, 2055. **The 1025 (2–4 unit)
+was explicitly left out**, so its grid condition is the appraiser's own words. A
+condo on a 1073 carries `C3` exactly like a house; the same 2–4 family used as a
+comparable *on a 1004* carries `C3` too. So one building can be `C4` on one
+report and "Average" on another, and both are correct.
+
+- [ ] **6.1 One pure module `condition-scale.js`** returning `{code, rank,
+  rankLow, rankHigh, basis, source, original, confidence, why}`. `code` set ONLY
+  from a literal code; `rank` the only thing anything filters or adjusts on;
+  spanned words keep their span; `original` always displayed.
+- [ ] **6.2 The mapping table** — `Good` → 3 (2–3), `Average` → 4 (3–4), `Fair` →
+  5 (4–5), `Avg-Good` → 3 (3–4), and the rest.
+- [ ] **6.3 What must stay NULL, and this is most of the list:** every RELATIVE
+  word — `Similar`, `Superior`, `Inferior`, `Same`, `+`, `-` — which is the *most
+  common* thing in a non-UAD grid and is about that report's subject, not the
+  property; `Updated`/`Renovated` (that is work, not condition — a cosmetic flip
+  over a failing roof is still C4); and every material in the quality slot —
+  **`BRICK` is a real value in our corpus, which is why there can be no default.**
+- [ ] **6.4 Search and facets can see a worded rating** — 2 properties are
+  invisible to every condition filter today
+- [ ] **6.5 The UI shows the appraiser's word PLUS the reading** — `Average
+  (reads as C3–C4)`, never a code we did not receive, always the basis (`C3
+  (after repairs)`), and a filter says what it cannot see.
+
+## PHASE 7 — WHAT NOT TO BUILD
+
+Recorded so nobody re-proposes it. Each needs MLS-completeness we do not have:
+FSD / calibrated confidence percentages, a Collateral-Underwriter-style comp
+selection model, regression adjustments, absorption rates, DOM analytics, owner
+skip-tracing, street-view imagery, and tight "6 months / 1 mile" defaults.
+
+**Do not buy drive-time** (~$9,000/yr): Fannie's own form wants straight-line
+miles and a bearing, and the one-mile radius is a lender overlay, not a GSE rule.
+
+**Buy nothing until Phases 1–5 ship**, then run ONE measurable experiment against
+the ~50 files where we already hold the appraiser's own conclusion. If we then
+need coverage: **HouseCanary** is the realistic partner ($0.05/call property
+estimate, a `comps_sale` endpoint matching our data shape); **RentCast** ($0 →
+$199/mo) is the cheapest way to test the idea at all.
