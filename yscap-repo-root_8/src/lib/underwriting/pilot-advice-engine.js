@@ -174,7 +174,10 @@ const EVALUATORS = {
   rtl_cond_credit: {
     domain: 'credit',
     async evaluate(client, appId, item) {
-      const c = await creditCompleteness(client, appId, item.field_key);
+      // Pass the ITEM so the waiver is visible: a credit condition cleared to go
+      // by an approved import waiver must not be badged "not ready" when the
+      // sign-off gate would let it through (owner-directed 2026-08-03).
+      const c = await creditCompleteness(client, appId, item.field_key, item.id);
       return { complete: !!c.complete, contradicted: false };
     },
   },

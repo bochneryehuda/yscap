@@ -3119,6 +3119,28 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-empty { margin-top:8px; padding:16px; border:1px dashed var(--border); border-radius:12px;
   background:var(--surface-soft); color:var(--muted); font-size:.9rem; }
 
+/* Credit report from ANOTHER source + the import waiver (owner-directed
+   2026-08-03). Every text colour here is an explicit DARK ink on the white
+   canvas — never a --ink* token, which is the LIGHT paper colour (see the
+   white-on-white rule in CLAUDE.md). */
+.crx-ext { margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface-soft); }
+.crx-ext-head { display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
+.crx-ext-title { font-weight:700; font-size:.85rem; color:#141B22; }
+.crx-ext-sub { font-size:.8rem; color:#4B585C; margin-top:3px; max-width:62ch; }
+.crx-ext-empty { margin-top:10px; font-size:.85rem; color:#4B585C; }
+.crx-ext-docs { margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+.crx-ext-doc { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.crx-ext-doc-name { flex:1 1 180px; min-width:0; font-size:.85rem; color:#141B22;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.crx-ext-note, .crx-ext-why { font-size:.78rem; color:#4B585C; margin-top:6px; }
+.crx-ext-actions { margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.crx-ext-ask { margin-top:10px; display:flex; flex-direction:column; }
+.crx-rev-accepted { border-color:var(--ok); color:var(--ok); }
+.crx-rev-rejected { border-color:var(--danger); color:var(--danger); }
+.crx-rev-pending  { border-color:var(--warning); color:var(--warning); }
+.crx-disabled { opacity:.55; pointer-events:none; }
+
 /* Condition compact summary — the score(s) that always sit at the bottom of the
    credit condition, + the "open full report" action. No big inline section. */
 .crx-cond-summary { margin-top:10px; }
