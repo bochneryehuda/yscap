@@ -403,8 +403,40 @@ never attempted. Everything in this phase costs about $10, one time.
   out 0.11% NARROWER than the circle east-west at every latitude.
 - [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — free, and it is
   the second identity signal item 1.9 needs
-- [ ] **3.7 THE MAP.** Subject pin, numbered comp pins, radius rings,
-  click-to-select. MapLibre + OSM, no tile bill.
+- [x] **3.7 THE MAP.** Subject pin, numbered comp pins, a distance ring,
+  click-to-select — **DONE**, on the comparable search
+  (`app-v2/src/components/CompMap.jsx`). **The two halves of the original plan
+  turned out to disagree: MapLibre is a WebGL VECTOR-tile engine and OSM's free
+  service serves RASTER tiles only**, so MapLibre would have needed a vector
+  style from a paid provider — an API key and a bill, which was the one thing
+  the line ruled out. What we need is a locator, not a GIS: a few `<img>` tags in
+  a grid and about a hundred lines of Web Mercator, against ~800 KB of engine for
+  a 3D globe we will never turn. So the projection lives in
+  `app-v2/src/lib/tilemap.js`, PURE and unit-tested
+  (`scripts/test-tilemap-pure.mjs`, 44 assertions), because a map that is 0.1%
+  wrong looks perfect and puts a comparable on the wrong side of a road — the
+  same reason the search's bounding box has its own containment test. It is
+  checked against an INDEPENDENT formula (the atanh form against tan+sec), at
+  anchors true by definition, and for the property that actually matters: the
+  fitted zoom is the TIGHTEST that fits, asserted from both sides, because "a
+  zoom that fits" is satisfied by zoom 1 and piles every comparable on the
+  subject.
+  **THE HONESTY RULES CARRY OVER FROM THE REST OF THE BUILD.** A property with no
+  position is never placed — it is named BELOW the map with the reason, because a
+  map showing 4 of 6 comparables and saying so is useful and one showing 4 and
+  implying 4 is not. A position we worked out by trilateration is drawn HOLLOW
+  and says so: about 17 feet out, close enough to see the street and not close
+  enough to argue about a boundary. The opening view frames the FURTHEST pin
+  rather than the radius that was asked for, because the search relaxes its
+  radius when a market is thin and framing on the request would push exactly the
+  hardest-won comparables off the edge. And if the tiles do not arrive the pins
+  and the ring still draw, with a line saying the streets are missing — judged on
+  whether a tile actually PAINTED, not on an `onError` that may never fire, which
+  is what this environment does: ten tiles requested, none loaded, no error, and
+  a silent grey box that read as "this area has no streets".
+  Rendered against the real warehouse: 7 numbered pins all inside the box, the
+  ring drawn and labelled, no page errors, no sideways scroll, and clicking a pin
+  selects that comparable in the list.
 
 ## PHASE 4 — THE REPORT
 

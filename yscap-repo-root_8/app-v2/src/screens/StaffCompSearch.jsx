@@ -6,6 +6,7 @@ import {
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
+import CompMap from '../components/CompMap.jsx';
 import { geoBasisInfo } from '../lib/geoBasis.js';
 
 /* FIND COMPARABLES — start from a PROPERTY, not from six filters typed by hand.
@@ -52,6 +53,7 @@ export default function StaffCompSearch() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState(() => new Map());
+  const [mapPick, setMapPick] = useState(null);
   const [sending, setSending] = useState(false);
 
   // Everything the search runs on lives in the URL, so a comp search is a LINK —
@@ -255,6 +257,22 @@ export default function StaffCompSearch() {
             </h2>
             <span style={{ color: MUTED, fontSize: 12 }}>Best match first. The score is advisory — you decide.</span>
           </div>
+          {/* WHERE THEY ARE. "0.42 mi NE" cannot answer the question an
+              underwriter actually has — are these on the same side of the
+              highway, the same school district, across the tracks. Clicking a
+              pin picks that comparable, so the map and the list are one
+              selection rather than two. */}
+          <CompMap
+            subject={subject}
+            comps={rows}
+            radiusMi={d.applied_filters && d.applied_filters.radius_mi}
+            selectedId={mapPick}
+            onSelect={(id) => {
+              setMapPick(id);
+              const r = rows.find((x) => String(x.id) === String(id));
+              if (r) toggle(r);
+            }}
+          />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {rows.map((r) => (
               <CompRow key={r.id} r={r} checked={picked.has(r.id)} onToggle={() => toggle(r)} />
