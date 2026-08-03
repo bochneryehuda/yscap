@@ -297,9 +297,28 @@ throw away.
   stated (`values.conditionOfAppraisalAll`, null when there was only one), so
   "the appraiser gave no as-is opinion" is distinguishable from "we only read the
   first line".
-- [ ] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback
-- [ ] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them
-- [ ] **2.8 13 columns go NULL on any vendor without the UAD `COMPARISON_DETAIL` block** — find the fallbacks
+- [x] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback.
+  Measured over the 769 real comparables: functional utility **769**, location
+  factor **769**, data source **769**, days on market **660**, contract date
+  **484**, concessions **359**, basement area **312**. The UAD VIEW/LOCATION
+  codes were the last of them and were the worst of them — see below.
+- [x] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them.
+  `appraisal_format_refusals` records every one with its reason, the research
+  landing warns about the deadline and states the date, and the render harness
+  asserts both.
+- [x] **2.8 13 columns go NULL on any vendor without the UAD `COMPARISON_DETAIL` block** — find the fallbacks.
+  The last two were the VIEW and LOCATION ratings, and the grid row states them
+  in UAD short form (`N;Res;`, `A;BsySt;`) on every report that omits the block.
+  Measured before → after: **view rating 409 → 608, location rating 409 → 667**,
+  and **24 ADVERSE ratings surfaced that nothing could see** — a signal the
+  appraisal tab badges. The same pass fixed the other half: the fallback stored
+  the grid text VERBATIM, so **181 comparables showed a raw code as their
+  "Location"** — `N;Res;`, `A;BsySt;`, even `N;Res;2.5%` with the adjustment
+  percentage stuck on — rendered straight to an underwriter. `uad-rating.js`
+  expands the code and refuses what is not a rating: a relative word
+  ("similar"), and a bare FACTOR ("Residential", "BusyRoad"), because naming
+  what you look at is not rating it and reading BusyRoad as neutral would
+  manufacture the judgement that matters most.
 
 
 ## PHASE 3 — THE MAP AND THE ADDRESS

@@ -826,7 +826,7 @@ function buildFieldsJson(A) {
 //     reports carrying no UAD block — view 409 -> 769, location 409 -> 769,
 //     financing type 343 -> 620 — plus functional utility, a real appraisal fact
 //     stated on every one of the 769 comparables and read by nothing until now.
-const COMP_PARSE_VERSION = 10;
+const COMP_PARSE_VERSION = 11;
 
 module.exports = {
   importAppraisal,

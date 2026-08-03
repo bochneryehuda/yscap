@@ -566,7 +566,12 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
 // report would have been stamped "re-parsed at 4" with all five still NULL,
 // and `units`/`property_type` would have been rewritten with no record of
 // WHERE they came from, which is the one thing `identity_basis` exists to say.
-const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
+// db/446 — the view and location cells: the RATING the grid states in UAD short
+// form when the structured block is absent (360 of 769 comparables carried
+// none), and the FACTOR expanded out of the code instead of stored raw (136
+// showed `N;Res;` to a human).
+const REPARSED = ['view_rating', 'location_rating', 'view_type', 'location_type',
+  'beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
   'units', 'unit_mix', 'price_per_gla', 'price_per_gla_basis', 'gla', 'gla_basis',
   // The comparable's own property type, derived ONLY from its stated unit count
   // (db/409 §7's column, written by nothing until now).

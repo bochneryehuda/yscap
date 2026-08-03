@@ -13,6 +13,7 @@
 const X = require('./xml');
 const { splitComps } = require('./comp-grid');
 const { derivePropertyCategory } = require('./property-category');
+const UAD = require('./uad-rating');
 
 const CUR_YEAR = 2026; // NOTE: injected constant — the codebase forbids new Date() in date-only paths.
 
@@ -851,13 +852,30 @@ function comparables(root, effectiveYear) {
       adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
-      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
-      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      // …AND WHEN THE UAD BLOCK IS ABSENT, THE GRID ROW STATES IT ANYWAY. 360 of
+      // 769 real comparables carry NO view or location rating, and every one of
+      // them has a View/Location adjustment line whose description says `N;Res;`
+      // or `A;BsySt;` — the same rating, in the UAD short form. `Adverse` is a
+      // real underwriting signal the appraisal tab badges, and it was missing
+      // from nearly half the grid. Read by `uad-rating.js`, which refuses a
+      // relative word ("similar") and refuses a bare FACTOR ("Residential",
+      // "BusyRoad") — naming what you look at is not rating it, and reading
+      // BusyRoad as neutral would manufacture the judgement that matters most.
+      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse'])
+        || UAD.readUadRating(adjText(g.adjustments, 'View')).rating,
+      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse'])
+        || UAD.readUadRating(adjText(g.adjustments, 'Location')).rating,
       // EVERY location factor, not just the first — see `factorsOf`. The dropped
       // one was the price-relevant one: 23 of 769 comparables carry a second
       // element with a DIFFERENT code, and it is the BusyRoad / Commercial.
+      // THE RAW CODE MUST NOT REACH A SCREEN. This fell back to the grid row's
+      // text verbatim, so 136 comparables stored `N;Res;`, `A;BsySt;` and even
+      // `N;Res;2.5%` — a code with the adjustment percentage stuck on — and the
+      // appraisal tab renders that string as the property's "Location". Same
+      // class as a database key reaching a screen: not a missing answer, a
+      // confident unreadable one.
       locationType: locationTypeOf(X.findAll(c, 'COMPARISON_LOCATION_DETAIL'))
-        || adjText(g.adjustments, 'Location'),
+        || UAD.readUadRating(adjText(g.adjustments, 'Location')).factor,
       // WHAT THE COMPARABLE LOOKS OUT ON, not just whether the appraiser liked it.
       // The overall RATING above is a three-way verdict (Beneficial/Neutral/Adverse)
       // and every vendor that writes it also names the view itself — a comp backing
@@ -869,7 +887,7 @@ function comparables(root, effectiveYear) {
       // The UAD elements win when the report carries them; the grid's own View row
       // fills the blank on the 73 reports that do not (360 comparables).
       viewType: viewTypeOf(X.findAll(c, 'COMPARISON_VIEW_DETAIL'))
-        || adjText(g.adjustments, 'View'),
+        || UAD.readUadRating(adjText(g.adjustments, 'View')).factor,
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
       // A BASEMENT BEDROOM IS NOT A BEDROOM, and Fannie separates them on the form
