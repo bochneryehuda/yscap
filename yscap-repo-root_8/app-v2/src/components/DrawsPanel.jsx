@@ -1972,6 +1972,132 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
 
       {showPhotos && <InspectionGallery appId={appId} draw={draw} finding={finding} readsOff={readsOff} />}
       {finding && <FindingStatus appId={appId} finding={finding} reload={reload} />}
+      {finding && <InvestorDeliveryCard appId={appId} drawId={draw.sitewire_draw_id} reload={reload} />}
+    </div>
+  );
+}
+
+/* INVESTOR DELIVERY (owner-directed 2026-08-03) — once the borrower agrees, the draw goes to the
+   note buyer who actually funds it. Everything shown here is computed by the server
+   (src/sitewire/investor-delivery*.js): the money, who receives it, and what is blocking the send.
+   The screen never re-derives a figure — it prints what the report and the packet were built from. */
+function InvestorDeliveryCard({ appId, drawId, reload }) {
+  const [open, setOpen] = useState(false);
+  const [p, setP] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
+  }, [appId, drawId]);
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  async function setMode(mode, scope) {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/funding-mode`, { mode, scope });
+      load();
+    } catch (e) { setErr(e?.data?.error || 'Could not save that choice.'); }
+    finally { setBusy(false); }
+  }
+
+  async function send() {
+    if (!p) return;
+    const who = p.to.join(', ');
+    const modeLine = p.funding_mode === 'reimbursement'
+      ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+      : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
+    if (!window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`)) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode,
+      });
+      const missing = (r.skipped || []).length;
+      setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      load(); reload();
+    } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
+    finally { setBusy(false); }
+  }
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <button className="btn btn-sm ghost" onClick={() => setOpen(true)}>Investor delivery</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8, border: '1px solid var(--line,#e6e0d4)', borderRadius: 8, padding: '10px 12px' }}>
+      <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontWeight: 700, color: '#141B22' }}>Investor delivery</div>
+        <button className="btn btn-xs ghost" onClick={() => setOpen(false)}>Hide</button>
+      </div>
+      {!p ? <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>Loading…</div> : (
+        <>
+          <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+            Sends the approved draw to <b style={{ color: '#141B22' }}>{p.note_buyer || 'the note buyer'}</b> with the inspector’s report, our report, the draw packet and the borrower’s signed wire instructions.
+          </div>
+
+          {/* the money, exactly as the report and packet state it */}
+          <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr auto', gap: '2px 12px', maxWidth: 460 }}>
+            <span className="small" style={{ color: '#4B585C' }}>Approved on inspection</span>
+            <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.approved_cents)}</span>
+            <span className="small" style={{ color: '#4B585C' }}>To the borrower</span>
+            <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.to_borrower_cents)}</span>
+            {p.money.to_us_cents > 0 && (<>
+              <span className="small" style={{ color: '#4B585C' }}>Our draw fee</span>
+              <span className="small" style={{ color: '#141B22', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.to_us_cents)}</span>
+            </>)}
+            <span className="small" style={{ color: '#141B22', fontWeight: 700 }}>Investor funds</span>
+            <span className="small" style={{ color: '#141B22', fontWeight: 700, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{usd2(p.money.investor_total_cents)}</span>
+          </div>
+
+          {/* how it is funded */}
+          <div style={{ marginTop: 10 }}>
+            <div className="small" style={{ color: '#141B22', fontWeight: 700 }}>How this draw is funded</div>
+            <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+              {(p.modes || []).map((m) => (
+                <button key={m.mode} className={'btn btn-xs ' + (p.funding_mode === m.mode ? 'primary' : 'ghost')}
+                  disabled={busy} title={m.help} onClick={() => setMode(m.mode, 'draw')}>{m.label}</button>
+              ))}
+            </div>
+            <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+              {(p.modes || []).find((m) => m.mode === p.funding_mode)?.help}
+              {p.funding_mode_source === 'default' ? ' This is the standard arrangement.' : p.funding_mode_source === 'file' ? ' Set as this file’s default.' : ' Set for this draw.'}
+            </div>
+            <button className="btn btn-xs ghost" style={{ marginTop: 4 }} disabled={busy}
+              onClick={() => setMode(p.funding_mode, 'file')}>Use this for every draw on this file</button>
+          </div>
+
+          {/* who it goes to */}
+          <div className="small" style={{ marginTop: 10, color: '#4B585C' }}>
+            <b style={{ color: '#141B22' }}>To:</b> {p.to.length ? p.to.join(', ') : <span style={{ color: '#B4453C' }}>no investor contacts saved</span>}<br />
+            <b style={{ color: '#141B22' }}>Copied:</b> {p.cc.join(', ') || '—'}<br />
+            <span>The borrower is never included.</span>
+          </div>
+
+          {p.blockers.length > 0 && (
+            <ul className="small" style={{ marginTop: 8, color: '#B4453C', paddingLeft: 18 }}>
+              {p.blockers.map((b, i) => <li key={i}>{b}</li>)}
+            </ul>
+          )}
+
+          <div className="row" style={{ gap: 8, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
+              title={p.can_send ? `Deliver this draw to ${p.note_buyer}` : 'Clear the items above first'}>
+              {busy ? 'Sending…' : `Deliver to ${p.note_buyer || 'the investor'}`}
+            </button>
+            {p.history.length > 0 && (
+              <span className="small" style={{ color: '#4B585C' }}>
+                Last delivered {new Date(p.history[0].sent_at).toLocaleString('en-US')}{p.history[0].status === 'error' ? ' (failed)' : ''} · {p.history.length} delivery{p.history.length === 1 ? '' : 's'} on record
+              </span>
+            )}
+          </div>
+          {msg ? <div className="small" style={{ color: '#2F7F86', marginTop: 6 }}>{msg}</div> : null}
+          {err ? <div className="small" style={{ color: '#B4453C', marginTop: 6 }}>{err}</div> : null}
+        </>
+      )}
     </div>
   );
 }
@@ -2000,9 +2126,38 @@ function FindingStatus({ appId, finding, reload }) {
     if (decision === 'approved' && dollars != null && dollars !== '' && Number.isFinite(Number(dollars))) body.approved_cents = Math.round(Number(dollars) * 100);
     try { await api.post(`/api/sitewire/findings/${finding.id}/lines/${lineId}/decide`, body); const d = await api.get(`/api/sitewire/findings/${finding.id}`); setDetail(d); reload(); } catch (e) { /* surfaced by parent on reload */ }
   }
+  // THE BORROWER MAY AGREE OUTSIDE THE PORTAL (owner-directed 2026-08-03): "we should also be able
+  // to click that the borrower agreed with the finding in case the borrower gives us his
+  // authorization verbally or he writes an email and he's not doing it in the portal." It runs the
+  // SAME transition their own Accept button does — the note records how the approval arrived.
+  const [recording, setRecording] = useState(false);
+  const [recErr, setRecErr] = useState('');
+  async function recordAgreement() {
+    const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
+    if (note == null) return;
+    if (String(note).trim().length < 8) { window.alert('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
+    setRecording(true); setRecErr('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/mark-accepted`, { note: String(note).trim() });
+      reload();
+    } catch (e) { setRecErr(e?.data?.error || 'Could not record the borrower’s approval — please try again.'); }
+    finally { setRecording(false); }
+  }
+
   return (
     <div style={{ marginTop: 8, borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8 }}>
-      <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}</div>
+      <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}
+        {finding.accepted_via === 'staff' ? <span className="muted"> · recorded by the team</span> : null}</div>
+      {finding.status === 'delivered' && (
+        <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn btn-sm ghost" disabled={recording} onClick={recordAgreement}
+            title="Use this when the borrower approved by phone or email instead of clicking Accept in their portal.">
+            {recording ? 'Recording…' : 'Borrower agreed (by phone or email)'}
+          </button>
+          <span className="small" style={{ color: '#4B585C' }}>Waiting on the borrower — or record their approval here if they gave it to you directly.</span>
+        </div>
+      )}
+      {recErr ? <div className="small" style={{ color: '#B4453C', marginTop: 4 }}>{recErr}</div> : null}
       {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => {
         const defDollars = l.dispute_desired_cents != null ? String(Math.round(Number(l.dispute_desired_cents)) / 100) : '';
         const val = amt[l.id] != null ? amt[l.id] : defDollars;
