@@ -492,7 +492,34 @@ function groupDelta(rows, keyOf, minSample, label, inverse = false) {
   };
 }
 
-/** Monthly % change in median $/sqft, older half vs newer half. Null when thin. */
+/**
+ * THE TWO HALVES HAVE TO BE FAR ENOUGH APART TO BE A TREND.
+ *
+ * A percentage gap divided by the months between the halves is a RATE, and this
+ * used to gate only on how MANY dated sales there were — never on how far apart
+ * they sat. Sixteen sales all closed inside one month still passed, and a 4% gap
+ * over ONE month became 3.95% A MONTH. The same sixteen readings spread over a
+ * year read 0.33%/month: a 12-fold swing driven entirely by the spacing.
+ *
+ * `suggestAdjustments` then multiplied that by the months since a comp sold with
+ * no ceiling, so a $400,000 comp sold a year ago was pre-filled at **+$190,750**
+ * — a 47.7% net adjustment offered to a human as a suggestion.
+ *
+ * Three guards, and each refuses OUT LOUD rather than returning a quiet number:
+ *   * the half-midpoints must be at least MIN_TREND_MONTHS apart;
+ *   * the resulting rate must be inside MAX_MONTHLY_PCT. A crude median-of-halves
+ *     on a few dozen sales that says the market is moving faster than ~1.5% a
+ *     month is telling us the two halves differ for some reason OTHER than time
+ *     (different streets, different sizes, a couple of distressed sales) — the
+ *     honest reading of an implausible rate is "this method cannot see it";
+ *   * the total dollars are capped per comp where it is applied, below.
+ */
+const MIN_TREND_MONTHS = 6;
+const MAX_MONTHLY_PCT = 1.5;
+// …and a ceiling on the DOLLARS a time adjustment may carry on one comp, since a
+// legal rate compounded over a long-ago sale gets there anyway. 15% mirrors the
+// net-adjustment figure this desk already flags for review.
+const MAX_TIME_ADJ_PCT = 15;
 function timeTrend(rows, today, minSample) {
   const dated = rows.filter((o) => o.sale_date).slice().sort((a, b) => String(a.sale_date).localeCompare(String(b.sale_date)));
   if (dated.length < minSample * 2) {
@@ -506,7 +533,19 @@ function timeTrend(rows, today, minSample) {
   const midNewer = newer[Math.floor(newer.length / 2)].sale_date;
   const months = monthsBetween(String(midNewer).slice(0, 10), String(midOlder).slice(0, 10));
   if (!mo || !mn || !months || months <= 0) return { value: null, n: dated.length, why: 'the sales are not spread over enough time to read a trend' };
+  if (months < MIN_TREND_MONTHS) {
+    return { value: null, n: dated.length, monthsApart: round(months, 0.1),
+      why: `these ${dated.length} sales are bunched into about ${round(months, 0.1)} month${months < 1.5 ? '' : 's'} — `
+        + `dividing a price gap by that little time turns ordinary scatter into a huge monthly rate, `
+        + `so we need at least ${MIN_TREND_MONTHS} months between the older and newer halves before calling anything a trend` };
+  }
   const pct = ((mn - mo) / mo) * 100 / months;
+  if (!(Math.abs(pct) <= MAX_MONTHLY_PCT)) {
+    return { value: null, n: dated.length, monthsApart: round(months, 0.1),
+      why: `this set reads as ${round(pct, 0.01)}% a month, which is faster than a market moves — `
+        + `the two halves almost certainly differ for some reason other than time (different streets, `
+        + `different sizes, a distressed sale or two), so there is nothing here we can honestly call a trend` };
+  }
   return {
     value: round(pct, 0.01), n: dated.length, monthsApart: round(months, 0.1),
     basis: `median price per foot moved ${round(((mn - mo) / mo) * 100, 0.1)}% over about ${round(months, 0.1)} months between the older and newer halves of the set`,
@@ -567,8 +606,22 @@ function suggestAdjustments(subject, comp, rates, opts = {}) {
   const trend = rates && rates.monthlyMarketChangePct ? num(rates.monthlyMarketChangePct.value) : null;
   const months = today && comp && comp.sale_date ? monthsBetween(today, comp.sale_date) : null;
   if (trend && months && months > 1 && num(comp.sale_price)) {
-    lines.push({ key: 'market_conditions', amount: round(num(comp.sale_price) * (trend / 100) * months, 250), source: 'suggested',
-      note: `sold about ${Math.round(months)} months ago; our own sales moved about ${trend}% a month (${rates.monthlyMarketChangePct.basis})` });
+    // A CEILING ON THE DOLLARS, on top of the ceiling on the RATE. A rate inside
+    // MAX_MONTHLY_PCT is still compounded by however long ago the comp sold, so a
+    // three-year-old sale would carry a 54% adjustment on a perfectly ordinary
+    // 1.5%/month reading. Past MAX_TIME_ADJ_PCT of the sale price the suggestion
+    // stops being a nudge and becomes the value, and a human should be typing it:
+    // the line is capped and SAYS it was capped, rather than quietly shrinking.
+    const raw = num(comp.sale_price) * (trend / 100) * months;
+    const cap = num(comp.sale_price) * (MAX_TIME_ADJ_PCT / 100);
+    const capped = Math.abs(raw) > cap;
+    const amount = capped ? Math.sign(raw) * cap : raw;
+    lines.push({ key: 'market_conditions', amount: round(amount, 250), source: 'suggested',
+      note: `sold about ${Math.round(months)} months ago; our own sales moved about ${trend}% a month `
+        + `(${rates.monthlyMarketChangePct.basis})`
+        + (capped ? ` — held at ${MAX_TIME_ADJ_PCT}% of the sale price, because ${Math.round(months)} months `
+          + 'at that rate comes to more than a time adjustment should ever carry on its own; '
+          + 'read the sale yourself before accepting it' : '') });
   }
   // Concessions the appraiser recorded are a FACT, not a judgement — a seller
   // credit inflated the recorded price by exactly that much.

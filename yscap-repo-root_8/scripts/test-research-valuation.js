@@ -304,5 +304,61 @@ function corpus(n, f) {
     'the thresholds the UI shows are the ones the engine tests');
 }
 
+// ---- 4b. THE TIME TREND IS A RATE, AND A RATE NEEDS A SPAN --------------------
+// This used to gate only on HOW MANY dated sales there were, never on how far
+// apart they sat. Sixteen sales bunched into one month passed the count check,
+// and a 4% price gap divided by ONE month became 3.95% A MONTH. The identical
+// readings spread over a year read 0.33%/month — a twelve-fold swing driven
+// entirely by the spacing. `suggestAdjustments` then multiplied it by the months
+// since a comp sold with no ceiling, offering a human +$190,750 on a $400,000
+// comparable as a "suggestion".
+{
+  // Sixteen sales, the newer half 4% dearer, ALL INSIDE ONE MONTH.
+  const bunched = corpus(16, (i) => ({
+    sale_price: i < 8 ? 375000 : 390000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2026-01-05' : '2026-02-05',
+  }));
+  const r = V.deriveMarketRates(bunched, { today: TODAY });
+  ok(r.monthlyMarketChangePct.value === null,
+    'sales bunched into a single month are NOT a market trend, however many of them there are');
+  ok(/bunched|between the older and newer halves/.test(r.monthlyMarketChangePct.why || ''),
+    'and the refusal explains it is the SPACING, not the count');
+
+  // The same readings spread over two years ARE a trend, and a modest one.
+  const spread = corpus(16, (i) => ({
+    sale_price: i < 8 ? 375000 : 390000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2024-09-05' : '2026-01-05',
+  }));
+  const r2 = V.deriveMarketRates(spread, { today: TODAY });
+  ok(r2.monthlyMarketChangePct.value != null && Math.abs(r2.monthlyMarketChangePct.value) < 1.5,
+    'the SAME price gap spread over two years reads as a small, believable monthly rate');
+
+  // A rate no market moves at is refused even with a long span — the two halves
+  // differ for some reason other than time.
+  const wild = corpus(16, (i) => ({
+    sale_price: i < 8 ? 200000 : 600000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2025-01-05' : '2026-01-05',
+  }));
+  const r3 = V.deriveMarketRates(wild, { today: TODAY });
+  ok(r3.monthlyMarketChangePct.value === null,
+    'a rate faster than a market moves is refused — that is the method failing, not the market');
+  ok(/faster than a market moves/.test(r3.monthlyMarketChangePct.why || ''),
+    'and it says so, instead of returning a confident number');
+
+  // THE DOLLARS ARE CAPPED TOO. A legal rate compounded over a long-ago sale gets
+  // to an absurd figure on its own.
+  const rates = { pricePerSqft: { value: null }, glaAdjustmentPerSqft: { value: null },
+    perBedroom: { value: null }, perBath: { value: null }, perConditionGrade: { value: null },
+    monthlyMarketChangePct: { value: 1.4, basis: 'test' } };
+  const lines = V.suggestAdjustments(
+    { gla: 1500 }, { sale_price: 400000, sale_date: '2022-08-02', gla: 1500 },
+    rates, { today: TODAY });
+  const mc = lines.find((l) => l.key === 'market_conditions');
+  ok(mc && Math.abs(mc.amount) <= 400000 * 0.15,
+    'a time adjustment can never exceed 15% of the sale price, however long ago the comp sold');
+  ok(mc && /held at 15%/.test(mc.note),
+    'and when it is held back it SAYS so, rather than quietly shrinking');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
