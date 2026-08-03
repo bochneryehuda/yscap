@@ -307,6 +307,12 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// The research desk: the cross-file property / comparable / appraiser database built
+// out of every appraisal XML we have ever imported (db/415), its search engine, and
+// the build-your-own valuation grid (db/410). Staff-wide by design — it holds
+// addresses, property characteristics and recorded sale prices, no borrower data —
+// so the router applies requireAuth + requireStaff itself and does NOT scope per file.
+app.use('/api/research', require('./routes/research'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
 // underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
@@ -620,6 +626,49 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
           .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
+        // BACK-DATE THE RESEARCH DATABASE (owner-directed 2026-08-02: "open and back date
+        // this database — on every single file that we have already in XML, all the
+        // comparables that he used should be saved into that database"). Folds every
+        // appraisal we have ever imported into the cross-file property / comparable /
+        // appraiser warehouse (db/415). Oldest report first, so the final state matches
+        // what we would have reached by filing each report as it arrived.
+        //
+        // Bounded per boot and SELF-DRAINING: the ingest ledger records each report, so
+        // each boot picks up where the last one stopped and a fully-folded corpus makes
+        // this a single empty query. Idempotent, never throws, fire-and-forget.
+        require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
+          .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
+        // PUTTING THOSE PROPERTIES ON THE MAP (db/412) — what makes "find me every
+        // comparable within half a mile" possible. Only comparables the appraiser's
+        // own software happened to geocode carry coordinates, and a SUBJECT property
+        // never does, so the radius search had almost nothing to filter.
+        //
+        // Two free, keyless services (US Census, then OpenStreetMap) and the answer
+        // is stored permanently — deliberately not Google, whose terms cap a stored
+        // coordinate at 30 days and would turn a one-off lookup into a monthly bill
+        // for a number that never moves (docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md).
+        //
+        // Paced and bounded per boot, ordered by how often a property actually turns
+        // up in the reports so the useful ones are placed first, and SELF-DRAINING
+        // (every row it looks at is stamped, so an address nobody can place is not
+        // re-asked forever). Off-switch RESEARCH_GEOCODE_DISABLED=1.
+        require('./lib/research/geocode').backfillGeocodes(require('./db'),
+          { limit: Number(process.env.RESEARCH_GEOCODE_BOOT || 120) })
+          .then((r) => r && r.looked && console.log('[boot] research geocoding:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research geocoding failed:', e.message));
+        // PREVIOUS AND FUTURE for the warehouse's own roll-up (db/414). `properties`
+        // is derived from the observations, but the roll-up only runs when a report
+        // TOUCHES a property — so widening what rolls up (the facts the reports have
+        // always stated and the search could not reach) would leave every property
+        // already in the database behind, with a NULL in each new column and a
+        // filter that quietly returns almost nothing. This drains that through the
+        // ONE definition of the roll-up. Bounded, most-observed first, self-draining
+        // via `rollup_version`; a future fact is a column, a mapping and a bump.
+        require('./lib/research/ingest').rerollStaleProperties(require('./db'),
+          { limit: Number(process.env.RESEARCH_REROLL_BOOT || 500) })
+          .then((r) => r && r.rerolled && console.log('[boot] research roll-up refresh:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research roll-up refresh failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at
@@ -685,6 +734,18 @@ if (require.main === module) {
           .then((r) => r && (r.added || r.filled)
             && console.log('[boot] funded deals onto track records:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] funded track-record backfill failed:', e.message));
+        // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/413,
+        // owner-authorized 2026-08-02). Maps Platform permits keeping a `place_id`
+        // indefinitely and caps a stored latitude/longitude at 30 days; this cache
+        // was holding them permanently. The sweep blanks the lapsed COORDINATES and
+        // keeps the place_id, so `samePlace()` — the whole reason db/124 exists — is
+        // untouched: no extra API call, no behaviour change, nothing slower. An
+        // `osm:` row never expires (its licence permits keeping the result), and the
+        // research warehouse's own coordinates (db/412) are Census/OSM-sourced and
+        // are not affected. Bounded, idempotent, self-draining, never throws.
+        require('./lib/address-canon').expireGoogleCoordsOnce()
+          .then((r) => r && r.expired && console.log('[boot] google coordinate expiry:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] google coordinate expiry failed:', e.message));
         // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
         // THREE fields (first / middle / last, + suffix) so it lines up with the way
         // Encompass, MISMO and every closing document model a person. This splits the
@@ -803,6 +864,10 @@ if (require.main === module) {
     // with its USPS-standardized subject address. OFF unless USPS_BACKFILL_ENABLED=1 and
     // USPS keys are set (developer.usps.com).
     try { require('./lib/address-usps-verify').startUspsBackfill(); } catch (e) { console.warn('usps backfill not started:', e.message); }
+    // Previous files: put back the USPS stamps the "it bounces back" bug wiped
+    // (owner-reported 2026-08-02; db/415). Cache-only, so it spends no USPS quota,
+    // and it only ever re-asserts an import a human already made on the same place.
+    try { require('./lib/usps-stamp-heal').startUspsStampHeal(); } catch (e) { console.warn('usps stamp heal not started:', e.message); }
   });
 }
 module.exports = app;

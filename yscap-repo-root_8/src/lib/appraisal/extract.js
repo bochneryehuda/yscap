@@ -244,7 +244,8 @@ function settledMonth(desc) {
 }
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null,
+  const out = { gla: null, glaBasis: null, saleDate: null, conditionUad: null, qualityUad: null,
+    conditionText: null, qualityText: null, dom: null,
     beds: null, bathsFull: null, bathsHalf: null, baths: null, totalRooms: null,
     pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
@@ -255,11 +256,20 @@ function compGrid(c) {
     if (t === 'Other' && !d) d = clean(X.attr(spa, '_TypeOtherDescription'));
     const amt = toNum(X.attr(spa, '_Amount'));
     if (t) out.adjustments.push({ type: t, description: d, amount: amt });
-    if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) out.gla = g; }
-    else if (t === 'GrossBuildingArea' && d && out.gla == null) { const g = toNum(d); if (g != null && g > 100 && g < 100000) out.gla = g; }
+    // WHICH AREA THIS IS. A 1025 grid states GROSS BUILDING area where a 1004 states
+    // gross LIVING area, and both land in `gla` — so a price-per-foot comparison
+    // across the two forms is apples to oranges unless the basis travels with the
+    // number. Recording it costs nothing and makes the difference visible.
+    if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gla'; } }
+    else if (t === 'GrossBuildingArea' && d && out.gla == null) { const g = toNum(d); if (g != null && g > 100 && g < 100000) { out.gla = g; out.glaBasis = 'gba'; } }
     else if (t === 'DateOfSale' && d) out.saleDate = settledMonth(d);
-    else if (t === 'Condition' && d && UAD_C.test(d)) out.conditionUad = d;
-    else if (t === 'Quality' && d && UAD_Q.test(d)) out.qualityUad = d;
+    // A NON-UAD RATING IS STILL A RATING. The UAD codes stay enum-whitelisted (the
+    // review checks compare them and must never see a free-text value), but a vendor
+    // that writes "Good" or "Avg-Good" instead of "C3" was having the comparable's
+    // condition — the single most important thing about a comp after its price —
+    // thrown away entirely. The raw word is kept beside the code, never in place of it.
+    else if (t === 'Condition' && d) { if (UAD_C.test(d)) out.conditionUad = d; else out.conditionText = d; }
+    else if (t === 'Quality' && d) { if (UAD_Q.test(d)) out.qualityUad = d; else out.qualityText = d; }
   }
   // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the single most-missed
   // grid fact. On a multi-unit file it may repeat per unit; take the first (subject-comparison) row.
@@ -281,8 +291,16 @@ function compGrid(c) {
   }
   const cd = X.find(c, 'COMPARISON_DETAIL');
   if (cd) {
-    if (!out.conditionUad) { const cc = clean(X.attr(cd, 'GSEOverallConditionType')); if (cc && UAD_C.test(cc)) out.conditionUad = cc; }
-    if (!out.qualityUad) { const qq = clean(X.attr(cd, 'GSEQualityOfConstructionRatingType')); if (qq && UAD_Q.test(qq)) out.qualityUad = qq; }
+    if (!out.conditionUad) {
+      const cc = clean(X.attr(cd, 'GSEOverallConditionType'));
+      if (cc && UAD_C.test(cc)) out.conditionUad = cc;
+      else if (cc && !out.conditionText) out.conditionText = cc;
+    }
+    if (!out.qualityUad) {
+      const qq = clean(X.attr(cd, 'GSEQualityOfConstructionRatingType'));
+      if (qq && UAD_Q.test(qq)) out.qualityUad = qq;
+      else if (qq && !out.qualityText) out.qualityText = qq;
+    }
     const dom = toNum(X.attr(cd, 'GSEDaysOnMarketDescription')); if (dom != null && dom >= 0 && dom < 3000) out.dom = dom;
   }
   return out;
@@ -376,7 +394,9 @@ function comparables(root) {
       })(),
       netAdjPct: signed(X.attr(c, 'SalePriceTotalAdjustmentNetPercent'), 1e6),    // numeric(8,2), can be < 0
       grossAdjPct: signed(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent'), 1e6), // numeric(8,2)
-      gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
+      gla: g.gla, glaBasis: g.glaBasis, saleDate: g.saleDate,
+      conditionUad: g.conditionUad, qualityUad: g.qualityUad,
+      conditionText: g.conditionText, qualityText: g.qualityText,
       dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).

@@ -1758,8 +1758,20 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
           AND t.code='usps_address_verification'
         RETURNING ci.id`, [req.params.id, req.actor.id]);
     await client.query('COMMIT');
+    // TELL CLICKUP. A re-spelling is suppressed by the outbound no-op check (the
+    // card and the file already name the same place), so this costs nothing in the
+    // ordinary case — but when USPS makes a SUBSTANTIVE correction (a wrong ZIP, a
+    // wrong street), the card still holds the wrong address, and the inbound guard
+    // would correctly read that as a real edit and write it straight back over the
+    // import. Pushing is what stops that specific bounce. Scoped, so it is treated
+    // as the deliberate human edit it is; best-effort, never blocks the import.
+    try { await enqueueClickupPush(req.params.id, ['property_address']); } catch (_) {}
+    // The ADDRESS goes in the audit detail, not just the status: it is the only
+    // record of what a human actually adopted, and the 2026-08-02 bounce bug was
+    // diagnosed — and repaired — from this row (see lib/usps-stamp-heal.js).
     await audit(req, 'usps_verified_address_imported', 'application', req.params.id,
-      { status: app.usps_match, conditionIds: cleared.rows.map((r) => r.id) });
+      { status: app.usps_match, address: (app.usps_address && app.usps_address.oneLine) || null,
+        conditionIds: cleared.rows.map((r) => r.id) });
     res.json({ ok: true, address: app.usps_address, conditionCleared: cleared.rowCount > 0 });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
@@ -2141,7 +2153,7 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
     }
     /* THE AFFIDAVIT IS NO LONGER A PREREQUISITE OF MARKING THE FILE INDIVIDUAL
        (owner-directed 2026-08-02). It is still REQUIRED — as its own rule-driven
-       condition (db/410, `cond_noo_affidavit_individual`), which is the thing
+       condition (db/417, `cond_noo_affidavit_individual`), which is the thing
        that must be cleared before clear-to-close.
 
        WHY THE OLD 400 HAD TO GO: it demanded the affidavit ride along in the very
@@ -5358,14 +5370,16 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         missing: pkg.missing,
         termSheetExecuted: pkg.termSheetExecuted,
         insurance: closingPrep.insuranceSlots(pkg.groups.insurance),
-        // The byte budget the ACTIVE provider allows, so the card can warn BEFORE a
-        // send that something will not fit — never after.
+        // What ONE email can carry, so the card can say BEFORE the send how many
+        // emails the package will take — never after. A package over this is now
+        // SPLIT across the closing chain rather than trimmed, so this is no longer
+        // a warning, only a count.
         budgetBytes: closingPrep.attachBudgetRawBytes(),
+        maxParts: closingPrep.maxParts(),
         totalBytes: (pkg.ordered || []).reduce((n, d) => n + (Number(d.size_bytes) || 0), 0),
-        // Documents we can already tell will not go: one that is too big on its own,
-        // or that has no stored copy. The total-vs-budget warning alone missed both —
-        // a single 12 MB survey on a 15 MB file is under the budget and still cannot
-        // be attached, and the sender only found out from the sent email.
+        // The only two things we can still tell will NOT go: a document bigger than
+        // a whole email on its own, and one with no stored copy. A package merely
+        // over the budget is not in this list any more — it is split.
         willSkip: closingPrep.predictSkips(pkg.ordered),
       },
       chain: thread ? {
@@ -5432,7 +5446,19 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
     const note = String((req.body && req.body.note) || '').trim().slice(0, 4000);
     const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
-    const attach = await closingPrep.buildAttachments(pkg.ordered);
+    // A package bigger than one email is SPLIT across the chain, not trimmed
+    // (owner-directed 2026-08-02). Part 1 is the request; parts 2..N carry the rest
+    // of the documents into the same conversation.
+    const pack = await closingPrep.packAttachments(pkg.ordered);
+    const parts = pack.parts.filter((p) => p.attachments.length);
+    const partCount = parts.length;
+    // What part 1's email describes: what rides on THIS message, plus the whole
+    // package (so the manifest names every document, wherever it travels).
+    const attach = {
+      attachments: (parts[0] || { attachments: [] }).attachments,
+      attached: pack.attached, skipped: pack.skipped,
+      totalBytes: pack.totalBytes, partCount,
+    };
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const senderName = meRow.full_name || meRow.email || '';
 
@@ -5460,6 +5486,37 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
 
+    // THE REST OF THE PACKAGE, onto the same conversation. Sent AFTER part 1 has
+    // landed, so a part can never arrive before the request that explains it — and
+    // each part carries its own dedupe key, so a double-click cannot duplicate one.
+    // A failed part is REPORTED, never silent: part 1 has already gone out naming
+    // every document, so the operator must be told which ones did not follow.
+    const partsFailed = [];
+    for (let i = 1; i < parts.length; i++) {
+      const partNo = i + 1;
+      const files = parts[i].attachments.map((a) => a.filename);
+      let r;
+      try {
+        r = await closingThread.sendOnThread({
+          applicationId: appId,
+          eventKind: 'order',
+          dedupeKey: force ? null : `order:part${partNo}`,
+          to, cc,
+          attachments: parts[i].attachments,
+          fromName: senderName,
+          staffId: req.actor.id,
+          msgType: 'closing_order',
+          subject: closingPrep.CLOSING_PREP_TITLE,
+          build: ({ address }) => closingPrep.buildAttachmentPartEmail(data,
+            { address, part: partNo, of: partCount, files, senderName }),
+        });
+      } catch (e) { r = { ok: false, reason: (e && e.message) || 'error' }; }
+      if (!r || (!r.ok && !r.skipped)) {
+        partsFailed.push({ part: partNo, files, reason: (r && r.reason) || 'send_failed' });
+        console.error(`[closing-prep] ${appId}: part ${partNo} of ${partCount} did not send (${(r && r.reason) || 'unknown'}) — ${files.join(', ')}`);
+      }
+    }
+
     // THE EMAIL HAS ALREADY GONE. Everything from here is bookkeeping, so a failure
     // must not answer "Could not send the closing-prep request" — counsel HAS the
     // package, and telling the operator otherwise invites a second ~20 MB send to
@@ -5475,7 +5532,8 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
                        subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
                        send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
         [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
-         JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+         JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length,
+           parts: partCount, partsFailed: partsFailed.length })]);
     } catch (e) {
       console.error(`[closing-prep] the request WAS sent for ${appId} but the order row failed to write:`, (e && e.message) || e);
     }
@@ -5500,12 +5558,14 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     await audit(req, 'closing_prep_ordered', 'application', appId, {
       to: to.length, cc: cc.length, extra: extraEmails.length,
       attached: attach.attached.length, skipped: attach.skipped.length, force: !!force,
+      parts: partCount, partsFailed,
     });
     res.json({
       ok: true, sent_to: to, cc, subject: sent.subject,
-      address: sent.address,
-      attached: attach.attached.map((d) => ({ filename: d.filename, group: d.group, bytes: d.bytes })),
+      address: sent.address, parts: partCount,
+      attached: attach.attached.map((d) => ({ filename: d.filename, group: d.group, bytes: d.bytes, part: d.part })),
       skipped: attach.skipped.map((d) => ({ filename: d.filename, reason: d.reason })),
+      partsFailed,
     });
   } catch (e) { res.status(500).json({ error: 'Could not send the closing-prep request.' }); }
 });
@@ -6435,7 +6495,7 @@ async function signOffGate(itemId, actor) {
     const pn = (await db.query(
       `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
     /* THE AFFIDAVIT IS NO LONGER DEMANDED HERE (owner-directed 2026-08-02). It
-       has its own condition now — `cond_noo_affidavit_individual` (db/410),
+       has its own condition now — `cond_noo_affidavit_individual` (db/417),
        rule-driven on `vesting_is_individual` — and that condition is
        prior_to_docs, so it holds clear-to-close exactly as this gate used to.
        Keeping the demand in BOTH places would mean one affidavit asked for
@@ -13342,13 +13402,22 @@ router.get('/documents/:id/dossier', async (req, res) => {
       }),
       safe(async () => {
         const r = await db.query(
+          // ON-BEHALF-OF. `impersonator_staff_id` (db/320) is stamped whenever a
+          // staffer acts inside a borrower-view session. Without this join the
+          // dossier names the BORROWER as the person who uploaded or accepted a
+          // document a staff member actually handled — the same hole the file
+          // audit log closed, left open here. The user agent rides along too:
+          // "which device did this arrive from" is a routine custody question.
           `SELECT al.created_at, al.action, al.actor_kind, al.detail, al.ip_address,
+                  al.user_agent,
+                  NULLIF(imp.full_name,'') AS impersonator_name,
                   COALESCE(NULLIF(s.full_name,''),
                            NULLIF(b.full_name,''),
                            NULLIF(btrim(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')),'')) AS actor_name
              FROM audit_log al
              LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id=al.actor_id
              LEFT JOIN borrowers b ON al.actor_kind='borrower' AND b.id=al.actor_id
+             LEFT JOIN staff_users imp ON imp.id = al.impersonator_staff_id
             WHERE (al.entity_type='document' AND al.entity_id=$1)
                OR (al.detail->>'documentId' = $1::text)
             ORDER BY al.created_at LIMIT 200`, [doc.id]);
@@ -13431,9 +13500,14 @@ router.get('/documents/:id/dossier', async (req, res) => {
       // when, and from where. The request log is richer than the audit row
       // (it has the IP and the outcome of every attempt, including refusals).
       safe(async () => (await db.query(
+        // Same on-behalf-of rule as the audit trail above: a staffer who
+        // previewed or downloaded this inside a borrower-view session must not
+        // appear in the ledger as the borrower. This is the half of the ledger
+        // an exfiltration question is actually asked of.
         `SELECT ra.at, ra.method, ra.path, ra.status, ra.actor_kind, ra.actor_email,
-                ra.actor_role, ra.ip
+                ra.actor_role, ra.ip, NULLIF(rimp.full_name,'') AS impersonator_name
            FROM request_audit_log ra
+           LEFT JOIN staff_users rimp ON rimp.id = ra.impersonator_staff_id
           WHERE ra.entity_id=$1 ORDER BY ra.at DESC LIMIT 100`, [doc.id])).rows),
     ]);
 

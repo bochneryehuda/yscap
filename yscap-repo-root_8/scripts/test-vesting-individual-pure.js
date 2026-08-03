@@ -149,7 +149,7 @@ console.log('\nF. the affidavit is a CONDITION now, not a prerequisite of markin
     'the engine runs immediately, so the affidavit condition appears at once');
 }
 {
-  const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '410_vesting_individual_affidavit.sql'), 'utf8');
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '417_vesting_individual_affidavit.sql'), 'utf8');
   ok(/cond_noo_affidavit_individual/.test(sql), 'the affidavit condition is seeded');
   ok(/vesting_is_individual/.test(sql) && /is_true/.test(sql),
     '…rule-driven, so linking an LLC later retracts it on its own');

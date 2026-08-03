@@ -190,6 +190,34 @@ eq('garbage still rejected', normalizeTypedDate('26'), null);
   eq('loc: near-identical coords equivalent (~10m)', feq(ADDR, cuLoc(40.69805, -73.95692, 'x'), ourLoc(40.69804, -73.95691, 'y')), true);
   eq('loc: different address NOT equivalent', feq(ADDR, cuLoc(40.69, -73.95, 'a'), ourLoc(41.23, -75.91, 'b')), false);
   eq('loc: formatted fallback matches', feq(ADDR, { formatted_address: '74 Kent Ave, Brooklyn, NY' }, ourLoc(40.69, -73.95, '74 Kent Ave Brooklyn NY')), true);
+
+  // THE ADDRESS DECIDES, NOT THE PIN (owner-directed 2026-08-02: "even if the
+  // addresses don't match up exactly it shouldn't start going for manual review as
+  // long as it means the same address … every provider reads an address a little
+  // different"). Google, OpenStreetMap and a USPS-derived record place ONE building
+  // tens of metres apart — well past the ~11 m coordinate tolerance — so comparing
+  // coordinates FIRST made the same home read as an identity rewrite, which the PII
+  // shield turned into a `pii_overwrite_blocked` review with nothing to decide.
+  // Each of these fails on the coordinates-first order.
+  eq('loc: same address, two providers’ pins ~30m apart is still the same place',
+     feq(ADDR, cuLoc(40.698040, -73.956911, '74 Kent Ave, Brooklyn, NY 11249, USA'),
+         ourLoc(40.698310, -73.956640, '74 Kent Ave, Brooklyn, NY 11249')), true);
+  eq('loc: same address spelled two ways, pins far apart, still the same place',
+     feq(ADDR, cuLoc(41.826800, -71.394800, '21 Governor Street, Providence, RI 02906, USA'),
+         ourLoc(41.827400, -71.395600, '21 Governor St, Providence, RI 02906-1234')), true);
+  eq('loc: a unit keyword and an ordinal are spelling, not a different home',
+     feq(ADDR, cuLoc(40.6300, -73.9950, '5701 15 Ave 4D, Brooklyn, NY 11219'),
+         ourLoc(40.6309, -73.9961, '5701 15th Ave Apt 4d, Brooklyn, NY 11219')), true);
+  // …and the pin can never make two DIFFERENT houses equal, however close it is.
+  eq('loc: neighbouring house numbers are NOT the same place, however close the pins',
+     feq(ADDR, cuLoc(40.698040, -73.956911, '74 Kent Ave, Brooklyn, NY 11249'),
+         ourLoc(40.698041, -73.956912, '76 Kent Ave, Brooklyn, NY 11249')), false);
+  eq('loc: the same street number in two ZIPs is two properties',
+     feq(ADDR, cuLoc(40.5, -74.5, '1727 S 2nd St, Piscataway, NJ 08854'),
+         ourLoc(40.5, -74.5, '1727 S 2nd St, Plainfield, NJ 07063')), false);
+  // The pin is still the fallback when the text cannot be read on both sides.
+  eq('loc: unreadable text on both sides falls back to the coordinates',
+     feq(ADDR, cuLoc(40.698040, -73.956911, 'Kent Ave'), ourLoc(40.698045, -73.956915, 'Kent Avenue')), true);
   const USERS = F.SHARED.loanOfficer;
   eq('users: already assigned = no-op', feq(USERS, [{ id: 81537660 }], { add: [81537660] }), true);
   eq('users: new assignee NOT equivalent', feq(USERS, [{ id: 111 }], { add: [81537660] }), false);

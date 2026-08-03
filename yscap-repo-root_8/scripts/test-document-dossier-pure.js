@@ -215,4 +215,49 @@ t('summarizing a detail blob never throws and never dumps a nested object', () =
   assert.ok(!/\{/.test(s), s);
 });
 
+// ── THE ON-BEHALF-OF HOLE, CLOSED ────────────────────────────────────────────
+// An action taken inside a borrower-view session is recorded under the
+// BORROWER's identity — that is who the session ran as. The file audit log
+// already names the real human; the dossier did not, so a staffer's upload or
+// download read as the borrower's own act. These pin both halves.
+t('the timeline names the real human behind a borrower-view session', () => {
+  const tl = D.buildTimeline({
+    doc: { id: 'd1', created_at: '2026-01-01T00:00:00Z' },
+    audits: [{
+      created_at: '2026-01-02T00:00:00Z', action: 'accept_document',
+      actor_kind: 'borrower', actor_name: 'Sam Borrower',
+      impersonator_name: 'Dov Klein', detail: {},
+    }],
+  });
+  const ev = tl.find((e) => e.code === 'accept_document');
+  assert.ok(ev, 'the accept event is in the timeline');
+  assert.strictEqual(ev.impersonator, 'Dov Klein');
+  assert.ok(/Dov Klein/.test(ev.detail), 'the real human is named in the detail');
+  assert.ok(/signed in as this borrower/i.test(ev.detail), ev.detail);
+  assert.strictEqual(ev.tone, 'warn', 'an on-behalf-of action is never rendered as routine');
+});
+t('an ordinary action carries no impersonator and keeps its own tone', () => {
+  const tl = D.buildTimeline({
+    doc: { id: 'd1', created_at: '2026-01-01T00:00:00Z' },
+    audits: [{ created_at: '2026-01-02T00:00:00Z', action: 'accept_document',
+      actor_kind: 'staff', actor_name: 'Dov Klein', detail: {} }],
+  });
+  const ev = tl.find((e) => e.code === 'accept_document');
+  assert.strictEqual(ev.impersonator, null);
+  assert.notStrictEqual(ev.tone, 'warn');
+});
+t('the access ledger names the real human on a preview or download', () => {
+  const acc = D.buildAccess([
+    { at: '2026-01-03T00:00:00Z', method: 'GET', path: '/documents/d1/download',
+      status: 200, actor_kind: 'borrower', actor_email: 'sam@example.com',
+      impersonator_name: 'Dov Klein' },
+    { at: '2026-01-04T00:00:00Z', method: 'GET', path: '/documents/d1/download',
+      status: 200, actor_kind: 'staff', actor_email: 'lisa@example.com' },
+  ], []);
+  const imp = acc.find((a) => a.who === 'sam@example.com');
+  assert.strictEqual(imp.impersonator, 'Dov Klein');
+  const plain = acc.find((a) => a.who === 'lisa@example.com');
+  assert.strictEqual(plain.impersonator, null, 'an ordinary read is never mislabelled');
+});
+
 console.log(`\n${n} assertions passed.`);

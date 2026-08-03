@@ -1769,6 +1769,31 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // not somebody's correction — a house-number CHANGE ("1727" → "1725") still flows
   // in untouched. Same idiom as the guard below: cols[field]=null → COALESCE keeps
   // the portal value, audited, and the good value is re-pushed to repair the card.
+  //
+  // A RE-SPELLING OF THE SAME PLACE IS NOT A CHANGE — the second half of the same
+  // guard, and the root cause of "the USPS address verification bounces back, no
+  // matter how many times you import it" (owner-reported 2026-08-02).
+  //
+  // ClickUp's location picker stores the GOOGLE form of an address; USPS returns the
+  // official mailing form. They routinely differ in spelling ("Street"/"St", a ZIP+4,
+  // a trailing ", USA") while naming the SAME building — and the two systems can
+  // never be made to agree, because neither of them is ours to normalize. Since the
+  // pull COALESCE-overwrites `property_address`, every reconcile of the card wrote
+  // Google's spelling back over the USPS one, and the db/379 trigger — which wipes
+  // the whole USPS stamp on ANY change to the address — cleared `usps_imported_at`
+  // and reopened the verification condition. Title, insurance and closing prep are
+  // all gated on that stamp, which is exactly why the verification had to be redone
+  // before each order. It was not even limited to a re-spelling: the trigger compares
+  // the address OBJECTS, and the USPS object carries fields ClickUp's never does, so
+  // a byte-identical address in a different shape wiped the stamp too.
+  //
+  // So the inbound value is compared by MEANING (`address.sameAddress` — the ONE
+  // definition of "same place" in this repo, already used by the OUTBOUND no-op
+  // suppression in `mapper.fieldValueEquivalent`, so both directions now agree). Same
+  // place → decline the write and keep ours; the card is left alone, because forcing
+  // ClickUp to hold our spelling is neither possible nor necessary. `sameAddress` is
+  // conservative — anything it cannot read on both sides answers false — so a real
+  // edit in ClickUp still flows in untouched.
   if (targetId && cols.property_address) {
     try {
       const ADDR = require('../lib/address');
@@ -1787,6 +1812,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
              VALUES ('system', NULL, 'clickup_pull_address_no_house_number', 'application', $1, $2)`,
             [targetId, JSON.stringify({ taskId: task && task.id, kept: oursText, refused: theirsText })]);
         } catch (_) {}
+      } else if (oursText && theirsText && ADDR.sameAddress(oursText, theirsText)) {
+        // Silent on purpose: this is the ORDINARY state of every synced file (two
+        // systems spelling one address their own way), so auditing it would write a
+        // row per file per reconcile pass and drown the real guards above.
+        cols.property_address = null;   // COALESCE keeps our (USPS-standardized) spelling
       }
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }

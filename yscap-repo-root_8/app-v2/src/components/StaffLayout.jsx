@@ -440,6 +440,9 @@ export default function StaffLayout({ children }) {
             many. Same screen, opened straight onto that tool. */}
         <NavLink className="sb-link" to="/internal/term-sheet" title="Term Sheet Generator — price a loan and build a full term sheet without leaving PILOT. Save what you price as a named scenario and pick it up later."><NavIcon name="pricing" />Term Sheet Generator</NavLink>
         <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
+        {/* The research desk (owner-directed 2026-08-02). Every staff role — it holds
+            addresses, property facts and recorded sale prices, and no borrower data. */}
+        <NavLink className="sb-link" to="/internal/research" title="Property Research — every property and comparable sale our appraisers have ever shown us, searchable by town, price, size, bedrooms, condition and sale date. Pick the sales you like and build your own valuation from them."><NavIcon name="pipeline" />Property Research</NavLink>
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

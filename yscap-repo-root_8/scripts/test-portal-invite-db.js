@@ -187,7 +187,7 @@ function call(server, method, p, token, body) {
     {
       const fs = require('fs');
       const path = require('path');
-      const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '409_portal_invite_state.sql'), 'utf8');
+      const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '416_portal_invite_state.sql'), 'utf8');
 
       const oldId = await mk('Olden', `pi-old-${sfx}@test.local`);
       await db.query(

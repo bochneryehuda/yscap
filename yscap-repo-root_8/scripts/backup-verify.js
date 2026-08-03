@@ -112,6 +112,17 @@ async function main() {
   log(`testing backup ${manifest.id} from ${manifest.createdAt} ` +
       `(${manifest.totals.tables} tables, ${manifest.totals.rows.toLocaleString('en-US')} rows)`);
 
+  // IS THE NEWEST BACKUP STILL RECENT? See manifest.freshness for why this is the drill's job.
+  // Only when we auto-picked the newest: an explicit --id means "test THIS one", and complaining
+  // about the age of a backup somebody deliberately named would be noise.
+  const staleness = wantId
+    ? { stale: false, ageHours: null, maxAgeHours: cfg.backup.verifyMaxAgeHours }
+    : manifestLib.freshness(manifest.createdAt || chosen.parsed.at, Date.now(), cfg.backup.verifyMaxAgeHours);
+  if (staleness.stale) {
+    console.error(`[verify] STALE — the newest backup is ${manifestLib.describeAge(staleness.ageHours)} ` +
+                  `(limit ${staleness.maxAgeHours}h). The nightly backup appears to have stopped running.`);
+  }
+
   // Step 1 — is the object even there, and the size it claims?
   const head = await vault.head(manifest.artifact.key);
   const problems = manifestLib.auditManifest(manifest, head);
@@ -177,10 +188,16 @@ async function main() {
     if (fs.existsSync(tmpPath)) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
   }
 
-  const ok = !comparison ? true : comparison.ok;
+  // The restore and the SCHEDULE are judged separately, then reported together. A three-week-old
+  // backup restores perfectly — that is a passing restore and a failing schedule, and merging them
+  // into one boolean is how the drill would have sent "passed" while the nightly job was dead.
+  const restoreOk = !comparison ? true : comparison.ok;
+  const ok = restoreOk && !staleness.stale;
   const verification = {
     verifiedAt: new Date().toISOString(),
     ok,
+    restoreOk,
+    freshness: staleness,
     mode: quick ? 'checksum-only' : (comparison ? 'test-restore' : 'decrypt-only'),
     restoreErrors: restoreReport ? restoreReport.errors : null,
     comparison: comparison ? {
@@ -206,10 +223,41 @@ async function main() {
     tables: comparison ? manifest.totals.tables : null,
     rows: comparison ? manifest.totals.rows : null,
     detail: verification,
-    error: ok ? null : (comparison && comparison.summary),
+    error: ok ? null
+      : (staleness.stale
+          ? `the newest backup is ${manifestLib.describeAge(staleness.ageHours)} — the nightly backup has stopped` +
+            (restoreOk ? '' : `; it also did not restore cleanly: ${comparison && comparison.summary}`)
+          : (comparison && comparison.summary)),
   });
 
-  if (ok) {
+  // A stale backup that RESTORED is its own alarm, and it must not borrow the "did not restore"
+  // wording — the file is fine, the schedule is not, and the two need different actions.
+  if (staleness.stale && restoreOk) {
+    await report.alert({
+      ok: false,
+      subject: 'THE NIGHTLY BACKUP HAS STOPPED RUNNING',
+      lines: [
+        `The newest backup we can find is ${manifestLib.describeAge(staleness.ageHours)}, taken on ${manifest.createdAt}.`,
+        `A backup should be taken every night, so anything over ${staleness.maxAgeHours} hours means the nightly job is not running.`,
+        '',
+        // Only claim what this run actually did: with --quick, or with no scratch database wired
+        // up, nothing was restored and saying otherwise would be the same lie in a smaller font.
+        ...(comparison
+          ? ['The good news: that backup is genuinely fine. We restored it into a test database and it',
+             'came back complete, so nothing already saved has been lost.']
+          : ['That backup file itself is intact and decrypts correctly, but it was not test-restored on',
+             'this run, so what is in it has not been proven to load.']),
+        '',
+        `The problem: everything entered since ${manifest.createdAt} is NOT in any backup.`,
+        '',
+        'The nightly job only sends an email when it fails — so if it stops running altogether it goes',
+        'quiet instead of complaining. This message is that missing alarm.',
+      ],
+      action: 'Ask whoever looks after the system to check the ys-capital-backup scheduled job in Render TODAY — ' +
+              'whether it is still enabled, and whether its last runs succeeded.',
+    });
+    process.exitCode = 1;
+  } else if (ok) {
     log(`PASS — backup ${manifest.id} ${comparison ? 'was restored and matches the original' : 'is intact'}`);
     await report.alert({
       ok: true,
