@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import InviteApplicant from '../components/InviteApplicant.jsx';
+import { useFlash } from '../components/FlashToast.jsx';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -353,7 +354,10 @@ export default function StaffQueue() {
   const [err, setErr] = useState('');
   const [exporting, setExporting] = useState(false);   // #152 Export to Excel in flight
   const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState('');
+  // The sync runs for ~12s while the user scrolls the pipeline, so its progress
+  // rides the fixed toast — a banner appearing and clearing mid-scroll moved the
+  // list under them (see FlashToast.jsx).
+  const { flash, flashErr, clearFlash, toast } = useFlash();
 
   // The filters the URL asks the server for. An empty URL defaults to the ACTIVE
   // pipeline; any explicit filter (even a bare createdFrom from a KPI) suppresses
@@ -431,17 +435,17 @@ export default function StaffQueue() {
   useEffect(() => { fetchList(); }, [fetchList]); // refetch whenever the URL filters change
 
   async function syncMine() {
-    setSyncing(true); setSyncMsg('');
+    setSyncing(true); clearFlash();
     try {
       await api.staffSyncMyClickup();
-      setSyncMsg('Pulling your files from ClickUp… this refreshes in a moment.');
+      flash('Pulling your files from ClickUp… this refreshes in a moment.', 0);  // holds until the run reports back
       // the backfill runs server-side; reload the pipeline a few times as it
       // lands — via the ref, so the refresh honors whatever the user has
       // typed/filtered SINCE clicking sync (a stale closure used to refetch
       // without the query and wipe their search results).
       setTimeout(() => { loadContext(); fetchListRef.current(); }, 4000);
-      setTimeout(() => { loadContext(); fetchListRef.current(); setSyncMsg('Synced ✓'); setTimeout(() => setSyncMsg(''), 4000); }, 12000);
-    } catch (e) { setSyncMsg(e.message || 'Sync failed'); }
+      setTimeout(() => { loadContext(); fetchListRef.current(); flash('Synced ✓'); }, 12000);
+    } catch (e) { flashErr(e.message || 'Sync failed', 0); }   // a failed sync waits to be read
     finally { setTimeout(() => setSyncing(false), 12000); }
   }
 
@@ -538,7 +542,7 @@ export default function StaffQueue() {
           </button>
         </div>
       </div>
-      {syncMsg && <div className="notice ok" style={{ marginBottom: 12 }}>{syncMsg}</div>}
+      {toast}
 
       {err && <div role="alert" className="notice err">{err}
         <button className="btn link small" onClick={() => { setErr(''); loadContext(); fetchList(); }}>Retry</button></div>}
