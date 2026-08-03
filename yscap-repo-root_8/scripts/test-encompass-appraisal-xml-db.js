@@ -244,8 +244,14 @@ const rowFor = async (id) => (await db.query(
     ok(row && row.error, 'the reason the bookkeeping failed is still recorded alongside it');
     ok(errs.some((e) => /ARE saved/.test(e)),
       'and it ALARMS — a ledger write failing on a file we hold deserves a human');
-    ok(!r.errors.some((e) => /22P02|42703|syntax/.test(e)),
-      'the recovery UPDATE itself is valid SQL');
+    // NOT an assertion on r.errors: the recovery UPDATE ends in `.catch(() => {})`
+    // and capture()'s catch pushes nothing to out.errors, so a SQL fault there can
+    // never reach it — an assertion phrased that way passes even with a bogus
+    // column injected, which was the first version of this line. The SQL's
+    // validity is what the three assertions above actually prove: a broken
+    // recovery UPDATE cannot leave the row 'captured' with a storage_ref on it.
+    ok(row && row.attempts >= 1,
+      'the attempt is still counted, so a retry is visible in the ledger');
   }
 
   /* ── 4. Every status the code writes satisfies the CHECK ─────────────────── */

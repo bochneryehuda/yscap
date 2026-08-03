@@ -703,10 +703,13 @@ t('a non-url is refused with a plain reason', () => {
   {
     const enc3 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
     const origGet = enc3.apiGet, origConfigured = enc3.configured, origErr = console.error;
+    const origPipeline = enc3.pipelineSearch, origLog = console.log;
     const errs = [];
-    let zipSweep, xmlSweep;
+    const zipSweepLog = [];
+    let zipSweep;
     try {
       console.error = (...a) => { errs.push(a.join(' ')); };
+      console.log = (...a) => { zipSweepLog.push(a.join(' ')); };
       enc3.configured = () => true;
       // One appraisal service order carrying ONE resource: the appraisal type
       // URN on a ZIP package — the exact UAD 3.6 shape the module documents.
@@ -723,9 +726,15 @@ t('a non-url is refused with a plain reason', () => {
         }
         return [];
       };
-      zipSweep = await M.sweepOnce(db, { loans: [{ loanId: 'zl1' }], paceMs: 0 });
+      // THROUGH makeTick, not sweepOnce: makeTick owns the real log gate and the
+      // real log call, which is the half being asserted. It sweeps the pipeline
+      // rather than a supplied list, so the pipeline is stubbed to one loan.
+      enc3.pipelineSearch = async () => [{ loanId: 'zl1', fields: { 'Loan.LoanNumber': 'ZL1' } }];
+      zipSweep = await M._internals.makeTick(db)();
     } finally {
-      console.error = origErr; enc3.apiGet = origGet; enc3.configured = origConfigured;
+      console.error = origErr; console.log = origLog;
+      enc3.apiGet = origGet; enc3.configured = origConfigured;
+      enc3.pipelineSearch = origPipeline;
     }
 
     t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
@@ -745,23 +754,16 @@ t('a non-url is refused with a plain reason', () => {
         `expected an alarm naming the unparsable format, saw: ${JSON.stringify(errs).slice(0, 300)}`);
     });
 
-    t('the sweep SPEAKS UP when otherFormat is the only non-zero counter', () => {
-      // The gate is the half that makes the counter worth anything: without
-      // otherFormat in it this sweep logs nothing at all.
-      const logged = [];
-      const origLog = console.log;
-      console.log = (...a) => { logged.push(a.join(' ')); };
-      try {
-        // Drive the real gate with the real shape a ZIP-only sweep produces.
-        const r = { ...zipSweep };
-        assert.ok(!r.resources && !r.captured && !r.failed,
-          'fixture check: every other counter must be zero for this to mean anything');
-        if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
-          console.log('[encompass-xml] sweep:', JSON.stringify({ otherFormat: r.otherFormat }));
-        }
-      } finally { console.log = origLog; }
-      assert.ok(logged.some((l) => /otherFormat/.test(l)),
-        'a ZIP-only sweep must produce a log line, not silence');
+    t('a ZIP-only sweep is REPORTED, not silent — driven through the real makeTick', () => {
+      // The first version of this test re-wrote the production gate condition into
+      // the test body and asserted on its own copy, so it could only ever pass —
+      // it stayed green with the production gate reverted. Drive `makeTick`, which
+      // owns the real gate and the real log call, and assert on what it prints.
+      assert.ok(!zipSweepLog.some((l) => /"resources":[1-9]/.test(l)),
+        'fixture check: the ZIP sweep must have captured nothing for this to mean anything');
+      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":1/.test(l)),
+        `a sweep whose only finding is an unparsable format must still report it, saw: ${
+          JSON.stringify(zipSweepLog).slice(0, 300)}`);
     });
 
     t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {
@@ -774,6 +776,48 @@ t('a non-url is refused with a plain reason', () => {
       assert.ok(!isAppraisalResource({ type: 'urn:ice:epc:partner:title:report:version:V1' }),
         'a title report is not an appraisal');
       assert.ok(!isAppraisalResource({}), 'nothing to go on → not an appraisal');
+    });
+
+    t('the NAME fallback is a real backstop, and does not fire on unrelated documents', () => {
+      // The generous half of isAppraisalResource, and the half with a false-
+      // positive cost — so pin both directions.
+      const { isAppraisalResource } = M._internals;
+      assert.ok(isAppraisalResource({ name: 'AppraisalReport.zip' }),
+        'a delivery whose type URN ALSO changed must still be noticed by name');
+      assert.ok(isAppraisalResource({ name: 'appraisal invoice.pdf' }),
+        'a companion document DOES match — that is accepted, and is why the alarm is once per sweep');
+      assert.ok(!isAppraisalResource({ name: 'UCDP_Submission_Summary.pdf' }),
+        'a real sibling document type from a fulfilled order must NOT fire');
+      assert.ok(!isAppraisalResource({ name: '16341496.xml' }),
+        "the XML's own bare-numeric name must not fire it either");
+    });
+
+    t('a typo\'d poll interval falls back and SAYS SO, like every other knob', () => {
+      // Fix 4 shipped with no test, and an envNum-only test would not have caught
+      // that either — start() has to actually USE it. So drive start() and assert
+      // on what it says: reverting it to the raw `Number(process.env…)` read makes
+      // this go red, which is the whole point.
+      const enc4 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+      const warned = [], logged = [];
+      const ow = console.warn, ol = console.log, oc = enc4.configured;
+      let timer = null;
+      try {
+        console.warn = (...a) => { warned.push(a.join(' ')); };
+        console.log = (...a) => { logged.push(a.join(' ')); };
+        enc4.configured = () => true;
+        process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC = 'five minutes';
+        timer = M.start(db);
+      } finally {
+        // Always disarm: start() arms a real interval. It is unref'd, so it cannot
+        // hold the process open, but leaving it would sweep under a later test.
+        if (timer) clearInterval(timer);
+        console.warn = ow; console.log = ol; enc4.configured = oc;
+        delete process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC;
+      }
+      assert.ok(warned.some((w) => /ENCOMPASS_APPRAISAL_XML_POLL_SEC/.test(w)),
+        `a bad poll interval must not be swallowed in silence, saw: ${JSON.stringify(warned)}`);
+      assert.ok(logged.some((l) => /catcher on, sweeping every 300s/.test(l)),
+        `and it must fall back to the 300s default, saw: ${JSON.stringify(logged)}`);
     });
 
     t('a plain XML delivery is UNCHANGED by any of this', () => {

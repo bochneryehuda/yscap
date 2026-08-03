@@ -270,9 +270,24 @@ const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
  * Was this resource an appraisal DELIVERY, whatever format it arrived in? PURE.
  *
  * Deliberately generous where `isAppraisalXml` is strict. This one only decides
- * whether something is worth TELLING SOMEONE about; it never causes a download.
- * A false positive costs one log line, a false negative costs the silence this
- * exists to break — so the name is accepted as a fallback signal too.
+ * whether something is worth TELLING SOMEONE about; it never causes a download,
+ * never writes a ledger row and never changes a status.
+ *
+ * BE HONEST ABOUT WHAT A FALSE POSITIVE COSTS — it is not "one log line". The
+ * name fallback matches real companion documents on a fulfilled order
+ * ("Appraisal Invoice.pdf", "Appraiser_License.pdf"), and because nothing is
+ * recorded for one of these the same resource is re-seen on EVERY sweep. So the
+ * cost is a recurring `otherFormat` tick plus, unbounded, a recurring alarm and a
+ * slot out of the shared error budget — which is why the call site fires both of
+ * those exactly ONCE per sweep. With that bound the residual cost really is one
+ * line per sweep that mentions a companion document, and the alarm text says so
+ * rather than claiming nothing is being caught.
+ *
+ * The trade is deliberate in this direction: a false negative is the silence this
+ * exists to break, and the six sibling document types recorded on a real Class
+ * Valuations order (docs/ENCOMPASS-APPRAISAL-XML-DISCOVERY.md) contain no
+ * "apprais" in their type names — so the fallback is a backstop for a delivery
+ * whose type URN ALSO changed, not the primary signal.
  */
 function isAppraisalResource(res) {
   if (!res) return false;
@@ -816,16 +831,28 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
           // these makes the sweep speak up.
           if (isAppraisalResource(res)) {
             out.otherFormat++;
+            // BOTH the alarm and the error line are ONCE PER SWEEP, and the error
+            // line especially. `errors[]` is ONE shared 50-slot budget for the
+            // whole sweep and only the first three are printed, so a per-resource
+            // push here would crowd out a real `orders …` / `expand …` / `record …`
+            // failure on some other loan and leave it visible only as an
+            // `errorsDropped` tick.
+            //
+            // That is not hypothetical: nothing is written to the ledger for one of
+            // these, so the SAME resource is re-seen and re-counted on EVERY sweep
+            // for as long as its loan stays in the window. Per-resource and
+            // unbounded, an appraiser's licence PDF sitting beside the XML would
+            // burn a slot 288 times a day — which is precisely the failure the
+            // `warnOnce` note above this file describes.
             if (out.otherFormat === 1) {
-              // ONCE per sweep, not once per resource: a tenant-wide format
-              // change would otherwise print a line per appraisal per 5 minutes.
-              console.error('[encompass-xml] ALARM: an appraisal was delivered in a format this ' +
-                `catcher does not parse (${res.mimeType || 'no mime'} / ${res.name || 'no name'}). ` +
-                'Nothing was downloaded and nothing is being caught for it — if this is the whole ' +
-                'tenant, the format changed (UAD 3.6 ships a ZIP) and the catcher needs updating.');
+              console.error('[encompass-xml] ALARM: an appraisal-looking resource arrived in a format ' +
+                `this catcher does not parse (${res.mimeType || 'no mime'} / ${res.name || 'no name'}). ` +
+                'It was NOT downloaded. If the XML for this loan was captured, this is most likely a ' +
+                'companion document and is harmless; if the whole tenant reports this and nothing is ' +
+                'being captured, the delivery format has changed and the catcher needs updating.');
+              pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
+                `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — ${'see otherFormat for the count'}`);
             }
-            pushErr(out, `resource ${res.id || '(no id)'} is an appraisal delivery in an unparsable format ` +
-              `(${res.mimeType || 'no mime'} / ${res.name || 'no name'})`);
           }
           continue;
         }
@@ -966,11 +993,12 @@ function makeTick(db) {
         // used to log nothing at all — and since the whole historical back book is
         // legitimately expired, that silence is indistinguishable from normal
         // operation. The feature could stop working on day one unnoticed.
-        // `otherFormat` is IN THE GATE deliberately. It is the one counter that can
-        // be non-zero while every other one is zero — a tenant whose appraisals all
-        // arrive in a format we cannot parse produces no resources, no captures and
-        // no failures, so without it here that sweep logs nothing and reads exactly
-        // like a healthy quiet one.
+        // `otherFormat` is in the gate as BELT-AND-SUSPENDERS, and it is honestly
+        // redundant today: the same branch that increments it also calls pushErr,
+        // so `errors.length` is already non-zero and the gate already fires. It is
+        // here so the gate stays correct if that pushErr is ever bounded, dropped,
+        // or crowded out — the counter is the fact, the error line is incidental.
+        // Do not read this term as the thing that makes a ZIP-only sweep visible.
         if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
           console.log('[encompass-xml] sweep:', JSON.stringify({
             loans: r.loans, resources: r.resources, captured: r.captured,
@@ -1014,8 +1042,11 @@ function makeTick(db) {
 // THROUGH envNum LIKE EVERY OTHER KNOB. This was the one tuning value that read
 // its env var raw, so a typo'd poll interval fell back to 300 in SILENCE —
 // against this module's own stated rule that a bad value "falls back to the
-// default and SAYS SO, rather than degrading". The clamp is unchanged (60..600s);
-// only the silence is fixed.
+// default and SAYS SO, rather than degrading". The clamp RANGE is unchanged
+// (60..600s) and every valid value behaves identically; the only behaviour that
+// moves is a literal 0/-0/0.0, which the old `|| 300` swallowed to 300 before
+// clamping and which now clamps up to the 60s floor. Neither is a valid setting
+// and 60s is safe, so the change is the silence, not the range.
 function start(db, { intervalSec = envNum('ENCOMPASS_APPRAISAL_XML_POLL_SEC', 300, { min: 60, max: 600 }) } = {}) {
   // Only the ENV kill stops the timer being armed at all. The live switch is
   // deliberately NOT checked here: it is re-read inside every tick (via
