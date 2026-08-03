@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
-import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
+import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
+import DocPreview from './DocPreview.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -57,8 +58,13 @@ const STATUS_TONE = {
 const KB = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 const when = (ts) => (ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '');
 
-/* Exactly what will be attached, grouped, with everything empty called out. */
-function DocumentPreview({ documents, isAssignment }) {
+/* Exactly what will be attached, grouped, with everything empty called out — and,
+   owner-directed 2026-08-03, each document openable right here: "in the closing
+   prep email we should also see all the documents over there in the closing prep
+   order and we should also have the preview button". Checking that the term sheet
+   and the binder about to go to the attorney are the right files is the point of
+   showing the list at all. */
+function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
   const [open, setOpen] = useState(false);
   const groups = documents.groups || [];
   const total = groups.reduce((n, g) => n + g.docs.length, 0);
@@ -113,10 +119,14 @@ function DocumentPreview({ documents, isAssignment }) {
               {g.docs.length === 0
                 ? <div className="small" style={{ color: MUTED }}>Nothing on file</div>
                 : g.docs.map((d) => (
-                    <div key={d.id} className="small" style={{ color: MUTED }}>
-                      {d.filename} · {KB(d.size_bytes)}
-                      {d.slot_label ? ` · ${d.slot_label}` : ''}
-                      {d.review_status && d.review_status !== 'accepted' ? ` · ${d.review_status}` : ''}
+                    <div key={d.id} className="row small" style={{ color: MUTED, gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '1px 0' }}>
+                      <span style={{ flex: 1, minWidth: 160 }}>
+                        {d.filename} · {KB(d.size_bytes)}
+                        {d.slot_label ? ` · ${d.slot_label}` : ''}
+                        {d.review_status && d.review_status !== 'accepted' ? ` · ${d.review_status}` : ''}
+                      </span>
+                      {onPreview && <button className="btn ghost small" onClick={() => onPreview(d)} title="Open it here without downloading">Preview</button>}
+                      {onDownload && <button className="btn ghost small" onClick={() => onDownload(d)}>Download</button>}
                     </div>
                   ))}
             </div>
@@ -224,6 +234,7 @@ export default function ClosingPrepCard({ appId }) {
   const [showDeal, setShowDeal] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
   const [followMsg, setFollowMsg] = useState('');
+  const [previewDoc, setPreviewDoc] = useState(null);
 
   const load = useCallback(() => {
     setErr('');
@@ -340,7 +351,8 @@ export default function ClosingPrepCard({ appId }) {
         )}
       </div>
 
-      <DocumentPreview documents={data.documents || {}} isAssignment={isAssignment} />
+      <DocumentPreview documents={data.documents || {}} isAssignment={isAssignment}
+        onPreview={setPreviewDoc} onDownload={download} />
 
       <Recipients recipients={data.recipients || { to: [], cc: [] }} team={data.team || {}}
         contacts={data.contacts || { title: [], other: [] }}
@@ -435,7 +447,16 @@ export default function ClosingPrepCard({ appId }) {
       </div>
 
       <ChainAddress chain={data.chain} />
-      <ChainHistory appId={appId} chain={data.chain} onDownload={download} />
+      <ChainDocuments chain={data.chain} onDownload={download} />
+      <ChainHistory appId={appId} chain={data.chain} />
+      {previewDoc && (
+        <DocPreview
+          title={previewDoc.slot_label || 'Closing prep document'}
+          filename={previewDoc.filename}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => download(previewDoc)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </div>
   );
 }
