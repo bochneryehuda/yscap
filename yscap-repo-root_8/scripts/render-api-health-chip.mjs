@@ -79,6 +79,20 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     ok(!/Missing:[^\n]*USPS_CLIENT_ID/.test(body),
       'the card no longer lists USPS_CLIENT_ID as missing');
 
+
+    // ---- THE LICENSING CONTROL, ON THE SAME PAGE ------------------------
+    // It reports itself into the boot log and into a public endpoint that
+    // deliberately carries no explanation. This is the screen somebody opens to
+    // ask "is that rule still on?", so the answer has to be here.
+    ok(await page.locator('text=Google coordinate rule').count() === 1,
+      'the Google-coordinate licensing rule is reported on the page');
+    const lic = (await page.locator('text=Google coordinate rule').first().locator('xpath=ancestor::section[1]').innerText())
+      .replace(/\s+/g, ' ').trim();
+    ok(/✓ On/.test(lic), `and reads as ON against a database that has it (${lic.slice(0, 90)})`);
+    ok(/may never place a property here/i.test(lic),
+      'saying in plain words what the rule actually does');
+    ok(/Last checked/i.test(lic), 'and when it last asked, so a stale answer is visible');
+
     ok(errors.length === 0, `no page errors (${errors.slice(0, 3).join(' | ') || 'none'})`);
   } catch (e) {
     console.error(e);

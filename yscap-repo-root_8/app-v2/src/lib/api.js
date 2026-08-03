@@ -897,6 +897,9 @@ export const api = {
   // ---- ClickUp Control Center (admin / platform_setup) ----
   // API Health — status of every external API / integration.
   integrationsHealth: () => req('GET', '/api/admin/integrations/health'),
+  // The Google-coordinate licensing rule, in full. /api/health carries only the
+  // verdict (it is public); the explanation lives behind this one.
+  researchLicensing: () => req('GET', '/api/admin/research-licensing'),
   integrationTest:    (key) => req('POST', `/api/admin/integrations/${encodeURIComponent(key)}/test`),
   // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
   // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
