@@ -29,8 +29,10 @@ const loanExceptions = require('../lib/loan-exceptions');
 const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
+const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
+const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1319,9 +1321,10 @@ router.post('/applications', async (req, res) => {
           rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
           processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,
           payoff_amount,original_purchase_price,acquisition_date,payoff_lender,payoff_loan_number,
+          personal_name_purchase,
           source,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-               $24,$25,$26,$27,$28,'staff','new',now())
+               $24,$25,$26,$27,$28,$29,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, addr ? jsonbText(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
@@ -1329,7 +1332,11 @@ router.post('/applications', async (req, res) => {
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo),   // #97: General REO slot
-       refiCols.payoff, refiCols.origPrice, refiCols.acqDate, refiCols.payoffLender, refiCols.payoffLoanNumber]);
+       refiCols.payoff, refiCols.origPrice, refiCols.acqDate, refiCols.payoffLender, refiCols.payoffLoanNumber,
+       /* HOW IS IT VESTED — asked at the door now, not waived afterwards
+          (owner-directed 2026-08-02). One shared reading, so this form, the
+          borrower's application and the public form can never disagree. */
+       require('../lib/fields').vestsIndividually(b)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
@@ -1435,6 +1442,12 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     acceptUrl, hasAccount: !!hasAuth.rows[0],
   }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
   await audit(req, 'invite_borrower', 'application', appId, { email });
+  // Record that it went out, on the PERSON (lib/portal-invite) — otherwise the
+  // file can never say whether anyone has invited them, and the only safe move
+  // is to send it again. Note this fires for the already-has-a-login case too:
+  // that path mints no invite token, so it was previously invisible even though
+  // an email really was sent.
+  await portalInvite.recordInviteSent(borrowerId, { email, byStaffId: req.actor.id });
   // Best-effort in-app notice to the file's team.
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
 }
@@ -1513,6 +1526,8 @@ router.post('/invite-to-portal', async (req, res) => {
         acceptUrl, hasAccount: !!hasAuth.rows[0],
       }, { replyTo: inv.email || null, from: require('../lib/email').fromWithName(inv.full_name) });
     } catch (_) { /* invite email is best-effort; the profile + lead are already saved */ }
+    // Record it on the person, same as every other invite door (lib/portal-invite).
+    await portalInvite.recordInviteSent(borrowerId, { email, byStaffId: req.actor.id });
     // 3) open a CRM lead for the owning officer so the relationship is tracked from
     // first touch — unless one already exists for this email + officer (idempotent).
     let leadId = null;
@@ -1600,6 +1615,45 @@ router.get('/applications/:id', async (req, res) => {
 // USPS ADDRESS VERIFICATION — staff-only, file-scoped by the middleware above.
 // A check stages USPS's answer beside the working address. Only the separate
 // import action adopts it and clears the enforced condition.
+/* ── TRACK-RECORD FINDINGS (owner-directed 2026-08-02) ──────────────────────
+   "We should have findings ON the track record of stuff that was not done
+   correctly … and you should not be able to clear and sign off on the
+   experience condition till you clear those findings … give a few options over
+   there what to do."
+
+   Both doors are file-scoped by the `/applications/:id` middleware, so a staffer
+   only ever sees the findings of a file they can already open. Reading also
+   RE-RUNS the detector, so opening the Track record section is what keeps the
+   list current — the same self-syncing shape the underwriting desk uses. */
+router.get('/applications/:id/track-record-findings', async (req, res) => {
+  try {
+    const TRF = require('../lib/track-record-findings');
+    await TRF.syncForFile(req.params.id);          // best-effort; never throws
+    res.json({ findings: await TRF.openForFile(req.params.id) });
+  } catch (e) {
+    console.error('[track-record] findings load failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load the track-record findings' });
+  }
+});
+
+router.post('/applications/:id/track-record-findings/:findingId', async (req, res) => {
+  try {
+    const TRF = require('../lib/track-record-findings');
+    const out = await TRF.resolveFinding({
+      findingId: req.params.findingId,
+      action: String((req.body && req.body.action) || ''),
+      note: (req.body && req.body.note) || null,
+      actorId: req.actor.id,
+      appId: req.params.id,
+    });
+    res.json({ ...out, findings: await TRF.openForFile(req.params.id) });
+  } catch (e) {
+    if (e && e.expose && e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[track-record] finding resolve failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not record that decision' });
+  }
+});
+
 router.get('/applications/:id/usps-verification', async (req, res) => {
   try {
     const row = (await db.query(
@@ -2097,19 +2151,54 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
          provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
       uploadedDocId = r.rows[0].id;
     }
+    /* THE AFFIDAVIT IS NO LONGER A PREREQUISITE OF MARKING THE FILE INDIVIDUAL
+       (owner-directed 2026-08-02). It is still REQUIRED — as its own rule-driven
+       condition (db/417, `cond_noo_affidavit_individual`), which is the thing
+       that must be cleared before clear-to-close.
+
+       WHY THE OLD 400 HAD TO GO: it demanded the affidavit ride along in the very
+       same request, which makes the choice impossible at the two doors that
+       matter most. A borrower filling in the public application form has no
+       affidavit to attach, and neither does a staffer opening a brand-new file —
+       and the owner wants the choice available right away on all three doors.
+       Nothing is lost: the requirement moved from a refusal nobody could act on
+       into a condition everybody can see, chase and clear. */
     const hasAff = uploadedDocId || (await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
          AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
-    if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
 
     await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
-    await db.query(
-      `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
-      [item.id, req.actor.id]);
+    /* The LLC condition stands down either way — there is no entity to document.
+       It is only SIGNED OFF when the affidavit is genuinely in hand; otherwise it
+       is waived as not-applicable, so the file never reads as though somebody
+       cleared a requirement that was never met. The affidavit is chased by its
+       own condition from here. */
+    if (hasAff) {
+      await db.query(
+        `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
+        [item.id, req.actor.id]);
+    } else {
+      /* WAIVED is recorded the way this system records a waive — `waived_at` set
+         alongside status 'satisfied' (the status column's CHECK allows only
+         outstanding/requested/received/satisfied/issue; there is no 'waived'
+         value, and the waive is the STAMP). `is_required=false` so it reads as
+         not-applicable rather than as a requirement somebody met. */
+      await db.query(
+        `UPDATE checklist_items
+            SET status='satisfied', waived_at=now(), is_required=false, updated_at=now(),
+                notes = COALESCE(NULLIF(notes,''), '[auto] Not applicable — this file vests in an individual''s name, so there is no entity to document. The non-owner-occupied affidavit is tracked on its own condition.')
+          WHERE id=$1`, [item.id]);
+    }
     enqueueChecklistStatusPush(item.id).catch(() => {});
     try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
-    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id, { documentId: uploadedDocId });
-    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId });
+    /* Attach the affidavit condition NOW rather than waiting for the next
+       evaluate — the person who just marked the file individual should see what
+       it costs them immediately. Best-effort: the engine re-runs on every file
+       view, so a failure here delays the condition, it never loses it. */
+    try { await require('../lib/conditions/engine').evaluateApplication(req.params.id); } catch (_) {}
+    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id,
+      { documentId: uploadedDocId, affidavitOnFile: !!hasAff });
+    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId, affidavitOnFile: !!hasAff });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2425,6 +2514,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        (`missingFields`); refusing here too means a hand-rolled or stale payload
        cannot get past it either. Refused BEFORE any work is done, like the
        cash-out refusal below, so it can never leave a register half-done. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
@@ -3335,6 +3437,19 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     /* Same refusal as the register door: a refinance with no as-is value has no
        denominator to size against, and `forcePrice` below would otherwise turn
        that into a confident-looking quote rather than an INELIGIBLE one. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before accepting these terms.',
@@ -6379,13 +6494,15 @@ async function signOffGate(itemId, actor) {
     // require that affidavit here rather than a verified LLC.
     const pn = (await db.query(
       `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
-    if (pn && pn.personal_name_purchase) {
-      const aff = (await db.query(
-        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-           AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [itemId])).rows[0];
-      if (!aff) return 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase (bought in an individual name, not an LLC).';
-      return null;
-    }
+    /* THE AFFIDAVIT IS NO LONGER DEMANDED HERE (owner-directed 2026-08-02). It
+       has its own condition now — `cond_noo_affidavit_individual` (db/417),
+       rule-driven on `vesting_is_individual` — and that condition is
+       prior_to_docs, so it holds clear-to-close exactly as this gate used to.
+       Keeping the demand in BOTH places would mean one affidavit asked for
+       twice, and the LLC condition could never be closed out on a file that
+       genuinely has no entity to document. There is nothing to verify here on a
+       personal-name file: there IS no entity, which is the whole point. */
+    if (pn && pn.personal_name_purchase) return null;
     const v = (await db.query(
       `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
     if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
@@ -6434,6 +6551,16 @@ async function signOffGate(itemId, actor) {
     }
     return null;
   }
+  /* THE TRACK RECORD MUST BE CLEAN FIRST (owner-directed 2026-08-02: "you should
+     not be able to clear and sign off on the experience condition till you clear
+     those findings … you can't sign off the experience condition before you sign
+     off all the findings or dismiss all the findings").
+     This runs BEFORE the claimed-experience check on purpose: a duplicated line
+     or the file's own subject property sitting on the record is wrong whether or
+     not this particular deal is priced on experience, and it is the same list of
+     evidence either way. It FAILS OPEN on a read error — see the module. */
+  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(app.id);
+  if (trkBlock) return trkBlock;
   // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
   // the file (nothing to verify for the chosen structure), it may be signed off
   // freely; it only becomes gated once experience is claimed on the application /
@@ -7406,11 +7533,19 @@ router.get('/borrowers/:id', async (req, res) => {
               b.housing_status, b.housing_payment, b.employment_type, b.employer,
               b.contact_type, b.primary_officer_id, b.shares_email,
               b.photo_id_document_id, b.created_at, b.last_seen_at,
-              (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
+              ba.last_login_at,
               (b.ssn_encrypted IS NOT NULL) AS has_ssn,
+              /* Where they stand with the portal (lib/portal-invite). has_account
+                 was missing here entirely — the list endpoint returned it but the
+                 profile did not, so the one screen showing a person could not say
+                 whether they even had a login. */
+              ${portalInvite.PORTAL_SELECT},
+              inv.full_name AS invited_by_name,
               off.full_name AS primary_officer_name
          FROM borrowers b
+         LEFT JOIN borrower_auth ba ON ba.borrower_id = b.id
          LEFT JOIN staff_users off ON off.id = b.primary_officer_id
+         LEFT JOIN staff_users inv ON inv.id = b.portal_invited_by
         WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -7444,7 +7579,15 @@ router.get('/borrowers/:id', async (req, res) => {
         WHERE t.borrower_id=$1 AND t.kind='data_only'
         ORDER BY t.last_seen DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
     // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
-    res.json({ ...require('../lib/residence').withLiveResidence(r.rows[0]), contacts, sharing, otherDeals });
+    // `portal` is the shaped standing + the plain-language sentence, built by the
+    // ONE definition (lib/portal-invite), so the borrower profile and the loan
+    // file can never word it differently.
+    const portal = portalInvite.shapePortal(r.rows[0]);
+    res.json({
+      ...require('../lib/residence').withLiveResidence(r.rows[0]),
+      contacts, sharing, otherDeals,
+      portal: { ...portal, ...portalInvite.describePortalAccess(portal) },
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -10367,6 +10510,11 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
     // The Workflow, phase two: a freshly-funded file auto-hands off to the draw
     // coordinator (best-effort — never breaks the status move).
     try { await workflowAuto.onFunded(appId, opts.actorId); } catch (_) {}
+    // A deal WE funded belongs on the borrower's own track record — PILOT
+    // imported history from ClickUp and Encompass but never recorded its own
+    // closings (owner-reported 2026-08-02). Unverified, never a duplicate,
+    // best-effort: a funding must never fail over a track-record line.
+    try { await trackRecordFromFile.addFromFundedFile(appId); } catch (_) {}
   }
   try { await conditionEngine.evaluateApplication(appId, { actor: opts.actorId ? { id: opts.actorId } : undefined, reason: 'status_change' }); } catch (_) {}
   // Announce only when the BORROWER-FACING bucket actually changed (many internal
@@ -10498,6 +10646,8 @@ router.patch('/applications/:id', async (req, res) => {
     if (status === 'funded') {
       try { await seedPostClosing(req.params.id); } catch (_) {}
       try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
+      // Same as the internal-status door above — both doors must record the deal.
+      try { await trackRecordFromFile.addFromFundedFile(req.params.id); } catch (_) {}
     }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
@@ -14439,6 +14589,48 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
 
 // Preview a move for the confirm dialog: does the pasted card exist, and is it
 // currently linked to another file? Never changes anything.
+/* WHAT PILOT HOLDS vs WHAT THE CARD HOLDS, field by field (owner-directed
+   2026-08-02). READ-ONLY: it fetches the one task and writes nothing, to either
+   system. File-scoped by the /applications/:id middleware — no extra permission,
+   because every staffer who can open the file can already see these values one
+   at a time; this only puts the card's copy beside them.
+
+   The verdict is the SYNC'S OWN (lib/clickup-compare reuses
+   mapper.fieldValueEquivalent), so a field this screen calls "matching" is
+   exactly a field a push would decline to write. Best-effort throughout — a
+   ClickUp outage answers "we could not read the card", never a 500. */
+router.get('/applications/:id/clickup/compare', async (req, res) => {
+  try {
+    const row = (await db.query(
+      `SELECT clickup_pipeline_task_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const taskId = row.clickup_pipeline_task_id;
+    if (!taskId) return res.json({ ok: true, linked: false, rows: [], counts: {}, summary: 'This file is not linked to a ClickUp card yet.' });
+
+    const orchestrator = require('../clickup/orchestrator');
+    const registry = require('../clickup/registry');
+    const client = require('../clickup/client');
+    const cmp = require('../lib/clickup-compare');
+
+    const ctx = await orchestrator.loadPushContext(req.params.id);
+    if (!ctx) return res.status(404).json({ error: 'not found' });
+    let task = null;
+    try { task = await client.getTask(taskId); } catch (e) {
+      return res.json({ ok: true, linked: true, taskId, unreadable: true, rows: [], counts: {},
+        summary: 'Could not read the ClickUp card just now — try again in a moment.',
+        reason: (e && e.message) || 'clickup unreachable' });
+    }
+    const options = await registry.optionMap(null).catch(() => ({}));
+    const { rows, counts } = cmp.compare(ctx, task, options);
+    res.json({ ok: true, linked: true, taskId, rows, counts,
+      attention: cmp.needsAttention(rows), summary: cmp.summarize(counts) });
+  } catch (e) {
+    console.warn('[clickup-compare] failed:', db.describeError(e));
+    res.json({ ok: true, linked: true, unreadable: true, rows: [], counts: {},
+      summary: 'Could not build the comparison just now.' });
+  }
+});
+
 router.get('/applications/:id/clickup/relink-preview', requireRole('admin'), async (req, res) => {
   try {
     const out = await require('../clickup/relink').relinkPreview({ appId: req.params.id, taskInput: req.query.taskId });

@@ -836,10 +836,40 @@ export default function Apply() {
             ); })()}
 
             <h3 style={{ margin: '18px 0 14px' }}>Entity &amp; officer</h3>
+            {/* HOW WILL YOU HOLD TITLE? Asked outright (owner-directed
+                2026-08-02). It used to be inferred from leaving the LLC box
+                blank, which is not the same thing: nobody knows that leaving a
+                field empty is an answer, so every application arrived as an
+                entity purchase and a staffer undid it inside the file. Choosing
+                "my own name" clears any entity, because the two contradict. */}
+            <div className="field"><label>How will you hold title?</label>
+              <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 4 }}>
+                {[{ v: 'entity', t: 'In an entity (LLC / Corp)' }, { v: 'individual', t: 'In my own name — no entity' }].map(o => (
+                  <label key={o.v} className="row" style={{ gap: 6, alignItems: 'center', cursor: 'pointer', color: '#141B22' }}>
+                    <input type="radio" name="vesting" value={o.v}
+                      checked={(form.vesting || 'entity') === o.v}
+                      onChange={() => setForm(f => {
+                        const next = o.v === 'individual'
+                          ? { ...(f || {}), vesting: 'individual', entityName: '', llcId: '' }
+                          : { ...(f || {}), vesting: 'entity' };
+                        save({ data: o.v === 'individual' ? { vesting: 'individual', entityName: '', llcId: '' } : { vesting: 'entity' } });
+                        return next;
+                      })} />
+                    <span>{o.t}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="muted small" style={{ marginTop: 4, color: '#4B585C' }}>
+                Buying in your own name is fine — we’ll ask you to sign one extra form (a non-owner-occupied affidavit) instead of entity paperwork.
+                Note that the Gold Standard program is only available to an entity.
+              </p>
+            </div>
+            {(form.vesting || 'entity') === 'entity' ? (
             <div className="field"><label>Vesting entity / LLC (if any)</label>
               <LlcPicker value={form.entityName || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
                 onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
               <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
+            ) : null}
             {ownedOfficer ? (
               // Locked to the officer of record — the borrower has worked with
               // this officer before (or signed up through their invite link), so
