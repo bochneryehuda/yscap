@@ -53,6 +53,7 @@ import StaffVendors from './screens/StaffVendors.jsx';
 // the build-your-own valuation grid (db/410).
 import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
 import StaffCompSearch from './screens/StaffCompSearch.jsx';
+import StaffMarket from './screens/StaffMarket.jsx';
 import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';
 import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
@@ -206,6 +207,8 @@ export default function App() {
           <Route path="/internal/research" element={<StaffPrivate><StaffPropertyResearch /></StaffPrivate>} />
           {/* Subject-anchored comp search: start from a property, a loan file, or a typed address. */}
           <Route path="/internal/research/comps" element={<StaffPrivate><StaffCompSearch /></StaffPrivate>} />
+          {/* What the appraisers themselves said about a town's market, month by month. */}
+          <Route path="/internal/research/market" element={<StaffPrivate><StaffMarket /></StaffPrivate>} />
           <Route path="/internal/research/property/:id" element={<StaffPrivate><StaffPropertyDetail /></StaffPrivate>} />
           <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
           <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />

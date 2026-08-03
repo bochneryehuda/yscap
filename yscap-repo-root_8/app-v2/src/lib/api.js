@@ -1087,6 +1087,10 @@ export const api = {
   researchAppraiser:   (id) => req('GET', `/api/research/appraisers/${id}`),
   researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
   researchComps:       (f) => req('GET', '/api/research/comps' + qs(f)),
+  // The 1004MC market grid, rolled up by month across every report we hold for a
+  // town. Small numbers of reports per month, so the screen shows the count too.
+  researchMarket:        (f) => req('GET', '/api/research/market' + qs(f)),
+  researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
   // Upload appraisal data files straight into the research database. `files` is
   // [{filename, xml}] — the screen sends a big drop in size-bounded batches,
