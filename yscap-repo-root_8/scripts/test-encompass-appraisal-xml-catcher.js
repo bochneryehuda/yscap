@@ -97,6 +97,27 @@ t('a real appraisal carrying a byte-order mark is ACCEPTED, not thrown away', ()
   }
 });
 
+t('a REAL MISMO 2.6 appraisal passes the sniff — in every encoding', () => {
+  // The sniff's job is to refuse an error page. The expensive way to get that
+  // wrong is the OTHER direction: refusing a genuine appraisal discards bytes
+  // that can never be re-fetched. So it is pinned against the repo's real
+  // fixture — the same document the research-warehouse tests import — and any
+  // future tightening that would reject a real report fails here first.
+  const { appraisalXml } = require(path.join(__dirname, 'lib', 'research-xml-fixture'));
+  const xml = appraisalXml();
+  const utf16be = Buffer.from(xml, 'utf16le'); utf16be.swap16();
+  const variants = {
+    'plain utf-8': Buffer.from(xml),
+    'utf-8 BOM': Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(xml)]),
+    'utf-16le BOM': Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(xml, 'utf16le')]),
+    'utf-16be BOM': Buffer.concat([Buffer.from([0xFE, 0xFF]), utf16be]),
+    'leading whitespace': Buffer.from(`\n  ${xml}`),
+  };
+  for (const [label, buf] of Object.entries(variants)) {
+    assert.strictEqual(looksLikeXml(decodeHead(buf)), true, `a real appraisal (${label}) must be accepted`);
+  }
+});
+
 t('a vendor timestamp that Postgres could not parse is dropped, not bound', () => {
   // An unparseable value raises 22007, the INSERT fails, the resource is never
   // downloaded and the window closes — losing the file over a record-only column.
