@@ -234,18 +234,31 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
   // The invisible characters a real paste carries. The SOFT HYPHEN is the one a
   // PDF copy produces, and the first cut missed it — so it refused with
   // `"" is not a number`: a complaint quoting a character that renders as empty.
-  // EVERY code point the class covers, not a sample of the ones it started with:
-  // the class was widened to the bidi controls (U+061C, U+202A-E, U+2066-9), and every
-  // character the original loop tested was ALREADY matched by the narrower version —
-  // so reverting the widening left the suite fully green, which is no guard at all.
-  for (const inv of [
-    '\u00AD', '\u200E', '\u200F', '\u2062', '\u180E', '\u00AD\u200E',
-    '\u061C', '\u202A', '\u202D', '\u202E', '\u2060', '\u2066', '\u2069', '\uFEFF',
-    '\u202A\u200B\u2069',
-  ]) {
+  /* EVERY code point in the class, GENERATED from the ranges rather than listed —
+     the previous version tested 13 of 23 by hand while its comment claimed all of
+     them, and 4 of the 10 the widening actually ADDED (U+202B, U+202C, U+2067,
+     U+2068) were among the missing. A hand-kept list drifts from the pattern; this
+     cannot. */
+  const RANGE = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+  const INVISIBLE_CODE_POINTS = [
+    0x00AD, 0x061C, 0x180E,
+    ...RANGE(0x200B, 0x200F), ...RANGE(0x202A, 0x202E),
+    ...RANGE(0x2060, 0x2064), ...RANGE(0x2066, 0x2069), 0xFEFF,
+  ];
+  ok(INVISIBLE_CODE_POINTS.length === 23,
+    `the class covers 23 code points (${INVISIBLE_CODE_POINTS.length})`);
+  for (const cp of INVISIBLE_CODE_POINTS) {
+    const inv = String.fromCodePoint(cp);
     const r = SF.cleanCorrections({ gla: inv });
     ok(r.problems.length === 0 && r.values.gla === null,
-      `${JSON.stringify(inv)} renders as nothing, so it is a BLANK — never a refusal about nothing`);
+      `U+${cp.toString(16).toUpperCase().padStart(4, '0')} renders as nothing, so it is a BLANK — never a refusal about nothing`);
+  }
+  // …and a run of them together is still just a blank.
+  {
+    const run = INVISIBLE_CODE_POINTS.map((c) => String.fromCodePoint(c)).join('');
+    const r = SF.cleanCorrections({ gla: run });
+    ok(r.problems.length === 0 && r.values.gla === null,
+      'and all 23 pasted together are still a blank, not a refusal about nothing');
   }
   // …and the class sweeps ONLY invisibles. A character that RENDERS must survive, or
   // widening the pattern would start silently eating real text — far worse than the

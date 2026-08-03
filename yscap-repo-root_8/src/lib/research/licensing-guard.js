@@ -62,36 +62,57 @@ const PROBE_SOURCES = ['google_places', 'GOOGLE'];
 /**
  * DOES THE DATABASE ACTUALLY REFUSE A GOOGLE COORDINATE?
  *
- * The only question that matters, asked the only way that cannot be fooled: try to
- * store one and see. Reading the constraint's TEXT is a proxy — it has already
- * been wrong twice (an `/i` flag that made a `'%GOOGLE%'` pattern read as
- * installed; a substring match that read six neutered constraints as installed) —
- * and it goes stale the day a Postgres major deparses anything differently. A
- * refused INSERT is the property itself.
+ * A NEGATIVE ORACLE ONLY, and that asymmetry is the whole design. One row the
+ * database ACCEPTS proves the rule protects nothing. One row it REFUSES proves
+ * nothing about every other row — so this may only ever DOWNGRADE the text check's
+ * verdict, never promote it. Getting that backwards is not theoretical: the first
+ * version of this probe overwrote the verdict in both directions, and three
+ * constraints then reported "installed" while a real Google write SUCCEEDED —
+ * `… OR (geo_latitude IS NOT NULL AND geo_longitude IS NOT NULL)`, `… OR city IS
+ * NOT NULL`, `… OR geo_at IS NOT NULL`. The first is the dangerous one, because it
+ * is the licensing-correct thought ("the rule is about a STORED COORDINATE")
+ * written the wrong way round. All three were proven against real Postgres.
+ *
+ * SO THE PROBE ROW LOOKS LIKE A REAL WRITE. `geocode.js` sets geo_latitude,
+ * geo_longitude, geo_source, geo_precision, geo_at and geo_attempted_at together,
+ * onto a row that already has a city and a state. A probe carrying only
+ * `geo_source` is refused by any exemption keyed on the other five while every
+ * real row sails through — and it also FALSE-ALARMS on the legitimate narrowing
+ * `… OR geo_latitude IS NULL` ("enforce the rule only when a coordinate is
+ * actually stored"), which genuinely does refuse a real Google write.
  *
  * ATTRIBUTED, not just refused: Postgres names the constraint that rejected the
  * row, so "something else happened to stop it" can never read as "our rule works".
  *
- * REQUIRES A CLIENT ALREADY INSIDE A TRANSACTION — never the pool. `pool.query`
- * hands out a different connection per call, so a BEGIN there would leave the
- * INSERT running outside any transaction and COMMIT a junk row into the warehouse.
- * Each attempt sits inside its own SAVEPOINT so a refusal (the expected, healthy
- * answer) does not abort the caller's transaction.
+ * REQUIRES A CHECKED-OUT CLIENT ALREADY INSIDE A TRANSACTION — never the pool.
+ * `pool.query` hands out a different connection per call, so the INSERT would run
+ * outside any transaction and COMMIT a junk row into the warehouse. Two things
+ * stop that, and BOTH are load-bearing: the `release` test below rejects the db
+ * module itself, and the leading SAVEPOINT fails with 25P01 outside a transaction
+ * block. Do not make that SAVEPOINT conditional — it is the transaction guard, not
+ * a tidiness measure.
  *
  * Returns `{ tested, refused, by }`. `tested:false` means we could not ask — a
- * read-only replica, a role without INSERT, a statement timeout — and the caller
- * must fall back rather than read it as "not refused", which would be a false
- * alarm about a control that is actually on.
+ * read-only replica, a role without INSERT, a statement timeout, an unrelated
+ * constraint the probe row happens to violate — and the caller must fall back to
+ * the text check rather than read it either way.
  */
 async function verifyRefusesGoogle(client) {
+  // Not the pool, not the db module: a checked-out client has `release`.
+  if (!client || typeof client.release !== 'function' || typeof client.query !== 'function') {
+    return { tested: false, refused: null, by: null };
+  }
   for (const value of PROBE_SOURCES) {
+    // ALSO THE TRANSACTION GUARD — 25P01 outside a transaction block.
     try { await client.query('SAVEPOINT geo_licensing_probe'); }
     catch (_) { return { tested: false, refused: null, by: null }; }
     let err = null;
     try {
       await client.query(
-        `INSERT INTO ${TABLE} (address_key, display_address, geo_source)
-         VALUES ($1, $2, $3)`,
+        `INSERT INTO ${TABLE}
+           (address_key, display_address, city, state,
+            geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
+         VALUES ($1, $2, 'Licensing Probe', 'NJ', $3, 40.1, -74.1, 'rooftop', now(), now())`,
         [`licensing-probe|${Date.now()}|${Math.random()}`, 'licensing probe', value]);
     } catch (e) { err = e; }
     // Undo it either way: on success the row must never survive, and on refusal
@@ -120,6 +141,7 @@ async function checkGeoLicensing(dbc, opts) {
   const db = dbc || require('../../db');
   let present;
   let neutered = false;
+  let probe = null;
   try {
     /* KEYED ON THE TABLE THE APP ACTUALLY WRITES TO, AND ON A CONSTRAINT THAT
        ACTUALLY MEANS SOMETHING. `to_regclass` resolves `properties` through the
@@ -162,18 +184,20 @@ async function checkGeoLicensing(dbc, opts) {
        regex operator), or the same rule deparsed differently by a future Postgres,
        reads as NOT installed. That is a false alarm rather than a false all-clear,
        db/459 re-applies this exact text on every boot, and the behavioural probe
-       below overrules it whenever it can actually be asked. */
+       below can only ever make this answer STRICTER, never laxer. */
     const def = String((r.rows[0] || {}).def || '').replace(/\s+/g, ' ').trim();
     present = r.rows.length > 0 && EXACT_DEF.test(def);
 
-    /* AND WHERE WE CAN, WE ASK THE DATABASE RATHER THAN READ ITS MIND. The
-       behavioural probe is authoritative in BOTH directions when it runs: it
-       catches a constraint whose text we cannot parse but which does refuse
-       (no false alarm), and — the case that matters — one that wears the right
-       name over a predicate that refuses nothing. */
-    if (r.rows.length > 0 && opts && opts.verifyWrite) {
-      const v = await verifyRefusesGoogle(db);
-      if (v.tested) { present = v.refused; neutered = !v.refused; }
+    /* AND WHERE WE CAN, WE ALSO ASK THE DATABASE — but ONLY to say NO.
+       The probe DOWNGRADES and never promotes: a row the database accepts proves
+       the rule protects nothing, while a row it refuses proves nothing about every
+       other row. So the anchored text stays a NECESSARY condition and the probe
+       adds a second one. Overwriting in both directions is what let three
+       coordinate- and city-keyed exemptions read as installed while a real Google
+       write succeeded. */
+    if (present && opts && opts.verifyWrite) {
+      probe = await verifyRefusesGoogle(db);
+      if (probe.tested && !probe.refused) { present = false; neutered = true; }
     }
   } catch (e) {
     // We could not ask. That is NOT the same as "it is fine".
@@ -181,7 +205,26 @@ async function checkGeoLicensing(dbc, opts) {
     return { ok: false, checked: false, present: null, offenders: null,
       why: `could not confirm the Google-coordinate rule is installed: ${why}` };
   }
-  if (present) return { ok: true, checked: true, present: true, offenders: 0, why: null };
+  if (present) {
+    /* A PROBE THAT COULD NOT RUN MUST NOT READ AS ONE THAT PASSED. It is refused
+       by any unrelated CHECK its row happens to violate, and by the next NOT NULL
+       column added to `properties` without a default — and `properties` is an
+       actively growing table. Without this the authoritative half would quietly
+       stop running and the answer would still be a confident `ok:true, why:null`,
+       which is the shape of every failure this module exists to prevent. */
+    const blocked = opts && opts.verifyWrite && probe && !probe.tested;
+    return {
+      ok: true, checked: true, present: true, offenders: 0,
+      probeTested: probe ? probe.tested : null,
+      probeBlockedBy: probe ? probe.by : null,
+      why: blocked
+        ? `the Google-coordinate rule (${CONSTRAINT}) reads as installed, but the write probe `
+          + `could NOT run${probe.by ? ` (the probe row was refused by ${probe.by})` : ''} — so this `
+          + 'is the constraint\'s TEXT, not the database\'s own answer. Check whether a new NOT NULL '
+          + `column or an unrelated CHECK on ${TABLE} is blocking it.`
+        : null,
+    };
+  }
 
   // Only now — the constraint is missing, so the scan is the rare path, not the
   // boot path. Rows already in violation are the overwhelmingly likely reason the
@@ -336,8 +379,10 @@ function health() {
        this one has data in flight.) For that window the single-flight slot stays
        taken and the verdict is frozen at whatever it last said. That is bounded
        and self-healing rather than the permanent connection leak it replaced, and
-       it is VISIBLE: the snapshot carries its own `at`, so the API-Health page's
-       "Last checked" simply stops advancing. Do not "fix" it by clearing the slot
+       and it is confined to /api/health's own snapshot. The admin page does NOT read
+       that snapshot — it answers from its own bounded probe and stamps its own
+       `at` at response time — so a stuck refresh surfaces there as that card's
+       ordinary "could not check", never as a frozen timestamp nobody notices. Do not "fix" it by clearing the slot
        on a timer — that lets probes stack on a dead server and re-creates the
        exhaustion this design exists to prevent. */
     const epoch = ++refreshEpoch;

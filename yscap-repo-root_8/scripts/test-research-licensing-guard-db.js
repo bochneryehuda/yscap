@@ -249,6 +249,121 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
     }
 
+    /* ---- F2. THE PROBE IS LOAD-BEARING, PROVEN THE ONLY WAY THAT COUNTS ----
+       Every assertion above about the behavioural check passed when the probe was
+       replaced by a stub that never touched the database — because in each of
+       those cases the TEXT check already gave the same answer. The whole suite ran
+       60/60 green against a gutted probe. So these exercise the probe where the
+       text check cannot help, and each one was re-run against that same stub. */
+    {
+      // (a) IT ACTUALLY RAN. The one assertion that catches the probe dying
+      // silently — an unrelated CHECK, or the next NOT NULL column added to
+      // `properties` without a default, and `properties` is a growing table.
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
+      const v = await G._internals.verifyRefusesGoogle(client);
+      ok(v.tested === true && v.refused === true,
+        `the write probe really runs against the shipped schema (${JSON.stringify(v)})`);
+
+      // (b) AND IT DETECTS AN UNPROTECTED DATABASE.
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      const gone = await G._internals.verifyRefusesGoogle(client);
+      ok(gone.tested === true && gone.refused === false,
+        `and with the rule dropped it reports the row was STORED (${JSON.stringify(gone)})`);
+
+      // (c) THE CASE THE PROBE EXISTS FOR: canonical text, no actual protection.
+      // A `lower()` shadowed from a schema earlier in the search_path binds at
+      // constraint-creation time, and `pg_get_constraintdef` prints it unqualified
+      // — so the definition is byte-identical to db/459's while the rule refuses
+      // nothing. The text check CANNOT see this; only asking the database can.
+      // (A pg_temp shadow does NOT reproduce it — the constraint still binds
+      // pg_catalog.lower — which is why this uses a real schema.)
+      await client.query(`CREATE SCHEMA lic_shadow`);
+      await client.query(
+        `CREATE FUNCTION lic_shadow.lower(text) RETURNS text AS $$ SELECT 'x'::text $$ LANGUAGE sql IMMUTABLE`);
+      await client.query(`SET LOCAL search_path = lic_shadow, public, pg_catalog`);
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
+      const shadowDef = (await client.query(
+        `SELECT pg_get_constraintdef(oid) d FROM pg_constraint WHERE conname=$1`, [G.CONSTRAINT])).rows[0].d;
+      ok(G._internals.EXACT_DEF.test(shadowDef.replace(/\s+/g, ' ').trim()),
+        'a shadowed lower() deparses byte-identically, so the text check is satisfied');
+      ok((await G.checkGeoLicensing(client)).ok === true,
+        '  …and the text check alone therefore calls it installed');
+      const caught = await G.checkGeoLicensing(client, { verifyWrite: true });
+      ok(caught.ok === false && /EXISTS but does not refuse/.test(caught.why || ''),
+        `  …while asking the database catches it (${(caught.why || '').slice(0, 60)})`);
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      await client.query(`SET LOCAL search_path = public, pg_catalog`);
+      await client.query(`DROP SCHEMA lic_shadow CASCADE`);
+
+      /* (d) THE PROBE MAY ONLY DOWNGRADE, and this is the case that proves why.
+         A refused row says nothing about every OTHER row. Making the probe row
+         look like a real write (coordinate, precision, timestamps, city) defeats
+         the obvious evasions directly — but it can never carry EVERY column, so
+         an exemption keyed on one it lacks refuses the probe while admitting real
+         rows. `zip` is the honest example: 312 of the 314 properties in this
+         warehouse have one, and the probe row does not.
+         So: the text check rejects this, the probe REFUSES it, and the verdict
+         must still be NOT installed. A probe allowed to promote reports the
+         control fully on. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR zip IS NOT NULL
+               OR lower(geo_source) NOT LIKE '%google%')`);
+      const probeSaysRefused = await G._internals.verifyRefusesGoogle(client);
+      ok(probeSaysRefused.tested === true && probeSaysRefused.refused === true,
+        'an exemption on a column the probe row lacks REFUSES the probe…');
+      const evader = await G.checkGeoLicensing(client, { verifyWrite: true });
+      ok(evader.ok === false && evader.present === false,
+        '  …and it is STILL not reported as installed — the probe may only downgrade');
+      // …and prove it really is no protection, rather than that a string mismatched.
+      await client.query('SAVEPOINT ev');
+      let realWriteStored = true;
+      try {
+        await client.query(
+          `INSERT INTO properties (address_key, display_address, city, state, zip,
+             geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
+           VALUES ($1,'x','Trenton','NJ','08608','google_places',40.1,-74.1,'rooftop',now(),now())`,
+          [`nj|evader|${sfx}`]);
+      } catch (_) { realWriteStored = false; }
+      await client.query('ROLLBACK TO SAVEPOINT ev');
+      ok(realWriteStored,
+        '  …while the database really would store a REAL Google write under it');
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* (d2) And the realistic probe row still catches the coordinate-keyed
+         exemption DIRECTLY — the licensing-correct thought written the wrong way
+         round, and the one the first version of this probe promoted. A probe row
+         carrying only `geo_source` is refused by this and reports it installed. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR (geo_latitude IS NOT NULL AND geo_longitude IS NOT NULL)
+               OR lower(geo_source) NOT LIKE '%google%')`);
+      const coordEvader = await G._internals.verifyRefusesGoogle(client);
+      ok(coordEvader.tested === true && coordEvader.refused === false,
+        'the probe row carries a coordinate, so a coordinate-keyed exemption is caught by the probe itself');
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      // (e) NEVER ON THE POOL. The INSERT would run outside any transaction and
+      // COMMIT a junk row into the permanent warehouse.
+      const onPool = await G._internals.verifyRefusesGoogle(db);
+      ok(onPool.tested === false,
+        'the probe refuses to run on the pool, where its INSERT would COMMIT');
+
+      // (f) A PROBE THAT COULD NOT RUN SAYS SO, instead of reading as a pass.
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
+      await client.query(
+        `ALTER TABLE properties ADD CONSTRAINT lic_probe_blocker CHECK (city <> 'Licensing Probe')`);
+      const blocked = await G.checkGeoLicensing(client, { verifyWrite: true });
+      ok(blocked.probeTested === false && /could NOT run/.test(blocked.why || ''),
+        `an unrelated CHECK blocking the probe is REPORTED, not silently a pass (${
+          (blocked.why || '').slice(0, 70)})`);
+      ok(blocked.probeBlockedBy === 'lic_probe_blocker',
+        '  …naming the constraint that blocked it, so it can be found');
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_probe_blocker`);
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+    }
+
     // ---- G. RESTORED, and the constraint itself still bites --------------
     await client.query('ROLLBACK');
     await client.query('BEGIN');   // a clean transaction for the last check
@@ -263,6 +378,56 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
            VALUES ($1,'x','y','NJ','Google Places')`, [`nj|licensing2|${sfx}`]);
       } catch (_) { refused = true; }
       ok(refused, 'a Google-sourced coordinate is still refused by the database itself');
+    }
+
+    /* ---- H. THE THREE ENTRY POINTS THE APP ACTUALLY USES -------------------
+       `probeBounded()` had NO test caller anywhere, `assertGeoLicensing()` was
+       only ever called WITH a client so its no-argument branch — the one boot
+       takes — was never executed, and nothing reached the admin route. All three
+       were changed to route through the bounded probe precisely so a lock on
+       `properties` cannot hang boot or an admin request; none of that was covered.
+       These run OUTSIDE the destructive transaction, against the real shipped
+       schema, so they exercise exactly what production does. */
+    {
+      const b = await G.probeBounded();
+      ok(b.ok === true && b.checked === true,
+        `probeBounded() confirms the rule on the shipped schema (${b.why || 'no why'})`);
+      ok(b.probeTested === true,
+        '  …and it really ran the write probe, rather than reading the text alone');
+
+      // The boot path: no client argument at all. `probeTested` is what makes this
+      // discriminate — `ok:true` alone holds on the OLD unbounded pool call too, so
+      // asserting only that would not notice the routing being reverted.
+      const boot = await G.assertGeoLicensing();
+      ok(boot.ok === true && boot.checked === true,
+        'assertGeoLicensing() with no client confirms the rule');
+      ok(boot.probeTested === true,
+        '  …and it went through the BOUNDED probe, not the unbounded pool call boot used to make');
+
+      /* AND IT IS GENUINELY BOUNDED. Without the server-side statement_timeout a
+         lock on `properties` hangs boot forever — after app.listen has already
+         fired, so the process serves traffic while bootstrapAdmin() and every boot
+         backfill queued behind it never run. */
+      const locker = await db.getClient();
+      let elapsed = 0;
+      try {
+        await locker.query('BEGIN');
+        await locker.query('LOCK TABLE properties IN ACCESS EXCLUSIVE MODE');
+        const t0 = Date.now();
+        const held = await G.probeBounded();
+        elapsed = Date.now() - t0;
+        ok(held.ok === false && held.checked === false,
+          `behind an ACCESS EXCLUSIVE lock it reports UNCONFIRMED, never ok (${(held.why || '').slice(0, 50)})`);
+        ok(elapsed < G._internals.PROBE_TIMEOUT_MS * 2,
+          `and it gives up in bounded time rather than hanging (${elapsed}ms)`);
+      } finally {
+        await locker.query('ROLLBACK').catch(() => {});
+        locker.release();
+      }
+      // The pool must be usable afterwards — the whole reason the timeout is
+      // server-side is that a Promise.race leaks the connection instead.
+      ok((await db.query('SELECT 1 AS n')).rows[0].n === 1,
+        'and the pool still works afterwards — the probe released its connection');
     }
   } catch (e) {
     console.error(e);
