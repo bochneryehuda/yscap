@@ -58,6 +58,10 @@ function tone(value, target) {
 }
 const TONE_COLOR = { good: '#2E7A5E', warn: '#B07A1E', bad: '#A32A2A' };
 
+// How many rows a ranked list actually draws. Shared with the note underneath it, so the
+// card can never claim a number different from the one on screen.
+const ROWS_DRAWN = 12;
+
 /**
  * Colour for a change against the period before. UP IS NOT AUTOMATICALLY GOOD — days-to-fund
  * climbing is bad news, and painting it green would say the opposite of what happened. The
@@ -100,7 +104,7 @@ function Rows({ series, format, onPick }) {
   if (!series.length) return <p className="muted small" style={{ margin: '10px 0 0' }}>Nothing to show yet.</p>;
   return (
     <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {series.slice(0, 12).map((s) => (
+      {series.slice(0, ROWS_DRAWN).map((s) => (
         <button key={s.key} type="button" onClick={onPick ? () => onPick(s) : undefined}
           style={{ border: 0, background: 'none', padding: 0, textAlign: 'left', cursor: onPick ? 'pointer' : 'default' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: INK, marginBottom: 3 }}>
@@ -140,10 +144,16 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
       return (
         <>
           <Chart series={answer.series} format={answer.format} onPick={onDrill ? (s) => onDrill(s) : undefined} />
-          {answer.truncated && (
-            // A chart that quietly stops at its cap reads as the whole picture.
+          {/* Describe WHAT IS DRAWN, not what was fetched. A ranked list draws 12 rows
+              however many buckets came back, and a trend keeps the EARLIEST periods
+              (ORDER BY bucket ASC) — so "showing the biggest 20" over 12 rows of oldest
+              months was wrong twice over. The note also has to appear when the list is
+              merely longer than the 12 it draws, cap or no cap. */}
+          {(answer.truncated || (answer.viz !== 'trend' && answer.series.length > ROWS_DRAWN)) && (
             <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
-              Showing the biggest {answer.series.length} only — there are more.
+              {answer.viz === 'trend'
+                ? `Showing the first ${answer.series.length} periods${answer.truncated ? ' — there are more' : ''}.`
+                : `Showing the top ${Math.min(ROWS_DRAWN, answer.series.length)} of ${answer.series.length}${answer.truncated ? '+' : ''}.`}
             </p>
           )}
         </>
@@ -220,6 +230,11 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
           {answer.explain.dateField && <div><span className="dsh-k">Using the date</span><span>{answer.explain.dateField}</span></div>}
           <div><span className="dsh-k">Period</span><span>{answer.explain.period}</span></div>
           {answer.explain.groupedBy && <div><span className="dsh-k">Broken down by</span><span>{answer.explain.groupedBy}</span></div>}
+          {answer.explain.comparisonStored && (
+            <div><span className="dsh-k">Compared with</span>
+              <span>{answer.explain.compared
+                || 'nothing — a comparison needs a date and a period that is not “all time”'}</span></div>
+          )}
           <div><span className="dsh-k">Whose files</span>
             <span>{answer.explain.scoped ? 'only the files you can see' : 'every file in the company'}</span></div>
           {answer.explain.measureNote && <div><span className="dsh-k">Note</span><span>{answer.explain.measureNote}</span></div>}

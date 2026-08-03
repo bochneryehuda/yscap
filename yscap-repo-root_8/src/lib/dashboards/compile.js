@@ -196,6 +196,24 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * as 'YYYY-MM-DD' STRINGS (src/db.js sets a type parser for OID 1082), so doing month
  * maths on them in JavaScript is how a report ends up a day out.
  */
+/**
+ * The "how many" behind "the last N days/months" — ONE definition.
+ *
+ * FLOORED, not merely clamped: `n` is interpolated into `interval '<n> months'` and
+ * `CURRENT_DATE - <n>`, and a fractional value makes Postgres refuse the whole statement
+ * ("operator does not exist: date - numeric"), so a card stored with n:1.5 would never
+ * answer again. Missing or unreadable falls back to 30.
+ *
+ * IT IS EXPORTED BECAUSE THE EXPLAIN PANEL MUST QUOTE THE SAME NUMBER THE QUERY USED.
+ * Reading the raw stored value there had the panel whose entire job is to say what ran
+ * announcing "the last 1.5 days" over a one-day window, and "the last undefined days" over
+ * a thirty-day one — the same divergence the panel already refuses to allow for the date
+ * field and the period kind.
+ */
+function periodN(period) {
+  return Math.max(1, Math.min(3650, Math.floor(Number(period && period.n)) || 30));
+}
+
 function periodSql(dateFieldKey, period, p, { shift = null } = {}) {
   if (!dateFieldKey) return null;
   if (!registry.has(registry.DATE_FIELDS, dateFieldKey)) {
@@ -209,12 +227,7 @@ function periodSql(dateFieldKey, period, p, { shift = null } = {}) {
   // `shift` moves the whole window back for a comparison: 'prior_period' or 'prior_year'.
   const back = shift === 'prior_year' ? " - interval '1 year'" : '';
 
-  // FLOORED, not merely clamped. `n` is interpolated into `interval '<n> months'` and
-  // `CURRENT_DATE - <n>`, and a fractional value makes Postgres refuse the whole statement
-  // ("operator does not exist: date - numeric") — so a card saved with n:1.5 would never
-  // answer again. Not an injection (anything non-numeric falls back to 30), but a card that
-  // is permanently broken by a number a person typed is our bug, not theirs.
-  const n = Math.max(1, Math.min(3650, Math.floor(Number(period && period.n)) || 30));
+  const n = periodN(period);
 
   switch (kind) {
     case 'mtd': {
@@ -502,6 +515,6 @@ function buildDrillList(card, scope, { limit = 200, offset = 0, seed = [], bucke
 
 module.exports = {
   makeParams, compileRow, compileFilter, validateFilter, describeFilter,
-  periodSql, buildWhere, groupingFor, buildAggregate, buildDrillList, likeEscape, castFor,
+  periodSql, periodN, buildWhere, groupingFor, buildAggregate, buildDrillList, likeEscape, castFor,
   PERIOD_KINDS,
 };

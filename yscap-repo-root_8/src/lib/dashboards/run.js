@@ -86,8 +86,18 @@ function getPool() {
 const inflight = new Map();
 const waiting = new Map();
 
-// How long a card is willing to WAIT for one of its own person's slots before giving up.
-const QUEUE_MS = Math.max(1000, Math.min(20000, parseInt(process.env.DASHBOARD_QUEUE_MS || '10000', 10) || 10000));
+/**
+ * How long a card waits for one of its own person's slots before giving up.
+ *
+ * FLOORED AT THE LONGEST A SLOT CAN BE HELD — the pool wait plus the statement budget —
+ * for the same reason CONNECT_MS is floored above it. Set shorter, a person whose own four
+ * cards are stuck in the POOL's queue behind other people's load gets their fifth card
+ * refused with "too many dashboard cards loading at once", which blames them for a queue
+ * they did not cause, while their own four go on to succeed seconds later. Waiting the full
+ * hold time means the refusal only ever fires when the person really is the one saturating.
+ */
+const QUEUE_MS = Math.max(CONNECT_MS + BUDGET_MS,
+  Math.min(30000, parseInt(process.env.DASHBOARD_QUEUE_MS || '10000', 10) || 10000));
 // And how many may be waiting at once, so a runaway client cannot pile up work forever.
 const MAX_QUEUED = Math.max(1, MAX_PER_USER * 4);
 

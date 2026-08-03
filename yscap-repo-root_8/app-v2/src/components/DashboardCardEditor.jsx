@@ -32,6 +32,10 @@ const PERIODS = [
   { v: 'fixed', label: 'Between two dates' },
 ];
 
+// The two periods that carry a "how many", and the number both the box and the draft use.
+const NEEDS_N = ['last_days', 'last_months'];
+const DEFAULT_N = 12;
+
 const VIZ = [
   { v: 'number', label: 'A big number' },
   { v: 'trend', label: 'A trend over time' },
@@ -127,13 +131,27 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
         <label className="field"><span>Period</span>
           <select className="input" disabled={!draft.date_field}
             value={(draft.period && draft.period.kind) || 'all'}
-            onChange={(e) => set({ period: { ...(draft.period || {}), kind: e.target.value } })}>
+            onChange={(e) => {
+              // SEED THE NUMBER THE BOX IS ABOUT TO DISPLAY. Picking "the last N days" used
+              // to set only the kind, so the "How many?" box showed 12 while the card
+              // carried no number at all — the screen and the draft disagreed, and the save
+              // was then refused over a value that visibly read 12.
+              const kind = e.target.value;
+              const period = { ...(draft.period || {}), kind };
+              if (NEEDS_N.includes(kind) && !Number.isInteger(Number(period.n))) period.n = DEFAULT_N;
+              set({ period });
+            }}>
             {PERIODS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
           </select></label>
-        {['last_days', 'last_months'].includes(draft.period && draft.period.kind) && (
+        {NEEDS_N.includes(draft.period && draft.period.kind) && (
           <label className="field"><span>How many?</span>
-            <input className="input" type="number" min="1" max="120" value={(draft.period && draft.period.n) || 12}
-              onChange={(e) => set({ period: { ...draft.period, n: Number(e.target.value) } })} /></label>
+            {/* An emptied box falls back to the same number it then shows, so clearing it
+                can never leave the card in a state the screen does not reflect. */}
+            <input className="input" type="number" min="1" max="3650"
+              value={(draft.period && draft.period.n) || DEFAULT_N}
+              onChange={(e) => set({
+                period: { ...draft.period, n: e.target.value === '' ? DEFAULT_N : Number(e.target.value) },
+              })} /></label>
         )}
         {draft.period && draft.period.kind === 'fixed' && (
           <>

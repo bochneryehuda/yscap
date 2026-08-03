@@ -47,7 +47,9 @@ const PERIOD_LABEL = {
 function periodLabel(period) {
   const kind = (period && period.kind) || 'all';
   const l = PERIOD_LABEL[kind];
-  if (typeof l === 'function') return l(period && period.n, period && period.from, period && period.to);
+  // compile.periodN, not the raw stored value — this panel exists to say what the query
+  // ACTUALLY did, and the compiler floors and clamps that number before using it.
+  if (typeof l === 'function') return l(compile.periodN(period), period && period.from, period && period.to);
   return l || 'all time';
 }
 
@@ -156,6 +158,11 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
       compared: comparisonPossible(card, dateApplied)
         ? COMPARE_LABEL[card.compare.kind]
         : null,
+      // Whether one was ASKED FOR at all — without this the panel cannot tell "no comparison
+      // wanted" from "a comparison was wanted and could not be made", and the second is
+      // exactly the state worth explaining (the shipped hero cards are subtitled "against
+      // last year", so a silent card contradicts its own subtitle).
+      comparisonStored: !!(card.compare && card.compare.kind && card.compare.kind !== 'none'),
       sql: includeSql ? q.text : undefined,
     };
 

@@ -496,6 +496,27 @@ async function main() {
       const noDates = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
         { title: 'nodates', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'fixed' } }, loTok);
       ok(noDates.status === 400, 'as is a "between two dates" with no dates');
+
+      // …but an ABSENT "how many" is not invalid — the compiler defaults it, and refusing it
+      // made "the last N days/months" unsavable outright, because the editor's dropdown set
+      // only the kind while its box displayed a default nobody had stored.
+      for (const kind of ['last_days', 'last_months']) {
+        const c = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
+          { title: `no-n ${kind}`, metric_key: 'file_count', date_field: 'created_at', period: { kind } }, loTok);
+        ok(c.status === 201, `"${kind}" saves with no "how many" typed yet`);
+        const a = await api('GET', `/api/dashboards/cards/${c.body.card.id}/answer`, null, loTok);
+        ok(a.body.ok === true, `…and answers`);
+        ok(/the last 30 (days|months)/.test(a.body.explain.period),
+          `…and the panel quotes the number the query really used (${a.body.explain.period})`);
+      }
+      // A card stored with a bad number before the guard existed still answers, and the
+      // panel must quote the floored value, not the raw one.
+      const legacy = await api('POST', `/api/dashboards/${forked.body.dashboard.id}/cards`,
+        { title: 'legacy n', metric_key: 'file_count', date_field: 'created_at', period: { kind: 'last_days', n: 7 } }, loTok);
+      await db.query(`UPDATE dashboard_cards SET period='{"kind":"last_days","n":1.5}'::jsonb WHERE id=$1`, [legacy.body.card.id]);
+      const la = await api('GET', `/api/dashboards/cards/${legacy.body.card.id}/answer`, null, loTok);
+      ok(la.body.ok === true && la.body.explain.period === 'the last 1 days',
+        `a card stored with 1.5 answers, and the panel says the 1 day it used (${la.body.explain && la.body.explain.period})`);
     }
   } finally {
     await db.query(`DELETE FROM applications WHERE source=$1`, [TAG]).catch(() => {});

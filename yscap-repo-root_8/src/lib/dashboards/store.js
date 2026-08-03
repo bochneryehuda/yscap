@@ -65,7 +65,14 @@ function validateCard(card) {
   }
   // The period's OWN numbers are checked here, not only its kind — a card that saves happily
   // and then can never answer is worse than one that is refused while you are looking at it.
-  if (card.period && ['last_days', 'last_months'].includes(card.period.kind)) {
+  //
+  // ABSENT IS NOT INVALID. `compile.periodN` treats a missing "how many" as 30, so a card
+  // without one answers perfectly well; refusing it here made two of the nine periods
+  // unsavable outright, because the editor's own dropdown never seeded the value while its
+  // box displayed a default. Refuse a value that is really there and really wrong — never
+  // the absence of one.
+  if (card.period && ['last_days', 'last_months'].includes(card.period.kind)
+      && card.period.n !== undefined && card.period.n !== null && card.period.n !== '') {
     const n = Number(card.period.n);
     if (!Number.isInteger(n) || n < 1 || n > 3650) {
       p.push('“how many” must be a whole number between 1 and 3650');
