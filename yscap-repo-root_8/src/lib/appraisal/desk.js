@@ -714,6 +714,47 @@ async function backfillComparableParseOnce(limit = 150) {
         // less must never blank what the original import stated. `comp_set` and
         // the split metadata are LEFT ALONE — they have their own backfill and a
         // human can override them from the desk.
+        // THE RENT SCHEDULE, FOR THE BACK BOOK (db/435). `appraisal_rental_
+        // comparables` is written by the fresh-import path only, so every report
+        // already in the database had an EMPTY rent schedule and the warehouse
+        // re-ingest — which reads that table — filed zero rentals and reported
+        // success. The whole measured win reached only reports imported after the
+        // deploy, which is exactly what the "previous AND future" rule forbids.
+        //
+        // Re-derived from the stored source XML this pass already parsed, and
+        // UPSERTED rather than deleted-and-inserted so a concurrent reader never
+        // sees the schedule missing. Nothing points at these rows by id (the
+        // warehouse keys on the report plus the sequence), so a re-parse that
+        // reads a row differently simply corrects it.
+        for (const rc of (A.rentalComps || [])) {
+          await client.query(
+            `INSERT INTO appraisal_rental_comparables
+               (appraisal_id, seq, is_subject, address, city, state, zip, proximity,
+                monthly_rent, rent_per_gba, gba_sqft, rent_controlled, data_source,
+                lease_terms, utilities_included, location_code,
+                condition_uad, condition_text, age_years, year_built, units, unit_mix)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+             ON CONFLICT (appraisal_id, COALESCE(seq, '')) DO UPDATE SET
+               is_subject = EXCLUDED.is_subject, address = EXCLUDED.address,
+               city = EXCLUDED.city, state = EXCLUDED.state, zip = EXCLUDED.zip,
+               proximity = EXCLUDED.proximity, monthly_rent = EXCLUDED.monthly_rent,
+               rent_per_gba = EXCLUDED.rent_per_gba, gba_sqft = EXCLUDED.gba_sqft,
+               rent_controlled = EXCLUDED.rent_controlled, data_source = EXCLUDED.data_source,
+               lease_terms = EXCLUDED.lease_terms, utilities_included = EXCLUDED.utilities_included,
+               location_code = EXCLUDED.location_code, condition_uad = EXCLUDED.condition_uad,
+               condition_text = EXCLUDED.condition_text, age_years = EXCLUDED.age_years,
+               year_built = EXCLUDED.year_built, units = EXCLUDED.units,
+               unit_mix = EXCLUDED.unit_mix`,
+            [r.id, rc.seq, !!rc.isSubject, rc.address, rc.city, rc.state, rc.zip, rc.proximity,
+              rc.monthlyRent, rc.rentPerGba, rc.gba, rc.rentControlled, rc.dataSource,
+              rc.leaseTerms, rc.utilitiesIncluded, rc.locationCode,
+              rc.conditionUad, rc.conditionText, rc.ageYears,
+              Number.isFinite(Number(rc.yearBuilt)) && rc.yearBuilt != null && rc.yearBuilt !== ''
+                ? Math.trunc(Number(rc.yearBuilt)) : null,
+              rc.units,
+              rc.unitMix ? JSON.stringify(rc.unitMix) : null]);
+        }
+
         const v = (A.values || {});
         await client.query(
           `UPDATE appraisals SET

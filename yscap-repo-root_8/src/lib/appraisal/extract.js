@@ -92,6 +92,25 @@ function bathsTextOf(full, half) {
 // A MISMO Y/N indicator → strict boolean. Blank/other → null (NEVER default false — a missing
 // flag is "unknown", not "no", and truthiness on a stray comment must never read as yes).
 function yn(v) { const s = clean(v); if (!s) return null; if (/^y/i.test(s)) return true; if (/^n/i.test(s)) return false; return null; }
+/**
+ * A Yes/No enum read STRICTLY — the whole word, not its first letter.
+ *
+ * `yn` above matches on the initial letter, which is fine for a field whose only
+ * fillers are Yes and No and wrong for one whose commonest filler is "N/A":
+ * "N/A", "n/a", "None" and "Not Applicable" all begin with an n and all read as
+ * a definite NO. That matters wherever the column's contract is "NULL means the
+ * report did not say — never 'no'" (db/435's rent-control status). Deliberately
+ * a SECOND helper rather than a change to `yn`: every one of its existing
+ * callers reads a genuinely binary GSE indicator, and widening the refusal there
+ * is its own measurement, not a side effect of this one.
+ */
+function yesNoExact(v) {
+  const s = clean(v);
+  if (!s) return null;
+  if (/^(y|yes|true|1)$/i.test(s)) return true;
+  if (/^(n|no|false|0)$/i.test(s)) return false;
+  return null;
+}
 // Store a value ONLY if it exactly matches a known enum set — otherwise null (mirrors the UAD
 // C1-6/Q1-6 discipline). Case-sensitive as MISMO emits, with a case-insensitive fallback match.
 function enumOf(v, set) { const s = clean(v); if (!s) return null; if (set.includes(s)) return s; const hit = set.find((x) => x.toLowerCase() === s.toLowerCase()); return hit || null; }
@@ -720,8 +739,15 @@ function comparables(root, effectiveYear) {
  */
 function rentalGrid(root, effectiveYear) {
   const out = [];
+  // ONE ROW PER SEQUENCE, decided HERE. The sales grid dedupes its own sequence
+  // (`comparables()`); this did not, and the two doors then disagreed about a
+  // repeat — the loan-file door's `ON CONFLICT … DO NOTHING` kept the FIRST while
+  // the upload door's UPSERT kept the LAST. Same report, two answers.
+  const seenSeq = new Set();
   for (const m of X.findAll(root, 'MULTIFAMILY_RENTAL')) {
     const seq = clean(X.attr(m, 'PropertySequenceIdentifier'));
+    if (seq != null && seenSeq.has(seq)) continue;
+    if (seq != null) seenSeq.add(seq);
     const loc = X.find(m, 'LOCATION');
     // The features are a `_Type`/`_Description` list, exactly like the sales
     // grid's adjustment lines; read the four every report writes.
@@ -740,7 +766,15 @@ function rentalGrid(root, effectiveYear) {
       const baths = parseBaths(X.attr(u, 'TotalBathroomCount'));
       const sqft = bounded(X.attr(u, 'SquareFeetCount'), 1e6);
       const rent = bounded(X.attr(u, 'MonthlyRentAmount'), 1e8);
-      if (rooms == null && beds == null && baths.full == null && sqft == null && rent == null) continue;
+      // A FORM PADS WITH ZEROS AS OFTEN AS WITH BLANKS — db/426's rule, and this
+      // dropped only the blanks. `count('0', 99)` returns 0, which is not null,
+      // so `TotalRoomCount="0" TotalBedroomCount="0"` survived as a dwelling and
+      // a DUPLEX was filed as a 4-FAMILY. Measured on a real report
+      // (2242 Concord St, Detroit): the rent schedule said 4 units while the
+      // SAME report's sales grid said 2, and the rental row won the roll-up.
+      // A row that states nothing ABOUT a dwelling is not a dwelling.
+      if ((rooms || 0) + (beds || 0) + (baths.full || 0) + (baths.half || 0)
+          + (sqft || 0) + (rent || 0) <= 0) continue;
       units.push({ unit: clean(X.attr(u, 'UnitSequenceIdentifier')) || String(units.length + 1),
         rooms, beds, baths_full: baths.full, baths_half: baths.half, baths: baths.text,
         sqft, monthly_rent: rent });
@@ -762,9 +796,13 @@ function rentalGrid(root, effectiveYear) {
       monthlyRent: bounded(X.attr(m, 'MonthlyRentAmount'), 1e8),
       rentPerGba: bounded(X.attr(m, 'RentPerGrossBuildingAreaAmount'), 1e6),
       gba: bounded(X.attr(m, 'GrossBuildingAreaSquareFeetCount'), 1e6),
-      // The enum is Yes/No; anything else is left unanswered rather than guessed.
-      rentControlled: /^y/i.test(String(X.attr(m, 'RentControlStatusType') || '')) ? true
-        : (/^n/i.test(String(X.attr(m, 'RentControlStatusType') || '')) ? false : null),
+      // The enum is Yes/No, and ANYTHING ELSE IS UNANSWERED — db/435's own column
+      // comment says "NULL means the report did not say — never 'no'". Testing
+      // `/^n/i` against the raw attribute broke that on the commonest filler
+      // there is: "N/A", "n/a", "None" and "Not Applicable" all start with an n
+      // and all read as "not rent controlled", which then rolls up onto the
+      // property. Matched whole, through `clean()`, like every other enum here.
+      rentControlled: yesNoExact(X.attr(m, 'RentControlStatusType')),
       dataSource: clean(X.attr(m, 'DataSourceDescription')),
       leaseTerms: clean(feat.Lease),
       utilitiesIncluded: clean(feat.UtilitiesIncluded),

@@ -105,7 +105,8 @@ const dateOnly = (v) => {
  */
 const ROLLUP_FACTS = Object.freeze({
   property_type: 'property_type', property_category: 'property_category',
-  units: 'units', year_built: 'year_built', gla: 'gla', lot_area: 'lot_area', lot_sqft: 'lot_sqft',
+  units: 'units', year_built: 'year_built', gla: 'gla', gla_basis: 'gla_basis',
+  lot_area: 'lot_area', lot_sqft: 'lot_sqft',
   beds: 'beds', baths_full: 'baths_full', baths_half: 'baths_half', baths_text: 'baths_text',
   total_rooms: 'total_rooms', stories: 'stories', design_style: 'design_style',
   basement_sqft: 'basement_sqft', below_grade_sqft: 'below_grade_sqft',
@@ -498,9 +499,12 @@ async function upsertObservation(db, cols) {
   // through to the sales pivot, whose partial index does not cover a NULL
   // `comparable_id`, and every re-ingest would insert another copy.
   const rental = cols.role === 'rental_comparable';
+  // COALESCE'd, matching db/436's indexes: NULLs are DISTINCT in a unique index,
+  // so a rental row with no sequence matched no conflict target at all and every
+  // re-ingest inserted another copy.
   const conflict = rental
-    ? (uploaded ? '(import_id, comp_seq) WHERE role = \'rental_comparable\' AND import_id IS NOT NULL'
-      : '(appraisal_id, comp_seq) WHERE role = \'rental_comparable\' AND appraisal_id IS NOT NULL')
+    ? (uploaded ? '(import_id, COALESCE(comp_seq, \'\')) WHERE role = \'rental_comparable\' AND import_id IS NOT NULL'
+      : '(appraisal_id, COALESCE(comp_seq, \'\')) WHERE role = \'rental_comparable\' AND appraisal_id IS NOT NULL')
     : cols.role === 'subject'
       ? (uploaded ? '(import_id) WHERE role = \'subject\' AND import_id IS NOT NULL'
         : '(appraisal_id) WHERE role = \'subject\'')
@@ -619,6 +623,21 @@ async function rollupProperty(db, propertyId) {
   // stated a unit count, the best-sourced one wins, and recency only breaks a
   // tie. A subject observation carries no `identity_basis` and is treated as
   // measured, because that is what it is: the appraiser stood in the building.
+  // A GROSS LIVING AREA OUTRANKS A GROSS BUILDING AREA, whatever the dates say.
+  // They are different measurements — a building area includes the stairwells,
+  // the shared halls and the basement — and `gla` is read blind downstream: the
+  // search screen labels it "Gross living area", sorts on it and divides the
+  // sale price by it, and the valuation engine derives its per-foot adjustment
+  // and its size bracket from it. Measured inside ONE report (766 Winchester
+  // Ave): the sales grid says 2,247 living and the rent schedule says 2,747
+  // building; on a tie the rental was written last and won. Nothing is
+  // converted — the difference varies per building, so the honest answer is to
+  // prefer the one that answers the question and record which it is.
+  const bestGla = obs
+    .filter((o) => o.gla != null && o.gla !== '')
+    .sort((a, b) => (a.gla_basis === 'gba' ? 1 : 0) - (b.gla_basis === 'gba' ? 1 : 0))[0];
+  if (bestGla) { set.gla = bestGla.gla; set.gla_basis = bestGla.gla_basis || null; }
+
   const bestUnits = obs
     .filter((o) => o.units != null && o.units !== '')
     .sort((a, b) => identityRank(b) - identityRank(a))[0];
@@ -635,6 +654,10 @@ async function rollupProperty(db, propertyId) {
   const counts = {
     subject_count: obs.filter((o) => o.role === 'subject').length,
     comp_count: comps.length,
+    // Counted apart from the sales comparables so subject + comp + rental adds
+    // up to `observation_count` — adding a third role made those two disagree
+    // by a number nothing on the screen explained.
+    rental_comp_count: obs.filter((o) => o.role === 'rental_comparable').length,
     arv_comp_count: comps.filter((o) => o.comp_set === 'arv').length,
     asis_comp_count: comps.filter((o) => o.comp_set === 'as_is').length,
     observation_count: obs.length,
@@ -1282,9 +1305,18 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
         street: rc.address, city: txt(rc.city), fallbackCity: inh,
         state: txt(rc.state) || a.subject_state, zip: rc.zip,
       });
-      if (pid && !rentalMixByPid.has(pid)) rentalMixByPid.set(pid, mix);
+      // TOUCHED, so the property this resolved gets a roll-up. Without it the
+      // index could leave a `properties` row with no observation and no
+      // recomputation if the rental block later failed.
+      if (pid) { touched.add(pid); if (!rentalMixByPid.has(pid)) rentalMixByPid.set(pid, mix); }
     }
-  }, () => { /* the carry-across is a bonus; a failure must never touch the sales grid */ });
+  }, (e) => {
+    // NAMED, not silent. Every other best-effort block in this file records why
+    // it gave up; this one returned nothing at all, so a failure was invisible
+    // in `out.skipped` and in `property_ingest_log` alike.
+    out.skipped.push({ role: 'rental_area_index',
+      why: `per-unit areas could not be carried from the rent schedule onto the sales grid: ${e.message}` });
+  });
 
   const compObs = [];
   for (const c of comps) {
@@ -1437,6 +1469,11 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
   // one for the same report would double every count on that property.
   // Through `bestEffort` — see its header for why "best-effort" means two
   // different things depending on which door called us.
+  //
+  // COUNTED OUTSIDE THE BLOCK. `out.observations++` inside a savepoint survives
+  // the rollback that un-writes its row, and that number is what
+  // `property_ingest_log.observations_written` records.
+  let rentalsFiled = 0;
   await bestEffort(db, 'rental_grid', async () => {
     // ONE REPORT IS READ THE SAME WAY WHICHEVER DOOR IT ARRIVED THROUGH. A
     // loan-file report has `appraisal_rental_comparables` rows to read; an
@@ -1448,6 +1485,11 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
           WHERE appraisal_id = $1 AND is_subject = false ORDER BY seq`, [appraisalId])).rows : []);
     for (const rc of rentalRows) {
       if (rc.is_subject) continue;
+      // ONE BAD ROW MUST NOT COST THE WHOLE SCHEDULE. With a single savepoint
+      // around the loop, an unstorable figure on the first rental discarded a
+      // perfectly good second one. Each row settles on its own, and a failure
+      // NAMES the row rather than the schedule.
+      const settled = await bestEffort(db, 'rental_row', async () => {
       // The SAME address shape the sales comparables use — `upsertProperty`
       // owns the key, and `fallbackCity` is the gated inheritance (a row that
       // named no town takes the subject's ONLY when the two ZIPs agree).
@@ -1461,7 +1503,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       if (!pid) {
         out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: txt(rc.address),
           why: 'the rent schedule did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
-        continue;
+        return false;
       }
       touched.add(pid);
       await upsertObservation(db, {
@@ -1526,10 +1568,17 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
         contract_date: null,
         facts: JSON.stringify({ lease_terms: txt(rc.lease_terms) || null,
           utilities_included: txt(rc.utilities_included) || null }),
-      });
-      out.observations++;
+        });
+        return true;
+      }, (e) => out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: txt(rc.address),
+        why: `this rent-schedule row could not be filed: ${e.message}` }));
+      if (settled) rentalsFiled++;
     }
   }, (e) => out.skipped.push({ role: 'rental_comparable', why: `the rent schedule could not be filed: ${e.message}` }));
+  // COUNTED AFTER THE BLOCK SETTLES, never inside it. `out.observations++` sat
+  // within the savepoint, so a rollback un-wrote the rows and left the number —
+  // and that number is what `property_ingest_log.observations_written` records.
+  out.observations += rentalsFiled;
 
   // ---- photos, then the roll-ups ----------------------------------------
   // ONLY A LOAN-FILE REPORT HAS PICTURES TO LINK. The photographs live in
@@ -1722,7 +1771,12 @@ function mergeUnitAreas(salesMix, rentalMix) {
   if (!Array.isArray(rentalMix) || rentalMix.length !== mix.length) return salesMix;
   const byUnit = new Map();
   for (const u of rentalMix) { if (u && u.unit != null) byUnit.set(String(u.unit), u); }
-  if (byUnit.size !== rentalMix.length) return salesMix;              // a repeated unit number
+  if (byUnit.size !== rentalMix.length) return salesMix;              // a repeated unit number on the rent side
+  // AND ON THE SALES SIDE. A sales row with no stated sequence is labelled by
+  // POSITION (`r.seq != null ? r.seq : i + 1`), so a seq-less first row and a
+  // genuine `UnitSequenceIdentifier="1"` row both come out as "1" — and both
+  // would then have been given unit 1's area while unit 2's was discarded.
+  if (new Set(mix.map((u) => String(u.unit))).size !== mix.length) return salesMix;
   if (!mix.every((u) => u && u.unit != null && byUnit.has(String(u.unit)))) return salesMix;
   let filled = 0;
   const out = mix.map((u) => {

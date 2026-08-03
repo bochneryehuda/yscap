@@ -664,7 +664,12 @@ function buildFieldsJson(A) {
 //     the stated age, the design style is stored, and `REPARSED` finally
 //     carries every column this parser owns. 4 was claimed by the commit
 //     immediately before this one, so a report stamped 4 must be re-read.
-const COMP_PARSE_VERSION = 5;
+// 6 — db/435: the RENT SCHEDULE. `appraisal_rental_comparables` was written by
+//     the fresh-import path only, so every report already in the database had an
+//     empty one and the warehouse re-ingest filed zero rentals while reporting
+//     success. The re-parse now re-derives the schedule from the stored XML, and
+//     the version bump is what makes it reach the back book.
+const COMP_PARSE_VERSION = 6;
 
 module.exports = {
   importAppraisal,
