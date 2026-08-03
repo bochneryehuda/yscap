@@ -207,7 +207,7 @@ export default function StaffPropertyDetail() {
           <Fact k="Market rent" v={p.market_rent ? money(p.market_rent) + ' / month' : null} />
           <Fact k="Owner of record" v={p.owner_of_record} />
           <Fact k="HOA fee" v={p.hoa_fee_amount ? `${money(p.hoa_fee_amount)}${p.hoa_fee_period ? ' / ' + String(p.hoa_fee_period).toLowerCase() : ''}` : null} />
-          {/* db/448 + db/424. A fact you can FILTER on but never SEE is half a
+          {/* db/448 + db/450. A fact you can FILTER on but never SEE is half a
               feature — the tax search shipped without a tax column, so a search
               on the tax bill returned rows that never said what the tax bill was. */}
           <Fact k="Attached / detached" v={p.attachment_type} />
@@ -222,7 +222,7 @@ export default function StaffPropertyDetail() {
           <Fact k="Effective age" v={p.effective_age ? `${p.effective_age} years` : null} />
           <Fact k="Foundation" v={p.foundation_type} />
           <Fact k="Neighbourhood" v={p.neighborhood} />
-          {/* The cost approach. AS-IS ONLY (db/424): a renovation report states
+          {/* The cost approach. AS-IS ONLY (db/450): a renovation report states
               these about the FINISHED house, so the roll-up refuses them there —
               which is why "condition C5" and "no depreciation" can no longer
               appear on one row. */}

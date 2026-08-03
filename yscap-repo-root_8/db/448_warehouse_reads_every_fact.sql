@@ -160,8 +160,8 @@ CREATE INDEX IF NOT EXISTS idx_properties_condo_project
 -- FIX, not tidying.
 --
 -- `migrate-boot` runs every numbered file's FULL TEXT on EVERY boot. So an ADD
--- here and a DROP in db/424 do not settle: db/448 re-adds what db/424 removed,
--- db/424 removes it again, and the pair CHURNS ELEVEN COLUMNS PER BOOT. A dropped
+-- here and a DROP in db/450 do not settle: db/448 re-adds what db/450 removed,
+-- db/450 removes it again, and the pair CHURNS ELEVEN COLUMNS PER BOOT. A dropped
 -- column keeps its `pg_attribute` slot forever, and Postgres allows 1600 per
 -- table — so the loop is a countdown. MEASURED on a database this branch had been
 -- booted against: 1,476 dropped attributes on `properties` and 328 on
@@ -172,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_properties_condo_project
 -- The nine `properties` columns (the condo absorption counts, the listing note,
 -- the cost service) and the two dead `property_observations` columns
 -- (`form_version` / `software_vendor`, which nothing has ever been able to fill)
--- are simply never created now. db/424 KEEPS its DROPs so a database where the
+-- are simply never created now. db/450 KEEPS its DROPs so a database where the
 -- old version of this file already ran is still cleaned up once — after which
 -- both files are stable no-ops. `check-migrations` now refuses this shape.
 -- ---------------------------------------------------------------------------

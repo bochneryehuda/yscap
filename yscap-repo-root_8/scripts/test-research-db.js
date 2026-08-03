@@ -952,7 +952,7 @@ async function makeAppraisal(appId, o) {
     'and the PROPERTY facts roll up onto the property, where the search can reach them');
     ok(!('lender_name' in fProp) && !('addendum_text' in fProp) && !('form_version' in fProp),
       'while the REPORT facts have no property column at all — they can never overwrite a durable answer');
-    // db/424 — the audit's five corrected placements, each proven from the SAME
+    // db/450 — the audit's five corrected placements, each proven from the SAME
     // report. A fact is on the wrong side if it describes a REPORT, a FUTURE
     // house, or a WHOLE BUILDING, and `properties` claims none of those.
     ok(fObs.listing_history && fObs.cost_data_source && !('listing_history' in fProp)
@@ -1058,7 +1058,7 @@ async function makeAppraisal(appId, o) {
     ok(mObs.trends && mObs.trends.Supply === 'Declining' && mObs.nbhd_builtup === 'Over 75%'
       && Array.isArray(mObs.present_land_use),
     'the appraiser\'s trend conclusions and the page-1 neighbourhood read land with it');
-    // db/424 — this column was declared `text` and written through a string
+    // db/450 — this column was declared `text` and written through a string
     // helper, so a jsonb source object stored the literal "[object Object]" on
     // every single row. The type is what makes the value readable.
     ok(mObs.comp_research && typeof mObs.comp_research === 'object'
@@ -1072,11 +1072,11 @@ async function makeAppraisal(appId, o) {
     // exact value to NULL. Re-running the real migration text is the only honest
     // proof, so that is what this does.
     await db.query(require('fs').readFileSync(
-      require('path').join(__dirname, '..', 'db', '424_warehouse_fact_placement.sql'), 'utf8'));
+      require('path').join(__dirname, '..', 'db', '450_warehouse_fact_placement.sql'), 'utf8'));
     const mAfterBoot = (await db.query(
       `SELECT comp_research FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0];
     ok(mAfterBoot.comp_research && mAfterBoot.comp_research.salesCount === 26,
-      'and it SURVIVES db/424 running again on the next boot — the retype is guarded on the column '
+      'and it SURVIVES db/450 running again on the next boot — the retype is guarded on the column '
       + 'still being text, so a deploy can never drop the data it exists to make readable');
     // The market is about an AREA, so it must never appear on the property row.
     const mProp = (await db.query(

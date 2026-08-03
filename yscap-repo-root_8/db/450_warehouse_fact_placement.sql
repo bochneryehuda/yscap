@@ -1,4 +1,4 @@
--- 424 — PUTTING db/448'S FACTS WHERE THEY BELONG
+-- 450 — PUTTING db/448'S FACTS WHERE THEY BELONG
 --
 -- db/448 carried 59 previously-dropped facts into the warehouse. A pre-merge
 -- audit, run against a real database with real reports, proved that FIVE of the
@@ -10,6 +10,18 @@
 -- known answer about a REAL HOUSE AS IT STANDS TODAY. A fact that is true of a
 -- REPORT, of a FUTURE house, or of a WHOLE BUILDING is not that, however
 -- convenient it is to have on the row.
+--
+-- WHY 450 AND NOT 424. This file exists to CORRECT db/448 and db/449, so it must
+-- run after them. It was originally 424 — correctly, because those two were then
+-- 422 and 423 — and when main's dashboards work (#985) collided on 421/422/423
+-- and this branch's three were renumbered to 447/448/449, this one silently
+-- inverted: it began running BEFORE the migration that CREATES
+-- `market_observations`, so `ALTER TABLE market_observations …` failed with
+-- 42P01 on every fresh database. `migrate-boot` logs a failed file and KEEPS
+-- GOING (by design — a migration hiccup must not stop the service booting), so
+-- `ensureSchema()` still returned cleanly and the only evidence was one
+-- "FAILED … — continuing" line in the boot log. A renumber has to move the whole
+-- dependent CHAIN, not just the colliding files.
 --
 -- ─── 1. THE BUILDING'S ABSORPTION STATISTICS WERE FILED PER UNIT ─────────────
 --

@@ -116,7 +116,7 @@ for (const f of files) {
 // Postgres allows 1600 per table, so it is a countdown to that table dying with
 // "tables can have at most 1600 columns" — and nothing warns you on the way.
 //
-// MEASURED before this check existed: db/448 added 11 columns db/424 removed, and
+// MEASURED before this check existed: db/448 added 11 columns db/450 removed, and
 // a database this branch had been booted against carried 1,476 dropped attributes
 // on `properties` and 328 on `property_observations` — exactly 9 and 2 per boot
 // over 164 boots — with `properties` sitting at attnum 1600, permanently dead.
@@ -131,7 +131,7 @@ for (const f of files) {
   for (const f of files) {
     const sql = fs.readFileSync(path.join(DB_DIR, f), 'utf8');
     // A DROP inside a DO-block guarded on the column's current TYPE is the
-    // sanctioned retype (db/424's comp_research): it fires once and then never
+    // sanctioned retype (db/450's comp_research): it fires once and then never
     // again, so it does not churn. Only an unguarded top-level DROP counts.
     const guardedRetype = /DO\s+\$\$[\s\S]*?DROP\s+COLUMN[\s\S]*?END\s+\$\$/i.test(sql);
     let m;
@@ -151,6 +151,71 @@ for (const f of files) {
     while ((m = addRe.exec(sql))) {
       const key = `${m[1].toLowerCase()}.${m[2].toLowerCase()}`;
       if (!added.has(key)) added.set(key, f);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A TABLE CANNOT BE ALTERED BEFORE IT IS CREATED — the renumber-inversion check
+// ---------------------------------------------------------------------------
+// A renumber has to move the whole dependent CHAIN, not just the colliding file.
+// Reproduced: main's dashboards work collided on 421/422/423, this branch's three
+// were renumbered to 447/448/449 — and `424_warehouse_fact_placement.sql`, which
+// exists to CORRECT two of them, was left behind. It then ran BEFORE the
+// migration that CREATES `market_observations`, so its `ALTER TABLE` failed with
+// 42P01 on every fresh database.
+//
+// NOTHING SAID SO. `migrate-boot` logs a failed file and keeps going ON PURPOSE —
+// a migration hiccup must not stop the service booting — so `ensureSchema()`
+// still resolved, the boot still succeeded, and the only evidence anywhere was a
+// single "FAILED … — continuing" line in the log. It reached CI.
+//
+// This is a static read of the files, so it costs nothing and needs no database.
+// Conservative by construction: a table this directory never CREATEs is skipped
+// entirely (it belongs to `schema.sql`, which runs first), and a DROP TABLE
+// resets the table's origin so a legitimate drop-and-recreate is not flagged.
+{
+  const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)/gi;
+  const dropTableRe = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-z_][a-z0-9_]*)/gi;
+  const alterRe = /ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([a-z_][a-z0-9_]*)/gi;
+  const createdIn = new Map();          // table -> the FIRST migration number that creates it
+  const altersOf = new Map();           // table -> [{num, file}]
+
+  for (const f of files) {
+    const num = Number(f.slice(0, 3));
+    const sql = fs.readFileSync(path.join(DB_DIR, f), 'utf8');
+    let m;
+    createRe.lastIndex = 0;
+    while ((m = createRe.exec(sql))) {
+      const t = m[1].toLowerCase();
+      if (!createdIn.has(t)) createdIn.set(t, num);
+    }
+    // A drop-and-recreate is legitimate; forget the earlier origin so a later
+    // CREATE in a later file becomes the one that counts.
+    dropTableRe.lastIndex = 0;
+    while ((m = dropTableRe.exec(sql))) {
+      const t = m[1].toLowerCase();
+      if (createdIn.has(t) && createdIn.get(t) < num) createdIn.delete(t);
+    }
+    alterRe.lastIndex = 0;
+    while ((m = alterRe.exec(sql))) {
+      const t = m[1].toLowerCase();
+      if (!altersOf.has(t)) altersOf.set(t, []);
+      altersOf.get(t).push({ num, file: f });
+    }
+  }
+
+  for (const [table, uses] of altersOf) {
+    const born = createdIn.get(table);
+    if (born == null) continue;                     // created by schema.sql — always first
+    for (const u of uses) {
+      if (u.num < born) {
+        hardErrors++;
+        fail(`${u.file} alters "${table}", which is not created until migration ${born} — `
+          + 'a renumber moved one file out of its chain. `migrate-boot` logs a failed '
+          + 'migration and CONTINUES, so this fails silently on every fresh database. '
+          + 'Move the whole dependent chain, not just the colliding file.');
+      }
     }
   }
 }

@@ -58,7 +58,7 @@ const ID = require('./identity');
  *     re-rolling can invent a value that was never written to an observation —
  *     the report has to be READ AGAIN. That is this number.
  *
- * db/424 hit exactly that: `attachment_type` was added to both sides, and after
+ * db/450 hit exactly that: `attachment_type` was added to both sides, and after
  * a full re-roll 4 of the 5 appraisals carrying an attachment style still had
  * NULL on their property, because the value had never reached an observation.
  * The same was true of every db/448 fact — 3 of 125 observations carried a tax
@@ -68,7 +68,7 @@ const ID = require('./identity');
  *
  * BUMP THIS whenever the ingest starts reading a fact it did not read before.
  */
-// 2 — db/448's 59 facts and db/424's `attachment_type` are read off the report,
+// 2 — db/448's 59 facts and db/450's `attachment_type` are read off the report,
 //     so the reports have to be re-read for the corpus we already hold.
 // 3 — db/426: a 2-4 unit comparable's rooms/beds/baths were read off the FIRST
 //     `ROOM_ADJUSTMENT` row, which is UNIT 1, not the property. Every such comp
@@ -161,7 +161,7 @@ const ROLLUP_FACTS = Object.freeze({
   // concessions) are deliberately ABSENT from this map — rolling those onto the
   // property would let the newest appraisal overwrite a durable answer with
   // something that was only ever true of one report.
-  // db/424 — the attachment STYLE, which db/405 evicted from `property_type`
+  // db/450 — the attachment STYLE, which db/405 evicted from `property_type`
   // specifically so the fact would not be lost, and which then reached no
   // warehouse table at all. Durable and searchable; it is simply not a category.
   attachment_type: 'attachment_type',
@@ -177,7 +177,7 @@ const ROLLUP_FACTS = Object.freeze({
   depreciation_functional: 'depreciation_functional',
   depreciation_external: 'depreciation_external',
   depreciation_total: 'depreciation_total',
-  // db/424 — `cost_data_source` and `listing_history` are DELIBERATELY absent.
+  // db/450 — `cost_data_source` and `listing_history` are DELIBERATELY absent.
   // The first names the cost SERVICE the appraiser consulted (report methodology,
   // the exact analogue of `contract_data_source`, which is already observation-
   // only); the second is a note whose date-qualifier `listed_within_year` is
@@ -193,7 +193,7 @@ const ROLLUP_FACTS = Object.freeze({
   fema_panel_date: 'fema_panel_date',
   condo_project_name: 'condo_project_name',
   condo_project_type: 'condo_project_type',
-  // THE DURABLE project attributes only (db/424). What the project was DESIGNED
+  // THE DURABLE project attributes only (db/450). What the project was DESIGNED
   // as does not move; how much of it has SOLD does, and those counts describe the
   // whole BUILDING as of one report's date — filing them here gave every unit a
   // private copy of the building's statistics, disagreeing with the unit next
@@ -220,7 +220,7 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-// 5 — db/448 widened the fact set by 36 property columns; db/424 corrected five
+// 5 — db/448 widened the fact set by 36 property columns; db/450 corrected five
 // of those placements, added the attachment style, and — the reason this bump
 // MATTERS rather than merely tidying — put the cost approach and its depreciation
 // under AS_IS_ONLY. A property already rolled at 3 is carrying after-repair
@@ -265,7 +265,7 @@ const ROLLUP_VERSION = 9;
  * 'as_repaired' is skipped for these columns only; everything else it stated
  * (the size, the year built, the address) is a fact either way and still counts.
  *
- * db/424 EXTENDED THIS SET, because db/448 added the numeric analogue of
+ * db/450 EXTENDED THIS SET, because db/448 added the numeric analogue of
  * `condition_uad` and left it unprotected. Proven on a real database: a 2019
  * as-is report said C5 with $72,000 of depreciation, a 2026 renovation report
  * (correctly stamped `as_repaired`) said C2 with ZERO physical depreciation and
@@ -312,7 +312,7 @@ const ROLLUP_VERSION = 9;
 const AS_IS_ONLY = new Set([
   'condition_uad', 'condition_text', 'quality_uad', 'quality_text',
   // The cost approach and its depreciation — the same claim as `condition_uad`,
-  // in dollars (db/424).
+  // in dollars (db/450).
   'depreciation_physical', 'depreciation_functional', 'depreciation_external',
   'depreciation_total', 'depreciated_cost_improvements',
   'cost_new_total', 'dwelling_cost_new', 'dwelling_price_per_sqft', 'dwelling_sqft',
@@ -1117,7 +1117,7 @@ async function rollupProperty(db, propertyId) {
         // narrative ("C4 for as-is value. C3 for As repaired value."), that IS a
         // statement about the house as it stands and may be used. Nothing else on
         // an after-repair report gets this: the money figures have no such
-        // sentence, and letting them through is the db/424 bug.
+        // sentence, and letting them through is the db/450 bug.
         if (obsCol !== 'condition_uad' || !o.condition_uad_as_is) continue;
         set[propCol] = o.condition_uad_as_is;
         break;
@@ -1663,7 +1663,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       // The attachment STYLE, kept as its own fact rather than smuggled into the
       // category. db/405 evicted it from `property_type` precisely so it would
       // not be lost — "Detached" answers a different question from "Multi 2-4",
-      // and neither substitutes for the other (db/424).
+      // and neither substitutes for the other (db/450).
       attachment_type: txt(a.attachment_type),
       // THE GRID'S CODE, THE APPRAISER'S WORD, AND — ON A RENOVATION REPORT — THE
       // AS-IS CODE OUT OF THEIR OWN NARRATIVE.
@@ -1686,7 +1686,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       // `condition_basis` must NOT be flipped to 'as_is' to let it through: that
       // flag gates the WHOLE of AS_IS_ONLY, so flipping it would let this report's
       // after-repair depreciation and cost figures roll up too — re-opening
-      // exactly the db/424 defect ("condition C5" beside "zero physical
+      // exactly the db/450 defect ("condition C5" beside "zero physical
       // depreciation") one commit after fixing it. The roll-up consults this
       // column explicitly instead.
       condition_uad_as_is: txt(a.condition_uad_as_is),
@@ -1743,7 +1743,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       condo_common_elements: txt(a.condo_common_elements),
       condo_management_type: txt(a.condo_management_type),
       // `form_version` and `software_vendor` were written here by db/448 and are
-      // GONE (db/424): the parser never assigns either, `appraisalRowFrom`
+      // GONE (db/450): the parser never assigns either, `appraisalRowFrom`
       // hard-codes software_vendor null and omits form_version entirely, so both
       // source columns are always NULL and both observation columns were dead.
       // db/448's own test only passed because it INSERTed a value straight into

@@ -21,7 +21,7 @@
 -- ─── AND THE ONE PLACE AN AS-IS RATING EXISTS ON A RENOVATION FILE ───────────
 --
 -- On a subject-to-repairs report the grid's condition describes the FINISHED
--- house, so the roll-up refuses it (`AS_IS_ONLY`, db/424) and those properties
+-- house, so the roll-up refuses it (`AS_IS_ONLY`, db/450) and those properties
 -- end up with no current condition at all. But the appraiser routinely writes
 -- BOTH ratings into the condition narrative —
 --
@@ -62,7 +62,7 @@ COMMENT ON COLUMN appraisals.condition_uad_as_is IS
 -- the observation's `condition_basis` is deliberately NOT flipped to 'as_is' to
 -- let it through: that flag gates the WHOLE of `AS_IS_ONLY`, so flipping it would
 -- carry this report's after-repair DEPRECIATION and COST figures onto the
--- property too — re-opening the exact db/424 defect ("condition C5" beside "zero
+-- property too — re-opening the exact db/450 defect ("condition C5" beside "zero
 -- physical depreciation, replacement cost as-if-new") one commit after fixing it.
 -- The roll-up consults this column explicitly, for the condition CODE only.
 ALTER TABLE property_observations ADD COLUMN IF NOT EXISTS condition_uad_as_is text;

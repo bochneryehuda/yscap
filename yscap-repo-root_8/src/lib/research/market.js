@@ -191,7 +191,7 @@ async function writeMarket(db, a, ctx = {}) {
     market_reconciliation_comment: txt(a.market_reconciliation_comment),
     // jsonb, NOT text. `appraisals.comp_research` is a jsonb object (the RESEARCH
     // block's sales/listing counts and price brackets), so running it through the
-    // string helper stored the literal "[object Object]" on every row — db/424
+    // string helper stored the literal "[object Object]" on every row — db/450
     // retypes the column and this binds it properly.
     comp_research: bindableJson(a.comp_research),
   };

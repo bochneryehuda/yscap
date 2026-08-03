@@ -44,8 +44,8 @@ coverage, not about the user's filters.
 ## DONE (this session)
 
 - [x] Market screen — months of supply, median price, days on market by month, with the sample size drawn as a first-class part of every reading
-- [x] db/424 — five wrong fact placements corrected; after-repair money can no longer roll onto a property
-- [x] db/424 idempotency — the migration was wiping its own column on every boot
+- [x] db/450 — five wrong fact placements corrected; after-repair money can no longer roll onto a property
+- [x] db/450 idempotency — the migration was wiping its own column on every boot
 - [x] `INGEST_VERSION` — the lever that actually back-fills a newly-read fact, which `ROLLUP_VERSION` cannot
 - [x] `AS_IS_ONLY` corrected in **both** directions — three facts joined it, two provably wrong entries left it
 - [x] db/426 — a 2–4 unit comparable's rooms/beds/baths, and the per-unit breakdown
@@ -132,7 +132,7 @@ coverage, not about the user's filters.
 ## PHASE 1 — STOP BEING WRONG
 
 **11 of 14 done.** Also fixed on the way, and not on the original list: a
-migration pair (db/448 + db/424) that undid each other on every boot, burning a
+migration pair (db/448 + db/450) that undid each other on every boot, burning a
 permanent Postgres column slot each time — measured at 1,476 burnt slots with
 `properties` sitting exactly at the 1,600 hard limit, i.e. one boot from a table
 that could never be altered again. `check-migrations` now refuses that shape.

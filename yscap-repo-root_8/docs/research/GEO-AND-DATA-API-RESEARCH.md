@@ -706,7 +706,7 @@ act on and a note buyer can review.
 
 ### 6.1 What is genuinely missing
 
-The appraisal is rich (see `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md` — db/448 and db/424 pulled
+The appraisal is rich (see `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md` — db/448 and db/450 pulled
 nearly every stated fact through to the warehouse). What it **structurally cannot** give us:
 
 | Missing fact | Why the XML cannot supply it | Who needs it |
@@ -842,4 +842,4 @@ Restated so a future change can be checked against them:
 - [CoreLogic on Datarade](https://datarade.ai/data-providers/corelogic/profile) · [DataTree (First American) on Datarade](https://datarade.ai/data-providers/datatree-by-first-american/profile) · [CoreLogic pricing from actual buyers](https://www.pricelevel.com/vendors/corelogic/pricing) **[2nd]**
 - [NCES EDGE — School District Boundaries](https://nces.ed.gov/programs/edge/Geographic/DistrictBoundaries) · [NCES EDGE — SABS](https://nces.ed.gov/programs/edge/sabs) · [SABS technical documentation](https://nces.ed.gov/programs/edge/docs/EDGE_SABS_2015_2016_TECHDOC.pdf)
 - [HUD-USPS ZIP Code Crosswalk files](https://www.huduser.gov/portal/datasets/usps_crosswalk.html) · [HUD crosswalk API](https://www.huduser.gov/portal/dataset/uspszip-api.html)
-- Internal: `docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md`, `docs/research/RESEARCH-WAREHOUSE-HANDOFF.md`, `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md`, `docs/PROPERTY-COMP-DATABASE-RESEARCH.md`, `db/409`, `db/412`, `db/413`, `db/415`, `db/419`, `db/448`, `db/424`
+- Internal: `docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md`, `docs/research/RESEARCH-WAREHOUSE-HANDOFF.md`, `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md`, `docs/PROPERTY-COMP-DATABASE-RESEARCH.md`, `db/409`, `db/412`, `db/413`, `db/415`, `db/419`, `db/448`, `db/450`
