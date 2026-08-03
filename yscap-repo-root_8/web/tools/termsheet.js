@@ -1225,17 +1225,44 @@
 
   /* ===================== PDF (branded, signable) ===================== */
   function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+  /* ---------- OUR OWN COPY FIRST, the outside hosts only as a backup -------
+     Owner-directed 2026-08-03. These two loaders reached for a CDN and NOTHING
+     ELSE — so a jsdelivr/unpkg outage, or an officer whose corporate network
+     blocks public file hosts, lost the term sheet PDF, the proof-of-funds
+     letter AND the Excel export in one go, on a browser that was plainly
+     online and already talking to us. The vendored copies have been sitting in
+     tools/vendor/ the whole time; the Scope of Work and Track Record tools
+     have always tried them first. This makes the term sheet behave the same.
+     If the page loaded, the engine loads — no second host has to be up.
+     Versions are unchanged: vendor/jspdf.umd.min.js IS the pinned 2.5.1, and
+     vendor/xlsx.bundle.js is the same xlsx-js-style 1.2.0 build the other two
+     tools already load in production. termsheet.js uses no autoTable, so
+     jsPDF alone is enough here.                                            */
+  async function loadFirst(srcs, ready, what) {
+    if (ready()) return;
+    for (var i = 0; i < srcs.length; i++) {
+      // A source that 404s AND one that loads but defines nothing both fall
+      // through to the next — only "the library is actually here" stops us.
+      try { await loadScript(srcs[i]); } catch (e) { continue; }
+      if (ready()) return;
+    }
+    throw new Error(what + " failed to load");
+  }
+  var haveJsPDF = function () { return !!(window.jspdf && window.jspdf.jsPDF); };
+  var haveXLSX = function () { return !!(window.XLSX && window.XLSX.utils); };
   async function ensurePDF() {
-    if (window.jspdf && window.jspdf.jsPDF) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    catch (e) { await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    if (!(window.jspdf && window.jspdf.jsPDF)) throw new Error("pdf library failed to load");
+    await loadFirst([
+      "vendor/jspdf.umd.min.js",                                        // ours
+      "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+      "https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"
+    ], haveJsPDF, "pdf library");
   }
   async function ensureXLSX() {
-    if (window.XLSX && window.XLSX.utils) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    catch (e) { await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    if (!(window.XLSX && window.XLSX.utils)) throw new Error("spreadsheet library failed to load");
+    await loadFirst([
+      "vendor/xlsx.bundle.js",                                          // ours
+      "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js",
+      "https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
+    ], haveXLSX, "spreadsheet library");
   }
   // Visible deal summary for the Excel export: inputs + both programs' headline results.
   function xlsxSections() {
@@ -1369,7 +1396,7 @@
       wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
       X.writeFile(wb, fileStem() + ".xlsx");
       flash("Excel exported.");
-    } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
+    } catch (e) { flash("Excel export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team."); }
     finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
   }
   async function importXlsx(input) {
@@ -1827,7 +1854,7 @@
       doc.save(fileStem() + ".pdf");
       flash("Term sheet downloaded.");
     } catch (e) {
-      flash("Term sheet export needs an internet connection (loads the PDF engine).");
+      flash("Term sheet export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
   function pctp(x) { return (Math.round(x * 1000) / 10) + "%"; }
@@ -1995,7 +2022,7 @@
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
       flash("Proof-of-funds letter downloaded.");
     } catch (e) {
-      flash("Letter export needs an internet connection (loads the PDF engine).");
+      flash("Letter export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
 

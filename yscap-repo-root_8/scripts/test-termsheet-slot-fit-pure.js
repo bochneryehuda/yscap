@@ -125,6 +125,32 @@ for (const rel of COPIES) {
   //     otherwise pass every assertion below.
   ok(!/doc\.text\(\s*vlines\[0\]/.test(src), "no surface draws only the first wrapped line any more");
 
+  /* (0b) THE PDF ENGINE COMES FROM OUR OWN SERVER FIRST.
+     Owner-directed 2026-08-03. Both loaders reached for a CDN and NOTHING
+     ELSE, so a jsdelivr/unpkg outage — or an officer whose corporate network
+     blocks public file hosts — lost the term sheet PDF, the proof-of-funds
+     letter AND the Excel export at once, on a browser already talking to us.
+     The vendored copies had been sitting in tools/vendor/ the whole time and
+     the Scope of Work / Track Record tools always tried them first.
+     Asserted at SOURCE level because CI has no browser; the end-to-end proof
+     (both documents generating with cdn.jsdelivr and unpkg BLOCKED, no
+     injection) is a headless-Chromium run. */
+  for (const [fn, local] of [["ensurePDF", "vendor/jspdf.umd.min.js"], ["ensureXLSX", "vendor/xlsx.bundle.js"]]) {
+    let body = "";
+    try { body = extractFn(src, fn); } catch (e) { ok(false, `${fn}() is present: ${e.message}`); continue; }
+    const srcs = [...body.matchAll(/"([^"]*(?:vendor\/|cdn\.jsdelivr|unpkg)[^"]*)"/g)].map(m => m[1]);
+    ok(srcs.length >= 2, `${fn}() lists a local copy AND a fallback (${srcs.length} sources)`);
+    eq(srcs[0], local, `${fn}() tries OUR OWN copy first`);
+    ok(srcs.slice(1).some(s => /^https:/.test(s)), `${fn}() keeps an outside host as the backup`);
+    // The vendored file must actually be there, in BOTH trees, or "local first"
+    // silently costs a wasted request on every export and changes nothing.
+    const dir = path.dirname(path.join(ROOT, rel));
+    ok(fs.existsSync(path.join(dir, local)), `${local} exists beside ${path.basename(rel)}`);
+  }
+  // A source that loads but defines nothing must fall through to the next one —
+  // otherwise a stale/blank vendored file would break exports permanently.
+  ok(/if \(ready\(\)\) return;/.test(extractFn(src, "loadFirst")), "loadFirst() only stops once the library is really there");
+
   let fnSource;
   try { fnSource = extractFn(src, "fitSlotLines"); }
   catch (e) { ok(false, `fitSlotLines() is present: ${e.message}`); continue; }
