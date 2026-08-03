@@ -102,6 +102,24 @@ coverage, not about the user's filters.
   "3 FAMILY", "4-PLEX"). It refuses far more than it accepts: "1/2 Duplex"
   (9 comps, all on 1004s) is ONE SIDE of a two-unit building, and "DOUBLE BLOCK"
   is used both ways, so both are left unanswered rather than doubled.
+- [x] **The second audit's nine** (db/433, db/434). The one that mattered most:
+  **none of the three back-book version counters had been bumped**, so on an
+  already-deployed database none of this would have reached a single stored
+  report — `COMP_PARSE_VERSION` 4→5 (4 was claimed by the previous commit, so a
+  report stamped 4 would never be re-read), `INGEST_VERSION` 3→4, `ROLLUP_VERSION`
+  5→6. Also: the **SQL twin** of `guessFromFormCode` was never changed, and
+  `migrate-boot` re-runs every file on every boot, so db/322 kept rewriting a
+  1004D file's property type to "SFR (1 unit)" and auditing it as a repair — the
+  exact wrong fact db/432 exists to stop, manufactured nightly; a **form-implied
+  subject unit count outranked a real measurement** in the roll-up (19 of 79 real
+  subjects carry one); five **design-style false positives** (a 12-family read as
+  a DUPLEX, "2-4 Family" read as 4, "2.5 Family" read as 5, four half-duplex
+  spellings); the style branch was **unbounded on an unrecognised form**; the
+  label could **overwrite a form-proved category** (a 1073 comparable stopped
+  being a condo); the re-parse guard **did not protect the legacy rows it exists
+  for**; and `REPARSED` listed 19 of 53 columns under a comment saying every one
+  must be listed — now widened, with the exclusions named and an invariant test
+  that caught a real overlap on its first run.
 - [x] An **iLAD loan-application export is no longer reported as an unreadable
   appraisal**. Three files in the corpus were refused with "UAD 3.6 — a 3.6
   reader is required"; they are Encompass loan-application exports carrying no
