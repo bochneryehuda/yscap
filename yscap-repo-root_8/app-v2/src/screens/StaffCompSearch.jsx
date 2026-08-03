@@ -513,10 +513,18 @@ function CompRow({ r, checked, onToggle }) {
       background: checked ? '#FCFAF4' : '#fff' }}>
       <input type="checkbox" checked={checked} onChange={onToggle} style={{ marginTop: 4 }}
         aria-label={`Pick ${r.display_address}`} />
-      {r.primary_photo_document_id
-        ? <ResearchPhoto documentId={r.primary_photo_document_id} alt={r.display_address}
-          style={{ width: 92, height: 68, objectFit: 'cover', borderRadius: 6, border: '1px solid #E4DECF' }} />
-        : <div style={{ width: 92, height: 68, borderRadius: 6, background: '#F4F1EA' }} />}
+      {/* THE APPRAISER'S PHOTO WHEN THERE IS ONE, THE STREET WHEN THERE IS NOT.
+          A grey box tells an officer nothing about a house, and a good share of
+          warehouse properties carry no photograph. The street-level fallback is
+          always LABELLED as such: an appraisal photo is evidence of the property
+          on the day of the report and is what the condition grade was written
+          from, while a street image is a car that drove past at some point — and
+          presenting the two alike invites somebody to read a tidy front garden as
+          evidence of condition. It renders nothing at all until a Google key is
+          configured, so the layout is unchanged until then. */}
+      <ResearchPhoto documentId={r.primary_photo_document_id} alt={r.display_address}
+        streetAddress={[r.display_address, r.city, r.state].filter(Boolean).join(', ')}
+        style={{ width: 92, height: 68, objectFit: 'cover', borderRadius: 6, border: '1px solid #E4DECF' }} />
       <div style={{ flex: '1 1 260px', minWidth: 0 }}>
         <Link to={`/internal/research/property/${r.id}`} style={{ color: INK, fontWeight: 600, textDecoration: 'none' }}>
           {r.display_address}

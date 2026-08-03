@@ -75,12 +75,13 @@ export default function StaffPropertyDetail() {
       </div>
 
       <header style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
-        {hero && (
-          <ResearchPhoto documentId={hero.document_id} alt={p.display_address}
-            onClick={() => setShot(hero)}
-            style={{ width: 240, height: 170, objectFit: 'cover', borderRadius: 10, cursor: 'zoom-in',
-              border: '1px solid #E4DECF' }} />
-        )}
+        {/* The appraiser's own photograph when the warehouse holds one; otherwise
+            the street, clearly labelled as the street (see ResearchPhoto). */}
+        <ResearchPhoto documentId={hero && hero.document_id} alt={p.display_address}
+          streetAddress={[p.display_address, p.city, p.state].filter(Boolean).join(', ')}
+          onClick={hero ? () => setShot(hero) : undefined}
+          style={{ width: 240, height: 170, objectFit: 'cover', borderRadius: 10,
+            cursor: hero ? 'zoom-in' : 'default', border: '1px solid #E4DECF' }} />
         <div style={{ flex: '1 1 320px' }}>
           <h1 style={{ margin: '0 0 4px', color: INK, fontSize: 24 }}>{p.display_address}</h1>
           <div style={{ color: MUTED, fontSize: 14 }}>
