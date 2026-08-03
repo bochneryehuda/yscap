@@ -21,14 +21,15 @@
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <!-- FROZEN PRICING ENGINES — loaded byte-identical, expose window.YSP / GSP / TitleCost.
          React reads these globals; it never modifies engine logic. -->
-    <script src="engines/standard-program.js?v=asgseller18-asgelig"></script>
-    <script src="engines/gold-standard.js?v=asgseller19"></script>
-    <script src="engines/silver-program.js?v=silver9-bandeps"></script>
-    <script src="engines/title-cost.js"></script>
-    <script type="module" crossorigin src="/portal/assets/index-DNpatluF.js"></script>
+    <script type="module" crossorigin src="/portal/assets/index-OYDkmngt.js"></script>
     <link rel="stylesheet" crossorigin href="/portal/assets/index-CB3ja3KJ.css">
   </head>
   <body>
     <div id="root"></div>
+    <!-- The frozen pricing engines are NOT loaded here (2026-08-03). They were
+         downloaded by every visitor before login, and the portal never used them:
+         the only reader was a console.info diagnostic at startup. The real pricing
+         work happens inside the Term Sheet Studio iframe, which loads its own
+         copies from /tools/. Do not re-add these tags — ask the server instead. -->
   </body>
 </html>

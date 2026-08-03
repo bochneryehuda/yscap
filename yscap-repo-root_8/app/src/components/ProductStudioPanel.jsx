@@ -46,22 +46,26 @@ function addrLine(a) {
   return [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ');
 }
 
-/* Admin-mode soft gate — the SAME password gate the static Term Sheet tool
-   carries (cyrb53 hash check). Unlocking reveals the studio's admin pricing
-   zone (markups, origination, fee overrides, manual basis); the password is
-   ALSO sent with the registration so the server honors those overrides. */
-function cyrb53(str, seed = 0) {
-  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-  for (let i = 0, ch; i < str.length; i++) {
-    ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+/* Admin-mode gate — the SAME password gate the static Term Sheet tool carries,
+   now CHECKED ON THE SERVER (POST /api/pricing-admin/unlock). This file is
+   compiled into the one portal bundle EVERY visitor downloads, so the cyrb53
+   hash that used to sit here shipped the gate to every borrower's browser.
+   Same password, same behavior; the check just isn't decided on their machine.
+   Unlocking reveals the studio's admin pricing zone (markups, origination, fee
+   overrides, manual basis) — nothing more: a borrower session has been unable to
+   send staff pricing overrides since audit S1-04 (src/routes/borrower.js). */
+async function checkAdminPassword(pw) {
+  try {
+    const r = await fetch('/api/pricing-admin/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: String(pw == null ? '' : pw) }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json().catch(() => null);
+    return !!(d && d.ok === true);
+  } catch (_) { return false; }
 }
-const ADMIN_HASH = 6019969998889003; // matches web/tools/termsheet.js
 
 // Omit empty values so a blank studio field never overrides file data with 0.
 function compact(obj) {
@@ -272,7 +276,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   };
   const adminActive = isStaff || !!adminKey;   // overrides ride along even when the zone is locked shut
 
-  function toggleAdmin() {
+  async function toggleAdmin() {
     if (isStaff) return;   // staff always have the zone
     if (adminKey) {
       // Lock the zone shut — the values REMAIN live in the studio and are
@@ -287,7 +291,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     }
     const pw = window.prompt('Admin mode — enter the pricing admin password:');
     if (pw == null) return;
-    if (cyrb53(pw, 0) === ADMIN_HASH) {
+    if (await checkAdminPassword(pw)) {
       setAdminKey(pw);
       setAdminOpen(true);
       setMsg('Admin pricing unlocked — markup, origination and fee overrides are live.');
