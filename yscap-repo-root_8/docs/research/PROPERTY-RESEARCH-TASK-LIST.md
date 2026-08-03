@@ -415,10 +415,22 @@ never attempted. Everything in this phase costs about $10, one time.
   radii — 25,200 points, all inside — and fails on the old formula, which came
   out 0.11% NARROWER than the circle east-west at every latitude.
 - [ ] **3.6 USPS is fully wired and stamped on 0 of 706 files** — **BLOCKED ON
-  CREDENTIALS.** The code is wired and `src/config.js` reads `USPS_CLIENT_ID` /
-  `USPS_CLIENT_SECRET`; both are unset, which is the only reason it has stamped
-  nothing. It needs a free developer.usps.com account and those two values in the
-  Render environment — nothing here is left to write. Free, and it is the second
+  CREDENTIALS, and the one thing that could have hidden them is now closed.** The
+  owner's words were *"USPS credentials are already in Render — you can use the
+  exact same keys"*, which is the exact situation where this reports "not
+  connected" forever and nobody can tell why: the code read `USPS_CLIENT_ID` /
+  `USPS_CLIENT_SECRET` and a value set under any other name was invisible to it,
+  so "never configured" and "configured under a different name" looked identical
+  from the outside. `src/lib/usps-env.js` (36 assertions) now accepts the
+  alternates USPS's own portal uses (`USPS_CONSUMER_KEY` / `_SECRET`,
+  `USPS_API_KEY` / `_SECRET`, `USPS_KEY` / `USPS_SECRET`) and — the part that
+  matters more — when it is STILL not configured the API Health screen says what
+  it can SEE: which halves are set, which USPS variables are set under names it
+  does not read (with what to rename them to), and whether what is there is a Web
+  Tools user id, which is a credential for the OLDER XML API and would fail
+  authentication in a way that reads as "your key is wrong". It names VARIABLES,
+  never values. Still needs the two values present under one of those names —
+  nothing here is left to write. Free, and it is the second
   identity signal item 1.9 needs.
 - [x] **3.7 THE MAP.** Subject pin, numbered comp pins, a distance ring,
   click-to-select — **DONE**, on the comparable search

@@ -30,6 +30,9 @@
 // strong random value for this process and warn loudly. That closes the
 // forge-anyone's-token / decrypt-any-SSN hole; the trade-off (values reset on
 // restart) is surfaced so operators set a stable value.
+// The USPS keys, resolved once, whichever env name they are under (lib/usps-env).
+const uspsEnv = require('./lib/usps-env').credentials();
+
 const generatedSecrets = new Set();   // names we had to auto-generate this boot
 function resolveSecret(name) {
   const v = process.env[name];
@@ -609,8 +612,17 @@ module.exports = {
   // developer account (developer.usps.com) — add the two keys to activate real
   // USPS address standardization + ZIP+4.
   usps: {
-    clientId:     process.env.USPS_CLIENT_ID,
-    clientSecret: process.env.USPS_CLIENT_SECRET,
+    // THE KEYS, WHICHEVER NAME THEY ARE UNDER. `USPS_CLIENT_ID` /
+    // `USPS_CLIENT_SECRET` are the documented names and are read first, but USPS's
+    // own portal labels the same v3 OAuth pair "Consumer Key" / "Consumer Secret"
+    // on some screens — so a value set as `USPS_CONSUMER_KEY` was invisible here
+    // and the integration reported "not connected" forever with no way to tell
+    // that from genuinely-not-configured. `lib/usps-env` owns the list and the
+    // diagnostic (which names variables, never values). It deliberately does NOT
+    // accept a Web Tools user id: that is the older XML API and would fail
+    // authentication in a way that reads as "your key is wrong".
+    clientId:     uspsEnv.clientId,
+    clientSecret: uspsEnv.clientSecret,
     baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
     // Burst brake for the FREE tier (60 lookups/hour, shared across USPS APIs): once
     // this many lookups happen in a rolling hour, further LIVE verifies are skipped
