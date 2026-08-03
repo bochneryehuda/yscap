@@ -17,6 +17,45 @@ import {
    The number this produces is an internal indication. It is not an appraisal,
    and the disclaimer travels with it everywhere it is shown. */
 
+/* THE PRINTED REPORT HAS TO BE THE WHOLE REPORT.
+
+   This screen's print rule used to be three `display:none` lines, and the
+   valuation is the deliverable — the thing somebody prints and files. Two ways
+   it came out incomplete, both of which the appraisal panel already documents
+   and solves:
+
+   · THE GRID IS A HORIZONTAL SCROLLER. Comparables are COLUMNS, and the section
+     carries `overflow-x:auto` so the screen can scroll to the fourth and fifth.
+     On paper an overflow container CLIPS: everything past the fold was simply
+     absent, with no sign it had been cut. A grid missing its right-hand comps is
+     worse than no printout, because it reads as complete.
+
+   · COLOUR CARRIES MEANING HERE. A negative adjustment is red and the total row
+     is shaded; browsers drop background colours when printing unless told not
+     to, so the one visual cue distinguishing a subtraction from an addition
+     disappeared.
+
+   Also sets a page margin, keeps a comparable's cell from splitting across
+   pages, and never breaks a page straight after a heading. */
+const PRINT_CSS = `
+@media print {
+  @page { margin: 14mm; }
+  html, body { background: #fff !important; }
+  .app-sidebar, .app-topbar, .btn, select { display: none !important; }
+  /* The scroll containers, opened out so the full grid reaches the paper. */
+  [style*="overflow"] { overflow: visible !important; }
+  table { width: 100% !important; table-layout: fixed !important; font-size: 9.5px !important; }
+  td, th { padding: 3px 4px !important; overflow-wrap: anywhere !important; }
+  /* An input is how an adjustment is typed on screen; on paper it is just the
+     number, and a box drawn round every cell makes the grid unreadable. */
+  input { border: 0 !important; padding: 0 !important; background: transparent !important;
+    font-size: 9.5px !important; }
+  section { break-inside: auto; }
+  h1, h2, h3 { break-after: avoid; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
+`;
+
 export default function StaffValuation() {
   const { id } = useParams();
   const [d, setD] = useState(null);
@@ -152,7 +191,11 @@ export default function StaffValuation() {
       <SubjectBlock v={v} isFinal={isFinal} onSave={(patch) => act('subject', () => api.valuationUpdate(id, { subject: patch }))} />
 
       {/* ---- what the suggestions were worked out from ---- */}
-      <MarketRates rates={v.market_rates} />
+      {/* OPENED FOR THE PRINTOUT. The detail is collapsed on screen because it is
+          reference rather than headline — but a printed valuation that states an
+          adjustment and not the rate behind it is exactly the document this panel
+          exists to prevent. */}
+      <MarketRates rates={v.market_rates} forceOpen={printing} />
 
 
       {/* ---- the grid ---- */}
@@ -176,7 +219,13 @@ export default function StaffValuation() {
           onAdded={(next) => { setD(next); setPicker(false); }} />
       )}
 
-      {printing && <style>{'@media print { .app-sidebar, .app-topbar, .btn { display: none !important; } }'}</style>}
+      {/* ALWAYS MOUNTED, not only while our own button is held. Everything in it
+          is inside `@media print`, so it costs nothing on screen — and the button
+          is not the only way a report gets printed: Ctrl+P and the browser's own
+          "Save as PDF" never set `printing`, so gating the stylesheet on it meant
+          the two most likely ways to produce this document were exactly the ones
+          that produced the clipped, colourless version of it. */}
+      <style>{PRINT_CSS}</style>
     </div>
   );
 }
@@ -265,8 +314,11 @@ function SubjectBlock({ v, isFinal, onSave }) {
    A REFUSED RATE IS SHOWN, NOT HIDDEN. "We could not read a price per bathroom,
    and here is why" is the honest answer to an empty grid line, and it stops a
    reviewer assuming the tool simply forgot. */
-function MarketRates({ rates }) {
+function MarketRates({ rates, forceOpen }) {
   const [open, setOpen] = useState(false);
+  // The print pass forces it open WITHOUT touching the user's own choice, so
+  // dismissing the browser's print dialog leaves the screen exactly as it was.
+  const isOpen = open || !!forceOpen;
   const r = rates && typeof rates === 'object' ? rates : {};
   const keys = Object.keys(r);
 
@@ -303,7 +355,7 @@ function MarketRates({ rates }) {
     <section style={{ ...S.panel, marginBottom: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <h2 style={{ margin: 0, fontSize: 16, color: INK }}>What these suggestions were worked out from</h2>
-        <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Hide the rest' : 'Show the rest'}</button>
+        <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>{isOpen ? 'Hide the rest' : 'Show the rest'}</button>
       </div>
 
       {/* The rate the grid leans on hardest, with the thing that decides how much to trust it. */}
@@ -341,7 +393,7 @@ function MarketRates({ rates }) {
         <div style={{ marginTop: 10, color: GOLD, fontSize: 13, lineHeight: 1.5 }}>{r.distressedNote}</div>
       )}
 
-      {open && (
+      {isOpen && (
         <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
           <tbody>
             {rows.map(([label, rate, kind]) => (
@@ -359,7 +411,7 @@ function MarketRates({ rates }) {
         </table>
       )}
 
-      {open && (
+      {isOpen && (
         <div style={{ color: MUTED, fontSize: 12, marginTop: 8 }}>
           Worked out from {r.sampleSize == null ? 'our' : r.sampleSize} closed
           {r.sampleSize === 1 ? ' sale' : ' sales'} in this market

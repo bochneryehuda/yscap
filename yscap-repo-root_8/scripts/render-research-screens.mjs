@@ -142,6 +142,28 @@ const RATES = {
     ok(/\+0\.42% a month/.test(body), 'valuation: a real +0.42%/month trend is not rounded away to 0%');
     ok(/no rate/.test(body), 'valuation: a REFUSED rate reads "no rate" rather than a blank');
 
+    // ---- 1b. THE PRINTED REPORT IS THE WHOLE REPORT ----------------------
+    // Emulating print media is the only way to see what actually reaches paper:
+    // the grid is a horizontal scroller, and an overflow container CLIPS when
+    // printed, so the comps past the fold used to be silently absent.
+    await page.emulateMedia({ media: 'print' });
+    await page.waitForTimeout(300);
+    const printed = await page.evaluate(() => {
+      const scrollers = [...document.querySelectorAll('section')]
+        .filter((s) => getComputedStyle(s).overflowX === 'auto' || getComputedStyle(s).overflowX === 'scroll');
+      const t = document.querySelector('table');
+      return {
+        clipped: scrollers.length,
+        tableClipped: t ? t.scrollWidth > t.clientWidth + 1 : false,
+        colour: getComputedStyle(document.body).printColorAdjust
+          || getComputedStyle(document.body).webkitPrintColorAdjust || '',
+      };
+    });
+    ok(printed.clipped === 0, 'print: no section still clips its contents — the full grid reaches the paper');
+    ok(printed.tableClipped === false, 'print: the adjustment table is not cut off at the right edge');
+    ok(printed.colour === 'exact', 'print: colours are kept, so a negative adjustment still reads as negative');
+    await page.emulateMedia({ media: 'screen' });
+
     // ---- 2. FormatWatch + MapCoverage on the research landing ------------
     body = await visit('/internal/research');
     noCrash(body, 'research landing');
