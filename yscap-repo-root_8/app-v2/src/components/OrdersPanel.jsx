@@ -637,11 +637,27 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
             <button className="btn ghost small" disabled={!!busy || needsContact} onClick={() => place(true)} title="Re-send the full order to the vendor + CC chain">
               {busy === 'place' ? 'Sending…' : 'Re-send order'}
             </button>
-            <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)} title="Cancel this order (no email is sent)">Cancel order</button>
+            {/* NOT on a FINISHED order. Cancelling is not a tidier way of saying
+                "done" — it is an explicit stand-down that shuts the vendor reply
+                door, so on an order that already finished it can only lose the
+                team the ability to write to a company that may still owe the
+                final policy. Reopen is the action there. */}
+            {order.status !== 'completed' && (
+              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)} title="Cancel this order (no email is sent)">Cancel order</button>
+            )}
           </>
         )}
-        {order.status === 'cancelled' && (
-          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)} title="Reopen without re-sending">Reopen order</button>
+        {/* Reopen covers BOTH ways an order ends. Offering it only for 'cancelled'
+            made "Mark finished" a one-way door: an order finished by hand, or
+            retired by the sweep on a condition somebody later pushed back, had no
+            way back onto the desk. The server decides which state it returns to —
+            'documents_in' when the vendor has actually answered — so reopening
+            never tells the nudge that a commitment sitting on the file is missing. */}
+        {(order.status === 'cancelled' || order.status === 'completed') && (
+          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}
+            title="Put this order back on the Orders desk without re-sending it">
+            Reopen order
+          </button>
         )}
         {((order.returnedDocs || []).length > 0 || placed) && (
           <button className="btn ghost small" onClick={() => setShowThread(s => !s)}>{showThread ? 'Hide' : 'Open'} {kind} email thread</button>

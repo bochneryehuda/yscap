@@ -199,6 +199,14 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
         `UPDATE file_orders SET status='documents_in', updated_at=now()
           WHERE application_id=$1 AND order_type='attorney' AND status IN ('ordered','documents_in')`,
         [applicationId]);
+      // AND STAMP THAT THE ATTORNEY ANSWERED, exactly as order-inbox does for a
+      // title or insurance vendor. Nothing on the live path wrote this column for
+      // the attorney order — only db/454's boot back-fill did — so an order
+      // finished and then reopened before the next deploy went back to 'ordered'
+      // and the overdue nudge told the team "we asked the closing attorney N days
+      // ago and nothing has come back" about documents already on the file.
+      // Fill-only and gated on an active status, so it is safe to call every time.
+      await require('./order-tracking').noteFirstResponse(applicationId, 'attorney');
     } catch (_) { /* best-effort — the documents are filed either way */ }
     // IN-APP ONLY. The chain email itself already forwards to every assignee through
     // the normal inbound path, so emailing again about the same message would be the

@@ -45,9 +45,9 @@ const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes'
 const { classifyReturnAttachment } = require('./order-return-filter');
 // The slot vocabulary + the condition each order files into live in ONE place,
 // shared with the Orders desk and the condition's own slot picker (order-slots.js).
-const { CONDITION_CODE } = require('./order-slots');
+const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
 
-const DOC_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const DOC_KIND = RETURN_DOC_KIND;
 const MAX_RETURN_DOCS = 20;
 
 /**

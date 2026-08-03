@@ -261,7 +261,18 @@ function orderState(order, now) {
   const status = str(o.status) || 'not_ordered';
   const open = OPEN_STATUSES.includes(status);
   const dueOn = open ? effectiveDueOn(o) : null;
-  const late = open ? daysLate(dueOn, today) : 0;
+  /* A FILE ON HOLD IS NOT LATE, and that rule lives HERE so it cannot be applied
+     to one surface and not another. It was written into the cross-file desk only,
+     so a file parked for 90 days read "on time" on the Orders desk and, for the
+     same order, "64 business days late" in a red strip inside the file — the exact
+     disagreement this module exists to make impossible. The order is genuinely
+     still open (its documents still need classifying, and it still shows on the
+     desk); nobody is being asked to chase a vendor about a paused deal.
+
+     Read off the row when the caller joined the file's status; a caller that did
+     not is unaffected, so this can only ever silence lateness, never invent it. */
+  const onHold = str(o.file_status || o.fileStatus) === 'on_hold';
+  const late = open && !onHold ? daysLate(dueOn, today) : 0;
   const orderedDay = dayOf(o.ordered_at || o.orderedAt);
   // CALENDAR days out — "how long has this been sitting", which a human reads in
   // real days. Lateness is the business-day question; they are different questions
@@ -282,7 +293,13 @@ function orderState(order, now) {
     daysOut,
     daysLate: late,
     overdue: late > 0,
+    // Surfaced so a card can SAY why an obviously old order is not being chased,
+    // rather than looking like the clock is broken.
+    onHold,
     pendingOn: open ? pendingOn(o) : null,
+    // Derived from `late`, so a held order is never handed an escalation tier the
+    // ladder would act on. Reading the pre-override lateness here left the state
+    // internally inconsistent — "not late" alongside "escalate to the admins".
     chase: chaseTier(late),
   };
 }

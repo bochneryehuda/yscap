@@ -46,6 +46,29 @@
 const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
 
 /**
+ * The `documents.doc_kind` a vendor's returned documents are filed under.
+ *
+ * Lives here, beside CONDITION_CODE, because it answers the same shape of
+ * question ("what does this order type map to?") and because it had already been
+ * written out by hand in the two JS places that consume it — order-inbox's insert
+ * and the Orders desk's returned-document lists. A third copy for the reopen rule
+ * would have been the point at which they drift.
+ *
+ * NO `attorney` ENTRY, deliberately. The closing chain files its documents as
+ * `closing_correspondence`, which is running correspondence rather than a vendor
+ * delivery — and `staff.js` builds the per-order returned-document lists from
+ * `Object.values()` of this map, so adding it would start showing every closing
+ * email's attachments as a title/insurance style order return. The two SQL copies
+ * that remain (`staff.js`'s desk CASE and `tpr-export.js`'s categoriser) are not
+ * folded in here for the same reason: each carries an attorney arm this map must
+ * not have.
+ *
+ * Frozen: one object now backs three modules, so a stray write would change the
+ * meaning of a document kind everywhere at once.
+ */
+const RETURN_DOC_KIND = Object.freeze({ title: 'title_order_return', insurance: 'insurance_order_return' });
+
+/**
  * What the condition template declares TODAY, used only when the template row
  * cannot be read (a brand-new database, a transient error). Kept identical to
  * db/051's seed so a fallback can never invent a slot the condition does not
@@ -171,6 +194,6 @@ async function slotsForConditionTemplate(dbc, code) {
 }
 
 module.exports = {
-  CONDITION_CODE, EXTRA_SLOTS, FALLBACK_CONDITION_SLOTS,
+  CONDITION_CODE, RETURN_DOC_KIND, EXTRA_SLOTS, FALLBACK_CONDITION_SLOTS,
   canonicalizeSlot, conditionSlotLabels, slotsFor, slotsForConditionTemplate,
 };

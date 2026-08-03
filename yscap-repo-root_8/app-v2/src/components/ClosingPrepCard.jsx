@@ -440,13 +440,27 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
-            <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
-              Cancel request
-            </button>
+            {/* NOT on a FINISHED request. Cancelling is an explicit stand-down
+                that shuts the follow-up and reply doors on the closing chain, so
+                on a request that already finished it can only cost the team the
+                ability to write to counsel about a deal that is done. Reopen is
+                the action there. */}
+            {order.status !== 'completed' && (
+              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
+                Cancel request
+              </button>
+            )}
           </>
         )}
-        {order.status === 'cancelled' && (
-          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}>Reopen</button>
+        {/* Both ways this order ends. It reaches 'completed' on its own once the
+            deal is over (closing-prep.retireClosedOrdersOnce), so offering Reopen
+            only for 'cancelled' left a closed file that came back to life with no
+            way back onto the desk. */}
+        {(order.status === 'cancelled' || order.status === 'completed') && (
+          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}
+            title="Put this request back on the Orders desk without re-sending it">
+            Reopen
+          </button>
         )}
       </div>
 

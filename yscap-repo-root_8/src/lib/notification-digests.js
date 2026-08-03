@@ -1040,8 +1040,23 @@ async function orderOverdueOnce() {
          two identical emails and two in-app rows every time, every two days, for as
          long as the order stayed late. */
       const told = [];
-      if (assignee) { await notify.notifyStaff(assignee, { ...payload }); told.push(String(assignee)); delivered++; }
-      if (tier === 'team' || tier === 'admins' || !assignee) {
+      // `notifyStaff` returns null when the staffer muted this file or the
+      // loan-officer gate parked the message as a draft — counting the CALL rather
+      // than the delivery meant the "nobody was reached, tell the admins" fallback
+      // below could never fire for a muted assignee.
+      if (assignee) {
+        const one = await notify.notifyStaff(assignee, { ...payload });
+        told.push(String(assignee));          // never write to them twice regardless
+        if (one) delivered++;
+      }
+      /* `|| !delivered` is the third condition and it is the one that keeps the
+         ladder a LADDER. At the first tier with a present assignee this arm is
+         false — correct while that assignee actually heard us. When they did not
+         (they muted the file, or the loan-officer gate held the message), the
+         admin arm below fires on the same `!delivered`, so a ONE-day-late order
+         went straight past the file team to every administrator in the company.
+         The team is the next rung up from the assignee, not a rung to skip. */
+      if (tier === 'team' || tier === 'admins' || !assignee || !delivered) {
         const team = await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: assignee || null, exceptStaffIds: told });
         // COUNTED BY WHO WAS ACTUALLY REACHED, not by "the call returned".
         // `delivered++` unconditionally meant a fan-out over a file with NO active
@@ -1056,12 +1071,32 @@ async function orderOverdueOnce() {
          this database have no active assignee; without this, a late order on one
          of them told literally nobody at every tier below `admins` while stamping
          the audit row as though the nudge had gone out. */
-      if (tier === 'admins' || !delivered) { await notify.notifyAdmins({ ...payload, exceptStaffIds: told }); delivered++; }
+      if (tier === 'admins' || !delivered) {
+        // Counted the same way as the other two rungs: `notifyAdmins` returns one
+        // entry per administrator and a NULL for each one who muted the file, so
+        // `delivered++` on the call itself claimed a delivery on a database with
+        // no active administrator at all — the one case where the release below
+        // is the only thing standing between a late order and total silence.
+        const admins = await notify.notifyAdmins({ ...payload, exceptStaffIds: told });
+        delivered += Array.isArray(admins) ? admins.filter(Boolean).length : 0;
+      }
       await _stamp(DIGEST_ACTION.ORDER_OVERDUE, r.application_id, {
         orderType: r.order_type, daysLate: days, tier, pendingOn: st.pendingOn,
         toldAssignee: !!assignee,
         // An assignment left behind by somebody who has gone is worth seeing.
         assigneeInactive: !!(r.assigned_to && !r.assigned_name),
+        /* HOW MANY PEOPLE THIS ACTUALLY REACHED. The stamp is what the audit trail
+           shows, and it used to say a nudge went out whatever happened: on a
+           database with no active administrator, an absent or muted assignee and
+           an empty file team, every rung reaches nobody, nothing throws, and the
+           file was recorded as nudged and then silenced for two days. The claim is
+           deliberately still KEPT here — releasing it would re-run the whole
+           ladder every half hour, which on a configured NOTIFY_ADMINS inbox means
+           a copy every half hour — so the honest number is the fix: a run of
+           `delivered: 0` rows is the signal that the roster, not the sweep, is
+           what needs attention. */
+        delivered,
+        toldNobody: delivered === 0,
       });
       sent++;
     } catch (e) {

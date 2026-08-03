@@ -26,6 +26,16 @@ const loGate = require('./lo-notification-gate');
 const loSelfGate = require('./lo-self-gate');
 const notifCatalog = require('./notification-catalog');
 
+/**
+ * What `notifyStaff` returns when the message was HELD rather than delivered or
+ * lost — the loan-officer gate parked it in that officer's Drafts, from where it
+ * usually auto-sends. Truthy on purpose: every caller that asks "did this reach
+ * anybody?" must count it as reached, because it will arrive. A notification row
+ * id is returned on the ordinary path and `null` only when nothing will ever be
+ * delivered (dropped, or the recipient's inbox is switched off).
+ */
+const DELIVERY_DRAFTED = 'drafted';
+
 // A small upper-case eyebrow rendered above each email's headline so the reader
 // can classify it before reading the title. Keyed by notification `type`;
 // borrower-safe (no capital-partner names). A caller may override via opts.kicker.
@@ -384,7 +394,15 @@ async function notifyStaff(staffId, opts) {
             recipientKind: 'staff', recipientId: staffId, applicationId: opts.applicationId,
             type: opts.type, opts, recipientLabel: null,
             autoSendAt: decision.autoSendAt || null });
-          return null;
+          // TRUTHY — a DRAFT IS NOT A LOST MESSAGE. It is parked in this officer's
+          // Drafts and usually auto-sends at `autoSendAt`, so the person WAS
+          // reached. Returning null here made it indistinguishable from 'drop',
+          // and every caller that asks "did this reach anybody?" then escalated:
+          // one loan officer with the gate switched on would have sent every
+          // e-sign event on their own files to every administrator in the company.
+          // `null` is reserved for the two outcomes where nothing will ever
+          // arrive — a dropped message and an inbox switched off.
+          return DELIVERY_DRAFTED;
         }
       }
     } catch (_) { /* fall through and send */ }
@@ -817,8 +835,14 @@ async function notifyAppBorrowers(appId, opts) {
     is honored inside notifyStaff, so it isn't re-implemented here. */
 async function notifyAppStaff(appId, opts = {}) {
   const { rows } = await db.query(
-    `SELECT DISTINCT staff_id FROM application_assignees
-      WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [appId]);
+    // ACTIVE ONLY. A fired employee stays an application_assignee until somebody
+    // reassigns the file (this module's own notes say so), so without this the
+    // team fan-out could consist entirely of people who cannot sign in — and any
+    // caller asking "did this reach anybody?" was told yes.
+    `SELECT DISTINCT aa.staff_id
+       FROM application_assignees aa
+       JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+      WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL`, [appId]);
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
   // `exceptStaffIds` is the PLURAL form, for a caller fanning out over several
   // audiences in turn (the order-overdue ladder tells the assignee, then the team,
@@ -836,8 +860,21 @@ async function notifyAppStaff(appId, opts = {}) {
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
     if (exceptMany.has(String(r.staff_id))) continue;
-    await notifyStaff(r.staff_id, { ...shared });
-    out.push(r.staff_id);
+    // Only a REAL delivery counts. notifyStaff returns null when the staffer muted
+    // this file, or when the loan-officer gate held the message as a draft — so
+    // pushing unconditionally reported recipients nobody actually heard from, and a
+    // caller's "nobody was reached, fall back" branch could never fire.
+    //
+    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this
+    // catch a single failing row aborted the whole fan-out, and the caller was
+    // told NOTHING about the people already reached — so a throttled nudge (the
+    // overdue-order ladder) released its claim on the strength of a zero that was
+    // wrong and re-sent to everyone who had already received it. Reporting who
+    // genuinely got it is what makes "was anybody reached?" answerable at all.
+    let one = null;
+    try { one = await notifyStaff(r.staff_id, { ...shared }); }
+    catch (e) { console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
+    if (one) out.push(r.staff_id);
   }
   return out;
 }
@@ -856,7 +893,12 @@ async function notifyAdmins(opts) {
   const ids = [];
   for (const a of rows) {
     if (exceptMany.has(String(a.id))) continue;
-    ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
+    // Per-admin guard, same reasoning as notifyAppStaff above: one failing
+    // administrator must not stop the escalation reaching the others. The
+    // administrators are the LAST rung of every ladder in this system — losing
+    // the rest of them to one bad row is losing the escalation entirely.
+    try { ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email })); }
+    catch (e) { console.error('[notify] admin fan-out', a.id, (e && e.message) || e); }
   }
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
   // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose

@@ -333,6 +333,69 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     const ev = await tracking.listEvents(appF, 'insurance');
     assert(ev.some((e) => e.kind === 'cancelled') && ev.some((e) => e.kind === 'reopened'),
       'both are on the record, with who did them');
+
+    /* REOPEN COVERS BOTH WAYS AN ORDER ENDS, and it restores the state the order
+       can be PROVEN to have been in. Offering it only for 'cancelled' made "Mark
+       finished" a one-way door: an order finished by hand, or retired by the sweep
+       on a condition somebody later pushed back, could never come back. */
+    const fin = await call('POST', `/api/staff/applications/${appF}/orders/insurance/complete`, {});
+    assert(fin.status === 200 && (await orderRow(appF, 'insurance')).status === 'completed',
+      'an open order can be marked finished by hand');
+    const reFin = await call('POST', `/api/staff/applications/${appF}/orders/insurance/cancel`, { reopen: true });
+    assert(reFin.status === 200 && reFin.body.status === 'ordered',
+      'and a FINISHED order can be reopened, not only a cancelled one');
+    assert((await orderRow(appF, 'insurance')).completed_at === null,
+      'reopening clears the completion — a running order must never carry a turnaround');
+
+    /* AND IT DOES NOT ALWAYS GO BACK TO 'ordered'. `order-sla.pendingOn` reads
+       'ordered' as "the vendor owes us an answer", so reopening an order whose
+       documents are already on the file would have the overdue nudge email the
+       team "we asked them 40 days ago and nothing came back" about a binder they
+       can see. The evidence decides — this is db/454's own CASE. */
+    await db.query(`UPDATE file_orders SET first_response_at = now() - interval '2 days'
+                     WHERE application_id=$1 AND order_type='insurance'`, [appF]);
+    await call('POST', `/api/staff/applications/${appF}/orders/insurance/complete`, {});
+    const reAns = await call('POST', `/api/staff/applications/${appF}/orders/insurance/cancel`, { reopen: true });
+    assert(reAns.body.status === 'documents_in',
+      'an order the vendor ANSWERED reopens to documents_in, so the nudge never claims they are silent');
+
+    // A live order has nothing to reopen — rewriting its status out from under
+    // whatever it is doing is not a no-op, so it is refused rather than accepted.
+    const reLive = await call('POST', `/api/staff/applications/${appF}/orders/insurance/cancel`, { reopen: true });
+    assert(reLive.status === 409 && reLive.body.code === 'not_reopenable',
+      'reopening an order that is already open is refused');
+
+    /* THE DOCUMENT ARM, which `first_response_at` alone never exercises. That
+       column is stamped by the INBOUND path, so a binder a staffer filed by hand
+       onto the condition leaves it NULL while the documents are plainly on the
+       file — a document you can see is the stronger evidence of the two. This is
+       also the only arm carrying a subquery, and the arm whose first cut compared
+       COALESCE(doc_kind,'') to '' and therefore matched every ORDINARY upload. */
+    const appG = await mkApp();
+    await addVendor(appG, 'title_company', `${uniq}-t9@vendor.test`);
+    await placeOrder(appG, 'title');
+    await db.query(`UPDATE file_orders SET first_response_at = NULL
+                     WHERE application_id=$1 AND order_type='title'`, [appG]);
+    await call('POST', `/api/staff/applications/${appG}/orders/title/complete`, {});
+    const noDocs = await call('POST', `/api/staff/applications/${appG}/orders/title/cancel`, { reopen: true });
+    assert(noDocs.body.status === 'ordered',
+      'with nothing back from the vendor the order reopens as still-waiting');
+    // An ORDINARY upload (doc_kind NULL) must not read as a vendor delivery.
+    await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, size_bytes, storage_ref, storage_provider, is_current)
+       VALUES ($1,'a-borrower-upload.pdf','application/pdf',10,'x/none','local',true)`, [appG]);
+    await call('POST', `/api/staff/applications/${appG}/orders/title/complete`, {});
+    const stillNone = await call('POST', `/api/staff/applications/${appG}/orders/title/cancel`, { reopen: true });
+    assert(stillNone.body.status === 'ordered',
+      'an ordinary upload is NOT a returned title document — doc_kind is NULL on nearly every document');
+    // The vendor's actual return IS.
+    await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, size_bytes, storage_ref, storage_provider, doc_kind, is_current)
+       VALUES ($1,'commitment.pdf','application/pdf',10,'x/none2','local','title_order_return',true)`, [appG]);
+    await call('POST', `/api/staff/applications/${appG}/orders/title/complete`, {});
+    const withDocs = await call('POST', `/api/staff/applications/${appG}/orders/title/cancel`, { reopen: true });
+    assert(withDocs.body.status === 'documents_in',
+      'a returned title document reopens the order to documents_in even with no first_response_at');
   }
 
   /* ── I. the file's own payload carries the whole picture ──────────────────── */

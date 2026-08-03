@@ -5128,7 +5128,7 @@ const orderTracking = require('../lib/order-tracking');
 const orderSla = require('../lib/order-sla');
 const orderSlots = require('../lib/order-slots');
 const { orderReplyTo } = require('../lib/file-address');
-const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const ORDER_RETURN_KIND = orderSlots.RETURN_DOC_KIND;
 
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
 
@@ -5206,8 +5206,16 @@ router.get('/applications/:id/orders', async (req, res) => {
       `SELECT o.order_type, o.status, o.vendor_name, o.vendor_email, o.ordered_at, o.last_followup_at,
               o.followup_count, o.send_count, o.meta,
               o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.completed_at, o.notes,
-              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email,
+              -- The file's own status, because orderState needs it to know a held
+              -- file is not late. Selected here so the card, the section badge
+              -- and the cross-file desk all feed the SAME function the same
+              -- facts — the desk had this rule and the card did not, and a held
+              -- file read "on time" on one screen and "64 business days late",
+              -- in red, on the other.
+              a.status AS file_status
          FROM file_orders o
+         JOIN applications a ON a.id = o.application_id
          -- ACTIVE ONLY, matching the overdue nudge's own join. Without it the
          -- card and the desk printed a departed staffer's name while the nudge
          -- (which filters on is_active) told the team nobody owned the order —
@@ -5832,8 +5840,12 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Cancel an order (or reopen a cancelled one). Cancelling frees it to be
-// re-ordered from scratch (the place gate treats 'cancelled' like 'not_ordered').
+// Cancel an order, or put a cancelled / completed one back on the desk.
+//
+// Cancelling frees it to be re-ordered from scratch (the place gate treats
+// 'cancelled' like 'not_ordered'). Reopening is NOT the mirror image — it
+// restores the state the order can be PROVEN to have been in, which is why it
+// goes through orderTracking.reopenOrder rather than writing a status here.
 router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
@@ -5841,15 +5853,34 @@ router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
-    const next = reopen ? 'ordered' : 'cancelled';
+    if (reopen) {
+      const v = await orderTracking.reopenOrder(appId, kind, { actorId: req.actor.id });
+      if (v.ok) {
+        await audit(req, 'order_reopened', 'application', appId, { kind, status: v.status });
+        return res.json({ ok: true, status: v.status });
+      }
+      if (v.reason === 'error') {
+        return res.status(500).json({ error: 'Could not reopen that order just now. Try again in a moment.', code: 'reopen_failed' });
+      }
+      // NO ROW AT ALL IS A 404, NOT A 409. Collapsing the two told somebody whose
+      // order does not exist that it "is already open", which is the opposite of
+      // what they need to hear and matches nothing on their screen.
+      const row = (await db.query(
+        `SELECT 1 FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+      if (!row) return res.status(404).json({ error: 'This order has not been created yet.' });
+      return res.status(409).json({
+        error: 'Only a cancelled or finished order can be reopened — this one is already open.',
+        code: 'not_reopenable',
+      });
+    }
     const upd = await db.query(
-      `UPDATE file_orders SET status=$3, updated_at=now()
-        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
+      `UPDATE file_orders SET status='cancelled', updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind]);
     if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
     await orderTracking.recordEvent({
-      applicationId: appId, orderType: kind, kind: reopen ? 'reopened' : 'cancelled', actorId: req.actor.id,
+      applicationId: appId, orderType: kind, kind: 'cancelled', actorId: req.actor.id,
     });
-    await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
+    await audit(req, 'order_cancelled', 'application', appId, { kind });
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -6036,17 +6067,23 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     const token = claimToken;
     claimToken = null;                 // once only, whichever path gets here first
     try {
+      // The token is compared as a TIMESTAMP, not as text. It is CARRIED as text
+      // (see the claim below — a JS Date would truncate Postgres's microseconds),
+      // but `ordered_at::text` renders in the CONNECTION's TimeZone and this
+      // release runs on whichever pooled connection is free, not the one that
+      // claimed. Casting the token back to timestamptz compares the instant
+      // itself, so the release cannot silently match nothing.
       if (claimPrev) {
         await db.query(
           `UPDATE file_orders SET ordered_at = $3::timestamptz, updated_at = now()
-            WHERE application_id=$1 AND order_type='attorney' AND ordered_at::text = $2`,
+            WHERE application_id=$1 AND order_type='attorney' AND ordered_at = $2::timestamptz`,
           [appId, token, claimPrev.ordered_at || null]);
       } else {
         // There was no row before this attempt — the claim minted it, so remove it
         // rather than leaving a phantom 'ordered' attorney order nobody placed.
         await db.query(
           `DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'
-             AND ordered_at::text = $2 AND COALESCE(send_count,0) = 0`, [appId, token]);
+             AND ordered_at = $2::timestamptz AND COALESCE(send_count,0) = 0`, [appId, token]);
       }
     } catch (_) { /* best effort — never turn a send failure into a 500 */ }
   };
@@ -6323,26 +6360,73 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
     // stop it short of re-sending the whole package. Cancelling is the one action
     // that must always be reachable once an attorney has been written to.
     const engaged = await closingPrep.orderIsLive(appId);
+    /* REOPEN GOES THROUGH THE SHARED RULE, exactly as the title and insurance
+       orders do. Writing 'ordered' here was the same one-way door they had: this
+       order reaches 'completed' on its own (closing-prep.retireClosedOrdersOnce
+       closes it when the deal is over), and the card only offered Reopen for
+       'cancelled' — so an order closed on a file that later came back to life had
+       no way onto the desk. reopenOrder also clears `completed_at`, which a bare
+       status write left behind as a turnaround on an order that is running again. */
+    if (reopen) {
+      const v = await orderTracking.reopenOrder(appId, 'attorney', { actorId: req.actor.id });
+      if (v.ok) {
+        await audit(req, 'closing_prep_reopened', 'application', appId, { status: v.status });
+        return res.json({ ok: true, status: v.status });
+      }
+      if (v.reason === 'error') {
+        return res.status(500).json({ error: 'Could not reopen the closing-prep request just now. Try again in a moment.', code: 'reopen_failed' });
+      }
+      const row = (await db.query(
+        `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      if (row) {
+        return res.status(409).json({
+          error: 'Only a cancelled or finished closing-prep request can be reopened — this one is already open.',
+          code: 'not_reopenable',
+        });
+      }
+      // No row at all. The row is written AFTER the send, so a DB blip can leave a
+      // file whose request genuinely went out with nothing recorded — the same
+      // recovery the cancel path below needs, and the reason this is an UPSERT.
+      if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status)
+         VALUES ($1,'attorney','ordered')
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status='ordered', updated_at=now()`,
+        [appId]);
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: 'attorney', kind: 'reopened', actorId: req.actor.id,
+      });
+      await audit(req, 'closing_prep_reopened', 'application', appId, { status: 'ordered', recovered: true });
+      return res.json({ ok: true, status: 'ordered' });
+    }
+    // UPSERT, never a bare UPDATE. The order row is written AFTER the send, so a DB
+    // blip leaves a file whose request genuinely went out with no row — and then
+    // Cancel 404'd ("Closing prep has not been requested yet"), Send answered 409
+    // "already sent", and the chain kept emailing outside counsel with no way to
+    // stop it short of re-sending the whole package. Cancelling is the one action
+    // that must always be reachable once an attorney has been written to.
     const upd = await db.query(
-      `UPDATE file_orders SET status=$2, updated_at=now()
-        WHERE application_id=$1 AND order_type='attorney' RETURNING status`,
-      [appId, reopen ? 'ordered' : 'cancelled']);
+      `UPDATE file_orders SET status='cancelled', updated_at=now()
+        WHERE application_id=$1 AND order_type='attorney' RETURNING status`, [appId]);
     if (!upd.rows[0]) {
       if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
       await db.query(
         `INSERT INTO file_orders (application_id, order_type, status)
-         VALUES ($1,'attorney',$2)
-         ON CONFLICT (application_id, order_type) DO UPDATE SET status=EXCLUDED.status, updated_at=now()`,
-        [appId, reopen ? 'ordered' : 'cancelled']);
+         VALUES ($1,'attorney','cancelled')
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled', updated_at=now()`,
+        [appId]);
     }
-    // Same history the other two orders keep — and the 'reopened' line is what
-    // stops the retire sweep closing it again behind the person who reopened it.
+    // Same history the other two orders keep.
     await orderTracking.recordEvent({
-      applicationId: appId, orderType: 'attorney',
-      kind: reopen ? 'reopened' : 'cancelled', actorId: req.actor.id,
+      applicationId: appId, orderType: 'attorney', kind: 'cancelled', actorId: req.actor.id,
     });
-    await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
-    res.json({ ok: true, status: upd.rows[0].status });
+    await audit(req, 'closing_prep_cancelled', 'application', appId, {});
+    // NOT `upd.rows[0].status`. The recovery branch above runs precisely when that
+    // row does not exist, so reading through it threw a TypeError into the catch
+    // and answered 500 — on the one path that exists to make Cancel reachable when
+    // the row was lost, which is the moment it matters most. The status is known
+    // either way: this branch only ever writes 'cancelled'.
+    res.json({ ok: true, status: 'cancelled' });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -6457,6 +6541,17 @@ router.get('/orders', async (req, res) => {
       const f = byFile.get(row.application_id);
       // THE SAME orderState THE CARD AND THE SWEEP USE. Computed on the server so
       // the desk can never call an order late that the file screen calls on time.
+      /* A HELD FILE IS NOT LATE, and the rule now lives inside `orderState` (it
+         reads `file_status` off the row this query already selects). Putting held
+         files back on this desk was right — their returned documents belong in
+         "Needs classifying" and an order placed on one must not vanish — but
+         withholding only the Chase button left every other lateness surface
+         running: the red "N days late" pill, `anyOverdue`, the Late tab and its
+         count, and `worstDaysLate`, which is the desk's PRIMARY SORT KEY. A file
+         held for ninety days sorted to the very top of the queue reading "64 days
+         late" beside "not being chased", ahead of every order somebody could
+         actually act on. The clock resumes by itself when the hold lifts —
+         nothing is stored. */
       const state = orderSla.orderState(row, now);
       f[row.order_type] = {
         status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,

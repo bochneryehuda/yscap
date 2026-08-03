@@ -24,7 +24,7 @@ const db = require('../db');
 // mapping is the "silently dead mapping" class CLAUDE.md documents: the day one
 // side is renamed the other still matches zero rows, and every consumer reads
 // "clean" rather than "broken".
-const { CONDITION_CODE } = require('./order-slots');
+const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
 
 /** The three order types this desk tracks. */
 const ORDER_TYPES = ['title', 'insurance', 'attorney'];
@@ -170,6 +170,90 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
 }
 
 /**
+ * PUT A FINISHED ORDER BACK ON THE DESK.
+ *
+ * Reopen answers two different mistakes and must handle both: an order somebody
+ * CANCELLED and now needs after all, and an order that was marked COMPLETED
+ * (by hand, or by the sweep on a condition that was later pushed back) while the
+ * vendor still owes us something. Offering it only for 'cancelled' left the second
+ * case with no way back — the desk's own "Mark finished" button was a one-way door.
+ *
+ * THE STATUS IT GOES BACK TO IS NOT ALWAYS 'ordered', and this is the same
+ * reasoning db/454's one-shot repair spells out: `order-sla.pendingOn` reads
+ * 'ordered' as "the vendor owes us an answer", so reopening an order whose
+ * commitment is already sitting on the file makes the overdue nudge email the team
+ * "we asked Acme Title 40 days ago and nothing came back" about documents they can
+ * see. It is db/454's own CASE, so the migration and the button agree:
+ *   · the vendor answered → 'documents_in'
+ *   · otherwise           → 'ordered'
+ *
+ * "The vendor answered" is `first_response_at` OR a returned document actually on
+ * the file. Both, because they can disagree: `first_response_at` is stamped by the
+ * inbound path, so a document a staffer filed by hand onto the order's condition
+ * leaves it NULL — and a document you can see is the stronger evidence of the two.
+ *
+ * DELIBERATELY NO 'not_ordered' ARM. A missing `ordered_at` looks like "this was
+ * never sent", and it is not: the closing-prep cancel route re-creates a lost row
+ * bare so that Cancel stays reachable once outside counsel has been written to, and
+ * that row carries no timestamp. Reopening it as 'not_ordered' would tell
+ * `closing-prep.orderIsLive` the attorney was never engaged, which shuts the
+ * follow-up and reply doors on a file with a live chain — the exact trap the
+ * recovery exists to avoid. The order cannot be reopened unless it was cancelled or
+ * completed, and both of those are things you can only do to an order that was
+ * placed, so 'ordered' is the honest floor.
+ *
+ * Only from 'cancelled' or 'completed': reopening a live order is a no-op that
+ * would rewrite its status out from under whatever it was doing.
+ *
+ * RETURNS A VERDICT, not a bare status — `{ok, status, reason}` where reason is
+ * 'not_reopenable' (there was no cancelled/completed row) or 'error' (the write
+ * itself failed). A single null for both let the routes tell somebody "this one is
+ * already open" during a database blip, which is a lie about their own file and
+ * leaves them refreshing a card that still says Cancelled. Never throws.
+ */
+async function reopenOrder(applicationId, orderType, { actorId = null, reason = null, client = null } = {}) {
+  const q = client || db;
+  try {
+    const r = await q.query(
+      `UPDATE file_orders o
+          SET status = CASE
+                WHEN o.first_response_at IS NOT NULL THEN 'documents_in'
+                -- NULL, not ''. The attorney order has no returned-document kind
+                -- of its own, and COALESCE(d.doc_kind,'') = '' matches every
+                -- ORDINARY upload on the file — doc_kind is NULL for almost all of
+                -- them — so an attorney order on any file holding a single document
+                -- reopened as 'documents_in'. Comparing to NULL is never true, so
+                -- with no mapped kind this arm simply does not apply.
+                WHEN $3::text IS NOT NULL AND EXISTS (
+                  SELECT 1 FROM documents d
+                   WHERE d.application_id = o.application_id
+                     AND d.doc_kind = $3::text
+                     AND d.is_current = true
+                ) THEN 'documents_in'
+                ELSE 'ordered' END,
+              -- The order is open again, so it has no completion. Nothing PRICES
+              -- off this column today (the scorecard measures turnaround from
+              -- ordered_at to first_response_at), but it is what the card prints
+              -- as "finished on", and an order being chased must not also show a
+              -- date it was finished.
+              completed_at = NULL,
+              updated_at = now()
+        WHERE o.application_id = $1 AND o.order_type = $2
+          AND o.status IN ('cancelled', 'completed')
+      RETURNING o.id, o.status`, [applicationId, orderType, RETURN_DOC_KIND[orderType] || null]);
+    if (!r.rows[0]) return { ok: false, status: null, reason: 'not_reopenable' };
+    await recordEvent({
+      applicationId, orderType, kind: 'reopened', actorId,
+      orderId: r.rows[0].id, detail: reason ? { reason } : null, client,
+    });
+    return { ok: true, status: r.rows[0].status, reason: null };
+  } catch (e) {
+    console.error('[order-tracking] reopen', applicationId, orderType, (e && e.message) || e);
+    return { ok: false, status: null, reason: 'error' };
+  }
+}
+
+/**
  * RETIRE THE TITLE AND INSURANCE ORDERS THE FILE HAS FINISHED WITH.
  *
  * An order is done when the condition it exists to satisfy is signed off — that
@@ -280,5 +364,5 @@ async function listEvents(applicationId, orderType, { limit = 50 } = {}) {
 module.exports = {
   ORDER_TYPES,
   recordEvent, defaultAssignee, ensureAssignee, noteFirstResponse,
-  completeOrder, retireSatisfiedOrdersOnce, listEvents,
+  completeOrder, reopenOrder, retireSatisfiedOrdersOnce, listEvents,
 };

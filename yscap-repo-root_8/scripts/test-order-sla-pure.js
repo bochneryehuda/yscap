@@ -115,6 +115,24 @@ console.log('\n7. the whole state of one order');
   eq(cancelled.open, false, 'and it is not open');
   const done = sla.orderState({ order_type: 'title', status: 'completed', ordered_at: '2026-06-01T14:00:00Z' }, now);
   eq(done.overdue, false, 'nor is a completed one');
+
+  /* A FILE ON HOLD IS NOT LATE — and the rule lives HERE, in the one calculator,
+     not on the desk that happened to notice it first. It had been written into the
+     cross-file desk alone, so a file parked for months read "on time" there and
+     "64 business days late", in red, on the order's own card. */
+  const heldOrder = { order_type: 'title', status: 'ordered', ordered_at: '2026-06-01T14:00:00Z' };
+  const running = sla.orderState(heldOrder, now);
+  eq(running.overdue, true, 'an old open order on an ordinary file IS late');
+  const held = sla.orderState({ ...heldOrder, file_status: 'on_hold' }, now);
+  eq(held.overdue, false, 'the same order on a HELD file is not late');
+  eq(held.daysLate, 0, 'and carries no day count for a screen to print');
+  eq(held.onHold, true, 'the card is told WHY, so an old order does not look like a broken clock');
+  eq(held.open, true, 'it is still OPEN — its documents still need classifying and it stays on the desk');
+  eq(held.chase, sla.orderState({ ...heldOrder, status: 'ordered', ordered_at: now.toISOString() }, now).chase,
+    'and it is never handed an escalation tier the nudge ladder would act on');
+  eq(sla.orderState({ ...heldOrder, file_status: 'processing' }, now).overdue, true,
+    'every other file status is unaffected — this can silence lateness, never invent it');
+  eq(running.onHold, false, 'a caller that did not select the file status is unchanged');
 }
 
 console.log('\n8. a roll-up over a list of orders — ONE calculator, never a second one');
