@@ -55,16 +55,25 @@ coverage, not about the user's filters.
 
 ## PHASE 1 — STOP BEING WRONG
 
+**11 of 14 done.** Also fixed on the way, and not on the original list: a
+migration pair (db/422 + db/424) that undid each other on every boot, burning a
+permanent Postgres column slot each time — measured at 1,476 burnt slots with
+`properties` sitting exactly at the 1,600 hard limit, i.e. one boot from a table
+that could never be altered again. `check-migrations` now refuses that shape.
+And `research/rekey.js` + db/428, without which the identity fixes below would
+have been WORSE than the bugs: a changed key does not fail loudly, it mints a
+duplicate the next time a report arrives about a house we already hold.
+
 Correctness first. Every item is a measured wrong answer or a fact we hold and
 throw away.
 
-- [ ] **1.1 Price per square foot is dead on every 2–4 unit comp.**
+- [x] **1.1 Price per square foot is dead on every 2–4 unit comp.**
   `SalesPricePerGrossBuildingAreaAmount` appears nowhere in `extract.js`. Same
   file, one attribute renamed: a 1004 reads $154.59, a 1025 reads null.
-- [ ] **1.2 A comparable's garage is structurally always NULL.**
+- [x] **1.2 A comparable's garage is structurally always NULL.**
   `ADJ_TYPES.garage` looks for `garage`/`carport`; MISMO 2.6 writes
   `Parking`/`CarStorage`. Neither matches.
-- [ ] **1.3 A post-rehab refinance appraisal is mis-read as after-repair.**
+- [x] **1.3 A post-rehab refinance appraisal is mis-read as after-repair.**
   `HYPO_RE`'s second arm does not require the word "hypothetical", so *"All
   repairs were completed in 2024"* flips an **explicit `AsIs`** report to ARV:
   the as-is value is dropped and every comp is stamped `arv`. Split the pattern;
@@ -80,34 +89,34 @@ throw away.
   1025s and routinely says *"C4 as-is, C3 as repaired"* — the one place the AS-IS
   rating on a renovation file is written down, which is exactly what `AS_IS_ONLY`
   currently leaves those properties without.
-- [ ] **1.6 A subject that cannot be keyed is dropped SILENTLY.** `writeReport`
+- [x] **1.6 A subject that cannot be keyed is dropped SILENTLY.** `writeReport`
   wraps it in `if (subjectId)` with no `else`, while a comparable is counted with
   a reason. That defeats the ledger's stated purpose.
 - [ ] **1.7 `appraisal_comparables.property_type` is written by nothing** (0 of
   83). Either fill it from a stated fact or drop the column — a column nothing
   writes reads as "the report didn't say" when the truth is "we never looked".
-- [ ] **1.8 The geocoder accepts a match that changed the street.** Census
+- [x] **1.8 The geocoder accepts a match that changed the street.** Census
   returns `26 10TH ST` for `26 S 10th St` — directional dropped, `precision:
   'address'`, and it is the identical coordinate it returns for a different
   house. `address.geocodeRewriteIsSafe` exists, was written after exactly this
   incident, and `research/geocode.js` never calls it.
-- [ ] **1.9 Three dedupe COLLISIONS — different properties, one key.** Two ZIPs
+- [x] **1.9 Three dedupe COLLISIONS — different properties, one key.** Two ZIPs
   on one street with no city; `Suite 5` = `Apt 5` = `Bldg 5` = `Lot 5` = `#5`;
   and `5 Building Rd` / `5 Room Rd` collapsing because `splitUnit` eats a street
   whose name is a unit keyword (`address.withoutUnit()` already has the fix).
-- [ ] **1.10 Seven dedupe SPLITS — one property, several keys.** Bare unit,
+- [x] **1.10 Seven dedupe SPLITS — one property, several keys.** Bare unit,
   spaced unit, ordinals (`15 Ave` ≠ `15th Ave`), borough vs county, one ZIP with
   two town names, suffix synonyms, fractional house numbers.
-- [ ] **1.11 `sameAddress` reads a hyphen as a range**, so every Queens address
+- [x] **1.11 `sameAddress` reads a hyphen as a range**, so every Queens address
   over-matches: `150-25 78th Rd` = `150-99 78th Rd`. That comparer gates USPS
   stamps and review closing, and its stated discipline is to UNDER-match.
-- [ ] **1.12 `perBath` is confounded by size** and returns **$86,940 for one
+- [x] **1.12 `perBath` is confounded by size** and returns **$86,940 for one
   bathroom** — while the identical confound pointing the other way is correctly
   refused, and the message blames the sample when 73 sales is not small.
-- [ ] **1.13 An active listing carries 36% of the weight** into the indicated
+- [x] **1.13 An active listing carries 36% of the weight** into the indicated
   value, the median, the high and the price-per-foot. An asking price is not a
   sale.
-- [ ] **1.14 Distressed sales are neither filtered nor selectable.** 8 REO
+- [x] **1.14 Distressed sales are neither filtered nor selectable.** 8 REO
   alongside 8 arm's-length drops the median $/sqft to $217.
 
 ## PHASE 2 — READ EVERYTHING THE XML ALREADY CONTAINS

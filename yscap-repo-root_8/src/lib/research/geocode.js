@@ -42,6 +42,9 @@
  */
 const https = require('https');
 const { URL } = require('url');
+// The one place that decides whether a provider's answer is still about OUR
+// address — written after the 2026-07-28 Piscataway/Plainfield incident.
+const ADDR = require('../address');
 
 const UA = 'PILOT-Research/1.0 (YS Capital; property research warehouse)';
 
@@ -166,13 +169,39 @@ function addressLine(p) {
  * Place ONE property. Returns the coordinate, or null with a reason. Never throws.
  * Exported so a single property can be placed on demand from a screen.
  */
-async function geocodeProperty(p) {
+async function geocodeProperty(p, { providers = PROVIDERS } = {}) {
   const line = addressLine(p);
   if (!line) return { ok: false, why: 'the address is not complete enough to look up' };
-  for (const provider of PROVIDERS) {
+  let rejected = null;
+  for (const provider of providers) {
     let hit = null;
     try { hit = await provider(line); } catch (_) { hit = null; }
-    if (hit) return { ok: true, ...hit, query: line };
+    if (!hit) continue;
+    // A GEOCODER ANSWERS A DIFFERENT HOUSE RATHER THAN SAY IT CANNOT FIND YOURS.
+    // Verified live: the Census geocoder answers "26 S 10th St, Piscataway, NJ
+    // 08854" with "26 10TH ST, PISCATAWAY, NJ, 08854" — the directional dropped,
+    // `precision: 'address'`, and the IDENTICAL coordinate it returns for "26
+    // 10th St", which is a different street. Google normalises the same address
+    // to a Plainfield ZIP: a real, rooftop-precise match on a house ~130 m away
+    // across a municipal line where the numbering runs on.
+    //
+    // `address.geocodeRewriteIsSafe` was written after exactly that incident
+    // (2026-07-28) and refuses a provider answer that drops or moves the house
+    // number, disagrees on a ZIP we already hold, or loses a leading directional.
+    // Every provider here already RETURNS its matched string; nothing was reading
+    // it, and the coordinates were adopted regardless. A confident wrong pin is
+    // worse than no pin — it puts a property on the wrong street and every
+    // distance measured from it is wrong without looking wrong.
+    if (hit.matched && !ADDR.geocodeRewriteIsSafe(line, hit.matched)) {
+      rejected = rejected || { source: hit.source, matched: hit.matched };
+      continue;
+    }
+    return { ok: true, ...hit, query: line };
+  }
+  if (rejected) {
+    return { ok: false, query: line, rejected: true, matched: rejected.matched, source: rejected.source,
+      why: `the closest thing ${rejected.source} could find was "${rejected.matched}", which is a different `
+        + 'property — a wrong pin is worse than none, so this one is left unplaced' };
   }
   return { ok: false, why: 'no service could place that address', query: line };
 }
@@ -189,7 +218,7 @@ async function geocodeProperty(p) {
  * forever and the sweep would never reach the rest.
  */
 async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
-  const out = { looked: 0, placed: 0, unplaceable: 0, errors: 0, remaining: 0 };
+  const out = { looked: 0, placed: 0, unplaceable: 0, wrongProperty: 0, errors: 0, remaining: 0 };
   if (process.env.RESEARCH_GEOCODE_DISABLED === '1') { out.disabled = true; return out; }
   try {
     const rows = (await db.query(
@@ -220,6 +249,10 @@ async function backfillGeocodes(db, { limit = 100, onProgress = null } = {}) {
             `UPDATE properties SET geo_attempted_at = now(), geo_attempts = geo_attempts + 1 WHERE id = $1`,
             [p.id]);
           out.unplaceable++;
+          // Counted separately: "nothing could place this" and "the only thing on
+          // offer was a different house" are different problems, and a climbing
+          // wrongProperty count means a whole town's addresses need looking at.
+          if (hit && hit.rejected) out.wrongProperty++;
         }
       } catch (_) { out.errors++; }
       if (onProgress) { try { onProgress(out); } catch (_) { /* a hook never breaks the sweep */ } }
