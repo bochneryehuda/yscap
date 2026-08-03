@@ -247,7 +247,11 @@ function Recipients({ recipients, team, contacts, extra, setExtra, disabled }) {
   );
 }
 
-export default function ClosingPrepCard({ appId }) {
+/* `onChanged` lets the card tell whoever hosts it that the closing order moved —
+   the Orders panel refreshes the sibling title/insurance cards and the section
+   badges off it. Without it the three order sections each held their own copy of
+   the file and only the one you touched was ever right. */
+export default function ClosingPrepCard({ appId, onChanged = null }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
@@ -266,6 +270,11 @@ export default function ClosingPrepCard({ appId }) {
       .catch((e) => setErr((e && e.message) || 'Could not load closing prep.'));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
+  /* Reload THIS card and tell the host the order moved, so the sibling order
+     sections and the section badges stop showing a file that has moved on.
+     Deliberately not folded into `load` itself: that also runs on mount, and
+     announcing a change nobody made would cost a round trip on every render. */
+  const reload = useCallback(() => { load(); if (onChanged) onChanged(); }, [load, onChanged]);
 
   const download = async (d) => {
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
@@ -294,9 +303,12 @@ export default function ClosingPrepCard({ appId }) {
           + (failed.length ? ` ${failed.length} of the follow-on emails did not send — these documents did NOT reach the attorney: ${failed.map((f) => f.files.join(', ')).join('; ')}. Re-send to try again.` : ''),
       });
       setNote('');
-      load();
+      reload();
     } catch (e) {
-      if (e && e.status === 409) setMsg({ tone: 'warn', text: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: true });
+      // The server's own wording wins — see the note on the same branch in
+      // OrdersPanel: a hard-coded string here tells somebody who just pressed
+      // "force a re-send" to force a re-send.
+      if (e && e.status === 409) setMsg({ tone: 'warn', text: (e && e.message) || 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: !(e.data && e.data.code === 'too_soon') });
       else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the closing-prep request.' });
     } finally { setBusy(''); }
   };
@@ -309,7 +321,7 @@ export default function ClosingPrepCard({ appId }) {
         extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       });
       setMsg({ tone: 'ok', text: `Follow-up sent on the closing chain to ${(r.sent_to || []).join(', ')}.` });
-      setFollowMsg(''); setFollowOpen(false); load();
+      setFollowMsg(''); setFollowOpen(false); reload();
     } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the follow-up.' }); }
     finally { setBusy(''); }
   };
@@ -317,7 +329,7 @@ export default function ClosingPrepCard({ appId }) {
   const cancel = async (reopen) => {
     if (!reopen && !window.confirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.')) return;
     setBusy('cancel'); setMsg(null);
-    try { await api.staffCancelClosingPrep(appId, reopen); load(); }
+    try { await api.staffCancelClosingPrep(appId, reopen); reload(); }
     catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
     finally { setBusy(''); }
   };
@@ -428,13 +440,27 @@ export default function ClosingPrepCard({ appId }) {
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
-            <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
-              Cancel request
-            </button>
+            {/* NOT on a FINISHED request. Cancelling is an explicit stand-down
+                that shuts the follow-up and reply doors on the closing chain, so
+                on a request that already finished it can only cost the team the
+                ability to write to counsel about a deal that is done. Reopen is
+                the action there. */}
+            {order.status !== 'completed' && (
+              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
+                Cancel request
+              </button>
+            )}
           </>
         )}
-        {order.status === 'cancelled' && (
-          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}>Reopen</button>
+        {/* Both ways this order ends. It reaches 'completed' on its own once the
+            deal is over (closing-prep.retireClosedOrdersOnce), so offering Reopen
+            only for 'cancelled' left a closed file that came back to life with no
+            way back onto the desk. */}
+        {(order.status === 'cancelled' || order.status === 'completed') && (
+          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}
+            title="Put this request back on the Orders desk without re-sending it">
+            Reopen
+          </button>
         )}
       </div>
 

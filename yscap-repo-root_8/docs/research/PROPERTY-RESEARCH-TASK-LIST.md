@@ -657,7 +657,7 @@ never attempted. Everything in this phase costs about $10, one time.
   two screens come to disagree about the same comparable. One call now, on the
   same row the adjustments were computed for.
 - [x] **5.5 Confirm-the-facts step, then instant re-value** — **DONE**
-  (`src/lib/research/subject-facts.js`, 63 assertions; db/459; the confirm door
+  (`src/lib/research/subject-facts.js`, 63 assertions; db/460; the confirm door
   `POST /valuations/:id/confirm-subject`; the "What this value rests on" panel on
   the valuation screen; `test-subject-facts-db.js`, 25).
   **It leads with what is NOT happening, not with what is blank.** A WRONG fact
@@ -788,7 +788,7 @@ never attempted. Everything in this phase costs about $10, one time.
   quarter overwrites rather than leaving two rows nobody can choose between.
 - [x] **5.11 Draw and save a market-area polygon** — **DONE, and it now CUTS the
   comparable search** (`src/lib/research/market-area.js`, 68 assertions including a
-  61x61 grid scan; db/457; the drawing UI on `StaffMarketAreas`;
+  61x61 grid scan; db/458; the drawing UI on `StaffMarketAreas`;
   `?market_area_id=` on `GET /api/research/comps`;
   `test-market-area-filter-db.js`, 20).
   **A radius is a bad model of a neighbourhood and every appraiser knows it**: a

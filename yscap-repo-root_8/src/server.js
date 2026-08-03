@@ -262,7 +262,7 @@ app.get('/api/health', async (req, res) => {
     // `protected:false` means the nightly off-site backup has not succeeded recently — act on it.
     backup: backupStatus,
     // `ok:false` means the database-level rule that keeps a Google-sourced coordinate
-    // out of the permanent property warehouse (db/458) is not confirmed installed.
+    // out of the permanent property warehouse (db/459) is not confirmed installed.
     // A licensing control, so it is reported rather than assumed.
     //
     // DELIBERATELY ONLY THE VERDICT. This endpoint is PUBLIC (see the storage and
@@ -650,7 +650,7 @@ if (require.main === module) {
         await ensureSchema();
         // ensureSchema NEVER throws — a failed migration logs and continues, which
         // is right for a schema change and wrong for a CONTROL. Ask the database
-        // out loud whether the Google-coordinate licensing rule (db/458) is
+        // out loud whether the Google-coordinate licensing rule (db/459) is
         // actually installed, so it can never be silently absent. Reports only;
         // never blocks the boot — and its OWN try/catch, because a throw from the
         // `require` itself would otherwise skip bootstrapAdmin() and every boot

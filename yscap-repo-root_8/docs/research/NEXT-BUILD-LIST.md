@@ -123,7 +123,7 @@ miles, which is a county"). Still to do:
 - [x] **A4a** Its pure test — **DONE**, 68 assertions including a 61x61 grid scan
   against the shape's own definition, and both failure modes proven to fail the
   suite when reintroduced.
-- [x] **A4b** A table and routes — **DONE** (`db/457`, save / list / archive /
+- [x] **A4b** A table and routes — **DONE** (`db/458`, save / list / archive /
   what-is-inside). Archived, never deleted: a valuation may rest on a boundary.
 - [x] **A4c** Drawing on the map — **DONE**, verified by CLICKING the map in
   Chromium and reading the saved shape back out of the database.
@@ -209,7 +209,7 @@ Mixing these would put us out of compliance quietly, and nothing would break to
 tell us.
 
 - [x] **B2** **DONE** — and it is a DATABASE CONSTRAINT, not only a code rule
-  (`db/458`, `properties_no_google_geo_ck`). Every other guard on this is one
+  (`db/459`, `properties_no_google_geo_ck`). Every other guard on this is one
   somebody has to remember: a comment, a provider list, a source-level assertion.
   Each catches the change written the way we expect. The change that will actually
   break this is the one nobody reviewed — an import script, a hand-run migration,
@@ -409,7 +409,7 @@ API* + *Maps JavaScript API*, restrict it to our domain):
   Static is billed per request, and a 25-row comparable list would otherwise fire
   25 billable calls per page view including the rows nobody scrolls to. Verified in
   a real browser in both states (`scripts/render-street-fallback.mjs`, 10).
-- [x] **C4c** **DONE** — same guard as B2 above (`db/458`).
+- [x] **C4c** **DONE** — same guard as B2 above (`db/459`).
 
 ---
 
