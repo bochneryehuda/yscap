@@ -114,6 +114,23 @@ function yesNoExact(v) {
 // Store a value ONLY if it exactly matches a known enum set — otherwise null (mirrors the UAD
 // C1-6/Q1-6 discipline). Case-sensitive as MISMO emits, with a case-insensitive fallback match.
 function enumOf(v, set) { const s = clean(v); if (!s) return null; if (set.includes(s)) return s; const hit = set.find((x) => x.toLowerCase() === s.toLowerCase()); return hit || null; }
+// THE VIEW A PROPERTY HAS, in the appraiser's own words where they gave them.
+// UAD writes it as a coded type plus a free-text description used when the code is
+// `Other` — and `Other` is precisely the interesting case (the corpus's own values:
+// Cemetery, Creek, Warehse, Comm). Returning the bare code for those would file the
+// least informative reading of the most informative line, so the description wins
+// when the code is `Other` or absent; otherwise the code is returned as stated.
+// UNRECOGNISED CODES ARE KEPT AS WRITTEN rather than mapped to null — this is a long
+// open GSE list (ResidentialView, CityStreetView, ParkView, WoodsView, WaterView …)
+// and a whitelist here would silently drop every value nobody thought of, which is
+// the trap the worded condition/quality fields already fell into.
+function viewTypeOf(node) {
+  if (!node) return null;
+  const code = clean(X.attr(node, 'GSEViewType'));
+  const other = clean(X.attr(node, 'GSEViewTypeOtherDescription'));
+  if (!code || /^other$/i.test(code)) return other || code || null;
+  return code;
+}
 // A neighborhood _HOUSING price is in $THOUSANDS (575 = $575,000). Convert to dollars with a
 // magnitude guard so it can NEVER be confused with a full-dollar amount (a share of the corpus
 // carries these; feeding one into money() would store $575 and mis-scale an ARV check 1000×).
@@ -696,9 +713,56 @@ function comparables(root, effectiveYear) {
       viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
       locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
       locationType: clean(X.attr(X.find(c, 'COMPARISON_LOCATION_DETAIL'), 'GSELocationType')),
+      // WHAT THE COMPARABLE LOOKS OUT ON, not just whether the appraiser liked it.
+      // The overall RATING above is a three-way verdict (Beneficial/Neutral/Adverse)
+      // and every vendor that writes it also names the view itself — a comp backing
+      // onto a park and one backing onto a cemetery are both `Adverse`/`Beneficial`
+      // to one appraiser and the opposite to the next, so the rating alone cannot
+      // be re-judged later. `GSEViewTypeOtherDescription` is the appraiser's own
+      // words when the enum is `Other`, which is where the interesting ones live
+      // (measured across the corpus: Cemetery, Creek, Warehse, Comm).
+      viewType: viewTypeOf(X.find(c, 'COMPARISON_VIEW_DETAIL')),
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
-      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
+      // A BASEMENT BEDROOM IS NOT A BEDROOM, and Fannie separates them on the form
+      // for exactly that reason. The grid's headline bed/bath counts are ABOVE
+      // grade, so a 3-bed comparable with two more beds downstairs and a 3-bed
+      // comparable with none read identically today — the below-grade area alone
+      // does not say whether that space is finished living space or a boiler room.
+      // Read per comparable from its own COMPARISON_DETAIL; 57 of the 152 real
+      // reports state them.
+      // `count`, NOT `bounded` — ZERO IS THE ANSWER HERE, not the absence of one.
+      // "This basement has no bedrooms" and "the appraiser didn't say" are different
+      // facts about a comparable, and `bounded` (which exists for money and areas)
+      // refuses 0, so every stated zero would have been filed as silence: measured
+      // 31 of 769 comparables carrying a bed count instead of the 211 that state one.
+      belowGradeBeds: count(X.attr(cd, 'GSEBelowGradeBedroomRoomCount'), 100),
+      // AND THE BATH COUNT IS UAD `full.half`, NOT A DECIMAL — "0.1" is no full
+      // baths and one half bath, not a tenth of a bathroom. It goes through the
+      // same decoder the grid's own bath line uses, so the two can never disagree.
+      belowGradeBaths: (() => {
+        const b = parseBaths(X.attr(cd, 'GSEBelowGradeBathroomRoomCount'));
+        return b.full == null && b.half == null ? null : { full: b.full, half: b.half, text: b.text };
+      })(),
+      belowGradeRecRooms: count(X.attr(cd, 'GSEBelowGradeRecreationRoomCount'), 100),
+      belowGradeOtherRooms: count(X.attr(cd, 'GSEBelowGradeOtherRoomCount'), 100),
+      // WalkOut / WalkUp / InteriorOnly — the difference between a basement that
+      // can be a legal unit and one that cannot.
+      basementExit: enumOf(X.attr(cd, 'GSEBasementExitType'), ['WalkOut', 'WalkUp', 'InteriorOnly']),
+      // WHERE THIS COMPARABLE CAME FROM — an MLS number, tax records, an exterior
+      // inspection. Only 79 of the 152 real reports carry the UAD extension that
+      // holds `GSEDataSourceDescription`, but 135 state it on the COMPARABLE_SALE
+      // element itself and 145 state how it was VERIFIED — so reading the UAD
+      // attribute alone left the provenance blank on 66 files (43% of the corpus),
+      // which read as "this vendor doesn't say" when the vendor did say.
+      // The order is strongest-first: the UAD attribute is the structured one, the
+      // element's own description is the same fact unstructured, and the
+      // verification description is a statement about the same sale (it is the
+      // fallback, not a peer — "Ext inspection/Assessor records" answers "how do
+      // we know this" rather than "where did it come from").
+      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription'))
+        || clean(X.attr(c, 'DataSourceDescription'))
+        || clean(X.attr(c, 'DataSourceVerificationDescription')),
     });
   }
   // A PADDED GRID COLUMN IS NOT A COMPARABLE. Several vendors emit the form's

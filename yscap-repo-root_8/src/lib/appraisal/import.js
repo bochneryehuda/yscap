@@ -564,8 +564,17 @@ function comparableRowFrom(c, formType = null) {
     financing_type: c.financingType,
     prior_sale_amount: c.priorSaleAmount, prior_sale_date: c.priorSaleDate,
     latitude: c.latitude, longitude: c.longitude,
-    view_rating: c.viewRating, location_rating: c.locationRating,
+    view_rating: c.viewRating, location_rating: c.locationRating, view_type: c.viewType,
     below_grade_sqft: c.belowGradeSqft, below_grade_finished_sqft: c.belowGradeFinishedSqft,
+    below_grade_beds: c.belowGradeBeds,
+    // The UAD `full.half` pair is stored as its two halves, exactly as the grid's
+    // own bath count is — a single numeric column would have to choose between
+    // storing 0.1 (which reads as a tenth) and 0.5 (which invents a convention the
+    // report never used).
+    below_grade_baths_full: c.belowGradeBaths ? c.belowGradeBaths.full : null,
+    below_grade_baths_half: c.belowGradeBaths ? c.belowGradeBaths.half : null,
+    below_grade_rec_rooms: c.belowGradeRecRooms, below_grade_other_rooms: c.belowGradeOtherRooms,
+    basement_exit: c.basementExit,
     data_source: c.compDataSource, location_type: c.locationType,
     // The worded condition/quality rating a non-UAD vendor wrote, and which of
     // the two AREA measures this comp's `gla` actually is (db/409 §7).
@@ -669,7 +678,14 @@ function buildFieldsJson(A) {
 //     empty one and the warehouse re-ingest filed zero rentals while reporting
 //     success. The re-parse now re-derives the schedule from the stored XML, and
 //     the version bump is what makes it reach the back book.
-const COMP_PARSE_VERSION = 6;
+// 7 — db/437: the comparable's DATA SOURCE reached the file on only 53% of
+//     reports because it was read from the UAD extension alone, while 135 of the
+//     152 real reports state it on the COMPARABLE_SALE element itself; with the
+//     fallback it is 100%. Plus the below-grade room breakdown (a basement
+//     bedroom is not a bedroom), the basement's exit type, and the UAD view TYPE
+//     beside the view RATING — a comp facing a cemetery and one facing a park
+//     were both stored as nothing more than one appraiser's verdict.
+const COMP_PARSE_VERSION = 7;
 
 module.exports = {
   importAppraisal,

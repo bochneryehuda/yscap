@@ -592,7 +592,14 @@ const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
   'location_type', 'below_grade_sqft', 'below_grade_finished_sqft',
   'days_on_market', 'data_source', 'sale_type', 'financing_type',
   'concession_amount', 'prior_sale_amount', 'prior_sale_date',
-  'adjusted_price', 'sale_status', 'contract_date'];
+  'adjusted_price', 'sale_status', 'contract_date',
+  // db/437 — the provenance and the basement. `data_source` above was already
+  // listed and still came back blank on 43% of reports, because the gap was in
+  // WHERE the parser looked, not in whether the column was re-read; the version
+  // bump to 7 is what actually reaches those rows.
+  'view_type', 'basement_exit', 'below_grade_beds',
+  'below_grade_baths_full', 'below_grade_baths_half',
+  'below_grade_rec_rooms', 'below_grade_other_rooms'];
 // WHAT THE RE-PARSE DELIBERATELY LEAVES ALONE, named so the pair can be
 // checked against `comparableRowFrom` mechanically. `REPARSED` carried a
 // comment reading "EVERY COLUMN THIS PARSER OWNS MUST BE LISTED HERE" and

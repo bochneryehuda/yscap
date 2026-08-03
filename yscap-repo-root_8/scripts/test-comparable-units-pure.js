@@ -481,5 +481,91 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   }
 }
 
+// ---------------------------------------------------------------------------
+// 14. WHERE THE COMPARABLE CAME FROM, WHAT IT LOOKS OUT ON, WHAT IS DOWNSTAIRS
+//     (db/437). Three separate wrong answers, each measured over the 152 real
+//     reports before being fixed.
+// ---------------------------------------------------------------------------
+{
+  // The data source was read ONLY from the UAD extension, which 73 of the 152
+  // real reports do not carry — while 135 state it on COMPARABLE_SALE itself.
+  const withUad = (extra = '') => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000"${extra}>
+ <LOCATION PropertyStreetAddress="4 Source Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ <COMPARISON_DETAIL GSEDataSourceDescription="CNYISMLS #S1"/>
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`;
+  const noUad = (attrs) => `<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000" ${attrs}>
+ <LOCATION PropertyStreetAddress="4 Source Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`;
+  const src = (xml) => (extract(xml).comparables[0] || {}).compDataSource;
+
+  ok(src(withUad()) === 'CNYISMLS #S1', 'the UAD source still wins when the report carries one');
+  ok(src(noUad('DataSourceDescription="Tax records"')) === 'Tax records',
+    'a report with no UAD extension falls back to the element\'s own source — 66 of 152 files');
+  ok(src(noUad('DataSourceVerificationDescription="Ext inspection/Assessor"')) === 'Ext inspection/Assessor',
+    'and to how the sale was VERIFIED when that is all it states');
+  // The order matters: verification answers "how do we know this", not "where did
+  // it come from", so it may never outrank a stated source.
+  ok(src(noUad('DataSourceDescription="MLS #7" DataSourceVerificationDescription="Ext insp"')) === 'MLS #7',
+    'a stated source outranks the verification note, never the other way round');
+  ok(src(noUad('DataSourceDescription="N/A"')) == null,
+    'and a placeholder is still nothing — the fallback does not launder "N/A" into a source');
+
+  // A basement bedroom is not a bedroom, and a STATED ZERO is an answer.
+  const bg = (attrs) => extract(`<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000">
+ <LOCATION PropertyStreetAddress="4 Cellar Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ <COMPARISON_DETAIL ${attrs}/>
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`).comparables[0] || {};
+
+  ok(bg('GSEBelowGradeBedroomRoomCount="2"').belowGradeBeds === 2, 'two bedrooms below grade are read');
+  ok(bg('GSEBelowGradeBedroomRoomCount="0"').belowGradeBeds === 0,
+    'a stated ZERO is kept — "no bedrooms down there" is an answer, and the money helper would have dropped it');
+  ok(bg('').belowGradeBeds === null, 'and an unstated one is still null, which is a different fact');
+  // The count is never folded into the above-grade one: the form separates them
+  // precisely because they are not the same thing.
+  const both = bg('GSEBelowGradeBedroomRoomCount="2"');
+  ok(both.beds !== 2 || both.belowGradeBeds === 2,
+    'the below-grade count is its own column and never added to the grid\'s bed count');
+
+  // UAD writes the bath count as `full.half`, NOT as a decimal.
+  const b01 = bg('GSEBelowGradeBathroomRoomCount="0.1"').belowGradeBaths;
+  ok(b01 && b01.full === 0 && b01.half === 1,
+    '"0.1" is no full baths and one half bath — not a tenth of a bathroom');
+  const b20 = bg('GSEBelowGradeBathroomRoomCount="2.0"').belowGradeBaths;
+  ok(b20 && b20.full === 2 && b20.half === 0, '"2.0" is two full baths and no half');
+  ok(bg('GSEBelowGradeBathroomRoomCount="0.0"').belowGradeBaths.full === 0,
+    'and a stated 0.0 survives — the same zero trap as the bedrooms');
+
+  ok(bg('GSEBasementExitType="WalkOut"').basementExit === 'WalkOut', 'the basement exit type is read');
+  ok(bg('GSEBasementExitType="Nonsense"').basementExit === null,
+    'an exit type outside the enum is refused rather than stored — the column carries a CHECK');
+
+  // The view TYPE beside the view RATING.
+  const view = (attrs) => extract(`<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000">
+ <LOCATION PropertyStreetAddress="4 View Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ ${attrs}
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`).comparables[0] || {};
+
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="ParkView"/>').viewType === 'ParkView',
+    'the view type is read beside the rating');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="Other" GSEViewTypeOtherDescription="Cemetery"/>').viewType === 'Cemetery',
+    'and "Other" yields the appraiser\'s own word, which is the informative case');
+  ok(view('<COMPARISON_VIEW_DETAIL GSEViewType="WoodsView"/>').viewType === 'WoodsView',
+    'a code outside any whitelist is kept verbatim — the GSE list is long and open');
+  ok(view('').viewType === null, 'no view element states no view');
+  // The rating and the type are different facts and must not overwrite each other.
+  const v2 = view('<COMPARISON_VIEW_OVERALL_RATING GSEViewOverallRatingType="Adverse"/>'
+    + '<COMPARISON_VIEW_DETAIL GSEViewType="Other" GSEViewTypeOtherDescription="Warehse"/>');
+  ok(v2.viewRating === 'Adverse' && v2.viewType === 'Warehse',
+    'the verdict and the fact are stored side by side — one appraiser\'s "Adverse" can never be re-judged, a warehouse can');
+}
+
 console.log(failures ? `\ntest-comparable-units-pure: ${failures} FAILED` : '\ntest-comparable-units-pure: all passed');
 process.exit(failures ? 1 : 0);

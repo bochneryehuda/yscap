@@ -111,10 +111,23 @@ const ROLLUP_FACTS = Object.freeze({
   total_rooms: 'total_rooms', stories: 'stories', design_style: 'design_style',
   basement_sqft: 'basement_sqft', below_grade_sqft: 'below_grade_sqft',
   below_grade_finished_sqft: 'below_grade_finished_sqft',
+  // db/437 — WHAT IS DOWNSTAIRS, beside how much of it there is. `beds` above is
+  // the ABOVE-grade count the grid states; these are never added to it, because
+  // the whole reason the form separates them is that they are not the same thing.
+  below_grade_beds: 'below_grade_beds',
+  below_grade_baths_full: 'below_grade_baths_full',
+  below_grade_baths_half: 'below_grade_baths_half',
+  below_grade_rec_rooms: 'below_grade_rec_rooms',
+  below_grade_other_rooms: 'below_grade_other_rooms',
+  basement_exit: 'basement_exit',
   garage_type: 'garage_type', garage_spaces: 'garage_spaces',
   condition_uad: 'condition_uad', condition_text: 'condition_text',
   quality_uad: 'quality_uad', quality_text: 'quality_text',
   view_rating: 'view_rating', location_rating: 'location_rating', location_type: 'location_type',
+  // The view RATING is one appraiser's verdict on the outlook; the view TYPE is
+  // what is actually there. Both roll up, because a later reader can re-judge a
+  // cemetery and cannot re-judge an "Adverse".
+  view_type: 'view_type',
   neighborhood: 'neighborhood', census_tract: 'census_tract', flood_zone: 'flood_zone',
   zoning_id: 'zoning_id', zoning_desc: 'zoning_desc', market_rent: 'market_rent',
   owner_of_record: 'owner_of_record', hoa_fee_amount: 'hoa_fee_amount', hoa_fee_period: 'hoa_fee_period',
@@ -1415,8 +1428,14 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       // an after-repair comparable, so its ratings are always the as-is basis.
       condition_basis: 'as_is',
       view_rating: txt(c.view_rating), location_rating: txt(c.location_rating),
-      location_type: txt(c.location_type),
+      location_type: txt(c.location_type), view_type: txt(c.view_type),
       below_grade_sqft: c.below_grade_sqft, below_grade_finished_sqft: c.below_grade_finished_sqft,
+      below_grade_beds: c.below_grade_beds,
+      below_grade_baths_full: c.below_grade_baths_full,
+      below_grade_baths_half: c.below_grade_baths_half,
+      below_grade_rec_rooms: c.below_grade_rec_rooms,
+      below_grade_other_rooms: c.below_grade_other_rooms,
+      basement_exit: txt(c.basement_exit),
       basement_sqft: null, basement_finished_pct: null,
       garage_type: fromAdjustments(c.adjustments, 'garage', (v) => txt(v)), garage_spaces: null,
       price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
