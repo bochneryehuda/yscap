@@ -58,6 +58,19 @@ function tone(value, target) {
 }
 const TONE_COLOR = { good: '#2E7A5E', warn: '#B07A1E', bad: '#A32A2A' };
 
+/**
+ * Colour for a change against the period before. UP IS NOT AUTOMATICALLY GOOD — days-to-fund
+ * climbing is bad news, and painting it green would say the opposite of what happened. The
+ * card's own "good is higher / lower" setting decides; with no setting the change is stated
+ * in plain ink and left for the reader to judge.
+ */
+function deltaColor(pct, target) {
+  if (!target || !target.direction || !isFinite(pct) || pct === 0) return INK;
+  const up = pct > 0;
+  const higherIsBetter = target.direction === 'higher_is_better';
+  return up === higherIsBetter ? TONE_COLOR.good : TONE_COLOR.bad;
+}
+
 function Bars({ series, format, onPick }) {
   const max = Math.max(1, ...series.map((s) => Math.abs(s.value || 0)));
   const n = series.length;
@@ -143,6 +156,20 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
         {answer.matched != null && answer.denominator == null && (
           <div className="small" style={{ color: MUTED, marginTop: 2 }}>
             {nf.format(answer.matched)} file{answer.matched === 1 ? '' : 's'}
+          </div>
+        )}
+        {answer.compare && answer.compare.value != null && (
+          // Both figures, always — the percentage is the summary, the old number is the
+          // evidence. Green/red is deliberately read off the card's own "good is higher /
+          // lower" setting rather than assuming up is good: rising days-to-fund is bad.
+          <div className="small" style={{ color: MUTED, marginTop: 4 }}>
+            {answer.compare.deltaPct == null ? null : (
+              <b style={{ color: deltaColor(answer.compare.deltaPct, answer.target) }}>
+                {answer.compare.deltaPct >= 0 ? '▲' : '▼'}{' '}
+                {Math.abs(answer.compare.deltaPct).toFixed(answer.compare.deltaPct >= 10 ? 0 : 1)}%{' '}
+              </b>
+            )}
+            vs {fmt(answer.compare.value, answer.format)} {answer.compare.label}
           </div>
         )}
       </button>

@@ -38,7 +38,15 @@ types.setTypeParser(1082, (v) => v);
 
 const POOL_MAX = Math.max(1, Math.min(8, parseInt(process.env.DASHBOARD_POOL_MAX || '4', 10) || 4));
 const BUDGET_MS = Math.max(1000, Math.min(30000, parseInt(process.env.DASHBOARD_TIMEOUT_MS || '8000', 10) || 8000));
-const MAX_PER_USER = Math.max(1, parseInt(process.env.DASHBOARD_MAX_CONCURRENT || '3', 10) || 3);
+/**
+ * MUST STAY ABOVE THE PER-REQUEST WORKER COUNT in routes/dashboards.js (3). Set equal to it,
+ * one dashboard load consumes the person's entire allowance, so anything overlapping — a
+ * second tab, the card editor's 400 ms live preview, the reload that follows a save — is
+ * refused and paints "Too many dashboard cards loading at once" on cards that are perfectly
+ * fine. The cap is here to stop ONE person occupying the small pool, not to serialise their
+ * own page. If the worker count ever rises, raise this with it.
+ */
+const MAX_PER_USER = Math.max(1, parseInt(process.env.DASHBOARD_MAX_CONCURRENT || '8', 10) || 8);
 
 let pool = null;
 function getPool() {

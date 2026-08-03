@@ -82,10 +82,18 @@ export default function StaffDashboard() {
     await load();
   }
 
-  async function openFiles(answer) {
+  /**
+   * `pick` is the bar the person clicked — the card hands back the same bucket it drew, and
+   * we send its label straight to the server, which re-applies it to the very same query
+   * that produced the number. Clicking August must list August; before this the argument was
+   * dropped on the floor and every bar opened the whole period, under a subtitle promising
+   * "exactly the ones this number counted" and a card subtitled "click any month".
+   */
+  async function openFiles(answer, pick) {
+    const bucket = (pick && pick.key) || null;
     try {
-      const r = await api.dashboardCardFiles(answer.id, { limit: 200 });
-      setDrill({ title: answer.title, files: (r && r.files) || [] });
+      const r = await api.dashboardCardFiles(answer.id, { limit: 200, ...(bucket ? { bucket } : {}) });
+      setDrill({ title: answer.title, bucket, files: (r && r.files) || [] });
     } catch (e) { setErr(e.message || 'Could not list those files'); }
   }
 
@@ -150,7 +158,7 @@ export default function StaffDashboard() {
             <div className="dsh-heroes">
               {hero.map((a) => (
                 <DashboardCard key={a.id} answer={a} editable={canEdit}
-                  onDrill={a.ok && !a.series ? () => openFiles(a) : null}
+                  onDrill={a.ok && !a.series ? (pick) => openFiles(a, pick) : null}
                   onEdit={() => setEditing(cardOf(a) || 'new')} />
               ))}
             </div>
@@ -159,7 +167,7 @@ export default function StaffDashboard() {
             {body.map((a) => (
               <div key={a.id} className={`dsh-slot dsh-w-${a.width || 'one'}`}>
                 <DashboardCard answer={a} editable={canEdit}
-                  onDrill={a.ok ? () => openFiles(a) : null}
+                  onDrill={a.ok ? (pick) => openFiles(a, pick) : null}
                   onEdit={() => setEditing(cardOf(a) || 'new')} />
               </div>
             ))}
@@ -179,12 +187,15 @@ export default function StaffDashboard() {
           <div className="cv-modal" style={{ maxWidth: 900, width: '94%' }} role="dialog" aria-modal="true"
             aria-label={`Files behind ${drill.title}`} onClick={(e) => e.stopPropagation()}>
             <div className="row">
-              <h3 style={{ margin: 0, color: INK }}>{drill.title}</h3>
+              <h3 style={{ margin: 0, color: INK }}>
+                {drill.title}{drill.bucket ? ` · ${drill.bucket}` : ''}
+              </h3>
               <span className="spacer" />
               <button className="btn ghost small" onClick={() => setDrill(null)}>Close</button>
             </div>
             <p className="small" style={{ color: MUTED }}>
-              {drill.files.length} file{drill.files.length === 1 ? '' : 's'} — exactly the ones this number counted.
+              {drill.files.length} file{drill.files.length === 1 ? '' : 's'} — exactly the files this
+              number was worked out from.
             </p>
             <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
               <table className="table" style={{ minWidth: 720 }}>

@@ -285,18 +285,26 @@ const MEASURES = {
   },
 
   // --- Speed. Median and the slow tail, never the mean: one 400-day zombie file drags
-  //     an average into fiction, and the tail is what borrowers actually talk about. ---
+  //     an average into fiction, and the tail is what borrowers actually talk about.
+  //
+  //     BOTH SIDES ARE COUNTED AS CALENDAR DAYS, and that is the whole point. `actual_closing`
+  //     is a DATE and `submitted_at` is an instant; casting the DATE to timestamptz pins it to
+  //     00:00 in the SERVER's zone (UTC on Render), so a file submitted at 09:00 on the very
+  //     day it closed measured as NEGATIVE — rendered "-0 days" and shown GREEN against the
+  //     7-day target, because lower is better. Subtracting two DATEs gives a plain integer of
+  //     days and cannot pick up a zone at all. Same reasoning as the time-grain note in
+  //     compile.js: never let a zone touch a value that is a calendar date. ---
   days_to_fund_p50: {
     label: 'Days to fund (typical)', format: 'days',
     sql: `percentile_cont(0.5) WITHIN GROUP (
-            ORDER BY EXTRACT(epoch FROM (a.actual_closing::timestamptz - a.submitted_at)) / 86400.0)
+            ORDER BY (a.actual_closing - a.submitted_at::date))
             FILTER (WHERE a.actual_closing IS NOT NULL AND a.submitted_at IS NOT NULL)`,
     coverage: `COUNT(*) FILTER (WHERE a.actual_closing IS NOT NULL AND a.submitted_at IS NOT NULL)::bigint`,
   },
   days_to_fund_p90: {
     label: 'Days to fund (slowest 10%)', format: 'days',
     sql: `percentile_cont(0.9) WITHIN GROUP (
-            ORDER BY EXTRACT(epoch FROM (a.actual_closing::timestamptz - a.submitted_at)) / 86400.0)
+            ORDER BY (a.actual_closing - a.submitted_at::date))
             FILTER (WHERE a.actual_closing IS NOT NULL AND a.submitted_at IS NOT NULL)`,
     coverage: `COUNT(*) FILTER (WHERE a.actual_closing IS NOT NULL AND a.submitted_at IS NOT NULL)::bigint`,
   },

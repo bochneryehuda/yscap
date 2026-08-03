@@ -336,22 +336,15 @@ function ratioSelects(m, p) {
   ];
 }
 
-/** A single number (optionally broken down by a dimension or a time grain). */
-function buildAggregate(card, scope, { seed = [] } = {}) {
-  const p = makeParams(seed);
-  if (!registry.has(registry.MEASURES, card.metric_key)) {
-    throw new Error(`unknown measure "${card.metric_key}"`);
-  }
-  const m = registry.MEASURES[card.metric_key];
-  const where = buildWhere(card, scope, p);
-
-  const selects = m.kind === 'ratio' ? ratioSelects(m, p) : [`${m.sql} AS value`];
-  if (m.coverage) selects.push(`${m.coverage} AS covered`);
-  selects.push('COUNT(*)::bigint AS rows_matched');
-
-  // Grouping: either a time grain on the card's date field, or a catalogue dimension.
-  let groupExpr = null;
-  let groupLabel = null;
+/**
+ * How a card is broken up — a time grain on its date field, or a catalogue dimension.
+ *
+ * ONE DEFINITION, because the COUNT and the drill-through both need it and #145 says a
+ * clickable figure has exactly one definition shared by the number and the list. Written
+ * twice, the bar could say 9 and the list show 40 without either side looking wrong.
+ * Returns null when the card is a single number.
+ */
+function groupingFor(card) {
   if (card.grain) {
     if (!registry.has(registry.TIME_GRAINS, card.grain)) throw new Error(`unknown time grain "${card.grain}"`);
     if (!card.date_field || !registry.has(registry.DATE_FIELDS, card.date_field)) {
@@ -366,13 +359,41 @@ function buildAggregate(card, scope, { seed = [] } = {}) {
     // and moves if the server's timezone ever changes. `g.trunc` is interpolated, and is
     // safe for the one reason interpolation is ever safe here: it came from an exact key
     // lookup into TIME_GRAINS, so the user's bytes were a KEY, never content.
-    groupExpr = `date_trunc('${g.trunc}', ${col}::timestamp)`;
-    groupLabel = `to_char(date_trunc('${g.trunc}', ${col}::timestamp), '${g.fmt}')`;
-  } else if (card.group_by) {
-    if (!registry.has(registry.DIMENSIONS, card.group_by)) throw new Error(`unknown breakdown "${card.group_by}"`);
-    groupExpr = registry.DIMENSIONS[card.group_by].sql;
-    groupLabel = groupExpr;
+    return {
+      expr: `date_trunc('${g.trunc}', ${col}::timestamp)`,
+      label: `to_char(date_trunc('${g.trunc}', ${col}::timestamp), '${g.fmt}')`,
+    };
   }
+  if (card.group_by) {
+    if (!registry.has(registry.DIMENSIONS, card.group_by)) throw new Error(`unknown breakdown "${card.group_by}"`);
+    const sql = registry.DIMENSIONS[card.group_by].sql;
+    return { expr: sql, label: sql };
+  }
+  return null;
+}
+
+/**
+ * A single number (optionally broken down by a dimension or a time grain).
+ *
+ * `shift` moves the card's whole window back — 'prior_period' or 'prior_year' — so the same
+ * card, same filter and same scope can be asked "and what was it last year?". It is the ONLY
+ * difference between the two runs, which is what makes the comparison honest.
+ */
+function buildAggregate(card, scope, { seed = [], shift = null } = {}) {
+  const p = makeParams(seed);
+  if (!registry.has(registry.MEASURES, card.metric_key)) {
+    throw new Error(`unknown measure "${card.metric_key}"`);
+  }
+  const m = registry.MEASURES[card.metric_key];
+  const where = buildWhere(card, scope, p, { shift });
+
+  const selects = m.kind === 'ratio' ? ratioSelects(m, p) : [`${m.sql} AS value`];
+  if (m.coverage) selects.push(`${m.coverage} AS covered`);
+  selects.push('COUNT(*)::bigint AS rows_matched');
+
+  const grouping = groupingFor(card);
+  const groupExpr = grouping ? grouping.expr : null;
+  const groupLabel = grouping ? grouping.label : null;
 
   if (!groupExpr) {
     return {
@@ -403,12 +424,41 @@ function buildAggregate(card, scope, { seed = [] } = {}) {
 /**
  * The drill-through. Handed the SAME card and the SAME scope, so it compiles the SAME
  * predicate — which is the whole point: the list is the number, enumerated.
+ *
+ * "The same predicate" is more than the shared buildWhere, and both extras were missing:
+ *
+ *   A RATIO IS MEASURED OVER ITS DENOMINATOR, so the list is that cohort. Without this,
+ *   a pull-through card reading "60% (3 of 5)" listed all NINE matched files — four of
+ *   which are in neither half of the fraction — under the words "exactly the ones this
+ *   number counted". The numerator is deliberately NOT applied: the rate's population is
+ *   the denominator, and listing only the 3 that funded would answer a different question
+ *   than the one the card asks.
+ *
+ *   A CLICKED BUCKET IS PART OF THE QUESTION. Clicking August on a by-month trend must
+ *   list August, not the whole period. The bucket is matched on the grouping's LABEL —
+ *   the exact text the card displayed and handed back — so the client never has to know
+ *   how a bucket is computed, and a timestamp never has to survive a round trip through
+ *   JSON and back into a comparison. It is BOUND, never interpolated. An unknown label
+ *   simply matches nothing, which is the honest answer for a bucket that is not there.
  */
-function buildDrillList(card, scope, { limit = 200, offset = 0, seed = [] } = {}) {
+function buildDrillList(card, scope, { limit = 200, offset = 0, seed = [], bucket = null } = {}) {
   const p = makeParams(seed);
-  const where = buildWhere(card, scope, p);
+  const clauses = [buildWhere(card, scope, p)];
+
+  const m = registry.has(registry.MEASURES, card.metric_key) ? registry.MEASURES[card.metric_key] : null;
+  if (m && m.kind === 'ratio' && m.denominator) {
+    const den = compileFilter(m.denominator, p);
+    if (den) clauses.push(den);
+  }
+
+  if (bucket != null && String(bucket).length) {
+    const grouping = groupingFor(card);
+    if (grouping) clauses.push(`(${grouping.label})::text = ${p.add(String(bucket))}`);
+  }
+
+  const where = clauses.join(' AND ');
   const lim = Math.max(1, Math.min(1000, Number(limit) || 200));
-  const off = Math.max(0, Number(offset) || 0);
+  const off = Math.max(0, Math.min(1e6, Math.floor(Number(offset) || 0)));
   return {
     text: `SELECT a.id, a.ys_loan_number, a.status, a.internal_status, a.loan_amount,
                   a.property_address, a.program, a.loan_type, a.actual_closing,
@@ -425,6 +475,6 @@ function buildDrillList(card, scope, { limit = 200, offset = 0, seed = [] } = {}
 
 module.exports = {
   makeParams, compileRow, compileFilter, validateFilter, describeFilter,
-  periodSql, buildWhere, buildAggregate, buildDrillList, likeEscape, castFor,
+  periodSql, buildWhere, groupingFor, buildAggregate, buildDrillList, likeEscape, castFor,
   PERIOD_KINDS,
 };

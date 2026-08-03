@@ -26,6 +26,7 @@ const registry = require('./registry');
 const VIZ = ['number', 'trend', 'breakdown', 'table', 'compare', 'list'];
 const BANDS = ['hero', 'body'];
 const WIDTHS = ['one', 'two', 'full'];
+const COMPARE_KINDS = ['prior_period', 'prior_year'];
 
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -61,6 +62,16 @@ function validateCard(card) {
   }
   if (card.period && card.period.kind && card.period.kind !== 'all' && !card.date_field) {
     p.push('a card with a date range needs a date to apply it to');
+  }
+  // A comparison is a real second query, so it is checked like everything else — an unknown
+  // kind is refused here rather than silently ignored at answer time, which is how a card
+  // ends up subtitled "against last year" with nothing behind it.
+  if (card.compare && card.compare.kind) {
+    if (!COMPARE_KINDS.includes(card.compare.kind)) {
+      p.push(`"${card.compare.kind}" is not a comparison we understand`);
+    } else if (!card.date_field || ((card.period && card.period.kind) || 'all') === 'all') {
+      p.push('a comparison needs a date and a period — there is no "last year" for all time');
+    }
   }
   p.push(...compile.validateFilter(card.filter));
   return p;
@@ -164,12 +175,18 @@ async function fork(actor, id, { name } = {}) {
       `INSERT INTO dashboards (owner_staff_id, name, description, forked_from, product)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [actor.id, String(name || s.name).slice(0, 120), s.description, s.id, s.product]);
+    // EVERY column that describes a card must be copied, and `grain` is the one that got
+    // missed: dropping it turns a trend into a single all-period number that still carries
+    // its "Funded by month" title — a confidently WRONG card, not a visibly broken one.
+    // Forking is the only way to edit a company dashboard, so this is the main journey.
+    // When you add a column to dashboard_cards, add it here in the same commit; the DB test
+    // compares the copied rows field-for-field so a future omission fails rather than ships.
     await client.query(
       `INSERT INTO dashboard_cards
          (dashboard_id, position, band, width, title, subtitle, viz, metric_key,
-          filter, date_field, period, compare, group_by, target, options)
+          filter, date_field, period, compare, group_by, grain, target, options)
        SELECT $1, position, band, width, title, subtitle, viz, metric_key,
-              filter, date_field, period, compare, group_by, target, options
+              filter, date_field, period, compare, group_by, grain, target, options
          FROM dashboard_cards WHERE dashboard_id=$2`,
       [d.rows[0].id, s.id]);
     await client.query('COMMIT');
@@ -215,8 +232,23 @@ async function addCard(dashboardId, card) {
   return r.rows[0];
 }
 
-async function updateCard(cardId, card) {
-  const cur = await db.query(`SELECT * FROM dashboard_cards WHERE id=$1`, [cardId]);
+/**
+ * THE DASHBOARD ID IS PART OF THE KEY, NOT DECORATION. The route checks that the caller may
+ * edit the dashboard named in the PATH and then acts on a card by id — so if the card is not
+ * matched against that same dashboard, "may I edit dashboard X?" silently authorises a write
+ * to a card on dashboard Y. Creating a dashboard you own is one unguarded request away, so
+ * without the second half of this key ANY staff member could rewrite or delete a card on
+ * ANY dashboard, the company defaults included — and that is not recoverable in the product
+ * (seed.js only fills a dashboard that has NO cards, and canEdit refuses a system dashboard,
+ * so neither the next boot nor an admin can put a deleted company card back).
+ *
+ * `addCard` takes the dashboard from the path and `reorder` already scopes on it; these two
+ * were the gap. A card that exists but belongs elsewhere must read as 404, never 403 —
+ * telling a caller "that card is real but not yours" confirms an id they should not have.
+ */
+async function updateCard(dashboardId, cardId, card) {
+  const cur = await db.query(`SELECT * FROM dashboard_cards WHERE id=$1 AND dashboard_id=$2`,
+    [cardId, dashboardId]);
   if (!cur.rows[0]) { const e = new Error('That card is gone.'); e.status = 404; throw e; }
   const merged = { ...cur.rows[0], ...card };
   const problems = validateCard(merged);
@@ -226,7 +258,7 @@ async function updateCard(cardId, card) {
         position=$2, band=$3, width=$4, title=$5, subtitle=$6, viz=$7, metric_key=$8,
         filter=$9, date_field=$10, period=$11, compare=$12, group_by=$13, grain=$14,
         target=$15, options=COALESCE($16,'{}'::jsonb), updated_at=now()
-      WHERE id=$1 RETURNING *`,
+      WHERE id=$1 AND dashboard_id=$17 RETURNING *`,
     [cardId, merged.position || 0, merged.band || 'body', merged.width || 'one',
       merged.title, merged.subtitle || null, merged.viz || 'number', merged.metric_key,
       merged.filter ? JSON.stringify(merged.filter) : null, merged.date_field || null,
@@ -234,12 +266,18 @@ async function updateCard(cardId, card) {
       merged.compare ? JSON.stringify(merged.compare) : null,
       merged.group_by || null, merged.grain || null,
       merged.target ? JSON.stringify(merged.target) : null,
-      merged.options ? JSON.stringify(merged.options) : null]);
+      merged.options ? JSON.stringify(merged.options) : null,
+      dashboardId]);
   return r.rows[0];
 }
 
-async function removeCard(cardId) {
-  await db.query(`DELETE FROM dashboard_cards WHERE id=$1`, [cardId]);
+// Same key as updateCard, and for the same reason — see the note there. Nothing deleted
+// means the card is not on this dashboard, which the caller must read as "gone", not as a
+// successful delete of somebody else's card.
+async function removeCard(dashboardId, cardId) {
+  const r = await db.query(`DELETE FROM dashboard_cards WHERE id=$1 AND dashboard_id=$2`,
+    [cardId, dashboardId]);
+  if (!r.rowCount) { const e = new Error('That card is gone.'); e.status = 404; throw e; }
 }
 
 async function reorder(dashboardId, order) {

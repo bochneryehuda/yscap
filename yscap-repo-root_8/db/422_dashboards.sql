@@ -80,8 +80,9 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
   -- How it draws: a big number, a trend over time, a breakdown by a dimension,
   -- a ranked table, or two periods side by side.
   viz           text NOT NULL DEFAULT 'number',
-  -- What it measures — a key in the measure registry (src/lib/dashboards/registry.js),
-  -- or a user-defined ratio in dashboard_metrics.
+  -- What it measures — a key in the measure registry (src/lib/dashboards/registry.js).
+  -- The registry is the ONLY source: both write doors validate against it, so a key that
+  -- is not in the code cannot be stored here.
   metric_key    text NOT NULL,
   -- The condition tree, in the SAME shape the Condition Center already uses
   -- ({combinator, rules:[…]}), validated by the same rules.validateRule against a
@@ -162,32 +163,19 @@ CREATE INDEX IF NOT EXISTS idx_dashboard_shares_staff ON dashboard_shares (staff
 CREATE INDEX IF NOT EXISTS idx_dashboard_shares_role  ON dashboard_shares (role);
 
 -- ---------------------------------------------------------------------------
--- User-defined KPIs (a ratio of two measures, each with its own filter)
--- This is what makes "my own pull-through", "my own fallout rate", "cost per file"
--- something a person defines rather than something we hardcode.
+-- NOTE — there is deliberately NO `dashboard_metrics` table here.
+-- An earlier draft created one, with a comment claiming it was "what makes 'my own
+-- pull-through' something a person defines rather than something we hardcode". Nothing read
+-- it: a card's measure is validated against the code-owned registry (lib/dashboards/registry
+-- .js) at both write doors, so a row in that table could never have been selected. Shipping
+-- a table nothing reads, under a comment describing a feature that does not exist, is worse
+-- than shipping neither — the next person believes it. A person composes their own KPI today
+-- by combining a catalogue measure with their own filter, period and breakdown; if
+-- user-DEFINED measures are built later, the table arrives in the same commit as the code
+-- that reads it.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS dashboard_metrics (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_staff_id  uuid REFERENCES staff_users(id) ON DELETE CASCADE,
-  key             text NOT NULL,
-  label           text NOT NULL,
-  description     text,
-  -- {kind:'ratio', numerator:{metric, filter}, denominator:{metric, filter},
-  --  as:'percent'|'ratio', dateField}
-  definition      jsonb NOT NULL,
-  unit            text,
-  is_system       boolean NOT NULL DEFAULT false,
-  created_at      timestamptz NOT NULL DEFAULT now(),
-  updated_at      timestamptz NOT NULL DEFAULT now()
-);
-
--- A key is unique per owner; a system metric (owner NULL) is unique globally.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_dashboard_metrics_key
-  ON dashboard_metrics (COALESCE(owner_staff_id::text, ''), key);
 
 COMMENT ON TABLE dashboards IS
   'A saved dashboard. The shipped role defaults are rows here too (is_system) — editing one forks it to the editor rather than changing what everyone else sees.';
 COMMENT ON TABLE dashboard_cards IS
   'One question per card: a measure, a filter tree, a date field and a period. Never a stored number — every answer is computed live under the VIEWER''s file permissions.';
-COMMENT ON TABLE dashboard_metrics IS
-  'User-defined KPIs — a ratio of two measures, each with its own filter. Pull-through, fallout and any other rate are defined here rather than hardcoded.';

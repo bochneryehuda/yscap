@@ -51,6 +51,49 @@ function periodLabel(period) {
   return l || 'all time';
 }
 
+const COMPARE_LABEL = { prior_period: 'the period before', prior_year: 'a year ago' };
+
+/**
+ * "Funded this month — against last year." The shipped hero cards have carried that promise
+ * in their subtitle since day one while nothing computed it, so the words were simply false.
+ *
+ * It is the SAME card run a second time with the window shifted back — same measure, same
+ * filter, same scope — so the two figures are genuinely comparable. Rules that keep it
+ * honest rather than merely decorative:
+ *   · A COMPARISON NEEDS A CLOCK. With no date field the card counts all time, and all time
+ *     has no "last year" — so there is nothing to compare and we return null.
+ *   · "All time" likewise cannot be shifted (periodSql returns no predicate for it), which
+ *     would silently compare a figure against ITSELF and always read 0% change.
+ *   · A change from nothing is not a percentage. 0 → 5 is not "+∞%" or "+500%"; `deltaPct`
+ *     is null and the card shows the two numbers instead of inventing a rate.
+ *   · BEST-EFFORT: the comparison is the garnish, never the number. If the second query
+ *     fails or times out, the card still shows today's figure.
+ */
+async function comparisonFor(card, scope, actor, value, dateApplied) {
+  const kind = card.compare && card.compare.kind;
+  if (!kind || !COMPARE_LABEL[kind]) return null;
+  if (!dateApplied) return null;
+  if (((card.period && card.period.kind) || 'all') === 'all') return null;
+  try {
+    const seed = [];
+    const s2 = scopeFor(actor, seed);
+    const q = compile.buildAggregate({ ...card, filter: card.filter }, s2,
+      { seed: s2.params, shift: kind });
+    const r = await run.run(q, { staffId: actor && actor.id });
+    const prior = r.rows[0] && r.rows[0].value != null ? Number(r.rows[0].value) : null;
+    if (prior == null || value == null) return { kind, label: COMPARE_LABEL[kind], value: prior, deltaPct: null };
+    return {
+      kind,
+      label: COMPARE_LABEL[kind],
+      value: prior,
+      delta: value - prior,
+      deltaPct: prior === 0 ? null : ((value - prior) / Math.abs(prior)) * 100,
+    };
+  } catch (_) {
+    return null; // a missing comparison is a smaller failure than a missing card
+  }
+}
+
 /**
  * Run one card. Returns a shaped answer plus the explanation, or a shaped ERROR — this
  * never throws for a bad card, because one broken card must not take the dashboard down.
@@ -81,12 +124,20 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
     const q = compile.buildAggregate({ ...card, filter: card.filter }, scope, { seed: scope.params });
     const r = await run.run(q, { staffId: actor && actor.id });
 
+    // A PERIOD ONLY EXISTS IF A DATE FIELD DOES. The compiler emits a date predicate only
+    // when the card's date field resolves, so labelling the stored period unconditionally
+    // could tell someone "this year so far" under a figure that counted ALL TIME — the one
+    // thing this panel exists to make impossible. Read the same condition the compiler
+    // reads, and say "all time" when that is what actually ran.
+    const dateKey = card.date_field || card.dateField || null;
+    const dateApplied = !!dateKey && registry.has(registry.DATE_FIELDS, dateKey);
+
     const explain = {
       measure: measure.label,
       measureNote: measure.note || null,
       filter: compile.describeFilter(card.filter),
-      dateField: card.date_field ? (registry.DATE_FIELDS[card.date_field] || {}).label : null,
-      period: periodLabel(card.period),
+      dateField: dateApplied ? registry.DATE_FIELDS[dateKey].label : null,
+      period: dateApplied ? periodLabel(card.period) : 'all time',
       groupedBy: card.grain ? (registry.TIME_GRAINS[card.grain] || {}).label
         : card.group_by ? (registry.DIMENSIONS[card.group_by] || {}).label : null,
       scoped: !!scope.sql,
@@ -98,17 +149,19 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
       const row = r.rows[0] || {};
       const matched = Number(row.rows_matched || 0);
       const covered = row.covered == null ? null : Number(row.covered);
+      const value = row.value == null ? null : Number(row.value);
       return {
         ...base,
         ok: true,
         format: measure.format,
-        value: row.value == null ? null : Number(row.value),
+        value,
         numerator: row.numerator == null ? undefined : Number(row.numerator),
         denominator: row.denominator == null ? undefined : Number(row.denominator),
         matched,
         // "based on 214 of 390 files" — a card built on a partly-populated column says so
         // on its face rather than quietly averaging the half of the book that has data.
         coverage: covered == null ? null : { covered, of: matched, partial: covered < matched },
+        compare: await comparisonFor(card, scope, actor, value, dateApplied),
         explain,
       };
     }
@@ -146,13 +199,13 @@ async function answerCard(card, actor, { includeSql = false } = {}) {
 }
 
 /** The files behind a card's number — the SAME predicate, enumerated. */
-async function drillCard(card, actor, { limit = 200, offset = 0 } = {}) {
+async function drillCard(card, actor, { limit = 200, offset = 0, bucket = null } = {}) {
   const seed = [];
   const scope = scopeFor(actor, seed);
   const problems = compile.validateFilter(card.filter);
   if (problems.length) { const e = new Error(problems.join('; ')); e.status = 400; throw e; }
   const q = compile.buildDrillList({ ...card, filter: card.filter }, scope, {
-    limit, offset, seed: scope.params,
+    limit, offset, bucket, seed: scope.params,
   });
   const r = await run.run(q, { staffId: actor && actor.id });
   return r.rows;

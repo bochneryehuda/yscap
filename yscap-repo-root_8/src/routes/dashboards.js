@@ -125,8 +125,11 @@ router.get('/cards/:cardId/files', async (req, res) => {
   if (!await store.canSee(req.actor, c.rows[0].dashboard_id)) return bad(res, 'not yours to see', 403);
   const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit, 10) || 200));
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  // The clicked bar, as the label the card itself displayed. Bound by the compiler, and an
+  // unknown one simply matches nothing.
+  const bucket = req.query.bucket == null ? null : String(req.query.bucket).slice(0, 200);
   try {
-    res.json({ files: await answer.drillCard(c.rows[0], req.actor, { limit, offset }) });
+    res.json({ files: await answer.drillCard(c.rows[0], req.actor, { limit, offset, bucket }) });
   } catch (e) {
     res.status(e.status && e.status !== 401 ? e.status : 400).json({ error: e.message || 'could not list those files' });
   }
@@ -197,7 +200,9 @@ router.patch('/:id/cards/:cardId', async (req, res) => {
   if (!await mustEdit(req, res, req.params.id)) return;
   if (!UUID_RE.test(req.params.cardId)) return bad(res, 'not a card id');
   try {
-    const card = await store.updateCard(req.params.cardId, req.body || {});
+    // The dashboard id goes to the store as part of the KEY, not just as the thing we
+    // authorised — see the note on store.updateCard.
+    const card = await store.updateCard(req.params.id, req.params.cardId, req.body || {});
     await audit(req, 'dashboard_card_updated', req.params.id, { card: card.id, title: card.title });
     res.json({ card });
   } catch (e) {
@@ -208,7 +213,11 @@ router.patch('/:id/cards/:cardId', async (req, res) => {
 router.delete('/:id/cards/:cardId', async (req, res) => {
   if (!await mustEdit(req, res, req.params.id)) return;
   if (!UUID_RE.test(req.params.cardId)) return bad(res, 'not a card id');
-  await store.removeCard(req.params.cardId);
+  try {
+    await store.removeCard(req.params.id, req.params.cardId);
+  } catch (e) {
+    return res.status(e.status === 404 ? 404 : 500).json({ error: e.message || 'could not remove that card' });
+  }
   await audit(req, 'dashboard_card_removed', req.params.id, { card: req.params.cardId });
   res.json({ ok: true });
 });
@@ -216,6 +225,8 @@ router.delete('/:id/cards/:cardId', async (req, res) => {
 router.post('/:id/reorder', async (req, res) => {
   if (!await mustEdit(req, res, req.params.id)) return;
   await store.reorder(req.params.id, (req.body && req.body.order) || []);
+  await audit(req, 'dashboard_reordered', req.params.id, {
+    cards: ((req.body && req.body.order) || []).length });
   res.json({ ok: true });
 });
 
@@ -238,9 +249,13 @@ router.post('/:id/shares', async (req, res) => {
   }
 });
 
+// Taking someone's access away is the privacy-relevant half of sharing, so it is audited
+// exactly like granting it.
 router.delete('/:id/shares/:shareId', async (req, res) => {
   if (!await mustEdit(req, res, req.params.id)) return;
+  if (!UUID_RE.test(req.params.shareId)) return bad(res, 'not a share id');
   await store.unshare(req.params.id, req.params.shareId);
+  await audit(req, 'dashboard_unshared', req.params.id, { share: req.params.shareId });
   res.json({ shares: await store.shares(req.params.id) });
 });
 

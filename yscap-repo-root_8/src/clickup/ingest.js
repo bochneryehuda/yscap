@@ -2030,9 +2030,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // and recording the held status would put a stage change on the timeline that never
     // happened. Best-effort: a history write never breaks the pull.
     if (stageBefore && statusAfter.rows[0] && stageBefore.status !== statusAfter.rows[0].status) {
-      await require('../lib/stage-history').record(
+      // recordMove writes the history row AND advances status_changed_at, pinned to the
+      // status it describes — one definition, so this path cannot drift from it.
+      await require('../lib/stage-history').recordMove(
         targetId, stageBefore.status, statusAfter.rows[0].status, { source: 'clickup' });
-      await db.query(`UPDATE applications SET status_changed_at=now() WHERE id=$1`, [targetId]).catch(() => {});
     }
     // If ClickUp supplied a NEW loan officer for this file, drop the LO-
     // notification-gate's cached officer pointer so the very next borrower/

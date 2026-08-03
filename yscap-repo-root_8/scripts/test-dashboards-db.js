@@ -61,7 +61,7 @@ function api(method, path, body, token) {
 
 const TAG = 'dbtest_' + Date.now();
 
-async function mkApp({ status, officer = null, amount = null, state = null, closed = null, created = 0 }) {
+async function mkApp({ status, officer = null, amount = null, state = null, closed = null, created = 0, city = TAG }) {
   const id = uuid(); const b = uuid();
   await db.query(`INSERT INTO borrowers (id,first_name,last_name,email) VALUES ($1,'Dash','Tester',$2)`,
     [b, `${TAG}_${b.slice(0, 8)}@x.test`]);
@@ -70,7 +70,7 @@ async function mkApp({ status, officer = null, amount = null, state = null, clos
                                actual_closing,created_at,submitted_at,source)
      VALUES ($1,$2,$3,$4,$5,$6,$7, now() - ($8||' days')::interval, now() - ($8||' days')::interval, $9)`,
     [id, b, officer, status, amount,
-      JSON.stringify({ line1: '1 Test St', city: TAG, state: state || null }),
+      JSON.stringify({ line1: '1 Test St', city, state: state || null }),
       closed, String(created), TAG]);
   return id;
 }
@@ -249,7 +249,8 @@ async function main() {
     {
       const appId = await mkApp({ status: 'processing', officer: LO });
       const before = await db.query(`SELECT count(*)::int n FROM application_status_history WHERE application_id=$1`, [appId]);
-      await require(REPO + '/src/lib/stage-history').recordInbound(appId, 'underwriting');
+      await db.query(`UPDATE applications SET status='underwriting' WHERE id=$1`, [appId]);
+      await require(REPO + '/src/lib/stage-history').recordMove(appId, 'processing', 'underwriting', { source: 'clickup' });
       const after = await db.query(
         `SELECT from_status, to_status, source FROM application_status_history WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [appId]);
       ok(after.rows.length === before.rows[0].n + 1 || after.rows[0],
@@ -260,6 +261,14 @@ async function main() {
         'and stamped as having come from ClickUp, so it is told apart from a portal move');
       const again = await require(REPO + '/src/lib/stage-history').record(appId, 'underwriting', 'underwriting', { source: 'clickup' });
       ok(again === false, 'a re-sync that changes nothing does NOT write a fake stage change');
+      // The stamp is pinned to the status it describes: if the file has moved on again since,
+      // this move must NOT reset the newer stage's clock.
+      await db.query(`UPDATE applications SET status='approved', status_changed_at=now() - interval '5 days' WHERE id=$1`, [appId]);
+      await require(REPO + '/src/lib/stage-history').recordMove(appId, 'processing', 'underwriting', { source: 'clickup' });
+      const stamp = await db.query(
+        `SELECT status_changed_at < now() - interval '1 day' AS untouched FROM applications WHERE id=$1`, [appId]);
+      ok(stamp.rows[0] && stamp.rows[0].untouched === true,
+        'a late-arriving move does not reset the clock on a stage the file has already left');
     }
 
     // ---------------------------------------------------------------------
@@ -275,6 +284,152 @@ async function main() {
       const mine = await api('GET', `/api/dashboards/${forked.body.dashboard.id}`, null, loTok);
       ok(mine.body.dashboard.cards.length > 0, 'and the copy has the cards, not an empty page');
       ok(mine.body.canEdit === true, 'which they can edit');
+
+      // A COUNT is not enough. The fork dropped `grain`, which turned every trend into a
+      // single all-period number that still carried its "Funded by month" title — a card
+      // that is confidently WRONG rather than visibly broken, on the one journey that
+      // matters most (forking is the ONLY way to edit a company dashboard). Compare the
+      // copies field-for-field so the next column added to dashboard_cards cannot be
+      // forgotten here in silence.
+      const srcCards = await db.query(
+        `SELECT * FROM dashboard_cards WHERE dashboard_id=$1 ORDER BY position, title`, [sys.id]);
+      const cpCards = await db.query(
+        `SELECT * FROM dashboard_cards WHERE dashboard_id=$1 ORDER BY position, title`,
+        [forked.body.dashboard.id]);
+      ok(srcCards.rows.length === cpCards.rows.length, 'the copy has every card the original had');
+      const SKIP = new Set(['id', 'dashboard_id', 'created_at', 'updated_at']);
+      const cols = Object.keys(srcCards.rows[0] || {}).filter((c) => !SKIP.has(c));
+      const diff = [];
+      for (let i = 0; i < srcCards.rows.length; i++) {
+        for (const c of cols) {
+          const a = JSON.stringify(srcCards.rows[i][c] ?? null);
+          const b = JSON.stringify((cpCards.rows[i] || {})[c] ?? null);
+          if (a !== b) diff.push(`${srcCards.rows[i].title}.${c}: ${a} → ${b}`);
+        }
+      }
+      ok(diff.length === 0, `every column is copied, not just some (${diff.slice(0, 3).join(' | ') || 'all match'})`);
+      ok(cpCards.rows.some((c) => c.grain), '…including grain, so a trend stays a trend');
+    }
+
+    // ---------------------------------------------------------------------
+    console.log('\nI. a card belongs to its dashboard — you cannot reach one through another');
+    // ---------------------------------------------------------------------
+    {
+      // The route authorises the dashboard in the PATH and then acts on a card by id. If the
+      // card is not matched against that same dashboard, "I may edit MY dashboard" becomes a
+      // licence to rewrite or DELETE a card on anyone's — including the company defaults,
+      // which nothing in the product can restore (the seeder only fills a dashboard that has
+      // no cards, and a system dashboard is never editable in place).
+      const loDash = await api('POST', '/api/dashboards', { name: `${TAG} LO own` }, loTok);
+      const lo2Dash = await api('POST', '/api/dashboards', { name: `${TAG} LO2 own` }, adminTok);
+      const lo2Own = await api('POST', `/api/dashboards/${lo2Dash.body.dashboard.id}/cards`,
+        { title: 'LO2 card', metric_key: 'file_count' }, adminTok);
+      const victim = await api('POST', `/api/dashboards/${loDash.body.dashboard.id}/cards`,
+        { title: 'LO private card', metric_key: 'file_count' }, loTok);
+      ok(victim.status === 201 && lo2Own.status === 201, 'two people each own a dashboard with a card');
+
+      const crossPatch = await api('PATCH',
+        `/api/dashboards/${lo2Dash.body.dashboard.id}/cards/${victim.body.card.id}`,
+        { title: 'PWNED' }, adminTok);
+      ok(crossPatch.status === 404, 'editing someone else\'s card through your own dashboard is refused');
+      const stillThere = await db.query(`SELECT title FROM dashboard_cards WHERE id=$1`, [victim.body.card.id]);
+      ok(stillThere.rows[0] && stillThere.rows[0].title === 'LO private card', 'and their card is untouched');
+
+      const crossDelete = await api('DELETE',
+        `/api/dashboards/${lo2Dash.body.dashboard.id}/cards/${victim.body.card.id}`, null, adminTok);
+      ok(crossDelete.status === 404, 'deleting it that way is refused too');
+      const alive = await db.query(`SELECT count(*)::int n FROM dashboard_cards WHERE id=$1`, [victim.body.card.id]);
+      ok(alive.rows[0].n === 1, 'and it is still there');
+
+      // The company dashboard is the one that cannot be repaired, so prove it specifically.
+      const sysRow = await db.query(`SELECT id FROM dashboards WHERE slug='default_admin'`);
+      const sysCard = await db.query(
+        `SELECT id, title FROM dashboard_cards WHERE dashboard_id=$1 ORDER BY position LIMIT 1`, [sysRow.rows[0].id]);
+      const killSys = await api('DELETE',
+        `/api/dashboards/${loDash.body.dashboard.id}/cards/${sysCard.rows[0].id}`, null, loTok);
+      ok(killSys.status === 404, 'a loan officer cannot delete a card off the company dashboard');
+      const sysAlive = await db.query(`SELECT count(*)::int n FROM dashboard_cards WHERE id=$1`, [sysCard.rows[0].id]);
+      ok(sysAlive.rows[0].n === 1, `…and "${sysCard.rows[0].title}" is still on it`);
+
+      // The honest path still works.
+      const own = await api('PATCH', `/api/dashboards/${loDash.body.dashboard.id}/cards/${victim.body.card.id}`,
+        { title: 'renamed by its owner' }, loTok);
+      ok(own.status === 200 && own.body.card.title === 'renamed by its owner',
+        'while editing a card on your OWN dashboard still works');
+    }
+
+    // ---------------------------------------------------------------------
+    console.log('\nJ. the list under a number really is that number (#145), on every shape');
+    // ---------------------------------------------------------------------
+    {
+      const dash = await api('POST', '/api/dashboards', { name: `${TAG} drill` }, adminTok);
+      const did = dash.body.dashboard.id;
+
+      // (a) A RATIO is measured over its denominator, so that is the cohort listed. Before
+      // this, a pull-through card reading "3 of 5" listed every matched file — including
+      // files in neither half of the fraction.
+      const ratio = await api('POST', `/api/dashboards/${did}/cards`,
+        { title: 'Pull-through', metric_key: 'pull_through', date_field: 'created_at', period: { kind: 'all' } }, adminTok);
+      const rAns = await api('GET', `/api/dashboards/cards/${ratio.body.card.id}/answer`, null, adminTok);
+      const rFiles = await api('GET', `/api/dashboards/cards/${ratio.body.card.id}/files?limit=1000`, null, adminTok);
+      ok(rAns.body.ok === true && rAns.body.denominator != null, 'a ratio card answers with its denominator');
+      ok(rFiles.body.files.length === Number(rAns.body.denominator),
+        `the files listed are the cohort the rate is measured over (${rFiles.body.files.length} = ${rAns.body.denominator})`);
+
+      // (b) A CLICKED BAR is part of the question. Every bucket must list its own files, and
+      // the buckets must add up to the whole.
+      const trend = await api('POST', `/api/dashboards/${did}/cards`,
+        { title: 'By status', metric_key: 'file_count', viz: 'breakdown', group_by: 'status' }, adminTok);
+      const tAns = await api('GET', `/api/dashboards/cards/${trend.body.card.id}/answer`, null, adminTok);
+      ok(Array.isArray(tAns.body.series) && tAns.body.series.length > 1, 'a breakdown answers with several buckets');
+      let bucketSum = 0; let everyBucketMatches = true;
+      for (const s of tAns.body.series) {
+        const f = await api('GET',
+          `/api/dashboards/cards/${trend.body.card.id}/files?limit=1000&bucket=${encodeURIComponent(s.key)}`, null, adminTok);
+        bucketSum += f.body.files.length;
+        if (f.body.files.length !== Number(s.matched)) everyBucketMatches = false;
+      }
+      ok(everyBucketMatches, 'clicking a bucket lists exactly that bucket\'s files, not the whole card');
+      const whole = await api('GET', `/api/dashboards/cards/${trend.body.card.id}/files?limit=1000`, null, adminTok);
+      ok(bucketSum === whole.body.files.length,
+        `and the buckets add up to the card (${bucketSum} = ${whole.body.files.length})`);
+      const nonsense = await api('GET',
+        `/api/dashboards/cards/${trend.body.card.id}/files?bucket=${encodeURIComponent("no' OR 1=1--")}`, null, adminTok);
+      ok(nonsense.status === 200 && nonsense.body.files.length === 0,
+        'a bucket that is not there matches nothing, and cannot be used to inject');
+    }
+
+    // ---------------------------------------------------------------------
+    console.log('\nK. "against last year" actually compares, and time-to-fund is never negative');
+    // ---------------------------------------------------------------------
+    {
+      const dash = await api('POST', '/api/dashboards', { name: `${TAG} compare` }, adminTok);
+      const c = await api('POST', `/api/dashboards/${dash.body.dashboard.id}/cards`,
+        { title: 'Funded this year', metric_key: 'file_count', date_field: 'actual_closing',
+          period: { kind: 'ytd' }, compare: { kind: 'prior_year' } }, adminTok);
+      const ans = await api('GET', `/api/dashboards/cards/${c.body.card.id}/answer`, null, adminTok);
+      ok(ans.body.ok === true && ans.body.compare && ans.body.compare.kind === 'prior_year',
+        'a card that promises a comparison returns one');
+      ok(ans.body.compare && typeof ans.body.compare.value === 'number',
+        'with the earlier period\'s real figure, not a placeholder');
+      const bad = await api('POST', `/api/dashboards/${dash.body.dashboard.id}/cards`,
+        { title: 'nope', metric_key: 'file_count', compare: { kind: 'last_tuesday' } }, adminTok);
+      ok(bad.status === 400, 'and a comparison we do not understand is refused at save time');
+
+      // A DATE minus an INSTANT used to be measured through the server's timezone, so a file
+      // submitted in the morning of the day it closed came out NEGATIVE — displayed "-0 days"
+      // and coloured GREEN against a "lower is better" target.
+      // Its OWN city, so this measures exactly one file — the other sections deliberately
+      // create files whose closing dates predate their submission, which would swamp it.
+      const SPEED_CITY = TAG + '_speed';
+      const closer = await mkApp({ status: 'funded', officer: LO, amount: 100000, closed: '2026-07-15', city: SPEED_CITY });
+      await db.query(`UPDATE applications SET submitted_at = timestamptz '2026-07-15 09:30:00+00' WHERE id=$1`, [closer]);
+      const speed = await api('POST', `/api/dashboards/${dash.body.dashboard.id}/cards`,
+        { title: 'Time to fund', metric_key: 'days_to_fund_p50',
+          filter: { combinator: 'and', rules: [{ field: 'city', operator: 'eq', value: SPEED_CITY }] } }, adminTok);
+      const sAns = await api('GET', `/api/dashboards/cards/${speed.body.card.id}/answer`, null, adminTok);
+      ok(sAns.body.ok === true && (sAns.body.value == null || Number(sAns.body.value) >= 0),
+        `a file submitted on its own closing day is never negative days to fund (got ${sAns.body.value})`);
     }
   } finally {
     await db.query(`DELETE FROM applications WHERE source=$1`, [TAG]).catch(() => {});

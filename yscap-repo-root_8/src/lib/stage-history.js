@@ -62,32 +62,25 @@ async function record(applicationId, fromStatus, toStatus, opts = {}) {
 }
 
 /**
- * The ClickUp inbound case: we know the file and the status we are about to write, but the
- * caller has not read the previous one. Read it, write the row if it moved.
+ * Record a move AND advance `status_changed_at` — the complete inbound sequence, in ONE
+ * place, because a caller that does half of it leaves "how long has this file been sitting
+ * where it is" measuring the last PORTAL move on a file whose stage has changed in ClickUp
+ * many times since.
  *
- * Also advances `status_changed_at`, which the inbound path likewise never touched — so
- * "how long has this file been sitting where it is" was measuring the last PORTAL move on
- * files whose stage had been changed in ClickUp many times since.
+ * THE STAMP IS PINNED TO THE STATUS IT DESCRIBES (`AND status=$2`). Without that, a
+ * concurrent write that moves the file on again between the record and the stamp gets its
+ * clock reset to this move's time, so the newer stage looks older than it is. The caller
+ * hands us the before and after it actually wrote, so nothing is re-read and nothing can be
+ * inferred from a row that has since changed underneath us.
  */
-async function recordInbound(applicationId, toStatus, opts = {}) {
-  if (!applicationId || !toStatus) return false;
-  try {
-    const r = await db.query(
-      `SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
-    if (!r.rows[0]) return false;
-    const from = r.rows[0].status;
-    if (from === toStatus) return false;
-    const wrote = await record(applicationId, from, toStatus, { ...opts, source: 'clickup' });
-    if (wrote) {
-      await db.query(
-        `UPDATE applications SET status_changed_at=now() WHERE id=$1 AND status=$2`,
-        [applicationId, toStatus]).catch(() => {});
-    }
-    return wrote;
-  } catch (e) {
-    console.warn('[stage-history] inbound record failed for', applicationId, (e && e.message) || e);
-    return false;
+async function recordMove(applicationId, fromStatus, toStatus, opts = {}) {
+  const wrote = await record(applicationId, fromStatus, toStatus, opts);
+  if (wrote) {
+    await db.query(
+      `UPDATE applications SET status_changed_at=now() WHERE id=$1 AND status=$2`,
+      [applicationId, toStatus]).catch(() => {});
   }
+  return wrote;
 }
 
-module.exports = { record, recordInbound, SOURCES };
+module.exports = { record, recordMove, SOURCES };
