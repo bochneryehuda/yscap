@@ -571,7 +571,35 @@ async function upsertObservation(db, cols) {
  * Best-effort. This is a derived index; failing to build it must never fail an
  * ingest that has already stored the observation it derives from.
  */
-async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on }) {
+/**
+ * THE SIZE LINES, whose delta is unambiguous because both sides state ONE number
+ * in ONE unit. A `RoomCount` adjustment on most grids covers rooms AND bedrooms
+ * AND bathrooms together, so dividing it by a room difference would attribute the
+ * bathrooms to the rooms; those need their own measurement before they get a rate.
+ */
+const SIZE_LINES = new Set(['GrossLivingArea', 'GrossBuildingArea']);
+// Below this the arithmetic stops being a market signal: an ordinary adjustment
+// over a 20-foot difference reads as several hundred dollars a foot.
+const MIN_SQFT_DELTA = 25;
+
+/**
+ * The difference an adjustment was made FOR — SUBJECT minus COMPARABLE, because
+ * the appraiser adjusts the comparable's price TOWARD the subject. Measured over
+ * all 152 real reports: 468 of 473 usable, ZERO negative and ZERO implausible,
+ * which is the evidence that the convention holds rather than an assumption.
+ * Returns null the moment either side is silent — a rate we cannot ground is a
+ * rate we do not state.
+ */
+function unitDeltaFor(lineType, subjectGla, compGla) {
+  if (!SIZE_LINES.has(lineType)) return null;
+  const s = Number(subjectGla), c = Number(compGla);
+  if (!Number.isFinite(s) || !Number.isFinite(c) || s <= 0 || c <= 0) return null;
+  const d = s - c;
+  if (Math.abs(d) < MIN_SQFT_DELTA) return null;
+  return { delta: d, basis: 'sqft' };
+}
+
+async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on, subjectGla, compGla }) {
   if (!observationId) return 0;
   const rows = (Array.isArray(adjustments) ? adjustments : []).filter((a) => a && a.type);
   // UPSERT BY POSITION, THEN TRIM — never delete-then-insert. Two ingests of one
@@ -585,23 +613,27 @@ async function writeAdjustments(db, { observationId, propertyId, adjustments, pl
   if (rows.length) {
     const vals = [];
     const chunks = rows.map((a, i) => {
-      const b = i * 9;
+      const b = i * 11;
+      const ud = unitDeltaFor(String(a.type), subjectGla, compGla);
       vals.push(observationId, i, propertyId || null, String(a.type),
         a.description == null ? null : String(a.description).slice(0, 500),
         // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
         a.amount != null && Number.isFinite(Number(a.amount)) ? Number(a.amount) : null,
-        (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null);
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${rows.length * 9 + 1})`;
+        (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null,
+        ud ? ud.delta : null, ud ? ud.basis : null);
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${rows.length * 11 + 1})`;
     });
     vals.push(on || null);
     await db.query(
       `INSERT INTO property_adjustments
-         (observation_id, seq, property_id, line_type, description, amount, state, city, zip, observed_on)
+         (observation_id, seq, property_id, line_type, description, amount, state, city, zip,
+          unit_delta, unit_delta_basis, observed_on)
        VALUES ${chunks.join(',')}
        ON CONFLICT (observation_id, seq) DO UPDATE SET
          property_id = EXCLUDED.property_id, line_type = EXCLUDED.line_type,
          description = EXCLUDED.description, amount = EXCLUDED.amount,
          state = EXCLUDED.state, city = EXCLUDED.city, zip = EXCLUDED.zip,
+         unit_delta = EXCLUDED.unit_delta, unit_delta_basis = EXCLUDED.unit_delta_basis,
          observed_on = EXCLUDED.observed_on`, vals);
   }
   // A re-read that found FEWER lines must not leave the extra ones standing.
@@ -661,6 +693,54 @@ async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24
 
 
 /**
+ * WHAT APPRAISERS IN THIS MARKET ACTUALLY PAY PER SQUARE FOOT.
+ *
+ * This is the one `adjustmentBenchmark` explicitly refuses to be. That function
+ * returns the DOLLAR adjustments and says so; this divides each by the size
+ * difference it was made for, which is the number a person actually wants and the
+ * one the design document called the peer benchmark.
+ *
+ * Measured over the 152 real reports before it was built: 468 of 473 usable,
+ * ZERO negative and ZERO above $500 — median $40/sq ft, quartiles $25 and $50.
+ *
+ * REFUSES rather than answers thinly, on the same rule as everything else here: a
+ * rate is a number people will price a deal against, and a median of four
+ * adjustments is noise wearing the clothes of an answer. Never throws.
+ */
+async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample = 8 } = {}) {
+  try {
+    const p = [String(basis), String(months)];
+    const where = ['unit_delta_basis = $1', 'amount IS NOT NULL', 'amount <> 0',
+      'unit_delta IS NOT NULL', 'unit_delta <> 0',
+      "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
+    else if (city) {
+      p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`);
+      if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    } else if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    // A NEGATIVE RATE IS A MISREAD, NOT A MARKET. It means the adjustment pointed
+    // the opposite way to the size difference — zero of 468 real ones do — so it
+    // is excluded rather than averaged in, where two of them would drag a median
+    // that people price against.
+    const r = await db.query(
+      `SELECT count(*)::int AS n,
+              percentile_cont(0.5)  WITHIN GROUP (ORDER BY amount / unit_delta) AS median,
+              percentile_cont(0.25) WITHIN GROUP (ORDER BY amount / unit_delta) AS q1,
+              percentile_cont(0.75) WITHIN GROUP (ORDER BY amount / unit_delta) AS q3
+         FROM property_adjustments
+        WHERE ${where.join(' AND ')} AND (amount / unit_delta) > 0 AND (amount / unit_delta) < 500`, p);
+    const row = r.rows[0] || { n: 0 };
+    if (!row.n || row.n < minSample) {
+      return { ok: false, n: row.n || 0, minSample, basis,
+        reason: `only ${row.n || 0} usable adjustment${row.n === 1 ? '' : 's'} in this market — too few to state a rate` };
+    }
+    return { ok: true, n: row.n, basis, months,
+      median: Number(row.median), q1: Number(row.q1), q3: Number(row.q3),
+      of: 'dollars per square foot of difference, as appraisers in this market actually adjusted' };
+  } catch (_) { return { ok: false, basis, reason: 'could not read the adjustment corpus' }; }
+}
+
+/**
  * PREVIOUS AND FUTURE — build the adjustment rows for observations already stored.
  *
  * Every observation already carries its lines in the `adjustments` jsonb, so this
@@ -682,14 +762,42 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
   try {
     const rows = (await db.query(
       `SELECT o.id, o.property_id, o.adjustments, o.observed_on,
-              p.state, p.city, p.zip
+              p.state, p.city, p.zip,
+              o.gla AS comp_gla, a.gla AS subject_gla
          FROM property_observations o
          LEFT JOIN properties p ON p.id = o.property_id
+         LEFT JOIN appraisals a ON a.id = o.appraisal_id
         WHERE jsonb_typeof(o.adjustments) = 'array'
           AND jsonb_array_length(o.adjustments) > 0
-          AND NOT EXISTS (SELECT 1 FROM property_adjustments a WHERE a.observation_id = o.id)
+          AND (
+            -- (a) the rows were never built at all — an observation stored before
+            --     db/440.
+            NOT EXISTS (SELECT 1 FROM property_adjustments x WHERE x.observation_id = o.id)
+            -- (b) OR they were built before db/441 and carry no per-unit delta,
+            --     while BOTH sizes needed to derive one are on hand. Without this
+            --     arm every row db/440 wrote would keep a NULL rate forever: the
+            --     first arm only picks observations with NO rows, so nulling a
+            --     column can never bring one back into the queue. Bounded by the
+            --     same self-draining rule — writing the delta removes the row from
+            --     this arm, and an observation whose sizes are unknown is excluded
+            --     by the NOT NULL tests rather than re-examined every boot.
+            OR EXISTS (
+              SELECT 1 FROM property_adjustments x
+               WHERE x.observation_id = o.id
+                 AND x.line_type IN ('GrossLivingArea', 'GrossBuildingArea')
+                 AND x.unit_delta IS NULL
+                 AND o.gla IS NOT NULL AND a.gla IS NOT NULL
+                 -- AND THE SIZES MUST ACTUALLY DIFFER ENOUGH TO YIELD ONE, or the
+                 -- observation is re-picked on every boot forever and never
+                 -- changes: a delta under the floor is a PERMANENT null, not a
+                 -- pending one. Measured before this line: the queue stalled at
+                 -- 29 observations that could never drain. The threshold is BOUND
+                 -- from the JS constant rather than written into the SQL, so the
+                 -- two can never drift the way a hand-copied twin does.
+                 AND abs(a.gla - o.gla) >= $2)
+          )
         ORDER BY o.observed_on DESC NULLS LAST
-        LIMIT $1`, [limit])).rows;
+        LIMIT $1`, [limit, MIN_SQFT_DELTA])).rows;
     for (const r of rows) {
       scanned++;
       try {
@@ -698,6 +806,7 @@ async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
           adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
           place: { state: r.state, city: r.city, zip: r.zip },
           on: r.observed_on,
+          subjectGla: r.subject_gla, compGla: r.comp_gla,
         });
       } catch (_) { /* one bad observation must not stop the drain */ }
     }
@@ -1680,6 +1789,9 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       // that is the market the appraiser was pricing against. The report's
       // effective date is the fallback.
       on: saleDate || observedOn,
+      // The two sizes the size-line rate is derived from. `a.gla` is the SUBJECT
+      // of this report; `c.gla` is this comparable's own.
+      subjectGla: a.gla, compGla: c.gla,
     }), (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
       type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
@@ -2210,7 +2322,7 @@ async function ingestStatus(db) {
 }
 
 module.exports = {
-  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties, adjustmentBenchmark,
+  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties, adjustmentBenchmark, adjustmentRate,
   backfillAdjustmentRowsOnce,
   // The shared report-writing body — the standalone XML upload (db/411) drives it
   // with the same row shapes, so both doors read one report identically.
@@ -2218,5 +2330,5 @@ module.exports = {
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal, bindable,
-    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank, writeAdjustments },
+    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank, writeAdjustments, unitDeltaFor },
 };

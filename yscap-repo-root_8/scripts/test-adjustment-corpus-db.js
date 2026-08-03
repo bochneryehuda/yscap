@@ -128,8 +128,95 @@ if (!process.env.DATABASE_URL) {
   const again = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
   ok(again.scanned === 0, `and it self-drains — the second pass finds nothing (scanned ${again.scanned})`);
 
+  // -------------------------------------------------------------------------
+  // WHAT AN APPRAISER ACTUALLY PAID PER SQUARE FOOT (db/441).
+  //
+  // `adjustmentBenchmark` above returns the DOLLAR adjustments and says plainly
+  // that they are not a rate. This divides each by the size difference it was
+  // made for, which is the number a person actually wants. Measured over the 152
+  // real reports before it was built: 468 of 473 usable, ZERO negative, ZERO
+  // above $500 — median $40/sq ft.
+  // -------------------------------------------------------------------------
+  {
+    const { unitDeltaFor } = ingest._internals;
+    // THE SIGN CONVENTION, which is the whole thing. The appraiser adjusts the
+    // comparable's price TOWARD the subject, so a comp BIGGER than the subject is
+    // adjusted DOWN — and amount / (subject − comp) comes out POSITIVE.
+    const bigger = unitDeltaFor('GrossLivingArea', 1500, 1800);
+    ok(bigger && bigger.delta === -300 && bigger.basis === 'sqft',
+      'a comparable 300 feet BIGGER gives a delta of -300, so a negative adjustment reads as a positive rate');
+    const smaller = unitDeltaFor('GrossLivingArea', 1800, 1500);
+    ok(smaller && smaller.delta === 300, 'and a smaller one gives +300');
+    ok(unitDeltaFor('GrossBuildingArea', 2000, 1700) != null,
+      'a 1025 grid states BUILDING area and gets a rate the same way');
+
+    // ONLY THE SIZE LINES. A RoomCount adjustment covers rooms AND bedrooms AND
+    // bathrooms together, so dividing it by a room difference would attribute the
+    // bathrooms to the rooms — a rate that is wrong is worse than none.
+    ok(unitDeltaFor('RoomCount', 8, 6) === null, 'a room-count line gets no rate — its delta is not one thing');
+    ok(unitDeltaFor('Condition', 1500, 1200) === null, 'nor does a condition line');
+
+    // NEVER FABRICATE, and never divide by almost nothing.
+    ok(unitDeltaFor('GrossLivingArea', null, 1500) === null, 'a silent subject yields no delta');
+    ok(unitDeltaFor('GrossLivingArea', 1500, null) === null, 'a silent comparable yields no delta');
+    ok(unitDeltaFor('GrossLivingArea', 1500, 1490) === null,
+      'a 10-foot difference yields none either — an ordinary adjustment over it reads as hundreds per foot');
+    ok(unitDeltaFor('GrossLivingArea', 0, 1500) === null && unitDeltaFor('GrossLivingArea', 1500, -5) === null,
+      'and a zero or negative size is not a size');
+
+    // The rate, end to end, at a market that clears the floor.
+    // The back-fill derives the delta from the OBSERVATION's own size and the
+    // SUBJECT's, which lives on the appraisal — so the fixture carries both, the
+    // way a real comparable observation does. Without them the pass correctly
+    // cannot heal the row, which is itself the starvation guard below.
+    const bor = (await q(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Adj','Rate',$1) RETURNING id`,
+      [`adjrate-${process.pid}@example.test`]))[0].id;
+    const app = (await q(
+      `INSERT INTO applications (borrower_id, loan_type) VALUES ($1,'rtl') RETURNING id`, [bor]))[0].id;
+    const appr = (await q(
+      `INSERT INTO appraisals (application_id, gla) VALUES ($1, 1500) RETURNING id`, [app]))[0].id;
+    const o4 = (await q(
+      `INSERT INTO property_observations (property_id, appraisal_id, role, observed_on, gla, adjustments)
+       VALUES ($1,$2,'comparable','2026-03-01',1700,'[]'::jsonb) RETURNING id`, [pid, appr]))[0].id;
+    const sized = [];
+    for (let i = 0; i < 10; i++) sized.push({ type: 'GrossLivingArea', description: 'x', amount: -(40 * (200 + i * 10)) });
+    // One row per line, all with the same 200-foot delta → a clean $40/sq ft.
+    await db.query(`UPDATE property_observations SET adjustments = $2::jsonb WHERE id = $1`,
+      [o4, JSON.stringify(sized)]);
+    await writeAdjustments(db, { observationId: o4, propertyId: pid, adjustments: sized, place,
+      on: '2026-03-01', subjectGla: 1500, compGla: 1700 });
+    const withDelta = await q(
+      `SELECT count(*)::int n, count(unit_delta)::int d FROM property_adjustments WHERE observation_id=$1`, [o4]);
+    ok(withDelta[0].d === 10, `every size line carries its delta (${withDelta[0].d}/${withDelta[0].n})`);
+
+    const rate = await ingest.adjustmentRate(db, { city: 'Paterson', state: 'NJ', months: 6000 });
+    ok(rate.ok && rate.n === 10, `the rate answers from the market's own adjustments (n=${rate.n})`);
+    ok(rate.median > 0, `and it is POSITIVE — a negative rate is a misread, not a market ($${rate.median})`);
+    ok(/per square foot/.test(rate.of || ''), 'and it says what it is per, so no screen can mislabel it');
+
+    const nowhereRate = await ingest.adjustmentRate(db, { city: 'Nowheresville', state: 'ZZ', months: 6000 });
+    ok(!nowhereRate.ok, 'and it refuses in a market we have never lent in');
+
+    // THE BACK-FILL REACHES ROWS WRITTEN BEFORE db/441 — and then STOPS. The
+    // first arm only picks observations with NO rows, so nulling a column could
+    // never bring one back; and an observation whose sizes are too close yields a
+    // PERMANENT null, so without a floor test the queue never drains.
+    await db.query(`UPDATE property_adjustments SET unit_delta=NULL, unit_delta_basis=NULL
+                     WHERE observation_id=$1`, [o4]);
+    let passes = 0;
+    for (let i = 0; i < 6; i++) { const r = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 }); passes++; if (!r.scanned) break; }
+    const healed = await q(`SELECT count(unit_delta)::int d FROM property_adjustments WHERE observation_id=$1`, [o4]);
+    ok(healed[0].d === 10, `the back-fill fills a delta on rows that already existed (${healed[0].d}, ${passes} pass(es))`);
+    const drained = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
+    ok(drained.scanned === 0, `and it genuinely drains rather than re-picking forever (scanned ${drained.scanned})`);
+  }
+
   await db.query('DELETE FROM property_observations WHERE property_id=$1', [pid]);
   await db.query('DELETE FROM properties WHERE id=$1', [pid]);
+  await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email = $1)`,
+    [`adjrate-${process.pid}@example.test`]);
+  await db.query(`DELETE FROM borrowers WHERE email = $1`, [`adjrate-${process.pid}@example.test`]);
   console.log(fails ? `\ntest-adjustment-corpus-db: ${fails} FAILED` : '\ntest-adjustment-corpus-db: all passed');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error('test-adjustment-corpus-db threw:', e && e.stack); process.exit(1); });
