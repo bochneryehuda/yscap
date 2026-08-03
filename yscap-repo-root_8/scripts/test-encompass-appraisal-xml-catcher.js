@@ -194,16 +194,52 @@ t('the real ICE storage host is allowed', () => {
   assert.ok(assertStorageHost('https://int.streaming.us-west-2.skydrive.rd.elliemae.io/v1/clients/1/x'));
 });
 
+t('the PRODUCTION siblings of the observed hosts are allowed too', () => {
+  // Every host we have actually seen is a NON-production one (`-int`,
+  // `.rd.`). Pinning the allowlist to their exact spelling refused their
+  // production equivalents — and a refusal here throws inside capture(), the
+  // link dies minutes later, and the file is unrecoverable. So the plausible
+  // production shapes are asserted, and a future narrowing fails HERE rather
+  // than silently on the day it goes live.
+  for (const good of [
+    'https://media-pod0.elliemae.com/v2/media/x',            // no env suffix
+    'https://media-pod0-us-east-1.elliemae.com/v2/media/x',  // hyphenated env
+    'https://streaming.us-west-2.skydrive.elliemae.io/x',    // prod .io, no .rd.
+    'https://skydrive.elliemae.io/x',
+  ]) {
+    assert.ok(assertStorageHost(good), `expected ${good} to be allowed`);
+  }
+});
+
 t('a foreign host is REFUSED — the url arrives in an API response, so it is not trusted', () => {
   for (const bad of [
     'https://evil.example.com/x',
     'https://skydrive.ellieservices.com.evil.com/x',   // suffix-smuggling
     'https://elliemae.com.attacker.net/x',
+    'https://skydrive.elliemae.com.evil.com/x',        // smuggling the widened pattern
+    'https://evilskydrive.elliemae.com.evil.io/x',
+    'https://skydriveelliemae.io/x',                   // no dot before the domain
+    'https://elliemae.io.evil.com/x',
+    'https://skydrive.ellieservices.com@evil.com/x',   // userinfo smuggling
     'http://streaming.us-east-1.skydrive.ellieservices.com/x',  // plaintext
     'https://127.0.0.1/x',
     'https://169.254.169.254/latest/meta-data/',        // cloud metadata
+    'https://[::1]/x',
   ]) {
-    assert.throws(() => assertStorageHost(bad), /not allowed|not https/, `expected refusal for ${bad}`);
+    assert.throws(() => assertStorageHost(bad), /not allowed|not https|not a url/, `expected refusal for ${bad}`);
+  }
+});
+
+t('the Encompass API HOST is refused — this raw fetch must never reach it', () => {
+  // The one place in the repo that talks to an Encompass host outside the frozen
+  // client. The storage patterns are deliberately generous, so the API host is
+  // refused explicitly and FIRST, where no future widening can readmit it.
+  for (const api of [
+    'https://api.elliemae.com/encompass/v3/loans',
+    'https://api-int.elliemae.com/x',
+    'https://api.elliemae.io/x',
+  ]) {
+    assert.throws(() => assertStorageHost(api), /API host/, `expected ${api} to be refused as the API host`);
   }
 });
 
