@@ -429,6 +429,58 @@ the password manager and not only in a dashboard.
 
 ---
 
+## 6b. THE REHEARSAL — the runbook above was executed end to end, 2026-08-03
+
+Production had proven the nightly job and the weekly drill. It had **never run
+`scripts/backup-restore.js`** — the tool section 6 tells you to reach for in an actual
+disaster. A runbook nobody has executed is a hypothesis, so the whole chain was run against a real
+233-table Postgres and a stand-in object store: **26 checks, 0 failures.**
+
+| What was proven | Result |
+|---|---|
+| Backup produces one archive + a plaintext manifest + an encrypted inventory | pass |
+| The manifest leaks no table names and no borrower data | pass |
+| `backup:list` works **without** the encryption key | pass |
+| **Restore into an empty database** — 233 tables, 36 sequences, 796 indexes, 30 triggers, 494 foreign keys | all exact |
+| Binary (`bytea`), `jsonb`, unicode, embedded quotes/backslashes, `numeric(14,2)` and `numeric(6,3)` precision | byte-identical (md5 match) |
+| A sequence resumes at the same value (no duplicate-key storm on first write) | pass |
+| Documents restored to the **same keys**, byte-identical — so every reference in the restored database still resolves | pass |
+| Restore refuses the LIVE database without `--overwrite-the-live-database` | refused |
+| Restore refuses a backup written with a DIFFERENT encryption key | refused |
+| **One flipped byte** anywhere in the archive | detected, refused — never a partial restore |
+| Weekly drill end to end, plus its two scratch-database guards | pass / both refused |
+
+Two real defects were found by running it, and both are fixed in the same change:
+
+1. **A key needing URL-encoding was signed one way and sent another.** `signV4` signs
+   `canonicalUri(path)`; both S3 clients handed the RAW path to `http.request`. A document called
+   `bank statement (1).pdf` failed to copy — Node itself refuses the request ("path contains
+   unescaped characters"), then the client retries four times with backoff. **Unreachable today**:
+   every key this system writes is machine-generated and already safe (`storage-s3.newRef` is
+   `<hex>/<hex><.ext>` with the extension sanitised to `[A-Za-z0-9]`), which is why the live run of
+   999 documents was unaffected — and `canonicalUri` returns those keys unchanged, so the fix is a
+   byte-for-byte no-op on every object in the vault. It stops being a no-op the day anything is
+   stored under a human filename. Pinned by `scripts/test-s3-key-encoding.js`.
+2. **The document copy is stateful**, so a rehearsal that does not clear `backup_document_state`
+   copies nothing the second time and reads as a failure. That is the incremental copy working
+   correctly — worth knowing before anyone re-runs this.
+
+**Recovery expectations, measured rather than guessed.** Worst case is losing everything since the
+last nightly run, so up to **24 hours** — which is exactly why Render's own point-in-time recovery
+stays switched on as the first thing to reach for. Getting back up is dominated by waiting, not by
+typing: expect **one to two hours** for a full rebuild (create a database, restore, put the
+documents back, deploy, set the secrets, spot-check a loan file).
+
+**Have these three in hand before you start** — nothing else is recoverable from the vault:
+the R2 credentials, `BACKUP_ENCRYPTION_KEY`, and `SSN_ENCRYPTION_KEY`. Everything else can be
+re-issued.
+
+**Re-run this drill after any change to the backup, restore or storage code**, and at least
+quarterly. The harness is not committed (it stands up throwaway servers and databases); rebuild it
+from this section — the point is that the runbook in section 6 is what gets executed, unchanged.
+
+---
+
 ## 7. What this does *not* cover — stated plainly
 
 - **Third-party systems keep their own data.** ClickUp cards, SharePoint, DocuSign envelopes,

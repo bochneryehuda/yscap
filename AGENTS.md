@@ -22,30 +22,35 @@ Treat them as two different companies' software that happen to share one reposit
 
 1. **Never assume which side a request is for.** If it is not stated or not 100% obvious — **stop and ask**. Never
    guess, never do both, never pick the likelier one.
-2a. **The ONE shared zone is identity, and LT only READS it** (owner-directed 2026-08-03: *"same login same
-   borrower record, keep it separate everything else"*). Three zones, not two: **shared identity**
-   (`src/auth/index.js`, the `borrowers` person record, the `staff_users` roster), the **RTL product**, and the
-   **LT product**. A borrower sees all their files in one place and an officer sees all of theirs — both products,
-   each stamped — which is why an LT file points at those shared records. LT does not rewrite identity; creating
-   and editing a borrower stays in the one existing flow. Everything else is a brand-new LT build: *"the workflow
-   will be different, the sets will be different, integrations will be different."* The `authorized` block in
-   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list.
-2. **Nothing else crosses without the owner's explicit written authorization, per item** — no copying, re-using,
+2. **The ONE shared zone is identity, and LT only READS the person record** (owner-directed 2026-08-03: *"same
+   login same borrower record, keep it separate everything else"*). Three zones, not two: **shared identity**
+   (`src/auth/index.js`, the `borrowers` person record, the `staff_users` roster, the one shared borrower editor
+   `app-v2/src/components/BorrowerProfilePanel.jsx`, and the officer↔person link `borrower_officers`), the **RTL
+   product**, and the **LT product**. A borrower sees all their files in one place and an officer sees all of
+   theirs — both products, each stamped — which is why an LT file points at those shared records. **LT never
+   writes `borrowers`**: an officer CAN change a borrower profile from a long-term file, but through that one
+   shared editor and the existing `PATCH /api/staff/borrowers/:id`, so the person record keeps a single writer.
+   LT DOES write one identity table — `borrower_officers` — because otherwise the visibility rule (which resolves
+   an officer's relationship through `applications`, an RTL table) would refuse the very officers this was meant
+   for. Everything else is a brand-new LT build: *"the workflow will be different, the sets will be different,
+   integrations will be different."* The `authorized` block in
+   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list — 8 lines, all identity.
+3. **Nothing else crosses without the owner's explicit written authorization, per item** — no copying, re-using,
    importing, extending, generalizing or sharing of code, tables, columns, migrations, conditions, templates,
    endpoints, screens, components, prompts, mappings or integrations, in either direction. Ask → get it in writing →
    record it in `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` → then build.
-3. **The back end is separate.** LT lives only in `src/longterm/**` (back end), `app-v2/src/longterm/**` (front
+4. **The back end is separate.** LT lives only in `src/longterm/**` (back end), `app-v2/src/longterm/**` (front
    end), `/api/lt/*`, `lt_*` tables and trigger functions, `db/NNN_lt_*.sql`, `scripts/test-lt-*.js`. No LT table
    references an RTL table, no trigger crosses, no shared writer, service module or database pool — and LT may not
    reach an RTL table by raw SQL either (a crossing does not need a `require()`). The only permitted seams are
    `src/server.js` mounting the LT router and `scripts/test-lt-*.js`, which exist to test it.
-4. **Never change RTL to make LT work** — no new column on `applications`, no new ClickUp/Encompass/SharePoint/
+5. **Never change RTL to make LT work** — no new column on `applications`, no new ClickUp/Encompass/SharePoint/
    DocuSign/Sitewire/Trustpoint mapping, no new checklist template, unless the owner asked for that exact thing.
-5. **LT is explicitly not getting, for now: conditions, document underwriting, orders.**
-6. **The front end may show both; the back end may not.** A combined pipeline is allowed, read-only, with a visible
+6. **LT is explicitly not getting, for now: conditions, document underwriting, orders.**
+7. **The front end may show both; the back end may not.** A combined pipeline is allowed, read-only, with a visible
    product stamp on every row and a Both / RTL only / Long-Term only filter. Never a SQL join or a shared write path.
-7. **A feature built for one side never automatically applies to the other.**
-8. **When in doubt, ask. Silence is never permission.**
+8. **A feature built for one side never automatically applies to the other.**
+9. **When in doubt, ask. Silence is never permission.**
 
 Enforced by `yscap-repo-root_8/scripts/check-product-separation.js` (runs in `npm test`, blocks CI and the deploy),
 `.github/pull_request_template.md`, and `.github/PRODUCT-SEPARATION.md`. Do not weaken or bypass the gate —

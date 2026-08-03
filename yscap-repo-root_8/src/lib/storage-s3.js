@@ -142,9 +142,15 @@ function s3Request(method, key, { body = null, extraHeaders = {}, stream = false
     });
     headers.Authorization = authorization;
 
+    // The path on the wire must be the path that was SIGNED. signV4 signs `canonicalUri(loc.path)`,
+    // so sending the raw path means any key needing RFC-3986 encoding (a space, a bracket, a
+    // non-ASCII letter) is signed one way and sent another — S3 answers 403 SignatureDoesNotMatch.
+    // A no-op for every key we generate (`newRef` is `<hex>/<hex><.ext>`, extension sanitised to
+    // [A-Za-z0-9]); it matters only if a key is ever derived from a human filename. Same fix, same
+    // reason, as src/lib/backup/vault.js — the two clients share the signer, so they share the trap.
     const transport = loc.protocol === 'http:' ? http : https;
     const req = transport.request({
-      method, host: loc.hostname, port: loc.port || undefined, path: loc.path, headers,
+      method, host: loc.hostname, port: loc.port || undefined, path: canonicalUri(loc.path), headers,
     }, (res) => {
       if (stream) { resolve({ statusCode: res.statusCode, headers: res.headers, stream: res }); return; }
       const chunks = [];

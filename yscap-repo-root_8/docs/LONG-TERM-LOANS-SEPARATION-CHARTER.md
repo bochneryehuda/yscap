@@ -44,19 +44,20 @@ Reduced to its operating rules, this is the law now recorded in `CLAUDE.md`
 
 ## 2. What is actually here today (measured, not remembered)
 
-Everything below was counted in this repository on 2026-08-02. It is the reason the answer to "can we just add a
-loan-type column?" is no.
+Everything below was **re-counted on merged `main` (f8a7df4, 2026-08-03)** — the repository moves fast, so these
+figures are stamped with the commit they were measured at rather than left to rot. It is the reason the answer to
+"can we just add a loan-type column?" is no.
 
 | Thing | Count |
 |---|---|
-| Tables in the schema | **218** |
-| Numbered migrations replayed on every boot | **405** |
-| Migration files that reference `applications` | **193** |
+| Tables in the schema | **232** |
+| Numbered migrations replayed on every boot | **417** |
+| Migration files that reference `applications` (185 of them in real SQL, the rest in comments) | **199** |
 | Columns on `applications` (45 in `schema.sql` + 97 added later, none ever dropped) | **142** |
-| Foreign keys pointing at `applications` | **108** |
-| Database triggers defined in `db/` | **35** |
-| Test scripts in `npm test` | **564** |
-| JavaScript files under `src/` | **567** |
+| Foreign keys pointing at `applications` | **111** |
+| Database triggers defined in `db/` | **36** |
+| Steps in the `npm test` chain | **594** |
+| JavaScript files under `src/` | **585** |
 
 Every one of those was designed, tested and hardened for **one** product: a short-term rehab loan on a house.
 `applications` alone carries `arv`, `rehab_budget`, `rehab_type`, `sqft_pre`, `sqft_post`, `requested_exp_flips`,
@@ -81,7 +82,7 @@ moment a row exists or changes in `applications`:
 **Put a long-term loan in that table and all of it turns on.** A 30-year rental loan would get a rehab-budget
 condition, a flood certificate order, a ground-up plans condition, an ARV-based appraisal finding, a ClickUp card
 in the RTL pipeline folder, and an investor-guideline run against fix & flip rules — none of which anyone asked
-for, all of which would have to be suppressed one by one, forever, in 193 migrations and 567 files. **One missed
+for, all of which would have to be suppressed one by one, forever, in 199 migrations and 585 files. **One missed
 `WHERE` clause and a long-term loan is inside the RTL machine.**
 
 ### 2.1 A trap that is already in the building
@@ -118,8 +119,8 @@ already the system's behaviour. We are formalising it, not inventing it.
 Add `product = 'rtl' | 'lt'` to `applications` and filter everywhere.
 
 - ✅ Cheapest to start; the pipeline is one query.
-- ❌ **Rejected.** 35 triggers and 193 migrations already act on that table with no idea a second product exists.
-  Every existing query in 567 files silently becomes wrong until it is found and filtered. Protection would depend
+- ❌ **Rejected.** 36 triggers and 199 migrations already act on that table with no idea a second product exists.
+  Every existing query in 585 files silently becomes wrong until it is found and filtered. Protection would depend
   on never forgetting a `WHERE` clause — across every future change, forever. This is precisely the outcome the
   owner ruled out: *"features that we add for one by mistake added to the other."*
 
