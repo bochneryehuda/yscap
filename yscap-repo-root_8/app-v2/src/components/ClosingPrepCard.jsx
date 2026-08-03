@@ -143,10 +143,33 @@ function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
         </div>
       )}
 
+      {/* WAITING TO BE ACCEPTED — held back, not missing (owner-directed
+          2026-08-03). These documents ARE on the file; nobody has accepted them,
+          so they are not attached. Shown before "not on the file yet" and worded
+          differently on purpose: sending somebody to chase a borrower for a
+          document that is sitting in the building is the exact confusion the
+          old "Nothing on file" line created. */}
+      {(documents.awaiting || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
+          <b style={{ color: INK }}>Waiting to be accepted — not attached:</b>
+          <ul style={{ margin: '3px 0 0 18px', padding: 0, color: MUTED }}>
+            {(documents.awaiting || []).map((d) => (
+              <li key={d.id} className="small">{d.filename}{d.groupLabel ? ` — ${d.groupLabel}` : ''}</li>
+            ))}
+          </ul>
+          <div className="small" style={{ color: MUTED, marginTop: 3 }}>
+            These are on the file already. Only documents somebody has accepted go to the attorney —
+            accept them on their condition and they will be included.
+          </div>
+        </div>
+      )}
+
       {missing.length > 0 && (
         <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
           <b style={{ color: INK }}>Not on the file yet:</b>{' '}
-          <span style={{ color: MUTED }}>{missing.map((m) => m.label).join(' · ')}</span>
+          <span style={{ color: MUTED }}>
+            {missing.map((m) => `${m.label}${m.awaitingCount ? ` (${m.awaitingCount} waiting to be accepted)` : ''}`).join(' · ')}
+          </span>
           <div className="small" style={{ color: MUTED, marginTop: 3 }}>
             The email says these are coming. You can send now and they follow later, or add them first.
           </div>

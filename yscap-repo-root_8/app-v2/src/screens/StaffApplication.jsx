@@ -5771,11 +5771,34 @@ function TprExport({ appId }) {
             One folder named for the property, with a clean subfolder per document type (ID, LLC, Insurance, TITLE,
             Appraisal, Term Sheet, Contract &amp; Assignment…). REO holds the track-record Excel plus a folder per prior
             property. {prev.includedCount} document{prev.includedCount === 1 ? '' : 's'}
-            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included (the Heter Iska, rejected &amp; superseded files are excluded).
+            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included. Only documents somebody has ACCEPTED go
+            into the package — the Heter Iska, rejected and superseded files are excluded too.
           </p>
+          {/* HELD BACK, NAMED (owner-directed 2026-08-03). The package carries
+              only accepted documents, so the one thing this panel must never do
+              is let a package go out one document short without saying which
+              one. Named, not counted — "3 held back" sends nobody anywhere. */}
+          {(prev.pending || []).length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>
+                {prev.pending.length} document{prev.pending.length === 1 ? '' : 's'} on this file {prev.pending.length === 1 ? 'has' : 'have'} not been accepted yet, so {prev.pending.length === 1 ? 'it is' : 'they are'} NOT in the export:
+              </b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {prev.pending.slice(0, 15).map((d) => (
+                  <li key={d.id} className="small">{d.filename}{d.requirement ? ` — ${d.requirement}` : ''}</li>
+                ))}
+              </ul>
+              {prev.pending.length > 15 && (
+                <div className="small" style={{ color: '#4B585C' }}>…and {prev.pending.length - 15} more.</div>
+              )}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Accept each one on its condition (or reject it) and it will be in the next export.
+              </div>
+            </div>
+          )}
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-              <span className="muted small">Not yet accepted:</span>
+              <span className="muted small">Would ship empty:</span>
               {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{m}</span>)}
             </div>
           )}

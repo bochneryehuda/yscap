@@ -398,9 +398,15 @@ async function attachCertificate(order, buf, sha256) {
   const { ref, provider } = await storage.save(buf, { filename });
   const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
   const r = await db.query(
+    // BORN ACCEPTED (owner-directed 2026-08-03): PILOT ordered this certificate
+    // from the vendor and downloaded it through the API — it is the authoritative
+    // determination, not a file somebody sent us to check. Left 'pending' the
+    // flood condition could never be signed off, because no human ever "accepts"
+    // a certificate PILOT fetched itself. See lib/document-acceptance.js.
     `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
-                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256)
-     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9)
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256,
+                            review_status, reviewed_at)
+     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9,'accepted',now())
      RETURNING id`,
     [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null, sha256 || null]);
   if (itemId) {

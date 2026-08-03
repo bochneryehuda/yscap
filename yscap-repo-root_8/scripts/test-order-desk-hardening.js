@@ -137,14 +137,14 @@ const otherPdf = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/X 2>>endobj\ntrai
     const dl = await fetch(`${base}/api/borrower/documents/${doc.id}`, { headers: { Authorization: `Bearer ${jwtBo}` } });
     assert(dl.status === 403 || dl.status === 404, `and the borrower cannot download it (got ${dl.status})`);
 
-    // PREVIOUS AND FUTURE: db/424 must fix what is already on disk. Put a row back
+    // PREVIOUS AND FUTURE: db/426 must fix what is already on disk. Put a row back
     // into the old shape and re-run the migration exactly as boot does.
     await db.query(`UPDATE documents SET visibility='borrower', source_type='borrower_upload' WHERE id=$1`, [doc.id]);
-    const sql = require('fs').readFileSync(require('path').join(__dirname, '..', 'db', '424_order_returns_staff_only.sql'), 'utf8');
+    const sql = require('fs').readFileSync(require('path').join(__dirname, '..', 'db', '426_order_returns_staff_only.sql'), 'utf8');
     await db.query(sql);
     const healed = (await db.query(`SELECT visibility, source_type FROM documents WHERE id=$1`, [doc.id])).rows[0];
     assert(healed.visibility === 'staff_only' && healed.source_type === 'system',
-      'db/424 closes the exposure on a document that was already filed');
+      'db/426 closes the exposure on a document that was already filed');
     // Re-running it must be a no-op, and it must never touch anything else.
     const others = (await db.query(
       `SELECT count(*)::int AS c FROM documents

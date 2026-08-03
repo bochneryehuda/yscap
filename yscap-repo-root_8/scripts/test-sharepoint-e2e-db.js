@@ -32,6 +32,11 @@ const ok = (n, c) => { if (c) pass++; else { fail++; console.log(`FAIL ${n}`); }
 map.resolveSyncFolder = async () => ({ driveId: 'drive1', syncFolderId: 'sync1', fullPath: 'Pipeline Drive/Officer/Borrower/Addr/Synced by Pilot' });
 map.resolveConditionFolder = async () => ({ id: 'cond1' });
 map.invalidateScope = async () => {};
+// The mirror now files a document onto a SHELF inside its category folder
+// (db/425 — "Waiting for review" until somebody accepts it), so creating that
+// child folder is part of the Graph boundary this suite stubs. Deterministic id
+// per (parent, name) so the same shelf always resolves to the same folder.
+sp.ensureChildFolder = async (driveId, parentId, name) => ({ id: `${parentId}/${name}`, name });
 let uploadBehavior = 'ok';   // 'ok' | 'transient' | 'permanent'
 sp.uploadNew = async (driveId, parentId, name, bytes) => {
   if (uploadBehavior === 'transient') { const e = new Error('Graph PUT -> 503 serviceUnavailable: throttled'); e.status = 503; throw e; }
