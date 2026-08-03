@@ -135,7 +135,24 @@ COMMENT ON COLUMN properties.attachment_type IS
 --    it text and bound it through a string helper), so a cast would preserve
 --    nothing. `writeMarket` is idempotent per report and refills it on re-ingest.
 -- ---------------------------------------------------------------------------
-ALTER TABLE market_observations DROP COLUMN IF EXISTS comp_research;
+--    THE GUARD IS NOT DECORATION. `migrate-boot` runs every numbered file's FULL
+--    TEXT on EVERY BOOT, so a bare `DROP COLUMN IF EXISTS` + `ADD COLUMN IF NOT
+--    EXISTS` pair only LOOKS idempotent: the column always exists, so the DROP
+--    always fires, and every deploy would drop the freshly-populated jsonb column
+--    and re-add it empty. Measured before this guard: one `ensureSchema()` took a
+--    real `{salesCount:26,…}` to NULL, and nothing repopulates it (`writeMarket`
+--    runs on ingest, and the back-fill skips reports already logged ok). That is
+--    strictly WORSE than the "[object Object]" this exists to fix. It also burns a
+--    `pg_attribute` slot per boot against Postgres's hard 1600-column ceiling.
+--    So: retype ONLY while it is still text.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'market_observations'
+                AND column_name = 'comp_research'
+                AND data_type <> 'jsonb') THEN
+    ALTER TABLE market_observations DROP COLUMN comp_research;
+  END IF;
+END $$;
 ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS comp_research jsonb;
 COMMENT ON COLUMN market_observations.comp_research IS
   'The appraiser''s OWN researched market bracket for this report — sales and '

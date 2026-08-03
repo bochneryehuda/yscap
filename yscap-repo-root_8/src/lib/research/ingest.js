@@ -39,7 +39,32 @@ const K = require('./property-key');
 const MARKET = require('./market');
 const ID = require('./identity');
 
-const INGEST_VERSION = 1;
+/**
+ * WHAT THE INGEST CURRENTLY KNOWS HOW TO READ OFF A REPORT.
+ *
+ * The distinction from `ROLLUP_VERSION` below is the whole point, and getting it
+ * wrong strands the back book silently:
+ *
+ *   * a new PROPERTY column (a new entry in `ROLLUP_FACTS`, or a change to the
+ *     roll-up's RULES) is recomputed FROM the observations — bump ROLLUP_VERSION
+ *     and the boot sweep re-rolls every property;
+ *   * a new OBSERVATION column is read off the REPORT, and no amount of
+ *     re-rolling can invent a value that was never written to an observation —
+ *     the report has to be READ AGAIN. That is this number.
+ *
+ * db/424 hit exactly that: `attachment_type` was added to both sides, and after
+ * a full re-roll 4 of the 5 appraisals carrying an attachment style still had
+ * NULL on their property, because the value had never reached an observation.
+ * The same was true of every db/422 fact — 3 of 125 observations carried a tax
+ * amount. `backfill()` keys on `l.ingest_version < INGEST_VERSION`, is bounded
+ * per boot, runs oldest-report-first and self-drains, and `ingestStatus()`
+ * reports how much is left.
+ *
+ * BUMP THIS whenever the ingest starts reading a fact it did not read before.
+ */
+// 2 — db/422's 59 facts and db/424's `attachment_type` are read off the report,
+// so the reports have to be re-read for the corpus we already hold.
+const INGEST_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -154,15 +179,20 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-// 4 — db/422 widened the fact set by 36 property columns; db/424 corrected five
+// 5 — db/422 widened the fact set by 36 property columns; db/424 corrected five
 // of those placements, added the attachment style, and — the reason this bump
 // MATTERS rather than merely tidying — put the cost approach and its depreciation
 // under AS_IS_ONLY. A property already rolled at 3 is carrying after-repair
-// depreciation figures right now, and only a re-roll takes them back off. The
-// boot sweep (`rerollStaleProperties`) drains it through the one definition of
-// the roll-up; db/421 made its index version-agnostic so this bump does not
-// silently cost it that index.
-const ROLLUP_VERSION = 4;
+// depreciation figures right now, and only a re-roll takes them back off. 5 is
+// the audit's correction to that set in BOTH directions: three more facts joined
+// it (the years and the deficiency note, which were still reading the finished
+// house) and two provably wrong entries left it (`building_status` and
+// `site_improvements_value`), so a row rolled at 4 is carrying an after-repair
+// effective age AND is missing a build status it is entitled to. The boot sweep
+// (`rerollStaleProperties`) drains it through the one definition of the roll-up;
+// db/421 made its index version-agnostic so this bump does not silently cost it
+// that index (verified by EXPLAIN at both 4 and 5).
+const ROLLUP_VERSION = 5;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -190,9 +220,34 @@ const ROLLUP_VERSION = 4;
  * every number in it describes a house that does not exist yet. Depreciation IS
  * condition expressed in dollars, so it belongs under exactly the same rule.
  *
- * `building_status` joins it for the same reason at one remove — Proposed /
- * UnderConstruction / SubstantiallyComplete is a statement about a moment, and an
- * after-repair report's answer is about the finished building.
+ * A SECOND audit then proved the set stopped ONE COLUMN SHORT in three places
+ * and OVER-REACHED in two. Both directions are bugs, and the second is the
+ * quieter one — a false refusal does not produce a wrong answer, it produces NO
+ * answer, and a fact we hold and refuse to file is as lost as one we never read.
+ *
+ * STOPPED SHORT. Physical depreciation IS effective age over total economic
+ * life, and `remaining_economic_life` is read off the SAME `COST_ANALYSIS` node
+ * as the depreciation figures — protecting the dollars and not the years
+ * reproduces the exact self-contradiction one column over. Measured on the same
+ * two-report fixture: `depreciation_physical` correctly held 2019's $60,000
+ * while `effective_age` read the renovation report's 3 years and
+ * `remaining_economic_life` its 57. `dwelling_sqft` was the one member of the
+ * cost triple left out, so the row said $250,000 of dwelling cost over 2,100
+ * after-repair feet — $119/sqft — beside a `dwelling_price_per_sqft` of $156.25.
+ * And `physical_deficiency_note` reading "None noted." next to condition C5 and
+ * $60,000 of physical depreciation is a statement about a house that does not
+ * exist yet.
+ *
+ * OVER-REACHED. `building_status` was WRONG to be here, and provably so: its
+ * three non-'Existing' values (Proposed / UnderConstruction / SubstantiallyComplete)
+ * are only ever stated on a subject-to-completion report — which is precisely the
+ * set `conditionBasis` marks 'as_repaired'. The guard refused the value exactly on
+ * the reports that carry it, so the column could only ever read 'Existing' or
+ * nothing, and the desk's own warning ("not an existing structure; confirm the
+ * improvements are complete") went dark. `site_improvements_value` likewise: its
+ * source attribute is literally `SiteOtherImprovementsAsIsAmount` — the Fannie
+ * cost line printed as "As-is" Value of Site Improvements — so it is an as-is
+ * figure by name, on any report.
  */
 const AS_IS_ONLY = new Set([
   'condition_uad', 'condition_text', 'quality_uad', 'quality_text',
@@ -200,9 +255,12 @@ const AS_IS_ONLY = new Set([
   // in dollars (db/424).
   'depreciation_physical', 'depreciation_functional', 'depreciation_external',
   'depreciation_total', 'depreciated_cost_improvements',
-  'cost_new_total', 'dwelling_cost_new', 'dwelling_price_per_sqft',
-  'site_improvements_value', 'cost_quality_rating',
-  'building_status',
+  'cost_new_total', 'dwelling_cost_new', 'dwelling_price_per_sqft', 'dwelling_sqft',
+  'cost_quality_rating',
+  // …and the same claim in YEARS, off the same node.
+  'effective_age', 'remaining_economic_life',
+  // "What is wrong with this house" is about the house as it stands.
+  'physical_deficiency_note',
 ]);
 
 // ---------------------------------------------------------------------------

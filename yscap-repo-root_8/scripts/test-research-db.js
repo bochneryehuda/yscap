@@ -330,11 +330,15 @@ async function makeAppraisal(appId, o) {
     await db.query(
       `UPDATE appraisals SET depreciation_physical=60000, depreciation_total=72000,
          cost_new_total=300000, depreciated_cost_improvements=228000, dwelling_cost_new=250000,
-         cost_quality_rating='Average', building_status='Existing' WHERE id=$1`, [asIsRep]);
+         dwelling_sqft=1600, cost_quality_rating='Average', effective_age=40,
+         remaining_economic_life=20, physical_deficiency_note='Roof at end of life.',
+         site_improvements_value=15000, building_status='Existing' WHERE id=$1`, [asIsRep]);
     await db.query(
       `UPDATE appraisals SET depreciation_physical=0, depreciation_total=0,
          cost_new_total=520000, depreciated_cost_improvements=520000, dwelling_cost_new=500000,
-         cost_quality_rating='Good', building_status='SubstantiallyComplete' WHERE id=$1`, [A3]);
+         dwelling_sqft=2100, cost_quality_rating='Good', effective_age=3,
+         remaining_economic_life=57, physical_deficiency_note='None noted.',
+         site_improvements_value=40000, building_status='SubstantiallyComplete' WHERE id=$1`, [A3]);
     await ingest.ingestAppraisal(D, asIsRep);
     await ingest.ingestAppraisal(D, A3);          // the RENOVATION report is newest
     const renoCost = (await db.query(`SELECT * FROM properties WHERE id=$1`, [reno.id])).rows[0];
@@ -345,9 +349,29 @@ async function makeAppraisal(appId, o) {
       && Number(renoCost.dwelling_cost_new) === 250000,
     'AND SO DOES ITS DEPRECIATION — the newest report is about a house that does not exist yet, so the '
       + 'warehouse can no longer report "C5" and "no depreciation" on one row');
-    ok(renoCost.cost_quality_rating === 'Average' && renoCost.building_status === 'Existing',
-      'the cost grade and the build status follow the same rule — both describe the finished building '
-      + 'on an after-repair report');
+    ok(renoCost.cost_quality_rating === 'Average', 'the cost grade follows the same rule');
+    // …AND SO DO THE YEARS. Physical depreciation IS effective age over total
+    // economic life, and remaining_economic_life comes off the SAME cost node —
+    // protecting the dollars and not the years reproduced the identical
+    // contradiction one column over, which is what the second audit measured.
+    ok(Number(renoCost.effective_age) === 40 && Number(renoCost.remaining_economic_life) === 20,
+      'the AGE and the remaining life obey the after-repair rule too — a 1930 house is not 3 years old '
+      + 'because somebody plans to renovate it');
+    ok(Number(renoCost.dwelling_sqft) === 1600,
+      'and the cost triple stays arithmetically whole — dwelling cost over dwelling feet must not mix '
+      + 'an as-is dollar figure with an after-repair size');
+    ok(renoCost.physical_deficiency_note === 'Roof at end of life.',
+      '"None noted." can never sit beside condition C5 and $60,000 of physical depreciation');
+    // THE OTHER DIRECTION IS A BUG TOO: a false refusal loses a fact we hold.
+    // building_status's three non-Existing values are ONLY ever stated on a
+    // subject-to report — the exact set marked as_repaired — so guarding it made
+    // the column unable to say anything but "Existing".
+    ok(renoCost.building_status === 'SubstantiallyComplete',
+      'the BUILD STATUS is NOT refused — Proposed/UnderConstruction/SubstantiallyComplete are only ever '
+      + 'stated on the very reports the guard would refuse, so guarding it silenced the column entirely');
+    ok(Number(renoCost.site_improvements_value) === 40000,
+      'nor is the site-improvements value — the XML attribute is literally SiteOtherImprovementsAsIsAmount, '
+      + 'an as-is figure by name on any report');
     const renoObs2 = (await db.query(
       `SELECT depreciation_physical, cost_new_total FROM property_observations
         WHERE appraisal_id=$1 AND role='subject'`, [A3])).rows[0];
@@ -659,7 +683,23 @@ async function makeAppraisal(appId, o) {
     // fact off every property in PR #974, so prove it survived the round trip.
     ok(Array.isArray(fProp.off_site_improvements) && fProp.off_site_improvements.includes('Curb'),
       'a jsonb fact round-trips through the roll-up instead of throwing on the bind');
-    ok(Number(fProp.rollup_version) === 4, 'the property is stamped at the widened roll-up version');
+    ok(Number(fProp.rollup_version) === 5, 'the property is stamped at the widened roll-up version');
+    // THE OTHER VERSION, AND THE DISTINCTION THAT STRANDS A BACK BOOK IF MISSED.
+    // A new PROPERTY column is recomputed FROM the observations, so bumping
+    // ROLLUP_VERSION reaches it. A new OBSERVATION column is read off the REPORT,
+    // and no amount of re-rolling can invent a value that was never written —
+    // the report has to be READ AGAIN. Measured on this database before the fix:
+    // after a full successful re-roll, 4 of the 5 appraisals carrying an
+    // attachment style still had NULL on their property.
+    const ING = require('../src/lib/research/ingest');
+    const staleLog = (await db.query(
+      `SELECT count(*)::int n FROM property_ingest_log
+        WHERE appraisal_id=$1 AND ingest_version >= 2`, [factsA])).rows[0].n;
+    ok(staleLog === 1, 'a freshly ingested report is stamped at the current ingest version');
+    await db.query(`UPDATE property_ingest_log SET ingest_version = 1 WHERE appraisal_id=$1`, [factsA]);
+    const drained = await ING.backfill(D, { limit: 50 });
+    ok(drained.scanned >= 1, 'and a report stamped at an OLDER ingest version is re-READ by the sweep — '
+      + 'which is the only thing that can put a newly-read fact on a report we already hold');
 
     // …AND THE POINT OF ALL THAT: they are searchable, AND the result says what it
     // matched on. A filter whose fact has no result column is half a feature — you
@@ -726,6 +766,20 @@ async function makeAppraisal(appId, o) {
     ok(mObs.comp_research && typeof mObs.comp_research === 'object'
       && mObs.comp_research.salesCount === 26 && mObs.comp_research.salesHigh === 610000,
     'the appraiser\'s OWN researched sales bracket round-trips as real JSON, not as "[object Object]"');
+    // AND IT SURVIVES THE NEXT DEPLOY. `migrate-boot` runs every numbered file's
+    // FULL TEXT on every boot, so a bare `DROP COLUMN IF EXISTS` + `ADD COLUMN IF
+    // NOT EXISTS` pair is NOT idempotent — the column always exists, so the DROP
+    // always fires and the populated jsonb column is re-added empty, with nothing
+    // to repopulate it. Measured before the guard: one ensureSchema() took this
+    // exact value to NULL. Re-running the real migration text is the only honest
+    // proof, so that is what this does.
+    await db.query(require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'db', '424_warehouse_fact_placement.sql'), 'utf8'));
+    const mAfterBoot = (await db.query(
+      `SELECT comp_research FROM market_observations WHERE appraisal_id=$1`, [mktA])).rows[0];
+    ok(mAfterBoot.comp_research && mAfterBoot.comp_research.salesCount === 26,
+      'and it SURVIVES db/424 running again on the next boot — the retype is guarded on the column '
+      + 'still being text, so a deploy can never drop the data it exists to make readable');
     // The market is about an AREA, so it must never appear on the property row.
     const mProp = (await db.query(
       `SELECT * FROM properties WHERE id=$1`, [mObs.property_id])).rows[0];
