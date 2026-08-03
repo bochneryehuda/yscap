@@ -528,7 +528,7 @@ async function getClosingPrepData(applicationId) {
             a.loan_amount, a.purchase_price, a.is_assignment, a.underlying_contract_price,
             a.assignment_fee, a.as_is_value, a.arv, a.rehab_budget,
             a.expected_closing, a.est_closing_date,
-            a.loan_officer_id, a.processor_id, a.closer_id, a.llc_id,
+            a.loan_officer_id, a.processor_id, a.closer_id, a.llc_id, a.personal_name_purchase,
             NULLIF(TRIM(b.full_name),'') AS borrower_name, b.email AS borrower_email, b.cell_phone AS borrower_cell,
             NULLIF(TRIM(cb.full_name),'') AS co_borrower_name, cb.email AS co_borrower_email,
             l.llc_name AS entity_name, l.formation_state AS entity_state,
@@ -646,6 +646,15 @@ async function getClosingPrepData(applicationId) {
     entityName: a.entity_name || '',
     entityState: a.entity_state || null,
     hasEntity: !!a.llc_id,
+    /* HOW TITLE VESTS, IN WORDS. A personal-name purchase has no entity by
+       definition, so every "Vesting entity" line here used to be dropped and the
+       closing attorney was told nothing at all about vesting on exactly the
+       files where it is the unusual answer. One shared wording (lib/vesting-label)
+       so the tape, the file screen and this email can never describe the same
+       file differently. */
+    vestsIndividually: require('./vesting-label').isIndividual({
+      llcName: a.entity_name, llcId: a.llc_id, personalNamePurchase: a.personal_name_purchase,
+    }),
     // Prices, exactly as the owner asked: the gross price the borrower pays, and on
     // an assignment the underlying contract price, the fee, and the EFFECTIVE price
     // the loan is sized on.
@@ -773,7 +782,9 @@ function dealMeta(data) {
   add('Property type', [data.propertyType, data.units ? `${data.units} unit${data.units === 1 ? '' : 's'}` : null].filter(Boolean).join(' · '));
   add('Transaction', data.transactionType);
   add(data.borrowerCount > 1 ? `Borrowers (${data.borrowerCount})` : 'Borrower', data.borrowers.join(' & '));
-  add('Vesting entity', data.entityName ? [data.entityName, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ') : null);
+  add('Vesting', data.entityName
+    ? [data.entityName, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ')
+    : (data.vestsIndividually ? 'Closing as an individual — title in the borrower\u2019s own name, no entity' : null));
   if (data.isAssignment) {
     // On an assignment the attorney needs all three numbers to draft correctly.
     add('Underlying contract price', money(data.underlyingPrice));
@@ -1109,6 +1120,7 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     { label: 'Borrower', value: data.borrowerName },
   ];
   if (data.entityName) meta.push({ label: 'Vesting entity', value: data.entityName });
+  else if (data.vestsIndividually) meta.push({ label: 'Vesting', value: 'Closing as an individual (no entity)' });
   if (eventKind === 'clear_to_close' || eventKind === 'closing_date') {
     const d = dayText(extra.date || extra.closingDate || data.expectedClosing);
     if (d) meta.push({ label: 'Expected closing', value: d });

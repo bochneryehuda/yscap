@@ -511,9 +511,18 @@ export const api = {
   staffTrackRecordFindings: (appId) => req('GET', `/api/staff/applications/${appId}/track-record-findings`),
   staffResolveTrackRecordFinding: (appId, findingId, action, note) =>
     req('POST', `/api/staff/applications/${appId}/track-record-findings/${findingId}`, { action, note }),
+  // What is still LEFT on this file's track record (owner-directed 2026-08-03).
+  // Worked out server-side: the 36-month exit window is a frozen rule and the
+  // refusals are the sign-off gate's own — never re-derived in the browser.
+  staffTrackRecordTodo: (appId, borrowerId) =>
+    req('GET', `/api/staff/applications/${appId}/track-record-todo${borrowerId ? `?borrower=${borrowerId}` : ''}`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // Deals a BORROWER typed that nobody has reviewed yet — the track-record
+  // review queue (db/458). Scoped server-side to the borrowers this staffer sees.
+  staffTrackRecordReviews: () => req('GET', '/api/staff/track-record-reviews'),
+  staffTrackRecordReviewsCount: () => req('GET', '/api/staff/track-record-reviews/count'),
   // In-file verify set: the file's vesting entity + this borrower's track-record
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
   staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),

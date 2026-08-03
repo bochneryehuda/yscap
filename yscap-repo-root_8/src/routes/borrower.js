@@ -2784,6 +2784,38 @@ function trackRecordCols(b) {
     address_key: require('../lib/track-record-key').trackRecordKey(b.propertyAddress) || null,
   };
 }
+
+/* WHO TYPED THIS, AND SO WHERE IT STANDS (owner-directed 2026-08-03: "anyone
+   that enters the track record first should be pending review till they review
+   it and they provide documentation, then it should go for verified").
+
+   Applied by BOTH tool doors on create AND on edit, so the answer describes the
+   figures as they are NOW rather than who first opened the line. The status
+   reset is the load-bearing half: `verification_status` is not in the column map
+   above, so an EDIT used to leave whatever the last reviewer had set — a line a
+   processor had moved to 'docs' (or, on the staff door, all the way to
+   verified/limited) could be re-typed underneath that verdict and keep it. A
+   changed line has not been reviewed; it is pending again.
+
+   `is_verified` is deliberately NOT written here. It is the flag every
+   experience count, the tier and the sign-off gate read; revoking a verification
+   is its own audited action, with a reason the borrower is told (staff.js
+   `/verify`).
+
+   AND THAT IS WHY THE STATUS RESET IS THE BORROWER'S DOOR ONLY. The borrower can
+   structurally never reach a verified line — their create upserts
+   `WHERE is_verified = false` and their edit/delete 404 on one — so resetting
+   there can only ever move an UNVERIFIED line back to pending, which is exactly
+   the rule. A STAFFER may deliberately correct a verified line's figures, and
+   writing 'pending' over that would leave the row claiming both at once:
+   `verification_status = 'pending'` next to `is_verified = true`, which every
+   count reads as verified and every screen reads as pending. Staff stamp who and
+   when; a new staff-entered line is pending by the column default anyway. */
+function trackRecordEnteredCols(kind) {
+  const cols = { entered_by_kind: kind, entered_at: new Date().toISOString() };
+  if (kind === 'borrower') cols.verification_status = 'pending';
+  return cols;
+}
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
   if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
@@ -2794,7 +2826,7 @@ router.post('/track-records', async (req, res) => {
   }
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') };
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   // Idempotent create: the tool sends one stable clientRowId per new line, so a
@@ -2837,7 +2869,7 @@ router.put('/track-records/:id', async (req, res) => {
   }
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') };
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   await db.query(
@@ -4306,6 +4338,7 @@ module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
 module.exports.trackRecordMissing = trackRecordMissing;
+module.exports.trackRecordEnteredCols = trackRecordEnteredCols;
 // Exposed so a test can RUN this door's text helper rather than regex the source
 // for its name — a source regex passes even when the helper has stopped
 // delegating, which is exactly how two defects in this series stayed hidden.

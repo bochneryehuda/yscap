@@ -286,6 +286,7 @@ export default function StaffLayout({ children }) {
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
   const [notifDraftCount, setNotifDraftCount] = useState(0);
   const [myExcCount, setMyExcCount] = useState(0);
+  const [trReviewCount, setTrReviewCount] = useState(0);
   const [closingCount, setClosingCount] = useState(0);
   // Files still OUTSTANDING on the purchasing desk (admins + closers).
   const [purchasingCount, setPurchasingCount] = useState(0);
@@ -294,6 +295,7 @@ export default function StaffLayout({ children }) {
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
+      api.staffTrackRecordReviewsCount().then(r => { if (alive) setTrReviewCount((r && r.pending) || 0); }).catch(() => {});
       api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
       // Gated: unlike /closing/count this endpoint is capability-gated, so polling
       // it for everyone would 403 on load and again every 2 minutes for every LO,
@@ -397,7 +399,7 @@ export default function StaffLayout({ children }) {
   // ONE Approvals badge = every decision queue this role can see. The pricing-
   // gated counts (escCount/excCount) only ever poll for manage_pricing/super
   // roles, so they stay 0 for everyone else and the sum is naturally scoped.
-  const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount;
+  const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount + trReviewCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
   return (
     <div className="app">
@@ -425,7 +427,7 @@ export default function StaffLayout({ children }) {
             Sync review, My exceptions) with ONE tabbed section. Visible to ALL
             staff; the badge sums every queue this role can see (the escalation/
             exception counts stay 0 for roles that don't poll them). */}
-        <NavLink className="sb-link" to="/internal/approvals" title="Approvals — everything waiting on a decision, in one place: manual/escalation approvals, policy exceptions, findings to review, sync reviews, and the requests you raised.">
+        <NavLink className="sb-link" to="/internal/approvals" title="Approvals — everything waiting on a decision, in one place: manual/escalation approvals, policy exceptions, findings to review, sync reviews, track-record deals waiting to be verified, and the requests you raised.">
           <NavIcon name="conditions" />Approvals
           {approvalsCount > 0 && <span className="sb-badge">{approvalsCount > 99 ? '99+' : approvalsCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/chat">

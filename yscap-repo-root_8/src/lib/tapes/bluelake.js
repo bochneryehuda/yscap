@@ -28,6 +28,8 @@
  */
 const path = require('path');
 const reg = require('../conditions/field-registry');
+// One wording for "what does this file vest in" across every tape + screen.
+const { vestingCell } = require('../vesting-label');
 
 // The originator/seller name as it appears on the MLPA (Blue Lake column E).
 // Owner-directed: use our company name.
@@ -140,7 +142,7 @@ const COLUMNS = [
   ['C', 's', null, () => 'Y'],                                                     // Pre-Approval Flag — always flagged (owner-directed)
   ['D', 's', null, (l) => l.app.ys_loan_number || l.app.investor_loan_number || ''], // Loan ID (our loan #)
   ['E', 's', null, () => SELLER_NAME],                                             // Seller (lender per MLPA)
-  ['F', 's', null, (l) => l.vesting.llc || ''],                                    // Borrowing Entity
+  ['F', 's', null, (l) => vestingCell(l.vesting)],                                 // Borrowing Entity ("Individual" when there is no entity)
   ['G', 's', null, (l) => l.vesting.llc || guarantorNameBQ(l)],                    // Mortgagor
   ['H', 'd', null, (l) => l.app.actual_closing || l.app.est_closing_date || l.app.expected_closing], // Origination/Note Date
   ['I', 's', null, (l) => nonCashflowingI(l)],                                     // Non-Cashflowing Flag
