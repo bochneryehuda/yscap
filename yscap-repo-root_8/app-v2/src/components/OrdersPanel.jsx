@@ -345,6 +345,17 @@ function OrderTracking({ appId, kind, tracking, onChanged }) {
             ? `${t.daysLate} business day${t.daysLate === 1 ? '' : 's'} late`
             : t.dueOn ? 'On time' : 'Waiting'}
         </span>
+        {/* WHY AN OBVIOUSLY OLD ORDER IS NOT LATE. The server stops the clock on a
+            file nobody is working (on hold, declined, withdrawn), so without this
+            the card just reads "On time" beside an order placed three months ago
+            and looks broken. The reason comes from the server so this card and the
+            cross-file desk can never describe the same order differently. */}
+        {t.dormant && (
+          <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>
+            · {t.dormantReason === 'on_hold' ? 'file on hold'
+              : t.dormantReason === 'declined' ? 'file declined' : 'file withdrawn'} — not being chased
+          </span>
+        )}
         {t.daysOut != null && (
           <span className="small" style={{ color: '#4B585C' }}>
             · out {t.daysOut} day{t.daysOut === 1 ? '' : 's'}

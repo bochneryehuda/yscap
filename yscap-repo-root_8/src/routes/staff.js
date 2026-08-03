@@ -6419,7 +6419,18 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
          ON CONFLICT (application_id, order_type)
          DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
                        subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
-                       send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
+                       send_count=file_orders.send_count+1,
+                       -- MERGED, not replaced — the same shape the title/insurance
+                       -- place route uses. Replacing wiped auto_retired_at, which
+                       -- is closing-prep's once-per-order stamp: the retire sweep
+                       -- skips an order that carries it. So a coordinator pressing
+                       -- "Re-send request" on a finished order (the button IS
+                       -- offered there) sent the whole package, brought the order
+                       -- back to life, and then lost it off the desk again within
+                       -- half an hour when the next sweep re-retired it. Reopen
+                       -- never had this bug — it does not touch meta — so the two
+                       -- ways back to life disagreed.
+                       meta=COALESCE(file_orders.meta,'{}'::jsonb) || EXCLUDED.meta, updated_at=now()`,
         [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
          JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length,
            parts: partCount, partsFailed: partsFailed.length })]);

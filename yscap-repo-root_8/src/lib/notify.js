@@ -860,29 +860,48 @@ async function notifyAppStaff(appId, opts = {}) {
   // staffer's email says WHICH file without re-querying per recipient.
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
-  // Returns the staff ids actually notified, so a caller running a LADDER can
-  // exclude them from its next rung. Every existing caller only tests `.length`
-  // ("was anybody on this file?"), which is unaffected.
+  /* WHAT THE ARRAY MEANS, and why the delivery count is a PROPERTY on it.
+     `.length` has meant ONE thing since this function was written — "how many
+     people are on this file" — and four callers rely on exactly that:
+     esign/webhook (three places) and esign/dead-letter all do
+     `if (!sent || !sent.length) await notifyAdmins(opts)`, meaning "this file has
+     nobody on it, so tell the administrators".
+
+     Filtering the array down to REAL deliveries silently changed that question to
+     "did anybody hear us", and the two are not the same. Every e-sign event uses
+     type `status_change`, which the notification catalog marks non-forced, so a
+     loan officer who mutes one of their own files — an ordinary, supported thing
+     to do — turned every "fully signed", "declined", "voided" and "we could not
+     save the signed copy" on that file into an email to EVERY administrator and
+     super-admin in the company.
+
+     So the array is the recipients again, and the delivery count rides along as
+     `.delivered` — the same additive-property shape `retrieveAttachmentsSafe`
+     uses for its dropped counters. A caller that wants "was anybody reached"
+     asks for it by name; a caller that wants "is this file covered" keeps
+     `.length` and is unaffected. */
   const out = [];
+  let delivered = 0;
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
     if (exceptMany.has(String(r.staff_id))) continue;
-    // Only a REAL delivery counts. notifyStaff returns null when the staffer muted
-    // this file, or when the loan-officer gate held the message as a draft — so
-    // pushing unconditionally reported recipients nobody actually heard from, and a
-    // caller's "nobody was reached, fall back" branch could never fire.
-    //
-    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this
-    // catch a single failing row aborted the whole fan-out, and the caller was
-    // told NOTHING about the people already reached — so a throttled nudge (the
+    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this catch
+    // a single failing row aborted the whole fan-out, and the caller was told
+    // NOTHING about the people already reached — so a throttled nudge (the
     // overdue-order ladder) released its claim on the strength of a zero that was
-    // wrong and re-sent to everyone who had already received it. Reporting who
-    // genuinely got it is what makes "was anybody reached?" answerable at all.
+    // wrong and re-sent to everyone who had already received it.
     let one = null;
     try { one = await notifyStaff(r.staff_id, { ...shared }); }
     catch (e) { console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
-    if (one) out.push(r.staff_id);
+    // The RECIPIENT, whatever happened — a ladder's next rung must not write to
+    // somebody again just because their copy was muted or held.
+    out.push(r.staff_id);
+    // A real delivery, or one the loan-officer gate is holding for later
+    // (DELIVERY_DRAFTED is truthy precisely so it counts here).
+    if (one) delivered += 1;
   }
+  // Non-enumerable so nothing that serializes or spreads this array picks it up.
+  Object.defineProperty(out, 'delivered', { value: delivered, enumerable: false });
   return out;
 }
 

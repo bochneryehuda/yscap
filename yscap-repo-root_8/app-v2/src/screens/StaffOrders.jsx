@@ -49,7 +49,15 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const [msg, setMsg] = useState('');
   if (!o) return <span className="muted small">—</span>;
 
-  const onHold = String(fileStatus || '') === 'on_hold';
+  /* WHY THIS ORDER IS NOT BEING CHASED. Wider than "on hold", which was only the
+     case somebody noticed first: an order is never retired unless its condition is
+     signed off, so one on a file that was later declined or withdrawn lives
+     forever — and the server already stops calling those late (order-sla
+     DORMANT_FILE_STATUSES). The row must say the same thing the clock does, or the
+     order reads as ignored rather than as parked. */
+  const DORMANT = { on_hold: 'file on hold', declined: 'file declined', withdrawn: 'file withdrawn' };
+  const dormantLabel = DORMANT[String(fileStatus || '')] || null;
+  const onHold = !!dormantLabel;
   const tone = o.overdue ? { color: '#B3261E', borderColor: '#B3261E' }
     : o.status === 'completed' ? { color: 'var(--ok)', borderColor: 'var(--ok)' }
     : (o.status === 'documents_in' || o.status === 'ordered') ? { color: 'var(--teal,#2F7F86)', borderColor: 'var(--teal,#2F7F86)' }
@@ -112,7 +120,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
           held file does not vanish the moment it is sent — but the overdue sweep
           deliberately will not chase a paused file, and a one-click Chase here
           would have the desk doing what the system has decided not to do. */}
-      {onHold && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>file on hold — not being chased</span>}
+      {dormantLabel && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>{dormantLabel} — not being chased</span>}
       {!onHold && o.status === 'ordered' && o.pendingOn === 'vendor' && (
         kind === 'attorney'
           ? <Link className="btn ghost small" to={`/internal/app/${appId}#sec-order-closing`}>Chase on the chain</Link>

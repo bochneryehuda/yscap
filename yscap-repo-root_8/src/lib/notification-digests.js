@@ -1058,12 +1058,16 @@ async function orderOverdueOnce() {
          The team is the next rung up from the assignee, not a rung to skip. */
       if (tier === 'team' || tier === 'admins' || !assignee || !delivered) {
         const team = await notify.notifyAppStaff(r.application_id, { ...payload, exceptStaffId: assignee || null, exceptStaffIds: told });
-        // COUNTED BY WHO WAS ACTUALLY REACHED, not by "the call returned".
-        // `delivered++` unconditionally meant a fan-out over a file with NO active
-        // assignees counted as a delivery — so a later rung throwing kept the
-        // throttle and the file was silenced for two days having told nobody at
-        // all, which is precisely what the release exists to prevent.
-        if (Array.isArray(team) && team.length) { told.push(...team.map(String)); delivered += team.length; }
+        /* TWO DIFFERENT NUMBERS, and this rung needs both.
+           `.length` is who is ON the file — everybody there goes on `told`, so the
+           admin rung below never writes to one of them a second time just because
+           their copy was muted or held. `.delivered` is who actually HEARD us, and
+           only that may satisfy the throttle: counting the call itself meant a
+           fan-out over a file with no active assignee registered as a delivery, so
+           a later rung throwing kept the claim and silenced the file for two days
+           having told nobody at all. */
+        if (Array.isArray(team) && team.length) told.push(...team.map(String));
+        delivered += (team && Number(team.delivered)) || 0;
       }
       /* NOBODY TO TELL → THE ADMINS, which is what every other fan-out in this
          repo already does (`if (!sent || !sent.length) await notify.notifyAdmins`
