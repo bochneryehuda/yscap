@@ -100,27 +100,71 @@ SELECT o.id, o.application_id, o.order_type, 'placed', o.ordered_by,
  WHERE o.ordered_at IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = o.id AND e.kind = 'placed');
 
-UPDATE file_orders
-   SET first_response_at = updated_at
- WHERE status = 'documents_in'
-   AND first_response_at IS NULL
-   AND updated_at IS NOT NULL;
-
--- An order on a file that is already FUNDED is finished, whatever the row says —
--- the desk was showing every deal we have ever closed as outstanding work.
--- Scoped to funded only: a declined or withdrawn file's order is 'cancelled'
--- territory, and cancelled means an explicit human stand-down that closes the
--- follow-up and reply doors, so it must never be applied by a migration.
+-- WHEN THE VENDOR DELIVERED, from the documents themselves — never from
+-- `updated_at`.
+--
+-- `updated_at` is bumped by the follow-up route, an Email-Center reply, a note, an
+-- assignment, a due-date change, cancel/reopen and the retire sweep, so on any
+-- order chased AFTER the documents landed it is far later than the real delivery.
+-- The scorecard treats this column as gospel, so seeding it that way would have
+-- overstated median turnaround and understated on-time for the WHOLE existing book
+-- with nothing marking the value as a guess. The first returned document's
+-- `created_at` is the real thing, and an order with no document simply keeps NULL —
+-- an honest gap beats a plausible wrong number.
 UPDATE file_orders o
-   SET status = 'completed', completed_at = COALESCE(o.completed_at, now()), updated_at = now()
-  FROM applications a
- WHERE a.id = o.application_id
-   AND a.status = 'funded'
-   AND o.status IN ('ordered', 'documents_in');
+   SET first_response_at = d.first_doc
+  FROM (
+    SELECT application_id,
+           CASE doc_kind WHEN 'title_order_return' THEN 'title'
+                         WHEN 'insurance_order_return' THEN 'insurance'
+                         ELSE 'attorney' END AS order_type,
+           min(created_at) AS first_doc
+      FROM documents
+     WHERE COALESCE(doc_kind,'') IN ('title_order_return','insurance_order_return','closing_correspondence')
+     GROUP BY 1, 2
+  ) d
+ WHERE d.application_id = o.application_id
+   AND d.order_type = o.order_type
+   AND o.first_response_at IS NULL
+   AND o.ordered_at IS NOT NULL
+   -- Never a delivery BEFORE the order went out; that is data, not a fact.
+   AND d.first_doc >= o.ordered_at;
 
-INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
-SELECT o.id, o.application_id, o.order_type, 'completed', NULL,
-       jsonb_build_object('backfilled', true, 'reason', 'the loan funded')
-  FROM file_orders o
- WHERE o.status = 'completed'
-   AND NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = o.id AND e.kind = 'completed');
+-- ---------------------------------------------------------------------------
+-- ONE-SHOT: an order on a file that is already FUNDED is finished, whatever the
+-- row says — the desk was showing every deal we have ever closed as outstanding
+-- work.
+--
+-- MARKER-GUARDED, because every migration replays on every boot and this one
+-- CHANGES A STATUS. Without the marker it silently re-closed an order a human had
+-- deliberately reopened (a real button, which even records a 'reopened' event) on
+-- the next deploy, with nothing recorded to say why. Same shape as db/356's
+-- one-shot. The live sweep (`order-tracking.retireSatisfiedOrdersOnce`) keeps
+-- orders retired from here on, and it honours a human's reopen.
+--
+-- Scoped to funded only: a declined or withdrawn file's order is 'cancelled'
+-- territory, and cancelled is an explicit human stand-down that closes the
+-- follow-up and reply doors, so it must never be applied by a migration.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM sync_runtime_state WHERE key = 'orders_funded_retire_v1') THEN
+    UPDATE file_orders o
+       SET status = 'completed', completed_at = COALESCE(o.completed_at, now()), updated_at = now()
+      FROM applications a
+     WHERE a.id = o.application_id
+       AND a.status = 'funded'
+       AND o.status IN ('ordered', 'documents_in');
+
+    INSERT INTO file_order_events (order_id, application_id, order_type, kind, actor_id, detail)
+    SELECT o.id, o.application_id, o.order_type, 'completed', NULL,
+           jsonb_build_object('backfilled', true, 'reason', 'the loan funded')
+      FROM file_orders o
+     WHERE o.status = 'completed'
+       AND NOT EXISTS (SELECT 1 FROM file_order_events e WHERE e.order_id = o.id AND e.kind = 'completed');
+
+    INSERT INTO sync_runtime_state (key, value)
+    VALUES ('orders_funded_retire_v1', jsonb_build_object('done_at', now()))
+    ON CONFLICT (key) DO NOTHING;
+  END IF;
+END $$;

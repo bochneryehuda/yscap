@@ -195,7 +195,19 @@ async function retireSatisfiedOrdersOnce({ limit = 200 } = {}) {
         WHERE o.order_type IN ('title','insurance')
           AND o.status IN ('ordered','documents_in')
           AND a.deleted_at IS NULL
-        ORDER BY o.ordered_at ASC NULLS LAST
+          -- A HUMAN'S REOPEN OUTRANKS THE SWEEP. Reopening a finished order is a
+          -- real button on the card, and without this the very next pass (or the
+          -- next deploy) closed it again with nothing recorded to say why — the
+          -- person would reopen it, walk away, and find it shut. Only a reopen that
+          -- is NEWER than the last completion counts, so an order reopened, worked
+          -- and legitimately finished again still retires.
+          AND NOT EXISTS (
+            SELECT 1 FROM file_order_events e
+             WHERE e.order_id = o.id AND e.kind = 'reopened'
+               AND e.created_at > COALESCE(
+                     (SELECT max(c.created_at) FROM file_order_events c
+                       WHERE c.order_id = o.id AND c.kind = 'completed'), 'epoch'::timestamptz))
+        ORDER BY o.ordered_at ASC NULLS LAST, o.id
         LIMIT $3`, [CONDITION_CODE.title, CONDITION_CODE.insurance, Math.max(1, Math.min(1000, Number(limit) || 200))]);
     for (const row of r.rows) {
       const funded = row.file_status === 'funded';

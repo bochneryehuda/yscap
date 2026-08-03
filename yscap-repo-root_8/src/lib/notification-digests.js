@@ -973,7 +973,9 @@ async function orderOverdueOnce() {
         badge: { text: days > 5 ? 'Very late' : 'Late', tone: 'action' },
         body: ours
           ? `${r.vendor_name ? `${r.vendor_name} has` : `${vendorWord.replace(/^the /, 'The ')} has`} sent documents back on the ${label.toLowerCase()} order and they are still waiting to be classified and accepted — ${days} business day${days === 1 ? '' : 's'} past when we expected this order to be finished. ${who}.`
-          : `We asked ${r.vendor_name || vendorWord} for the ${label.toLowerCase()} on ${st.daysOut != null ? `${st.daysOut} day${st.daysOut === 1 ? '' : 's'} ago` : 'this file'} and nothing has come back. It is ${days} business day${days === 1 ? '' : 's'} past the date we expected an answer. ${who} — please chase ${r.vendor_name ? 'them' : vendorWord}.`,
+          // "…on 20 days ago" — the `on` belonged to the 'this file' branch and rode
+          // along on the normal path, so EVERY nudge read ungrammatically.
+          : `We asked ${r.vendor_name || vendorWord} for the ${label.toLowerCase()} ${st.daysOut != null ? `${st.daysOut} day${st.daysOut === 1 ? '' : 's'} ago` : 'on this file'} and nothing has come back. It is ${days} business day${days === 1 ? '' : 's'} past the date we expected an answer. ${who} — please chase ${r.vendor_name ? 'them' : vendorWord}.`,
         applicationId: r.application_id,
         link: `/internal/app/${r.application_id}${r.order_type === 'title' ? '#sec-order-title' : r.order_type === 'insurance' ? '#sec-order-insurance' : '#sec-order-closing'}`,
         ctaLabel: 'Open the order',

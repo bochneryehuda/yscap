@@ -117,25 +117,32 @@ console.log('\n7. the whole state of one order');
   eq(done.overdue, false, 'nor is a completed one');
 }
 
-console.log('\n8. the aging roll-up reuses the conditions calculator');
+console.log('\n8. a roll-up over a list of orders — ONE calculator, never a second one');
 {
+  // There is deliberately NO `ageOrders` here. A roll-up was written on top of
+  // `condition-aging.ageConditions`, and it measured ELAPSED CALENDAR time against
+  // SLAs expressed in BUSINESS days — so a Friday-placed title order read "not yet
+  // due" on the card and "3 days open" in the roll-up, and the desk would have had
+  // a THIRD answer disagreeing with the card and the nudge. `orderState` is the one
+  // calculator; a caller that wants totals folds over it, which is what the desk
+  // and the digest both do. This pins that fold.
   const now = new Date('2026-08-14T12:00:00Z');
-  const agg = sla.ageOrders([
+  const rows = [
     { id: 'a', order_type: 'title', status: 'ordered', ordered_at: '2026-08-03T14:00:00Z' },
     { id: 'b', order_type: 'insurance', status: 'ordered', ordered_at: '2026-08-13T14:00:00Z' },
     { id: 'c', order_type: 'title', status: 'cancelled', ordered_at: '2026-05-01T14:00:00Z' },
     { id: 'd', order_type: 'attorney', status: 'completed', ordered_at: '2026-05-01T14:00:00Z', completed_at: '2026-05-05T14:00:00Z' },
-  ], now);
-  eq(agg.summary.open, 2, 'two orders are open');
-  eq(agg.summary.closed, 2, 'the cancelled and the completed one are closed');
-  eq(agg.summary.overdue, 1, 'only the eleven-day-old title order is overdue');
-  // The roll-up measures ELAPSED time (08-03 14:00 → 08-14 12:00 is 10 days and
-  // 22 hours, floored to 10), while the card's `daysOut` counts calendar-date
-  // steps and reads 11. Both are right and they answer different questions; this
-  // pins the roll-up to the calculator the conditions desk already uses.
-  eq(agg.summary.oldestDaysOpen, 10, 'the oldest open order has been out ten full days');
-  ok(!agg.conditions.find((c) => c.id === 'c').overdue,
-    'the CANCELLED order is not overdue — the adapter maps it closed, which condition-aging alone would not have done');
+  ];
+  const states = rows.map((r) => ({ id: r.id, st: sla.orderState(r, now) }));
+  const open = states.filter((x) => x.st.open);
+  eq(open.length, 2, 'two orders are open');
+  eq(states.length - open.length, 2, 'the cancelled and the completed one are closed');
+  eq(states.filter((x) => x.st.overdue).length, 1, 'only the eleven-day-old title order is overdue');
+  eq(Math.max(...open.map((x) => x.st.daysOut)), 11,
+    'the oldest open order has been out eleven days — the SAME number the card prints');
+  ok(!states.find((x) => x.id === 'c').st.overdue,
+    'a CANCELLED order is never overdue, however long ago it was placed');
+  ok(!states.find((x) => x.id === 'd').st.overdue, 'nor is a completed one');
 }
 
 console.log('\n9. the vocabulary is exactly three order types');

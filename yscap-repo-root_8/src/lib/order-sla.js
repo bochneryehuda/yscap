@@ -23,7 +23,6 @@
  */
 
 const { parseYMD, fmtYMD } = require('./term-options');
-const { ageConditions } = require('./underwriting/condition-aging');
 
 /**
  * How long we hold ourselves to waiting, per order type, in BUSINESS days.
@@ -65,6 +64,20 @@ function nyDay(now) {
   return dayOf(now == null || now === '' ? new Date() : now);
 }
 
+/* Built ONCE. Constructing an Intl.DateTimeFormat is expensive (~0.07ms), and
+   `orderState` needs three per row — on the cross-file desk, which has no LIMIT
+   and which an admin loads for every file, that measured 555ms of blocking
+   event-loop time over 900 orders. One shared formatter is stateless and safe. */
+let _nyFmt = null;
+function nyFormatter() {
+  if (!_nyFmt) {
+    _nyFmt = new Intl.DateTimeFormat('en-CA', {   // 'en-CA' formats as YYYY-MM-DD
+      timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+  }
+  return _nyFmt;
+}
+
 /**
  * The New York calendar date of a GIVEN instant, or null when there isn't one.
  *
@@ -79,10 +92,7 @@ function dayOf(value) {
     if (value == null || value === '') return null;
     const d = value instanceof Date ? value : new Date(value);
     if (!Number.isFinite(d.getTime())) return null;
-    // 'en-CA' formats as YYYY-MM-DD, which is the shape we store and compare.
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(d);
+    return nyFormatter().format(d);
   } catch (_e) { return null; }
 }
 
@@ -96,6 +106,19 @@ function weekdayOf(day) {
 }
 
 function isWeekend(day) { const w = weekdayOf(day); return w === 0 || w === 6; }
+
+/** Whole calendar days between two 'YYYY-MM-DD' dates, or null if either is
+    unreadable. Anchored at UTC midnight, so it is exact and DST-proof. Negative
+    (a date in the future) clamps to 0 — nothing has been "out" for -3 days. */
+function daysBetween(from, to) {
+  const a = parseYMD(from);
+  const b = parseYMD(to);
+  if (!a || !b) return null;
+  try {
+    const ms = Date.UTC(b.y, b.mo - 1, b.d) - Date.UTC(a.y, a.mo - 1, a.d);
+    return Math.max(0, Math.round(ms / 86400000));
+  } catch (_e) { return null; }
+}
 
 /** The next calendar day, by components. */
 function nextDay(day) {
@@ -220,15 +243,15 @@ function orderState(order, now) {
   const dueOn = open ? effectiveDueOn(o) : null;
   const late = open ? daysLate(dueOn, today) : 0;
   const orderedDay = dayOf(o.ordered_at || o.orderedAt);
-  let daysOut = null;
-  if (orderedDay && today) {
-    // CALENDAR days out — this is "how long has this been sitting", which a human
-    // reads in real days. Lateness is the business-day question; they are
-    // different questions and conflating them makes both wrong.
-    let cur = orderedDay, n = 0, guard = 0;
-    while (cur < today && guard++ < 4000) { cur = nextDay(cur); if (!cur) break; n += 1; }
-    daysOut = n;
-  }
+  // CALENDAR days out — "how long has this been sitting", which a human reads in
+  // real days. Lateness is the business-day question; they are different questions
+  // and conflating them makes both wrong.
+  //
+  // Computed by SUBTRACTION on the two calendar dates rather than by walking a day
+  // at a time: the loop was O(age) per row on a query with no LIMIT, and its 4000
+  // guard also silently capped an old order at 4000 days. Both dates are anchored
+  // at UTC midnight, so the difference is exact whole days with no DST drift.
+  const daysOut = daysBetween(orderedDay, today);
   return {
     orderType: str(o.order_type || o.orderType),
     status,
@@ -244,35 +267,21 @@ function orderState(order, now) {
   };
 }
 
-/**
- * Aging + a roll-up over a set of orders, through the SAME calculator the
- * conditions desk uses (`condition-aging.ageConditions`) rather than a second one
- * — the buckets, the overdue rule and the summary shape are already settled there
- * and tested, and two aging calculators would eventually disagree about the same
- * file.
- *
- * The adapter is where the order vocabulary is translated, and it earns its keep
- * in one place: `cancelled` is not in that module's CLOSED_STATUSES, so an order
- * somebody deliberately stood down would have gone on aging and eventually
- * reported itself overdue. It is mapped to 'closed'.
- */
-function ageOrders(rows, now) {
-  const list = Array.isArray(rows) ? rows : [];
-  const adapted = list.map((o) => ({
-    id: o && (o.id || `${o.application_id}:${o.order_type}`),
-    // 'ordered'/'documents_in' pass through as open; everything else is done as
-    // far as a clock is concerned.
-    status: OPEN_STATUSES.includes(str(o && o.status)) ? 'open' : 'closed',
-    requested_at: o && (o.ordered_at || o.orderedAt) || null,
-    completed_at: o && (o.completed_at || o.completedAt) || null,
-    sla_days: slaDaysFor(o),
-  }));
-  return ageConditions(adapted, { now });
-}
+/* THERE IS DELIBERATELY NO `ageOrders` HERE.
+   An adapter onto `condition-aging.ageConditions` looked like good reuse and was
+   written — then removed, because that calculator measures CALENDAR days while
+   every order SLA in this module is in BUSINESS days. Fed one, it declared a
+   Friday title order overdue on Tuesday while `orderState` said Thursday: a third
+   lateness answer, disagreeing with the desk, the card and the nudge, sitting
+   there waiting for its first caller. `orderState` is the one answer. */
 
 module.exports = {
   SLA_BUSINESS_DAYS, DEFAULT_SLA_DAYS, ORDER_TYPES, ORDER_LABEL, VENDOR_LABEL, OPEN_STATUSES,
-  nyDay, addBusinessDays, isWeekend, slaDaysFor, effectiveDueOn, daysLate,
-  chaseTier, pendingOn, orderState, ageOrders,
+  // `dayOf` is exported alongside `nyDay` ON PURPOSE: the two differ in exactly
+  // one way (a missing value reads as TODAY vs as nothing) and that difference has
+  // already caused one real bug, so a caller outside this module must be able to
+  // pick the right one rather than being handed only the forgiving one.
+  nyDay, dayOf, daysBetween, addBusinessDays, isWeekend, slaDaysFor, effectiveDueOn, daysLate,
+  chaseTier, pendingOn, orderState,
   _internals: { weekdayOf, nextDay },
 };

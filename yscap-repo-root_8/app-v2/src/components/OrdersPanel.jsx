@@ -782,9 +782,19 @@ function loadOrders(appId, { force = false } = {}) {
   const prev = cur || {};
   orderCache.set(appId, { ...prev, loading: true });
   emitOrders(appId);
-  // A response is only allowed to write if it is still the NEWEST request for a
-  // file somebody is still looking at.
-  const stillOurs = () => orderGen.get(appId) === gen && orderSubs.has(appId);
+  // A response is only allowed to write if it is still the NEWEST request for
+  // this file. THE GENERATION IS THE WHOLE TEST — deliberately NOT "and somebody
+  // is still subscribed".
+  //
+  // Requiring a subscriber wedged the room: `refreshOrders` is called from the
+  // order pop-up on a CONDITION, which lives in a different room, so no order
+  // section is mounted at that moment. The request set `loading:true`, the
+  // response was then discarded for having no subscriber, and `loading` was never
+  // cleared — after which the mount guard saw a populated cache entry, made no
+  // request, and all three sections read "Loading orders…" until the page was
+  // reloaded. Unmounting already bumps the generation, so a genuinely orphaned
+  // response is refused by this test alone.
+  const stillOurs = () => orderGen.get(appId) === gen;
   api.staffOrders(appId)
     .then((data) => { if (stillOurs()) orderCache.set(appId, { data, err: '', loading: false }); })
     // Keep the last good payload on a failed refresh: blanking three cards
@@ -802,7 +812,12 @@ function useOrders(appId) {
     let subs = orderSubs.get(appId);
     if (!subs) { subs = new Set(); orderSubs.set(appId, subs); }
     subs.add(rerender);
-    if (!orderCache.has(appId)) loadOrders(appId);
+    // Fetch unless there is already something to show or something on the way.
+    // "Has an entry" is NOT the same question: an entry can hold a failed refresh
+    // that nobody ever saw, and treating that as "already loaded" leaves the card
+    // showing an error for a request the reader never made.
+    const cur = orderCache.get(appId);
+    if (!cur || (!cur.data && !cur.loading)) loadOrders(appId);
     return () => {
       subs.delete(rerender);
       if (!subs.size) {
@@ -837,8 +852,19 @@ export default function OrdersPanel({ appId, canAccept = false, only = null }) {
   // THE CLOSING CARD DOES NOT READ THIS PAYLOAD. Making it wait for one meant the
   // attorney section showed "Loading orders…" behind a request it never uses —
   // and showed the ORDERS error in place of the closing card when that request
-  // failed. It fetches its own data and is rendered straight away.
-  if (only === 'closing') return <ClosingPrepCard appId={appId} onChanged={reload} />;
+  // failed. It fetches its own data and is rendered straight away; the tracking
+  // strip appears above it as soon as the orders payload arrives, and its absence
+  // never holds the card up.
+  if (only === 'closing') {
+    return (
+      <>
+        {data && data.orders.attorney && (
+          <OrderTracking appId={appId} kind="attorney" tracking={data.orders.attorney.tracking} onChanged={reload} />
+        )}
+        <ClosingPrepCard appId={appId} onChanged={reload} />
+      </>
+    );
+  }
 
   if (err && !data) return <div className="notice err">{err}</div>;
   if (!data) return <p className="muted small">Loading orders…</p>;

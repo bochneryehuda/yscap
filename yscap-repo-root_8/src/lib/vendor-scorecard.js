@@ -139,19 +139,25 @@ function summarize(card, { vendorName } = {}) {
  * @param {string[]} contactIds  service_contacts ids
  * @returns {Promise<Object<string, object>>} keyed by contact id
  */
-async function scorecardsFor(contactIds, { now = new Date() } = {}) {
+async function scorecardsFor(contactIds, { now = new Date(), excludeApplicationId = null } = {}) {
   const ids = [...new Set((Array.isArray(contactIds) ? contactIds : []).filter(Boolean))];
   if (!ids.length) return {};
   try {
+    const params = [ids];
+    let notThisFile = '';
+    // `excludeApplicationId` is what lets a card say "they are late on N OTHER
+    // orders" truthfully. Without it a file whose own title order is three days
+    // late, with nothing else anywhere, read "late on 1 other order right now".
+    if (excludeApplicationId) { params.push(excludeApplicationId); notThisFile = `AND o.application_id <> $${params.length}`; }
     const r = await db.query(
       `SELECT o.vendor_contact_id, o.order_type, o.status, o.ordered_at, o.first_response_at,
               o.completed_at, o.followup_count, o.due_on, o.sla_days
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
-        WHERE o.vendor_contact_id = ANY($1::uuid[]) AND o.ordered_at IS NOT NULL
+        WHERE o.vendor_contact_id = ANY($1::uuid[]) AND o.ordered_at IS NOT NULL ${notThisFile}
         -- id last so a capped read would be deterministic; there is no cap here
         -- because the set is bounded by the caller's id list.
-        ORDER BY o.ordered_at DESC, o.id`, [ids]);
+        ORDER BY o.ordered_at DESC, o.id`, params);
     const byVendor = new Map();
     for (const row of r.rows) {
       if (!byVendor.has(row.vendor_contact_id)) byVendor.set(row.vendor_contact_id, []);

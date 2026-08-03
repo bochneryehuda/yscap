@@ -281,7 +281,8 @@ async function retrieveAttachmentsSafe(emailId, metaList) {
   let total = 0;
   let droppedByCap = Math.max(0, (Array.isArray(metaList) ? metaList.length : 0) - list.length);
   let droppedByError = 0;
-  for (const a of list) {
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
     if (!a || !a.id) { droppedByCap += 1; continue; }
     if (a.size && Number(a.size) > perCap) { droppedByCap += 1; continue; }
     try {
@@ -300,7 +301,12 @@ async function retrieveAttachmentsSafe(emailId, metaList) {
       } finally { clearTimeout(t); }
       if (!buf) { droppedByError += 1; continue; }
       if (buf.length > perCap) { droppedByCap += 1; continue; }
-      if (total + buf.length > totalCap) { droppedByCap += Math.max(1, list.length - out.length); break; }
+      // The total budget is spent: THIS one and everything after it are dropped by
+      // the cap. Counted from the loop INDEX, not from how many were kept —
+      // `list.length - out.length` also swept up every earlier item that a
+      // transient error had already counted, so the team was told to ask the
+      // vendor to resend documents that were filed, or were about to be retried.
+      if (total + buf.length > totalCap) { droppedByCap += (list.length - i); break; }
       total += buf.length;
       out.push({
         filename: String(a.filename || meta.filename || 'attachment'),

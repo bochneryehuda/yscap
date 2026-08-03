@@ -5243,6 +5243,20 @@ router.get('/applications/:id/orders', async (req, res) => {
         } : null,
       };
     };
+    /* THE ATTORNEY ORDER'S CLOCK AND OWNER, so the closing section can show them
+       like the other two. Only the tracking block — the closing card owns its own
+       recipients, package and chain, and duplicating those here would be a second
+       source for them. Null when closing prep has never been sent. */
+    const attorneyRow = orderOf('attorney');
+    const attorneyTracking = attorneyRow ? {
+      ...orderSla.orderState(attorneyRow, new Date()),
+      assignedTo: attorneyRow.assigned_to || null,
+      assignedName: attorneyRow.assigned_name || attorneyRow.assigned_email || null,
+      firstResponseAt: attorneyRow.first_response_at || null,
+      completedAt: attorneyRow.completed_at || null,
+      notes: attorneyRow.notes || null,
+    } : null;
+
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
       const { to, cc, ccBorrower } = orders.recipientsFor(k, data, { ccBorrower: ccEffective(k) });
@@ -5258,6 +5272,10 @@ router.get('/applications/:id/orders', async (req, res) => {
       orders: {
         title: { ...shape('title'), recipients: recipientsPreview('title'), ccBorrower: ccEffective('title') },
         insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'), ccBorrower: ccEffective('insurance') },
+        // Tracking ONLY — everything else about the attorney order comes from its
+        // own closing-prep payload, which owns the recipients, the package and the
+        // chain. `null` until closing prep has actually been sent.
+        attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
       },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -5360,7 +5378,12 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
         [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
          (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower, !!force]);
       if (!claim.rows[0]) {
-        return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+        // Telling somebody who just pressed "force a re-send" to force a re-send is
+        // the advice-to-do-the-thing-you-just-did trap. A refusal inside the
+        // 10-second window is a double-click, and says so.
+        return res.status(409).json(force
+          ? { error: `That ${kind} order has just gone out — give it a moment before sending it again.`, code: 'too_soon' }
+          : { error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
       }
       claimed = claim.rows[0];
       sendRes = await orders.sendOrderMail({
@@ -5583,16 +5606,28 @@ router.post('/applications/:id/orders/:kind/due', async (req, res) => {
       dueOn = require('../lib/fields').normalizeTypedDate(b.dueOn);
       if (!dueOn) return res.status(400).json({ error: 'That date could not be read. Use the date picker.' });
     }
+    // An explicit blank CLEARS the per-order SLA back to the type default — the
+    // COALESCE shape meant it could be set but never unset. `undefined` (the key
+    // simply absent) leaves it alone, which is what a caller changing only the
+    // date means.
+    const slaGiven = Object.prototype.hasOwnProperty.call(b, 'slaDays');
     let slaDays = null;
-    if (b.slaDays != null && b.slaDays !== '') {
+    if (slaGiven && b.slaDays != null && b.slaDays !== '') {
       const n = Number(b.slaDays);
       if (!Number.isFinite(n) || n < 0 || n > 260) return res.status(400).json({ error: 'Give the number of business days to wait, from 0 to 260.' });
       slaDays = Math.floor(n);
     }
+    // Likewise the pinned date: only a caller that MENTIONED `dueOn` may clear it.
+    // Sending just a new SLA used to silently wipe a date somebody had agreed with
+    // the vendor.
+    const dueGiven = Object.prototype.hasOwnProperty.call(b, 'dueOn');
     const upd = await db.query(
-      `UPDATE file_orders SET due_on=$3, sla_days=COALESCE($4::int, sla_days), updated_at=now()
+      `UPDATE file_orders
+          SET due_on   = CASE WHEN $5::boolean THEN $3::date ELSE due_on END,
+              sla_days = CASE WHEN $6::boolean THEN $4::int  ELSE sla_days END,
+              updated_at = now()
         WHERE application_id=$1 AND order_type=$2 RETURNING id, ordered_at, due_on, sla_days, order_type, status`,
-      [appId, kind, dueOn, slaDays]);
+      [appId, kind, dueOn, slaDays, dueGiven, slaGiven]);
     if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
     await orderTracking.recordEvent({
       applicationId: appId, orderType: kind, kind: 'due_changed', actorId: req.actor.id,
@@ -5644,7 +5679,8 @@ router.get('/applications/:id/orders/:kind/vendor-scorecard', async (req, res) =
     const vendor = data && data.vendors[kind];
     if (!vendor || !vendor.id) return res.json({ card: null });
     const scorecard = require('../lib/vendor-scorecard');
-    const card = await scorecard.scorecardFor(vendor.id);
+    // THIS file's order is excluded, so "they are late on N OTHER orders" is true.
+    const card = await scorecard.scorecardFor(vendor.id, { excludeApplicationId: req.params.id });
     res.json({
       card,
       summary: scorecard.summarize(card, { vendorName: vendor.company_name || vendor.contact_name || null }),
@@ -6008,6 +6044,18 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
         [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
          JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length,
            parts: partCount, partsFailed: partsFailed.length })]);
+      // THE ATTORNEY ORDER IS TRACKED LIKE THE OTHER TWO. Without this it was the
+      // only one of the three with no owner and no history — so it showed "nobody
+      // assigned" on the desk and in the overdue nudge (which could then never
+      // reach the assignee tier), and its timeline was empty while orders placed
+      // BEFORE this shipped had a 'placed' line from db/425's back-fill. Old rows
+      // being better recorded than new ones is the drift these two calls close.
+      await orderTracking.ensureAssignee(appId, 'attorney');
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: 'attorney',
+        kind: force ? 'resent' : 'placed', actorId: req.actor.id,
+        detail: { to: to.length, attached: attach.attached.length, parts: partCount },
+      });
     } catch (e) {
       console.error(`[closing-prep] the request WAS sent for ${appId} but the order row failed to write:`, (e && e.message) || e);
     }
@@ -6111,6 +6159,12 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
          ON CONFLICT (application_id, order_type) DO UPDATE SET status=EXCLUDED.status, updated_at=now()`,
         [appId, reopen ? 'ordered' : 'cancelled']);
     }
+    // Same history the other two orders keep — and the 'reopened' line is what
+    // stops the retire sweep closing it again behind the person who reopened it.
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: 'attorney',
+      kind: reopen ? 'reopened' : 'cancelled', actorId: req.actor.id,
+    });
     await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -6149,13 +6203,28 @@ router.get('/orders', async (req, res) => {
                                  WHEN 'insurance' THEN 'insurance_order_return'
                                  ELSE 'closing_correspondence' END
          ) dc ON true
-        -- A FINISHED ORDER IS NOT WORK. 'completed' was in the status vocabulary from
-        -- day one but nothing ever wrote it for an attorney order, so every deal that
-        -- ever closed stayed on this desk looking outstanding — which is how a queue
-        -- stops being read. closing-prep.retireClosedOrdersOnce now retires them, and
-        -- this is what makes that visible. Cancelled was already hidden for the same
-        -- reason; the file's own card still shows either state in full.
-        WHERE o.status NOT IN ('cancelled','completed') ${scopeSql}
+        -- WHAT BELONGS ON THIS DESK IS WORK THAT IS STILL OUTSTANDING.
+        --
+        -- · 'cancelled' — an explicit human stand-down. Nothing to do.
+        -- · 'not_ordered' — nothing was ever sent. The only thing that leaves such a
+        --   row behind is the place route RELEASING a claim after a failed send, and
+        --   listing it made a file that failed to order once sit here forever showing
+        --   "not sent · nobody assigned". The file's own card still shows it in full.
+        -- · 'completed' — finished. Nothing ever wrote it for title or insurance, so
+        --   every deal we have ever closed stayed here looking outstanding, which is
+        --   how a queue stops being read. BUT a completed order that has documents
+        --   nobody has classified is still real work: the final policy and the
+        --   recorded mortgage often arrive AFTER the loan funds, and hiding them
+        --   would lose exactly the deliveries the follow-up door is kept open for.
+        -- · A DECLINED or WITHDRAWN file has no work left on it at all, and showing
+        --   one here put a one-click "chase the vendor" button on a dead deal — while
+        --   the overdue sweep already refused to touch it, so the desk and the nudge
+        --   disagreed about the same order. Funded and on-hold files stay: an order
+        --   on one can still be genuinely outstanding.
+        WHERE o.status NOT IN ('cancelled','not_ordered')
+          AND (o.status <> 'completed' OR COALESCE(dc.unassigned, 0) > 0)
+          AND a.status NOT IN ('declined','withdrawn')
+          ${scopeSql}
         -- OLDEST FIRST, and the LATENESS ordering is applied below rather than
         -- here: "late" is a BUSINESS-day question against a per-order SLA, which
         -- SQL cannot answer without duplicating order-sla's calendar arithmetic —

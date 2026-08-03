@@ -157,8 +157,9 @@ const uniq = `otr-${process.pid}-${Date.now()}`;
     assert(n.status === 200 && (await orderRow(appA, 'title')).notes === 'They said Thursday.', 'a note is kept on the order');
     // A NUL byte is refused by every text column in Postgres — the shared
     // `textColumn` chokepoint strips it before it can 500 the request.
-    const nul = await call('POST', `/api/staff/applications/${appA}/orders/title/note`, { note: 'ok bad' });
-    assert(nul.status === 200 && !String((await orderRow(appA, 'title')).notes).includes(' '),
+    const nul = await call('POST', `/api/staff/applications/${appA}/orders/title/note`, { note: 'ok\u0000bad' });
+    const nulNote = String((await orderRow(appA, 'title')).notes);
+    assert(nul.status === 200 && !nulNote.includes(String.fromCharCode(0)) && nulNote === 'okbad',
       'and a NUL byte is stripped rather than raising a database error');
   }
 
