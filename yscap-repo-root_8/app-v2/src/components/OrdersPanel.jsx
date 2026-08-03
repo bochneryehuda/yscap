@@ -9,6 +9,9 @@ import DocPreview from './DocPreview.jsx';
 // and prints the day BEFORE for anybody west of Greenwich, which is the exact
 // class of bug the repo's date rule exists to stop.
 import { fmtDay } from '../lib/dates.js';
+// Why an order's clock is stopped, worded in ONE place and shared with the
+// cross-file Orders desk — the decision itself is the server's.
+import { dormantMarker } from '../lib/orderDormant.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -340,11 +343,23 @@ function OrderTracking({ appId, kind, tracking, onChanged }) {
   return (
     <div className="panel" style={{ ...tone, marginBottom: 8, padding: '8px 10px' }}>
       <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        {/* "PAUSED", NOT "ON TIME", when the clock is stopped. The server stops it
+            on a file nobody is working (on hold, declined, withdrawn), and saying
+            "On time" beside an order placed three months ago claims we MET the
+            date rather than that we stopped measuring — the reason is spelled out
+            beside it either way. */}
         <span className="small" style={{ color: '#141B22', fontWeight: 700 }}>
-          {t.overdue
-            ? `${t.daysLate} business day${t.daysLate === 1 ? '' : 's'} late`
-            : t.dueOn ? 'On time' : 'Waiting'}
+          {t.dormant ? 'Paused'
+            : t.overdue ? `${t.daysLate} business day${t.daysLate === 1 ? '' : 's'} late`
+              : t.dueOn ? 'On time' : 'Waiting'}
         </span>
+        {/* WHY IT IS PAUSED — the SERVER's reason, worded in the one shared place,
+            so this card and the cross-file desk can never describe the same order
+            differently. A reason neither knows reads as "not being worked" rather
+            than being mislabelled as one they do. */}
+        {dormantMarker(t) && (
+          <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>· {dormantMarker(t)}</span>
+        )}
         {t.daysOut != null && (
           <span className="small" style={{ color: '#4B585C' }}>
             · out {t.daysOut} day{t.daysOut === 1 ? '' : 's'}

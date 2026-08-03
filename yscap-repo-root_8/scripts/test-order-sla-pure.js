@@ -133,6 +133,26 @@ console.log('\n7. the whole state of one order');
   eq(sla.orderState({ ...heldOrder, file_status: 'processing' }, now).overdue, true,
     'every other file status is unaffected — this can silence lateness, never invent it');
   eq(running.onHold, false, 'a caller that did not select the file status is unchanged');
+
+  /* AND THE SET IS WIDER THAN `on_hold`, which was only the case somebody noticed
+     first. An order is never retired unless its condition is signed off, so a
+     title order on a file that was later DECLINED or WITHDRAWN lives forever —
+     and the desk, the nudge and the scorecard all drop those files in SQL while
+     the order's own card went on counting days in red. */
+  for (const dead of ['declined', 'withdrawn']) {
+    const st = sla.orderState({ ...heldOrder, file_status: dead }, now);
+    eq(st.overdue, false, `an order on a ${dead} file is not late either`);
+    eq(st.dormant, true, 'and it says so');
+    eq(st.dormantReason, dead, 'naming which state it is in');
+    eq(st.onHold, false, 'without claiming the file is on hold — that marker means one thing');
+  }
+  /* FUNDED IS DELIBERATELY STILL LATE. The final title policy and the recorded
+     mortgage arrive AFTER funding, which is exactly why the follow-up and reply
+     doors stay open past it — an order left running there is real work. */
+  eq(sla.orderState({ ...heldOrder, file_status: 'funded' }, now).overdue, true,
+    'a FUNDED file still accrues lateness — the vendor may still owe the final policy');
+  eq(sla.DORMANT_FILE_STATUSES.includes('funded'), false,
+    'and the set says so out loud, so nobody adds it by tidying');
 }
 
 console.log('\n8. a roll-up over a list of orders — ONE calculator, never a second one');
