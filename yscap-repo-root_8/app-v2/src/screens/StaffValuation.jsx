@@ -130,6 +130,12 @@ export default function StaffValuation() {
               {busy === 'suggest' ? 'Working…' : 'Suggest adjustments'}
             </button>
           )}
+          {/* THE BRANDED REPORT is its own page, so it prints as a document
+              rather than as a printout of this working screen. */}
+          <Link className="btn btn-gold small" to={`/internal/research/valuation/${id}/report`}
+            style={{ textDecoration: 'none' }}>
+            Comparable report
+          </Link>
           <button className="btn ghost small" onClick={() => {
             setPrinting(true);
             // `finally`, because a print dialog that throws would otherwise leave

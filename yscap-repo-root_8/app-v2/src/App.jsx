@@ -61,6 +61,7 @@ import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';
 import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
 import StaffValuation from './screens/StaffValuation.jsx';
+import StaffCompReportScreen from './screens/StaffCompReportScreen.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
@@ -217,6 +218,7 @@ export default function App() {
           <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
           <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />
           <Route path="/internal/research/valuation/:id" element={<StaffPrivate><StaffValuation /></StaffPrivate>} />
+          <Route path="/internal/research/valuation/:id/report" element={<StaffPrivate><StaffCompReportScreen /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />
           <Route path="/internal/pipeline-shadow" element={<StaffPrivate><StaffPipelineShadow /></StaffPrivate>} />

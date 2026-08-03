@@ -440,21 +440,66 @@ never attempted. Everything in this phase costs about $10, one time.
 
 ## PHASE 4 — THE REPORT
 
-- [ ] **4.1 The branded PILOT comparable report.** Twelve sections, one full page
-  per comp. `jsPDF` is already vendored — no new dependency.
-- [ ] **4.2 Four layouts from one data model** — one-pager / standard / full /
-  grid-only. **The disclaimer scales; the honesty does not:** no layout may drop
-  the confidence label, the range, the comp count, or the blank-adjustment
-  sentence.
-- [ ] **4.3 The legal line, exactly.** USPAP attaches to an *appraiser*
-  performing an *appraisal*, so this is not one — **but no licensed appraiser on
-  staff or contract may operate this tool.** "Evaluation" is a regulated word we
-  may never use. Call it an **internal value indication**. It may never size a
-  loan.
-- [ ] **4.4 Every blank adjustment line, and why it is blank**, as a required
-  sentence — not an empty cell
-- [ ] **4.5 Photos in the report.** `property_photos` is currently 0 rows; ship
-  an honest placeholder rather than a broken box.
+- [x] **4.1 The branded PILOT comparable report.** Twelve sections, one full page
+  per comp — **DONE**, at `/internal/research/valuation/:id/report`
+  (`app-v2/src/components/CompReport.jsx`, linked from the valuation screen).
+  **NOT jsPDF, deliberately.** The vendored copy is a UMD global for the static
+  tool pages and would have to be re-plumbed into the SPA; more to the point,
+  hand-positioned PDF text cannot reflow, so every long address and every extra
+  comparable becomes a layout bug the READER finds. The browser's own print
+  engine paginates, embeds the brand fonts and produces a PDF through Save as
+  PDF — and it is VERIFIABLE, because Chromium renders the page to a real PDF in
+  the check and the pages can be counted. Measured: the full layout prints 6
+  Letter pages for 4 comparables with a page break before each one after the
+  first; `break-inside: avoid` on every card is what stops a comparable being
+  split across two sheets.
+- [x] **4.2 Four layouts from one data model** — **DONE**. The model is
+  `app-v2/src/lib/compReport.js`, PURE, and the four layouts are four ways of
+  reading it rather than four templates: four templates would be four places for
+  the honesty to rot. `MANDATORY` names what may never be dropped and
+  `missingMandatory` reports anything gone, so
+  `scripts/test-comp-report-pure.mjs` (90 assertions) proves the rule for every
+  layout at once **including one added later**, since it walks `LAYOUT_KEYS`
+  rather than a list typed in the test. The render check re-proves it off the
+  rendered page for all four.
+  **The disclaimer scales; the honesty does not — and that line was earned.** The
+  short layout blurbed itself "a single page" and measured at THREE Letter pages,
+  so the EXPLANATORY prose was scaled away (who may operate the tool, why the
+  rates come from our own reports, the subject's fact grid) and it came down to
+  two. What never scales: the value's RANGE, the confidence label, the comp-count
+  sentence, the blank-adjustment sentences, the "not an appraisal / never sizes a
+  loan" pair and the 7%-coverage caveat. Then the LABEL was changed rather than
+  the honesty: it is called "Short", because a name promising one page and
+  delivering two is exactly the small lie this build refuses. The render check
+  bounds it at two pages so a regression that re-inflates it is caught.
+- [x] **4.3 The legal line, exactly** — **DONE**, in `LEGAL`, and carried by every
+  layout. It states the thing USPAP-avoidance actually rests on, which is a
+  POLICY and not a fact about the code: **no licensed appraiser on staff or
+  contract may operate this tool**, because work they perform can carry USPAP
+  obligations this document does not satisfy. It says it is not an appraisal, not
+  an appraisal review, not USPAP work product, and may NEVER size, approve, price
+  or support a loan. **"Evaluation" is banned everywhere** (a defined term in the
+  Interagency Appraisal and Evaluation Guidelines — using it casually claims a
+  regulatory status we do not have) and is asserted absent from the prose, the
+  layout names and the rendered page.
+  The word ban is deliberately in TWO parts, because the first cut got it wrong:
+  a blanket ban on "appraisal report" also forbade the two sentences that most
+  need it — naming the real appraisal reports the data came from, and saying
+  "it is NOT an appraisal". `FORBIDDEN_WORDS` is what may appear nowhere;
+  `SELF_NAME_FORBIDDEN` is what the document may never call ITSELF, checked
+  against its name and its layout labels only.
+- [x] **4.4 Every blank adjustment line, and why it is blank** — **DONE**
+  (`blankReasons`). An empty cell says one of three completely different things:
+  the two did not differ, the appraiser saw a difference and judged it worth
+  nothing, or **nobody has looked yet** — and the third is the one that matters,
+  because it is the line still to be worked. A zero says the two were judged the
+  same OR the difference judged not to matter and admits the grid does not record
+  which; an untouched line says "nobody has worked this line yet". Every blank
+  carries words, asserted.
+- [x] **4.5 Photos in the report** — **DONE**, as the honest placeholder the item
+  asked for. A property with pictures says how many and where to see them; one
+  without says our records hold pictures only where the appraisal we paid for
+  carried them. No broken box, on either path.
 
 ## PHASE 5 — THE FEATURES THAT MAKE IT WORTH COPYING
 
