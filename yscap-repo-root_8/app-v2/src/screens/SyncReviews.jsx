@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* Sync review queue — the human gate for PILOT ⇄ ClickUp disagreements
  * (2026-07-15). The auto-resolution engine settles the provable conflicts by
@@ -300,19 +301,21 @@ export default function SyncReviews() {
   const [relinkInput, setRelinkInput] = useState({}); // rowId -> pasted ClickUp card link/id (relink_task)
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
-  const [bulkMsg, setBulkMsg] = useState('');
+  // A review row sits anywhere down a long queue, so its result rides the fixed
+  // toast — the same reason rowErr already exists for failures (FlashToast.jsx).
+  const { flash, clearFlash, toast } = useFlash();
   const [rowErr, setRowErr] = useState({});           // rowId -> error shown INLINE at the row (the top banner scrolls off-screen in a long list)
   const [recheckMsg, setRecheckMsg] = useState({});   // rowId -> "look again" result message
 
   async function bulk(action, winner) {
     const ids = Object.keys(selected).filter((id) => selected[id]);
     if (!ids.length) return;
-    setBusyId('bulk'); setErr(''); setBulkMsg('');
+    setBusyId('bulk'); setErr(''); clearFlash();
     try {
       const r = await api.post('/api/staff/sync-reviews/bulk', { ids, action, winner });
       const ok = (r.results || []).filter((x) => x.ok).length;
       const bad = (r.results || []).filter((x) => !x.ok);
-      setBulkMsg(`${ok} done${bad.length ? `, ${bad.length} failed (${bad.slice(0, 3).map((b) => b.error).join('; ')}${bad.length > 3 ? '…' : ''})` : ''}`);
+      flash(`${ok} done${bad.length ? `, ${bad.length} failed (${bad.slice(0, 3).map((b) => b.error).join('; ')}${bad.length > 3 ? '…' : ''})` : ''}`);
       setSelected({});
       await load();
     } catch (e) { setErr(e.message || 'Bulk action failed'); }
@@ -354,11 +357,11 @@ export default function SyncReviews() {
     return '';
   }
   async function act(id, verb, body) {
-    setBusyId(id); setErr(''); setBulkMsg(''); setRowErr((m) => ({ ...m, [id]: '' }));
+    setBusyId(id); setErr(''); clearFlash(); setRowErr((m) => ({ ...m, [id]: '' }));
     try {
       const out = await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {});
       const msg = actionResultMessage(verb, out);
-      if (msg) setBulkMsg(msg);
+      if (msg) flash(msg);
       await load();
     }
     // Show the failure BOTH at the top and INLINE at the row: for a row deep in a
@@ -381,7 +384,7 @@ export default function SyncReviews() {
         // Each proven-resolved reason gets its own plain line (never claim "already
         // fixed" when PILOT itself wrote the value); anything new falls back to the
         // generic "the two sides already match" line.
-        setBulkMsg('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
+        flash('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
           || 'the two sides already match, so PILOT cleared this review on its own.'));
         await load();
       } else if (out.outcome === 'still_open') {
@@ -431,7 +434,7 @@ export default function SyncReviews() {
         <h2>Sync review</h2>
         <div className="spacer" />
         <select className="input" style={{ maxWidth: 180 }} value={status}
-          onChange={(e) => { setStatus(e.target.value); setRecheckMsg({}); setBulkMsg(''); }}
+          onChange={(e) => { setStatus(e.target.value); setRecheckMsg({}); clearFlash(); }}
           aria-label="Filter by status">
           <option value="open">Needs review</option>
           <option value="resolved">Resolved</option>
@@ -445,7 +448,7 @@ export default function SyncReviews() {
         Dismiss keeps both sides as they are.
       </p>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
-      {bulkMsg && <div className="notice ok" style={{ marginBottom: 10 }}>{bulkMsg}</div>}
+      {toast}
       {status === 'open' && Object.values(selected).some(Boolean) && (
         <div className="panel" style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <strong>{Object.values(selected).filter(Boolean).length} selected</strong>

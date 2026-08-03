@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { fmtDay } from '../lib/dates.js';
+import { useFlash } from '../components/FlashToast.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
@@ -33,7 +34,6 @@ export default function StaffLeads() {
   const [rows, setRows] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
   const [view, setView] = useState('board');      // board | list
   const [q, setQ] = useState('');
   const [stageF, setStageF] = useState('');
@@ -45,7 +45,9 @@ export default function StaffLeads() {
 
   const load = () => api.staffLeads().then(setRows).catch(e => setErr(e.message));
   useEffect(() => { load(); api.staffTeam().then(setTeam).catch(() => {}); }, []);
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2600); };
+  // A lead action fires from a card/row anywhere down the board — its result
+  // goes to the fixed toast so it never shoves the board (see FlashToast.jsx).
+  const { flash, toast } = useFlash();
 
   const officers = useMemo(() => team.filter(m => ['loan_officer', 'admin', 'super_admin', 'processor'].includes(m.role)), [team]);
 
@@ -102,7 +104,7 @@ export default function StaffLeads() {
         </div>
       </div>
 
-      {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
+      {toast}
 
       <div className="stack">
         <div className="kpi-grid">

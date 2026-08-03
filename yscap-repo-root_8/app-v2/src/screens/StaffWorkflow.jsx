@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fmtDate } from '../lib/dates.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* THE WORKFLOW (owner-directed 2026-07-21) — my personal work queue.
    Everything submitted to me, in the order it arrived, with a live "up next"
@@ -65,7 +66,6 @@ export default function StaffWorkflow() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(null);            // item id being acted on
-  const [flash, setFlash] = useState('');
   const [returning, setReturning] = useState(null);  // item id whose send-back form is open
   const [outcome, setOutcome] = useState('');
   const [note, setNote] = useState('');
@@ -89,7 +89,9 @@ export default function StaffWorkflow() {
   }, [effTab, view]);
   useEffect(() => { reload(); }, [reload]);
 
-  const say = (m) => { setFlash(m); setTimeout(() => setFlash(''), 5000); };
+  // Every hand-off action belongs to a row — confirm in the fixed toast so
+  // the queue never jumps under the cursor (see FlashToast.jsx).
+  const { flash: say, toast } = useFlash();
 
   const pickup = useCallback(async (id) => {
     if (busy) return; setBusy(id); setErr('');
@@ -169,7 +171,7 @@ export default function StaffWorkflow() {
         </div>
       )}
 
-      {flash && <div className="notice ok" style={{ marginBottom: 12 }}>{flash}</div>}
+      {toast}
       {err && rows && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}
         <button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
 
