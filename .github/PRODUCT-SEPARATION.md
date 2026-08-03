@@ -15,38 +15,43 @@ Think of them as **two different companies' software that happen to share one re
 comparison: *"if I'm telling you to build something you don't know if you should build this for Amazon or for
 eBay — you ask."*
 
-## The eight rules
+## The nine rules
 
 1. **Never assume which side a request is for.** Not stated, or not 100% obvious? **Stop and ask.** Never guess,
    never "do both to be safe," never pick the likelier one.
-2a. **The one shared zone is identity, and LT only reads it** (owner-directed 2026-08-03: *"same login same borrower
-   record, keep it separate everything else"*). Three zones, not two: **shared identity** (`src/auth/index.js`, the
-   `borrowers` person record, the `staff_users` roster), the **RTL product**, and the **LT product**. A borrower
-   sees all their files in one place, an officer sees all of theirs — both products, each stamped. LT does not
-   rewrite identity. Everything else is a brand-new LT build. The `authorized` block in
-   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list.
-2. **Nothing else crosses without the owner's explicit written authorization, per item.** No copying, moving, re-using,
+2. **The one shared zone is identity, and LT only reads the person record** (owner-directed 2026-08-03: *"same
+   login same borrower record, keep it separate everything else"*). Three zones, not two: **shared identity**
+   (`src/auth/index.js`, the `borrowers` person record, the `staff_users` roster, the one shared borrower editor
+   `app-v2/src/components/BorrowerProfilePanel.jsx`, and the officer↔person link `borrower_officers`), the **RTL
+   product**, and the **LT product**. A borrower sees all their files in one place, an officer sees all of theirs —
+   both products, each stamped. **LT never writes `borrowers`**: an officer CAN change a borrower profile from a
+   long-term file, but through that one shared editor and the existing `PATCH /api/staff/borrowers/:id`, so the
+   person record keeps a single writer. LT DOES write one identity table — `borrower_officers` — because otherwise
+   the visibility rule (which resolves an officer's relationship through `applications`, an RTL table) would refuse
+   the very officers this was meant for. Everything else is a brand-new LT build. The `authorized` block in
+   `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md` is the complete crossing list — 8 lines, all identity.
+3. **Nothing else crosses without the owner's explicit written authorization, per item.** No copying, moving, re-using,
    importing, extending, generalizing or "sharing" of code, tables, columns, migrations, conditions, templates,
    endpoints, screens, components, prompts, mappings or integrations — in either direction. Wanting to re-use
    something is fine and expected: **ask, get it in writing, record it in
    `yscap-repo-root_8/docs/LONG-TERM-AUTHORIZED-COPIES.md`, then build.** Authorization is per item, never blanket.
-3. **The back end is separate, always.** LT code only in `src/longterm/**` (back end) and `app-v2/src/longterm/**`
+4. **The back end is separate, always.** LT code only in `src/longterm/**` (back end) and `app-v2/src/longterm/**`
    (front end); LT HTTP only under `/api/lt/*`; LT tables and trigger functions only named `lt_*`; LT schema only in
    its own `db/NNN_lt_*.sql` files; LT tests only `scripts/test-lt-*.js`. No LT table may reference an RTL table, and
    LT may not reach an RTL table by raw SQL either — a crossing does not need a `require()`. No trigger crosses. No
    shared writer, service module, database pool, queue row, or condition/checklist template. The **only** permitted
    seams are `src/server.js` mounting the LT router and `scripts/test-lt-*.js`.
-4. **Do not touch RTL in order to build LT.** No new column on `applications` or any RTL table, no new ClickUp
+5. **Do not touch RTL in order to build LT.** No new column on `applications` or any RTL table, no new ClickUp
    mapping, no new Encompass / SharePoint / DocuSign / Sitewire / Trustpoint wiring, no new checklist template,
    no new enum value — unless the owner asked for **that exact thing**.
-5. **LT is explicitly NOT getting, for now: conditions, document underwriting, orders.** Don't build them, don't
+6. **LT is explicitly NOT getting, for now: conditions, document underwriting, orders.** Don't build them, don't
    stub them, don't "leave room" for them by copying RTL shapes.
-6. **The front end may show both; the back end may not.** One pipeline may list both, with filters
+7. **The front end may show both; the back end may not.** One pipeline may list both, with filters
    (Both / RTL only / Long-Term only) and a **visible product stamp** on every row and every file header. The merge
    happens in the read/view layer only — never a SQL join, a shared table, or a shared write path.
-7. **A feature built for one side never automatically applies to the other.** "Every fix is all-sides" means every
+8. **A feature built for one side never automatically applies to the other.** "Every fix is all-sides" means every
    surface of *that* product. It never reaches across.
-8. **When in doubt, ask. Silence is never permission.**
+9. **When in doubt, ask. Silence is never permission.**
 
 ## How this is enforced
 
