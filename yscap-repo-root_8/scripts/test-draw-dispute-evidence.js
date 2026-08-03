@@ -57,6 +57,33 @@ async function jf(method, path, tok, body) { const r = await fetch(base + path, 
     ok((r.headers.get('content-type') || '').includes('image/png'), 'served type is image/png (safe)');
     ok((r.headers.get('content-disposition') || '').includes('inline'), 'safe image served inline');
 
+    // ---- WHAT THE BORROWER'S OWN ROLLUP CARRIES (owner-directed 2026-08-03: "yes add the
+    // released amount to the borrower screen too"). The structural guard in
+    // test-draw-approval-ladder.js reads the source; this asserts the LIVE payload, because a
+    // source-grep cannot prove the route actually answers with the money. ----
+    {
+      await db.query(`INSERT INTO sitewire_property_links (application_id,sitewire_property_id,matched_by,state,pushed_at,inspection_method) VALUES ($1,$2,'created','live',now(),'mobile') ON CONFLICT DO NOTHING`, [a.id, DR + 7]);
+      await db.query(`INSERT INTO sitewire_draws (application_id,sitewire_draw_id,number,status,total_requested_cents,total_approved_cents) VALUES ($1,$2,1,'pending',100000,0) ON CONFLICT DO NOTHING`, [a.id, DR]);
+      await db.query(`INSERT INTO sitewire_draw_requests (sitewire_draw_id,sitewire_request_id,requested_cents,approved_cents,inspection_count) VALUES ($1,9001,100000,60000,1) ON CONFLICT DO NOTHING`, [DR]);
+      const rr = await jf('GET', `/api/borrower/draws/${a.id}/rollup`, bt);
+      ok(rr.status === 200, 'borrower rollup → 200');
+      const dw = ((rr.body.rollup && rr.body.rollup.draws) || []).find((x) => Number(x.sitewire_draw_id) === DR);
+      ok(!!dw, 'the borrower rollup carries their draw');
+      if (dw) {
+        // VISIBLE — their own money
+        ok('net_release_cents' in dw, 'the borrower is told what actually reaches them');
+        ok('fee_cents' in dw, 'and what is deducted');
+        ok(typeof dw.net_explanation === 'string' && dw.net_explanation.length > 0, 'with a plain sentence explaining it');
+        ok(/wired to you/.test(dw.net_explanation || ''), 'the sentence is the BORROWER wording, not our internal one');
+        ok(!/net release\.?$/i.test(dw.net_explanation || ''), 'never the staff phrasing');
+        // HIDDEN — our fee schedule and our project income
+        ok(!('fee_kind' in dw), 'our fee SCHEDULE is not exposed');
+        ok(!rr.body.rollup.fees, 'our fee income across the project is not exposed');
+        // and never a capital-partner name anywhere in the payload
+        ok(!/fidelis|blue ?lake|corrfirst|emcap/i.test(JSON.stringify(rr.body)), 'no capital-partner name in the borrower payload');
+      }
+    }
+
     // a NON-image body (HTML) is rejected outright — never stored, never servable (audit H1)
     const f2 = (await db.query(`INSERT INTO draw_findings (application_id,sitewire_draw_id,status,total_requested_cents,total_approved_cents,delivered_at,updated_at) VALUES ($1,$2,'delivered',50000,50000,now(),now()) RETURNING id`, [a.id, DR + 1])).rows[0];
     const l2 = (await db.query(`INSERT INTO draw_finding_lines (finding_id,sitewire_request_id,name,requested_cents,approved_cents,not_approved_cents) VALUES ($1,9002,'Paint',50000,50000,0) RETURNING id`, [f2.id])).rows[0];

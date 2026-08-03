@@ -131,11 +131,19 @@ export default function DrawAccept() {
               <div className="dd-sub" style={{ marginTop: 4 }}>of {usd2(f.total_requested_cents)} requested{pct ? ` · ${pct}%` : ''}</div>
             </div>
 
-            {/* mode toggle */}
-            <div className="row" style={{ gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
-              <button className={'btn ' + (mode === 'review' ? 'primary' : 'ghost')} onClick={() => { setMode('review'); setErr(''); }}>Review &amp; accept</button>
-              <button className={'btn ' + (mode === 'dispute' ? 'primary' : 'ghost')} onClick={() => { setMode('dispute'); setErr(''); }}>Push back on a line</button>
-              <a className="btn ghost" href={reportHref} target="_blank" rel="noopener noreferrer" style={{ marginLeft: 'auto' }}>Report (PDF)</a>
+            {/* Mode toggle — one segmented control, not two buttons where only one can be true
+                (owner-directed 2026-08-03). Two `primary`/`ghost` buttons made "Review & accept"
+                look like the action rather than the tab it is; the PDF is a document, so it sits
+                apart as a quiet `soft` action. */}
+            <div className="act-bar" style={{ marginTop: 16 }}>
+              <div className="seg" role="group" aria-label="What would you like to do?">
+                <button type="button" className={mode === 'review' ? 'on' : ''} aria-pressed={mode === 'review'}
+                  onClick={() => { setMode('review'); setErr(''); }}>Review &amp; accept</button>
+                <button type="button" className={mode === 'dispute' ? 'on' : ''} aria-pressed={mode === 'dispute'}
+                  onClick={() => { setMode('dispute'); setErr(''); }}>Push back on a line</button>
+              </div>
+              <span style={{ flex: 1 }} />
+              <a className="btn btn-sm soft" href={reportHref} target="_blank" rel="noopener noreferrer">Report (PDF)</a>
             </div>
 
             {/* per-line detail */}

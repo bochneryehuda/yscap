@@ -283,22 +283,47 @@ const ROLLUP = rollupMod.computeRollup({
 }
 
 // ===========================================================================
-// F. NOTHING ABOUT OUR CUT MAY REACH A BORROWER
-// loadRollup folds our per-draw economics onto every draw. The borrower rollup route strips them,
-// but the strip is a hand-written destructure — so a NEW lender-only field (this change added three)
-// leaks the moment somebody forgets. Structural guard: every lender-only key must be named there.
+// F. WHAT A BORROWER MAY AND MAY NOT SEE OF OUR ECONOMICS
+// loadRollup folds our per-draw economics onto every draw, and the borrower rollup route decides
+// what rides through. That decision is a hand-written destructure, so it is guarded from BOTH
+// sides: a lender-only field must stay named in it, and the figures the borrower is entitled to
+// must NOT be (owner-directed 2026-08-03: "yes add the released amount to the borrower screen too"
+// — their PDF had shown the fee and the net for days while the screen still showed neither).
 // ===========================================================================
 {
   const fs = require('fs');
   const src = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'routes', 'borrower-draws.js'), 'utf8');
-  const LENDER_ONLY = ['fee_cents', 'fee_kind', 'fee_projected', 'net_release_cents', 'retainage_held_cents', 'net_explanation', 'released', 'release_date'];
-  const missing = LENDER_ONLY.filter((k) => !new RegExp('\\b' + k + '\\b[^\\n]*\\.\\.\\.safe|\\b' + k + ',').test(src));
-  eq('F1 every lender-only draw field is stripped from the borrower rollup', missing, []);
+  const stripped = (k) => new RegExp('\\{[^}]*\\b' + k + '\\b[^}]*\\.\\.\\.safe', 's').test(src);
+
+  // (a) still secret. `fee_kind` describes OUR fee schedule (which inspection tier priced the
+  // draw), and the rollup's `net_explanation` is the STAFF sentence — the borrower gets the
+  // borrower-voiced one instead, built from the same single definition.
+  const LENDER_ONLY = ['fee_kind', 'net_explanation'];
+  eq('F1 every lender-only draw field is still stripped from the borrower rollup',
+    LENDER_ONLY.filter((k) => !stripped(k)), []);
   ok('F2 our project fee income is deleted from the borrower rollup', /delete rollup\.fees/.test(src));
-  // and the module that produces them agrees on what is lender-only
+
+  // (b) deliberately VISIBLE. These are the borrower's own money — what was approved, what we
+  // take, and what actually reaches them. Stripping one again would put the screen back at odds
+  // with the PDF they can already download.
+  const BORROWER_SEES = ['fee_cents', 'fee_projected', 'net_release_cents', 'retainage_held_cents', 'released', 'release_date'];
+  eq('F3 the money the borrower is entitled to is NOT stripped',
+    BORROWER_SEES.filter((k) => stripped(k)), []);
+
+  // (c) the replacement sentence is the BORROWER wording, from the one definition — never the
+  // staff one, which talks about the fee "becoming final when the release is recorded".
+  ok('F4 the borrower gets the borrower-voiced explanation',
+    /netExplanation\([^)]*\{\s*borrower:\s*true/.test(src));
+
+  // and the money model really does produce these keys (neither list is stale)
   const m = APPROVAL.drawMoney({ draw: DRAW, requests: REQUESTS, findingLines: FINDING_LINES, feeCents: 29900 });
-  ok('F3 the money model does produce every one of those keys (the list is not stale)',
-    LENDER_ONLY.filter((k) => k in m).length >= 4);
+  ok('F5 the money model produces the fields both lists name',
+    BORROWER_SEES.filter((k) => k in m).length >= 4);
+
+  // (d) and the borrower wording itself never reads like our internal note
+  const borrowerSentence = APPROVAL.netExplanation(m, { borrower: true });
+  ok('F6 the borrower sentence says what is wired to them', /wired to you/.test(borrowerSentence));
+  ok('F7 and carries none of the staff-only caveat', !/becomes final when the release is recorded/.test(borrowerSentence));
 }
 
 {
