@@ -5018,12 +5018,9 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
    documents for the team to classify. Uses the orders lib for all email building.
    ═══════════════════════════════════════════════════════════════════════════ */
 const orders = require('../lib/orders');
+const orderSlots = require('../lib/order-slots');
 const { orderReplyTo } = require('../lib/file-address');
 const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
-const ORDER_SLOTS = {
-  title: ['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement', 'Other'],
-  insurance: ['Binder', 'Invoice', 'Quote', 'Declaration Page', 'Other'],
-};
 
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
 
@@ -5062,7 +5059,7 @@ router.get('/applications/:id/orders', async (req, res) => {
     };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
-      `SELECT id, doc_kind, filename, slot_label, review_status, is_current, size_bytes, created_at
+      `SELECT id, doc_kind, filename, content_type, slot_label, review_status, is_current, size_bytes, created_at
          FROM documents
         WHERE application_id=$1 AND doc_kind = ANY($2::text[])
         ORDER BY created_at DESC`,
@@ -5071,13 +5068,22 @@ router.get('/applications/:id/orders', async (req, res) => {
     // The real document condition each order files into (rtl_cond_title /
     // rtl_cond_insurance) — so the panel can show where returned docs land + its
     // current status.
-    const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
+    const CONDITION_CODE = orderSlots.CONDITION_CODE;
     const conds = (await db.query(
       `SELECT ci.id, ci.status, t.code, t.label
          FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
         WHERE ci.application_id=$1 AND t.code = ANY($2::text[])`,
       [req.params.id, Object.values(CONDITION_CODE)])).rows;
     const condOf = (k) => conds.find((c) => c.code === CONDITION_CODE[k]) || null;
+    // The slots each order's documents may be assigned to are DERIVED from the
+    // condition template's own named slots (order-slots.js), so choosing
+    // "Insurance binder" here is the same act as dropping the file into that slot
+    // on the condition. A hand-kept copy drifted from the template and left every
+    // classified document invisible on the condition it was filed to.
+    const slotSets = {
+      title: await orderSlots.slotsFor(db, 'title'),
+      insurance: await orderSlots.slotsFor(db, 'insurance'),
+    };
 
     const shape = (k) => {
       const row = orderOf(k);
@@ -5092,8 +5098,12 @@ router.get('/applications/:id/orders', async (req, res) => {
         lastFollowupAt: row ? row.last_followup_at : null,
         followupCount: row ? row.followup_count : 0,
         sendCount: row ? row.send_count : 0,
-        slots: ORDER_SLOTS[k],
-        condition: cond ? { label: cond.label, status: cond.status } : null,
+        slots: slotSets[k].all,
+        // Which of those slots are REAL slots on the condition, so the picker can
+        // say which choices file the document into a named slot and which leave it
+        // in the condition's "other documents" group.
+        conditionSlots: slotSets[k].conditionSlots,
+        condition: cond ? { itemId: cond.id, code: cond.code, label: cond.label, status: cond.status } : null,
         returnedDocs: docsFor(k),
       };
     };
@@ -5244,12 +5254,16 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
   if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
   try {
     const slotRaw = String((req.body && req.body.slot) || '').trim().slice(0, 80);
-    const allowed = new Set(ORDER_SLOTS[kind]);
     // Empty clears back to unassigned; anything else must be one of this order's
-    // known slots (Binder / Invoice / Title Commitment / …) — an unknown label is
-    // rejected rather than stored as free text.
-    if (slotRaw && !allowed.has(slotRaw)) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
-    const slot = slotRaw || null;
+    // known slots — DERIVED from the condition's own named slots plus the
+    // descriptive labels the condition has no slot for (order-slots.js), so a
+    // classified document really does land in the slot the condition draws. A
+    // legacy label ("Binder") is accepted and stored as the condition's own
+    // spelling; anything unrecognised is refused rather than stored as free text.
+    const { all } = await orderSlots.slotsFor(db, kind);
+    const c = orderSlots.canonicalizeSlot(slotRaw, all);
+    if (!c.ok) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
+    const slot = c.slot;
     const upd = await db.query(
       `UPDATE documents SET slot_label=$4
         WHERE id=$1 AND application_id=$2 AND doc_kind=$3 RETURNING id`,
@@ -5257,6 +5271,46 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
     if (!upd.rows[0]) return res.status(404).json({ error: 'not found' });
     await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
     res.json({ ok: true, slot });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * ASSIGN A DOCUMENT TO ONE OF ITS CONDITION'S OWN SLOTS — the same act as the
+ * Orders desk's classify, done from the condition itself (owner-directed
+ * 2026-08-03: "you should have a flexibility to select to which slot the document
+ * should be tied to … or if it should stay on a random slot within the insurance
+ * condition").
+ *
+ * Deliberately keyed on the DOCUMENT's condition rather than on an order: a
+ * document can reach a slotted condition without an order (a staffer uploads the
+ * binder by hand, an agent emails it to the file address), and it must be
+ * assignable there too. The allowed labels come from the SAME derivation the
+ * Orders desk uses, so the two doors can never offer different slots.
+ */
+router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const doc = (await db.query(
+      `SELECT d.id, d.checklist_item_id, t.code AS template_code
+         FROM documents d
+         LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE d.id=$1 AND d.application_id=$2`, [req.params.docId, appId])).rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!doc.checklist_item_id) {
+      return res.status(400).json({ error: 'This document is not on a condition, so it has no slot to go in.', code: 'no_condition' });
+    }
+    const allowed = await orderSlots.slotsForConditionTemplate(db, doc.template_code);
+    if (!allowed.length) {
+      return res.status(400).json({ error: 'This condition has no named slots — every document on it already shows.', code: 'no_slots' });
+    }
+    const c = orderSlots.canonicalizeSlot(String((req.body && req.body.slot) || '').trim().slice(0, 80), allowed);
+    if (!c.ok) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
+    await db.query(`UPDATE documents SET slot_label=$2 WHERE id=$1`, [doc.id, c.slot]);
+    await audit(req, 'condition_doc_slotted', 'application', appId, { templateCode: doc.template_code, slot: c.slot || 'unassigned' });
+    res.json({ ok: true, slot: c.slot });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
