@@ -4,6 +4,7 @@ import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 import { fullNameOf } from '../lib/personName.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 // Fallback role list (replaced live by GET /permissions-meta).
 const FALLBACK_ROLES = [
@@ -127,8 +128,12 @@ export default function StaffTeam() {
   const isAdmin = can('manage_team');
   const [rows, setRows] = useState(null);
   const [meta, setMeta] = useState({ roles: FALLBACK_ROLES, capabilities: [], roleDefaults: {} });
+  // `err` is the ADD-FORM's own banner and stays in flow next to that form (it
+  // sits at the top of the page, which is where the user already is). Every
+  // ROW action reports through the toast instead — a banner at the top of the
+  // page shoved the roster and was off-screen anyway. See FlashToast.jsx.
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
+  const { flash, flashErr, toast } = useFlash();
   const [form, setForm] = useState(blankForm());
   const [busy, setBusy] = useState(false);
   const [pwFor, setPwFor] = useState(null);
@@ -150,7 +155,6 @@ export default function StaffTeam() {
   }, [isAdmin]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   // Roster KPIs — derived from the staff rows already loaded (each carries
   // is_active / has_login / mfa_enabled). No new fetch, pure counts.
@@ -188,18 +192,16 @@ export default function StaffTeam() {
   }
 
   async function patch(id, patchBody, okMsg) {
-    setErr('');
     try { await api.adminUpdateStaff(id, patchBody); if (okMsg) flash(okMsg); await load(); }
-    catch (e) { setErr(e.message); }
+    catch (e) { flashErr(e.message); }
   }
   async function savePassword(id) {
-    setErr('');
     try {
       { const w = passwordProblem(pwVal); if (w) throw new Error(w); }
       await api.adminSetStaffPassword(id, pwVal);
       setPwFor(null); setPwVal(''); flash('Password set. They can log in now.');
       await load();
-    } catch (e) { setErr(e.message); }
+    } catch (e) { flashErr(e.message); }
   }
 
   if (!isAdmin) return <div role="alert" className="notice err">You do not have permission to manage the team.</div>;
@@ -237,13 +239,13 @@ export default function StaffTeam() {
         <div className="page-head-actions">
           <span className="muted small">{rows ? `${rows.length} team members` : ''}</span>
           <button className="btn btn-ghost btn-sm" disabled={mailBusy === 'all'} title="Email a welcome (with set-up link) to everyone who can't log in yet"
-            onClick={async () => { if (mailBusy) return; setMailBusy('all'); setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+            onClick={async () => { if (mailBusy) return; setMailBusy('all'); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
             Send welcome to all
           </button>
         </div>
       </div>
 
-      {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {rows != null && (
@@ -302,6 +304,9 @@ export default function StaffTeam() {
               <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div></div>
           )}
           <div className="field" style={{ alignSelf: 'end' }}>
+            {/* the page-top banner is off-screen by the time you reach this
+                button — repeat the refusal where the click happened */}
+            {err && <div className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
             <button className="btn primary" disabled={busy}>{busy ? 'Adding…' : 'Add team member'}</button>
           </div>
         </form>
@@ -357,11 +362,11 @@ export default function StaffTeam() {
                     {s.has_login ? 'Reset password' : 'Set password'}
                   </button>
                   <button className="btn link" disabled={mailBusy === `w${s.id}`} title="Email them their console welcome (sign-in or set-up link)"
-                    onClick={async () => { if (mailBusy) return; setMailBusy(`w${s.id}`); setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`w${s.id}`); try { const r = await api.adminWelcome(s.id); if (r.sent) flash(`Welcome email sent to ${r.email}.`); else flashErr(`Could not deliver to ${r.email} — check the email provider.`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
                     Send welcome
                   </button>
                   <button className="btn link" disabled={mailBusy === `r${s.id}`} title="Email them a link to set a new password"
-                    onClick={async () => { if (mailBusy) return; setMailBusy(`r${s.id}`); setErr(''); try { const r = await api.adminResetStaffEmail(s.id); flash(r.sent ? `Password-reset email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`r${s.id}`); try { const r = await api.adminResetStaffEmail(s.id); if (r.sent) flash(`Password-reset email sent to ${r.email}.`); else flashErr(`Could not deliver to ${r.email} — check the email provider.`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
                     Send password reset
                   </button>
                 </div>

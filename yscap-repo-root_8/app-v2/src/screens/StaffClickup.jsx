@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* ClickUp Control Center (admin / platform_setup).
    Lets an admin validate and drive the ClickUp ⇄ portal sync without a
@@ -51,12 +52,13 @@ export default function StaffClickup() {
   const [dry, setDry] = useState(null);           // last dry-run stats
   const [busy, setBusy] = useState('');           // which action is running
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
   const [appId, setAppId] = useState('');
   const [review, setReview] = useState(null);     // manual-review queue rows
   const [sweep, setSweep] = useState(null);       // borrower-profile sweep progress
 
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
+  // Confirmations ride the fixed toast so they never move the panels the
+  // admin is reading (see FlashToast.jsx).
+  const { flash, toast } = useFlash();
   const loadHealth = () => api.clickupHealth().then(setHealth).catch(e => setErr(e.message));
   const loadActivity = () => api.clickupActivity().then(r => setActivity(r.rows || [])).catch(() => {});
   const loadReview = () => api.clickupManualReview().then(r => setReview(r.rows || [])).catch(() => {});
@@ -116,7 +118,7 @@ export default function StaffClickup() {
           <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); loadReview(); flash('Refreshed'); }}>Refresh</button>
         </div>
       </div>
-      {msg && <div className="notice ok">{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {/* connection + switches */}
