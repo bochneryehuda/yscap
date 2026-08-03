@@ -514,6 +514,10 @@ export const api = {
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // Deals a BORROWER typed that nobody has reviewed yet — the track-record
+  // review queue (db/458). Scoped server-side to the borrowers this staffer sees.
+  staffTrackRecordReviews: () => req('GET', '/api/staff/track-record-reviews'),
+  staffTrackRecordReviewsCount: () => req('GET', '/api/staff/track-record-reviews/count'),
   // In-file verify set: the file's vesting entity + this borrower's track-record
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
   staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),

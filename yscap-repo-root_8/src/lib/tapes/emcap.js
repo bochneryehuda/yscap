@@ -30,6 +30,8 @@
  */
 const path = require('path');
 const reg = require('../conditions/field-registry');
+// One wording for "what does this file vest in" across every tape + screen.
+const { vestingCell } = require('../vesting-label');
 
 // Template cell-style indices (from the EMCAP workbook's row-2 cells / styles.xml):
 const S = {
@@ -194,7 +196,7 @@ function economics(loan) {
 // snapshot is attached — e.g. a direct buildRow in a unit test).
 const COLUMNS = [
   ['A', 's', null, (l) => l.app.ys_loan_number || l.app.investor_loan_number || ''],   // Loan #
-  ['B', 's', null, (l) => l.vesting.llc || ''],                                          // Borrowing Entity
+  ['B', 's', null, (l) => vestingCell(l.vesting)],                                       // Borrowing Entity ("Individual" when there is no entity)
   ['C', 's', null, (l) => guarantor(l)],                                                 // Guarantor
   ['D', 's', null, (l) => l.address.line1 || ''],                                        // Address
   ['E', 's', null, () => ''],                                                            // County — not stored (owner-directed blank)

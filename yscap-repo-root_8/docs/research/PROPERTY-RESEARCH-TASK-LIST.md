@@ -788,7 +788,7 @@ never attempted. Everything in this phase costs about $10, one time.
   quarter overwrites rather than leaving two rows nobody can choose between.
 - [x] **5.11 Draw and save a market-area polygon** — **DONE, and it now CUTS the
   comparable search** (`src/lib/research/market-area.js`, 68 assertions including a
-  61x61 grid scan; db/458; the drawing UI on `StaffMarketAreas`;
+  61x61 grid scan; db/461; the drawing UI on `StaffMarketAreas`;
   `?market_area_id=` on `GET /api/research/comps`;
   `test-market-area-filter-db.js`, 20).
   **A radius is a bad model of a neighbourhood and every appraiser knows it**: a

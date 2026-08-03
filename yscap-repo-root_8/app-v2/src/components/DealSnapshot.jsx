@@ -107,7 +107,7 @@ export default function DealSnapshot({ app, gating }) {
               the row rather than being left behind. On an individual-vested file
               this says so plainly instead of reading as a missing entity. */}
           {app.personal_name_purchase && !app.llc_id
-            ? row('Vesting', <span>Individual&rsquo;s name <span className="ts-badge" style={{ marginLeft: 6 }}>no entity</span></span>)
+            ? row('Vesting', <span>Closing as an individual <span className="ts-badge" style={{ marginLeft: 6 }}>no entity</span></span>)
             : row('Entity', (
               <span>
                 {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
