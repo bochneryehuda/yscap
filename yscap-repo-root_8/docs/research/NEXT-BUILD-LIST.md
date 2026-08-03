@@ -39,6 +39,30 @@ So: **keys = going forward; `USPS_BACKFILL_ENABLED` = the 706 already on file.**
   true` (API Health screen / the integrations health registry). This cannot be
   checked from a development environment — it has no Render secrets, and it must
   never have them.
+  - **EVERYTHING THAT COULD BE DONE FROM HERE IS DONE — the screen now answers
+    the question honestly, whichever name the keys are under.** Two changes, both
+    aimed at the one way this item can go wrong, which is that the keys ARE in
+    Render under a name we were not reading and "not connected" is
+    indistinguishable from "never configured":
+    · `src/lib/usps-env.js` accepts the alternate names USPS itself prints on its
+      portal (`USPS_CONSUMER_KEY` / `_SECRET`, `USPS_API_KEY` / `_SECRET`,
+      `USPS_KEY` / `_SECRET`), and when it is STILL not configured it lists every
+      `USPS*` variable it CAN see — **by name, never by value** — so the health
+      screen says "USPS_ADDRESS_KEY is set; this reads USPS_CLIENT_ID" instead of
+      "not connected". A **Web Tools user id** (`USPS_USERID`) is deliberately
+      NOT aliased: it is a credential for the older XML API and feeding it to the
+      v3 OAuth client would fail as "your key is wrong" when the truth is "that
+      is a key for another service" — so it is named and explained instead.
+      (`scripts/test-usps-env-pure.js`, 36.)
+    · The API Health page's environment CHIPS were still checking only the
+      canonical name, so a connector working perfectly under an alternate showed
+      a red "required — not set" and the card claimed a key was missing. An env
+      entry now declares `alsoAccepts`, the chip reports **which name carried
+      it**, and the alternates come from `usps-env`'s own lists so the two can
+      never drift. (`test-env-alias-chip-pure.js` 21 +
+      `scripts/render-api-health-chip.mjs` 8, browser-verified.)
+  - **What is left is one look at the live screen**, which only somebody with
+    access to the running service can take.
 - [ ] **A1b** Turn on `USPS_BACKFILL_ENABLED` and watch the first pass. **Mind
   the quota**: the free tier is 60 lookups an hour ACROSS ALL USPS APIs, the
   counter is per-process, so with more than one instance the effective cap
