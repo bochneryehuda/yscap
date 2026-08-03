@@ -4,7 +4,7 @@ import { dealPurchase } from '../lib/dealPrice.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDate } from '../lib/dates.js';
-import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
+import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -206,7 +206,8 @@ function ClosingEmailChainPanel({ appId, onDownloadDoc }) {
                     </div>
                   </div>
                 } />
-                <ChainHistory appId={appId} chain={chain} onDownload={onDownloadDoc} />
+                <ChainDocuments chain={chain} onDownload={onDownloadDoc} />
+                <ChainHistory appId={appId} chain={chain} />
               </>
             )}
       </div>

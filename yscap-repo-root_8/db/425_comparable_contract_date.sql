@@ -1,4 +1,4 @@
--- 420 — THE DATE THE PRICE WAS AGREED, not just the date it settled
+-- 425 — THE DATE THE PRICE WAS AGREED, not just the date it settled
 --
 -- UAD writes a comparable's date of sale as "s06/25;c03/25" — SETTLED June 2025,
 -- under CONTRACT March 2025. The parser read the first and threw the second

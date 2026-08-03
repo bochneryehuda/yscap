@@ -1114,7 +1114,7 @@ async function writeReport(db, { a, comps, link, out }) {
       net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
       adjustments: JSON.stringify(c.adjustments || []),
       appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
-      // WHEN THE PRICE WAS AGREED (db/420). Distinct from the settled date above,
+      // WHEN THE PRICE WAS AGREED (db/425). Distinct from the settled date above,
       // and NULL on anything imported before we started reading it — which means
       // 'unknown', never 'same as the settled date'.
       contract_date: dateOnly(c.contract_date),
