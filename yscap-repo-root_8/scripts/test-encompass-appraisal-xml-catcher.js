@@ -78,6 +78,27 @@ t('an HTML or JSON error body served at HTTP 200 is REFUSED', () => {
   }
 });
 
+t('an error body is refused however it is CASED, namespaced, or fragmented', () => {
+  // The store's refusals arrive in more than one dress, and a blocklist that
+  // only knew `<Error>` and `<body>` let these through to be stored as an
+  // appraisal: an uppercase root, an S3-style namespaced root, and the HTML
+  // fragments a bare error page is built from.
+  for (const body of [
+    '<ERROR><Code>AccessDenied</Code></ERROR>',
+    '<fault><code>x</code></fault>',
+    '<s3:Error><s3:Code>AccessDenied</s3:Code></s3:Error>',
+    '<ul><li>Access Denied</li></ul>',
+    '<br/>Access Denied',
+    '<form action="x"></form>',
+    '<iframe src="x"></iframe>',
+    '<style>body{}</style>',
+    '<table><tr><td>Access Denied</td></tr></table>',
+  ]) {
+    assert.strictEqual(looksLikeXml(decodeHead(Buffer.from(body))), false,
+      `expected refusal for ${body.slice(0, 40)}`);
+  }
+});
+
 t('a real appraisal carrying a byte-order mark is ACCEPTED, not thrown away', () => {
   // A MISMO file from a Windows toolchain routinely has a UTF-8 BOM; read as
   // latin1 it begins "ï»¿<?xml" and used to be refused — and because the URL dies

@@ -42,11 +42,6 @@ const { URL } = require('url');
 const crypto = require('crypto');
 const encompass = require('../lib/integrations/encompass');
 
-// The resource `type` an appraisal report XML carries. Matched as a PREFIX so a
-// future MISMO version (…:version:V3.6) is caught without a code change; the
-// mimeType check below is the real gate, this only classifies.
-const APPRAISAL_XML_TYPE = 'urn:ice:epc:partner:appraisal:report';
-
 // A sweep walks up to 500 loans, so an error per resource could grow without
 // bound and be carried around in memory for the whole pass. Keep a readable
 // sample and COUNT the rest — a silent truncation would read as "only three
@@ -248,11 +243,12 @@ function looksLikeXml(head) {
   if (!s.startsWith('<')) return false;
   // An HTML document OR FRAGMENT is never an appraisal. The store serves both —
   // a bare `<body>Access Denied</body>` has no doctype and no <html>.
-  if (/^<(html|head|body|title|h[1-6]|div|p|span|a|meta|script|table|center|pre)[\s/>]/i.test(s)) return false;
+  if (/^<(html|head|body|title|h[1-6]|div|p|span|a|meta|script|table|center|pre|ul|ol|li|br|hr|form|iframe|style|link|img|font|b|i|em|strong|tbody|tr|td)[\s/>]/i.test(s)) return false;
   // An XML-wrapped error is the object store's OTHER refusal shape
   // (`<Error><Code>AccessDenied</Code>…`), and it is well-formed XML, so nothing
-  // below would catch it.
-  if (/^<(Error|error|Fault|ErrorResponse)[\s/>]/.test(s)) return false;
+  // below would catch it. Case-insensitive and namespace-tolerant: `<ERROR>` and
+  // `<s3:Error>` are the same refusal wearing different clothes.
+  if (/^<[\w.-]*:?(error|fault|errorresponse|errordocument)[\s/>]/i.test(s)) return false;
   // Require a plausible XML root element — a name, optionally namespaced —
   // rather than merely "a < and a letter".
   return /^<[A-Za-z_][\w.-]*(:[A-Za-z_][\w.-]*)?[\s/>]/.test(s);
@@ -392,7 +388,13 @@ async function recordSighting(db, row) {
     // ±8.64e15 limit, so a stamp in epoch MICROseconds (a plausible vendor
     // variation) yields a year-58528 date whose ISO form Postgres rejects with
     // 22009 — failing the INSERT, skipping the download, and losing the file.
-    [t500(row.resourceId), t500(row.loanGuid), t500(row.loanNumber), t500(row.orderId),
+    // `resource_id` is bound AS GIVEN. The caller has already normalised it, and
+    // `textColumn` is NOT idempotent — it strips, then trims, then slices, so a
+    // value whose 500-char cut lands on whitespace loses another character on a
+    // second pass. Re-normalising here would store a key one character shorter
+    // than the one capture()'s UPDATEs look for, which is precisely the
+    // orphaned-bytes bug this was meant to close.
+    [row.resourceId, t500(row.loanGuid), t500(row.loanNumber), t500(row.orderId),
      t500(row.transactionId), t500(row.vendor), t500(row.resourceType),
      t500(row.filename), t500(row.mimeType),
      tsOrNull(row.receivedDate), tsOrNull(row.validityAt), row.status]
@@ -460,8 +462,13 @@ async function capture(db, res, meta) {
               sha256=$5, research_import_id=$6, captured_at=now(), error=$7,
               attempts = attempts + 1
         WHERE resource_id=$1`,
+      // `error` is a VENDOR-DERIVED string — an import reason quoting the file,
+      // or below, a download error quoting the response body — so it goes through
+      // the same NUL-stripping guard as every other text bind. Postgres refuses a
+      // NUL in text with 22021, and here that would throw a genuinely CAPTURED
+      // file into the failure path.
       [meta.resourceId, saved.ref, saved.provider || null, buf.length, digest, importId,
-       importNote ? String(importNote).slice(0, 500) : null]
+       t500(importNote)]
     );
     // An UPDATE that matched NOTHING means the ledger and this write disagree
     // about the key — the bytes are saved but orphaned, the row never leaves
@@ -481,7 +488,15 @@ async function capture(db, res, meta) {
           SET status = CASE WHEN status='captured' THEN 'captured' ELSE 'failed' END,
               error=$2, attempts = attempts + 1
         WHERE resource_id=$1`,
-      [meta.resourceId, String((e && e.message) || e).slice(0, 500)]
+      // NUL-guarded for the same reason: this message quotes the response BODY
+      // (`download 403: …`, `download is not xml: …`), so any binary payload —
+      // a PNG, a ZIP, a PDF — puts a NUL in it. Unguarded, the UPDATE was
+      // rejected (22021) and swallowed by the .catch below: the failure was never
+      // recorded, `attempts` stayed 0, the row stayed 'pending', and the next
+      // sweep promoted it to 'expired' — so a file we saw LIVE and tried to fetch
+      // ended up reading "only the AMC can supply it". That is exactly the
+      // distinction the status ladder exists to protect.
+      [meta.resourceId, t500(String((e && e.message) || e))]
     ).then((r) => {
       if (r && r.rowCount === 0) {
         console.error(`[encompass-xml] failure recorded NOTHING for resource ${meta.resourceId} — ledger row not found`);
@@ -504,7 +519,7 @@ async function capture(db, res, meta) {
 async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log = false } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
-    skipped: 0, noLink: 0, errors: [],
+    skipped: 0, noLink: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
   if (!encompass.configured()) return { ...out, disabled: true, reason: 'encompass not configured' };
@@ -533,7 +548,11 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
       // which is why `_rowGuid` accepts six spellings; a private two-spelling
       // reader here would have dropped every row, reported all zeros, and — since
       // a sweep with nothing in it logs nothing — done so in complete silence.
-      const reader = require('./reader');
+      // The `||` fallback covers a MISSING EXPORT; a module LOAD failure is a
+      // throw, and letting it reach the outer catch would discard a search that
+      // already succeeded. So the require gets its own guard.
+      let reader = {};
+      try { reader = require('./reader'); } catch { /* fall back to the local readers */ }
       const guidOf = reader._rowGuid || ((r) => r.loanId || (r.fields || {})['Loan.Guid']);
       const fieldOf = reader._rowField || ((r, n) => (r.fields || {})[n]);
       list = (Array.isArray(rows) ? rows : []).map((r) => ({
@@ -635,7 +654,14 @@ async function sweepOnce(db, { loans = null, sinceDays = 2, skewMs = 60000, log 
           // 'pending' — NOT 'failed'. A crash between recording the sighting and
           // the download would otherwise leave a row indistinguishable from a real
           // download failure.
-          status: live ? 'pending' : 'expired',
+          //
+          // A resource with NO LINK is terminal for us whatever its stamp says: we
+          // cannot fetch it, and only the AMC can supply it — the same practical
+          // position as an expiry. Leaving it 'pending' (which a missing
+          // `authorization` alongside a live stamp used to do) left a row that
+          // never reached a settled state and whose `attempts` stayed 0 forever.
+          // The noLink counter and the alarm carry the distinction.
+          status: (live && !missingLink) ? 'pending' : 'expired',
         };
         let known;
         try { known = await recordSighting(db, meta); }
@@ -703,6 +729,12 @@ function makeTick(db) {
             loans: r.loans, resources: r.resources, captured: r.captured,
             failed: r.failed, expired: r.expired, skipped: r.skipped,
             noLink: r.noLink,
+            // Both of these are the whole point of counting rather than
+            // truncating: printing three errors while silently dropping ten more,
+            // or capturing bytes the ledger never recorded, must not look like a
+            // clean run.
+            capturedUnrecorded: r.capturedUnrecorded || 0,
+            errorsDropped: r.errorsDropped || 0,
             errors: (r.errors || []).slice(0, 3),
           }));
         }

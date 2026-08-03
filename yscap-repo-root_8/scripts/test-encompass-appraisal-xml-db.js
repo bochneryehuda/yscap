@@ -22,9 +22,18 @@
  *      saved and orphaned, the row never left 'pending', and every later sweep
  *      re-attempted a dead URL. Neither UPDATE checked `rowCount`.
  *
- * Plus the things only a real database can answer: that the CHECK accepts every
- * status the code writes, that the status ladder never walks an outcome
- * backwards, and that the unique index makes a re-sweep idempotent.
+ *   3. `error` was the one vendor-derived text bind not NUL-stripped. It quotes
+ *      the response BODY, so any binary payload puts a NUL in it; Postgres
+ *      refuses that (22021) and the UPDATE was swallowed — so a real download
+ *      failure was never recorded, `attempts` stayed 0, the row stayed 'pending',
+ *      and the next sweep promoted it to 'expired'. A file we saw live and tried
+ *      to fetch then read as "only the AMC can supply it".
+ *
+ * Cases 1-3 each reproduce a bug that was live. The remainder are schema and
+ * behaviour tests that only a real database can answer — the CHECK accepts every
+ * status the code writes, the status ladder never walks an outcome backwards,
+ * and the unique index makes a re-sweep idempotent — and they are NOT regression
+ * tests for those fixes.
  *
  * Requires DATABASE_URL with migrations applied. Skips cleanly otherwise.
  */
@@ -59,9 +68,20 @@ function mkOrder(resource) {
   };
 }
 
+// This suite is about the LEDGER. It must not leave anything behind in the two
+// systems capture() also touches: `storage.save` writes a real blob under
+// STORAGE_DIR (a previous run of this pattern left an `uploads/` directory in the
+// repo), and `importXml` INSERTs a `research_imports` header row into a SHARED
+// table before it parses. Both are stubbed so cleanup is complete and no other
+// suite in the same CI job can be disturbed.
+const storage = require('../src/lib/storage');
+const xmlImport = require('../src/lib/research/xml-import');
+const saved = [];
+
 async function sweepWith(resource) {
   const order = mkOrder(resource);
   const origGet = enc.apiGet, origConfigured = enc.configured, origFetch = global.fetch;
+  const origSave = storage.save, origImport = xmlImport.importXml;
   enc.configured = () => true;
   enc.apiGet = async (p) => (/view=complete/.test(p) ? order : [order]);
   // A successful download of a real, tiny MISMO document.
@@ -70,9 +90,18 @@ async function sweepWith(resource) {
     headers: { get: () => null },
     arrayBuffer: async () => Buffer.from('<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6"/>'),
   });
+  storage.save = async (buf) => {
+    const ref = `test/${TAG}${saved.length}.xml`;
+    saved.push(ref);
+    return { ref, provider: 'local', bytes: buf.length };
+  };
+  xmlImport.importXml = async () => ({ ok: true, status: 'ok', importId: null, reason: null });
   try {
     return await M.sweepOnce(db, { loans: [{ loanId: `${TAG}guid`, loanNumber: 'L1' }] });
-  } finally { enc.apiGet = origGet; enc.configured = origConfigured; global.fetch = origFetch; }
+  } finally {
+    enc.apiGet = origGet; enc.configured = origConfigured; global.fetch = origFetch;
+    storage.save = origSave; xmlImport.importXml = origImport;
+  }
 }
 
 const rowFor = async (id) => (await db.query(
@@ -119,7 +148,38 @@ const rowFor = async (id) => (await db.query(
     ok(!r.capturedUnrecorded, 'no capture went unrecorded');
   }
 
-  /* ── 3. Every status the code writes satisfies the CHECK ─────────────────── */
+  /* ── 3. A binary error body carries a NUL — the FAILURE must still record ── */
+  {
+    const id = `${TAG}nul`;
+    const order = mkOrder({
+      id, name: 'x.xml', mimeType: 'application/xml',
+      receivedDate: new Date().toISOString(),
+      location: urlFor(id, future), authorization: 'elli-signature X',
+    });
+    const origGet = enc.apiGet, origConfigured = enc.configured, origFetch = global.fetch;
+    enc.configured = () => true;
+    enc.apiGet = async (p) => (/view=complete/.test(p) ? order : [order]);
+    // A PNG served at HTTP 200 where an XML was expected. The sniff refuses it
+    // and quotes the head — NUL bytes and all — into the error message.
+    global.fetch = async () => ({
+      status: 200, ok: true,
+      headers: { get: () => null },
+      arrayBuffer: async () => Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D]),
+    });
+    let r;
+    try {
+      r = await M.sweepOnce(db, { loans: [{ loanId: `${TAG}guid`, loanNumber: 'L1' }] });
+    } finally { enc.apiGet = origGet; enc.configured = origConfigured; global.fetch = origFetch; }
+
+    const row = await rowFor(id);
+    ok(r.failed === 1, `the sweep reports the failure (got ${JSON.stringify({ failed: r.failed, captured: r.captured })})`);
+    ok(row && row.status === 'failed',
+      `the LEDGER records it as failed — a NUL in the error text used to reject the UPDATE silently, leaving "${row && row.status}"`);
+    ok(row && row.attempts >= 1, 'and the attempt is counted, so a retry is visible');
+    ok(row && row.error && !row.error.includes(' '), 'the recorded reason is stored, NUL-stripped');
+  }
+
+  /* ── 4. Every status the code writes satisfies the CHECK ─────────────────── */
   {
     for (const status of ['pending', 'expired', 'failed', 'captured']) {
       const id = `${TAG}chk-${status}`;
@@ -142,7 +202,7 @@ const rowFor = async (id) => (await db.query(
     ok(rejected, 'and still refuses a status outside the four');
   }
 
-  /* ── 4. The status ladder never walks an outcome backwards ───────────────── */
+  /* ── 5. The status ladder never walks an outcome backwards ───────────────── */
   {
     const { _internals } = M;
     void _internals;
@@ -170,7 +230,7 @@ const rowFor = async (id) => (await db.query(
     }
   }
 
-  /* ── 5. A re-sweep of a captured resource downloads nothing ──────────────── */
+  /* ── 6. A re-sweep of a captured resource downloads nothing ──────────────── */
   {
     const id = `${TAG}idem`;
     const res = {
