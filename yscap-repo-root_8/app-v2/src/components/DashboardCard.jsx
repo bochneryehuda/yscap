@@ -163,8 +163,10 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
             if (!answer.truncated && drawn >= answer.series.length) return null;
             return (
               <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
+                {/* Both wordings state the TOTAL as well as the drawn count — a note whose
+                    only job is to say what is hidden must not omit how much. */}
                 {answer.grain
-                  ? `Showing the first ${drawn} periods${answer.truncated ? ' — there are more' : ''}.`
+                  ? `Showing the first ${drawn} of ${answer.series.length}${answer.truncated ? '+' : ''} periods.`
                   : `Showing the top ${drawn} of ${answer.series.length}${answer.truncated ? '+' : ''}.`}
               </p>
             );

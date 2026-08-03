@@ -41,6 +41,20 @@ const DEFAULT_N = 12;
 const nOk = (n) => Number.isInteger(Number(n)) && n !== null && n !== ''
   && Number(n) >= 1 && Number(n) <= 3650;
 
+/**
+ * What the card is ACTUALLY running — mirrors `compile.periodN` on the server (floor, clamp,
+ * and default an unreadable value to THIRTY).
+ *
+ * Two different questions look alike here and must not be answered with the same number.
+ * `nOk` answers "will the server accept this?"; this answers "what window is this card using
+ * right now?" — and only the second belongs in a box that is about to describe an existing
+ * card. Seeding an already-saved card from DEFAULT_N instead put 12 on screen over a card
+ * running 30 days, which is the screen-and-card disagreement this seeding exists to remove,
+ * and an untouched Save then wrote that 12 in. DEFAULT_N stays right for a period the person
+ * is picking for the first time, where there is no card behaviour to preserve.
+ */
+const effectiveN = (n) => Math.max(1, Math.min(3650, Math.floor(Number(n)) || 30));
+
 const VIZ = [
   { v: 'number', label: 'A big number' },
   { v: 'trend', label: 'A trend over time' },
@@ -55,13 +69,13 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
       filter: null, date_field: '', period: { kind: 'all' }, group_by: '', grain: '',
       band: 'body', width: 'one', target: null, ...(card || {}),
     };
-    // SEED ON OPEN, for the same reason the dropdown seeds on change: the "How many?" box
-    // is about to DISPLAY a number, so the draft has to carry it. A card stored with no
-    // "how many" is a legal state (the server defaults it to 30), and such cards already
-    // exist — opening one showed 12 in the box over a query that used 30, which is the
-    // screen-and-card disagreement this editor was just fixed to stop.
+    // SEED ON OPEN, for the same reason the dropdown seeds on change: the "How many?" box is
+    // about to DISPLAY a number, so the draft has to carry it. Seeded from what the card is
+    // RUNNING (effectiveN), never from the new-card default — an existing card's window must
+    // survive being looked at, and a Save the person believes changed nothing must not move
+    // it from 30 days to 12.
     if (NEEDS_N.includes(d.period && d.period.kind) && !nOk(d.period.n)) {
-      d.period = { ...d.period, n: DEFAULT_N };
+      d.period = { ...d.period, n: effectiveN(d.period.n) };
     }
     return d;
   });
@@ -164,9 +178,13 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
               // to set only the kind, so the "How many?" box showed 12 while the card
               // carried no number at all — the screen and the draft disagreed, and the save
               // was then refused over a value that visibly read 12.
+              // `nOk`, not a bare Number.isInteger — Number(null), Number('') and
+              // Number(false) are all the integer 0, so the weaker test declined to re-seed
+              // exactly the values that most need it, and the box went back to showing a
+              // number the card was not using. Both seeding sites now ask the same question.
               const kind = e.target.value;
               const period = { ...(draft.period || {}), kind };
-              if (NEEDS_N.includes(kind) && !Number.isInteger(Number(period.n))) period.n = DEFAULT_N;
+              if (NEEDS_N.includes(kind) && !nOk(period.n)) period.n = DEFAULT_N;
               set({ period });
             }}>
             {PERIODS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}

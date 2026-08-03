@@ -215,5 +215,35 @@ console.log('\n13. a card the catalogue no longer supports is refused, not silen
   ok(store.validateCard({ title: 'ok', metric_key: 'file_count' }).length === 0, 'and a good card passes');
 }
 
+console.log('\n14. the editor never shows a "how many" the card is not using');
+{
+  // THE CROSS-LAYER CONTRACT, pinned because this exact drift shipped twice. The editor
+  // decides what to put in the "How many?" box; the server's compile.periodN decides what
+  // the query actually does. They are two files, two languages' worth of defaults, and
+  // nothing but this check stops them disagreeing — the first version seeded the box with
+  // the NEW-CARD default (12) while the server defaulted an absent value to 30, so the box
+  // described a window the card was not running and an untouched Save wrote that in.
+  //
+  // Read straight out of the shipped component so the test cannot pass against a copy of
+  // the rule that the editor no longer uses.
+  const fs = require('fs');
+  const src = fs.readFileSync(__dirname + '/../app-v2/src/components/DashboardCardEditor.jsx', 'utf8');
+  const nOkSrc = (src.match(/const nOk = ([\s\S]*?);\n/) || [])[1];
+  const effSrc = (src.match(/const effectiveN = ([\s\S]*?);\n/) || [])[1];
+  ok(!!nOkSrc && !!effSrc, 'the editor still defines both nOk and effectiveN');
+  /* eslint-disable no-eval */
+  const nOk = eval(nOkSrc);
+  const effectiveN = eval(effSrc);
+  const shown = (n) => (nOk(n) ? Number(n) : effectiveN(n));
+
+  const cases = [undefined, null, '', 0, false, [], ' ', NaN, 1.5, -5, 5000, 3651, 12, '12', 3650, [5], '0012'];
+  const off = cases.filter((n) => shown(n) !== compile.periodN({ n }));
+  ok(off.length === 0,
+    `the box shows exactly what the query uses, for every stored value (${off.length ? JSON.stringify(off) : 'all 17 agree'})`);
+  ok(shown(undefined) === 30 && compile.periodN({}) === 30,
+    'a card with no "how many" reads 30 on both sides — not the new-card default');
+  ok(shown(1.5) === 1, 'and a stored 1.5 reads as the 1 day it really runs');
+}
+
 console.log(`\ndashboards-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
