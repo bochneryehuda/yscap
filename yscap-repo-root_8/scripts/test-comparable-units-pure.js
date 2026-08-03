@@ -592,6 +592,51 @@ const roomAdj = (c) => (c.adjustments || []).filter((a) => a.type === 'RoomCount
   'the adverse location factor survives — it used to be dropped for the bland one');
   ok(view('<COMPARISON_LOCATION_DETAIL GSELocationType="Residential"/>').locationType === 'Residential',
     'a single location factor is unchanged');
+
+  // ---------------------------------------------------------------------------
+  // 15. THE GRID ROW IS THE SAME FACT IN WORDS (db/439) — the fallback for the 73
+  //     of 152 real reports that carry NO UAD extension block at all. Everything
+  //     read from COMPARISON_DETAIL was blank on half the corpus, and that
+  //     blankness read as a VENDOR trait rather than as ours.
+  // ---------------------------------------------------------------------------
+  const row = (t, d) => `<SALE_PRICE_ADJUSTMENT _Type="${t}" _Description="${d}" _Amount="-2500"/>`;
+  const grid = (rows) => (extract(`<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000">
+ <LOCATION PropertyStreetAddress="4 Row Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ ${rows}
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`).comparables[0] || {});
+
+  ok(grid(row('View', 'Avg/BsyRd')).viewType === 'Avg/BsyRd',
+    'a report with no UAD block gets its view from the grid row — 360 comparables');
+  ok(grid(row('Location', 'Traffic exposure')).locationType === 'Traffic exposure',
+    'and its location the same way');
+  ok(grid(row('FinancingConcessions', 'Conventional')).financingType === 'Conventional',
+    'and how the sale was financed — 307 comparables');
+  ok(grid(row('FunctionalUtility', 'Infer-2beds')).functionalUtility === 'Infer-2beds',
+    'FUNCTIONAL UTILITY is read at all — stated on every one of the 769 comparables, and read by nothing before');
+
+  // A NUMBER IS NOT A DESCRIPTION. Several vendors put the adjustment amount, or a
+  // bare separator, in the description slot — the real corpus holds ";0", ";", "0"
+  // and "-25000" where a word belongs. Storing those would put "0" in a column a
+  // person reads as the property's financing type.
+  for (const junk of ['0', ';', ';0', '-25000', '  ', '$1,200', '-']) {
+    ok(grid(row('FinancingConcessions', junk)).financingType == null,
+      `a description of "${junk}" is a number, not a word — refused`);
+  }
+
+  // THE CODED VALUE ALWAYS WINS. The fallback fills a blank; it never overrides
+  // the structured attribute.
+  const coded = extract(`<?xml version="1.0"?><VALUATION_RESPONSE>
+<REPORT AppraisalFormType="FNM1004"><PROPERTY><SALES_COMPARISON>
+<COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="400000">
+ <LOCATION PropertyStreetAddress="4 Both Rd" PropertyCity="Newark" PropertyState="NJ" PropertyPostalCode="07103"/>
+ <COMPARISON_DETAIL GSEFinancingType="FHA"/>
+ <COMPARISON_VIEW_DETAIL GSEViewType="ParkView"/>
+ ${row('FinancingConcessions', 'Conventional')}${row('View', 'Residential')}
+</COMPARABLE_SALE></SALES_COMPARISON></PROPERTY></REPORT></VALUATION_RESPONSE>`).comparables[0];
+  ok(coded.financingType === 'FHA', 'the UAD financing type wins over the grid row');
+  ok(coded.viewType === 'ParkView', 'and the UAD view wins over the grid row');
   ok(view('').viewType === null, 'no view element states no view');
   // The rating and the type are different facts and must not overwrite each other.
   const v2 = view('<COMPARISON_VIEW_OVERALL_RATING GSEViewOverallRatingType="Adverse"/>'

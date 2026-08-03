@@ -128,6 +128,8 @@ const ROLLUP_FACTS = Object.freeze({
   // what is actually there. Both roll up, because a later reader can re-judge a
   // cemetery and cannot re-judge an "Adverse".
   view_type: 'view_type',
+  // How well the layout works, in the appraiser's own words (db/439).
+  functional_utility: 'functional_utility',
   neighborhood: 'neighborhood', census_tract: 'census_tract', flood_zone: 'flood_zone',
   zoning_id: 'zoning_id', zoning_desc: 'zoning_desc', market_rent: 'market_rent',
   owner_of_record: 'owner_of_record', hoa_fee_amount: 'hoa_fee_amount', hoa_fee_period: 'hoa_fee_period',
@@ -1468,6 +1470,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       condition_basis: 'as_is',
       view_rating: txt(c.view_rating), location_rating: txt(c.location_rating),
       location_type: txt(c.location_type), view_type: txt(c.view_type),
+      functional_utility: txt(c.functional_utility),
       below_grade_sqft: c.below_grade_sqft, below_grade_finished_sqft: c.below_grade_finished_sqft,
       below_grade_beds: c.below_grade_beds,
       below_grade_baths_full: c.below_grade_baths_full,

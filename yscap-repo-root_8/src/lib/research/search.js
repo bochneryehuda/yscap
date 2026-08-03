@@ -351,7 +351,7 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   -- deliberately NOT folded into beds / baths_full: those are the ABOVE-grade
   -- figures the grid states, and the whole reason the form separates them is that
   -- a basement bedroom is not a bedroom.
-  p.view_type, p.basement_exit, p.below_grade_beds,
+  p.view_type, p.functional_utility, p.basement_exit, p.below_grade_beds,
   p.below_grade_baths_full, p.below_grade_baths_half,
   p.below_grade_rec_rooms, p.below_grade_other_rooms,
   p.below_grade_sqft, p.below_grade_finished_sqft,

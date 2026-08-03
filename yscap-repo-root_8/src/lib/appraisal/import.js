@@ -685,6 +685,7 @@ function comparableRowFrom(c, formType = null) {
     below_grade_rec_rooms: c.belowGradeRecRooms, below_grade_other_rooms: c.belowGradeOtherRooms,
     basement_exit: c.basementExit,
     data_source: c.compDataSource, location_type: c.locationType,
+    functional_utility: c.functionalUtility,
     // The worded condition/quality rating a non-UAD vendor wrote, and which of
     // the two AREA measures this comp's `gla` actually is (db/409 §7).
     condition_text: c.conditionText, quality_text: c.qualityText, gla_basis: c.glaBasis,
@@ -805,7 +806,11 @@ function buildFieldsJson(A) {
 //     "Residential; BusyRoad", and the appraiser's own "Cem" / "Comm" discarded
 //     behind a bland "ResidentialView". Every stored comparable was read that
 //     way, so they all have to be re-read.
-const COMP_PARSE_VERSION = 9;
+// 10 — db/439: the grid's OWN rows are read as the fallback for the 73 of 152
+//     reports carrying no UAD block — view 409 -> 769, location 409 -> 769,
+//     financing type 343 -> 620 — plus functional utility, a real appraisal fact
+//     stated on every one of the 769 comparables and read by nothing until now.
+const COMP_PARSE_VERSION = 10;
 
 module.exports = {
   importAppraisal,

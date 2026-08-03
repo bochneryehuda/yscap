@@ -168,6 +168,33 @@ function viewTypeOf(nodes) {
 function locationTypeOf(nodes) {
   return factorsOf(nodes, 'GSELocationType', 'GSELocationTypeOtherDescription');
 }
+
+// THE GRID ROW IS THE SAME FACT, WRITTEN IN WORDS — the fallback for the 73 of 152
+// real reports that carry no UAD extension block at all.
+//
+// A Fannie grid has a row per fact (View, Location, Functional Utility, Financing
+// Concessions …), and a non-UAD vendor states its value as the row's own
+// description. Measured over the corpus, that recovers 360 comparables each for
+// the view and the location — the difference between a fact known on 53% of
+// comparables and on all of them.
+//
+// A NUMBER IS NOT A DESCRIPTION. These rows carry an ADJUSTMENT AMOUNT as well as
+// a label, and several vendors put the amount (or a bare separator) in the
+// description slot: the real corpus contains ";0", ";", "0" and "-25000" sitting
+// where a word belongs. Storing those would put "0" in a column a person reads as
+// the property's financing type. So a value is taken only when it contains an
+// actual letter and is not merely a number with punctuation around it.
+const ADJ_JUNK = /^[\s;:,.\-+$()0-9]*$/;
+function adjText(adjustments, type) {
+  for (const a of (adjustments || [])) {
+    if (a.type !== type) continue;
+    const d = clean(a.description);
+    if (!d || ADJ_JUNK.test(d)) continue;      // a number, a separator, or nothing
+    if (!/[A-Za-z]/.test(d)) continue;         // belt and braces: no letters, no word
+    return d;
+  }
+  return null;
+}
 // A neighborhood _HOUSING price is in $THOUSANDS (575 = $575,000). Convert to dollars with a
 // magnitude guard so it can NEVER be confused with a full-dollar amount (a share of the corpus
 // carries these; feeding one into money() would store $575 and mis-scale an ARV check 1000×).
@@ -731,7 +758,17 @@ function comparables(root, effectiveYear) {
       latitude: geo(X.attr(loc, 'LatitudeNumber'), 90),
       longitude: geo(X.attr(loc, 'LongitudeNumber'), 180),
       saleType: enumOf(X.attr(cd, 'GSESaleType'), ['ArmsLengthSale', 'REOSale', 'EstateSale', 'ShortSale', 'Listing', 'CourtOrderedSale']),
-      financingType: clean(X.attr(cd, 'GSEFinancingType')),
+      // The UAD attribute wins; the grid row fills the blank on a non-UAD report
+      // (307 comparables). NEVER the other way round — the coded value is the
+      // structured one.
+      financingType: clean(X.attr(cd, 'GSEFinancingType'))
+        || adjText(g.adjustments, 'FinancingConcessions'),
+      // FUNCTIONAL UTILITY — how well the layout works ("Conforms", "Average",
+      // "Inferior-2beds"). A real appraisal fact, stated on the grid of every one
+      // of the 769 comparables in the corpus, and read by nothing until now. It
+      // is the appraiser's own words and is stored as such: there is no code for
+      // it, and a whitelist would drop every phrasing nobody anticipated.
+      functionalUtility: adjText(g.adjustments, 'FunctionalUtility'),
       // THE SELLER'S CONCESSION IS NOT THE APPRAISER'S ADJUSTMENT FOR IT, and the
       // grid's `SALE_PRICE_ADJUSTMENT` line typed `SalesConcessions` is
       // deliberately NOT used as a fallback here, even though it is present on 206
@@ -804,7 +841,8 @@ function comparables(root, effectiveYear) {
       // EVERY location factor, not just the first — see `factorsOf`. The dropped
       // one was the price-relevant one: 23 of 769 comparables carry a second
       // element with a DIFFERENT code, and it is the BusyRoad / Commercial.
-      locationType: locationTypeOf(X.findAll(c, 'COMPARISON_LOCATION_DETAIL')),
+      locationType: locationTypeOf(X.findAll(c, 'COMPARISON_LOCATION_DETAIL'))
+        || adjText(g.adjustments, 'Location'),
       // WHAT THE COMPARABLE LOOKS OUT ON, not just whether the appraiser liked it.
       // The overall RATING above is a three-way verdict (Beneficial/Neutral/Adverse)
       // and every vendor that writes it also names the view itself — a comp backing
@@ -813,7 +851,10 @@ function comparables(root, effectiveYear) {
       // be re-judged later. `GSEViewTypeOtherDescription` is the appraiser's own
       // words when the enum is `Other`, which is where the interesting ones live
       // (measured across the corpus: Cemetery, Creek, Warehse, Comm).
-      viewType: viewTypeOf(X.findAll(c, 'COMPARISON_VIEW_DETAIL')),
+      // The UAD elements win when the report carries them; the grid's own View row
+      // fills the blank on the 73 reports that do not (360 comparables).
+      viewType: viewTypeOf(X.findAll(c, 'COMPARISON_VIEW_DETAIL'))
+        || adjText(g.adjustments, 'View'),
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
       // A BASEMENT BEDROOM IS NOT A BEDROOM, and Fannie separates them on the form

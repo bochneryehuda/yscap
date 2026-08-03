@@ -171,6 +171,8 @@ export default function StaffPropertyDetail() {
           {/* The view RATING beside it is one appraiser's verdict; this is the
               thing itself, and every factor they listed, not just the first. */}
           <Fact k="View" v={p.view_type} />
+          {/* db/439 — the appraiser's own words for whether the layout works. */}
+          <Fact k="Functional utility" v={p.functional_utility} />
           <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />
           <Fact k="Extra dwelling unit" v={p.has_adu === true ? 'Yes' : (p.has_adu === false ? 'No' : null)} />
           <Fact k="Heating fuel" v={p.heating_fuel} />

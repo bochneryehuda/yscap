@@ -597,7 +597,7 @@ const REPARSED = ['beds', 'baths', 'baths_full', 'baths_half', 'total_rooms',
   // listed and still came back blank on 43% of reports, because the gap was in
   // WHERE the parser looked, not in whether the column was re-read; the version
   // bump to 7 is what actually reaches those rows.
-  'view_type', 'basement_exit', 'below_grade_beds',
+  'view_type', 'basement_exit', 'functional_utility', 'below_grade_beds',
   'below_grade_baths_full', 'below_grade_baths_half',
   'below_grade_rec_rooms', 'below_grade_other_rooms'];
 // WHAT THE RE-PARSE DELIBERATELY LEAVES ALONE, named so the pair can be
