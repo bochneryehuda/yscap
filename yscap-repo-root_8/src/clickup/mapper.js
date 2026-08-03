@@ -642,24 +642,46 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options, pushOpts) {
       return asId != null && asId === newVal;
     }
     if (newVal && typeof newVal === 'object') {
-      // LOCATION: compare coordinates (tolerance ~10m), falling back to the
-      // normalized formatted address. Without this, an IDENTICAL borrower
-      // address could never be recognized as equivalent, so every full repush
-      // blocked it via the PII shield and queued a pointless review row
-      // (post-merge audit finding #2). Conservative: any doubt → not equivalent.
+      // LOCATION: THE ADDRESS DECIDES, NOT THE PIN (owner-directed 2026-08-02:
+      // "even if the addresses don't match up exactly it shouldn't start going for
+      // manual review as long as it means the same address, because every provider
+      // reads an address a little different").
+      //
+      // This used to return the COORDINATE comparison whenever both sides carried
+      // coordinates, and never look at the address at all. The tolerance is 1e-4
+      // degrees — about 11 metres — while Google, OpenStreetMap and a USPS-derived
+      // record routinely place one building tens of metres apart. So the SAME home,
+      // pinned by two different providers, read as a change: the write was not
+      // suppressed, the PII overwrite shield blocked it as an identity rewrite, and
+      // a `pii_overwrite_blocked` review row landed on the loan officer's desk with
+      // two spellings of one address and no decision to make.
+      //
+      // The order is now by authority. The mailing address is what identifies a
+      // property; the pin is a provider's opinion about where it sits.
+      //   1. the same PLACE (address.sameAddress — the one definition, conservative:
+      //      it needs a house number and street on BOTH sides, so it can never call
+      //      two different properties equal);
+      //   2. the same formatted string, letters and digits only (the fast path);
+      //   3. only then the pin, for a value whose text cannot be read on both sides
+      //      but whose coordinates agree.
       if (newVal.location && Number.isFinite(Number(newVal.location.lat))) {
+        try { if (ADDR.sameAddress(oldVal, newVal)) return true; } catch (_) { /* fall through */ }
+        const fa = (x) => String((x && (x.formatted_address || x.formattedAddress)) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!!fa(oldVal) && fa(oldVal) === fa(newVal)) return true;
+        // BOTH sides readable and NOT the same place → the answer is settled, and
+        // the pin may not overrule it. The tolerance is ~11 metres and adjacent row
+        // houses are closer than that, so falling through here would let a geocoder
+        // that pinned 74 and 76 Kent Ave to the same doorway suppress a REAL address
+        // correction — silently, since a suppressed write leaves no trace.
+        let readable = false;
+        try { readable = !!ADDR.addressCompareKey(oldVal) && !!ADDR.addressCompareKey(newVal); } catch (_) { readable = false; }
+        if (readable) return false;
         const c = (oldVal && oldVal.location) || {};
         if (Number.isFinite(Number(c.lat)) && Number.isFinite(Number(c.lng))) {
           return Math.abs(Number(c.lat) - Number(newVal.location.lat)) < 1e-4
               && Math.abs(Number(c.lng) - Number(newVal.location.lng)) < 1e-4;
         }
-        const fa = (x) => String((x && (x.formatted_address || x.formattedAddress)) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (!!fa(oldVal) && fa(oldVal) === fa(newVal)) return true;
-        // PILOT stops its addresses at the ZIP while ClickUp's picker appends
-        // ", USA" (owner-directed 2026-07-26 evening). Compare by MEANING so that
-        // difference — and unit-keyword / abbreviation spellings — is never read
-        // as an overwrite (which would churn writes and queue a PII review).
-        try { return ADDR.sameAddress(oldVal, newVal); } catch (_) { return false; }
+        return false;   // nothing to compare on — conservative, write it
       }
       // USERS: the write shape is {add:[id]} — equivalent when every id to add
       // is already assigned (an add-only write would be a no-op). Kills the

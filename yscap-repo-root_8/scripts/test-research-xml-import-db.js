@@ -210,6 +210,68 @@ const propByAddress = async (street) => (await db.query(
       'while asking for neither returns everything, including the properties no report has said either way about');
 
     // =====================================================================
+    // 1c. A MULTI-FAMILY REPORT MUST NOT TAKE ITS WHOLE PROPERTY SET DOWN
+    // =====================================================================
+    // THE BUG THIS PINS (owner-reported 2026-08-02: "he's not getting any info on
+    // any comp"): the unit mix is a jsonb column, so the roll-up reads it back as a
+    // JS ARRAY — and binding a JS array into jsonb makes the driver write a POSTGRES
+    // ARRAY literal, which Postgres refuses. The roll-up threw.
+    //
+    // The blast radius was total, not partial, for two reasons: `upsertProperty`
+    // writes ONLY the address, so EVERY fact comes from the roll-up; and the roll-up
+    // ran bare in a loop with the subject first, so one throw abandoned the whole
+    // report. A 2-4 family report left its subject AND every comparable on it with
+    // an address and nothing else — which reads as "we know nothing", not as a fault.
+    const mf = await XI.importXml(D, {
+      xml: base({
+        street: '80 Rentroll Ave', formType: 'FNM1025', units: 2,
+        effectiveDate: '2026-05-25', signedDate: '2026-05-26',
+        units2to4: [
+          { rooms: 4, beds: 2, baths: '1.0', sqft: 800, actualRent: 1500, marketRent: 1600 },
+          { rooms: 3, beds: 1, baths: '1.0', sqft: 650, actualRent: 1300, marketRent: 1400 },
+        ],
+        comps: [
+          { seq: '1', address: '82 Rentroll Ave', city: TOWN, state: 'NJ', zip: '08854',
+            price: 610000, saleDate: '2026-03-14', gla: 1900, beds: 4, baths: '2.0',
+            condition: 'C3', quality: 'Q4', yearBuilt: 1955 },
+        ],
+      }),
+      filename: 'multifamily.xml', uploadedBy: staff,
+    });
+    ok(mf.ok, `a 2-4 family report with a rent roll lands (${mf.reason || 'ok'})`);
+    ok(!(mf.skipped || []).some((x) => x.role === 'rollup'),
+      `and NO property failed to have its facts recomputed (${JSON.stringify(mf.skipped)})`);
+
+    const mfSubj = await propByAddress('80 Rentroll Ave');
+    ok(mfSubj && Number(mfSubj.gla) === 1520 && mfSubj.beds === 3 && mfSubj.condition_uad === 'C3',
+      'THE SUBJECT HAS ITS FACTS — this is the row that used to come back with an address and nothing else');
+    ok(mfSubj && Array.isArray(mfSubj.unit_mix) && mfSubj.unit_mix.length === 2,
+      `and the rent roll itself rolled up, as a real list (${JSON.stringify(mfSubj && mfSubj.unit_mix)})`);
+    ok(mfSubj && Number(mfSubj.market_rent) === 3000,
+      'and the whole-property market rent is the sum of the units');
+
+    const mfComp = await propByAddress('82 Rentroll Ave');
+    ok(mfComp && Number(mfComp.gla) === 1900 && mfComp.beds === 4 && mfComp.condition_uad === 'C3',
+      'AND SO DOES EVERY COMPARABLE ON THAT REPORT — one property could no longer take the rest down with it');
+
+    // Re-rolling it must stay clean: the roll-up reads its own jsonb output back.
+    await ingest._internals.rollupProperty(db, mfSubj.id);
+    const mfAgain = (await db.query(`SELECT gla, unit_mix FROM properties WHERE id = $1`, [mfSubj.id])).rows[0];
+    ok(mfAgain && Number(mfAgain.gla) === 1520 && Array.isArray(mfAgain.unit_mix),
+      'and recomputing it a second time is fine — the value it wrote is a value it can read back and re-bind');
+
+    // The guard is generic, not a special case for this one column.
+    const B = ingest._internals.bindable;
+    ok(typeof B({ a: 1 }) === 'string' && typeof B([1, 2]) === 'string',
+      'any object or array is serialised for a jsonb bind — the NEXT jsonb fact is safe without anyone remembering');
+    ok(B('already a string') === 'already a string',
+      'a string is passed through — an already-serialised value must never be double-encoded');
+    ok(B(null) === null && B(undefined) === undefined && B(7) === 7 && B(true) === true,
+      'and a null, a number and a boolean are untouched');
+    ok(B(new Date('2026-01-02T03:04:05Z')) instanceof Date,
+      'a Date is left for the driver, which knows what to do with one');
+
+    // =====================================================================
     // 2. IT NEVER TOUCHES A LOAN FILE
     // =====================================================================
     const appraisalsAfter = (await db.query(
