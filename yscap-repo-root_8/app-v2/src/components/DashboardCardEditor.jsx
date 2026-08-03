@@ -120,7 +120,9 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
   return (
     <div className="dsh-editor">
       <div className="dsh-ed-grid">
-        <label className="field"><span>What should the card be called?</span>
+        {/* span 2 of the editor's 3 columns, so this row fills the same gridlines every
+            other step uses instead of choosing its own column width. */}
+        <label className="field dsh-ed-wide"><span>What should the card be called?</span>
           <input className="input" value={draft.title} maxLength={120}
             placeholder="Funded this month" onChange={(e) => set({ title: e.target.value })} /></label>
         <label className="field"><span>A line underneath (optional)</span>
@@ -130,7 +132,7 @@ export default function DashboardCardEditor({ meta, card, onSave, onCancel, onDe
 
       <h4 style={{ color: MUTED }}>1 · What are we measuring?</h4>
       <div className="dsh-ed-grid">
-        <label className="field"><span>Measure</span>
+        <label className="field dsh-ed-wide"><span>Measure</span>
           <select className="input" value={draft.metric_key} onChange={(e) => set({ metric_key: e.target.value })}>
             {(meta.measures || []).map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
           </select></label>
