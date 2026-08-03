@@ -204,6 +204,17 @@ function valuation(root) {
   const V = X.find(root, 'VALUATION');
   const structured = money(X.attr(V, 'PropertyAppraisedValueAmount'));
   const effDate = normDate(X.attr(V, 'AppraisalEffectiveDate'));
+  // A REPORT CAN STATE MORE THAN ONE BASIS, AND ONLY THE FIRST WAS EVER READ.
+  // Measured across 143 real reports that state one at all: 142 state exactly
+  // one, and ONE states `SubjectToRepairs` AND `AsIs` together — which is
+  // precisely the renovation report that carries two values, the shape this
+  // whole warehouse is built around. Reading only the first is still the right
+  // PRIMARY answer (the after-repair basis is the conservative one and is what
+  // `AS_IS_ONLY` keys on), so the behaviour below is unchanged; what was missing
+  // is any record that the report said both, which is the difference between
+  // "the appraiser gave no as-is opinion" and "we only looked at the first line".
+  const coaAll = X.findAll(root, '_CONDITION_OF_APPRAISAL')
+    .map((n) => clean(X.attr(n, '_Type'))).filter(Boolean);
   const coa = X.find(root, '_CONDITION_OF_APPRAISAL');
   const cond = clean(X.attr(coa, '_Type'));
   const texts = narrativeTexts(root);
@@ -224,6 +235,10 @@ function valuation(root) {
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
 
   const out = { appraisedValue: structured, effectiveDate: effDate, conditionOfAppraisal: cond,
+    // Every basis the report stated, in the order it stated them — `cond` is
+    // still the first and still decides. Null when it stated only one, so a
+    // consumer can tell "one basis" from "we looked at one".
+    conditionOfAppraisalAll: coaAll.length > 1 ? coaAll : null,
     basis, // 'ARV' | 'ASIS' — which value the structured PropertyAppraisedValueAmount represents
     arv: null, arvConfidence: 'missing', arvSource: null,
     asIs: null, asIsConfidence: 'missing', asIsSource: null };

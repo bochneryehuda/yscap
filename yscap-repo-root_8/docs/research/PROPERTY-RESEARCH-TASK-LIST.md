@@ -260,11 +260,30 @@ throw away.
   rents, sitting in files we already hold. For a 2–4 unit lender this is the
   single richest thing left in the XML.
 
-- [ ] **2.5 ACI's `COMPARABLE_LISTING`** — absent from the parser entirely
+- [x] **2.5 ACI's `COMPARABLE_LISTING`** — CLOSED AS A NON-ITEM, on the evidence.
+  This was written from a schema reading, not from data. Measured: 56 of 152 real
+  reports carry the element, and **all 56 are empty self-closing placeholders at
+  sequence 0** (`<COMPARABLE_LISTING PropertySequenceIdentifier="0"/>`), inside
+  an equally empty `COMPETITIVE_LISTINGS` block. Not one carries an attribute
+  beyond the sequence number or a single child element. There is nothing to read,
+  and a parser for it would be code that can only ever return nothing. **Listing
+  comparables DO reach the warehouse** — through the ordinary sales grid, whose
+  `GSEListingStatusType` marks an active or pending comp and routes its price to
+  `last_list_price` rather than `last_sale_price` (that guard is already in the
+  ingest). Reopen only if a vendor turns up that actually populates the block.
+- [x] **2.9 Only the FIRST `_CONDITION_OF_APPRAISAL` is read** — real, and rarer
+  than it reads. Measured across the 143 reports that state one: 142 state
+  exactly one, and **one** states `SubjectToRepairs` AND `AsIs` together, which is
+  precisely the renovation report carrying two values. The primary answer is
+  deliberately UNCHANGED — the after-repair basis is the conservative one and is
+  what `AS_IS_ONLY` keys on — but the parser now records every basis the report
+  stated (`values.conditionOfAppraisalAll`, null when there was only one), so
+  "the appraiser gave no as-is opinion" is distinguishable from "we only read the
+  first line".
 - [ ] **2.6 The rest**: basement, lease dates, functional utility, UAD view/location codes, concessions, rent control, `DataSourceDescription` as a days-on-market fallback
 - [ ] **2.7 Count and report the UAD 3.6 refusals** — mandatory 2 Nov 2026, and we read none of them
 - [ ] **2.8 13 columns go NULL on any vendor without the UAD `COMPARISON_DETAIL` block** — find the fallbacks
-- [ ] **2.9 Only the FIRST `_CONDITION_OF_APPRAISAL` is read**, though the field map records files carrying both
+
 
 ## PHASE 3 — THE MAP AND THE ADDRESS
 
