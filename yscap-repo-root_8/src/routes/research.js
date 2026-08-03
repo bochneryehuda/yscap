@@ -1318,13 +1318,16 @@ router.post('/valuations/:id/confirm-subject', async (req, res, next) => {
     // WHAT THE CHECK ACTUALLY CHANGED. A confirmation that corrected the living
     // area is a different event from one that agreed with everything, and the
     // difference is the evidence that the step is worth doing.
+    // SAMENESS IS BY MEANING, AND THERE IS ONE DEFINITION OF IT. Comparing with
+    // String() here while `confirmationStale` compared numerically and
+    // case-insensitively meant "Single Family" -> "single family" counted as a
+    // CHANGE at this door (a full re-derive, market rates rewritten, the officer
+    // told a fact was corrected) and as IDENTICAL one function away.
     const changes = [];
     for (const f of SF.FACTS) {
       const a = SF._internals.readValue(before, f.key);
       const b = SF._internals.readValue(merged, f.key);
-      if (String(a == null ? '' : a) !== String(b == null ? '' : b)) {
-        changes.push({ key: f.key, label: f.label, was: a, now: b });
-      }
+      if (!SF.sameFactValue(f, a, b)) changes.push({ key: f.key, label: f.label, was: a, now: b });
     }
     await db.query(
       `UPDATE property_valuations
@@ -1351,12 +1354,40 @@ router.post('/valuations/:id/confirm-subject', async (req, res, next) => {
        everything has nothing to re-derive, and re-running the market rates for it
        would be work bought for nothing. Best-effort — a rates lookup failing must
        not lose the confirmation itself. */
+    /* A FAILURE HERE MUST NOT COME BACK AS A CONFIDENT SUCCESS. `resuggestAll`
+       rewrites each comparable in its own statement with no transaction, so a
+       throw partway leaves a grid half-derived from the old fact and half from the
+       new — and an empty catch then let `saveComputed` STORE a value off that and
+       the panel print "the value above has been rebuilt from them". Swallowing is
+       still right (the confirmation itself is recorded and must not be lost to a
+       rates lookup), but it is now LOUD and the answer says the value was not
+       rebuilt, so the screen can tell somebody to re-suggest rather than quoting
+       a number nobody should quote.
+       The rate WINDOW comes from what this valuation was last derived with, so a
+       12-month derivation is not silently overwritten with the 24-month default —
+       `market_rates` is the provenance record for "where did $119 a foot come
+       from?" and re-deriving it on a different window destroys that. */
+    let revalued = true, revalueWhy = null;
     if (changes.length) {
-      try { await resuggestAll(req.params.id, merged); } catch (e) { /* keep the confirmation */ }
+      try {
+        await resuggestAll(req.params.id, merged, ratesMonthsOf(v));
+      } catch (e) {
+        revalued = false;
+        revalueWhy = 'the market rates could not be re-read, so the adjustments still reflect the old facts — '
+          + 'press "Re-suggest" once to rebuild them';
+        console.error('[research] confirm-subject: re-suggest failed for', req.params.id, e && e.message);
+      }
     }
     await saveComputed(req.params.id);
+    // WHO CHECKED WHAT, on the file's own trail. For a feature whose whole point
+    // is accountability, one overwritable column was thin: two people checking the
+    // same valuation left only the second.
+    try {
+      await audit(req.actor && req.actor.id, 'valuation_subject_confirmed', req.params.id,
+        { changed: changes.map((c) => c.key), revalued });
+    } catch (e) { /* the trail is best-effort; the confirmation is not */ }
     const out = await loadValuation(req.params.id);
-    res.json(Object.assign({ changed: changes }, out));
+    res.json(Object.assign({ changed: changes, revalued, revalueWhy }, out));
   } catch (e) { next(e); }
 });
 
@@ -1627,6 +1658,12 @@ router.delete('/valuations/:id/comps/:compId', async (req, res, next) => {
  * suggestion for a key a person has already answered is dropped rather than
  * arguing with them.
  */
+/** The rate window this valuation's stored rates were derived with, else the default. */
+function ratesMonthsOf(v) {
+  const m = v && v.market_rates && Number(v.market_rates.months);
+  return Number.isFinite(m) && m > 0 ? m : 24;
+}
+
 async function resuggestAll(valuationId, subject, months = 24) {
   const derived = await ratesFor({ state: subject.state, city: subject.city, months });
   const rates = derived.rates;
@@ -2140,6 +2177,10 @@ async function resolveMarketArea(id) {
        FROM properties p
       WHERE p.eff_latitude BETWEEN $1 AND $2
         AND p.eff_longitude BETWEEN $3 AND $4
+      -- ORDERED, so the cap is DETERMINISTIC. An unordered LIMIT means which rows
+      -- come back is up to the planner, and two identical comparable searches
+      -- could resolve the same boundary to different properties.
+      ORDER BY p.id
       LIMIT ${MARKET_AREA_SCAN_CAP}`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
   const ring = Array.isArray(a.ring) ? a.ring : [];
   const inside = near.filter((p) => MA.pointInRing(p.eff_latitude, p.eff_longitude, ring));

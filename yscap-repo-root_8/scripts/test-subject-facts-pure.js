@@ -179,5 +179,111 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log(`FAIL ${m}`); }
     'a key that is not one of the facts is ignored — this door cannot be used to write a value');
 }
 
+// ---------------------------------------------------------------------------
+// F. A BLANK IS BLANK HOWEVER IT IS SPELLED — and zero is not "stated"
+// ---------------------------------------------------------------------------
+{
+  // `Number('')` is 0, so stripping punctuation and handing the rest to Number
+  // turned a box cleared with a SPACE into a living area of zero — filed with a
+  // 200 and a "checked by a person" badge, on a grid with no size, room or
+  // condition adjustment behind it. Reachable from the panel by clearing the box
+  // with a space instead of a backspace.
+  for (const blank of ['   ', '\t', '$', ',', ' , ', '  $  ']) {
+    const r = SF.cleanCorrections({ gla: blank });
+    ok(r.problems.length === 0 && r.values.gla === null,
+      `${JSON.stringify(blank)} is a BLANK, not a living area of zero`);
+  }
+  // A fat-fingered space becoming a plausible wrong number is worse than a
+  // refusal, because nobody looks twice at a plausible number.
+  ok(SF.cleanCorrections({ gla: ' 12 34 ' }).problems.length === 1,
+    "' 12 34 ' is refused rather than silently read as 1234");
+  for (const junk of ['0x10', '1e5', 'Infinity', 'NaN', '--5']) {
+    ok(SF.cleanCorrections({ gla: junk }).problems.length === 1,
+      `${JSON.stringify(junk)} is refused — a living area is typed in digits`);
+  }
+  ok(SF.cleanCorrections({ gla: '2,400' }).values.gla === 2400, 'and a comma-separated number still works');
+  ok(SF.cleanCorrections({ gla: ' 2400 ' }).values.gla === 2400, 'as does an outer-trimmed one');
+
+  // A CEILING, because there was none: a pasted phone number reaches a
+  // numeric(8,2) adjustment percentage as an overflow three layers down.
+  ok(SF.cleanCorrections({ gla: '9900000000' }).problems.length === 1, 'an absurd living area is refused');
+  ok(SF.cleanCorrections({ beds: 400 }).problems.length === 1, 'and an absurd bedroom count');
+
+  // A NON-STRING IS NOT AN ANSWER. `String({})` is "[object Object]".
+  for (const junk of [{}, ['a', 'b'], true]) {
+    ok(SF.cleanCorrections({ property_type: junk }).problems.length === 1,
+      `${JSON.stringify(junk)} is refused rather than coerced into the property type`);
+  }
+
+  // ZERO IS NOT AN ANSWER FOR THE FACTS THE GRID GATES ON TRUTHINESS.
+  // `suggestAdjustments` reads `sg = num(subject.gla)` and gates the size, room
+  // and condition lines on `sg` being truthy — so gla:0 produces exactly the
+  // silent grid a missing one does, while a plain `!= null` reported it stated.
+  const zero = SF.reviewSubject({ units: 0, property_type: 'Single Family', gla: 0 });
+  ok(zero.blindSpots.includes('gla'), 'a living area of ZERO is a blind spot, not a stated fact');
+  ok(zero.blindSpots.includes('units'), 'and so is a unit count of zero');
+  const zeroFact = zero.facts.find((f) => f.key === 'gla');
+  ok(zeroFact.stated === false && zeroFact.gap === true, 'reported as not stated');
+  // …but zero IS an answer where it is one.
+  const halfBath = SF.reviewSubject({ units: 1, property_type: 'Single Family', gla: 1800, baths_half: 0 });
+  ok(halfBath.facts.find((f) => f.key === 'baths_half').stated === true,
+    'a house with no half bathroom has stated that it has none');
+
+  // And the grid really does fall silent on zero, exactly as on missing.
+  const RATES = { glaAdjustmentPerSqft: { value: 45, basis: 'x' }, perBedroom: { valuePerSqft: 20 },
+    perConditionGrade: { valuePerSqft: 8, basis: 'y' } };
+  const comp = { gla: 1200, beds: 2, condition_uad: 'C4', sale_price: 300000, sale_date: '2026-05-01' };
+  const lines = V.suggestAdjustments({ units: 1, gla: 0, beds: 3, condition_uad: 'C3' }, comp, RATES,
+    { today: '2026-08-01' }).map((l) => l.key);
+  ok(!lines.includes('gla') && !lines.includes('room_count') && !lines.includes('condition'),
+    `a living area of zero silences the same three adjustments a missing one does (${lines.join(',') || 'nothing'})`);
+}
+
+// ---------------------------------------------------------------------------
+// G. A CONFIRMATION IS ABOUT A PROPERTY, NOT ONLY ABOUT ITS FACTS
+// ---------------------------------------------------------------------------
+{
+  const at = '2026-08-01T10:00:00Z';
+  const subject = { display_address: '12 Elm St', units: 1, property_type: 'Single Family',
+    gla: 1800, condition_uad: 'C3', beds: 3, baths_full: 2 };
+  const snap = SF.confirmedSnapshotOf(subject);
+  ok(SF.reviewSubject(subject, { confirmedAt: at, confirmedSnapshot: snap }).confirmed === true,
+    'the same property with the same facts stays confirmed');
+
+  // Re-point the valuation at a DIFFERENT house with identical facts. No FACT has
+  // moved, so without the identity the stamp stood and the screen said "a person
+  // has checked these facts against the property" — about another property.
+  const elsewhere = Object.assign({}, subject, { display_address: '900 Ocean Ave' });
+  const moved = SF.reviewSubject(elsewhere, { confirmedAt: at, confirmedSnapshot: snap });
+  ok(moved.stale.stale === true, 'changing the ADDRESS makes the confirmation stale');
+  ok(moved.confirmed === false, 'and it stops reading as checked — it is a different property');
+  ok(moved.stale.changed.some((c) => c.key === 'display_address'), 'naming the property itself as what moved');
+
+  // Case and spacing are not a move.
+  ok(SF.reviewSubject(Object.assign({}, subject, { display_address: '  12 ELM ST ' }),
+    { confirmedAt: at, confirmedSnapshot: snap }).stale.stale === false,
+    'and a re-cased address is the same house');
+
+  // A confirmation recorded before the identity was stored must not be claimed
+  // stale on the strength of an address it never captured.
+  const legacy = Object.assign({}, snap); delete legacy.__address;
+  ok(SF.reviewSubject(elsewhere, { confirmedAt: at, confirmedSnapshot: legacy }).stale.stale === false,
+    'a confirmation from before the address was recorded is not retro-flagged on one');
+}
+
+// ---------------------------------------------------------------------------
+// H. ONE DEFINITION OF "THE SAME ANSWER"
+// ---------------------------------------------------------------------------
+{
+  const f = SF.FACTS.find((x) => x.key === 'property_type');
+  ok(SF.sameFactValue(f, 'Single Family', 'single family') === true,
+    'text is compared case-insensitively — and the confirm route uses THIS, so the door and the '
+    + 'staleness check can no longer disagree about the same edit');
+  const i = SF.FACTS.find((x) => x.key === 'gla');
+  ok(SF.sameFactValue(i, 2400, '2400') === true, 'and a number is a number however it arrived');
+  ok(SF.sameFactValue(i, null, null) === true && SF.sameFactValue(i, null, 0) === false,
+    'while nothing and zero are different answers');
+}
+
 console.log(`\ntest-subject-facts-pure: ${pass} passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);

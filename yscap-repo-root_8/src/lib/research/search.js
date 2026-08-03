@@ -80,9 +80,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 const uuidList = (v) => {
   if (v == null || v === '') return null;
-  if (Array.isArray(v) && v.length === 0) return [];
-  const arr = list(v);
-  if (!arr) return null;
+  // ANYTHING SUPPLIED IS A FILTER THAT WAS ASKED FOR, even if nothing usable
+  // survives it. `list(',')` and `list(' ')` return null because every segment
+  // filters out, so the predicate VANISHED and the search answered with the whole
+  // town — the "a filter that cannot run silently widens" class this exists to
+  // close, on the query-string surface rather than the market-area one.
+  const arr = list(v) || [];
   return arr.filter((x) => UUID_RE.test(x)).slice(0, 20000);
 };
 

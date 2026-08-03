@@ -150,12 +150,25 @@ export default function CompMap({
       if (tilesLoaded.current === 0) setTilesBroken(true);
     }, TILE_WAIT_MS);
     return () => clearTimeout(t);
-  }, [view]);
+    /* `basemap` IS A DEPENDENCY, and leaving it out disarmed the check entirely.
+       `switchBasemap` resets the loaded counter and then clamps the zoom — but
+       when the current zoom is already under the new layer's ceiling (the ordinary
+       case; a comp search fits around z13-15 and the aerial layer caps at 16) the
+       updater returns the IDENTICAL view object, React bails out, and this effect
+       never re-runs. So the counter sat at 0 with no timer armed: a blocked or
+       down imagery server showed a grey box forever and never said so, which is
+       the exact silent failure the timer exists to catch. */
+  }, [view, basemap]);
 
   const recentre = useCallback(() => {
     if (!centre || !size.w) return;
-    setView({ lat: centre.lat, lng: centre.lng, zoom: zoomToFit(centre.lat, spanMi, size.w, size.h) });
-  }, [centre, size.w, size.h, spanMi]);
+    // THE LAYER'S CEILING APPLIES HERE TOO. `zoomToFit` answers up to MAX_ZOOM (19),
+    // and the aerial layer stops at 16 over much of the country — so re-centring on
+    // a tight cluster of comparables asked for imagery that does not exist and
+    // returned the blank grey map the clamp was added to prevent.
+    setView({ lat: centre.lat, lng: centre.lng,
+      zoom: Math.min(base.maxZoom || MAX_ZOOM, zoomToFit(centre.lat, spanMi, size.w, size.h)) });
+  }, [centre, size.w, size.h, spanMi, base.maxZoom]);
 
   /* DRAWING AND PANNING SHARE ONE SURFACE, so a click has to mean one thing at
      a time. While drawing, a press that does not MOVE is a corner and a press
@@ -397,7 +410,9 @@ export default function CompMap({
 
       {tilesBroken && (
         <div style={{ color: '#8A5A00', fontSize: 12.5, marginTop: 6 }}>
-          The street picture has not loaded, so this is showing positions on a plain background.
+          {/* NAME THE LAYER THE PERSON IS ACTUALLY ON. Saying "the street picture"
+              while they are looking at Satellite reads as a different fault. */}
+          The {base.label.toLowerCase()} picture has not loaded, so this is showing positions on a plain background.
           Everything on it is still in the right place — the pins and the distance ring are worked out
           here, not fetched.
         </div>

@@ -41,9 +41,41 @@
  * Pure — no database, no network, no clock beyond what is passed in.
  */
 
+/**
+ * A NUMBER, OR NOTHING — and "nothing" includes everything that LOOKS like a
+ * number after the punctuation comes off but is not one.
+ *
+ * `Number('')` is 0, so stripping `$ , and whitespace` and handing the remainder
+ * to Number turned '   ', '\t', '$' and ',' into a living area of ZERO — filed
+ * with a 200 and a "checked by a person" badge, on a valuation with no size, room
+ * or condition adjustment behind it. This module's own docstring says that is what
+ * it refuses ("quietly reading it as 2400, or as 0, is how a typo becomes a
+ * valuation"), and it was doing it. Reachable from the panel by clearing the box
+ * with a space instead of a backspace.
+ *
+ * INTERNAL WHITESPACE IS REFUSED TOO. ' 12 34 ' silently became 1234 — a
+ * fat-fingered space turning into a plausible wrong number is worse than a
+ * refusal, because nobody looks twice at a plausible number. Only a leading or
+ * trailing trim is forgiven.
+ *
+ * And `Number` accepts '0x10' (16), '1e5' and 'Infinity'; a living area is typed
+ * in digits, so the shape is checked rather than left to the coercion.
+ */
+const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
+/* THE ONE PREPARATION, so `num()` and the blank test can never disagree about
+   what an empty box is. `cleanCorrections` used to test blankness with a plain
+   `.trim()`, which does not remove the currency sign or the thousands comma this
+   strips — so a box cleared down to "$" or "," fell through to the number branch
+   and came back as `"$" is not a number`: a REFUSAL, raised against an answer
+   nobody gave. Reachable from the panel by selecting "1,200" and typing over all
+   of it but the comma. */
+const strippedForNumber = (v) => String(v).trim().replace(/[$,]/g, '');
 const num = (v) => {
-  if (v == null || v === '') return null;
-  const n = Number(String(v).replace(/[$,\s]/g, ''));
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const t = strippedForNumber(v);
+  if (t === '' || !NUMERIC_RE.test(t)) return null;
+  const n = Number(t);
   return Number.isFinite(n) ? n : null;
 };
 const txt = (v) => { const s = v == null ? '' : String(v).trim(); return s === '' ? null : s; };
@@ -63,7 +95,7 @@ const txt = (v) => { const s = v == null ? '' : String(v).trim(); return s === '
  */
 const FACTS = Object.freeze([
   {
-    key: 'units', label: 'How many units', kind: 'int',
+    key: 'units', label: 'How many units', kind: 'int', zeroIsBlank: true,
     drives: 'which sales are eligible at all — a 2-4 unit property is only ever compared with 2-4 unit sales',
     without: 'the search cannot band by unit count, so single families and 2-4 unit buildings can be mixed '
       + 'into one answer',
@@ -76,7 +108,7 @@ const FACTS = Object.freeze([
     critical: true,
   },
   {
-    key: 'gla', label: 'Living area (sq ft)', kind: 'int',
+    key: 'gla', label: 'Living area (sq ft)', kind: 'int', zeroIsBlank: true,
     drives: 'the size adjustment, and it is the multiplier on the bedroom, bathroom and condition adjustments too',
     without: 'no size, room-count or condition adjustment is being made at all — the value is close to a plain '
       + 'average of the sale prices',
@@ -114,6 +146,13 @@ const FACTS = Object.freeze([
 /** The keys a confirmation records, in order. */
 const FACT_KEYS = Object.freeze(FACTS.map((f) => f.key));
 
+/* WHAT IS TOO BIG TO BE THAT FACT. Generous — this is a refusal for a pasted phone
+   number or a doubled digit, not a plausibility opinion about a large house. */
+const MAX = Object.freeze({
+  units: 999, gla: 1000000, beds: 99, baths_full: 99, baths_half: 99, year_built: 2200,
+  property_type: Infinity, condition_uad: Infinity,
+});
+
 const readValue = (subject, key) => {
   const s = subject || {};
   const raw = s[key];
@@ -134,7 +173,15 @@ const readValue = (subject, key) => {
 function factsToConfirm(subject) {
   return FACTS.map((f) => {
     const value = readValue(subject, f.key);
-    const stated = value != null;
+    /* ZERO IS NOT AN ANSWER FOR THE FACTS THE GRID GATES ON TRUTHINESS.
+       `suggestAdjustments` reads `const sg = num(subject.gla)` and then gates the
+       size, room-count and condition lines on `sg` being TRUTHY — so a living area
+       of 0 produces exactly the same silent grid as a missing one, while a plain
+       `!= null` test reported it as stated and the panel announced the opposite of
+       what was happening. Same for the unit count, which bands the search. A half
+       bathroom of 0 and a year built of 0 are different: the first is a real
+       answer, the second is nonsense nobody stores. */
+    const stated = f.zeroIsBlank ? (value != null && Number(value) > 0) : value != null;
     return {
       key: f.key,
       label: f.label,
@@ -210,25 +257,61 @@ function confirmationStale(subject, confirmedSnapshot, confirmedAt) {
     return { stale: false, changed: [] };
   }
   const changed = [];
+  // THE PROPERTY ITSELF FIRST. A confirmation is about a house, and a valuation
+  // whose subject was re-pointed at a different address is not the thing that was
+  // checked — however identical its bedroom count happens to be.
+  const thenAddr = (confirmedSnapshot || {})[IDENTITY_KEY];
+  const nowAddr = txt((subject || {}).display_address);
+  if (thenAddr && String(thenAddr).trim().toLowerCase() !== String(nowAddr || '').trim().toLowerCase()) {
+    changed.push({ key: 'display_address', label: 'The property', was: thenAddr, now: nowAddr });
+  }
   for (const f of FACTS) {
     const then = readValue(confirmedSnapshot, f.key);
     const now = readValue(subject, f.key);
-    const same = f.kind === 'int'
-      ? (then == null && now == null) || (then != null && now != null && Number(then) === Number(now))
-      : String(then == null ? '' : then).trim().toLowerCase()
-        === String(now == null ? '' : now).trim().toLowerCase();
-    if (!same) changed.push({ key: f.key, label: f.label, was: then, now });
+    if (!sameFactValue(f, then, now)) changed.push({ key: f.key, label: f.label, was: then, now });
   }
   return { stale: changed.length > 0, changed };
 }
 
-/** The subset of a subject a confirmation records — never the whole snapshot. */
+/**
+ * ARE THESE THE SAME ANSWER? ONE definition, exported, because there were two.
+ *
+ * The confirm route compared with `String(a) !== String(b)` while this module
+ * compared ints numerically and text case-insensitively — so correcting a property
+ * type from "Single Family" to "single family" counted as a CHANGE at the door
+ * (a full re-derive, `market_rates` rewritten, the officer told "1 fact was
+ * corrected") and as IDENTICAL here. Sameness is by MEANING, in one place.
+ */
+function sameFactValue(f, a, b) {
+  if (f.kind === 'int') {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    return Number(a) === Number(b);
+  }
+  return String(a == null ? '' : a).trim().toLowerCase()
+    === String(b == null ? '' : b).trim().toLowerCase();
+}
+
+/**
+ * The subset of a subject a confirmation records — never the whole snapshot.
+ *
+ * IT RECORDS WHICH PROPERTY WAS CHECKED, not only what was checked about it.
+ * Without the address, confirming the facts of 12 Elm St and then editing the
+ * subject to 900 Ocean Ave left the stamp standing: no FACT had moved, so the
+ * screen said "a person has checked these facts against the property, and none
+ * has changed since" — about a different property. That is the laundering the
+ * whole staleness design exists to prevent, walking in through the door next to
+ * it.
+ */
+const IDENTITY_KEY = '__address';
 function confirmedSnapshotOf(subject) {
   const out = {};
   for (const k of FACT_KEYS) {
     const v = readValue(subject, k);
     if (v != null) out[k] = v;
   }
+  const addr = txt((subject || {}).display_address);
+  if (addr) out[IDENTITY_KEY] = addr;
   return out;
 }
 
@@ -246,14 +329,31 @@ function cleanCorrections(input) {
   for (const [k, raw] of Object.entries(input || {})) {
     const f = FACTS.find((x) => x.key === k);
     if (!f) continue;                                   // not a fact we confirm
-    if (raw === null || raw === '') { out[k] = null; continue; }
+    // A NON-STRING IS NOT AN ANSWER. `String({})` is "[object Object]" and
+    // `String(['a','b'])` is "a,b"; both used to be filed as the property type.
+    if (raw !== null && typeof raw !== 'string' && typeof raw !== 'number') {
+      problems.push({ key: k, label: f.label, why: 'that is not something this field holds' });
+      continue;
+    }
+    // BLANK IS BLANK, however it is spelled. A box cleared with a space instead of
+    // a backspace — or down to the currency sign or the comma it was typed with —
+    // is "we do not know", not a living area of zero and not a thing to argue
+    // with. Judged by the SAME preparation `num()` uses, so the two agree.
+    if (raw === null || strippedForNumber(raw) === '') { out[k] = null; continue; }
     if (f.kind === 'int') {
       const n = num(raw);
       if (n == null || !Number.isFinite(n)) {
-        problems.push({ key: k, label: f.label, why: `"${raw}" is not a number` });
+        problems.push({ key: k, label: f.label, why: `"${String(raw).slice(0, 40)}" is not a number` });
         continue;
       }
       if (n < 0) { problems.push({ key: k, label: f.label, why: 'that cannot be negative' }); continue; }
+      // A CEILING, because there was none. A pasted phone number as a living area
+      // is not a refusal anybody would think to write, and it reaches a
+      // numeric(8,2) adjustment percentage as an overflow three layers down.
+      if (n > MAX[f.key]) {
+        problems.push({ key: k, label: f.label, why: `that is larger than a ${f.label.toLowerCase()} can be` });
+        continue;
+      }
       out[k] = Math.round(n);
     } else {
       const s = txt(raw);
@@ -266,7 +366,8 @@ function cleanCorrections(input) {
 }
 
 module.exports = {
-  FACTS, FACT_KEYS,
+  FACTS, FACT_KEYS, MAX,
   factsToConfirm, reviewSubject, confirmationStale, confirmedSnapshotOf, cleanCorrections,
-  _internals: { readValue, headlineFor },
+  sameFactValue,
+  _internals: { readValue, headlineFor, num },
 };

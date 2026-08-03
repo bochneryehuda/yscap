@@ -125,7 +125,9 @@ export default function StaffCompSearch() {
       .then((r) => { if (live) setAreas(r.rows || []); })
       .catch(() => { if (live) setAreas([]); });
     return () => { live = false; };
-  }, [d, q.state, q.city]);
+    // Keyed on the MARKET, not on the whole search result — depending on `d` meant
+    // refetching the boundaries on every search of the same town.
+  }, [d && d.subject && d.subject.state, d && d.subject && d.subject.city, q.state, q.city]);
 
   const run = useCallback(() => {
     if (!canSearch) { setD(null); return; }
@@ -244,12 +246,28 @@ export default function StaffCompSearch() {
               different question than the one on screen. It says what it cut, in
               both numbers: "12 of the 40 nearby" is a boundary doing real work,
               "40 of the 40" means the shape is a rectangle. */}
-          {areas.length > 0 && (
+          {/* IT IS SHOWN WHENEVER IT IS IN FORCE, not only when there is a list to
+              choose from. `areas` is refetched per town, so searching a town with
+              no drawn boundaries emptied it — and the control and its evidence both
+              vanished while the request still carried the id and the search was
+              still cut to a polygon around a DIFFERENT town. A softer version of the
+              same fired whenever the chosen id was not in the list: the select found
+              no matching option and displayed "anywhere in the town" while a
+              boundary was in force. Either way it is a control lying about its own
+              search, which this screen's own comments forbid. */}
+          {(areas.length > 0 || q.market_area_id) && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <select style={{ ...S.input, width: 'auto' }} value={q.market_area_id || ''}
                 onChange={(e) => apply({ market_area_id: e.target.value || undefined })}>
                 <option value="">anywhere in the town</option>
                 {areas.map((a) => <option key={a.id} value={a.id}>inside “{a.name}”</option>)}
+                {/* The one in force, even when it belongs to another town — so it
+                    can be SEEN and switched off rather than silently applied. */}
+                {q.market_area_id && !areas.some((a) => a.id === q.market_area_id) && (
+                  <option value={q.market_area_id}>
+                    inside {d && d.market_area ? `“${d.market_area.name}”` : 'a boundary drawn elsewhere'}
+                  </option>
+                )}
               </select>
               {d && d.market_area && (
                 <span style={{ color: MUTED, fontSize: 12 }}>

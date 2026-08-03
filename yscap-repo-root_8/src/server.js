@@ -261,6 +261,13 @@ app.get('/api/health', async (req, res) => {
     storageHealth: storageCard,
     // `protected:false` means the nightly off-site backup has not succeeded recently — act on it.
     backup: backupStatus,
+    // `ok:false` means the database-level rule that keeps a Google-sourced coordinate
+    // out of the permanent property warehouse (db/455) is not confirmed installed.
+    // A licensing control, so it is reported rather than assumed.
+    researchGeoLicensing: (() => {
+      try { return require('./lib/research/licensing-guard').health(); }
+      catch (e) { return { ok: false, checked: false, why: e.message }; }
+    })(),
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
@@ -633,6 +640,12 @@ if (require.main === module) {
       try {
         const { ensureSchema, bootstrapAdmin } = require('./migrate-boot');
         await ensureSchema();
+        // ensureSchema NEVER throws — a failed migration logs and continues, which
+        // is right for a schema change and wrong for a CONTROL. Ask the database
+        // out loud whether the Google-coordinate licensing rule (db/455) is
+        // actually installed, so it can never be silently absent. Reports only;
+        // never blocks the boot.
+        await require('./lib/research/licensing-guard').assertGeoLicensing();
         await bootstrapAdmin();   // opt-in: seeds first admin when ADMIN_EMAIL/PASSWORD set
         // One-shot: ensure every active/closed RTL file (imported or manual) has
         // its full condition set + internal checklist. Idempotent + marker-guarded,
