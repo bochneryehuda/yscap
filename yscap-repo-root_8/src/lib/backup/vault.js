@@ -24,7 +24,9 @@ const http = require('http');
 const crypto = require('crypto');
 const { URL } = require('url');
 const { PassThrough } = require('stream');
-const { signV4 } = require('../storage-s3')._internals;
+// canonicalUri comes from the same module as the signer ON PURPOSE: the path on the wire and the
+// path that was signed have to be produced by ONE function, or they can silently disagree (below).
+const { signV4, canonicalUri } = require('../storage-s3')._internals;
 
 const SERVICE = 's3';
 const MIN_PART_BYTES = 5 * 1024 * 1024;          // S3's hard floor for every part but the last
@@ -176,7 +178,19 @@ function createVault(cfg) {
         const enc = (v) => encodeURIComponent(v).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
         return `${enc(k)}=${enc(query[k] == null ? '' : String(query[k]))}`;
       }).join('&');
-      const path = qs ? `${loc.path}?${qs}` : loc.path;
+      // …and so must the PATH, for exactly the same reason. `signV4` signs `canonicalUri(loc.path)`
+      // (RFC-3986 per segment, '/' kept), so sending the RAW path means a key containing a space, a
+      // bracket or a non-ASCII letter is signed one way and sent another — S3 answers
+      // 403 SignatureDoesNotMatch, and a raw space is not even a legal HTTP request line.
+      //
+      // This is unreachable today and is fixed as a TRAP, not a live fault: every key this system
+      // writes is machine-generated and already safe — `db/<yyyy>/<mm>/<stamp>-<hex>.ysbak` here,
+      // and `storage-s3.newRef`'s `<hex>/<hex><.ext>` (extension sanitised to [A-Za-z0-9]) for the
+      // document copies. For all of those `canonicalUri` returns the input unchanged, so this line
+      // is a byte-for-byte no-op on every object in the vault today. It stops being a no-op the day
+      // someone stores an object under a human filename, which is a very ordinary thing to add.
+      const wirePath = canonicalUri(loc.path);
+      const path = qs ? `${wirePath}?${qs}` : wirePath;
 
       const transport = loc.protocol === 'http:' ? http : https;
       const req = transport.request({ method, host: loc.hostname, port: loc.port || undefined, path, headers }, (res) => {
