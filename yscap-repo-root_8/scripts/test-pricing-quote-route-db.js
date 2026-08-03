@@ -82,6 +82,82 @@ const DEAL = {
       ok(!text.includes(k), `the response carries no ${k}`);
     }
 
+    /* THE ABOVE IS A DENYLIST OF FIVE WORDS, AND IT WAS NOT ENOUGH. An audit
+       (2026-08-03) passed every one of those assertions while the body carried
+       Silver's `overlays` — the note-buyer Underwriting Commentary, all 13
+       items including the ones that do not apply — plus `tierCaps`, the
+       workbook Tier Grid row verbatim, and `rateKey`, the RATE_BLOCKS index of
+       the cell just priced. None of them contains any of the five words.
+
+       A denylist can only ever name what somebody already thought of, so the
+       route now projects through an ALLOWLIST and this asserts the two
+       properties that actually matter. */
+    console.log('\n== B2. the withheld fields are genuinely withheld ==');
+    for (const p of ['standard', 'gold', 'silver']) {
+      const e = (B[p] && B[p].evaluate) || {};
+      for (const k of ['overlays', 'tierCaps', 'rateKey']) {
+        ok(!(k in e), `${p}.evaluate does not carry "${k}"`);
+      }
+    }
+    // A capital-partner / third-party name must never reach an anonymous
+    // surface. `overlays` carried one outright.
+    for (const name of ['Elementix', 'Fidelis', 'Blue Lake', 'BlueLake', 'CorrFirst', 'EMCAP', 'Temple View', 'Churchill']) {
+      ok(!new RegExp(name.replace(/\s/g, '\\s*'), 'i').test(text), `no third-party name "${name}" in the response`);
+    }
+
+    /* AND THE CLASSIFICATION IS COMPLETE. This is the part that keeps working
+       after everyone here has moved on: every key the engines actually produce
+       must be either shipped or deliberately withheld. A field added to an
+       engine tomorrow lands in neither set and fails HERE, so a future
+       `overlays` is caught before it ships rather than by the next audit. */
+    console.log('\n== B3. every engine field is classified — new ones fail here ==');
+    const { PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS } = require('../src/routes/pricing-quote')._internals;
+    const studioLib = require('../src/lib/pricing-studio');
+    const seen = new Set();
+    for (const strategy of ['Fix & Flip', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental']) {
+      for (const state of ['NJ', 'NY', 'FL', 'TX']) {
+        for (const loanType of ['Purchase', 'Refinance']) {
+          for (const isAssignment of [false, true]) {
+            let q = null;
+            try {
+              q = studioLib.studioQuote({
+                ...DEAL, strategy, state, loanType, isAssignment,
+                sellerPrice: isAssignment ? 350000 : 0,
+              }, { standard: 0.005, gold: 0.005, silver: 0.005 });
+            } catch (_) { continue; }
+            for (const p of ['standard', 'gold', 'silver']) {
+              const e = q && q[p] && q[p].evaluate;
+              if (e) for (const k of Object.keys(e)) seen.add(k);
+            }
+          }
+        }
+      }
+    }
+    const unclassified = [...seen].filter((k) => !PUBLIC_EVALUATE_FIELDS.has(k) && !WITHHELD_EVALUATE_FIELDS.has(k));
+    ok(seen.size > 30, `the sweep actually exercised the engines (${seen.size} distinct fields)`);
+    ok(
+      unclassified.length === 0,
+      `every engine field is either shipped or deliberately withheld${unclassified.length ? ` — UNCLASSIFIED: ${unclassified.join(', ')}. Add each to PUBLIC_EVALUATE_FIELDS or WITHHELD_EVALUATE_FIELDS in src/routes/pricing-quote.js, with a reason.` : ''}`,
+    );
+
+    console.log('\n== B4. the leverage slider actually moves the loan ==');
+    /* `targetLTC` is the studio's leverage slider. It was missing from the
+       whitelist, so every rung of the ladder answered with the maximum-leverage
+       loan and moving the slider changed nothing on screen. It belongs here and
+       is not an admin knob: all three engines apply it as
+       Math.min(maxLTC, targetLTC), so it can only ever ask for LESS. */
+    const loanOf = (r) => r.body && r.body.standard && r.body.standard.evaluate
+      && r.body.standard.evaluate.sizing && r.body.standard.evaluate.sizing.totalLoan;
+    const noTarget = loanOf(await call(server, DEAL));
+    const wide = loanOf(await call(server, { ...DEAL, targetLTC: 0.90 }));
+    const tight = loanOf(await call(server, { ...DEAL, targetLTC: 0.65 }));
+    ok(typeof wide === 'number' && typeof tight === 'number', 'both rungs price');
+    ok(tight < wide, `a lower target sizes a smaller loan (${tight} < ${wide})`);
+    // And it can only ever LOWER — the engines apply Math.min(maxLTC, targetLTC),
+    // so an out-of-range target must land exactly on the untargeted answer.
+    const absurd = loanOf(await call(server, { ...DEAL, targetLTC: 9.99 }));
+    ok(absurd === noTarget, `an out-of-range target cannot raise leverage (${absurd} === ${noTarget})`);
+
     console.log('\n== C. the answer is not cacheable and not indexable ==');
     eq(r.headers['cache-control'], 'no-store', 'Cache-Control');
     eq(r.headers['x-robots-tag'], 'noindex', 'X-Robots-Tag');

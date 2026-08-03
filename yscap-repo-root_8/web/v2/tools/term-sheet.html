@@ -999,9 +999,21 @@
 /* The owner's choice (2026-08-03): while the server is still pricing a deal,
    the figures DIM rather than keep showing the previous deal's numbers. A stale
    number that looks current is worse than a brief flicker. Only applies when the
-   server is the source — with the local engines there is never a gap. */
-:root[data-ts-pending="1"] .res-val,
-:root[data-ts-pending="1"] .prog-card .big { opacity: .45; transition: opacity .12s ease; }
+   server is the source — with the local engines there is never a gap.
+
+   THE FIRST VERSION OF THIS RULE MATCHED NOTHING (audit 2026-08-03). It named
+   `.res-val` and `.prog-card .big`, and neither class exists on this page or in
+   any script or stylesheet it loads — each appeared exactly once in the whole
+   file, here. So the attribute was set correctly and styled nothing: every
+   pending and every stale figure rendered at full opacity, indistinguishable
+   from a settled number, which is precisely the failure the owner asked to
+   avoid. The real figures are the detail rows (`.ts-line .v`) and the program
+   cards (`.pcard-loan`, `.pcard-statnum`). `scripts/test-term-sheet-pending-css.js`
+   now asserts every selector in this rule matches a real element in the shipped
+   HTML, because a selector typo is silent by nature. */
+:root[data-ts-pending="1"] .ts-line .v,
+:root[data-ts-pending="1"] .pcard-loan,
+:root[data-ts-pending="1"] .pcard-statnum { opacity: .45; transition: opacity .12s ease; }
 </style>
 
 <script src="address-autocomplete.js?v=admin9"></script>

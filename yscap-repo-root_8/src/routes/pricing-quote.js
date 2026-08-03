@@ -62,6 +62,15 @@ function sanitizeDeal(body) {
     rehabBudget: Math.max(0, num(b.rehabBudget) || 0),
     term: Math.max(1, Math.min(36, num(b.term) || 12)),
     irMonths: Math.max(0, Math.min(24, num(b.irMonths) || 0)),
+    // The studio's LEVERAGE SLIDER, and it belongs here: all three engines
+    // apply it as `Math.min(maxLTC, targetLTC)`, so it can only ever LOWER the
+    // cap — it is the borrower asking for less, not an override reaching past
+    // one. src/lib/pricing.js already whitelists it for the same reason.
+    // Dropping it (audit 2026-08-03) made every rung of the leverage ladder
+    // answer with the maximum-leverage loan, so moving the slider changed
+    // nothing on screen. 0 / absent means "no target", which is how the
+    // engines' own `targetLTC > 0` guard reads it.
+    targetLTC: Math.max(0, Math.min(1, num(b.targetLTC) || 0)),
     irAmount: Math.max(0, Math.min(100000000, num(b.irAmount) || 0)),
     accrual: 'Non-Dutch',                 // the frozen engine input, never client-set
     sqftAddition: bool(b.sqftAddition),
@@ -89,6 +98,75 @@ function companyMarkups() {
   } catch (_) { return {}; }
 }
 
+/* WHAT LEAVES THIS DOOR — an ALLOWLIST, because the engines' own result is not
+   a borrower-facing object.
+
+   The header above claims this hands back "ONE priced deal per request and
+   never the tables behind it". An audit (2026-08-03) proved that claim false:
+   `evaluate` was passed through verbatim, so a single anonymous request also
+   carried Silver's `overlays` — the note-buyer Underwriting Commentary, all 13
+   items INCLUDING the ones that do not apply to the deal, one of which names a
+   third-party vendor outright — plus `tierCaps`, the workbook Tier Grid row
+   copied verbatim, and `rateKey`, the RATE_BLOCKS index of the cell just
+   priced, which is a map for sweeping the grid.
+
+   Those three are guideline TABLE data wearing a quote's clothing, and a
+   capital-partner name on an anonymous surface breaks the standing rule that
+   such a name never appears on anything borrower-facing.
+
+   This is also what makes phase 4 worth doing. The text is downloadable from
+   the engines in the public web root TODAY — that is finding #7 itself — so
+   deleting those files is the fix. But delete them while this route still
+   passes the same fields through and the leak has not been closed, only moved
+   from a .js file to a JSON body. Narrowing here is a PREREQUISITE for phase 4,
+   not a nicety.
+
+   An ALLOWLIST rather than a denylist, deliberately: a denylist only covers the
+   fields somebody thought of, and the engines gain fields. Anything new is
+   withheld until a human classifies it — and `test-pricing-quote-route-db`
+   fails on an unclassified key, so "withheld by default" can never quietly
+   drop something the page needs. */
+const PUBLIC_EVALUATE_FIELDS = new Set([
+  // the verdict and why
+  'status', 'eligible', 'reasons', 'pricingReady', 'available',
+  // what the deal is
+  'program', 'product', 'productLabel', 'kind', 'regime', 'loanType', 'strategyCode',
+  'exit', 'cashOut', 'market', 'sizeBand', 'tier', 'tierLabel', 'projectCount',
+  // the money the sheet prints
+  'noteRate', 'sizing', 'caps', 'pricedCeiling', 'origination', 'origPct', 'drawFee',
+  'liquidity', 'liquidityPct',
+  // structure
+  'reserveTermCapped', 'reserveTermMonths', 'reserveEligible', 'reserveInCost',
+  'reserveCapIsConstruction', 'irRequired', 'irLocked', 'defaultTerm',
+  // flags the page branches on
+  'assignment', 'exitShortfall', 'escalations', 'cityReview', 'foreclosure',
+  'heavy', 'heavyAuto', 'sqft', 'multiUnit', 'gcOnly', 'dscr',
+]);
+
+/* Withheld ON PURPOSE. Named rather than merely absent, so the guard test can
+   tell "we decided against this" from "nobody has looked at this yet". */
+const WITHHELD_EVALUATE_FIELDS = new Set([
+  'overlays',   // the note-buyer Underwriting Commentary; names a third party
+  'tierCaps',   // the workbook Tier Grid row verbatim — silver-program.js says
+                // in its own comment this "is NOT what a borrower is shown",
+                // and termsheet.js says "NEVER read tierCaps" for display
+  'rateKey',    // the RATE_BLOCKS cell index; the page reads it zero times
+]);
+
+function publicEvaluate(e) {
+  if (!e || typeof e !== 'object') return e;
+  const out = {};
+  for (const k of Object.keys(e)) if (PUBLIC_EVALUATE_FIELDS.has(k)) out[k] = e[k];
+  return out;
+}
+
+function publicBlock(b) {
+  if (!b || typeof b !== 'object') return b;
+  const out = { ...b };
+  if (b.evaluate) out.evaluate = publicEvaluate(b.evaluate);
+  return out;
+}
+
 router.post('/studio', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.set('X-Robots-Tag', 'noindex');
@@ -100,7 +178,13 @@ router.post('/studio', (req, res) => {
     }
     // Echo the deal the server actually priced. The page needs it to tell a
     // stale answer from a current one when the visitor keeps typing.
-    return res.json({ ...out, deal });
+    return res.json({
+      ...out,
+      standard: publicBlock(out.standard),
+      gold: publicBlock(out.gold),
+      silver: publicBlock(out.silver),
+      deal,
+    });
   } catch (e) {
     // Never leak an engine's internals through an error string on a public door.
     return res.status(500).json({ available: false, reason: 'pricing error' });
@@ -108,3 +192,8 @@ router.post('/studio', (req, res) => {
 });
 
 module.exports = router;
+// Exposed so the guard test can assert the classification is COMPLETE: every
+// key the engines actually produce must be in one set or the other. A new
+// engine field lands in neither and fails CI, which is the point — it is how a
+// future `overlays` gets noticed before it ships rather than after.
+module.exports._internals = { PUBLIC_EVALUATE_FIELDS, WITHHELD_EVALUATE_FIELDS, publicEvaluate, sanitizeDeal };
