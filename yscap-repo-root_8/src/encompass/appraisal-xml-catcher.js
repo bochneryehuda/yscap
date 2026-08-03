@@ -19,16 +19,23 @@
  * So the file is reachable ONLY between delivery and delivery+15min, and polling
  * every few minutes catches each one. That is the whole design.
  *
- * ON THE TIMING MARGIN — the honest version. The "~20 seconds for the whole
- * tenant" figure from the research came from a probe script running at
- * concurrency 10. THIS walk is strictly sequential and paced (350ms between
- * loans, matching reader.bulkPullAllLoans). In steady state the 7-day window
- * keeps the list small — this tenant modifies ~6 loans a day, so a tick is ~44
- * loans, about 45 seconds inside a 300-second interval. A large backlog costs
- * minutes, and if a sweep outruns the interval the in-flight guard skips the
- * next tick and SAYS SO — the cadence degrades loudly, never silently. Watch for
- * "previous sweep still running": that line means the window or the pace needs
- * tuning for this tenant.
+ * ON THE TIMING MARGIN — the honest version. This walk is strictly sequential
+ * and paced: 350ms between LOANS, borrowing the constant from
+ * reader.bulkPullAllLoans. That is NOT the same as "matching" it — see the
+ * pacing note below, and do not import that walk's throughput figures from the
+ * research on the strength of a shared constant. (An earlier draft of this
+ * comment said "matching", and that one word is what produced the same wrong
+ * req/s claim here twice.)
+ *
+ * In steady state the 7-day window keeps the list small — this tenant modifies
+ * ~6 loans a day, so a tick is ~44 loans ≈ 15 seconds of PACING, plus
+ * Encompass's own response time on top. Only the pacing half is arithmetic; the
+ * response time is not measured anywhere here, which is why no wall-clock total
+ * is claimed — the margin inside a 300-second interval is wide, not precise. A
+ * large backlog costs minutes, and if a sweep outruns the interval the in-flight
+ * guard skips the next tick and SAYS SO — the cadence degrades loudly, never
+ * silently. Watch for "previous sweep still running": that line means the window
+ * or the pace needs tuning for this tenant.
  *
  * WHAT THE PACING ACTUALLY BUYS — stated precisely, because the obvious claim is
  * too strong. Encompass's binding limit is CONCURRENCY (30 simultaneous calls
@@ -116,7 +123,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A WARNING NOBODY CAN READ IS NOT A WARNING. `paceMs` is a parameter default, so
 // it is re-read on every sweep — an unbounded warning there is 288 identical
-// lines a day, which is how a log stops being read at all.
+// lines a day at the default 300s poll (start() clamps the interval to 60..600s,
+// so 144..1440), which is how a log stops being read at all.
 //
 // Keyed on name+VALUE, and be honest about what that means: a setting broken a
 // SECOND time to a DIFFERENT bad value warns again, but broken back to the SAME
@@ -182,9 +190,9 @@ function catchDisabled() {
     // noLink alarm exists to prevent. So the key's EXISTENCE is checked first.
     if (!switches.BY_KEY || !switches.BY_KEY[CATCH_SWITCH_KEY]) {
       // Through warnOnce for the same reason envNum is: this runs on EVERY sweep,
-      // so an unbounded warn here is 288 identical lines a day. Latent while the
-      // key is registered — which is exactly when a guard like this is worth
-      // adding, rather than after it has already flooded a log.
+      // so an unbounded warn here is the same 144..1440 identical lines a day.
+      // Latent while the key is registered — which is exactly when a guard like
+      // this is worth adding, rather than after it has already flooded a log.
       warnOnce(`switch-missing:${CATCH_SWITCH_KEY}`,
         `[encompass-xml] switch ${CATCH_SWITCH_KEY} is not in the registry — ` +
         'staying ON and relying on the env kill switch');
@@ -618,9 +626,12 @@ async function capture(db, res, meta) {
 // contradiction would have surfaced first.
 //
 // So the window is sized for the case we could NOT rule out. Also measured: the
-// tenant modifies ~6 loans a day, so 7 days is ~44 loans ≈ 45s of paced sweeping
-// inside a 300s interval — a 3.5x safety margin over the 2 days first shipped,
-// for about thirty seconds. `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
+// tenant modifies ~6 loans a day, so 7 days is ~44 loans — ~15s of PACING plus
+// Encompass's own response time, well inside a 300s interval. (The pacing half
+// is arithmetic; the response time is not measured here, so treat the margin as
+// wide rather than as a number.) That buys a 3.5x window over the 2 days first
+// shipped for a few extra seconds of sweeping, which is the trade.
+// `ENCOMPASS_APPRAISAL_XML_SINCE_DAYS` tunes it.
 // 1..90 days: below 1 the window is empty, and past ~90 the sweep stops fitting
 // inside its own interval on any real tenant.
 // The pipeline search is capped and NOT paged; see the alarm at the call site.
