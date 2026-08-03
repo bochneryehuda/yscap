@@ -69,7 +69,7 @@ const HELP = {
   retainage: 'Money you hold back from each approved draw and release at the very end, so the last piece isn\'t paid until the work is fully finished. Example: set to 10% — a $10,000 approved draw pays the borrower $9,000 now and keeps $1,000 until the project is done and signed off. Leave it at 0 for no hold-back (most files).',
   lien: 'Blocks a draw from being released until every required lien waiver is received or waived. Off unless this project uses lien waivers.',
   advanced: 'These aren\'t part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on here — globally, or for one specific project — and they\'ll appear on that file\'s desk.',
-  link: 'Match a note buyer to its record in Sitewire\'s capital-partner directory even when the names are spelled differently (e.g. “Fidelis” → “Fidelis Investments LLC”). Once linked, a rule for that note buyer pushes to the right Sitewire partner automatically. Nothing is guessed — you confirm each match.',
+  link: 'Match a note buyer to its record in Sitewire\'s capital-partner directory even when the names are spelled differently (e.g. a buyer saved here as “Acme” vs “Acme Capital Partners LLC” there). Once linked, a rule for that note buyer pushes to the right Sitewire partner automatically. Nothing is guessed — you confirm each match.',
 };
 
 export default function StaffDrawRules() {
@@ -251,7 +251,7 @@ export default function StaffDrawRules() {
 }
 
 /* Smart-link: match our free-text note-buyer labels to Sitewire's capital-partner directory,
-   tolerant of spelling differences ("Fidelis" → "Fidelis Investments LLC"). Nothing is guessed —
+   tolerant of spelling differences ("Acme" vs "Acme Capital Partners LLC"). Nothing is guessed —
    an admin confirms each link. The backend resolveCapitalPartnerId consults these confirmed links
    first, so a rule for a note buyer pushes to the right Sitewire partner. */
 function PartnerLinks({ partners, onChanged }) {
