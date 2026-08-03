@@ -36,6 +36,7 @@
  *     keeping observations in the first place.
  */
 const K = require('./property-key');
+const CS = require('./condition-scale');
 // The portal's own property-type vocabulary — a rental comparable's category is
 // derived from its unit count exactly the way a sales comparable's is, so the
 // two grids can never describe one building in two different words.
@@ -247,7 +248,10 @@ const ROLLUP_FACTS = Object.freeze({
 //     UNRECORDED area basis no longer outranks a stated building area, and
 //     `gla_basis` no longer travels without the `gla` it describes (105 property
 //     rows read "we do not know the area, but we know it is a building area").
-const ROLLUP_VERSION = 8;
+// 9 — db/444: a worded condition or quality rating is read into a rank a filter
+//     can use (`condition_rank_read` and its span). A quarter of the warehouse
+//     carried words only and was invisible to every condition filter.
+const ROLLUP_VERSION = 9;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -1178,7 +1182,40 @@ async function rollupProperty(db, propertyId) {
   if (bestUnits && bestUnits.property_type != null && bestUnits.property_type !== '') {
     set.units = bestUnits.units;
     set.property_type = bestUnits.property_type;
-  }
+    // AND HOW WE KNOW (db/444). The winner was chosen by `identityRank` and the
+    // provenance was then discarded, so a consumer holding a DIFFERENT reading —
+    // the appraisal tab, ranking this report's own statement against the
+    // warehouse's — had no way to tell a measurement from a form inference. A
+    // subject observation carries no `identity_basis` because it IS the
+    // measurement, so it is recorded by name.
+    set.units_basis = bestUnits.role === 'subject' ? 'subject' : (bestUnits.identity_basis || null);
+  } else set.units_basis = null;
+  // THE WORDED RATINGS ARE READ INTO SOMETHING A FILTER CAN USE (db/444).
+  // `condition_rank` / `quality_rank` are GENERATED from the UAD code alone, so a
+  // property whose only rating is the appraiser's own word — the whole 2-4 unit
+  // book, because the 1025 was never brought into UAD — is invisible to every
+  // condition filter, to the facets and to the valuation's per-grade rate.
+  // Measured: 234 of 955 real properties.
+  //
+  // It reads the ROLLED-UP values, not the observations, so it inherits the
+  // after-repair protection above for free: `AS_IS_ONLY` has already decided
+  // which report's condition is allowed to describe this property TODAY, and
+  // re-reading the words from the observations would walk straight around it.
+  // A rating we cannot read leaves every column NULL, which is the same thing
+  // the columns said before — never a guess, never a default.
+  const condRead = CS.readCondition(set.condition_uad || set.condition_text);
+  const qualRead = CS.readQuality(set.quality_uad || set.quality_text);
+  set.condition_rank_read = condRead.rank;
+  set.condition_rank_low = condRead.rankLow;
+  set.condition_rank_high = condRead.rankHigh;
+  set.condition_read_source = condRead.source;
+  set.condition_read_confidence = condRead.confidence;
+  set.quality_rank_read = qualRead.rank;
+  set.quality_rank_low = qualRead.rankLow;
+  set.quality_rank_high = qualRead.rankHigh;
+  set.quality_read_source = qualRead.source;
+  set.quality_read_confidence = qualRead.confidence;
+
   const comps = obs.filter((o) => o.role === 'comparable');
   const counts = {
     subject_count: obs.filter((o) => o.role === 'subject').length,

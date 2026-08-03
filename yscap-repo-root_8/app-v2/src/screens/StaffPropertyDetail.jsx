@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import {
   INK, MUTED, GOLD, S, money, sqft, num, day, saleMonth, baths,
-  conditionLabel, qualityLabel, COMP_SET_LABEL,
+  conditionLabel, conditionRead, qualityLabel, COMP_SET_LABEL,
 } from '../lib/research.js';
 import NearbyComps from '../components/NearbyComps.jsx';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
@@ -137,7 +137,7 @@ export default function StaffPropertyDetail() {
           <Fact k="Bathrooms" v={(p.baths_full != null || p.baths_half != null) ? baths(p) : p.baths_text} />
           <Fact k="Total rooms" v={p.total_rooms} />
           <Fact k="Year built" v={p.year_built} />
-          <Fact k="Condition" v={p.condition_uad || p.condition_text ? conditionLabel(p.condition_uad, p.condition_text) : null} />
+          <Fact k="Condition" v={p.condition_uad || p.condition_text ? conditionRead(p) : null} />
           <Fact k="Quality" v={p.quality_uad || p.quality_text ? qualityLabel(p.quality_uad, p.quality_text) : null} />
           <Fact k="Lot" v={p.lot_area || (p.lot_sqft ? sqft(p.lot_sqft) : null)} />
           <Fact k="Basement" v={p.basement_sqft ? sqft(p.basement_sqft) : null} />

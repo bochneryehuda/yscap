@@ -3,33 +3,38 @@
  * HOW MANY DOORS IT HAS — against a real database and the real HTTP routes.
  *
  * The owner's first requirement for the research build is that no comparable can
- * appear anywhere in the system without those two facts. The comp search, the
- * property page and the valuation grid answer it; the appraisal tab — the screen
- * an underwriter actually reviews the appraiser's own comps on — did not, and
- * could not: a MISMO sales grid has no element for either, which is why
- * `appraisal_comparables` has no such column. The warehouse answers it.
+ * appear anywhere in the system without those two facts. The appraisal tab — the
+ * screen an underwriter actually reviews the appraiser's own comps on — showed
+ * neither. THREE places can answer: the comparable row itself (populated for 769
+ * of 769 real comparables by db/430-432), this report's observation in the
+ * warehouse, and the property roll-up across every report that has ever
+ * described that address.
  *
- * What this pins, in the order the answer is decided:
- *   1. THIS REPORT'S OWN READING, and the fact that it says WHERE it came from —
- *      an appraiser writing it on the grid and a form proving it are different
- *      claims and a reviewer must be able to tell them apart.
- *   2. THE ROLL-UP as the fallback: what every OTHER report says about that same
- *      address, which is the thing the warehouse exists to know.
+ * What this pins:
+ *   1. THE ROW'S OWN ANSWER IS NEVER DISCARDED. The first cut nulled it and
+ *      re-derived from the warehouse, on a premise about the schema that was
+ *      false — so two real comparables at `212-1/2 Rancocas Rd`, whose house
+ *      number `propertyKey` cannot parse, rendered "type not stated · units not
+ *      stated" in red while the appraiser had written "2 units" on the grid.
+ *   2. THE BEST-SOURCED ANSWER WINS, on the ingest's OWN `identityRank`: a
+ *      measurement beats a grid statement beats a design-style reading beats a
+ *      FORM inference. 409 of 769 real comparables get both facts from the form
+ *      alone, so without this a genuinely counted six-family is re-labelled a
+ *      house the moment it appears as a comparable on a 1004.
  *   3. THE PAIR MOVES TOGETHER. A count from one source beside a type from
  *      another lands "3 units · SFR (1 unit)" on one row — the self-contradiction
- *      the roll-up has its own rule to prevent. Proven with an observation that
- *      states ONLY a count while the roll-up states both.
- *   4. AN UNKNOWN STAYS UNKNOWN — never guessed, and in particular NEVER
- *      inherited from the report's subject. That is the tempting fix (every comp
- *      on a 1025 is *probably* a 2-4) and it would paint the answer onto rows
- *      nobody established, hiding the one comp that is a different kind of
- *      building — which is exactly what the reviewer is looking for.
- *   5. BOTH DOORS — staff and borrower — because a fix on one surface is not a
- *      fix. The borrower's copy carries the two property facts and NOT our
- *      internal bookkeeping (the warehouse id, how many of our reports describe
- *      that address).
- *   6. IT NEVER THROWS. The appraisal tab must still render if the warehouse is
- *      unreachable; a missing fact reads exactly like an unstated one.
+ *      the roll-up has its own rule to prevent.
+ *   4. NO RAW DATABASE KEY REACHES A SCREEN. `properties.property_type` holds two
+ *      vocabularies (a subject observation writes `multi_2_4`, a comparable
+ *      writes `Multi 2–4`) and 130 of 955 real rows hold the key.
+ *   5. AN UNKNOWN STAYS UNKNOWN — never guessed, and in particular NEVER
+ *      inherited from the report's subject.
+ *   6. BOTH DOORS — staff and borrower. The borrower's copy carries the two
+ *      property facts and none of our internal bookkeeping.
+ *   7. A WAREHOUSE FAILURE DEGRADES TO THE ROW, NOT TO "NOT STATED". The research
+ *      ingest is fire-and-forget after an import and drains the back book 400
+ *      reports per boot, so "the warehouse has not caught up yet" is the ordinary
+ *      case, not the exotic one.
  *
  * Requires DATABASE_URL with migrations applied. Skips cleanly otherwise.
  */
@@ -65,10 +70,11 @@ function call(server, method, path, token) {
 async function property(street, opts = {}) {
   return (await db.query(
     `INSERT INTO properties (address_key, display_address, street, city, state, zip,
-       property_type, units, observation_count)
-     VALUES ($1,$2,$3,'Identitytown','NJ','07002',$4,$5,$6) RETURNING id`,
+       property_type, units, units_basis, observation_count)
+     VALUES ($1,$2,$3,'Identitytown','NJ','07002',$4,$5,$6,$7) RETURNING id`,
     [`nj|identitytown|${street.toLowerCase()}|${tag}`, `${street} ${tag}`, street,
-      opts.type || null, opts.units == null ? null : opts.units, opts.observations || 1])).rows[0].id;
+      opts.type || null, opts.units == null ? null : opts.units,
+      opts.basis === undefined ? null : opts.basis, opts.observations || 1])).rows[0].id;
 }
 
 (async () => {
@@ -91,30 +97,50 @@ async function property(street, opts = {}) {
       `INSERT INTO appraisals (application_id, form_type, property_type, units, as_is_value, imported_at, superseded)
        VALUES ($1,'FNM1025','Multi 2–4',3,400000,now(),false) RETURNING id`, [appId])).rows[0].id;
 
-    const comp = async (seq, street, price) => (await db.query(
-      `INSERT INTO appraisal_comparables (appraisal_id, is_subject, seq, address, city, state, sale_price, comp_set)
-       VALUES ($1,false,$2,$3,'Identitytown','NJ',$4,'as_is') RETURNING id`,
-      [apprId, seq, `${street} ${tag}`, price])).rows[0].id;
+    // EVERY REAL COMPARABLE CARRIES BOTH FACTS AND ITS PROVENANCE (db/430-432):
+    // 769 of 769 in the corpus carry a property type, 768 a unit count, 769 an
+    // identity basis. The first version of this test inserted them blank, which
+    // is a world that cannot occur — and that is exactly why it did not catch
+    // the module discarding what the row already states.
+    const comp = async (seq, street, price, own = {}) => (await db.query(
+      `INSERT INTO appraisal_comparables (appraisal_id, is_subject, seq, address, city, state,
+         sale_price, comp_set, property_type, units, identity_basis)
+       VALUES ($1,false,$2,$3,'Identitytown','NJ',$4,'as_is',$5,$6,$7) RETURNING id`,
+      [apprId, seq, `${street} ${tag}`, price,
+        own.type === undefined ? null : own.type,
+        own.units === undefined ? null : own.units,
+        own.basis === undefined ? null : own.basis])).rows[0].id;
     const subjectRow = (await db.query(
       `INSERT INTO appraisal_comparables (appraisal_id, is_subject, seq, address, city, state)
        VALUES ($1,true,'0',$2,'Identitytown','NJ') RETURNING id`, [apprId, `1 Subject Way ${tag}`])).rows[0].id;
 
     // 1 — the appraiser wrote it on the grid.
-    const cGrid = await comp('1', '10 Grid St', 510000);
-    const pGrid = await property('10 Grid St', { type: 'Multi 2–4', units: 3, observations: 2 });
+    const cGrid = await comp('1', '10 Grid St', 510000, { type: 'Multi 2–4', units: 3, basis: 'grid' });
+    const pGrid = await property('10 Grid St', { type: 'Multi 2–4', units: 3, basis: 'grid', observations: 2 });
     // 2 — the report FORM proves it (a 1004's grid only compares one-unit dwellings).
-    const cForm = await comp('2', '20 Form Ave', 480000);
-    const pForm = await property('20 Form Ave', { type: 'SFR (1 unit)', units: 1 });
+    const cForm = await comp('2', '20 Form Ave', 480000, { type: 'SFR (1 unit)', units: 1, basis: 'form' });
+    const pForm = await property('20 Form Ave', { type: 'SFR (1 unit)', units: 1, basis: 'form' });
     // 3 — this report says nothing; another report described the same address.
-    const cRecords = await comp('3', '30 Records Rd', 495000);
-    const pRecords = await property('30 Records Rd', { type: 'Multi 5+', units: 6, observations: 4 });
+    // THE ROW SAYS ONE UNIT BECAUSE THE FORM SAID SO; the warehouse holds a
+    // MEASURED count from when the same address was some report's subject. The
+    // measurement has to win, or a genuinely counted six-family is re-labelled a
+    // house the moment it appears as a comparable on a 1004.
+    const cRecords = await comp('3', '30 Records Rd', 495000, { type: 'SFR (1 unit)', units: 1, basis: 'form' });
+    // A RAW CANONICAL KEY, which is what a SUBJECT observation writes and what
+    // 130 of 955 real property rows hold. It must never reach a screen.
+    const pRecords = await property('30 Records Rd', { type: 'multi_5_plus', units: 6, basis: 'subject', observations: 4 });
     // 4 — this report states a COUNT only; the roll-up states both. The pair must
     //     come from ONE source, so the roll-up wins whole.
-    const cPartial = await comp('4', '40 Partial Pl', 470000);
-    const pPartial = await property('40 Partial Pl', { type: 'Multi 2–4', units: 4 });
+    const cPartial = await comp('4', '40 Partial Pl', 470000, { type: null, units: 2, basis: 'grid' });
+    const pPartial = await property('40 Partial Pl', { type: 'Multi 2–4', units: 4, basis: 'grid' });
     // 5 — nobody has ever established it. It must SAY so, and must not become the
     //     subject's three units.
     const cUnknown = await comp('5', '50 Unknown Ct', 460000);
+    // THE ROW STATES BOTH AND THE WAREHOUSE HAS NEVER SEEN IT — the shape of the
+    // two real `212-1/2 Rancocas Rd` comparables, whose house number
+    // `propertyKey` cannot parse. They rendered "type not stated · units not
+    // stated" in red while the appraiser had written "2 units" on the grid.
+    const cUnkeyed = await comp('6', '60 Unkeyed Ln', 455000, { type: 'Multi 2–4', units: 2, basis: 'grid' });
     const pUnknown = await property('50 Unknown Ct', {});
 
     const obs = async (compId, propId, o) => db.query(
@@ -141,15 +167,19 @@ async function property(street, opts = {}) {
     ok(by(cGrid).identity_source === 'grid',
       'and says the appraiser wrote it — not that we worked it out');
     ok(Number(by(cGrid).identity_observations) === 2 && by(cGrid).property_id === pGrid,
-      'it carries the warehouse link, so a reviewer can see every other report on that address');
+      'it carries the warehouse link, so a reviewer can reach every other report on that address');
 
     ok(by(cForm).identity_source === 'form' && Number(by(cForm).units) === 1,
       'a one-unit comp proven by the report FORM is distinguishable from one the appraiser wrote down');
 
-    ok(by(cRecords).property_type === 'Multi 5+' && Number(by(cRecords).units) === 6,
-      'a comp this report says nothing about is answered from our own records');
+    // THE MEASUREMENT BEATS THE INFERENCE. The row says 1 unit because a 1004
+    // says so; the warehouse counted 6 when the same address was a subject.
+    ok(Number(by(cRecords).units) === 6,
+      'a MEASURED count in our records beats a unit count the report form merely implied');
     ok(by(cRecords).identity_source === 'records',
       'and it says the answer did NOT come from this report');
+    ok(by(cRecords).property_type === 'Multi 5+',
+      'and the type is shown in the portal\'s own words — never the raw database key');
 
     ok(by(cPartial).property_type === 'Multi 2–4' && Number(by(cPartial).units) === 4,
       'THE PAIR MOVES TOGETHER — a source stating both beats a source stating only a count');
@@ -163,20 +193,30 @@ async function property(street, opts = {}) {
     ok(!got.some((r) => !r.is_subject && Number(r.units) === 3 && r.id !== cGrid),
       'NOTHING is inherited from the subject — a 3-unit subject does not make its comps 3-unit');
 
+    // THE ROW'S OWN ANSWER SURVIVES A WAREHOUSE THAT HAS NEVER SEEN IT. This is
+    // the `212-1/2 Rancocas Rd` case, and it is what the first cut got wrong.
+    ok(by(cUnkeyed).property_type === 'Multi 2–4' && Number(by(cUnkeyed).units) === 2,
+      'a comparable the warehouse could not key still states what the appraiser wrote on the grid');
+    ok(by(cUnkeyed).identity_source === 'grid',
+      'and still says the appraiser wrote it');
+
     const subj = by(subjectRow);
     ok(subj.property_type === 'Multi 2–4' && Number(subj.units) === 3 && subj.identity_source === 'subject',
       'the subject row states what the report itself says about the subject');
 
-    // ---- B. IT NEVER THROWS --------------------------------------------
+    // ---- B. IT DEGRADES TO THE ROW, NOT TO NOTHING ---------------------
     const broken = { query: async () => { throw new Error('warehouse down'); } };
     const degraded = await CI.attachCompIdentity(rows, { db: broken, appraisal: appr });
+    const dg = (id) => degraded.find((r) => r.id === id) || {};
     ok(Array.isArray(degraded) && degraded.length === rows.length,
-      'an unreachable warehouse degrades to "not stated" — the appraisal tab still renders');
-    ok(degraded.every((r) => r.is_subject || r.identity_source == null),
-      'and never invents a source it could not read');
+      'an unreachable warehouse still renders the appraisal tab');
+    ok(dg(cGrid).property_type === 'Multi 2–4' && Number(dg(cGrid).units) === 3,
+      'and every comparable still states what its own row says — one failed read must never blank a whole grid');
+    ok(dg(cUnknown).property_type == null && dg(cUnknown).identity_source == null,
+      'while a row that genuinely states neither still says so');
     ok((await CI.attachCompIdentity(null, { db })).length === 0, 'no comps at all is not an error');
     // The rows handed in are the caller's — a route re-uses them for the implied-value
-    // read and the collateral score, so mutating them here would change those numbers.
+    // read and the collateral score, so mutating them would change those numbers.
     ok(rows.every((r) => !('identity_source' in r)), 'the caller\'s own rows are not mutated');
 
     // ---- C. BOTH DOORS -------------------------------------------------

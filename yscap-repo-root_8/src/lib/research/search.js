@@ -220,9 +220,20 @@ function buildQuery(input = {}) {
   // so "condition C3 or better" means rank <= 3. A plain string comparison on the
   // text column would silently mean the opposite. `condition_rank` is the
   // generated numeric column, so this stays a simple indexed range.
+  // …AND IT READS THE APPRAISER'S OWN WORDS, NOT ONLY A UAD CODE (db/444).
+  // `condition_rank` is GENERATED from the digits of `condition_uad`, and UAD was
+  // mandated for exactly four forms — the 1025 (2-4 unit) was left out, so its
+  // grid condition is written in words. Measured on the real corpus: 234 of 955
+  // properties carry words only and were invisible to this filter, which for a
+  // 2-4 unit lender is most of the book it actually lends on.
+  // `condition_rank_read` is the resolved answer — the code when there is one,
+  // the reading of the words when there is not — so this filters on ONE column
+  // and cannot COALESCE two the wrong way round. `research/condition-scale.js`
+  // owns the reading and refuses far more than it accepts (a relative word is
+  // about that report's subject, not about the house).
   const condMin = rankOf(CONDITION_SCALE, f.condition_best), condMax = rankOf(CONDITION_SCALE, f.condition_worst);
-  if (condMin != null) where.push(`p.condition_rank >= ${P(condMin)}`);
-  if (condMax != null) where.push(`p.condition_rank <= ${P(condMax)}`);
+  if (condMin != null) where.push(`p.condition_rank_read >= ${P(condMin)}`);
+  if (condMax != null) where.push(`p.condition_rank_read <= ${P(condMax)}`);
   const qualMin = rankOf(QUALITY_SCALE, f.quality_best), qualMax = rankOf(QUALITY_SCALE, f.quality_worst);
   if (qualMin != null) where.push(`p.quality_rank >= ${P(qualMin)}`);
   if (qualMax != null) where.push(`p.quality_rank <= ${P(qualMax)}`);
@@ -366,6 +377,8 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   p.beds, p.baths_full, p.baths_half, p.baths_text, p.baths_total, p.total_rooms,
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,
+  p.condition_rank_read, p.condition_rank_low, p.condition_rank_high, p.condition_read_source,
+  p.quality_rank_read, p.quality_read_source,
   p.view_rating, p.location_rating,
   -- WHAT THE PROPERTY LOOKS OUT ON AND WHAT IS DOWNSTAIRS (db/437), by the same
   -- rule as the block below: these were read, rolled up and then reachable by
@@ -441,7 +454,8 @@ async function facets(db, filters = {}) {
   const dist = b.distanceSelect ? `, ${b.distanceSelect}` : '';
   const sql = `
     WITH hits AS (
-      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.property_type, p.last_sale_price${dist}
+      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.condition_rank_read,
+             p.property_type, p.last_sale_price${dist}
         FROM properties p
         ${b.where}
     )
@@ -453,6 +467,13 @@ async function facets(db, filters = {}) {
          WHERE beds IS NOT NULL GROUP BY beds ORDER BY beds LIMIT 12) x) AS beds,
       (SELECT json_agg(x) FROM (SELECT condition_uad, count(*)::int AS n FROM hits
          WHERE condition_uad IS NOT NULL GROUP BY condition_uad ORDER BY condition_uad) x) AS conditions,
+      -- HOW MANY OF THE ANSWER THIS LIST CANNOT DESCRIBE. The list groups by the
+      -- UAD code, which a quarter of the warehouse does not have — so without
+      -- this the sidebar reads as though every rated property is in it. Counted,
+      -- not guessed at, and the screen says so.
+      (SELECT count(*)::int FROM hits WHERE condition_uad IS NULL AND condition_rank_read IS NOT NULL)
+        AS conditions_worded,
+      (SELECT count(*)::int FROM hits WHERE condition_rank_read IS NULL) AS conditions_unrated,
       (SELECT json_agg(x) FROM (SELECT property_type, count(*)::int AS n FROM hits
          WHERE property_type IS NOT NULL GROUP BY property_type ORDER BY n DESC LIMIT 20) x) AS property_types,
       (SELECT json_build_object(
@@ -468,7 +489,9 @@ async function facets(db, filters = {}) {
   return {
     total: Number(row.total || 0),
     cities: row.cities || [], beds: row.beds || [],
-    conditions: row.conditions || [], property_types: row.property_types || [],
+    conditions: row.conditions || [],
+    conditions_worded: row.conditions_worded || 0, conditions_unrated: row.conditions_unrated || 0,
+    property_types: row.property_types || [],
     price_bands: row.price_bands || {},
   };
 }

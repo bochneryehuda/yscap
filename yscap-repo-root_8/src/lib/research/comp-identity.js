@@ -5,38 +5,49 @@
  * be a possibility that you should see a comparable in your system that doesn't
  * have how many units the property is, what property type it is."
  *
- * The comp SEARCH answers it, the property page answers it and the valuation
- * grid answers it — they all read the warehouse, which stores those two facts
- * per observation. The APPRAISAL TAB did not, and that is the surface an
- * underwriter actually reviews an appraiser's own comps on: its grid showed the
- * address, the distance, the living area, the beds, the baths, the condition
- * and the price, and nothing about what the building IS. So a three-family
- * could sit in the As-Is grid of a single-family report with nothing on the
- * screen saying so.
+ * THREE PLACES CAN ANSWER, AND THE BEST-SOURCED ONE WINS.
  *
- * `appraisal_comparables` cannot answer it on its own — a MISMO 2.6 sales grid
- * has no element for a comparable's property type or unit count, which is why
- * those columns do not exist on that table. The warehouse answers it, three
- * ways, and this module is the one place that decides which:
+ *   1. THE COMPARABLE ROW ITSELF. `appraisal_comparables.property_type` /
+ *      `.units` / `.identity_basis` (db/430-432) are populated for 769 of 769
+ *      real comparables. THIS IS THE PRIMARY ANSWER and it is never discarded.
+ *   2. THIS REPORT'S OBSERVATION in the warehouse — a copy of (1), useful only
+ *      when the row is missing something.
+ *   3. THE PROPERTY ROLL-UP — what every OTHER report that has ever described
+ *      that same address concluded, which is the thing no data vendor has.
  *
- *   1. THIS REPORT'S OWN OBSERVATION. The ingest already resolved it when the
- *      report was filed and recorded HOW (`identity_basis`): `grid` — the
- *      appraiser stated it on an adjustment line; `form` — the report form only
- *      compares that kind of dwelling, so a 1004 comp is one unit by the form's
- *      own definition; `style` — read from the stated design.
- *   2. THE PROPERTY ROLL-UP — what every OTHER report that has ever described
- *      that same address says, which is the thing no data vendor has and the
- *      entire reason the warehouse was built.
- *   3. Nothing, which SAYS SO. A blank column reads as "ordinary" and that is
- *      the misreading the requirement exists to prevent.
+ * THE FIRST CUT GOT THIS EXACTLY BACKWARDS AND AN AUDIT CAUGHT IT. It nulled the
+ * row's own values and re-derived from (2)/(3), on a stated premise — "a MISMO
+ * grid has no element for either, which is why those columns do not exist" —
+ * that is simply false. Two real comparables at `212-1/2 Rancocas Rd` carry
+ * `Multi 2–4 / 2 units / grid`, i.e. the appraiser WROTE IT ON THE GRID, and
+ * they rendered as "type not stated · units not stated" in red because
+ * `propertyKey` cannot parse that house number so the warehouse never saw them.
+ * Worse, one failed warehouse read blanked EVERY comp on the report — and the
+ * research ingest is fire-and-forget after an import and drains the back book
+ * 400 reports per boot, so a freshly imported report showed an all-red grid as a
+ * matter of course. The rule that prevents the whole class: **a later source may
+ * only ever IMPROVE on what the row already states, never replace it with
+ * nothing.**
  *
- * TWO RULES THAT LOOK LIKE DETAIL AND ARE NOT:
+ * HOW "BEST-SOURCED" IS DECIDED — by `ingest._internals.identityRank`, the SAME
+ * ranking the roll-up itself uses, so the screen and the warehouse can never
+ * disagree about which reading to believe: a measurement (a subject observation,
+ * where the appraiser stood in the building) outranks a grid statement, which
+ * outranks a design-style or per-unit-price reading, which outranks a FORM
+ * inference. That last one matters at scale: 409 of 769 real comparables get
+ * both facts from `identity_basis='form'` — the 1004 the appraiser happened to
+ * use, which proves one dwelling by the form's own definition and nothing more.
+ * Without the ranking, a house genuinely counted as a triplex when it was some
+ * report's SUBJECT would be re-labelled a single family the moment it turned up
+ * as a comparable on a 1004 — which is word for word the trap `rollupProperty`
+ * has its own written rule against.
+ *
+ * TWO MORE RULES THAT LOOK LIKE DETAIL AND ARE NOT:
  *
  * THE PAIR MOVES TOGETHER OR NOT AT ALL. Taking the unit count from one source
  * and the type from another lands "3 units" beside "SFR (1 unit)" on the same
- * row — the self-contradiction `ingest.rollupProperty` has its own rule to
- * prevent. A source that states both is preferred outright; only if none states
- * both is a partial answer used, and then from ONE source.
+ * row. A source that states both is preferred outright; only if none states both
+ * is a partial answer used, and then from ONE source.
  *
  * NOTHING IS EVER INHERITED FROM THE REPORT'S SUBJECT. It is the tempting fix
  * (every comp on a 1025 is *probably* a 2-4) and it is fabrication: it would
@@ -48,38 +59,55 @@
 'use strict';
 const db = require('../../db');
 const { _internals: I } = require('./ingest');
+const PT = require('../property-type');
 
 const has = (v) => v != null && v !== '';
 
 /**
- * Which of two readings of one comparable to believe. Delegates to the ingest's
- * OWN ranking so this can never disagree with the roll-up that produced the
- * property row it falls back to.
+ * How well-sourced a reading is, on the ingest's OWN scale. A comparable's basis
+ * is whatever the parser recorded; the roll-up's winner may be a SUBJECT
+ * observation, which is a measurement and outranks everything.
  */
-function betterObservation(a, b) {
-  if (!a) return b;
-  if (!b) return a;
-  return I.identityRank(b) > I.identityRank(a) ? b : a;
-}
+const rankOfBasis = (basis) => I.identityRank(
+  basis === 'subject' ? { role: 'subject', identity_basis: null }
+    : { role: 'comparable', identity_basis: basis || null });
+
+/**
+ * THE PROPERTY TYPE IS SHOWN IN THE PORTAL'S OWN WORDS.
+ *
+ * `properties.property_type` holds TWO vocabularies, because
+ * `property_observations` does: a comparable observation carries the display
+ * label ("Multi 2–4"), while a SUBJECT observation carries the canonical key
+ * ("multi_2_4") — and 130 of 955 real property rows carry a raw key. Those are
+ * exactly the subject-only properties the roll-up path exists to answer from, so
+ * without this a database key reaches the staff tab and the borrower's own
+ * property report. An unrecognised value is passed through untouched rather than
+ * dropped: a vocabulary we have not seen is still the appraiser's word.
+ */
+const label = (v) => (has(v) ? (PT.canonicalPropertyTypeLabel(v) || String(v)) : null);
 
 /**
  * Attach `property_type` / `units` / `identity_source` / `property_id` to a set
  * of `appraisal_comparables` rows.
  *
  * `identity_source` is one of the `identity_basis` values ('grid' | 'form' |
- * 'style' | 'price'), 'records' when it came from the property roll-up rather
- * than from this report, 'subject' for the subject row, or null when nothing
- * establishes it. The caller words it; this decides it.
+ * 'style' | 'price'), 'records' when the property roll-up beat this report's own
+ * reading, 'subject' for the subject row, or null when nothing establishes it.
+ * The caller words it; this decides it.
  *
- * Never throws: the appraisal tab must still render if the warehouse is
- * unreachable, and a missing fact reads exactly like an unstated one.
+ * Never throws, and a failure degrades to THE ROW'S OWN VALUES — never to
+ * "not stated", which would announce that facts we hold were never given.
  */
 async function attachCompIdentity(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const dbc = opts.db || db;
   const appraisal = opts.appraisal || null;
+
+  // SEEDED FROM THE ROW, ALWAYS. Everything below can only improve on this.
   const out = list.map((r) => Object.assign({}, r, {
-    property_type: null, units: null, identity_source: null,
+    property_type: label(r.property_type),
+    units: has(r.units) ? Number(r.units) : null,
+    identity_source: (has(r.property_type) || has(r.units)) ? (r.identity_basis || 'grid') : null,
     identity_observations: null, property_id: null,
   }));
 
@@ -88,7 +116,7 @@ async function attachCompIdentity(rows, opts = {}) {
   // stored value into a real category.
   for (const r of out) {
     if (!r.is_subject || !appraisal) continue;
-    if (has(appraisal.property_type)) r.property_type = appraisal.property_type;
+    if (has(appraisal.property_type)) r.property_type = label(appraisal.property_type);
     if (has(appraisal.units)) r.units = Number(appraisal.units);
     if (r.property_type != null || r.units != null) r.identity_source = 'subject';
   }
@@ -102,38 +130,46 @@ async function attachCompIdentity(rows, opts = {}) {
       `SELECT o.comparable_id, o.property_id, o.role, o.identity_basis,
               o.property_type AS obs_type, o.units AS obs_units,
               p.property_type AS roll_type, p.units AS roll_units,
-              p.observation_count
+              p.units_basis AS roll_basis, p.observation_count
          FROM property_observations o
          LEFT JOIN properties p ON p.id = o.property_id
         WHERE o.comparable_id = ANY($1::uuid[])`, [ids])).rows;
   } catch (e) { return out; }
 
-  // `uq_prop_obs_comparable` makes this one row per comparable, but a stale
-  // duplicate must not decide the answer on rank order alone — keep the
-  // better-sourced reading rather than whichever row the scan returned last.
   const byComp = new Map();
-  for (const o of obs) byComp.set(o.comparable_id, betterObservation(byComp.get(o.comparable_id), o));
+  for (const o of obs) if (!byComp.has(o.comparable_id)) byComp.set(o.comparable_id, o);
 
   for (const r of out) {
     if (r.is_subject) continue;
     const o = byComp.get(r.id);
-    if (!o) continue;
+    if (!o) continue;                                   // the row's own answer stands
     r.property_id = o.property_id || null;
     r.identity_observations = o.observation_count != null ? Number(o.observation_count) : null;
-    // THE PAIR MOVES TOGETHER. A source stating both wins outright; a partial
-    // answer is only ever taken whole from one source.
+
+    const src = list.find((x) => x.id === r.id) || {};
+    // EVERY CANDIDATE ON ONE SCALE. Ordered best-first by how it was established;
+    // ties keep this report's own statement, which needs no extra hop.
     const candidates = [
-      { type: o.obs_type, units: o.obs_units, source: o.identity_basis || 'grid' },
-      { type: o.roll_type, units: o.roll_units, source: 'records' },
-    ];
-    const pick = candidates.find((c) => has(c.type) && has(c.units))
-      || candidates.find((c) => has(c.type) || has(c.units));
-    if (!pick) continue;
-    if (has(pick.type)) r.property_type = pick.type;
-    if (has(pick.units)) r.units = Number(pick.units);
+      { type: src.property_type, units: src.units, source: src.identity_basis || 'grid',
+        rank: rankOfBasis(src.identity_basis) },
+      { type: o.obs_type, units: o.obs_units, source: o.identity_basis || 'grid',
+        rank: rankOfBasis(o.identity_basis) },
+      { type: o.roll_type, units: o.roll_units, source: 'records', rank: rankOfBasis(o.roll_basis) },
+    ].filter((c) => has(c.type) || has(c.units));
+    if (!candidates.length) continue;
+
+    // THE PAIR MOVES TOGETHER: a source stating BOTH is preferred outright, and
+    // among those the best-sourced wins. Only if none states both is a partial
+    // answer taken, and then whole from one source.
+    const both = candidates.filter((c) => has(c.type) && has(c.units));
+    const pool = both.length ? both : candidates;
+    const pick = pool.reduce((best, c) => (c.rank > best.rank ? c : best), pool[0]);
+
+    r.property_type = has(pick.type) ? label(pick.type) : null;
+    r.units = has(pick.units) ? Number(pick.units) : null;
     r.identity_source = pick.source;
   }
   return out;
 }
 
-module.exports = { attachCompIdentity, _internals: { betterObservation } };
+module.exports = { attachCompIdentity, _internals: { rankOfBasis, label } };

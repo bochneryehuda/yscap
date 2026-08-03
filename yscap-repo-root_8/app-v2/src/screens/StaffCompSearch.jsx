@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import {
-  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel,
+  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel, conditionRead,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
@@ -409,7 +409,7 @@ function CompRow({ r, checked, onToggle }) {
           <span>{sqft(r.gla)}</span>
           <span>{r.beds ?? '—'} bed / {baths(r)} bath</span>
           <span>built {r.year_built || '—'}</span>
-          <span>{conditionLabel(r.condition_uad, r.condition_text)}</span>
+          <span>{conditionRead(r)}</span>
         </div>
       </div>
       <div style={{ textAlign: 'right', minWidth: 130 }}>

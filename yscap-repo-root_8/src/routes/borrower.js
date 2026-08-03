@@ -1439,12 +1439,13 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   };
   // Same as the staff tab: every comparable states what kind of building it is
   // and how many doors it has. The two facts are property facts, not lender
-  // scrutiny, so they are borrower-safe — but HOW MANY of our reports have
-  // described that address, and its id in our research warehouse, are internal
-  // bookkeeping and are dropped.
+  // scrutiny, so they are borrower-safe — but our internal bookkeeping is
+  // dropped: the id in our research warehouse, how many of our reports have
+  // described that address, and WHERE the answer came from (which is a statement
+  // about our own data holdings, and reads as one).
   const borrowerComps = (await require('../lib/research/comp-identity')
     .attachCompIdentity(comps.rows, { db, appraisal: safeAppr }))
-    .map(({ property_id, identity_observations, ...c }) => c); // eslint-disable-line no-unused-vars
+    .map(({ property_id, identity_observations, identity_source, ...c }) => c); // eslint-disable-line no-unused-vars
   res.json({
     appraisal: safeAppr, comparables: borrowerComps, units: units.rows, findings: open, photos: photos.rows,
     summary: bSummary, score,

@@ -813,7 +813,12 @@ function identityLines(c) {
   return {
     type: c.property_type || 'type not stated',
     units: units != null ? `${units} unit${units === 1 ? '' : 's'}` : 'units not stated',
-    unknown: !c.property_type || units == null,
+    // EACH FACT COLOURS ITSELF. Reddening the whole cell when only one is
+    // missing says the appraiser stated neither, on a row where they plainly
+    // stated one — a real case in the corpus (a 1025 comparable that names the
+    // building type and never counts the doors).
+    typeUnknown: !c.property_type,
+    unitsUnknown: units == null,
     where: IDENTITY_SOURCE[c.identity_source] || null,
   };
 }
@@ -861,10 +866,10 @@ function CompRow({ c }) {
             address, the distance, the size, the beds, the baths and the price
             and neither of these, so a three-family could sit in a single-family
             report's grid with nothing on the screen saying so. */}
-        <td style={{ ...td, color: ident.unknown ? 'var(--crit,#B4483C)' : undefined }}
+        <td style={td}
           title={ident.where ? `${ident.type} · ${ident.units} — ${ident.where}` : undefined}>
-          <div style={{ fontWeight: 600 }}>{ident.type}</div>
-          <div style={{ fontSize: 11.5 }}>{ident.units}</div>
+          <div style={{ fontWeight: 600, color: ident.typeUnknown ? 'var(--crit,#B4483C)' : undefined }}>{ident.type}</div>
+          <div style={{ fontSize: 11.5, color: ident.unitsUnknown ? 'var(--crit,#B4483C)' : undefined }}>{ident.units}</div>
         </td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
