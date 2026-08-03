@@ -85,6 +85,10 @@ const encompass = require('../lib/integrations/encompass');
 // sample and COUNT the rest — a silent truncation would read as "only three
 // things went wrong".
 const MAX_ERRORS = 50;
+// How many DISTINCT unparsable shapes a sweep names. Enough to tell a companion
+// invoice from a licence from the report itself, and it bounds what this branch
+// can spend of the MAX_ERRORS shared slots however many resources carry them.
+const MAX_OTHER_FORMAT_NAMED = 3;
 function pushErr(out, msg) {
   if (out.errors.length < MAX_ERRORS) out.errors[out.errors.length] = msg;
   else out.errorsDropped = (out.errorsDropped || 0) + 1;
@@ -715,7 +719,8 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   paceMs = envNum('ENCOMPASS_APPRAISAL_XML_PACE_MS', 350, { min: 0, max: 10000 }) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
-    skipped: 0, noLink: 0, otherFormat: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
+    skipped: 0, noLink: 0, otherFormat: 0, otherFormatNames: [],
+    capturedUnrecorded: 0, capturedBookkeepingFailed: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
   if (!encompass.configured()) return { ...out, disabled: true, reason: 'encompass not configured' };
@@ -831,43 +836,52 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
           // these makes the sweep speak up.
           if (isAppraisalResource(res)) {
             out.otherFormat++;
-            // BOTH the alarm and the error line are ONCE PER SWEEP, and the error
-            // line especially. `errors[]` is ONE shared 50-slot budget for the
-            // whole sweep and only the first three are printed, so a per-resource
-            // push here would crowd out a real `orders …` / `expand …` / `record …`
-            // failure on some other loan and leave it visible only as an
-            // `errorsDropped` tick.
+            // NAME EACH DISTINCT SHAPE, capped — not the first resource, and not
+            // every resource. Both of the obvious answers are wrong, in opposite
+            // directions, and the cost of each is worth stating.
             //
-            // That is not hypothetical: nothing is written to the ledger for one of
-            // these, so the SAME resource is re-seen and re-counted on EVERY sweep
-            // for as long as its loan stays in the window. Per-resource and
-            // unbounded, an appraiser's licence PDF sitting beside the XML would
-            // burn a slot 288 times a day — which is precisely the failure the
-            // `warnOnce` note above this file describes.
-            if (out.otherFormat === 1) {
+            // PER RESOURCE is unaffordable. `errors[]` is ONE shared 50-slot budget
+            // for the whole sweep and only the first three are printed, so a push
+            // per resource would crowd out a real `orders …` / `expand …` /
+            // `record …` failure on some other loan and leave it visible only as an
+            // `errorsDropped` tick. And nothing is written to the ledger for one of
+            // these, so the SAME resource is re-seen on EVERY sweep for as long as
+            // its loan stays in the window — an appraiser's licence PDF sitting
+            // beside the XML would burn a slot 288 times a day, which is precisely
+            // the failure the `warnOnce` note above this file describes.
+            //
+            // FIRST ONLY was what shipped, and it buried the finding. The one alarm
+            // went to whichever resource the loop reached first, so a companion
+            // "Appraisal Invoice.pdf" on an early loan hid a genuine UAD 3.6 ZIP on
+            // a later one and the ZIP appeared nowhere but in the count — the exact
+            // reading this alarm exists to make possible.
+            //
+            // DISTINCT-AND-CAPPED keeps the bound that matters (at most
+            // MAX_OTHER_FORMAT_NAMED of the 50 shared slots, however many resources
+            // there are) while guaranteeing a new shape is always named.
+            //
+            // WHAT TO READ THIS WITH, stated precisely because the obvious answer
+            // is wrong twice over. `captured` is not it: an XML we already hold
+            // takes `out.skipped++` at the sighting check below, so a healthy loan
+            // reports `captured: 0` for the whole week it sits in the window, and
+            // the historical back book is legitimately expired. `resources` is not
+            // it either on its own — it is a SWEEP-WIDE total, so one healthy loan
+            // is enough to make it non-zero while another loan's appraisal is
+            // genuinely unreachable. The names below are the discriminator: an
+            // invoice or a licence reads as a companion document, a `.zip` of the
+            // report does not. `resources: 0` across the whole sweep is the
+            // tenant-wide signal that the format has changed.
+            const shape = `${res.mimeType || 'no mime'} / ${res.name || 'no name'}`;
+            if (!out.otherFormatNames.includes(shape)
+                && out.otherFormatNames.length < MAX_OTHER_FORMAT_NAMED) {
+              out.otherFormatNames.push(shape);
               console.error('[encompass-xml] ALARM: an appraisal-looking resource arrived in a format ' +
-                `this catcher does not parse (${res.mimeType || 'no mime'} / ${res.name || 'no name'}). ` +
-                'It was NOT downloaded. If the XML for this loan was captured, this is most likely a ' +
-                'companion document and is harmless; if the whole tenant reports this and nothing is ' +
-                'being captured, the delivery format has changed and the catcher needs updating.');
-              // NAMES ONLY THE FIRST ONE, and says so. A later resource in the
-              // same sweep — including a genuine ZIP behind a companion PDF — is
-              // reflected only in the `otherFormat` count, which is the accepted
-              // cost of not burning a slot per resource forever.
-              //
-              // Read this line WITH `otherFormat` and `resources` on the same
-              // summary — `resources`, NOT `captured`. A companion document sits
-              // beside a non-zero `resources`: we saw a parsable XML on that order,
-              // whether we captured it just now, SKIPPED it as already ours, or
-              // wrote it off as expired. A format change shows `resources: 0`.
-              //
-              // `captured` is the wrong discriminator and this comment said it
-              // twice: an XML we already hold takes `out.skipped++` at the sighting
-              // check below, so a healthy loan reports `captured: 0` for the whole
-              // week it sits in the window — and the entire historical back book is
-              // legitimately expired. Both would have read as a format change.
+                `this catcher does not parse (${shape}). It was NOT downloaded. A companion document ` +
+                '(an invoice, a licence) is the common and harmless case; if the report itself is ' +
+                'arriving this way and nothing is being captured, the delivery format has changed and ' +
+                'the catcher needs updating.');
               pushErr(out, `resource ${res.id || '(no id)'} looks like an appraisal but is in a format we do not parse ` +
-                `(${res.mimeType || 'no mime'} / ${res.name || 'no name'}) — first of this sweep; see otherFormat for the total`);
+                `(${shape}) — see otherFormat for the count and otherFormatNames for the shapes`);
             }
           }
           continue;
@@ -960,6 +974,13 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
 
         const verdict = await capture(db, res, meta);
         if (verdict.startsWith('captured-unrecorded')) out.capturedUnrecorded = (out.capturedUnrecorded || 0) + 1;
+        // COUNTED SEPARATELY, for the same reason capturedUnrecorded is. The bytes
+        // are in hand so this is a capture, not a failure — but the ledger row it
+        // left carries only status/storage_ref/error, with captured_at, sha256,
+        // byte_size and research_import_id all NULL. Rolling it silently into
+        // `captured` would make a row that needs a human look identical to a clean
+        // one on the only surface anybody reads.
+        if (verdict.startsWith('captured-bookkeeping-failed')) out.capturedBookkeepingFailed++;
         if (verdict.startsWith('captured')) out.captured++; else out.failed++;
         if (log) console.log('[encompass-xml]', verdict);
       }
@@ -1026,7 +1047,9 @@ function makeTick(db) {
             // truncating: printing three errors while silently dropping ten more,
             // or capturing bytes the ledger never recorded, must not look like a
             // clean run.
+            otherFormatNames: r.otherFormatNames || [],
             capturedUnrecorded: r.capturedUnrecorded || 0,
+            capturedBookkeepingFailed: r.capturedBookkeepingFailed || 0,
             errorsDropped: r.errorsDropped || 0,
             errors: (r.errors || []).slice(0, 3),
           }));
@@ -1091,7 +1114,7 @@ module.exports = {
   // exported for tests
   _internals: {
     validityOf, isAppraisalXml, isAppraisalResource, APPRAISAL_TYPE_PREFIX,
-    assertStorageHost, STORAGE_HOST_RE, makeTick,
+    assertStorageHost, STORAGE_HOST_RE, makeTick, MAX_OTHER_FORMAT_NAMED,
     decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };

@@ -716,15 +716,27 @@ t('a non-url is refused with a plain reason', () => {
       enc3.apiGet = async (p) => {
         if (/serviceOrders\/[^/?]+\?/.test(String(p))) {
           return { response: { resources: [{
+            // THE COMPANION DOCUMENT IS FIRST, deliberately. This is the exact
+            // order the post-merge audit found: the harmless licence PDF is
+            // whatever the loop happens to reach first, and under the shipped
+            // `otherFormat === 1` gate it spent the sweep's one alarm and one
+            // error slot — so the genuine unreachable appraisal below was named
+            // NOWHERE. Put the benign one first or this fixture proves nothing.
+            id: 'zip-2', name: 'Appraiser_License.pdf', mimeType: 'application/pdf',
+            location: 'https://skydrive.ellieservices.com/y?validity=zzz', authorization: 'sig',
+          }, {
             id: 'zip-1', name: 'AppraisalReport.zip', mimeType: 'application/zip',
             type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
             location: 'https://skydrive.ellieservices.com/x?validity=zzz', authorization: 'sig',
           }, {
-            // A SECOND unparsable resource, so the fixture can tell "counted once"
-            // from "counted per resource". Without two of these the error-budget
-            // assertion below is vacuous — errors.length is 1 either way.
-            id: 'zip-2', name: 'Appraiser_License.pdf', mimeType: 'application/pdf',
-            location: 'https://skydrive.ellieservices.com/y?validity=zzz', authorization: 'sig',
+            // A REPEAT of the shape above under a different resource id — a
+            // second unit's package, the same delivery format. The counter must
+            // tick for it; the error budget must NOT be spent again. Without this
+            // third resource "named per distinct shape" and "named per resource"
+            // are indistinguishable in this fixture.
+            id: 'zip-3', name: 'AppraisalReport.zip', mimeType: 'application/zip',
+            type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+            location: 'https://skydrive.ellieservices.com/z?validity=zzz', authorization: 'sig',
           }] } };
         }
         if (/serviceOrders$/.test(String(p))) {
@@ -744,24 +756,95 @@ t('a non-url is refused with a plain reason', () => {
     }
 
     t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
-      assert.strictEqual(zipSweep.otherFormat, 2,
+      assert.strictEqual(zipSweep.otherFormat, 3,
         `every unparsable appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
     });
 
-    t('but it spends ONE error slot per sweep, not one per resource', () => {
-      // The substantive behaviour change, and it was unpinned: `errors[]` is ONE
-      // shared 50-slot budget whose first three are printed, and nothing is written
-      // to the ledger for these, so the same resources are re-seen every sweep. Per
-      // resource, a companion PDF beside the XML would burn slots forever and crowd
-      // out a real orders/expand/record failure on another loan.
-      //
-      // Two unparsable resources, ONE error line — that is the whole assertion, and
-      // it is why the fixture above carries a second one.
+    t('a companion document reached FIRST does not bury the genuine appraisal', () => {
+      // THE POST-MERGE AUDIT'S FINDING, and the reason the naming changed. Under
+      // the shipped `otherFormat === 1` gate this fixture named the licence PDF
+      // and nothing else — the audit's own probe asked "mentions the genuine ZIP
+      // anywhere?" and got false. Both shapes must be named, and the assertion is
+      // on the ZIP specifically: a count of 2 would also pass if the wrong two
+      // were named.
+      const names = zipSweep.otherFormatNames || [];
+      assert.ok(names.some((n) => /AppraisalReport\.zip/.test(n)),
+        `the unreachable appraisal must be named, saw: ${JSON.stringify(names)}`);
+      assert.ok(names.some((n) => /Appraiser_License\.pdf/.test(n)),
+        `and the companion document too — it is how a reader tells them apart, saw: ${JSON.stringify(names)}`);
       const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
-      assert.strictEqual(mine.length, 1,
-        `two unparsable resources must produce ONE error line, saw ${mine.length}: ${JSON.stringify(mine)}`);
-      assert.ok(/first of this sweep/.test(mine[0]),
-        'and it must SAY it is only the first, so the count is not mistaken for the whole story');
+      assert.ok(mine.some((e) => /AppraisalReport\.zip/.test(e)),
+        `the ZIP must reach errors[], not only the names list, saw: ${JSON.stringify(mine)}`);
+    });
+
+    t('but a REPEATED shape spends the budget ONCE — per shape, never per resource', () => {
+      // The half that must survive the change. `errors[]` is ONE shared 50-slot
+      // budget whose first three are printed, and nothing is written to the ledger
+      // for these, so the same resources are re-seen every sweep for as long as
+      // their loan sits in the window. Per resource, an appraiser's licence PDF
+      // beside the XML would burn a slot 288 times a day and crowd out a real
+      // orders/expand/record failure on another loan.
+      //
+      // Three unparsable resources, TWO distinct shapes, TWO error lines — the
+      // third resource repeats the second's shape and must add nothing.
+      const mine = (zipSweep.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, 2,
+        `3 resources of 2 shapes must produce 2 error lines, saw ${mine.length}: ${JSON.stringify(mine)}`);
+      assert.strictEqual((zipSweep.otherFormatNames || []).length, 2,
+        'and the same for the names list — a repeat is not a new shape');
+      assert.ok(mine.every((e) => /see otherFormat for the count/.test(e)),
+        'each line must point at the count, so 2 named is never mistaken for 2 seen');
+    });
+
+    // The cap fixture. `t()` is SYNCHRONOUS — it calls fn(), it does not await it
+    // — so an `await` inside a t() callback makes every assertion after it
+    // unreachable: a failure becomes an unhandled rejection and the check passes
+    // regardless. Drive the sweep out here and assert on the result, exactly as
+    // the zipSweep block above does.
+    const manyRes = [];
+    for (let i = 0; i < 6; i++) {
+      manyRes[manyRes.length] = {
+        id: `many-${i}`, name: `Appraisal_${i}.zip`, mimeType: `application/x-vendor-${i}`,
+        type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+        location: 'https://skydrive.ellieservices.com/m?validity=zzz', authorization: 'sig',
+      };
+    }
+    let capped;
+    {
+      const og = enc3.apiGet, op = enc3.pipelineSearch, oc = enc3.configured, oe = console.error;
+      const ol2 = console.log;
+      try {
+        console.error = () => {}; console.log = () => {};
+        enc3.configured = () => true;
+        enc3.pipelineSearch = async () => [{ loanId: 'ml1', fields: { 'Loan.LoanNumber': 'ML1' } }];
+        enc3.apiGet = async (p) => {
+          if (/serviceOrders\/[^/?]+\?/.test(String(p))) return { response: { resources: manyRes } };
+          if (/serviceOrders$/.test(String(p))) return [{ id: 'o-many', serviceSetup: { category: 'APPRAISAL' } }];
+          return [];
+        };
+        capped = await M._internals.makeTick(db)();
+      } finally {
+        console.error = oe; console.log = ol2;
+        enc3.apiGet = og; enc3.pipelineSearch = op; enc3.configured = oc;
+      }
+    }
+
+    t('and the naming is BOUNDED — a tenant-wide format change cannot drain the budget', () => {
+      // The cap is what makes the distinct-shape rule affordable. Without it a
+      // vendor that stamps a unique filename per resource ("Appraisal_1234.zip")
+      // makes every resource its own shape, and we are back to per-resource — the
+      // failure the previous test exists to prevent. Six distinct shapes, three
+      // named. Read the bound from the module rather than hardcoding 3, so tuning
+      // it does not silently invalidate this check.
+      const CAP = M._internals.MAX_OTHER_FORMAT_NAMED;
+      assert.ok(Number.isInteger(CAP) && CAP > 0 && CAP < 6,
+        `fixture check: the cap must be a small positive integer under the 6 shapes offered, saw ${CAP}`);
+      assert.strictEqual(capped.otherFormat, 6, 'every resource is still COUNTED');
+      assert.strictEqual((capped.otherFormatNames || []).length, CAP,
+        `naming must stop at MAX_OTHER_FORMAT_NAMED, saw ${JSON.stringify(capped.otherFormatNames)}`);
+      const mine = (capped.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, CAP,
+        `and so must the error slots it spends, saw ${mine.length}`);
     });
 
     t('it is never downloaded — the 15-minute window is not spent on it', () => {
@@ -783,9 +866,20 @@ t('a non-url is refused with a plain reason', () => {
       // owns the real gate and the real log call, and assert on what it prints.
       assert.ok(!zipSweepLog.some((l) => /"resources":[1-9]/.test(l)),
         'fixture check: the ZIP sweep must have captured nothing for this to mean anything');
-      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":2/.test(l)),
+      assert.ok(zipSweepLog.some((l) => /\[encompass-xml\] sweep:/.test(l) && /"otherFormat":3/.test(l)),
         `a sweep whose only finding is an unparsable format must still report it, saw: ${
           JSON.stringify(zipSweepLog).slice(0, 300)}`);
+    });
+
+    t('the sweep line CARRIES the shape names — the count alone is not readable', () => {
+      // `otherFormat: 3` on its own cannot be acted on: three companion invoices
+      // and three unreachable appraisal packages print the same number. The names
+      // are what make the log line answerable, so they have to reach the payload,
+      // not just the return value.
+      const line = zipSweepLog.find((l) => /\[encompass-xml\] sweep:/.test(l));
+      assert.ok(line, 'fixture check: the sweep must have logged at all');
+      assert.ok(/AppraisalReport\.zip/.test(line),
+        `the sweep line must name the unreachable appraisal, saw: ${String(line).slice(0, 400)}`);
     });
 
     t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {

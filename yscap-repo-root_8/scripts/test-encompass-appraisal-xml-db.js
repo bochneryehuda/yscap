@@ -252,6 +252,21 @@ const rowFor = async (id) => (await db.query(
     // recovery UPDATE cannot leave the row 'captured' with a storage_ref on it.
     ok(row && row.attempts >= 1,
       'the attempt is still counted, so a retry is visible in the ledger');
+
+    // THE SWEEP SUMMARY MUST SAY THIS HAPPENED. The verdict string starts
+    // 'captured-bookkeeping-failed', and the routing below it is
+    // `if (verdict.startsWith('captured')) out.captured++` — so without its own
+    // counter this rolls silently into `captured` and the sweep line is
+    // indistinguishable from a clean capture. It is NOT clean: the row is
+    // 'captured' with a storage_ref but NULL captured_at / sha256 / byte_size /
+    // research_import_id, so the file is held but not fully filed, and nothing
+    // downstream would ever say so.
+    ok(r.capturedBookkeepingFailed === 1,
+      `the sweep must COUNT the half-filed capture separately, saw ${r.capturedBookkeepingFailed}`);
+    ok(r.captured === 1,
+      `and still count it as captured — we do hold the bytes (saw ${r.captured})`);
+    ok(r.failed === 0,
+      `and never as a failure — that is the reading this whole path exists to prevent (saw ${r.failed})`);
   }
 
   /* ── 4. Every status the code writes satisfies the CHECK ─────────────────── */
