@@ -1,0 +1,22 @@
+-- 423_drop_dead_dashboard_metrics.sql
+--
+-- Remove the `dashboard_metrics` table, which nothing has ever read.
+--
+-- WHY IT EXISTED AND WHY IT GOES. An early draft of db/422 created it, with a comment
+-- claiming it was "what makes 'my own pull-through' something a person defines rather than
+-- something we hardcode". It never worked that way: a card's measure is validated against
+-- the code-owned registry (src/lib/dashboards/registry.js) at every write door, so a row
+-- here could never have been selected by anything. The CREATE was removed from db/422
+-- before release, which is enough for a database that has not run it — but NOT for one that
+-- already had, where the table simply lingers. This drops it there.
+--
+-- WHY A DROP IS SAFE HERE, WHEN IT NORMALLY WOULD NOT BE. Nothing in the application ever
+-- INSERTed into this table — there is no route, no module and no migration that writes a
+-- row — so it can only ever be empty. Editing db/422 in place also means any database that
+-- ran the earlier copy logs a checksum-drift warning on boot; removing the leftover object
+-- is what makes the two states converge instead of diverging further.
+--
+-- Idempotent: IF EXISTS, so this is a no-op on every database that never saw the draft
+-- (which is all of production — db/422 has not shipped).
+
+DROP TABLE IF EXISTS dashboard_metrics;
