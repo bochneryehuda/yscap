@@ -919,6 +919,35 @@ const RB = (function(){
     if(!(window.jspdf&&window.jspdf.jsPDF)) throw new Error("pdf load failed"); }
   // Logo is embedded (rb-logo.js) so exports never depend on an async image load.
   function logoData(){ const L=(typeof window!=="undefined"&&window.RB_LOGO)?window.RB_LOGO:null; if(!L||!L.b64) return null; return { b64:L.b64, dataURI:"data:image/png;base64,"+L.b64, w:L.w||560, h:L.h||273 }; }
+  /* ---------- property-summary fact values: fit INSIDE the column ----------
+     Owner-reported 2026-08-03: a full property address ("3091 Patricia Court,
+     Manchester Township, NJ 08759") ran straight across the divider and was
+     drawn over the TRANSACTION fact beside it. Root cause: the value was
+     shrink-to-fit down to a floor and then drawn as ONE unbounded line, so
+     anything still too wide at the floor simply overflowed its column.
+     A value that does not fit now STACKS: the break is taken at the FIRST
+     comma, so the street holds line one and the city / state / ZIP drop to
+     line two. Anything still too wide is word-wrapped, and a last-resort
+     clamp trims to an ellipsis — so a fact can NEVER be drawn past its own
+     column, whatever is typed. Rows grow by their tallest value, so the panel
+     and everything under it move down instead of being written over.
+     Byte-identical in web/tools and web/v2/tools (guarded by
+     scripts/test-sow-fact-layout-pure.js); the caller passes its own font,
+     sizes and column width.                                                */
+  function fitFactValue(doc, val, maxW, font, style, maxSize, minSize){
+    const set=(s)=>{ doc.setFont(font,style); doc.setFontSize(s); };
+    let fs=maxSize; set(fs);
+    if(doc.getTextWidth(val)<=maxW) return {fs:fs, lines:[val]};
+    const c=val.indexOf(",");                                   // the street / city-state-ZIP seam
+    const parts = c>0 ? [val.slice(0,c).trim(), val.slice(c+1).trim()] : [val];
+    while(fs>minSize && parts.some(p=>doc.getTextWidth(p)>maxW)){ fs-=0.5; set(fs); }
+    const lines=[]; parts.forEach(p=>doc.splitTextToSize(p,maxW).forEach(w=>lines.push(w)));
+    return {fs:fs, lines:lines.map(l=>{                          // an unbreakable run can still overflow
+      if(doc.getTextWidth(l)<=maxW) return l;
+      let t=l; while(t.length>1 && doc.getTextWidth(t+"...")>maxW) t=t.slice(0,-1);
+      return t+"...";
+    })};
+  }
   // jsPDF's default font is Latin-1 only; strip characters it can't render (arrows etc.).
   function pdfSafe(s){ return String(s==null?"":s).replace(/\u2192/g,"to").replace(/\u2190/g,"<-").replace(/\u21b3/g,">").replace(/\u2713/g,"").replace(/\u2717|\u2715/g,"x").replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"').replace(/\u2026/g,"...").replace(/[\u2022\u25aa]/g,"-"); }
 
@@ -947,9 +976,18 @@ const RB = (function(){
         ["Project timeline", S.months?(S.months+" months"):"—"],
         ["Target budget", S.target?money(num(S.target)):"—"]
       ];
+      const fColW=(W-2*M)/3, fMaxW=fColW-10, fLineH=12;
+      const fFit=facts.map(f=>fitFactValue(doc,pdfSafe(f[1]),fMaxW,"helvetica","bold",10.5,8));
+      // Each row starts below the tallest value in the row ABOVE it, so a
+      // stacked address pushes the grid down instead of colliding with it.
+      const fRowLines=(r)=>{ let n=1; for(let k=0;k<3;k++){ const f=fFit[r*3+k]; if(f&&f.lines.length>n)n=f.lines.length; } return n; };
       doc.setFontSize(9);
-      for(let i=0;i<facts.length;i++){ const col=i%3, x=M+col*((W-2*M)/3); if(col===0&&i>0)y+=32; doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,y); doc.setTextColor(18,22,26); doc.setFont("helvetica","bold"); doc.setFontSize(10.5); doc.text(pdfSafe(facts[i][1]),x,y+14); }
-      y+=46;
+      for(let i=0;i<facts.length;i++){ const col=i%3, x=M+col*fColW;
+        if(col===0&&i>0) y+=32+(fRowLines(i/3-1)-1)*fLineH;
+        doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,y);
+        doc.setTextColor(18,22,26); doc.setFont("helvetica","bold"); doc.setFontSize(fFit[i].fs);
+        fFit[i].lines.forEach((ln,k)=>doc.text(ln,x,y+14+k*fLineH)); }
+      y+=46+(fRowLines(Math.floor((facts.length-1)/3))-1)*fLineH;
       const vd=S.vd,vrows=[];
       const dlt=(a,b)=>{ const d=num(b)-num(a); return (num(a)||num(b))&&d!==0?("   ("+(d>0?"+":"")+d+")"):""; };
       const span=(a,b,suf)=> ((a||b)? ((a||"?")+" to "+(b||"?")+(suf||"")) : "");

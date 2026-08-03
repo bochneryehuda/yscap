@@ -1790,17 +1790,44 @@
 
   /* ===================== PDF (branded, signable) ===================== */
   function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+  /* ---------- OUR OWN COPY FIRST, the outside hosts only as a backup -------
+     Owner-directed 2026-08-03. These two loaders reached for a CDN and NOTHING
+     ELSE — so a jsdelivr/unpkg outage, or an officer whose corporate network
+     blocks public file hosts, lost the term sheet PDF, the proof-of-funds
+     letter AND the Excel export in one go, on a browser that was plainly
+     online and already talking to us. The vendored copies have been sitting in
+     tools/vendor/ the whole time; the Scope of Work and Track Record tools
+     have always tried them first. This makes the term sheet behave the same.
+     If the page loaded, the engine loads — no second host has to be up.
+     Versions are unchanged: vendor/jspdf.umd.min.js IS the pinned 2.5.1, and
+     vendor/xlsx.bundle.js is the same xlsx-js-style 1.2.0 build the other two
+     tools already load in production. termsheet.js uses no autoTable, so
+     jsPDF alone is enough here.                                            */
+  async function loadFirst(srcs, ready, what) {
+    if (ready()) return;
+    for (var i = 0; i < srcs.length; i++) {
+      // A source that 404s AND one that loads but defines nothing both fall
+      // through to the next — only "the library is actually here" stops us.
+      try { await loadScript(srcs[i]); } catch (e) { continue; }
+      if (ready()) return;
+    }
+    throw new Error(what + " failed to load");
+  }
+  var haveJsPDF = function () { return !!(window.jspdf && window.jspdf.jsPDF); };
+  var haveXLSX = function () { return !!(window.XLSX && window.XLSX.utils); };
   async function ensurePDF() {
-    if (window.jspdf && window.jspdf.jsPDF) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    catch (e) { await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    if (!(window.jspdf && window.jspdf.jsPDF)) throw new Error("pdf library failed to load");
+    await loadFirst([
+      "vendor/jspdf.umd.min.js",                                        // ours
+      "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+      "https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"
+    ], haveJsPDF, "pdf library");
   }
   async function ensureXLSX() {
-    if (window.XLSX && window.XLSX.utils) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    catch (e) { await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    if (!(window.XLSX && window.XLSX.utils)) throw new Error("spreadsheet library failed to load");
+    await loadFirst([
+      "vendor/xlsx.bundle.js",                                          // ours
+      "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js",
+      "https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
+    ], haveXLSX, "spreadsheet library");
   }
   // Visible deal summary for the Excel export: inputs + both programs' headline results.
   /* Excel: the two leverage TRUTHS as two rows. The export used to carry only the
@@ -2019,7 +2046,7 @@
           });
         }
       } catch (e) {}
-    } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
+    } catch (e) { flash("Excel export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team."); }
     finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
   }
   async function importXlsx(input) {
@@ -2042,6 +2069,43 @@
   }
   function logoData() { try { if (!window.RB_LOGO) return null; return { dataURI: "data:image/png;base64," + window.RB_LOGO.b64, w: window.RB_LOGO.w, h: window.RB_LOGO.h }; } catch (e) { return null; } }
   function pdfSafe(s) { return String(s == null ? "" : s).replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\u2022/g, "*").replace(/\u2192/g, "->").replace(/[^\x00-\xFF]/g, ""); }
+  /* ---------- a value that must fit a fixed slot, never silently lost -------
+     Owner-directed 2026-08-03, alongside the Scope of Work address fix. The
+     proof-of-funds summary box and the derivation page each wrapped a value to
+     its slot and then drew ONLY vlines[0] \u2014 so a long property line lost its
+     city / state / ZIP with nothing on the page to say so. Same family as the
+     SOW overlap (a value that does not fit its slot), different symptom: the
+     tail was dropped rather than painted over the neighbour.
+     The value now STACKS: the break is taken at the FIRST comma (the street /
+     city-state-ZIP seam), after shrinking a half point at a time so most
+     addresses still fit on one line. Capped at TWO lines and ellipsis-clamped
+     past that, because both surfaces are fixed-height pages \u2014 an unbounded
+     grow would push the signature block (or the next section) off the sheet,
+     and a visible "..." still beats a silent drop.
+     A value that ALREADY FITS comes back unchanged at its original size, so
+     every term sheet that lays out correctly today is byte-for-byte unchanged.
+     Byte-identical in web/tools and web/v2/tools (guarded by
+     scripts/test-termsheet-slot-fit-pure.js).                              */
+  function fitSlotLines(doc, val, maxW, font, style, size, minSize, maxLines) {
+    var set = function (s) { doc.setFont(font, style); doc.setFontSize(s); };
+    var fs = size; set(fs);
+    if (doc.getTextWidth(val) <= maxW) return { fs: fs, lines: [val] };
+    var c = val.indexOf(",");
+    var parts = c > 0 ? [val.slice(0, c).trim(), val.slice(c + 1).trim()] : [val];
+    var tooWide = function () { for (var i = 0; i < parts.length; i++) if (doc.getTextWidth(parts[i]) > maxW) return true; return false; };
+    while (fs > minSize && tooWide()) { fs -= 0.5; set(fs); }
+    var lines = [];
+    for (var p = 0; p < parts.length; p++) doc.splitTextToSize(parts[p], maxW).forEach(function (w) { lines.push(w); });
+    var cap = maxLines || 2;
+    if (lines.length > cap) lines = lines.slice(0, cap - 1).concat([lines.slice(cap - 1).join(" ")]);
+    for (var k = 0; k < lines.length; k++) {                    // a run with no break point can still overflow
+      if (doc.getTextWidth(lines[k]) <= maxW) continue;
+      var t = lines[k];
+      while (t.length > 1 && doc.getTextWidth(t + "...") > maxW) t = t.slice(0, -1);
+      lines[k] = t + "...";
+    }
+    return { fs: fs, lines: lines };
+  }
   function flash(msg) {
     var t = el("ts-toast"); if (!t) { t = document.createElement("div"); t.id = "ts-toast"; t.className = "ys-toast"; document.body.appendChild(t); }
     t.textContent = msg; t.classList.add("show"); clearTimeout(flash._t); flash._t = setTimeout(function () { t.classList.remove("show"); }, 2800);
@@ -2637,7 +2701,7 @@
       // never blocks or delays the download).
       try { notifyGeneration(d, "Term sheet", doc.output("blob")); } catch (e) {}
     } catch (e) {
-      flash("Term sheet export needs an internet connection (loads the PDF engine).");
+      flash("Term sheet export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
   function pctp(x) { return (Math.round(x * 1000) / 10) + "%"; }
@@ -2756,7 +2820,12 @@
         ["Leverage on this financing", leverageLine(d, isBridge)],
         ["Indicative term", (d.term || 12) + " months, interest-only"]
       ];
-      var boxH = headH + rows.length * rowH + 8;
+      // Measure every value BEFORE the box is drawn: a row needing a second
+      // line makes the BOX taller, instead of having its tail dropped.
+      var POF_VLH = 10.5;                                       // a stacked value line
+      var vfit = rows.map(function (rw) { return fitSlotLines(doc, pdfSafe(rw[1]), boxW - 26 - 200, "helvetica", "bold", 8.5, 7.5, 2); });
+      var rowAdv = vfit.map(function (f) { return rowH + (f.lines.length - 1) * POF_VLH; });
+      var boxH = headH + rowAdv.reduce(function (a, b) { return a + b; }, 0) + 8;
       doc.setFillColor.apply(doc, SOFT); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.9);
       doc.roundedRect(boxX, y, boxW, boxH, 4, 4, "FD");
       doc.setFillColor.apply(doc, TEAL); doc.roundedRect(boxX, y, boxW, headH, 4, 4, "F"); doc.rect(boxX, y + 12, boxW, headH - 12, "F");
@@ -2767,11 +2836,13 @@
       for (var r = 0; r < rows.length; r++) {
         doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor.apply(doc, GRAY);
         doc.text(pdfSafe(rows[r][0]), boxX + 13, yy);
-        doc.setFont("helvetica", "bold"); doc.setTextColor.apply(doc, DARK);
-        var vlines = doc.splitTextToSize(pdfSafe(rows[r][1]), boxW - 26 - 200);
-        doc.text(vlines[0] || "", boxX + boxW - 13, yy, { align: "right" });
-        if (r < rows.length - 1) { doc.setDrawColor(231, 228, 219); doc.setLineWidth(0.5); doc.line(boxX + 13, yy + 5.5, boxX + boxW - 13, yy + 5.5); }
-        yy += rowH;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vfit[r].fs); doc.setTextColor.apply(doc, DARK);
+        // Drawn line by line at our OWN spacing, so the divider below sits where
+        // we measured it (jsPDF's own multi-line spacing is font-size derived).
+        (function (f, base) { f.lines.forEach(function (ln, k) { doc.text(ln, boxX + boxW - 13, base + k * POF_VLH, { align: "right" }); }); })(vfit[r], yy);
+        var lastLine = yy + (vfit[r].lines.length - 1) * POF_VLH;   // divider under the LAST line
+        if (r < rows.length - 1) { doc.setDrawColor(231, 228, 219); doc.setLineWidth(0.5); doc.line(boxX + 13, lastLine + 5.5, boxX + boxW - 13, lastLine + 5.5); }
+        yy += rowAdv[r];
       }
       y = y + boxH + 20;
 
@@ -2808,7 +2879,7 @@
       // Sales-desk heads-up with the exact generated letter (best-effort).
       try { notifyGeneration(d, "Proof of funds letter", doc.output("blob")); } catch (e) {}
     } catch (e) {
-      flash("Letter export needs an internet connection (loads the PDF engine).");
+      flash("Letter export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
 
@@ -3066,13 +3137,16 @@
       for (var r = 0; r < rows.length; r++) {
         if (!rows[r]) continue;
         var kind = rows[r][2] || "", isTot = kind === "tot", isSub = kind === "sub";
-        if (isTot) { doc.setFillColor(248, 245, 238); doc.rect(M, y - 10.5, W - 2 * M, 15, "F"); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
+        // Measure the value FIRST: a row that needs a second line grows, and the
+        // total row's ivory band grows with it instead of half-covering it.
+        var vf = fitSlotLines(doc, pdfSafe(rows[r][1]), (W - 2 * M) * 0.56, "helvetica", "bold", isSub ? 8 : 8.9, 7.5, 2);
+        var vExtra = (vf.lines.length - 1) * 11;
+        if (isTot) { doc.setFillColor(248, 245, 238); doc.rect(M, y - 10.5, W - 2 * M, 15 + vExtra, "F"); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
         doc.setFont("helvetica", isTot ? "bold" : "normal"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isSub ? GRAY : (isTot ? DARK : BODY));
         doc.text(pdfSafe(rows[r][0]), M + (isSub ? 12 : 0), y);
-        doc.setFont("helvetica", "bold"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isTot ? TEAL : DARK);
-        var vlines = doc.splitTextToSize(pdfSafe(rows[r][1]), (W - 2 * M) * 0.56);
-        doc.text(vlines[0] || "", W - M, y, { align: "right" });
-        y += isSub ? 12.5 : 14.5;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vf.fs); doc.setTextColor.apply(doc, isTot ? TEAL : DARK);
+        (function (f, base) { f.lines.forEach(function (ln, k) { doc.text(ln, W - M, base + k * 11, { align: "right" }); }); })(vf, y);
+        y += (isSub ? 12.5 : 14.5) + vExtra;
       }
       y += 9;
     }
