@@ -531,7 +531,22 @@ never attempted. Everything in this phase costs about $10, one time.
   is in `npm test`. A disagreement between two of our own appraisals is
   information, not something to hide, which is the whole premise of the
   provenance-first property page.
-- [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage
+- [ ] **5.9 Appraisal-vs-our-value variance** — a CDA in-house, gated on coverage.
+  **The engine and the route are DONE** — `src/lib/research/variance.js` (37
+  assertions) and `GET /api/research/variance`, verified end to end against a
+  real file (15% above ours, on 3 comparables from 3 reports by 3 appraisers,
+  our own sales agreeing to within 0.5%). It is mostly REFUSALS, because "the
+  appraisal is 14% high" is an accusation about a licensed professional and,
+  produced from four sales in the wrong town, a false one that reads exactly
+  like a true one. Four gates: coverage, INDEPENDENCE, distinct reports and
+  appraisers, and agreement. Independence is taken FIRST and it is the one
+  nobody thinks of — the comparables nearest a subject in our warehouse are very
+  often the ones the report under review put there itself, so it would agree
+  with itself perfectly, and agree most closely on exactly the reports where a
+  reviewer most needs a second opinion. "Came from this report" means ONLY from
+  it: a sale a second appraiser also described is the corroboration we want.
+  STILL TO DO: a screen, and the wording must stay a prompt to go and look —
+  never a verdict, never called an appraisal review or a CDA.
 - [ ] **5.10 Defensible time adjustment from contract date + FHFA HPI**
 - [ ] **5.11 Draw and save a market-area polygon**
 
