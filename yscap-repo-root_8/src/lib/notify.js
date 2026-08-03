@@ -172,6 +172,10 @@ function buildEmail(opts, audience) {
     // enrichment; absent → the email renders exactly as before.
     badge:     opts.badge || null,
     hero:      opts.hero || null,
+    // The ranked money block + the event's own facts box (lib/email/draw-email.js builds both
+    // for draws). Absent on every other email, which renders exactly as before.
+    figures:   opts.figures || null,
+    facts:     opts.facts || null,
     steps:     opts.steps || null,
     progress:  opts.progress || null,
     callout:   opts.callout || null,
@@ -249,7 +253,8 @@ async function _emailRow(id, to, opts, audience) {
     // notification id so we can tell if/when they opened it. The pixel rides ONLY
     // in the SENT copy; the stored Email Center copy uses the clean body (passed
     // via _ctx.bodyHtml) so a staffer opening the history never trips it.
-    const sentHtml = injectOpenPixel(msg.html, id);
+    const trackable = !(Array.isArray(opts.cc) && opts.cc.length);   // see the Cc note below
+    const sentHtml = trackable ? injectOpenPixel(msg.html, id) : msg.html;
     const pixelInjected = sentHtml !== msg.html;
     // #447: `bcc` loops the assigned loan officer into borrower emails. BUT that
     // copy carries the SAME pixel, keyed on the BORROWER's notification — so when
@@ -260,7 +265,18 @@ async function _emailRow(id, to, opts, audience) {
     // capture layer records `to` only (not bcc), so the officer was never in the
     // Email Center roster — splitting the send loses nothing from the history.
     const officerBcc = (Array.isArray(opts.bcc) && opts.bcc.length) ? opts.bcc : null;
-    const splitOfficer = pixelInjected && officerBcc;
+    // A VISIBLE Cc — the team, on the borrower's own email, where the borrower can SEE them
+    // (owner-directed 2026-08-03: "everybody should be looped in one email so we can then keep
+    // responding … so we can see who else is looped in this email. It gives more clarity").
+    const cc = (Array.isArray(opts.cc) && opts.cc.length) ? opts.cc : null;
+    // THE PIXEL AND THE Cc CANNOT COEXIST, and the Cc wins. The BCC case above solves the
+    // false-open problem by SPLITTING the send — but splitting is precisely what a visible Cc
+    // must never do: two messages are two threads, and reply-all on either one reaches half the
+    // people. So a Cc'd send carries NO open pixel at all. That costs an open statistic; keeping
+    // it would cost either the thread or the truth of "the borrower opened this" (any Cc'd
+    // staffer's mail client or security scanner loading the image would forge it). A reading
+    // nobody can trust is worse than no reading.
+    const splitOfficer = pixelInjected && officerBcc && !cc;
     // #150: an optional LO-branded From display name rides through untouched
     // (resend honors it; other providers ignore it). `_ctx` is stripped by the
     // provider wrapper and drives the portal-wide Email Center capture
@@ -268,7 +284,7 @@ async function _emailRow(id, to, opts, audience) {
     // capture below (two independent stores — the portal-wide Email Center and the
     // Draw Management email view).
     const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null,
-      bcc: splitOfficer ? null : (opts.bcc || null),
+      bcc: splitOfficer ? null : (opts.bcc || null), cc: cc,
       _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
@@ -637,15 +653,42 @@ async function _borrowerBcc(opts) {
     const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
     return uniq.length ? uniq : undefined;
   })();
-  // The draw loop-in rides the PRIMARY borrower only — same rule as the officer copy.
-  if (opts._skipOfficerBcc || !opts.applicationId || categoryOf(opts.type) !== 'draws') return base;
+  // The draw team is now a VISIBLE Cc (see _borrowerCc), not a hidden Bcc, so it is no longer
+  // merged in here. The base — the officer's monitoring copy on ordinary borrower mail — is
+  // unchanged for every non-draw email.
+  return base;
+}
+
+/**
+ * The VISIBLE Cc list for a borrower email — the people the borrower should be able to SEE.
+ *
+ * Owner-directed 2026-08-03: *"right now the system is just sending out like three separate
+ * emails of the same thing … everybody should be looped in ONE email so we can then keep
+ * responding. Everybody's looped in so we can see who else is looped in this email."*
+ *
+ * WHY Bcc WAS THE WRONG TOOL, and it is not a matter of taste. A Bcc is invisible, so a reply —
+ * from the borrower OR from us — reaches nobody else, and the conversation immediately splits
+ * into as many private threads as there were recipients. It also could not be the ONLY copy the
+ * team received, because nobody can tell they were on it, which is exactly why the draw events
+ * ALSO fanned out a separate staff email: the duplicate the owner is describing. Making the
+ * loop-in visible is what allows that duplicate to be switched off (see notifyAppThread) without
+ * anybody losing the message.
+ *
+ * Keyed on the notification's own CATEGORY, exactly as the Bcc rule was — so every draw email
+ * that exists today and every one added later gets this for free.
+ *
+ * Best-effort: a lookup failure means no Cc, never a failed send.
+ */
+async function _borrowerCc(opts) {
+  if (opts.cc) return opts.cc;                                   // an explicit caller list wins
+  // The loop-in rides the PRIMARY borrower's email only — a co-borrower fan-out must not Cc the
+  // same team a second time (the duplicate-sweep rule the Bcc followed too).
+  if (opts._skipOfficerBcc || !opts.applicationId || categoryOf(opts.type) !== 'draws') return undefined;
   let loopIn = [];
   try { loopIn = await require('./draw-recipients').drawLoopInBcc(opts.applicationId); }
   catch (_) { /* best-effort: the borrower's email still goes out */ }
-  if (!loopIn.length) return base;
-  const merged = [...new Set([...[].concat(base || []), ...loopIn]
-    .map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-  return merged.length ? merged : undefined;
+  const uniq = [...new Set(loopIn.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+  return uniq.length ? uniq : undefined;
 }
 
 /**
@@ -683,7 +726,17 @@ async function _prepareBorrowerOpts(opts) {
         : (typeof s.body === 'string' ? scrubTextExcept(s.body, protect) : s.body);
       return { ...s, title: typeof s.title === 'string' ? scrubTextExcept(s.title, protect) : s.title, body };
     }) : opts.sections,
-    bcc: await _borrowerBcc(opts),
+    ...(await (async () => {
+      // The Cc is resolved FIRST and the Bcc is then filtered against it. Without this the loan
+      // officer — who is in the draw loop-in AND is the monitoring Bcc on borrower mail — receives
+      // the same message twice: once visibly, once hidden. Which is the duplicate this whole
+      // change exists to remove, reintroduced one layer down.
+      const cc = await _borrowerCc(opts);
+      const ccSet = new Set((cc || []).map((e) => String(e).trim().toLowerCase()));
+      const bcc = await _borrowerBcc(opts);
+      const keptBcc = (bcc || []).filter((e) => !ccSet.has(String(e).trim().toLowerCase()));
+      return { cc, bcc: keptBcc.length ? keptBcc : undefined };
+    })()),
     _bccResolved: true,   // EMAIL-ONLY marker (never written to the notifications row)
   };
 }
@@ -718,6 +771,17 @@ async function notifyBorrower(borrowerId, opts) {
           recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
           type: opts.type, opts, recipientLabel: label,
           autoSendAt: decision.autoSendAt || null });
+        /* DELIBERATELY `null`, NOT the DELIVERY_DRAFTED sentinel its staff twin
+           returns, and the asymmetry is on purpose. The four readers of THIS
+           function's return value (lo-notification-worker, three in
+           staff-notif-center) write it straight into
+           `lo_notification_drafts.sent_notification_id`, a uuid column — so a
+           non-uuid sentinel here would be a type error rather than a nicer answer.
+           They only reach that write with `_bypassLoGate: true`, which makes this
+           branch unreachable for them, but "unreachable today" is not a reason to
+           arm it. If a caller ever needs to tell "held for later" from "dropped"
+           on the BORROWER side, give it a separate accessor the way
+           `deliveredCount` does — do not change this return. */
         return null;
       }
     } catch (_) { /* fall through and send */ }
@@ -860,30 +924,153 @@ async function notifyAppStaff(appId, opts = {}) {
   // staffer's email says WHICH file without re-querying per recipient.
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
-  // Returns the staff ids actually notified, so a caller running a LADDER can
-  // exclude them from its next rung. Every existing caller only tests `.length`
-  // ("was anybody on this file?"), which is unaffected.
+  /* WHAT THE ARRAY MEANS, and why the delivery count is a PROPERTY on it.
+     `.length` has meant ONE thing since this function was written — "how many
+     people are on this file" — and four callers rely on exactly that:
+     esign/webhook (three places) and esign/dead-letter all do
+     `if (!sent || !sent.length) await notifyAdmins(opts)`, meaning "this file has
+     nobody on it, so tell the administrators".
+
+     Filtering the array down to REAL deliveries silently changed that question to
+     "did anybody hear us", and the two are not the same. Every e-sign event uses
+     type `status_change`, which the notification catalog marks non-forced, so a
+     loan officer who mutes one of their own files — an ordinary, supported thing
+     to do — turned every "fully signed", "declined", "voided" and "we could not
+     save the signed copy" on that file into an email to EVERY administrator and
+     super-admin in the company.
+
+     So the array is the recipients again, and the delivery count rides along as
+     `.delivered` — the same additive-property shape `retrieveAttachmentsSafe`
+     uses for its dropped counters. A caller that wants "was anybody reached"
+     asks for it by name; a caller that wants "is this file covered" keeps
+     `.length` and is unaffected. */
   const out = [];
+  let delivered = 0;
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
     if (exceptMany.has(String(r.staff_id))) continue;
-    // Only a REAL delivery counts. notifyStaff returns null when the staffer muted
-    // this file, or when the loan-officer gate held the message as a draft — so
-    // pushing unconditionally reported recipients nobody actually heard from, and a
-    // caller's "nobody was reached, fall back" branch could never fire.
-    //
-    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this
-    // catch a single failing row aborted the whole fan-out, and the caller was
-    // told NOTHING about the people already reached — so a throttled nudge (the
+    // ONE BAD RECIPIENT MUST NOT SWALLOW THE REST OF THE TEAM. Without this catch
+    // a single failing row aborted the whole fan-out, and the caller was told
+    // NOTHING about the people already reached — so a throttled nudge (the
     // overdue-order ladder) released its claim on the strength of a zero that was
-    // wrong and re-sent to everyone who had already received it. Reporting who
-    // genuinely got it is what makes "was anybody reached?" answerable at all.
+    // wrong and re-sent to everyone who had already received it.
     let one = null;
+    let threw = false;
     try { one = await notifyStaff(r.staff_id, { ...shared }); }
-    catch (e) { console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
-    if (one) out.push(r.staff_id);
+    catch (e) { threw = true; console.error('[notify] app-staff fan-out', appId, r.staff_id, (e && e.message) || e); }
+    // The RECIPIENT, whatever the OUTCOME — a ladder's next rung must not write to
+    // somebody again just because their copy was muted or held for later.
+    //
+    // A THROW IS DIFFERENT and is deliberately NOT recorded: nothing reached them
+    // and nothing is holding a copy for them, so putting them on the exclusion list
+    // would remove their one remaining chance of hearing about it on the next rung.
+    // Their absence also keeps `.length` honest about who this call actually
+    // covered.
+    if (!threw) out.push(r.staff_id);
+    // A real delivery, or one the loan-officer gate is holding for later
+    // (DELIVERY_DRAFTED is truthy precisely so it counts here).
+    if (one) delivered += 1;
   }
+  // Non-enumerable so nothing that serializes or spreads this array picks it up.
+  Object.defineProperty(out, 'delivered', { value: delivered, enumerable: false });
   return out;
+}
+
+/**
+ * HOW MANY OF A `notifyAppStaff` RESULT WERE ACTUALLY REACHED.
+ *
+ * Ask through here, never `list.delivered` directly. The count rides on a
+ * non-enumerable property, which survives being awaited or passed around but is
+ * SILENTLY LOST by `[...list]`, `.map`, `.filter`, `.slice`, `.concat` and
+ * `Array.from` — and the caller that reads it (the overdue-order ladder) treats
+ * zero as "nobody heard us, tell every administrator in the company" AND writes
+ * that zero into the audit trail. So the day somebody memoizes or wraps that
+ * array for a test, a silent `undefined` would reintroduce exactly the
+ * escalate-to-everyone failure the property exists to prevent, with the audit row
+ * asserting nobody was told while people were emailed.
+ *
+ * A missing count is therefore LOUD and falls back to the safe direction —
+ * "assume the people we named heard us" — which is the pre-existing behaviour and
+ * costs at most one delayed escalation, rather than mailing the whole company.
+ */
+function deliveredCount(list) {
+  if (!Array.isArray(list)) return 0;
+  const n = list.delivered;
+  if (Number.isFinite(n)) return n;
+  console.error('[notify] deliveredCount: this array lost its delivery count — ' +
+    'something copied a notifyAppStaff result. Assuming everyone named was reached.');
+  return list.length;
+}
+
+/**
+ * ONE EMAIL, EVERYBODY ON IT — the borrower in To, the team in a visible Cc, and NO second copy.
+ *
+ * Owner-directed 2026-08-03: *"the system is just sending out like three separate emails of the
+ * same thing … our team is getting it separately, the borrower is getting it separately, and this
+ * is an issue on the entire site. When an email like this is going out, everybody should be looped
+ * in one email so we can then keep responding."*
+ *
+ * THE DUPLICATE WAS STRUCTURAL, not a bug at any one call site. A file event called
+ * `notifyAppBorrowers` (one email to the borrower, team hidden on Bcc) AND `notifyAppStaff` (one
+ * email EACH to every assignee). So the coordinator on a two-borrower file received the Bcc copy
+ * and their own staff copy of the same sentence, in two unrelated threads, and a reply to either
+ * one reached nobody else. This helper replaces that pair:
+ *
+ *   · the BORROWER fan-out sends the email, with the draw team on a VISIBLE Cc (`_borrowerCc`);
+ *   · the STAFF fan-out still runs — because the in-app rows, the per-staffer mute settings and
+ *     the "was anybody on this file?" answer all live there — but `inAppOnly` suppresses its
+ *     email, since every one of those people is already a named recipient of the one that went.
+ *
+ * WHY THE STAFF FAN-OUT IS NOT SIMPLY DROPPED: a staffer who is on the file but NOT in the draw
+ * loop-in (an assistant, a processor) would otherwise lose the notification entirely. They keep
+ * their in-app row, which is where team notifications were already meant to live for routine
+ * events (the 2026-07-20 "routine staff events are in-app only" rule) — this extends that to the
+ * one case where the email genuinely reaches them anyway.
+ *
+ * FALLBACK, and it matters: with NO borrower on the file, or on a file whose borrower mail is
+ * suppressed (on hold, muted category, held by the loan-officer gate), nothing would be sent at
+ * all — so the team would silently lose an event they used to receive. When the borrower send
+ * produced nothing, the staff fan-out is re-run WITH email enabled. An event never goes dark.
+ *
+ * The in-app rows are deliberately per-person and unchanged: they are one reader's record of one
+ * notification, and merging those would be meaningless.
+ */
+async function notifyAppThread(appId, opts = {}) {
+  const shared = { ...opts, applicationId: opts.applicationId || appId };
+  // CAN this file's borrower actually BE emailed? `notifyBorrower` returns the in-app row's id
+  // whether or not an email followed, so its return value alone is NOT proof of a send: a borrower
+  // with no address on file, or a parked file, would report "reached" and silence the team's copy —
+  // the event would then go out to nobody at all. So the one thing the return value cannot tell us
+  // is checked directly first. Fails toward SENDING: an unreadable file emails the team.
+  let mailable = true;
+  try {
+    const r = await db.query(
+      `SELECT count(*)::int AS n
+         FROM applications a
+         JOIN borrowers b ON b.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND COALESCE(b.email,'') <> ''
+          AND (a.status <> 'on_hold' OR $2::bool)`, [appId, !!opts.evenIfOnHold]);
+    mailable = (r.rows[0] && r.rows[0].n > 0);
+  } catch (_) { mailable = true; }
+
+  let borrowerIds = [];
+  try { borrowerIds = await notifyAppBorrowers(appId, shared); }
+  catch (e) { console.error('[notify] thread borrower fan-out', appId, (e && e.message) || e); }
+  // A null entry means the message was HELD (muted category, loan-officer gate) — also not a send.
+  const rows = (Array.isArray(borrowerIds) ? borrowerIds : []).filter(Boolean).length;
+  const emailed = mailable && rows > 0;
+  // ONE EMAIL, TWO VOICES. The email is genuinely a single message and carries a single subject —
+  // the borrower's, since they are the addressee. But the STAFF IN-APP ROW is a different artifact
+  // with a different reader: the desk's feed reading "YOUR construction draw has been released" is
+  // written in the borrower's voice about the desk's own file. So a caller may pass `staffTitle` /
+  // `staffBody` for the rows the team sees. Absent, the shared wording is used unchanged.
+  const staff = await notifyAppStaff(appId, {
+    ...shared,
+    ...(opts.staffTitle ? { title: opts.staffTitle } : {}),
+    ...(opts.staffBody ? { body: opts.staffBody } : {}),
+    inAppOnly: emailed,
+  });
+  return { borrowers: rows, staff, emailedTogether: emailed };
 }
 
 /** Notify every active admin (used when an application has no loan officer). */
@@ -1013,4 +1200,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
