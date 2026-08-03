@@ -69,7 +69,13 @@ function png() { const W = 6, H = 6; const ih = Buffer.alloc(13); ih.writeUInt32
   const text = bytes.toString('latin1');
   ok('borrower report is a PDF', bytes.slice(0, 5).toString('latin1') === '%PDF-');
   ok('borrower report scrubs the partner name', !text.includes('Fidelis'));
-  ok('borrower report has NO fee/net labels', !text.includes('Net release') && !text.includes('Draw fee'));
+  // OWNER-DIRECTED 2026-08-03 ("yes add the fee to the borrower report too") — SUPERSEDES the old
+  // "no fee/net labels" assertion. The draw processing fee comes out of the borrower's own approved
+  // amount and decides what wires, so they see the deduction. What stays hidden is a DIFFERENT thing:
+  // the capital-partner name (asserted above) and OUR fee income across the project.
+  ok('borrower report shows the draw processing fee that comes out of their money', text.includes('draw processing fee'));
+  ok('borrower report tells them what actually wires', text.includes('Amount wired to you'));
+  ok('borrower report never shows OUR project fee income', !text.includes('OUR DRAW FEES ON THIS PROJECT') && !text.includes('Charged so far'));
   const fn = drawReport.reportFilename({ scope: 'draw', mode: 'borrower', drawNumber: 1, version: meta.version, loanNo: loan });
   const docId = await drawReport.storeDrawReport({ appId: app, borrowerId: bor, filename: fn, bytes, mode: 'borrower' });
   const doc = (await db.query(`SELECT visibility, doc_kind FROM documents WHERE id=$1`, [docId])).rows[0];
