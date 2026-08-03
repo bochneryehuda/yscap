@@ -43,6 +43,7 @@ const FLIPS = require('../lib/research/flips');
 const V = require('../lib/research/valuation');
 const QA = require('../lib/research/quick-answer');
 const BR = require('../lib/research/bracketing');
+const MA = require('../lib/research/market-area');
 const K = require('../lib/research/property-key');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
@@ -1856,6 +1857,104 @@ router.get('/quick', async (req, res, next) => {
       answer,
       matched: found.rows.slice(0, 25),
       disclaimer: V.DISCLAIMER,
+    });
+  } catch (e) { next(e); }
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * MARKET AREAS — the boundary a person drew (db/453).
+ *
+ * A radius cannot say "this side of the highway". These can, and because the
+ * shape decides which comparables an officer is shown, every one of them
+ * records WHO drew it. The geometry — and every refusal — lives in
+ * `lib/research/market-area`, pure and tested; these routes only store and
+ * fetch.
+ * ─────────────────────────────────────────────────────────────────────────── */
+router.get('/market-areas', async (req, res, next) => {
+  try {
+    const params = [];
+    const where = ['a.archived_at IS NULL'];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    if (txt(req.query.state)) where.push(`upper(a.state) = ${P(String(req.query.state).toUpperCase())}`);
+    if (txt(req.query.city)) where.push(`lower(a.city) = ${P(String(req.query.city).toLowerCase())}`);
+    const r = await db.query(
+      `SELECT a.*, s.full_name AS created_by_name
+         FROM market_areas a LEFT JOIN staff_users s ON s.id = a.created_by
+        WHERE ${where.join(' AND ')}
+        ORDER BY a.updated_at DESC LIMIT 200`, params);
+    res.json({ rows: r.rows });
+  } catch (e) { next(e); }
+});
+
+router.post('/market-areas', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const name = txt(b.name);
+    if (!name) return res.status(400).json({ error: 'give the area a name — a boundary nobody can refer to is a boundary nobody will use' });
+    // THE GEOMETRY REFUSES, NOT THE ROUTE. One definition of what a usable shape
+    // is, shared with the search that will later ask "is this house inside it".
+    const shape = MA.describeArea(b.ring);
+    if (!shape.ok) return res.status(400).json({ error: shape.why, problem: shape.problem });
+    const ring = MA.cleanRing(b.ring);
+    const kind = ['neighborhood', 'working', 'exclusion'].includes(b.kind) ? b.kind : 'neighborhood';
+    const r = await db.query(
+      `INSERT INTO market_areas (name, kind, state, city, ring,
+         min_lat, max_lat, min_lng, max_lng, area_sq_mi, created_by, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [name, kind, txt(b.state) ? String(b.state).toUpperCase() : null, txt(b.city),
+        JSON.stringify(ring), shape.bounds.minLat, shape.bounds.maxLat,
+        shape.bounds.minLng, shape.bounds.maxLng, shape.areaSqMi, req.actor.id, txt(b.note)]);
+    res.status(201).json({ area: r.rows[0], shape });
+  } catch (e) {
+    // The partial-unique index: two live shapes with one name in one town is a
+    // filing mistake nobody can untangle later.
+    if (e && e.code === '23505') {
+      return res.status(409).json({ error: 'an area with that name already exists in that town — '
+        + 'give this one its own name, or archive the old one' });
+    }
+    next(e);
+  }
+});
+
+router.post('/market-areas/:id/archive', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    // ARCHIVED, NEVER DELETED. A valuation may have been built inside this
+    // boundary, and deleting it would leave that work resting on a shape nobody
+    // can look at.
+    const r = await db.query(
+      'UPDATE market_areas SET archived_at = now(), updated_at = now() WHERE id=$1 AND archived_at IS NULL RETURNING id',
+      [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'not found, or already archived' });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { next(e); }
+});
+
+/** Which of a market's properties fall inside a drawn area. */
+router.get('/market-areas/:id/properties', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const a = (await db.query('SELECT * FROM market_areas WHERE id=$1', [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // THE BOX FIRST, IN SQL — it is indexed and throws away almost everything.
+    // Then the EXACT test in JavaScript on what survives, because the box
+    // includes the corners a drawn shape deliberately cuts off.
+    const near = (await db.query(
+      `SELECT ${S.LIST_COLUMNS}
+         FROM properties p
+        WHERE p.eff_latitude BETWEEN $1 AND $2
+          AND p.eff_longitude BETWEEN $3 AND $4
+        LIMIT 5000`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
+    const ring = Array.isArray(a.ring) ? a.ring : [];
+    const inside = near.filter((p) => MA.pointInRing(p.eff_latitude, p.eff_longitude, ring));
+    res.json({
+      area: a,
+      rows: inside,
+      // BOTH NUMBERS, because "we hold 40 in the box and 12 in your shape" is
+      // the useful reading — it says how much the boundary actually cut.
+      inBox: near.length,
+      inArea: inside.length,
+      truncated: near.length >= 5000,
     });
   } catch (e) { next(e); }
 });

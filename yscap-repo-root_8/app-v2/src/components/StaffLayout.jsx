@@ -449,6 +449,7 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/research/market" title="Market conditions — what the appraisers themselves reported about a town month by month: months of supply, median sale price and days on market. Says how many reports each month rests on, so you know how much to trust it."><NavIcon name="pipeline" />Market conditions</NavLink>
         <NavLink className="sb-link" to="/internal/research/adjustments" title="What our own appraisers charge — the median and the usual range for every kind of adjustment they write, with how many reports and how many appraisers stand behind each figure. A claim about our reports, not about the market."><NavIcon name="pipeline" />What we charge</NavLink>
         <NavLink className="sb-link" to="/internal/research/quick" title="A town and a couple of basics, and what properties like that have been coming in at in the appraisals we paid for. Never a single figure, and it says nothing at all below five matches."><NavIcon name="pipeline" />Quick answer</NavLink>
+        <NavLink className="sb-link" to="/internal/research/areas" title="Draw the neighbourhood the way an appraiser would. A circle cannot say ‘this side of the highway’ — a drawn boundary can."><NavIcon name="pipeline" />Market areas</NavLink>
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

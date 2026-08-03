@@ -159,13 +159,92 @@ tell us.
 
 ---
 
-## C. THE OWNER'S ADDITIONS
+## C. THE OWNER'S ADDITIONS (2026-08-03)
 
-*(to be filled in — the owner is adding tasks here)*
+### C1. **THE HALF-MILE BUG — CONFIRMED, and it is not an API problem**
 
-- [ ]
-- [ ]
-- [ ]
+The owner: *"if I put in a real address and I click it should only come up things
+within half a mile — it doesn't work, it comes up properties from different
+states."*
+
+**Reproduced on real data:**
+
+```
+A half-mile search with NO coordinates (a typed address):
+  -> 955 properties across 9 STATES: CT, NJ, NY, AL, PA, OH, IN, MI, SC
+  -> distance column: null
+
+The SAME half mile, anchored on a property that HAS coordinates:
+  -> 9 properties, 1 state, furthest 0.449 miles, none over the limit
+
+Does the radius reach the SQL with no position?
+  -> WHERE clause: (none).  The radius is SILENTLY DROPPED.
+```
+
+**ROOT CAUSE** (`src/lib/research/search.js`): the distance predicate is built
+inside `if (lat != null && lng != null)`. A typed address has neither, so the
+radius is not applied at all — and nothing anywhere says so. The DISTANCE MATHS
+IS CORRECT: the anchored test proves it to three decimal places, and
+`test-research-geo-box-pure.js` already proves the bounding box contains the
+circle at every latitude. **A different geocoding API would not have fixed this.**
+
+- [ ] **C1a** **A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.**
+  When a radius is asked for and there is no position, the search must say so
+  and return nothing rather than hand back nine states. This is the same rule
+  the quick answer and the adjustment corpus already follow, and it is the one
+  the comp search is missing.
+- [ ] **C1b** **GEOCODE THE TYPED SUBJECT** so the radius can actually run —
+  which is what C2 is for. Until a typed address has a position, a radius search
+  from it is not answerable, and saying so is the honest behaviour.
+- [ ] **C1c** A test that FAILS on today's code: ask for a radius with no
+  position and assert nothing comes back with a null distance.
+
+### C2. **Address autofill everywhere in the Resource Center**
+
+The owner: *"take the address automatic filler … it should populate everywhere
+you can put in an address — property research, find comparables, market
+conditions, what we charge, quick answer."*
+
+Today only the loan-application form has it (`/api/address/suggest`, which
+already prefers Google Places when `GOOGLE_PLACES_API_KEY` is set and falls back
+to the free OpenStreetMap service otherwise).
+
+- [ ] **C2a** One shared `<AddressBox>` component that suggests as you type and
+  — the important part — **returns the POSITION with the address**, so every
+  screen that takes an address can run a real distance search from it.
+- [ ] **C2b** Put it on every research screen that takes an address.
+- [ ] **C2c** It must degrade honestly: with no key the free service still
+  suggests, and if a chosen address yields no position the screen says the
+  distance filter cannot run rather than quietly widening.
+
+### C3. **One Property Research & Resource Center section**
+
+The owner: *"we now have on our left side a few separate sections which all of
+them should technically be combined in one section with different pages …
+property research, find comparables, market conditions, what we charge, quick
+answer — all of it is one Resource Center."*
+
+- [ ] **C3** Collapse the six research nav links into ONE section with pages
+  inside it. Keep every existing URL working — officers have bookmarks, and a
+  reorganisation that breaks a saved link is a reorganisation that gets undone.
+
+### C4. **Real Google maps** — see A/B above for the recommendation
+
+The owner is adding a Google key. **One key covers both jobs** (enable *Places
+API* + *Maps JavaScript API*, restrict it to our domain):
+
+| Job | API | Why |
+|---|---|---|
+| The address box | **Google Places Autocomplete** | Already wired — `GOOGLE_PLACES_API_KEY` switches it on everywhere at once |
+| The map | **Google Maps JavaScript API** + Street View | The real map, satellite, and seeing the actual house |
+| The coordinates we STORE | **the free US Census geocoder — unchanged** | Not cost, LAW: Google's terms cap storing a lat/lng at 30 days while a place_id may be kept forever, and this warehouse is permanent |
+
+- [ ] **C4a** Google base map in `CompMap`, falling back to the current
+  OpenStreetMap tiles when no key is present — the map must never go blank
+  because a bill lapsed.
+- [ ] **C4b** Satellite toggle and Street View for the subject and each comp.
+- [ ] **C4c** A guard so a Google coordinate can never be written into
+  `properties` — the 30-day rule breaks silently, with nothing to warn us.
 
 ---
 
