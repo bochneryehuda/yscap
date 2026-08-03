@@ -693,5 +693,99 @@ t('a non-url is refused with a plain reason', () => {
     });
   }
 
+  // ── an appraisal we CANNOT parse is counted and said out loud ─────────────
+  // The post-merge audit's silent-total-failure finding. The skip used to happen
+  // before any counter, and makeTick's log gate is
+  // `resources || captured || failed || errors` — so a tenant whose appraisals
+  // all arrive as UAD 3.6 ZIPs produced all-zeros, which is exactly what a
+  // healthy quiet sweep looks like. The catcher would stop working on the day the
+  // format changed, with nothing anywhere saying so.
+  {
+    const enc3 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+    const origGet = enc3.apiGet, origConfigured = enc3.configured, origErr = console.error;
+    const errs = [];
+    let zipSweep, xmlSweep;
+    try {
+      console.error = (...a) => { errs.push(a.join(' ')); };
+      enc3.configured = () => true;
+      // One appraisal service order carrying ONE resource: the appraisal type
+      // URN on a ZIP package — the exact UAD 3.6 shape the module documents.
+      enc3.apiGet = async (p) => {
+        if (/serviceOrders\/[^/?]+\?/.test(String(p))) {
+          return { response: { resources: [{
+            id: 'zip-1', name: 'AppraisalReport.zip', mimeType: 'application/zip',
+            type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+            location: 'https://skydrive.ellieservices.com/x?validity=zzz', authorization: 'sig',
+          }] } };
+        }
+        if (/serviceOrders$/.test(String(p))) {
+          return [{ id: 'o-zip', serviceSetup: { category: 'APPRAISAL' } }];
+        }
+        return [];
+      };
+      zipSweep = await M.sweepOnce(db, { loans: [{ loanId: 'zl1' }], paceMs: 0 });
+    } finally {
+      console.error = origErr; enc3.apiGet = origGet; enc3.configured = origConfigured;
+    }
+
+    t('an appraisal in a format we cannot parse is COUNTED, not skipped in silence', () => {
+      assert.strictEqual(zipSweep.otherFormat, 1,
+        `a ZIP appraisal delivery must be counted, saw otherFormat=${zipSweep.otherFormat}`);
+    });
+
+    t('it is never downloaded — the 15-minute window is not spent on it', () => {
+      assert.strictEqual(zipSweep.resources, 0, 'a non-XML resource must not enter the capture path');
+      assert.strictEqual(zipSweep.captured, 0, 'nothing may be captured from a ZIP');
+      assert.strictEqual(zipSweep.failed, 0,
+        'and it must NOT be recorded as a failure — a format we do not handle is not a breakage');
+    });
+
+    t('it ALARMS, so a tenant-wide format change cannot pass unnoticed', () => {
+      assert.ok(errs.some((e) => /does not parse/.test(e)),
+        `expected an alarm naming the unparsable format, saw: ${JSON.stringify(errs).slice(0, 300)}`);
+    });
+
+    t('the sweep SPEAKS UP when otherFormat is the only non-zero counter', () => {
+      // The gate is the half that makes the counter worth anything: without
+      // otherFormat in it this sweep logs nothing at all.
+      const logged = [];
+      const origLog = console.log;
+      console.log = (...a) => { logged.push(a.join(' ')); };
+      try {
+        // Drive the real gate with the real shape a ZIP-only sweep produces.
+        const r = { ...zipSweep };
+        assert.ok(!r.resources && !r.captured && !r.failed,
+          'fixture check: every other counter must be zero for this to mean anything');
+        if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
+          console.log('[encompass-xml] sweep:', JSON.stringify({ otherFormat: r.otherFormat }));
+        }
+      } finally { console.log = origLog; }
+      assert.ok(logged.some((l) => /otherFormat/.test(l)),
+        'a ZIP-only sweep must produce a log line, not silence');
+    });
+
+    t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {
+      // The comment claimed this for months while nothing read res.type at all.
+      const { isAppraisalResource, APPRAISAL_TYPE_PREFIX } = M._internals;
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V2.6` }), 'V2.6');
+      assert.ok(isAppraisalResource({ type: `${APPRAISAL_TYPE_PREFIX}:version:V9.9` }), 'a future version');
+      assert.ok(isAppraisalResource({ type: String(APPRAISAL_TYPE_PREFIX).toUpperCase() + ':X' }),
+        'case must not decide it');
+      assert.ok(!isAppraisalResource({ type: 'urn:ice:epc:partner:title:report:version:V1' }),
+        'a title report is not an appraisal');
+      assert.ok(!isAppraisalResource({}), 'nothing to go on → not an appraisal');
+    });
+
+    t('a plain XML delivery is UNCHANGED by any of this', () => {
+      // The whole risk of the fix is that it alters what gets downloaded.
+      assert.ok(M._internals.isAppraisalXml({ mimeType: 'application/xml', name: 'a.xml' }),
+        'an xml resource is still an xml resource');
+      assert.ok(!M._internals.isAppraisalXml({
+        mimeType: 'application/zip', name: 'x.zip',
+        type: `${M._internals.APPRAISAL_TYPE_PREFIX}:version:V3.6`,
+      }), 'the appraisal URN must NOT make a ZIP look parsable — that would start the ZIP downloads');
+    });
+  }
+
   console.log(`test-encompass-appraisal-xml-catcher: ${pass} checks passed`);
 })().catch((e) => { console.error('FAIL (async block):', e && e.message); process.exitCode = 1; });

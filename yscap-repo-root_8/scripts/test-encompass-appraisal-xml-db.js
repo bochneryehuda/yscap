@@ -179,6 +179,75 @@ const rowFor = async (id) => (await db.query(
     ok(row && row.error && !row.error.includes(' '), 'the recorded reason is stored, NUL-stripped');
   }
 
+  /* ── 3b. BYTES IN HAND ARE NEVER REPORTED AS LOST ────────────────────────── */
+  // The post-merge audit's orphaned-bytes finding. `capture()` saves the blob and
+  // THEN records it. If that recording UPDATE throws — connection reset, statement
+  // timeout, deadlock — the catch used to write status='failed' with a NULL
+  // storage_ref: a file we genuinely hold, reported to every operator and every
+  // later sweep as lost, with its blob orphaned in storage. The link is dead
+  // minutes later, so nothing can ever put that right.
+  //
+  // Note the asymmetry this closes: the sibling "UPDATE matched no rows" case
+  // already alarmed loudly; the THROW on the same statement did not.
+  {
+    const id = `${TAG}bookkeeping-throw`;
+    // A db PROXY, so only the success UPDATE fails and every other statement —
+    // including the catch's own recovery UPDATE — goes to the real database.
+    let thrown = 0;
+    const flaky = {
+      ...db,
+      query: async (sql, params) => {
+        if (/SET status='captured'/.test(String(sql)) && thrown === 0) {
+          thrown++;
+          const e = new Error('simulated: connection terminated during the capture UPDATE');
+          e.code = '57P01';
+          throw e;
+        }
+        return db.query(sql, params);
+      },
+    };
+
+    const order = mkOrder({
+      id, name: 'appraisal.xml', mimeType: 'application/xml',
+      location: urlFor(id, Date.now() + 9 * 60000), authorization: 'sig',
+    });
+    const origGet = enc.apiGet, origConfigured = enc.configured, origFetch = global.fetch;
+    const origSave = storage.save, origImport = xmlImport.importXml, origErr = console.error;
+    const errs = [];
+    let r;
+    try {
+      console.error = (...a) => { errs.push(a.join(' ')); };
+      enc.configured = () => true;
+      enc.apiGet = async (p) => (/view=complete/.test(p) ? order : [order]);
+      global.fetch = async () => ({
+        status: 200, ok: true, headers: { get: () => null },
+        arrayBuffer: async () => Buffer.from('<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6"/>'),
+      });
+      storage.save = async (buf) => {
+        const ref = `test/${TAG}throw.xml`; saved.push(ref);
+        return { ref, provider: 'local', bytes: buf.length };
+      };
+      xmlImport.importXml = async () => ({ ok: true, status: 'ok', importId: null, reason: null });
+      r = await M.sweepOnce(flaky, { loans: [{ loanId: `${TAG}guid`, loanNumber: 'L1' }] });
+    } finally {
+      enc.apiGet = origGet; enc.configured = origConfigured; global.fetch = origFetch;
+      storage.save = origSave; xmlImport.importXml = origImport; console.error = origErr;
+    }
+
+    ok(thrown === 1, `fixture check: the capture UPDATE was made to throw exactly once (saw ${thrown})`);
+    const row = await rowFor(id);
+    ok(row, 'the ledger row exists');
+    ok(row && row.status === 'captured',
+      `bytes we HOLD must not be recorded as lost — status is "${row && row.status}"`);
+    ok(row && row.storage_ref,
+      'and the storage ref is written, so the blob is findable rather than orphaned');
+    ok(row && row.error, 'the reason the bookkeeping failed is still recorded alongside it');
+    ok(errs.some((e) => /ARE saved/.test(e)),
+      'and it ALARMS — a ledger write failing on a file we hold deserves a human');
+    ok(!r.errors.some((e) => /22P02|42703|syntax/.test(e)),
+      'the recovery UPDATE itself is valid SQL');
+  }
+
   /* ── 4. Every status the code writes satisfies the CHECK ─────────────────── */
   {
     for (const status of ['pending', 'expired', 'failed', 'captured']) {

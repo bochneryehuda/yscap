@@ -242,14 +242,42 @@ function isAppraisalXml(res) {
   // Likewise an SVG or an XHTML page: both contain "xml", both would pass a
   // "starts with <" byte sniff, and neither is an appraisal.
   if (mime.includes('svg') || mime.includes('xhtml')) return false;
-  // The declared type URN (`urn:ice:epc:partner:appraisal:report:…`, matched as a
-  // PREFIX so a future MISMO/UAD version needs no code change) says WHAT the
-  // resource is, but not what FORMAT it is in: a UAD 3.6 delivery carries that
-  // same type on a ZIP PACKAGE. Downloading that burns part of the 15-minute
-  // window on something that can never parse and leaves a permanent 'failed' row
-  // which every later sweep retries and which reads to an operator as a breakage
-  // rather than "not applicable". So the format decides, for every resource.
+  // FORMAT DECIDES HERE, and ONLY format — this function deliberately does not
+  // look at `res.type`. The declared type URN says WHAT the resource is, not what
+  // FORMAT it arrived in: a UAD 3.6 delivery carries the same appraisal type on a
+  // ZIP PACKAGE. Downloading that burns part of the 15-minute window on something
+  // that can never parse and leaves a permanent 'failed' row which every later
+  // sweep retries and which reads to an operator as a breakage rather than "not
+  // applicable".
+  //
+  // The type URN is read by `isAppraisalResource` below, whose job is the OTHER
+  // question — "was this an appraisal delivery at all?" — which is what makes a
+  // format we cannot parse VISIBLE instead of silent. Keep the two apart: folding
+  // the URN into this test is what would start the ZIP downloads.
   return mime.includes('xml') || /\.xml$/i.test(name);
+}
+
+// The appraisal report type URN, matched as a PREFIX so a future MISMO/UAD
+// version (…:V2.6, …:V3.6, whatever comes next) needs no code change.
+//
+// An earlier version of the comment above claimed this prefix match was already
+// happening inside `isAppraisalXml`. It was not — nothing in this module read
+// `res.type` except to store it. That is now true rather than merely described,
+// and it buys the thing its absence cost: see `otherFormat` at the call site.
+const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
+
+/**
+ * Was this resource an appraisal DELIVERY, whatever format it arrived in? PURE.
+ *
+ * Deliberately generous where `isAppraisalXml` is strict. This one only decides
+ * whether something is worth TELLING SOMEONE about; it never causes a download.
+ * A false positive costs one log line, a false negative costs the silence this
+ * exists to break — so the name is accepted as a fallback signal too.
+ */
+function isAppraisalResource(res) {
+  if (!res) return false;
+  if (String(res.type || '').toLowerCase().startsWith(APPRAISAL_TYPE_PREFIX)) return true;
+  return /apprais/i.test(String(res.name || ''));
 }
 
 /** Guard the download URL's host. Throws with a plain reason. */
@@ -505,6 +533,14 @@ function statusRankSql(col) {
 async function capture(db, res, meta) {
   const url = res.location || res.url;
   const auth = res.authorization || res.authorizationHeader;
+  // HOISTED OUT OF THE TRY SO THE CATCH CAN SEE IT. Once the bytes are in storage
+  // they are the one thing that cannot be re-fetched — the link dies minutes
+  // later. If the success UPDATE itself throws (connection reset, statement
+  // timeout, deadlock) the catch below would otherwise write 'failed' with no
+  // storage_ref: the blob is orphaned, and a file we genuinely HAVE reads as lost
+  // to every operator and every later sweep. The sibling `rowCount === 0` case
+  // already alarms about exactly that; this closes the throw path beside it.
+  let savedRef = null;
   try {
     // Inside the try: a require that throws must not escape a function whose
     // documented contract is that it never does.
@@ -512,6 +548,7 @@ async function capture(db, res, meta) {
     const buf = await fetchResource(url, auth);
     const digest = sha256(buf);
     const saved = await storage.save(buf, { filename: meta.filename || 'appraisal.xml' });
+    savedRef = saved && saved.ref ? saved.ref : null;
 
     // Feed the research warehouse through the SAME door a hand-uploaded XML uses,
     // so a report filed by the catcher is indistinguishable from one filed by a
@@ -572,9 +609,25 @@ async function capture(db, res, meta) {
       ? `captured ${meta.filename} (${buf.length} bytes) — ${importNote}`
       : `captured ${meta.filename} (${buf.length} bytes)`;
   } catch (e) {
+    // THE BYTES OUTRANK THE ERROR. If we got here AFTER storage.save succeeded,
+    // the download worked and only the bookkeeping failed — so record the ref and
+    // say 'captured', because the file genuinely is in hand and no later sweep
+    // can re-fetch it. Writing 'failed' with a NULL ref here (the old behaviour)
+    // orphaned a real file and told every operator it was lost.
+    //
+    // The alarm is LOUD rather than silent: this path means the ledger write
+    // failed on a file we hold, which is worth a human's attention even though
+    // nothing was lost.
+    if (savedRef) {
+      console.error(`[encompass-xml] ALARM: the bytes for resource ${meta.resourceId} ARE saved at ` +
+        `${savedRef}, but recording the capture threw (${(e && e.message) || e}). ` +
+        'Recording it as captured — the file is in hand, not lost.');
+    }
     await db.query(
       `UPDATE encompass_appraisal_xml
-          SET status = CASE WHEN status='captured' THEN 'captured' ELSE 'failed' END,
+          SET status = CASE WHEN status='captured' OR $3::text IS NOT NULL
+                            THEN 'captured' ELSE 'failed' END,
+              storage_ref = COALESCE(storage_ref, $3),
               error=$2, attempts = attempts + 1
         WHERE resource_id=$1`,
       // NUL-guarded for the same reason: this message quotes the response BODY
@@ -585,13 +638,15 @@ async function capture(db, res, meta) {
       // sweep promoted it to 'expired' — so a file we saw LIVE and tried to fetch
       // ended up reading "only the AMC can supply it". That is exactly the
       // distinction the status ladder exists to protect.
-      [meta.resourceId, t500(String((e && e.message) || e))]
+      [meta.resourceId, t500(String((e && e.message) || e)), savedRef]
     ).then((r) => {
       if (r && r.rowCount === 0) {
         console.error(`[encompass-xml] failure recorded NOTHING for resource ${meta.resourceId} — ledger row not found`);
       }
     }).catch(() => {});
-    return `failed ${meta.filename}: ${(e && e.message) || e}`;
+    return savedRef
+      ? `captured-bookkeeping-failed ${meta.filename}: ${(e && e.message) || e}`
+      : `failed ${meta.filename}: ${(e && e.message) || e}`;
   }
 }
 
@@ -645,7 +700,7 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
   paceMs = envNum('ENCOMPASS_APPRAISAL_XML_PACE_MS', 350, { min: 0, max: 10000 }) } = {}) {
   const out = {
     loans: 0, orders: 0, resources: 0, captured: 0, expired: 0, failed: 0,
-    skipped: 0, noLink: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
+    skipped: 0, noLink: 0, otherFormat: 0, capturedUnrecorded: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
   if (!encompass.configured()) return { ...out, disabled: true, reason: 'encompass not configured' };
@@ -746,7 +801,34 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
       const rawResources = ((full || {}).response || {}).resources;
       const resources = Array.isArray(rawResources) ? rawResources : [];
       for (const res of resources) {
-        if (!isAppraisalXml(res)) continue;
+        if (!isAppraisalXml(res)) {
+          // THE SILENT-TOTAL-FAILURE HOLE. Skipping straight to `continue` here
+          // meant an appraisal delivered in a format we cannot parse produced
+          // NOTHING: no ledger row, no counter, and — because makeTick's log gate
+          // is `resources || captured || failed || errors` — not even a log line.
+          // The day this tenant moves to UAD 3.6 (same appraisal type URN, ZIP
+          // package) every sweep would report all zeros, which is exactly what a
+          // healthy quiet sweep looks like. That is the same indistinguishable-
+          // from-normal silence the noLink alarm exists to break.
+          //
+          // NOT downloading it is still right (see isAppraisalXml). Counting it
+          // is what was missing. The counter is in the log gate below, so one of
+          // these makes the sweep speak up.
+          if (isAppraisalResource(res)) {
+            out.otherFormat++;
+            if (out.otherFormat === 1) {
+              // ONCE per sweep, not once per resource: a tenant-wide format
+              // change would otherwise print a line per appraisal per 5 minutes.
+              console.error('[encompass-xml] ALARM: an appraisal was delivered in a format this ' +
+                `catcher does not parse (${res.mimeType || 'no mime'} / ${res.name || 'no name'}). ` +
+                'Nothing was downloaded and nothing is being caught for it — if this is the whole ' +
+                'tenant, the format changed (UAD 3.6 ships a ZIP) and the catcher needs updating.');
+            }
+            pushErr(out, `resource ${res.id || '(no id)'} is an appraisal delivery in an unparsable format ` +
+              `(${res.mimeType || 'no mime'} / ${res.name || 'no name'})`);
+          }
+          continue;
+        }
         out.resources++;
 
         // Read the clock HERE. A sweep walks up to 500 loans sequentially, so a
@@ -884,11 +966,16 @@ function makeTick(db) {
         // used to log nothing at all — and since the whole historical back book is
         // legitimately expired, that silence is indistinguishable from normal
         // operation. The feature could stop working on day one unnoticed.
-        if (r.resources || r.captured || r.failed || (r.errors || []).length) {
+        // `otherFormat` is IN THE GATE deliberately. It is the one counter that can
+        // be non-zero while every other one is zero — a tenant whose appraisals all
+        // arrive in a format we cannot parse produces no resources, no captures and
+        // no failures, so without it here that sweep logs nothing and reads exactly
+        // like a healthy quiet one.
+        if (r.resources || r.captured || r.failed || r.otherFormat || (r.errors || []).length) {
           console.log('[encompass-xml] sweep:', JSON.stringify({
             loans: r.loans, resources: r.resources, captured: r.captured,
             failed: r.failed, expired: r.expired, skipped: r.skipped,
-            noLink: r.noLink,
+            noLink: r.noLink, otherFormat: r.otherFormat,
             // Both of these are the whole point of counting rather than
             // truncating: printing three errors while silently dropping ten more,
             // or capturing bytes the ledger never recorded, must not look like a
@@ -924,7 +1011,12 @@ function makeTick(db) {
  * is sequential. Raising it past ~10 minutes starts losing files, which is
  * exactly the failure this module exists to prevent.
  */
-function start(db, { intervalSec = Number(process.env.ENCOMPASS_APPRAISAL_XML_POLL_SEC || 300) } = {}) {
+// THROUGH envNum LIKE EVERY OTHER KNOB. This was the one tuning value that read
+// its env var raw, so a typo'd poll interval fell back to 300 in SILENCE —
+// against this module's own stated rule that a bad value "falls back to the
+// default and SAYS SO, rather than degrading". The clamp is unchanged (60..600s);
+// only the silence is fixed.
+function start(db, { intervalSec = envNum('ENCOMPASS_APPRAISAL_XML_POLL_SEC', 300, { min: 60, max: 600 }) } = {}) {
   // Only the ENV kill stops the timer being armed at all. The live switch is
   // deliberately NOT checked here: it is re-read inside every tick (via
   // `sweepOnce`'s own gate), so flipping it off stops the work and flipping it
@@ -949,7 +1041,8 @@ module.exports = {
   sweepOnce,
   // exported for tests
   _internals: {
-    validityOf, isAppraisalXml, assertStorageHost, STORAGE_HOST_RE, makeTick,
+    validityOf, isAppraisalXml, isAppraisalResource, APPRAISAL_TYPE_PREFIX,
+    assertStorageHost, STORAGE_HOST_RE, makeTick,
     decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };
