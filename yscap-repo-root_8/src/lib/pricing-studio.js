@@ -134,13 +134,27 @@ function studioQuote(deal, markups) {
      is showing. Quote it for each program that produced a loan — the studio
      prints whichever one is on screen, and sending all three costs nothing. */
   out.title = {};
+  /* WHAT EACH TITLE FIGURE WAS COMPUTED FOR — a sibling, never folded into the
+     title object itself, so `title[p]` stays byte-identical to the engine's own
+     return value and the parity proof keeps comparing like for like.
+
+     The page asks for title through a GLOBAL — `YSTitle.estimate(state, loan,
+     loanType)` — which says nothing about which program is asking. A client
+     reading these answers back therefore has to identify the right one, and
+     the only honest way to do that is to match on everything the estimate
+     depends on. Guessing by loan amount alone hands back another program's
+     title whenever two programs size differently (audit 2026-08-03 measured
+     $3,600 vs $3,615, and on an ineligible deal a cash-to-close $2,520 short). */
+  out.titleFor = {};
   for (const p of ['standard', 'gold', 'silver']) {
     const blk = out[p];
     const sized = blk && blk.evaluate && blk.evaluate.sizing;
     const total = sized ? num(sized.totalLoan) : 0;
-    if (!total) { out.title[p] = null; continue; }
-    try { out.title[p] = YSTitle.estimate(d.state, total, d.loanType); }
-    catch (_) { out.title[p] = null; }
+    if (!total) { out.title[p] = null; out.titleFor[p] = null; continue; }
+    try {
+      out.title[p] = YSTitle.estimate(d.state, total, d.loanType);
+      out.titleFor[p] = { loan: total, state: d.state, loanType: d.loanType };
+    } catch (_) { out.title[p] = null; out.titleFor[p] = null; }
   }
 
   /* The two pure helpers the page uses for display branching — which is a

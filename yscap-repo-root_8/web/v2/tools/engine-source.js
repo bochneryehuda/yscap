@@ -44,6 +44,38 @@
   var ENDPOINT = '/api/pricing/studio';
   var PENDING = 'PENDING';
 
+  /* TWO HELPERS THE PAGE CALLS BEFORE ANY DEAL EXISTS — captured, not guessed.
+     ============================================================================
+     `normStrategy(s)` maps a strategy label to a code and `projectCount(code,
+     exp)` adds up experience. The page calls both SYNCHRONOUSLY for display
+     branching long before a quote has been asked for, so a server round trip
+     cannot answer them, and the first version of this file served them from
+     whatever answer happened to land last. Measured cost of that (audit
+     2026-08-03, real browser): on a ground-up deal `normStrategy` returned null
+     on the first call, so termsheet.js never bumped the term from 12 to 18 —
+     and because it stamps `lastDeal` regardless, it never ran again. The deal
+     then priced on the wrong term end to end, and the Gold card flipped from
+     Eligible to Manual review. `projectCount` was worse: it ignored its
+     arguments entirely and returned the last answer's number, which prints on
+     the exported term-sheet PDF as the borrower's claimed experience.
+
+     So capture the REAL ones off the local engines while they are still loaded
+     — this file runs after their <script> tags. Neither is guideline data (one
+     is a substring map, the other an addition), so nothing is duplicated and
+     nothing leaks by keeping them local.
+
+     PHASE 4 OPENS THIS AGAIN, DELIBERATELY UNRESOLVED HERE: deleting the
+     engines from the public web root removes the very functions this captures.
+     At that point the choice is a small non-guideline shim or having the server
+     publish the strategy map itself. Both are real designs with a trade-off,
+     so neither is invented on the way past — the fallbacks below keep this
+     honest in the meantime (they answer "not known yet", never a wrong code). */
+  var localYSP = root.YSP || null;
+  var LOCAL_NORM = localYSP && typeof localYSP.normStrategy === 'function'
+    ? function (s) { return localYSP.normStrategy(s); } : null;
+  var LOCAL_COUNT = localYSP && typeof localYSP.projectCount === 'function'
+    ? function (code, exp) { return localYSP.projectCount(code, exp); } : null;
+
   /* The cache key IS the deal. Two deals that differ in any priced input are
      different questions, so the key is built from the whole sanitized input
      rather than a hand-picked subset — a subset is how a cache starts answering
@@ -157,35 +189,62 @@
   onSettled(function (key) { lastAnswer = cache[key] || lastAnswer; });
 
   function strategyCode(s) {
+    if (LOCAL_NORM) return LOCAL_NORM(s);
+    // No local engine to ask. Answer only about the strategy actually priced —
+    // for anything else say "not known yet" rather than hand back the code of a
+    // DIFFERENT strategy, which is what the previous version did (both of its
+    // branches returned the same expression, so the test above was dead code).
     if (lastAnswer && lastAnswer.deal && String(lastAnswer.deal.strategy) === String(s)) {
-      return lastAnswer.derived && lastAnswer.derived.strategyCode;
+      return (lastAnswer.derived && lastAnswer.derived.strategyCode) || null;
     }
-    // A different strategy than the one last priced: ask for it, and say "not
-    // known yet" rather than guess.
-    return (lastAnswer && lastAnswer.derived && lastAnswer.derived.strategyCode) || null;
+    return null;
   }
-  function projectCount() {
-    return (lastAnswer && lastAnswer.derived && lastAnswer.derived.projectCount) || 0;
+  function projectCount(code, exp) {
+    if (LOCAL_COUNT) return LOCAL_COUNT(code, exp);
+    // Same rule: only answer about the deal that was priced. `null` rather than
+    // 0 — "we do not know" and "the borrower has done none" are different
+    // claims, and this number is printed on the term sheet.
+    var d = lastAnswer && lastAnswer.deal;
+    var derived = lastAnswer && lastAnswer.derived;
+    if (!d || !derived) return null;
+    var sameCode = code == null || String(derived.strategyCode) === String(code);
+    var sameExp = !exp || (
+      Number(exp.flips || 0) === Number(d.expFlips || 0)
+      && Number(exp.holds || 0) === Number(d.expHolds || 0)
+      && Number(exp.ground || 0) === Number(d.expGround || 0)
+    );
+    return sameCode && sameExp ? derived.projectCount : null;
   }
 
   root.YSP = viewFor('standard');
   root.GSP = viewFor('gold');
   root.SVP = viewFor('silver');
   root.YSTitle = {
-    estimate: function (state, loan) {
+    /* THE THIRD ARGUMENT IS LOAD-BEARING. The frozen engine is
+       `estimate(state, loan, txnType)` and the page passes all three
+       (termsheet.js:551/611/672). The previous stub declared only two, matched
+       on the floored loan amount alone, and — worse — fell back to the STANDARD
+       program's figure on a miss. Audit 2026-08-03 measured that live: $3,600
+       against $3,615 and $3,025 against $3,155 on ordinary deals, and on an
+       ineligible deal a cash-to-close $2,520 short, all rendered as settled
+       numbers. Match on everything the estimate depends on, and NEVER
+       substitute one loan's title for another's. */
+    estimate: function (state, loan, loanType) {
       var last = lastAnswer;
-      if (!last || !last.title) return { total: 0, pending: true };
-      // Whichever program produced this loan amount is the one whose title
-      // figure the page is printing.
+      if (!last || !last.title || !last.titleFor) return { total: 0, pending: true };
       var names = ['standard', 'gold', 'silver'];
+      var want = Math.floor(Number(loan) || 0);
       for (var i = 0; i < names.length; i++) {
-        var blk = last[names[i]];
-        var sized = blk && blk.evaluate && blk.evaluate.sizing;
-        if (sized && Math.floor(Number(sized.totalLoan) || 0) === Math.floor(Number(loan) || 0)) {
-          return last.title[names[i]] || { total: 0 };
-        }
+        var f = last.titleFor[names[i]];
+        if (!f) continue;
+        if (Math.floor(Number(f.loan) || 0) !== want) continue;
+        if (String(f.state || '') !== String(state || '')) continue;
+        if (String(f.loanType || '') !== String(loanType || '')) continue;
+        return last.title[names[i]] || { total: 0, pending: true };
       }
-      return last.title.standard || { total: 0, pending: true };
+      // Nothing we hold was computed for THIS loan. Say so — a pending title
+      // reads as an em-dash, which is honest; a substituted one reads as money.
+      return { total: 0, pending: true };
     }
   };
 
