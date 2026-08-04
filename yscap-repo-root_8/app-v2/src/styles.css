@@ -96,6 +96,12 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .nav a,.nav .btn,.nav .pill{white-space:nowrap}
 .nav a{color:var(--muted);font-weight:500;font-size:14px}
 .nav a.active,.nav a:hover{color:var(--ivory);text-decoration:none}
+/* Tasks nav badge — small gold count chip on the "Tasks" link (the task list
+   moved off the home page into its own Tasks section, so the nav carries the
+   at-a-glance signal). Matches the .badge/.chat-badge system. */
+.nav-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;
+  padding:0 5px;margin-left:6px;border-radius:9px;background:var(--gold);color:var(--on-accent);
+  font-size:11px;font-weight:700;line-height:1;vertical-align:middle}
 /* Mobile menu: a hamburger button + slide-in drawer. Both are desktop-hidden
    here and switched on in the phone media query below. */
 .nav-toggle{display:none;flex:none;width:44px;height:44px;margin-left:auto;
@@ -109,6 +115,11 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 /* cards / panels */
 .panel{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .panel + .panel{margin-top:18px}
+/* Inside a grid, panels are laid out by the grid GAP, not stacked — so the
+   adjacent-sibling stacking margin above must NOT apply, or the 2nd/3rd card in
+   a row gets an 18px top margin that eats into its cell and leaves side-by-side
+   loan cards visibly uneven (owner-directed: even box sizing). */
+.grid > .panel + .panel{margin-top:0}
 .grid{display:grid;gap:16px}
 /* minmax(0,1fr), NOT 1fr: a bare 1fr is minmax(auto,1fr), so a column can't
    shrink below its content's min-content width — one panel with wide content
@@ -605,6 +616,7 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
   .nav .btn{width:100%;justify-content:center;margin-top:14px;min-height:48px}
   .nav .bell{width:100%;min-height:48px;justify-content:flex-start}
   .nav .chat-badge.nav{position:static;margin-left:auto}
+  .nav a .nav-count{margin-left:auto}
 }
 @keyframes navfade{from{opacity:0}to{opacity:1}}
 @media(max-width:520px){
