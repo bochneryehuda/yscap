@@ -2160,8 +2160,12 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
 router.post('/applications/:id/vesting/personal-name', async (req, res) => {
   try {
     const b = req.body || {};
-    if (!can(req.actor, 'sign_off_conditions'))
-      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    // Owner-directed 2026-08-04: loan officers may also switch vesting to
+    // individual (waive the LLC condition + populate the Non-Owner-Occupied
+    // certification), via the dedicated waive_vesting_llc capability — not only
+    // processors/admins, and without granting the broader sign_off_conditions power.
+    if (!can(req.actor, 'waive_vesting_llc'))
+      return res.status(403).json({ error: 'You do not have permission to switch this file to an individual (personal-name) vesting.' });
     const app = (await db.query(
       `SELECT a.id, a.status, a.borrower_id, a.llc_id, a.lender, l.is_verified AS llc_verified,
               (SELECT r.program FROM product_registrations r
@@ -2841,6 +2845,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      // Item 15: the manual GOLD top-tier markup sticks the same way, so a future
+      // quote (staff or borrower self-service) never drops it back to zero. A
+      // blank clears it → the company per-tier default (or historic 0) governs.
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldT1Pct'))
+        await client.query(`UPDATE applications SET file_markup_gold_t1_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldT1Pct)]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
@@ -3050,7 +3059,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
       const row = t.rows[0] || {};
-      const pctRate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : '—';
+      const pctRate = quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : '—';
       const dollars = '$' + Math.round(total).toLocaleString('en-US');
       const money2 = (n) => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
       const szn = quote.sizing || {};
@@ -3825,6 +3834,12 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            -- Who manually added this condition + any pending "please delete" request,
+            -- so the row can offer Delete (to the adder / an admin) or Ask-to-delete
+            -- (owner-directed 2026-08-04).
+            ci.created_by_id, crb.full_name AS created_by_name,
+            ci.delete_requested_by, drb.full_name AS delete_requested_by_name,
+            ci.delete_requested_at, ci.delete_request_reason,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
             -- PILOT's advisory overlay (owner-directed 2026-07-24): its "ready / not_ready /
             -- agree / dispute" verdict + note on this condition, ON TOP of the human status.
@@ -3864,6 +3879,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
+       LEFT JOIN staff_users crb ON crb.id = ci.created_by_id
+       LEFT JOIN staff_users drb ON drb.id = ci.delete_requested_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
@@ -4087,6 +4104,91 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
     } catch (_) { /* best-effort */ }
   }
   res.status(201).json({ ok: true, itemId });
+});
+
+// ---- Delete / request-delete a MANUALLY-added condition (owner-directed 2026-08-04) ----
+// "If he was the one manually adding the condition, then he should be able to
+//  manually delete the condition. If somebody else manually added it, then he can
+//  request from that person to delete, and that person should get a prompt to delete."
+// Only manual conditions (origin_kind manual_custom / manual_library / exception) are
+// deletable — auto/rules/system conditions are engine-owned and must never be
+// hand-deleted (they clear themselves). documents.checklist_item_id is ON DELETE SET
+// NULL, so a misfiled document is unlinked, never destroyed.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+async function loadManualCondition(appId, itemId) {
+  const r = await db.query(
+    `SELECT ci.id, ci.application_id, ci.origin_kind, ci.created_by_id, ci.created_by_kind,
+            ci.label, ci.delete_requested_by, ci.delete_requested_at,
+            su.full_name AS created_by_name
+       FROM checklist_items ci
+       LEFT JOIN staff_users su ON su.id = ci.created_by_id
+      WHERE ci.id=$1 AND ci.application_id=$2`, [itemId, appId]);
+  return r.rows[0] || null;
+}
+
+router.delete('/applications/:id/conditions/:itemId', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — it cannot be deleted here. It clears itself when the file no longer needs it.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    const isAdmin = req.actor.role === 'super_admin' || req.actor.role === 'admin';
+    if (!isCreator && !isAdmin) {
+      return res.status(403).json({
+        error: `Only ${it.created_by_name || 'the person who added it'} can delete this condition. Use "Ask to delete" to request it.`,
+        code: 'needs_delete_request', creatorName: it.created_by_name || null });
+    }
+    await db.query(`DELETE FROM checklist_items WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    await audit(req, 'delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, byCreator: !!isCreator });
+    // If an admin (not the adder) removed it, tell the adder it's gone.
+    if (!isCreator && it.created_by_id) {
+      try {
+        await notify.notifyStaff(it.created_by_id, {
+          type: 'condition_deleted', title: 'A condition you added was deleted', inAppOnly: true,
+          body: `"${it.label}" was removed by ${req.actor.full_name || 'an admin'}.`,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+      } catch (_) { /* best-effort */ }
+    }
+    res.json({ ok: true, deleted: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/conditions/:itemId/request-delete', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — there is nobody to ask.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    if (isCreator) return res.status(400).json({ error: 'You added this condition — you can delete it directly.' });
+    if (!it.created_by_id) return res.status(400).json({ error: 'This condition has no recorded owner to ask; an admin can delete it.' });
+    const reason = String((req.body || {}).reason || '').trim().slice(0, 500) || null;
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=$1, delete_requested_at=now(), delete_request_reason=$2 WHERE id=$3 AND application_id=$4`,
+      [req.actor.id, reason, req.params.itemId, req.params.id]);
+    await audit(req, 'request_delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, reason });
+    try {
+      await notify.notifyStaff(it.created_by_id, {
+        type: 'condition_delete_requested', title: 'Please delete a condition you added',
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `${req.actor.full_name || 'A teammate'} asked you to delete "${it.label}"${reason ? ` — "${reason}"` : ''}. Open the file to delete it.`,
+        applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, requested: true, creatorName: it.created_by_name || null });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The adder dismisses a delete request without deleting (they disagree).
+router.post('/applications/:id/conditions/:itemId/dismiss-delete-request', async (req, res) => {
+  try {
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=NULL, delete_requested_at=NULL, delete_request_reason=NULL
+        WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Re-run the automatic condition rules for this one file.
@@ -5216,7 +5318,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     if (isOrderKind(String((req.body && req.body.scope) || ''))) {
       const kind = String(req.body.scope);
       const row = (await db.query(
-        `SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+        `SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
       // FAIL CLOSED, like the closing branch. Falling through would send a vendor
       // reply to the borrower — the exact outcome this branch exists to prevent — so
       // a scope the file cannot honour is refused, never redirected.
@@ -5238,19 +5340,27 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
       const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      // Reply on the SAME vendor chain the order was placed on (owner-directed
+      // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
+      const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`,
+        type: `${kind}_followup`, thread,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
       }
       // A reply IS a follow-up on this order — record it as one so the aging clock
-      // and the desk's "last chased" both reflect that somebody wrote to the vendor.
+      // and the desk's "last chased" both reflect that somebody wrote to the vendor,
+      // and advance the thread (lastMessageId) on a confirmed send.
       await db.query(
-        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
-          WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+                meta = CASE WHEN $3::text IS NOT NULL
+                         THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                         ELSE meta END,
+                updated_at=now()
+          WHERE application_id=$1 AND order_type=$2`, [appId, kind, sent.messageId || null]);
       await orderTracking.recordEvent({
         applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
@@ -5704,6 +5814,19 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       // may well have delivered it, and releasing would invite the re-send that
       // double-orders.
       await orderTracking.ensureAssignee(appId, kind);
+      // Anchor the vendor conversation on THIS order's Message-ID (the thread root)
+      // so a later follow-up / Email Center reply lands on the same chain in the
+      // vendor's inbox instead of a new one (owner-directed 2026-08-04). Only on a
+      // CONFIRMED send (an ambiguous send carries no id); best-effort — a missed
+      // stamp just means the follow-up threads by subject, not by header. A re-send
+      // re-anchors the thread, which is correct (the vendor sees a fresh order).
+      if (sendRes.messageId) {
+        await db.query(
+          `UPDATE file_orders
+              SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('rootMessageId', $3::text, 'lastMessageId', $3::text)
+            WHERE application_id=$1 AND order_type=$2`,
+          [appId, kind, sendRes.messageId]).catch(() => {});
+      }
       /* RE-SENDING A FINISHED ORDER IS A REOPEN, AND IT MUST BE RECORDED AS ONE.
          The retire sweep leaves an order alone only while a 'reopened' event is
          NEWER than the last 'completed' one — that is the whole mechanism by which
@@ -5765,7 +5888,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
   if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(`SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const row = (await db.query(`SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
       return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
     }
@@ -5789,19 +5912,30 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // follow-up the vendor never received whenever email was off or the API key had
     // rotated — so `last_followup_at` moved, the aging clock reset, and the order
     // looked chased. On this desk a false "we chased them" is worse than an error.
+    // The follow-up rides the SAME vendor conversation the order was placed on:
+    // reuse the order's subject + reference its Message-ID so it threads in the
+    // vendor's inbox instead of opening a new chain (owner-directed 2026-08-04).
+    const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
     const sendRes = await orders.sendOrderMail({
       appId, kind, data, to, cc, replyTo, built,
       fromName: meRow.full_name || meRow.email,
-      type: `${kind}_followup`,
+      type: `${kind}_followup`, thread,
     });
     if (!sendRes.ok && !sendRes.ambiguous) {
       return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
     }
     // An ambiguous send counts: the provider may have delivered it, and NOT
     // recording it would have the desk telling somebody to chase again immediately.
+    // A confirmed send also ADVANCES the thread (lastMessageId) so the next
+    // follow-up references this message; an ambiguous send carries no id, so the
+    // thread is left pointing at the last confirmed message.
     await db.query(
-      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
-        WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+              meta = CASE WHEN $3::text IS NOT NULL
+                       THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                       ELSE meta END,
+              updated_at=now()
+        WHERE application_id=$1 AND order_type=$2`, [appId, kind, sendRes.messageId || null]);
     await orderTracking.recordEvent({
       applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
       detail: { to: to.length, note: note ? note.slice(0, 200) : null, unconfirmed: !!sendRes.ambiguous },
@@ -6229,6 +6363,12 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         // Drives whether the card treats a missing assignment as a real gap — a
         // straight purchase has no assignment and must not be nagged for one.
         isAssignment: data.isAssignment,
+        // Vesting / purpose awareness (owner-directed 2026-08-04): an individual
+        // needs no entity documents, and a refinance has no purchase contract —
+        // so the card must not show them as outstanding, and the attorney email
+        // says it is an individual. The missing list below is already filtered.
+        vestsIndividually: data.vestsIndividually,
+        isRefinance: data.transactionType === 'Refinance',
       },
       deal: closingPrep.dealMeta(data),
       order: {
@@ -6251,7 +6391,11 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
           })),
         })),
         counts: pkg.counts,
-        missing: pkg.missing,
+        // Only the documents THIS deal actually needs — a refinance drops the
+        // purchase contract, an individual drops the entity documents, a straight
+        // purchase drops the assignment (owner-directed 2026-08-04). Same helper
+        // the attorney email uses, so the screen and the email never disagree.
+        missing: closingPrep.applicableMissing(pkg.missing, data),
         // Held back because nobody has accepted them yet (owner-directed
         // 2026-08-03). NOT attached, and named here so the sender sees it BEFORE
         // they send — the alternative is an attorney one document short and a

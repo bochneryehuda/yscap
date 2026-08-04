@@ -33,6 +33,10 @@ const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Progr
 const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
 const { parseAddress } = require('./address');   // city recovery from composed/string addresses
+// THE shared "does this deal size on the as-is value (a refinance)?" predicate —
+// the engine's own `!== 'Purchase'` meaning, so a raw label ("Cash-Out Refinance")
+// can never make normalize() treat as a purchase a deal the engine sized as a refi.
+const { sizesOnAsIsValue } = require('./deal-basis');
 
 /* ---- small coercers ---- */
 // Strips thousands-separator commas before parsing (#143): the studio's dollar
@@ -224,9 +228,19 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
+    // top-tier section, persisted like the sticky whole-program markups above so
+    // a re-quote never drops it. NULL/absent → the company per-tier default (or
+    // the historic Gold Tier 1 = 0) governs, so existing files are unchanged.
+    ...(app.file_markup_gold_t1_pct != null ? { markupGoldT1Pct: num(app.file_markup_gold_t1_pct) } : {}),
     // 1% closing-cost buffer waiver (db/390, owner-authorized 2026-07-31) —
     // file-owned; an admin waives it through its own audited endpoint.
     waiveLiqBuffer: !!app.liquidity_buffer_waived,
+    // The existing loan being retired on a refinance. Read here (never in the
+    // frozen engines) so cash-to-close can add the shortfall the borrower brings to
+    // cover a payoff the funds-at-closing do not fully cover (owner-directed
+    // 2026-08-04). Purchases carry no payoff; num('') is 0, so this is inert there.
+    payoff: num(app.payoff_amount),
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
@@ -234,6 +248,12 @@ function buildInputs(app, experience, overrides) {
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section
+    // for the top tier"). A percent; overlays the company per-tier default for the
+    // Gold engine's Tier 1 only. Blank/absent leaves the historic Gold Tier 1 = 0
+    // (or the company per-tier default if one is set) — so it never changes a file
+    // that doesn't use it. See markupTiersFor().
+    'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
@@ -279,6 +299,7 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
+    if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -290,7 +311,7 @@ function buildInputs(app, experience, overrides) {
      engine a refinance whose "purchase price" was a leftover purchase figure. On a
      refinance the two ARE one number by definition, so bind them rather than trust
      the caller to. A purchase is untouched. */
-  if (out.loanType === 'Refinance') {
+  if (sizesOnAsIsValue(out.loanType)) {
     out.purchasePrice = num(out.asIsValue);
     out.asIsDefaulted = false;
     out.asIsMissing = !(num(out.asIsValue) > 0);
@@ -343,6 +364,45 @@ function markupOverride(input, program) {
 function setEngineMarkup(program, value) {
   const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
   if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
+}
+
+/* PER-EXPERIENCE-TIER MARKUP (owner-directed item 15) — an OVERLAY on top of the
+   frozen per-program markup, never a change to it. Two sources, per-tier:
+     1) COMPANY defaults from the Pricing Admin Center — cd.markupTiers, shaped
+        { standard:{1,2,3}, gold:{1,2,3}, silver:{1,2,3} } as PERCENTS (mirrors
+        markupStdPct etc.). A manual product prices on the Standard engine, so it
+        reads the 'standard' map — same normalization as markupKeyFor().
+     2) A PER-FILE studio override for the Gold TOP tier (markupGoldT1Pct, the
+        studio's "manual section for the top tier"), which wins for Gold Tier 1.
+   Returns { tier: fraction } for ONLY the tiers actually configured, or null when
+   nothing is set. null → setMarkupTiers is never called → the engine keeps its
+   historic behavior byte-for-byte (Gold Tier 1 = 0, every other tier the base/
+   override markup). A configured value is what makes Gold Tier 1 controllable —
+   exactly the owner's "we don't even have an option to control the best tier". */
+function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : 'standard'; }
+function markupTiersFor(program, input, cd) {
+  const out = {};
+  const comp = cd && cd.markupTiers && typeof cd.markupTiers === 'object' ? cd.markupTiers[tierMapKey(program)] : null;
+  if (comp && typeof comp === 'object') {
+    for (const t of [1, 2, 3]) {
+      const v = comp[t];
+      if (v != null && v !== '' && isFinite(num(v)) && num(v) >= 0) out[t] = num(v) / 100;
+    }
+  }
+  // Per-file studio override for the Gold top tier wins over the company default —
+  // but ONLY a valid, finite, non-negative value (same guard as the company path
+  // above): a nonsensical negative must never clobber a configured company Gold
+  // Tier-1 default. An invalid value falls through, so the company/historic value
+  // governs.
+  if (program === 'gold' && hasInput(input, 'markupGoldT1Pct')) {
+    const t1 = num(input.markupGoldT1Pct);
+    if (isFinite(t1) && t1 >= 0) out[1] = t1 / 100;
+  }
+  return Object.keys(out).length ? out : null;
+}
+function setEngineMarkupTiers(program, tiers) {
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
+  if (engine && typeof engine.setMarkupTiers === 'function') engine.setMarkupTiers(tiers);
 }
 
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
@@ -431,7 +491,27 @@ function normalize(program, input, ev, ladder) {
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
   const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
-  const cashToClose = round2(downPayment + assignmentExcess + closingDueAtClose);
+  /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
+     down payment (equity) plus the closing costs. On a REFINANCE there is no down
+     payment (the frozen engine returns downPayment=0 for a refi), and instead the
+     borrower must bring whatever the funds-at-closing do not cover of the existing
+     loan PAYOFF plus the closing costs. Funds-at-closing = the INITIAL ADVANCE only
+     — a renovation refi's rehab holdback is released later in draws, so it never
+     helps clear the payoff at the table. This is the exact mirror of the cash-OUT
+     figure (payoff.js structuralCashOut = funded − payoff − closing): exactly one of
+     {cash to the borrower, cash the borrower brings} is greater than zero. On the
+     owner's example (initial 173,550, payoff 220,000, closing 10,254.38) it is
+     max(0, 220,000 + 10,254.38 − 173,550) = 56,704.38. No frozen number moves —
+     this is the reported cash-to-close only, and a purchase is byte-identical. */
+  // Refinance by MEANING, not by an exact string — same test the engine uses to
+  // pick its as-is denominator, so normalize can never disagree with what the
+  // engine actually sized (owner-directed refinance hardening 2026-08-04).
+  const isRefinanceDeal = sizesOnAsIsValue(input.loanType);
+  const payoffAmount = isRefinanceDeal ? Math.max(0, num(input.payoff)) : 0;
+  const fundedAtClose = initialAdvance;   // rehab holdback funds later, in draws
+  const cashToClose = isRefinanceDeal
+    ? Math.max(0, round2(payoffAmount + closingDueAtClose - fundedAtClose))
+    : round2(downPayment + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
   let reserveMo = 0;
@@ -551,6 +631,22 @@ function normalize(program, input, ev, ladder) {
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
     },
     cashToClose,
+    // Refinance breakdown so every surface can explain the cash-to-close correctly
+    // (payoff + closing − funds at closing) instead of the purchase "down payment +
+    // closing" wording. null on a purchase. Owner-directed 2026-08-04.
+    refi: isRefinanceDeal ? {
+      payoff: payoffAmount,
+      fundedAtClose,
+      closing: closingDueAtClose,
+      shortfall: cashToClose,   // == max(0, payoff + closing − fundedAtClose) — what the borrower BRINGS
+      // The MIRROR: what the borrower RECEIVES when the funds advanced exceed the
+      // payoff + closing (a cash-out). Exactly one of {shortfall, cashOut} is > 0,
+      // so a cash-out refi carries a real "cash to you" figure instead of the $0
+      // cash-to-close that a purchase-shaped reading produced. This is the STRUCTURAL
+      // figure (the sized loan implies it); a per-file typed override lives on
+      // applications.estimated_cash_out and is applied by payoff.js above this.
+      cashOut: round2(Math.max(0, fundedAtClose - payoffAmount - closingDueAtClose)),
+    } : null,
     reserveRequirement,
     reserveMonths: reserveMo,
     reserveBasis,
@@ -608,13 +704,18 @@ function quoteProgram(program, input) {
   // Markup: per-file override → COMPANY default → engine's built-in markup.
   // Applied through the SAME frozen setMarkup hook and reset in finally — the
   // engine math is never changed, only which markup input it runs with.
+  const cd = pricingSettings.current();
   let m = markupOverride(input, program);
   if (m == null) {
-    const cd = pricingSettings.current();
     const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
     if (companyMarkup != null) m = num(companyMarkup) / 100;
   }
   if (m != null) setEngineMarkup(program, m);
+  // Per-tier markup overlay (item 15). Inert when nothing is configured, so an
+  // unconfigured file prices byte-for-byte as before. Reset in each finally,
+  // exactly like setEngineMarkup — the engine is only ever "hot" during a quote.
+  const tiers = markupTiersFor(program, input, cd);
+  if (tiers) setEngineMarkupTiers(program, tiers);
   if (program === 'silver') {
     // The Silver program prices on its own frozen engine (EMCAP grid). Its
     // ladder varies by LTC band exactly like Standard's, so it ships one too.
@@ -631,6 +732,7 @@ function quoteProgram(program, input) {
       return normalize('silver', input, ev, ladder);
     } finally {
       if (m != null) setEngineMarkup(program, null);
+      if (tiers) setEngineMarkupTiers(program, null);
     }
   }
   if (program === 'gold') {
@@ -640,6 +742,7 @@ function quoteProgram(program, input) {
       return normalize('gold', input, ev, null);
     } finally {
       if (m != null) setEngineMarkup(program, null);
+      if (tiers) setEngineMarkupTiers(program, null);
     }
   }
   try {
@@ -657,6 +760,7 @@ function quoteProgram(program, input) {
     return normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder);
   } finally {
     if (m != null) setEngineMarkup(program, null);
+    if (tiers) setEngineMarkupTiers(program, null);
   }
 }
 
@@ -704,6 +808,8 @@ function econVersionFor(app) {
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
+
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
     (app.property_address && (app.property_address.zip || app.property_address.postal_code)) || '',
   ].map(f).join('|');

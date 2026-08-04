@@ -55,6 +55,7 @@ export default function Layout({ children }) {
   const { signOut, isBorrowerView, exitBorrowerView } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
+  const [taskCount, setTaskCount] = useState(0);   // outstanding to-dos → Tasks nav badge
   const [menuOpen, setMenuOpen] = useState(false);
   // Stale-build watchdog — EVERY layout shell mounts it (CLAUDE.md rule; the
   // borrower shell was missed when the staff shell got it — mega-audit #2).
@@ -64,6 +65,13 @@ export default function Layout({ children }) {
     let live = true;
     api.notifications().then(r => {
       if (live) setUnread((r || []).filter(n => !n.read_at).length);
+    }).catch(() => {});
+    // The Tasks nav carries a live count of what's waiting on the borrower
+    // (owner-directed: the task list moved off the home page into its own Tasks
+    // section, so the nav is now the at-a-glance signal). Fails quiet — a bad
+    // load just hides the badge, never blanks the shell.
+    api.actionItems().then(d => {
+      if (live) setTaskCount(d && Array.isArray(d.items) ? d.items.length : 0);
     }).catch(() => {});
     return () => { live = false; };
   }, []);
@@ -81,6 +89,9 @@ export default function Layout({ children }) {
           {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
           <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/dashboard">Dashboard</NavLink>
+            <NavLink to="/tasks" title="Everything waiting on you, across all your loans">
+              Tasks{taskCount > 0 && <span className="nav-count" aria-hidden="true">{taskCount}</span>}
+            </NavLink>
             <NavLink to="/apply">New application</NavLink>
             <NavLink to="/pricing" title="Price a loan and save scenarios — build a term sheet from your own numbers">Price a loan</NavLink>
             <NavLink to="/profile">Profile</NavLink>

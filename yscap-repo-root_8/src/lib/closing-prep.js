@@ -88,6 +88,25 @@ const GROUPS = [
 
 const GROUP_KEYS = GROUPS.map((g) => g.key);
 
+/* Which empty document groups are ACTUALLY missing for THIS deal — the one place
+   that knows a refinance has no purchase contract, a straight purchase has no
+   assignment, and an INDIVIDUAL-vested file has no entity documents (owner-directed
+   2026-08-04). Used by BOTH the attorney email (bodySections) and the card route
+   so the two can never disagree about what is outstanding. A document a deal does
+   not need is not "missing" — it must never block the send screen or be listed to
+   the attorney as awaited. */
+function applicableMissing(missing, data) {
+  const d = data || {};
+  const isRefi = d.transactionType === 'Refinance' || d.isRefinance === true;
+  const individual = d.vestsIndividually === true || !d.entityName;
+  return (missing || []).filter((m) => {
+    if (m.key === 'assignment' && !d.isAssignment) return false;   // purchase, not an assignment
+    if (m.key === 'contract' && isRefi) return false;              // a refinance has no purchase contract
+    if (m.key === 'llc' && individual) return false;               // an individual has no entity documents
+    return true;
+  });
+}
+
 // Belt-and-suspenders on the standing HARD FREEZE: the Heter Iska never leaves the
 // building. `selectTprDocuments` already excludes it five ways; this is a sixth,
 // local check, because THIS package goes to an outside law firm.
@@ -854,11 +873,7 @@ function bodySections(data, pkg, attach, address) {
   // these as soon as we have them" — documents that will never exist, and an
   // implication the deal is entity-vested, on an email whose own deal block prints
   // no vesting entity at all. Same for an assignment group on a straight purchase.
-  const missing = (pkg.missing || []).filter((m) => {
-    if (m.key === 'assignment' && !data.isAssignment) return false;
-    if (m.key === 'llc' && !data.entityName) return false;
-    return true;
-  });
+  const missing = applicableMissing(pkg.missing, data);
   if (missing.length) {
     sections.push({
       title: 'Not yet on file',
@@ -1540,7 +1555,7 @@ module.exports = {
   GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS, DEAD_DEAL_STATUSES, DEAD_DEAL_SQL,
   retireClosedOrdersOnce,
   SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES, CONTACT_LABEL, CLOSING_PREP_TITLE,
-  gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
+  gatherPackage, applicableMissing, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
   attachBudgetRawBytes, maxParts, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail,

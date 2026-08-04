@@ -3,6 +3,7 @@ import { fullNameOf } from '../lib/personName.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { revealAnchor } from './FileSections.jsx';
 import { dealBasis, seasoningText } from '../lib/dealBasis.js';
+import { fmtRatePctFromPct } from '../lib/rateFormat.js';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -76,7 +77,7 @@ export default function DealSnapshot({ app, gating }) {
         </div>
         <div className="snap-stat">
           <span className="snap-stat-k">Note rate</span>
-          <span className="snap-stat-v gold">{app.rate_pct != null ? Number(app.rate_pct).toFixed(2) + '%' : '—'}</span>
+          <span className="snap-stat-v gold">{app.rate_pct != null ? fmtRatePctFromPct(app.rate_pct) + '%' : '—'}</span>
         </div>
         {g && (
           // Clickable (owner-directed): the count jumps to the "What's left to

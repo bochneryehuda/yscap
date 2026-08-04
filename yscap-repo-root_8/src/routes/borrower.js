@@ -811,7 +811,7 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, fico, ...rest } = inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
   return rest;
 }
 // Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
@@ -1202,7 +1202,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
       const row = t.rows[0] || {};
-      const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : 'n/a';
+      const rate = quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : 'n/a';
       const sz = quote.sizing || {}, ccQ = quote.closingCosts || {};
       const ctx = await notify.fileContext(appId, [
         { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
@@ -1540,7 +1540,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
     }
     if (it.tool_payload && typeof it.tool_payload === 'object') {
-      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
       it.tool_payload = rest;
     }
   }

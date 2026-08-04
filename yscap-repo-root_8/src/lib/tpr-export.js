@@ -112,7 +112,7 @@ const CODE_CATEGORY = {
   cond_emd_corrfirst: C.EMD,
   // The non-owner-occupied affidavit files with the ENTITY documents: on an
   // individual-vested file it is what stands in for the entity file (db/417).
-  cond_noo_affidavit_individual: C.ENTITY,
+  cond_noo_affidavit_individual: C.LLC,
   // LLC / vesting entity documents
   llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
   rtl_llc_formation: C.LLC, rtl_llc_ein: C.LLC, rtl_llc_opagmt: C.LLC, rtl_llc_goodstanding: C.LLC,
@@ -122,6 +122,10 @@ const CODE_CATEGORY = {
   insurance_binder: C.INSURANCE, rtl_cond_insurance: C.INSURANCE,
   // Title
   title_commitment: C.TITLE, rtl_cond_title: C.TITLE,
+  // Refinance payoff (db/464) — the borrower's current mortgage / payoff
+  // statement (external) and the ordered/verified payoff (internal) file with
+  // Title: they clear the existing lien on the property.
+  cond_payoff_external: C.TITLE, cond_payoff_internal: C.TITLE,
   // Flood
   rtl_cond_flood: C.FLOOD,
   // Bank statements / assets
@@ -748,6 +752,9 @@ async function buildTprExport(appId) {
     const q = registration.quote || {};
     const s = q.sizing || {};
     const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
+    // Note rate keeps its 3rd decimal (10.625%, not 10.63%) — owner-directed
+    // 2026-08-04. LTC/LTV above stay at their existing precision.
+    const rateTxt = (v) => v == null ? 'n/a' : require('./rate-format').fmtRatePct(v) + '%';
     const m = (v) => v == null ? 'n/a' : '$' + Math.round(Number(v)).toLocaleString('en-US');
     // Fees / cash-to-close show EXACT cents (owner-directed 2026-07-16 — a $86.76
     // fee must not round); loan/advance/holdback/reserve stay whole-dollar (frozen).
@@ -759,7 +766,7 @@ async function buildTprExport(appId) {
         `Product: ${[q.programLabel, q.productLabel].filter(Boolean).join(' - ') || registration.program}`,
         `Status: ${registration.status || 'n/a'}`,
         `Loan amount: ${m(s.totalLoan || registration.total_loan)}`,
-        `Note rate: ${pct(q.noteRate || registration.note_rate)}`,
+        `Note rate: ${rateTxt(q.noteRate || registration.note_rate)}`,
         `Initial advance: ${m(s.initialAdvance)}`,
         `Rehab holdback: ${m(s.rehabHoldback)}`,
         `Financed interest reserve: ${m(s.financedReserve)}`,

@@ -17,6 +17,7 @@
  * the Email Center by msg_type so each order has its own Gmail-style thread.
  */
 const db = require('../db');
+const crypto = require('crypto');
 const cfg = require('../config');
 const email = require('./email');
 const notify = require('./notify');
@@ -325,17 +326,63 @@ function isAmbiguousSendFailure(err) {
  *
  * @returns {Promise<{ok:true, to:string[], cc:string[]} | {ok:false, reason:string, message:string, ambiguous?:boolean}>}
  */
-async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type }) {
+/** A Message-ID we own for an order email (angle-bracketed, our domain on the
+    right). Unique per send; the left side names the order for traceability. */
+function newOrderMessageId(appId, kind) {
+  const domain = cfg.chatReplyDomain || 'orders.yscapgroup.com';
+  return `<order.${kind}.${String(appId).replace(/[^a-z0-9-]/gi, '')}.${crypto.randomBytes(8).toString('hex')}@${domain}>`;
+}
+/** Re:-prefix a subject exactly once (mirrors closing-thread.replySubject) so a
+    follow-up carries the SAME subject as the order — what Gmail/Outlook thread on
+    when a provider rewrites our Message-ID. */
+function replyOrderSubject(subject) {
+  const s = String(subject || '').trim();
+  if (!s) return '';
+  return /^re\s*:/i.test(s) ? s : `Re: ${s}`;
+}
+
+/**
+ * @param {object} [thread] the stored order thread state — `{ root, last, subject }`
+ *        from file_orders (meta.rootMessageId / meta.lastMessageId + the stored
+ *        subject). Absent on the FIRST send (the order itself, which is the root).
+ *        When present, this send is a FOLLOW-UP / reply and MUST land in the same
+ *        conversation the order was placed on — in the vendor's own inbox, not a
+ *        new chain (owner-directed 2026-08-04). Two mechanisms, mirroring
+ *        closing-thread: (1) reuse the ORIGINAL order subject with one "Re:" (the
+ *        load-bearing part — Resend may rewrite our Message-ID, and the subject is
+ *        what mail clients fall back to); (2) RFC threading headers (a Message-ID we
+ *        mint + In-Reply-To/References pointing at the last message we sent). The
+ *        minted Message-ID is RETURNED so the caller can advance the thread.
+ */
+async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type, thread }) {
   const toList = (to || []).filter(Boolean);
   const ccList = (cc || []).filter(Boolean);
   if (!toList.length) {
     return { ok: false, reason: 'contact', message: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first — there is no one to send the order to.` };
   }
+  // The follow-up / reply doors ALWAYS pass `thread` (the place door never does), so
+  // its presence — not whether it carries ids — is what marks a reply. This matters
+  // for a LEGACY order placed before threading existed: it has no stored Message-ID,
+  // but the follow-up must STILL reuse the order subject with "Re:" so it threads by
+  // subject in the vendor's inbox.
+  const isReply = !!thread;
+  const parent = thread && (thread.last || thread.root);
+  const messageId = newOrderMessageId(appId, kind);
+  const subject = isReply ? (replyOrderSubject(thread.subject || built.subject) || built.subject) : built.subject;
+  // Message-ID + an X- marker always ride; Microsoft Graph can carry only X- headers
+  // (it drops the RFC threading ones), so the subject reuse above is what threads a
+  // Graph-sent chain. In-Reply-To/References are added only when we know the parent's
+  // Message-ID (a reply on a thread we anchored) — for Resend.
+  const headers = { 'Message-ID': messageId, 'X-Pilot-Order-Thread': `${appId}:${kind}` };
+  if (parent) {
+    headers['In-Reply-To'] = parent;
+    headers.References = (thread.root && thread.root !== parent) ? `${thread.root} ${parent}` : parent;
+  }
   let res;
   try {
     res = await email.sendMail({
       to: toList, cc: ccList,
-      subject: built.subject, html: built.html, text: built.text,
+      subject, html: built.html, text: built.text, headers,
       replyTo: replyTo || require('./file-address').fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName && email.fromWithName ? email.fromWithName(fromName) : undefined,
       _ctx: { applicationId: appId, type, audience: 'staff' },
@@ -354,7 +401,7 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
   }
   const verdict = sendVerdict(res);
   if (!verdict.ok) return { ok: false, reason: verdict.reason, message: verdict.message };
-  return { ok: true, to: toList, cc: ccList };
+  return { ok: true, to: toList, cc: ccList, messageId };
 }
 
 module.exports = {
@@ -362,4 +409,5 @@ module.exports = {
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
   transactionType, propertyLine, money,
   sendOrderMail, sendVerdict, isAmbiguousSendFailure,
+  newOrderMessageId, replyOrderSubject,
 };

@@ -15,6 +15,7 @@ import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
 import EsignDone from './screens/EsignDone.jsx';
 import Dashboard from './screens/Dashboard.jsx';
+import Tasks from './screens/Tasks.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
 import Profile from './screens/Profile.jsx';
@@ -154,6 +155,7 @@ export default function App() {
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
+          <Route path="/tasks" element={<Private><Tasks /></Private>} />
           <Route path="/apply" element={<Private><Apply /></Private>} />
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
           <Route path="/app/:id" element={<Private><Application /></Private>} />
