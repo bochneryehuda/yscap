@@ -748,6 +748,9 @@ async function buildTprExport(appId) {
     const q = registration.quote || {};
     const s = q.sizing || {};
     const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
+    // Note rate keeps its 3rd decimal (10.625%, not 10.63%) — owner-directed
+    // 2026-08-04. LTC/LTV above stay at their existing precision.
+    const rateTxt = (v) => v == null ? 'n/a' : require('./rate-format').fmtRatePct(v) + '%';
     const m = (v) => v == null ? 'n/a' : '$' + Math.round(Number(v)).toLocaleString('en-US');
     // Fees / cash-to-close show EXACT cents (owner-directed 2026-07-16 — a $86.76
     // fee must not round); loan/advance/holdback/reserve stay whole-dollar (frozen).
@@ -759,7 +762,7 @@ async function buildTprExport(appId) {
         `Product: ${[q.programLabel, q.productLabel].filter(Boolean).join(' - ') || registration.program}`,
         `Status: ${registration.status || 'n/a'}`,
         `Loan amount: ${m(s.totalLoan || registration.total_loan)}`,
-        `Note rate: ${pct(q.noteRate || registration.note_rate)}`,
+        `Note rate: ${rateTxt(q.noteRate || registration.note_rate)}`,
         `Initial advance: ${m(s.initialAdvance)}`,
         `Rehab holdback: ${m(s.rehabHoldback)}`,
         `Financed interest reserve: ${m(s.financedReserve)}`,

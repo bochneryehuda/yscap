@@ -389,7 +389,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
                 </div>
                 <div class="ts-tabs" id="tsTabs">
                     <button type="button" data-prog="gold" class="on">Gold Standard</button>
-                    <button type="button" data-prog="standard">Standard</button>
+                    <button type="button" data-prog="silver">Silver</button>
                 </div>
                 <div class="ts-body">
                     <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Single-family · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
@@ -1031,18 +1031,20 @@ section[id], main[id]{ scroll-margin-top:96px; }
 <!-- ============ /APPLY CHOOSER MODAL ============ -->
 
 <script>
-/* Hero term-sheet card: Standard / Gold switcher (owner-directed 2026-07-14).
-   Defaults to the GOLD best-case single-family scenario (7.5% rate, 93% LTC).
-   These are illustrative marketing figures — a proposal, never a commitment,
-   and NOT the frozen pricing engine (that lives in the studio). */
+/* Hero term-sheet card: Gold / Silver switcher (owner-directed 2026-08-04,
+   superseding the 2026-07-14 Gold/Standard version). Defaults to the GOLD
+   best-case single-family scenario (7.5% rate, 93% LTC). The second card is the
+   SILVER program (92.5% LTC, 9.30% rate). These are illustrative marketing
+   figures — a proposal, never a commitment, and NOT the frozen pricing engine
+   (that lives in the studio). */
 (function(){
   /* Each program shows its HEADLINE MAX loan-to-cost on the shared $375,000 cost
      basis (Purchase $300k + Rehab $75k): Gold 93.0% -> 0.93x375k = $348,750;
-     Standard 92.5% (its true program max LTC, 0.925) -> 0.925x375k = $346,875.
-     Monthly is interest-only at the shown rate. Illustrative, not the engine. */
+     Silver 92.5% -> 0.925x375k = $346,875. Monthly is interest-only at the shown
+     rate (loan x rate / 12). Illustrative, not the engine. */
   var SCENARIOS = {
     gold:     { loan:'$348,750', rate:'7.50%', orig:'1.25 pts', ltc:'93.0%', mo:'$2,180' },
-    standard: { loan:'$345,000', rate:'10.30%', orig:'1.25 pts', ltc:'92.0%', mo:'$2,961' }
+    silver:   { loan:'$346,875', rate:'9.30%', orig:'1.25 pts', ltc:'92.5%', mo:'$2,688' }
   };
   var tabs = document.getElementById('tsTabs');
   if(!tabs) return;

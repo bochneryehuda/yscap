@@ -41,9 +41,12 @@ const money = (v) => {
   const n = Number(v);
   return isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : String(v);
 };
+// Rate display only (note rate) — 3-decimal precision so 10.625% never truncates
+// to 10.63% (owner-directed 2026-08-04). Not used for LTC/LTV here.
+const { fmtRatePct } = require('./rate-format');
 const pct = (v) => {
   const n = Number(v);
-  return isFinite(n) ? (n * 100).toFixed(2) + '%' : String(v);
+  return isFinite(n) ? fmtRatePct(n) + '%' : String(v);
 };
 
 // Human names for the application columns the staff edit endpoint can touch.
@@ -959,7 +962,7 @@ const TRAILS = [
       actor: 'staff', actor_name: p.registered_by_name,
       verb: `registered ${p.product_label || p.program || 'a product'}`,
       label: [p.total_loan != null ? `$${Math.round(Number(p.total_loan)).toLocaleString('en-US')}` : null,
-        p.note_rate != null ? `${(Number(p.note_rate) * 100).toFixed(2)}%` : null,
+        p.note_rate != null ? `${fmtRatePct(p.note_rate)}%` : null,
         p.status ? `Engine: ${p.status}` : null, p.is_current ? 'current' : 'superseded'].filter(Boolean).join(' · '),
       entity_type: 'product_registration', entity_id: p.id })],
   },

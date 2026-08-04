@@ -7,6 +7,7 @@ import TermSheetStudio, {
 import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
+import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -266,7 +267,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Loan structure</p>
           <Row k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
-          <Row k="Note rate (interest-only)" v={pct(q.noteRate ?? reg.note_rate)} />
+          <Row k="Note rate (interest-only)" v={fmtRatePct(q.noteRate ?? reg.note_rate) + '%'} />
           <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
           <Row k="Construction holdback" v={money(s.rehabHoldback)} />
           {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
@@ -947,7 +948,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
     : snap && !snap.program ? 'Tap a program card above to choose Standard, Gold Standard, Silver or Manual.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? fmtRatePctFromPct(d.rate) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently
@@ -1060,7 +1061,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'silver' ? 'Silver' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'silver' ? 'Silver' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
           <button className="btn primary small" onClick={() => setOpenStudio(true)}
             title="Opens the full-screen Term Sheet Studio — everything you enter autosaves to the file; leaving resumes where you left off.">
             {cur ? 'Reprice / re-register' : 'Open Products & Pricing'}
@@ -1114,7 +1115,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   {counterTerms.maxAcqLtv != null && <span>as-is LTV {(counterTerms.maxAcqLtv * 100).toFixed(2)}% · </span>}
                   {counterTerms.maxArvLtv != null && <span>ARV LTV {(counterTerms.maxArvLtv * 100).toFixed(2)}% · </span>}
                   {counterTerms.maxLtc    != null && <span>LTC {(counterTerms.maxLtc * 100).toFixed(2)}% · </span>}
-                  {counterTerms.noteRate  != null && <span>rate {(counterTerms.noteRate * 100).toFixed(2)}% · </span>}
+                  {counterTerms.noteRate  != null && <span>rate {fmtRatePct(counterTerms.noteRate)}% · </span>}
                   {counterTerms.origPct   != null && <span>origination {(counterTerms.origPct * 100).toFixed(2)}% · </span>}
                   {counterTerms.loanAmount != null && <span>loan {money(counterTerms.loanAmount)} · </span>}
                 </div>
@@ -1249,7 +1250,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
-          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${pct(h.note_rate)} on ${when(h.created_at)}`).join(' · ')}
+          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${fmtRatePct(h.note_rate)}% on ${when(h.created_at)}`).join(' · ')}
         </p>
       )}
 
@@ -1261,7 +1262,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <strong>Products &amp; Pricing — Term Sheet Studio</strong>
               <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
             </div>
-            {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+            {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
             <button className={`btn primary toolsheet-done${registerBlocked ? ' is-blocked' : ''}`}
               disabled={busy} aria-disabled={busy || registerBlocked} onClick={registerClick}>
               {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')

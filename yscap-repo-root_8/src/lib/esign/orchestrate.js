@@ -298,6 +298,14 @@ function fmtPct(v) {
   let s = (n * 100).toFixed(2).replace(/\.?0+$/, '');
   return `${s}%`;
 }
+// The NOTE RATE keeps its third decimal on the executed term sheet (10.625%, not
+// 10.63%) — owner-directed 2026-08-04. LTC/LTV keep the 2-decimal fmtPct above.
+function fmtRate(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!isFinite(n)) return '';
+  return require('../rate-format').fmtRatePct(n) + '%';
+}
 /** Decrypt the SSN for the internal signed application; never throw, never print
  *  ciphertext. Full 9 digits → 123-45-6789; only a last-4 survives → ***-**-1234. */
 function fmtSsn(encrypted, last4) {
@@ -470,7 +478,7 @@ async function loadDocGenData(db, applicationId) {
       type: a.loan_type || '',
       amt: fmtUSD(a.loan_amount),
       term: a.term || '',
-      rate: fmtPct(a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null)),
+      rate: fmtRate(a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null)),
       price: fmtUSD(a.purchase_price),
       asis: fmtUSD(a.as_is_value),
       arv: fmtUSD(a.arv),

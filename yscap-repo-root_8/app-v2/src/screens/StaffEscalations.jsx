@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { fmtRatePct } from '../lib/rateFormat.js';
 
 /* Manual Program admin + the super-admin ESCALATION box (owner-directed
  * 2026-07-20; page redesign 2026-07-26).
@@ -378,7 +379,7 @@ export default function StaffEscalations() {
                 <div className="esc-row-sub">
                   {kindLabel}
                   {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
-                  {s.noteRate != null ? ` @ ${(Number(s.noteRate) * 100).toFixed(2)}%` : ''}
+                  {s.noteRate != null ? ` @ ${fmtRatePct(s.noteRate)}%` : ''}
                   {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
                   {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
                 </div>
@@ -441,7 +442,7 @@ export default function StaffEscalations() {
                         {ct.maxAcqLtv != null && <span>as-is LTV {(ct.maxAcqLtv * 100).toFixed(2)}% · </span>}
                         {ct.maxArvLtv != null && <span>ARV LTV {(ct.maxArvLtv * 100).toFixed(2)}% · </span>}
                         {ct.maxLtc    != null && <span>LTC {(ct.maxLtc * 100).toFixed(2)}% · </span>}
-                        {ct.noteRate  != null && <span>rate {(ct.noteRate * 100).toFixed(2)}% · </span>}
+                        {ct.noteRate  != null && <span>rate {fmtRatePct(ct.noteRate)}% · </span>}
                         {ct.origPct   != null && <span>origination {(ct.origPct * 100).toFixed(2)}% · </span>}
                         {ct.loanAmount != null && <span>loan {money(ct.loanAmount)} · </span>}
                       </div>

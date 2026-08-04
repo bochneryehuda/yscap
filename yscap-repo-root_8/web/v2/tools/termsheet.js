@@ -59,8 +59,33 @@
   }
 
   /* ---------------- deal helpers ---------------- */
+  /* NOTE RATE display — up to 3 decimals, never fewer than 2, one trailing zero
+     trimmed, so 10.625% prints as 10.625 (not 10.63) and 10.30% stays 10.30
+     (owner-directed 2026-08-04). Takes a PERCENT number (e.g. d.rate = 10.625, or
+     noteRate*100). Changes no pricing number — the engine still produces the rate;
+     this only stops the display from throwing away its third decimal. Mirrors the
+     server helper src/lib/rate-format.js so every surface shows the SAME rate. */
+  function fmtRate3(pctNum) {
+    var n = Number(pctNum);
+    if (!isFinite(n)) return "";
+    var s = n.toFixed(3);
+    if (s.charAt(s.length - 1) === "0") s = s.slice(0, -1);
+    return s;
+  }
   function purpose() { return val("dealPurpose") || "Purchase"; }
   function isRefi() { return purpose().indexOf("refinance") > -1 || purpose().indexOf("Refinance") > -1; }
+  /* CASH TO CLOSE ON A REFINANCE (owner-directed 2026-08-04). A purchase brings a
+     down payment plus closing costs. A refinance has no down payment; instead the
+     borrower brings whatever the funds that advance at closing (the INITIAL ADVANCE
+     — the rehab holdback funds later in draws) do NOT cover of the existing-loan
+     payoff PLUS the closing costs. This is the exact mirror of the "cash to you"
+     figure (structuralCashOut = funded − payoff − closing): exactly one of {cash to
+     you, cash you bring} is greater than zero. On the owner's example (initial
+     173,550, payoff 220,000, closing 10,254.38) it is
+     max(0, 220,000 + 10,254.38 − 173,550) = 56,704.38. No pricing number moves. */
+  function refiCashToClose(initialAdvance, closing) {
+    return Math.max(0, Math.max(0, num("payoff")) + (closing || 0) - (initialAdvance || 0));
+  }
   function isCashOut() { return purpose().toLowerCase().indexOf("cash-out") > -1; }
   /* WHO the payoff goes to, as a sentence fragment — "" when nobody was named, so
      every caller reads the same whether or not the officer filled it in. */
@@ -554,7 +579,7 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _sl.downPayment + excessOOP + closing;   // reserve is never brought to the table; OOP rehab is funded over construction, not here
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var liquidity = cashToClose + reserves + _sl.oopRehab + closingBuffer;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
@@ -614,7 +639,7 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _g.downPayment + excessOOP + closing;
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
@@ -675,7 +700,7 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _sv.downPayment + excessOOP + closing;
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
@@ -771,7 +796,7 @@
     var stdCity = ready && !!d.cityReview;
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
-    YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+    YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
     YS.put("stdOrigBig", stdSized ? cardUSD(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(liveOrigPct()));
     setBadge("stdBadge", d.status, ready);
@@ -801,7 +826,7 @@
       var goldExit = ready && (G.exitShortfall > 0);   // costs>ARV is INELIGIBLE (kept for the explanatory sub-line)
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
       YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
-      YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
+      YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? fmtRate3(G.noteRate * 100) + "%" : EM);
       YS.put("goldOrigBig", gSized ? cardUSD(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
@@ -826,7 +851,7 @@
       var silverGeo = ready && !!S.geoReview;
       var sSized = ready && (ss.totalLoan > 0) && S.status !== "INELIGIBLE" && !silverExit && !silverGeo;
       YS.put("silverLoanBig", silverGeo ? "Manual" : (sSized ? YS.fmtUSD(Math.floor(ss.totalLoan)) : ((ready && S.status !== "INELIGIBLE") ? "$0" : EM)));
-      YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? (S.noteRate * 100).toFixed(2) + "%" : EM);
+      YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? fmtRate3(S.noteRate * 100) + "%" : EM);
       YS.put("silverOrigBig", sSized ? cardUSD(Math.floor(ss.totalLoan || 0) * adminOrigPct("silver")) : EM);
       YS.put("silverOrigPts", origPtStr(adminOrigPct("silver")));
       setBadge("silverBadge", S.status, ready);
@@ -861,7 +886,7 @@
     } else {
       var mSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       YS.put("manLoanBig", mSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM));
-      YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+      YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
       YS.put("manOrigBig", mSized ? cardUSD(d.origFee) : EM);
       YS.put("manOrigPts", origPtStr(adminOrigPct("manual")));
       setBadge("manBadge", d.status, ready);
@@ -918,7 +943,7 @@
     var byLoan = live.slice().sort(function (a, b) { return b.loan - a.loan; });
     var parts = [];
     if (byRate.length > 1 && (byRate[1].rate - byRate[0].rate) > 0.00005)
-      parts.push("<strong>" + byRate[0].name + "</strong> has the <strong>lowest rate</strong> (" + (byRate[0].rate * 100).toFixed(2) + "%)");
+      parts.push("<strong>" + byRate[0].name + "</strong> has the <strong>lowest rate</strong> (" + fmtRate3(byRate[0].rate * 100) + "%)");
     if (byLoan.length > 1 && (byLoan[0].loan - byLoan[1].loan) > 500)
       parts.push("<strong>" + byLoan[0].name + "</strong> lends the <strong>most</strong> (" + YS.fmtUSD(byLoan[0].loan) + ")");
     var manuals = live.filter(function (p) { return p.manual; }).map(function (p) { return p.name; });
@@ -995,7 +1020,7 @@
       } else {
         var maxRow = rows[0], delta = (maxRow.noteRate - row.noteRate) * 100;
         hint.innerHTML = "<b>Lower leverage, lower rate.</b> At " + pctLbl(row.targetLtcPct) +
-          " LTC your rate is <b>" + (row.noteRate * 100).toFixed(2) + "%</b> \u2014 " + delta.toFixed(2) +
+          " LTC your rate is <b>" + fmtRate3(row.noteRate * 100) + "%</b> \u2014 " + delta.toFixed(2) +
           "% below the maximum-leverage rate. Loan " + YS.fmtUSD(Math.floor(row.totalLoan)) +
           ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Drag right for more leverage.";
       }
@@ -1488,7 +1513,7 @@
     }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
     var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : ((sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)");
-    YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+    YS.put("rRate", (sized && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
     // two interest-only payment lines: initial-advance payment + fully-drawn payment
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
     YS.put("rPmtFull", (sized && d.fullPayment > 0) ? YS.fmtUSD(d.fullPayment) + "/mo" : EM);
@@ -1886,7 +1911,7 @@
     var std = [
       ["Status", statusLabel(d.status)],
       ["Loan amount", (stdExit || stdCity) ? "Manual review" : (stdOk && d.totalLoan ? money(d.totalLoan) : EM)],
-      ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
+      ["Note rate", (stdOk && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM],
       minInterestOn("standard") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       ["Interest accrual", accrualLabel()],
       (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
@@ -1918,7 +1943,7 @@
         ["Status", statusLabel(gd.status)],
         ["Product", (gd.productLabel || EM) + (gd.tierLabel ? " \u00b7 " + gd.tierLabel : "")],
         ["Loan amount", gExit ? "Manual review" : (gOk && gd.totalLoan ? money(gd.totalLoan) : EM)],
-        ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
+        ["Note rate", (gOk && gd.rate > 0) ? fmtRate3(gd.rate) + "%" : EM],
         minInterestOn("gold") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
         ["Interest accrual", accrualLabel()],
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
@@ -1961,7 +1986,7 @@
       silver = [
         ["Status", statusLabel(sd.status)],
         ["Loan amount", (sExit || sGeo) ? "Manual review" : (sOk && sd.totalLoan ? money(sd.totalLoan) : EM)],
-        ["Note rate", (sOk && sd.rate > 0) ? sd.rate.toFixed(2) + "%" : EM],
+        ["Note rate", (sOk && sd.rate > 0) ? fmtRate3(sd.rate) + "%" : EM],
         minInterestOn("silver") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
         ["Interest accrual", accrualLabel()],
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("silver").join("; ")],
@@ -1986,6 +2011,21 @@
         var svi = silver.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
         if (svi > -1) Array.prototype.splice.apply(silver, [svi, 0].concat(sd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
       }
+    }
+    // REFINANCE: reconcile each block's fee list to cash-to-close by naming the
+    // existing-loan payoff and the funds advanced at closing (owner-directed
+    // 2026-08-04) — otherwise a refi's fees sum to closing costs while cash-to-close
+    // includes the payoff shortfall, which looks like an error.
+    if (isRefi() && num("payoff") > 0) {
+      [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
+        var rows = pr[0], dd = pr[1], ok = pr[2];
+        if (!ok || !dd) return;
+        var i = rows.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
+        if (i > -1) Array.prototype.splice.apply(rows, [i, 0].concat([
+          ["Existing loan payoff", money(num("payoff"))],
+          ["Less funds advanced at closing (initial advance)", "−" + money(fundedAtClose(dd))]
+        ]));
+      });
     }
     // Some rows are conditional (min-interest, deferred fee) and come through as
     // null — drop them so the Excel writer never dereferences a null pair.
@@ -2415,7 +2455,7 @@
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, d.pricingReady ? pillC : [150, 156, 150]); doc.text(pdfSafe(d.pricingReady ? stTxt : "Awaiting FICO score"), M + 16, y + 55);
       var rx = W - M - 16;
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.2); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 17, { align: "right", charSpace: 0.5 });
-      doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 40, { align: "right" });
+      doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : "\u2014", rx, y + 40, { align: "right" });
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 55, { align: "right" });
       y += heroH + 16;
 
@@ -2487,6 +2527,14 @@
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
+      // REFINANCE: the borrower brings the existing-loan payoff, less the funds that
+      // advance at closing (the initial advance), on top of the closing costs above.
+      // These two rows make the section reconcile to the cash-to-close total
+      // (fees + payoff \u2212 funds advanced). Owner-directed 2026-08-04.
+      if (isRefi() && sized && num("payoff") > 0) {
+        yR = rowIn(xR, colW, "Existing loan payoff", money(num("payoff")), yR);
+        yR = rowIn(xR, colW, "Less funds advanced at closing (initial advance)", "\u2212" + money(fundedAtClose(d)), yR);
+      }
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
@@ -2679,7 +2727,7 @@
           var vals = [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
             money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
-            (r.noteRate * 100).toFixed(2) + "%"
+            fmtRate3(r.noteRate * 100) + "%"
           ];
           var cx2 = M;
           cols.forEach(function (c, ci) { var w = c.w * tW; doc.text(vals[ci], c.a === "r" ? cx2 + w - 7 : cx2 + 7, ry + 13, { align: c.a === "r" ? "right" : "left" }); cx2 += w; });
@@ -2914,7 +2962,7 @@
       { label: "Borrower / entity", value: (borrowerOfRecord() || "").trim() },
       { label: "Property", value: (chk("addrTBD") ? "TBD" : (val("propAddr") || "")) + (val("propState") ? ", " + val("propState") : "") },
       { label: "Loan amount", value: (d && d.totalLoan) ? YS.fmtUSD(d.totalLoan) : "" },
-      { label: "Note rate", value: (d && d.pricingReady && d.rate) ? d.rate.toFixed(2) + "%" : "" },
+      { label: "Note rate", value: (d && d.pricingReady && d.rate) ? fmtRate3(d.rate) + "%" : "" },
       { label: "Term", value: (d && d.term) ? d.term + " months" : "" },
       { label: "Purchase price", value: num("price") ? YS.fmtUSD(num("price")) : "" },
       { label: "Rehab budget", value: num("construction") ? YS.fmtUSD(num("construction")) : "" },
@@ -3043,7 +3091,7 @@
       "Reply-to: " + s.email, "Program: " + s.program,
       "Property: " + (s.property || "TBD") + (s.state ? ", " + s.state : ""),
       "Loan amount: " + (s.loanAmount ? YS.fmtUSD(s.loanAmount) : "\u2014"),
-      "Note rate: " + (s.rate ? s.rate.toFixed(2) + "%" : "\u2014"),
+      "Note rate: " + (s.rate ? fmtRate3(s.rate) + "%" : "\u2014"),
       "Term: " + (s.term ? s.term + " months" : "\u2014"),
       "Eligibility: " + (s.status || "\u2014"), "", "The term sheet PDF is attached. Please follow up."].join("\n");
   }
@@ -3217,7 +3265,7 @@
       (d.ltcPct > 0 && !isBridge) ? ["Loan-to-cost (LTC)", pc(d.ltcPct)] : null,
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
-      ["Note rate (interest-only)", (d.rate > 0 ? d.rate.toFixed(2) + "%" : "\u2014")],
+      ["Note rate (interest-only)", (d.rate > 0 ? fmtRate3(d.rate) + "%" : "\u2014")],
       ["Interest accrual", accrualLabel()],
       minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,

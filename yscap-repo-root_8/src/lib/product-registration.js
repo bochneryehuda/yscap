@@ -4,6 +4,7 @@ const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
 const { termWritebackText } = require('./term-text');
 const { sqftForType } = require('./fields');
+const { fmtRatePct } = require('./rate-format');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 // The EXPLICIT experience claim a register carried for one bucket, or null when
@@ -25,10 +26,15 @@ function productName(quote) {
 function assetDetail(quote) {
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
+  // On a REFINANCE the cash to close is the payoff shortfall (payoff + closing
+  // costs − the funds that advance at closing), not a purchase down payment.
+  const cashToCloseDetail = quote.refi
+    ? `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`
+    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
-    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${(quote.noteRate * 100).toFixed(2)}%` : ''}.`,
-    `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`,
+    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${fmtRatePct(quote.noteRate)}%` : ''}.`,
+    cashToCloseDetail,
     `Assets/liquidity to verify: ${money(quote.liquidityRequired || quote.liquidity)} (${money(quote.cashToClose)} cash to close + ${money(quote.reserveRequirement)} reserve requirement).`,
   ];
   if (quote.reserveBasis) lines.push(`Reserve basis: ${quote.reserveBasis}.`);
@@ -517,7 +523,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   quote = quote || {};
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
-  const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
+  const rate = quote.noteRate != null ? fmtRatePct(quote.noteRate) + '%' : null;
   const programLabel = quote.programLabel || 'your program';
   // Term-sheet options (owner-directed 2026-07-22): only surface what applies.
   const to = termOptions && typeof termOptions === 'object' ? termOptions : {};

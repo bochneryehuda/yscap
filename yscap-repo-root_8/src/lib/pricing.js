@@ -227,6 +227,11 @@ function buildInputs(app, experience, overrides) {
     // 1% closing-cost buffer waiver (db/390, owner-authorized 2026-07-31) —
     // file-owned; an admin waives it through its own audited endpoint.
     waiveLiqBuffer: !!app.liquidity_buffer_waived,
+    // The existing loan being retired on a refinance. Read here (never in the
+    // frozen engines) so cash-to-close can add the shortfall the borrower brings to
+    // cover a payoff the funds-at-closing do not fully cover (owner-directed
+    // 2026-08-04). Purchases carry no payoff; num('') is 0, so this is inert there.
+    payoff: num(app.payoff_amount),
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
@@ -431,7 +436,24 @@ function normalize(program, input, ev, ladder) {
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
   const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
-  const cashToClose = round2(downPayment + assignmentExcess + closingDueAtClose);
+  /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
+     down payment (equity) plus the closing costs. On a REFINANCE there is no down
+     payment (the frozen engine returns downPayment=0 for a refi), and instead the
+     borrower must bring whatever the funds-at-closing do not cover of the existing
+     loan PAYOFF plus the closing costs. Funds-at-closing = the INITIAL ADVANCE only
+     — a renovation refi's rehab holdback is released later in draws, so it never
+     helps clear the payoff at the table. This is the exact mirror of the cash-OUT
+     figure (payoff.js structuralCashOut = funded − payoff − closing): exactly one of
+     {cash to the borrower, cash the borrower brings} is greater than zero. On the
+     owner's example (initial 173,550, payoff 220,000, closing 10,254.38) it is
+     max(0, 220,000 + 10,254.38 − 173,550) = 56,704.38. No frozen number moves —
+     this is the reported cash-to-close only, and a purchase is byte-identical. */
+  const isRefinanceDeal = input.loanType === 'Refinance';
+  const payoffAmount = isRefinanceDeal ? Math.max(0, num(input.payoff)) : 0;
+  const fundedAtClose = initialAdvance;   // rehab holdback funds later, in draws
+  const cashToClose = isRefinanceDeal
+    ? Math.max(0, round2(payoffAmount + closingDueAtClose - fundedAtClose))
+    : round2(downPayment + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
   let reserveMo = 0;
@@ -551,6 +573,15 @@ function normalize(program, input, ev, ladder) {
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
     },
     cashToClose,
+    // Refinance breakdown so every surface can explain the cash-to-close correctly
+    // (payoff + closing − funds at closing) instead of the purchase "down payment +
+    // closing" wording. null on a purchase. Owner-directed 2026-08-04.
+    refi: isRefinanceDeal ? {
+      payoff: payoffAmount,
+      fundedAtClose,
+      closing: closingDueAtClose,
+      shortfall: cashToClose,   // == max(0, payoff + closing − fundedAtClose)
+    } : null,
     reserveRequirement,
     reserveMonths: reserveMo,
     reserveBasis,
