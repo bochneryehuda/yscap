@@ -890,8 +890,10 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
           if (matchKind) {
             out.otherFormat++;
             // NAME EACH DISTINCT SHAPE, capped, in TWO SEPARATE BUDGETS. All three
-            // of the simpler answers are wrong, and the cost of each is worth
-            // stating because two of them have already shipped.
+            // of the simpler answers are wrong, and each is worth stating so the
+            // next person does not re-derive one of them. Exactly ONE of them ever
+            // ran in production — see below; the others were considered and
+            // rejected here.
             //
             // PER RESOURCE is unaffordable. `errors[]` is ONE shared 50-slot budget
             // for the whole sweep and only the first three are printed, so a push
@@ -903,13 +905,18 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // beside the XML would burn a slot on every sweep, which is precisely
             // the failure the `warnOnce` note above this file describes.
             //
-            // FIRST ONLY shipped, and it buried the finding. The one alarm went to
-            // whichever resource the loop reached first, so a companion
-            // "Appraisal Invoice.pdf" on an early loan hid a genuine UAD 3.6 ZIP on
-            // a later one and the ZIP appeared nowhere but in the count.
+            // FIRST ONLY is the one that shipped (a4d057a / #1008). The single
+            // alarm went to whichever resource the loop reached first, so a
+            // companion "Appraisal Invoice.pdf" on an early loan WOULD hide a
+            // genuine unreadable package on a later one, leaving it nowhere but in
+            // the count. Stated as a mechanism, not as history: it was demonstrated
+            // against a fixture, and the measurement below says this tenant has
+            // never actually had an unreadable package to hide.
             //
-            // DISTINCT SHAPES ON ONE SHARED BUDGET also shipped, and it only made
-            // that less likely rather than impossible: enough distinct
+            // DISTINCT SHAPES ON ONE SHARED BUDGET was the next attempt and NEVER
+            // shipped — it was replaced on the branch before merge, so no
+            // production sweep ever ran it. It only made the above less likely
+            // rather than impossible: enough distinct
             // filename-matched shapes on the loans reached first still fill a shared
             // budget before a later loan's genuine package is reached. How MANY it
             // takes is the cap; how often it happens here is measured beside
@@ -958,6 +965,14 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // dispute.xlsx" in the whole tenant — so the real cost today is one
             // slot, not the worst case.
             const cap = MAX_OTHER_FORMAT_NAMED;
+            // ORDER MATTERS HERE, and it costs something: the shape is TRUNCATED
+            // before it is de-duplicated, so two vendor filenames that differ only
+            // past 500 characters collapse to one shape and the second is named
+            // nowhere even with slots to spare. Accepted deliberately — the
+            // alternative is de-duplicating on the full unbounded vendor string,
+            // which re-opens the memory/log bloat t500 exists to close, and the
+            // count still rises either way. Needs ~500-character filenames sharing
+            // a prefix, which no observed vendor produces.
             const shape = t500(`${res.mimeType || 'no mime'} / ${res.name || 'no name'}`);
             if (!named.includes(shape) && named.length < cap) {
               named[named.length] = shape;
