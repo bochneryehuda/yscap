@@ -302,13 +302,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
          look like a real write (coordinate, precision, timestamps, city) defeats
          the obvious evasions directly — but it can never carry EVERY column, so
          an exemption keyed on one it lacks refuses the probe while admitting real
-         rows. `zip` is the honest example: 312 of the 314 properties in this
-         warehouse have one, and the probe row does not.
+         rows. The probe row now carries a zip, a year built and an old created_at,
+         so `beds` is the honest example today — a column real properties have and
+         the probe row does not. There will ALWAYS be such a column: that is why the
+         probe may only ever downgrade, however rich its row becomes.
          So: the text check rejects this, the probe REFUSES it, and the verdict
          must still be NOT installed. A probe allowed to promote reports the
          control fully on. */
       await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
-        CHECK (geo_source IS NULL OR zip IS NOT NULL
+        CHECK (geo_source IS NULL OR beds IS NOT NULL
                OR lower(geo_source) NOT LIKE '%google%')`);
       const probeSaysRefused = await G._internals.verifyRefusesGoogle(client);
       ok(probeSaysRefused.tested === true && probeSaysRefused.refused === true,
@@ -321,9 +323,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       let realWriteStored = true;
       try {
         await client.query(
-          `INSERT INTO properties (address_key, display_address, city, state, zip,
+          `INSERT INTO properties (address_key, display_address, city, state, zip, beds,
              geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
-           VALUES ($1,'x','Trenton','NJ','08608','google_places',40.1,-74.1,'rooftop',now(),now())`,
+           VALUES ($1,'x','Trenton','NJ','08608',3,'google_places',40.1,-74.1,'rooftop',now(),now())`,
           [`nj|evader|${sfx}`]);
       } catch (_) { realWriteStored = false; }
       await client.query('ROLLBACK TO SAVEPOINT ev');
@@ -463,14 +465,46 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
       }
 
-      /* (h2) WHY THAT BRANCH MAY NEVER CLAIM PROTECTION. These rewrites REFUSE the
-         probe row and STORE a real Google write, because the probe row carries
-         only the coordinate columns while a real property carries a zip and a year
-         built. `created_at` is the realistic one — told by this very guard that the
-         rows must be cleared before db/459 can be re-applied, grandfathering them
-         by date is the obvious way to keep a rule without deleting warehouse rows.
-         The verdict is correctly NOT-installed either way; what is being pinned is
-         that the WORDING never reassures. */
+      /* (h1b) THE OFFENDER COUNT IN *THIS* BRANCH. It went missing here twice —
+         added to two of the three branches, then claimed fixed while still absent
+         from the third — because nothing tested it: (i) below only ever reaches the
+         PROVEN branch. This reaches the hedged one, which is where it hid. */
+      await client.query('SAVEPOINT rowsb2');
+      /* A row with a Google source but NO coordinate: the count sees it, and the
+         narrowing rule (which only bites once a coordinate is stored) validates
+         over it — so this reaches the HEDGED branch with offenders > 0, which is
+         exactly the combination that was never tested. */
+      await client.query(
+        `INSERT INTO properties (address_key, display_address, city, state, geo_source)
+         VALUES ($1,'x','y','NJ','google_places')`, [`nj|hedgerow|${sfx}`]);
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR geo_latitude IS NULL)`);
+      {
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(!/does NOT refuse/.test(r.why || ''),
+          'a rule that still refuses reaches the HEDGED branch, not the proven one');
+        ok(r.offenders >= 1, `  …and it still COUNTS the rows in violation (${r.offenders})`);
+        ok(/already carr/i.test(r.why || ''),
+          `  …and names them in the sentence a human reads (${(r.why || '').slice(-70)})`);
+      }
+      await client.query('ROLLBACK TO SAVEPOINT rowsb2');
+
+      /* (h2) THE EXEMPTIONS A PROBE ROW CAN MISS — now caught, two ways.
+         These rewrites store the write `geocode.js` actually performs while a
+         SPARSE probe row (geo columns only) sails past them, because a real
+         property also carries a zip, a year built and an older created_at.
+         `created_at` is the realistic one: told by this very guard that the rows
+         must be cleared before db/459 can be re-applied, grandfathering them by
+         date is the obvious way to keep a rule without deleting warehouse rows.
+         Closed by (1) filling those columns on the probe row, so it is STORED and
+         the loud proven-no-protection branch fires, and (2) the no-write proof —
+         a validated constraint coexisting with a stored Google coordinate proves
+         the rule permits one.
+         `stored` is ASSERTED, not merely interpolated into a message: `ok()` prints
+         its message only on FAILURE, so a computed-but-unchecked value is invisible
+         — swapping in three genuinely-refusing rules left this section fully green
+         before that assertion existed, which is the same class the impostor loop
+         above was written to stop. */
       {
         const realId = (await client.query(
           `INSERT INTO properties (address_key, display_address, city, state, zip, year_built, created_at)
@@ -485,25 +519,65 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             'a created_at grandfather clause'],
         ]) {
           await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
-          const v = await G._internals.verifyRefusesGoogle(client);
-          ok(v.tested === true && v.refused === true,
-            `${label} REFUSES the probe row…`);
-          // …and yet stores the write geocode.js actually performs.
+          // THE PREMISE, asserted: it really does store the write geocode.js makes.
+          // Byte-for-byte that write, including geo_attempts and updated_at — an
+          // exemption keyed on either would otherwise slip past this fixture.
           await client.query('SAVEPOINT ev2');
           let stored = true;
           try {
             await client.query(
               `UPDATE properties SET geo_latitude=40.1, geo_longitude=-74.1, geo_source='google_places',
-                 geo_precision='rooftop', geo_at=now(), geo_attempted_at=now() WHERE id=$1`, [realId]);
+                 geo_precision='rooftop', geo_at=now(), geo_attempted_at=now(),
+                 geo_attempts = geo_attempts + 1, updated_at = now() WHERE id=$1`, [realId]);
           } catch (_) { stored = false; }
           await client.query('ROLLBACK TO SAVEPOINT ev2');
+          ok(stored, `${label} really would STORE the write geocode.js performs…`);
+          // …and the guard now PROVES it rather than hedging: the enriched probe
+          // row is stored under it, so the loud branch fires.
+          const v = await G._internals.verifyRefusesGoogle(client);
+          ok(v.tested === true && v.refused === false,
+            '  …the enriched probe row is stored under it too, so it is provable');
           const r2 = await G.checkGeoLicensing(client, { verifyWrite: true });
-          ok(r2.ok === false && r2.present === false,
-            `  …and is still reported NOT installed (stored a real write: ${stored})`);
+          ok(r2.ok === false && r2.present === false, '  …and it is reported NOT installed');
+          ok(/does NOT refuse/.test(r2.why || ''),
+            `  …with the LOUD proven wording, not a hedge (${(r2.why || '').slice(0, 50)})`);
           ok(!/protected right now|warehouse is protected/.test(r2.why || ''),
-            '  …with no claim that the warehouse is protected');
+            '  …and never a claim that the warehouse is protected');
           await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
         }
+
+        /* (h3) THE NO-WRITE PROOF. The catalog query requires `convalidated`, so
+           Postgres has already checked the rule against every existing row — which
+           means a row carrying a Google source AND a stored coordinate, under a
+           validated constraint of that name, PROVES the rule permits exactly what
+           the licence forbids. No probe, no INSERT, no guessing which column an
+           exemption keys on. It cannot false-fire: Postgres REFUSES to validate a
+           rule such a row violates. */
+        await client.query(
+          `INSERT INTO properties (address_key, display_address, city, state, zip, geo_source, geo_latitude, geo_longitude)
+           VALUES ($1,'x','Trenton','NJ','08608','google_places',40.1,-74.1)`, [`nj|proof|${sfx}`]);
+        await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+          CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR zip IS NOT NULL)`);
+        {
+          const r3 = await G.checkGeoLicensing(client);   // NO probe at all
+          ok(/does NOT refuse/.test(r3.why || ''),
+            'a stored Google coordinate under a VALIDATED rule proves it permits one — with no write probe');
+          ok(r3.offenders >= 1 && /already carr/i.test(r3.why || ''),
+            `  …and the loud message still names the rows to act on (${r3.offenders})`);
+        }
+        await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+        // …while a GENUINE rule cannot even be validated with that row present, so
+        // the proof can never false-fire.
+        await client.query('SAVEPOINT genuine');
+        let genuineRefused = false;
+        try {
+          await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+            CHECK (geo_source IS NULL OR geo_source NOT ILIKE '%google%')`);
+        } catch (e) { genuineRefused = e.code === '23514'; }
+        await client.query('ROLLBACK TO SAVEPOINT genuine');
+        ok(genuineRefused,
+          'and a genuinely-protecting rule cannot be validated over that row at all — so the proof never false-fires');
+        await client.query(`DELETE FROM properties WHERE address_key = $1`, [`nj|proof|${sfx}`]);
         await client.query(`DELETE FROM properties WHERE address_key = $1`, [`nj|realrow|${sfx}`]);
       }
 

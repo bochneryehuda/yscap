@@ -108,11 +108,21 @@ async function verifyRefusesGoogle(client) {
     catch (_) { return { tested: false, refused: null, by: null }; }
     let err = null;
     try {
+      /* THE ROW LOOKS LIKE A REAL PROPERTY, not just a real geo write. Every column
+         it omits is a column an exemption can be keyed on — `OR zip IS NOT NULL`,
+         `OR year_built IS NOT NULL`, `OR created_at < '<date>'` to grandfather the
+         back book — and each of those refuses a sparse probe while storing every
+         real row. Filling them costs nothing and can only ever catch MORE: the
+         probe may only downgrade, and a genuine rule refuses a Google source
+         whatever else the row carries (measured against db/459's rule, `NOT ILIKE`
+         and the coordinate-carrying narrowing — all three still refuse this row).
+         `created_at` is backdated for the same reason. */
       await client.query(
         `INSERT INTO ${TABLE}
-           (address_key, display_address, city, state,
+           (address_key, display_address, city, state, zip, year_built, created_at,
             geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
-         VALUES ($1, $2, 'Licensing Probe', 'NJ', $3, 40.1, -74.1, 'rooftop', now(), now())`,
+         VALUES ($1, $2, 'Licensing Probe', 'NJ', '08608', 1962, now() - interval '400 days',
+                 $3, 40.1, -74.1, 'rooftop', now(), now())`,
         [`licensing-probe|${Date.now()}|${Math.random()}`, 'licensing probe', value]);
     } catch (e) { err = e; }
     // Undo it either way: on success the row must never survive, and on refusal
@@ -240,12 +250,33 @@ async function checkGeoLicensing(dbc, opts) {
   // boot path. Rows already in violation are the overwhelmingly likely reason the
   // migration could not apply, and they are what somebody has to delete or re-source.
   let offenders = null;
+  let storedGoogleCoords = null;
   try {
     const r = await db.query(
-      `SELECT count(*)::int AS n FROM ${TABLE}
+      `SELECT count(*)::int AS n,
+              count(*) FILTER (WHERE geo_latitude IS NOT NULL AND geo_longitude IS NOT NULL)::int AS withgeo
+         FROM ${TABLE}
         WHERE geo_source IS NOT NULL AND lower(geo_source) LIKE '%google%'`);
     offenders = r.rows[0].n;
+    storedGoogleCoords = r.rows[0].withgeo;
   } catch (_) { /* the count is a diagnosis, not the finding */ }
+
+  /* PROOF WITHOUT A WRITE, and it is the strongest signal available here.
+     The catalog query above requires `convalidated`, which means Postgres has
+     CHECKED the constraint against every existing row — so a row that carries a
+     Google source AND a stored coordinate, sitting under a validated constraint of
+     that name, PROVES the installed rule permits exactly what the licence forbids.
+     No probe row, no INSERT, no guessing about which columns a rule exempts on.
+     It cannot false-fire: Postgres REFUSES to validate a rule that such a row
+     violates (measured — `NOT ILIKE` and the coordinate-carrying narrowing both
+     fail with 23514 while the exemption rules validate happily), so this can only
+     ever be true of a rule that really does allow it.
+     This is what closes the blind spot the write probe cannot reach — a probe row
+     can never carry every column, but the rows already in the table carry all of
+     them. It matters most in precisely the case that is realistic: somebody
+     grandfathers the back book because offending rows exist, which is the only
+     situation where such rows are there to prove it. */
+  if (named && storedGoogleCoords > 0) neutered = true;
 
   /* THREE OUTCOMES, NOT TWO. `offenders` is null when the count itself FAILED —
      a role without SELECT on the table, a statement timeout — and reading that as
@@ -300,8 +331,8 @@ async function checkGeoLicensing(dbc, opts) {
          the geo columns, so an exemption keyed on ANY other column — `OR zip IS
          NOT NULL`, `OR year_built IS NOT NULL`, `OR created_at < '<date>'` to
          grandfather the back book — refuses the probe and lets every real row
-         through. Two of those three were measured storing a real Google UPDATE
-         while this branch called the warehouse protected. The `created_at` one is
+         through. All three were measured storing a real Google UPDATE while this
+         branch called the warehouse protected. The `created_at` one is
          the realistic case precisely BECAUSE of the advice above: told the rows
          must be cleared before db/459 can be re-applied, grandfathering them is
          the obvious way to keep a rule without deleting warehouse rows.
@@ -312,9 +343,9 @@ async function checkGeoLicensing(dbc, opts) {
         probeTested: true, probeBlockedBy: null,
         why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its `
           + 'text has been rewritten. It refused our test row, but that is NOT proof it refuses '
-          + 'every write: the test row carries only the coordinate columns, so a rule that exempts '
-          + 'rows by any other column (a zip, a year built, an older created_at) would refuse ours '
-          + `and still let a real property through.${rows} Restore the reviewed rule and check who `
+          + 'every write: a rule can exempt rows by a column our test row does not happen to '
+          + `match, refusing ours while letting a real property through.${rows} Restore the `
+          + `reviewed rule and check who `
           + 'changed it.' };
     }
     // Named, text not canonical, and we could not test the behaviour. Say exactly
