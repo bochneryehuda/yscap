@@ -310,6 +310,36 @@ textarea{min-height:90px;resize:vertical}
   border-radius:var(--radius-sm);background:rgba(20,27,34,.72);color:var(--teal-br);font-weight:600;
   font-size:13px;pointer-events:none;letter-spacing:.03em;z-index:2}
 
+/* BORROWER CONDITIONS — the compact, staff-like line (owner-directed: "cleaner
+   conditions design like staff"). A condition is a tidy header you scan — status
+   dot, name, what's needed, one action — that clicks open to reveal its
+   documents / form / downloads beneath, like the staff .cnd line. Namespaced
+   `bcond-*` so it can never collide with the staff `.cond-act`/`.cnd` rules.
+   Text colours are explicit dark hex (var(--ink*) is a LIGHT token — never a
+   text colour). */
+.bcond{display:block}
+.bcond-head{display:flex;align-items:flex-start;gap:10px;width:100%}
+.bcond.clickable>.bcond-head{cursor:pointer}
+.bcond-chev{flex:none;width:12px;color:#4B585C;font-size:11px;line-height:1.9;
+  transition:transform .15s ease;user-select:none;text-align:center}
+.bcond-chev.open{transform:rotate(90deg)}
+.bcond-chev.spacer{visibility:hidden}
+.bcond-main{flex:1 1 auto;min-width:0}
+.bcond-title{font-weight:600;color:#141B22;line-height:1.35}
+.bcond-sub{color:#4B585C;font-size:13px;line-height:1.4;margin-top:2px}
+.bcond-status{flex:none;white-space:nowrap;font-size:12px;color:#4B585C;align-self:center}
+.bcond-act{flex:none;align-self:center}
+.bcond-body{padding:10px 0 2px 22px}
+@media(max-width:720px){
+  /* The name + guidance take the full width (most readable on a phone); the
+     status and action wrap onto their own line beneath. */
+  .bcond-head{flex-wrap:wrap}
+  .bcond-main{flex:1 1 60%}
+  .bcond-status{align-self:center}
+  .bcond-act{margin-left:auto;align-self:center}
+  .bcond-body{padding-left:0}
+}
+
 /* auth screen */
 .authbg{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px;
   background:radial-gradient(900px 520px at 50% -8%, rgba(127,169,176,.12), transparent 62%), var(--ink)}
