@@ -239,6 +239,7 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
     const isGuaranty = exc.exception_type === 'guaranty_waiver';
     const isEsign = exc.exception_type === 'esign_before_ctc';
     const isPricing = exc.exception_type === 'pricing_exception';
+    const isConditionWaiver = exc.exception_type === 'condition_waiver';
 
     // Approval validity (expirable types only — the engine re-validates the
     // type + window; a bad value simply stores no expiry).
@@ -300,6 +301,25 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
           `UPDATE applications SET co_borrower_pg_waived=$2, updated_at=now() WHERE id=$1`,
           [row.application_id, decision === 'approved']);
       }
+      // Condition waiver (owner-directed 2026-08-04): APPROVE marks the ONE
+      // condition it names WAIVED — status='satisfied' with the waived stamps,
+      // exactly the shape a checklist waive writes — and records on the condition
+      // itself that an approved exception cleared it. DENY changes nothing. Scoped
+      // to THIS exception's file (application_id) so a mis-pointed row can never
+      // reach another file's condition. A row whose target condition was deleted
+      // (target_checklist_item_id went NULL, ON DELETE SET NULL) simply waives
+      // nothing — the approval is still recorded.
+      if (isConditionWaiver && decision === 'approved' && exc.target_checklist_item_id) {
+        await client.query(
+          `UPDATE checklist_items
+              SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+                  waived_by=$2, waived_at=now(),
+                  notes = NULLIF(btrim(COALESCE(notes,'') || $4, E'\n'), ''),
+                  updated_at=now()
+            WHERE id=$1 AND application_id=$3`,
+          [exc.target_checklist_item_id, req.actor.id, row.application_id,
+           `\n[auto] Waived by approved exception EX-${row.exception_seq}${note ? ` — ${String(note).slice(0, 200)}` : ''}`]);
+      }
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
@@ -359,6 +379,20 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
             : `A super admin DENIED exporting the data tape on ${ctx ? ctx.label : 'the file'} before Encompass matches (EX-${row.exception_seq})${note ? ` — ${String(note).slice(0, 200)}` : ''}. Get the loan into Encompass and reconcile every field first.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-encompass`, ctaLabel: 'Open the loan file',
+        });
+      } else if (isConditionWaiver) {
+        const condName = exc.target_condition_label || 'a condition';
+        const ctx = await notify.fileContext(row.application_id, [
+          { label: 'Condition waiver', value: decision === 'approved' ? 'Approved' : 'Denied' },
+        ]);
+        await notify.notifyAppStaff(row.application_id, {
+          type: 'condition_waiver_decided',
+          title: decision === 'approved' ? 'Condition waiver approved' : 'Condition waiver denied',
+          body: decision === 'approved'
+            ? `The request to waive “${condName}” on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was APPROVED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. That condition is now marked waived.`
+            : `The request to waive “${condName}” on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was DENIED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. The condition still needs to be met.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
         });
       } else {
         const ctx = await notify.fileContext(row.application_id, [

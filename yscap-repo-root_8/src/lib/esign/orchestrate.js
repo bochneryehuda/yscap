@@ -837,9 +837,19 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     // the package MAY send — gate.js still owns that; this only stops the wrong
     // DOCUMENT going out once it may.
     if (d.kind === 'term_sheet' && doc.term_sheet_final !== true) {
-      const err = new Error(`Cannot send ${spec.label}: ${termSheetStamp.REGENERATE_MESSAGE}`);
-      err.retryable = false;
-      throw err;
+      // A super-admin may FORCE the send past this refusal (owner-directed
+      // 2026-08-04, db/467). The authorization is stamped on the envelope row —
+      // NOT passed through the closure — so it survives every send retry (the
+      // send engine re-reads the row via the atomic claim's RETURNING *). It
+      // changes NOTHING the PDF prints: the sheet may still read "NOT FINAL", and
+      // the officer was warned of exactly that. Without the stamp the refusal
+      // stands, permanently — the bytes cannot be re-stamped from here.
+      if (!row.ts_final_override_by) {
+        const err = new Error(`Cannot send ${spec.label}: ${termSheetStamp.REGENERATE_MESSAGE}`);
+        err.retryable = false; err.code = 'TERM_SHEET_NOT_FINAL';
+        throw err;
+      }
+      console.warn(`[esign] term-sheet package ${row.id} sent past the "not final" refusal by super-admin override (documents.term_sheet_final=${doc.term_sheet_final === false ? 'false' : 'null'})`);
     }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
@@ -1019,6 +1029,17 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     }
   }
 
+  // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
+  // (owner-directed 2026-08-04, db/467). The ROUTE authorizes it (super_admin +
+  // a reason) and passes it here; sendPackage only APPLIES it — it stamps the
+  // envelope so buildDefinition, and every send retry, honor it. It never widens
+  // the appraisal/P&P send-gate (checked above); it only lets an authorized send
+  // past the wording refusal. A blank/unauthorized override is ignored.
+  const tsOverride = (opts.termSheetFinalOverride && opts.termSheetFinalOverride.by
+    && String(opts.termSheetFinalOverride.reason || '').trim())
+    ? { by: opts.termSheetFinalOverride.by, reason: String(opts.termSheetFinalOverride.reason).trim().slice(0, 1000) }
+    : null;
+
   const app = await loadApplication(db, applicationId);
   // A draw_request needs its "Signed draw request form" condition to EXIST before the
   // envelope is created, so createOrClaimEnvelope binds the signed doc → that condition.
@@ -1029,11 +1050,22 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   }
   // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
   // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.
-  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue, recipient: opts.recipient });
+  // A term-sheet-final override also mints a FRESH envelope (reissue) so it can be
+  // stamped even when a prior refused send left a terminal one — the in-flight
+  // check inside createOrClaimEnvelope still prevents any duplicate.
+  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue || !!tsOverride, recipient: opts.recipient });
   // A plain send that found only a TERMINAL prior envelope did NOT mint a new one —
   // report that (never a false "Sent"), so the UI tells staff to use Re-issue rather
   // than piling up duplicate envelopes.
   if (terminal) return { ok: false, terminal: true, envelopeRowId: row.id, latestStatus: row.status };
+  if (tsOverride) {
+    await db.query(
+      `UPDATE esign_envelopes
+          SET ts_final_override_by=$2, ts_final_override_reason=$3, ts_final_override_at=now(), updated_at=now()
+        WHERE id=$1`,
+      [row.id, tsOverride.by, tsOverride.reason]);
+    row.ts_final_override_by = tsOverride.by;   // reflect locally (buildDefinition re-reads via the claim)
+  }
 
   const result = await send.sendClaimedEnvelope(row.id, {
     db, docusign,

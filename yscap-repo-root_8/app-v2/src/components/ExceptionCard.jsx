@@ -94,6 +94,12 @@ const TYPE_META = {
     defaultPolicy: () => 'The credit condition needs a report IMPORTED on the file — that files the PDF + the data file and reads the scores. A PDF on its own is not enough.',
     requestedChange: () => <>Sign the <b>credit report condition</b> off on a report obtained <b>somewhere else</b>, with <b>no credit imported or re-pulled</b> here. The PDF is uploaded on the condition and still has to be <b>accepted</b>; approving this lets the condition be signed off without an import, and the accepted PDF ships in the TPR export and the SharePoint sync like any other document.</>,
   },
+  condition_waiver: {
+    chip: 'Condition waiver',
+    jumpHash: '#sec-conditions', jumpLabel: 'Jump to the conditions',
+    defaultPolicy: () => 'The condition has to be met (or its document provided and accepted) before it can be signed off.',
+    requestedChange: (subject, r) => <>Waive the condition <b>{(r && r.target_condition_label) || 'named below'}</b> without meeting it. Approving marks that one condition <b>waived</b> — it clears that condition and nothing else.</>,
+  },
   encompass_mismatch: {
     chip: 'Encompass exception',
     /* `sec-encompass` is a RETIRED address (the comparison is a tab of
@@ -160,7 +166,7 @@ export default function ExceptionCard({ r, reasonCodes = {}, compFactors = {}, h
         </div>
         <div style={{ flex: '1 1 220px' }}>
           <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Requested change</div>
-          <div>{meta.requestedChange(subject)}</div>
+          <div>{meta.requestedChange(subject, r)}</div>
         </div>
       </div>
 

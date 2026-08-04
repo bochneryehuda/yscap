@@ -210,14 +210,26 @@ async function termSheetStampBlock(db, applicationId) {
         ORDER BY is_current DESC NULLS LAST, created_at DESC
         LIMIT 1`, [applicationId]);
     const doc = r.rows[0];
-    if (!doc) return { onFile: false, final: false, block: false, message: null };
-    const final = doc.term_sheet_final === true;
+    // Is the FILE ready to produce a FINAL term sheet RIGHT NOW? — the same rule the
+    // studio uses when it stamps one (every send requirement met EXCEPT the P&P
+    // sign-off, which is the registration itself). This is what lets the panel offer
+    // to finalize the sheet ON THE SPOT (owner-directed 2026-08-04: "that button …
+    // should be the button that is generating the final term sheet after all the
+    // conditions are met") instead of only pointing staff back to Products & Pricing.
+    let stamp = { final: false, blockers: [], unreadable: true };
+    try { stamp = await require('./term-sheet-stamp').termSheetStamp(applicationId, { db }); } catch (_) { /* fail closed → canFinalize false */ }
+    const blockers = (stamp.blockers || []).map((b) => ({ code: b.code, label: b.label, reason: b.reason }));
+    const final = !!(doc && doc.term_sheet_final === true);
+    // canFinalize: the file may be stamped final now, and it is not already final.
+    const canFinalize = !!stamp.final && !final;
+    if (!doc) return { onFile: false, final: false, block: false, message: null, canFinalize, blockers };
     return {
       onFile: true, final, block: !final, generatedAt: doc.created_at,
       message: final ? null : require('./term-sheet-stamp').REGENERATE_MESSAGE,
+      canFinalize, blockers,
     };
   } catch (_) {
-    return { onFile: false, final: false, block: false, message: null };
+    return { onFile: false, final: false, block: false, message: null, canFinalize: false, blockers: [] };
   }
 }
 

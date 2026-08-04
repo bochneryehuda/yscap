@@ -131,6 +131,31 @@ ok(/INITIAL TERM SHEET/.test(REGENERATE_MESSAGE) && /re-register/i.test(REGENERA
     'and refuses anything not recorded as FINAL — NULL (a legacy sheet, generated under the rule that printed the initial wording) is refused too');
   ok(/SELECT id, filename, content_type, storage_ref, storage_provider, created_at, term_sheet_final/.test(src),
     'the column is actually selected — without it doc.term_sheet_final is undefined and EVERY send would refuse');
+  // The super-admin OVERRIDE (owner-directed 2026-08-04, db/467): the refusal is
+  // SKIPPED only when the override is stamped on the ENVELOPE row (so it survives
+  // send retries, which re-read the row), never passed through the closure.
+  ok(/if \(!row\.ts_final_override_by\)/.test(src),
+    'the refusal is skipped only when the override is stamped on the envelope row (durable across retries)');
+  ok(/opts\.termSheetFinalOverride/.test(src) && /ts_final_override_by=\$2, ts_final_override_reason=\$3/.test(src),
+    'sendPackage reads the authorized override and stamps it on the envelope row');
+  ok(/reissue: !!opts\.reissue \|\| !!tsOverride/.test(src),
+    'an override mints a FRESH envelope so it can be stamped even after a prior refused send left a terminal one');
+}
+{
+  const src = require('fs').readFileSync(R + '/src/routes/staff.js', 'utf8');
+  ok(/termSheetFinalOverrideReason/.test(src) && /role === 'super_admin'/.test(src),
+    'the send route accepts termSheetFinalOverrideReason and authorizes it for a super_admin only');
+  ok(/term_sheet_final_override_denied/.test(src),
+    'a non-super-admin who supplies an override reason is REFUSED — never silently sent');
+  ok(/recordIssuanceOverride/.test(src) && /term_sheet_final override/.test(src),
+    'an override that actually sent is recorded in the exception register');
+}
+{
+  const src = require('fs').readFileSync(R + '/src/lib/esign/tracking.js', 'utf8');
+  ok(/canFinalize/.test(src) && /termSheetStamp\(applicationId/.test(src),
+    'the panel is told whether the sheet can be FINALIZED in place now (the studio-stamp rule), so the Send button can generate the final sheet instead of dead-ending');
+  ok(/const canFinalize = !!stamp\.final && !final;/.test(src),
+    'canFinalize means the file may be stamped final AND is not already final');
 }
 {
   const src = require('fs').readFileSync(R + '/src/lib/esign/tracking.js', 'utf8');

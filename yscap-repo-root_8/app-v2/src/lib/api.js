@@ -683,6 +683,8 @@ export const api = {
   requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
   // Ask a super admin to allow the data tape out before Encompass matches (owner-directed 2026-08-02).
   requestTapeException:      (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/tape-encompass`, body || {}),
+  // Ask an admin/super-admin to waive a specific condition (owner-directed 2026-08-04).
+  requestConditionWaiver:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-waiver`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),

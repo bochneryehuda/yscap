@@ -62,6 +62,9 @@ const KICKER_OF = {
   // Data-tape export before Encompass matches (owner-directed 2026-08-02): the
   // request to a super-admin, and the decision sent back to the file's team.
   tape_encompass_exception: 'Data-tape exception', tape_encompass_exception_decided: 'Data-tape exception',
+  // Condition waiver (owner-directed 2026-08-04): any staffer requests to waive a
+  // specific condition; the decision goes back to the file's team.
+  condition_waiver_request: 'Condition waiver', condition_waiver_decided: 'Condition waiver',
   // Credit report signed off on a report obtained ELSEWHERE (owner-directed
   // 2026-08-03): the request for an admin to review.
   credit_import_exception: 'Credit exception',
@@ -567,6 +570,9 @@ const CATEGORY_OF = {
   // action-bearing, so it emails like the other exception requests. Deliberately
   // NOT in STAFF_INAPP_TYPES: a condition is waiting on this decision.
   credit_import_exception: 'conditions',
+  // Condition waiver (owner-directed 2026-08-04) — a review request + the decision
+  // back to the team; action-bearing (a condition is waiting on it), so they email.
+  condition_waiver_request: 'conditions', condition_waiver_decided: 'conditions',
   exception_comment: 'conditions', exception_request_reply: 'conditions',
   exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
