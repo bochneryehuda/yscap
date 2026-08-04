@@ -822,15 +822,21 @@ async function drawFindingsAwaitingBorrowerOnce() {
         if (!(await _gate(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, '2 days'))) continue;
         const drawRecipients = require('./draw-recipients');
         const coords = await drawRecipients.coordinatorsOrDesk(r.application_id);
-        for (const c of coords) {
-          try {
-            await notify.notifyStaff(c.id, {
-              type: 'draw',
-              title: r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`,
-              badge: { text: 'Follow up', tone: 'action' },
-              body: `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`,
-              applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk', emailTo: c.email });
-          } catch (e) { console.error('[digest] draw-borrower-stuck notify', c.id, e && e.message); }
+        const stuckTitle = r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`;
+        const stuckBody = `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`;
+        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle, body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
+        if (coords.length) {
+          for (const c of coords) {
+            try { await notify.notifyStaff(c.id, { ...stuckOpts, emailTo: c.email }); }
+            catch (e) { console.error('[digest] draw-borrower-stuck notify', c.id, e && e.message); }
+          }
+        } else {
+          // No draw coordinator on the file AND an empty desk — never silently drop the follow-up
+          // (audit LOW; owner's "don't leave things silent" theme). Reach the file's own staff team
+          // so a stuck draw is always covered by someone. Same 2-day throttle already claimed above.
+          console.warn('[digest] draw-borrower-stuck: no draw coordinator/desk for', r.application_id, '— falling back to the file team');
+          try { await notify.notifyAppStaff(r.application_id, stuckOpts); }
+          catch (e) { console.error('[digest] draw-borrower-stuck fallback', r.application_id, e && e.message); }
         }
         await _stamp(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, { awaiting: r.n, nudges: r.nudges, cap: CAP, coordinators: coords.length });
         sent++;
