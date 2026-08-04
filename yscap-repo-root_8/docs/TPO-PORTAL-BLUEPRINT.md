@@ -115,9 +115,17 @@ internal workflow condition.
    + cross-surface fallback exclude `is_external`). Minimal `/api/tpo` router
    (`/me`, `/applications`). Tests `scripts/test-tpo-foundation-pure.js`,
    `scripts/test-tpo-identity-db.js`.
-2. **Front door + firm onboarding** — the `app-v2` TPO experience (login, layout,
-   scoped pipeline); an internal admin creates a firm + invites the lead broker;
-   the firm admin invites their processors; the role mapping shows on the file.
+2. **Front door + firm onboarding** ✅ — internal admin surface (`admin-tpo.js`,
+   `/api/admin/tpo`): create a firm, invite the lead broker, list/detail firms,
+   suspend/close (atomically revokes broker sessions). The firm admin invites
+   their own processors (`/api/tpo/team` + `/team/invite`). Invite machinery reuses
+   `invite_tokens` + `/auth/accept` (`db/466` carries the firm + firm-admin flag +
+   the `tpo` invite kind); `tpoInvite` email. The `app-v2` third door: `TpoLogin`,
+   `TpoAccept`, `TpoLayout`, firm-scoped `TpoPipeline`, `TpoTeam`; `isTpo` in the
+   auth context + route guards (`TpoPrivate`; borrower/staff areas bounce a tpo
+   actor to `/tpo`). **The internal-roster `is_external` sweep is DONE** (see §6).
+   Tests `scripts/test-tpo-identity-db.js` (onboarding → scoping → cross-door
+   isolation → roster/notification exclusion → suspend/revoke → invariants).
 3. **Files, borrowers & PII** — a broker creates borrowers, enters TPO loans,
    sees their book with full PII; the borrower-portal-off toggle.
 4. **Pricing, conditions & documents** — Term Sheet Studio (price/register/
@@ -139,10 +147,17 @@ internal workflow condition.
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 
 - **Every INTERNAL `staff_users` roster/picker query must exclude
-  `is_external=true`** — the internal team screen, `GET /api/roster` (the public
-  officer dropdown a broker must NEVER appear on), assignee pickers, "see_all"
-  lists, ClickUp officer sync. No external users exist in prod yet, so there is
-  no live leak today; this MUST be swept before Phase 2 creates any.
+  `is_external=true`** — SWEPT (Phase 2): `GET /api/roster` (public officer
+  dropdown), the internal team list + welcome-all (`admin.js`), global-search
+  officers / mentionables / team / picker (`staff.js`), `mentions.js`,
+  `workflow.js` (candidate + all-active-staff), `clickup-sync.js`, the Dashboards
+  officer-filter dropdown (`dashboards.js`), and the public `?lo=` branded-officer
+  resolver (`leads.js`). The internal NOTIFICATION fan-out is excluded at the
+  chokepoint too — `notify.notifyStaff` returns early for an external user and
+  `notifyAppStaff` filters `is_external=false`, so a broker (who IS the loan-officer
+  assignee on their firm's files) never receives an internal-format staff email or
+  digest. `is_external` is `NOT NULL DEFAULT false`, so `= false` never drops an
+  internal row. When adding a NEW internal roster/picker/fan-out, add the filter.
 - **Hide the ClickUp + Encompass file tabs** in `StaffApplication.jsx` — but
   those are staff screens; a TPO uses the separate `/api/tpo` surface, so this is
   only relevant if a TPO screen ever embeds a staff component.

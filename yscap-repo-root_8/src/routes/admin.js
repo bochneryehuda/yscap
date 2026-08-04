@@ -112,7 +112,8 @@ router.get('/staff', async (req, res) => {
             COALESCE(notifications_enabled,true) AS notifications_enabled,
             COALESCE(visible_officer_ids,'{}')::uuid[] AS visible_officer_ids,
             (password_hash IS NOT NULL) AS has_login, last_login_at
-       FROM staff_users ORDER BY department NULLS LAST, sort_order, full_name`);
+       FROM staff_users WHERE is_external = false
+       ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows.map((row) => ({
     ...row,
     permissions: row.permissions || null,
@@ -467,7 +468,7 @@ router.post('/staff/welcome-all', async (req, res) => {
   const onlyNoLogin = (req.body || {}).onlyWithoutLogin !== false;   // default: those who can't log in yet
   const r = await db.query(
     `SELECT email, full_name, role, (password_hash IS NOT NULL) AS has_login
-       FROM staff_users WHERE is_active=true ${onlyNoLogin ? 'AND password_hash IS NULL' : ''}
+       FROM staff_users WHERE is_active=true AND is_external=false ${onlyNoLogin ? 'AND password_hash IS NULL' : ''}
       ORDER BY full_name`);
   let sent = 0, failed = 0;
   for (const row of r.rows) {

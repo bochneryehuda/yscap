@@ -74,6 +74,7 @@ export function AuthProvider({ children }) {
   }, []);
   const actor = actorFromToken(token);
   const isStaff = actor?.kind === 'staff';
+  const isTpo   = actor?.kind === 'tpo';
   const impersonation = actor?.impersonation || null;
   useEffect(() => {
     let live = true;
@@ -140,6 +141,7 @@ export function AuthProvider({ children }) {
       kind:     actor?.kind || null,        // 'borrower' | 'staff'
       role:     actor?.role || null,        // borrower | loan_officer | processor | underwriter | admin | super_admin | loan_coordinator | software_setup
       isStaff,
+      isTpo,
       isBorrower: actor?.kind === 'borrower',
       permissions: perms,
       can,

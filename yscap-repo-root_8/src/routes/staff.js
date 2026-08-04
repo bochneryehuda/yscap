@@ -944,7 +944,7 @@ router.get('/search', async (req, res) => {
     // ---- officers / team (the roster is visible to all staff) ----
     const officers = await db.query(
       `SELECT id, full_name, title, role, email FROM staff_users
-        WHERE is_active=true AND (full_name ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(title,'') ILIKE $1)
+        WHERE is_active=true AND is_external=false AND (full_name ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(title,'') ILIKE $1)
         ORDER BY sort_order NULLS LAST, full_name LIMIT 6`, [like]);
 
     // ---- tasks / reminders (title), scoped to files the staffer can reach ----
@@ -13263,7 +13263,7 @@ router.get('/chat/inbox', async (req, res) => {
 router.get('/applications/:id/mentionables', async (req, res) => {
   try {
     const [users, tasks, docs, apps] = await Promise.all([
-      db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true ORDER BY full_name`),
+      db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true AND is_external=false ORDER BY full_name`),
       db.query(`SELECT id, label, status FROM checklist_items WHERE application_id=$1 ORDER BY sort_order LIMIT 300`, [req.params.id]),
       db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
       // S3-11: the borrower's OTHER files are only mentionable if THIS officer can
@@ -14960,7 +14960,7 @@ router.post('/notifications/:id/read', async (req, res) => {
 router.get('/team', async (req, res) => {
   const r = await db.query(
     `SELECT id, full_name, email, role, title, department FROM staff_users
-      WHERE is_active=true ORDER BY department NULLS LAST, sort_order, full_name`);
+      WHERE is_active=true AND is_external=false ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows);
 });
 
@@ -15457,7 +15457,7 @@ router.get('/audit-log/facets', async (req, res) => {
   try {
     const [acts, staff] = await Promise.all([
       db.query(`SELECT action, count(*)::int AS n FROM audit_log GROUP BY action ORDER BY n DESC`),
-      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE ORDER BY full_name`),
+      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE AND is_external=false ORDER BY full_name`),
     ]);
     const actions = acts.rows.map((a) => {
       const meta = describeAuditAction(a.action);

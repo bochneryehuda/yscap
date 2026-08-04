@@ -429,6 +429,9 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  // TPO firm onboarding (db/464/466). The router self-gates requireAuth +
+  // requireStaff + manage_team; the mount adds the staff wall as defense-in-depth.
+  app.use('/api/admin/tpo', requireAuth, requireStaff, require('./routes/admin-tpo'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));

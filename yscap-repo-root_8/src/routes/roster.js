@@ -39,7 +39,7 @@ async function load() {
   const r = await db.query(
     `SELECT email, full_name, role, title, department, phone, cell, ext, nmls
        FROM staff_users
-      WHERE is_active = true AND site_selectable = true
+      WHERE is_active = true AND site_selectable = true AND is_external = false
       ORDER BY sort_order, full_name`);
   const people = r.rows.map(shape);
   const byDept = new Map();

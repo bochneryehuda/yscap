@@ -1334,7 +1334,7 @@ async function backfillMemberLinksOnce() {
   } catch (e) { console.error('[clickup-sync] member-link backfill: member fetch failed', e.message); return 0; }
   if (!byEmail.size) return 0;
   const staff = await db.query(
-    `SELECT id, email FROM staff_users WHERE clickup_user_id IS NULL AND email IS NOT NULL AND is_active=true`);
+    `SELECT id, email FROM staff_users WHERE clickup_user_id IS NULL AND email IS NOT NULL AND is_active=true AND is_external=false`);
   let linked = 0;
   for (const s of staff.rows) {
     const cu = byEmail.get(String(s.email).toLowerCase());

@@ -579,7 +579,10 @@ async function completeMfa(req, res) {
     // staff AND tpo both live in staff_users (db/464); only the minted token
     // kind differs, which is what routes the external user to the TPO door.
     if (claims.kind === 'staff' || claims.kind === 'tpo') {
-      const r = await db.query(`SELECT role, token_version, is_active FROM staff_users WHERE id=$1`, [claims.sub]);
+      const r = await db.query(
+        `SELECT u.role, u.token_version, u.is_active, f.status AS firm_status
+           FROM staff_users u LEFT JOIN tpo_firms f ON f.id = u.tpo_firm_id
+          WHERE u.id=$1`, [claims.sub]);
       if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
       // The password path filters `is_active=true`, but this one didn't — so a
       // DEACTIVATED staffer with 2FA could finish signing in, get a valid-looking
@@ -589,6 +592,14 @@ async function completeMfa(req, res) {
       // a reason they can act on.
       if (r.rows[0].is_active === false)
         return res.status(403).json({ error: 'This account has been turned off. Ask an admin to re-enable it.', code: 'account_deactivated' });
+      // A TPO (broker) session additionally requires an ACTIVE firm. The password
+      // step already enforces this, but the MFA challenge was minted BEFORE the
+      // second factor — this closes the narrow window where the firm is suspended
+      // between issuing the challenge and verifying it. A non-external user can
+      // never carry a tpo challenge (only /tpo/login mints one, is_external only),
+      // and their firm_status is NULL, so this refuses that case too.
+      if (claims.kind === 'tpo' && r.rows[0].firm_status !== 'active')
+        return res.status(403).json({ error: 'Your firm’s access is not active. Contact YS Capital.', code: 'firm_inactive' });
       const mint = claims.kind === 'tpo' ? tpoToken : staffToken;
       return res.json({ token: mint(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
     }
@@ -772,16 +783,19 @@ router.post('/borrower/reset', async (req, res) => {
 // ---------------- MFA setup (borrower or staff) ----------------
 router.post('/mfa/setup', requireAuth, async (req, res) => {
   const secret = C.newTotpSecret();
-  const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
+  // A tpo user is a staff_users row (db/464), so their 2FA enrolls in
+  // staff_users — only a borrower uses borrower_auth. (mfaTbl/mfaIdCol are
+  // defined below this route, so the branch is inlined to match them.)
+  const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
+  const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   await db.query(`UPDATE ${tbl} SET mfa_secret=$2 WHERE ${idCol}=$1`, [req.actor.id, secret]);
-  const label = req.actor.kind === 'staff' ? 'staff' : 'borrower';
+  const label = req.actor.kind === 'borrower' ? 'borrower' : req.actor.kind;
   res.json({ secret, otpauthUrl: C.totpUri(secret, `${label}:${req.actor.id.slice(0, 8)}`) });
 });
 router.post('/mfa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
-  const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
+  const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
+  const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   const r = await db.query(`SELECT mfa_secret FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
   if (!r.rows[0]?.mfa_secret || !C.verifyTotp(r.rows[0].mfa_secret, code))
     return res.status(401).json({ error: 'invalid code' });
@@ -794,7 +808,7 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
   // Confirmation email (best-effort, never blocks the response).
   try {
     let email = null, firstName = null;
-    if (req.actor.kind === 'staff') {
+    if (req.actor.kind !== 'borrower') {   // staff OR tpo — both in staff_users
       const s = await db.query(`SELECT email, full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
       email = s.rows[0]?.email; firstName = (s.rows[0]?.full_name || '').split(' ')[0] || null;
     } else {
@@ -936,9 +950,12 @@ router.post('/staff/mfa/verify', completeMfa);
 router.post('/tpo/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
+    // The firm must be ACTIVE — a suspended/closed firm's brokers cannot sign in
+    // (and suspending a firm also revokes any live sessions via token_version).
     const r = await db.query(
-      `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
-         FROM staff_users WHERE email=$1 AND is_active=true AND is_external=true`, [email]);
+      `SELECT u.id, u.role, u.password_hash, u.mfa_enabled, u.token_version, u.failed_attempts, u.locked_until
+         FROM staff_users u JOIN tpo_firms f ON f.id = u.tpo_firm_id
+        WHERE u.email=$1 AND u.is_active=true AND u.is_external=true AND f.status='active'`, [email]);
     const row = r.rows[0];
     if (!row || !row.password_hash) {
       // Enumeration defense: spend the same time whether or not the account
@@ -1079,6 +1096,28 @@ router.post('/accept', async (req, res, next) => {
         [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
+    }
+    if (row.kind === 'tpo') {
+      // A TPO (external brokerage) invite (db/464/466). Creates an is_external
+      // staff_users row tied to the firm named on the invite, and mints a
+      // kind='tpo' session. NEVER flip an INTERNAL account into an external one:
+      // the ON CONFLICT UPDATE is guarded on `is_external = true`, so a conflict
+      // with an internal row updates nothing and returns no row → refuse.
+      if (!row.tpo_firm_id) return res.status(400).json({ error: 'this invite is not linked to a firm' });
+      const roleWanted = perms.TPO_ROLE_KEYS.includes(row.role) ? row.role : 'tpo_processor';
+      const s = await db.query(
+        `INSERT INTO staff_users (email, full_name, role, password_hash, is_external, tpo_firm_id, is_firm_admin, site_selectable)
+           VALUES ($1,$2,$3,$4,true,$5,$6,false)
+         ON CONFLICT (email) DO UPDATE SET
+           password_hash=EXCLUDED.password_hash, full_name=EXCLUDED.full_name, role=EXCLUDED.role,
+           is_external=true, tpo_firm_id=EXCLUDED.tpo_firm_id, is_firm_admin=EXCLUDED.is_firm_admin,
+           failed_attempts=0, locked_until=NULL, token_version=staff_users.token_version+1
+           WHERE staff_users.is_external = true
+         RETURNING id, role, token_version`,
+        [row.email, fullName || row.email, roleWanted, await C.hashPassword(password), row.tpo_firm_id, row.is_firm_admin]);
+      if (!s.rows[0]) return res.status(403).json({ error: 'that email already belongs to an internal account' });
+      await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
+      return res.json({ token: tpoToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
     }
     const b = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)

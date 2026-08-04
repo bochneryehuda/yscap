@@ -400,6 +400,18 @@ export const api = {
   unarchiveDraft: (id) => req('POST', `/api/borrower/drafts/${id}/unarchive`),
   submitDraft:    (id, b) => req('POST', `/api/borrower/drafts/${id}/submit`, b),
 
+  // ---- TPO portal (external brokerage users — the third front door) ----
+  // A broker signs in ONLY here; the token carries kind='tpo' and every /api/tpo
+  // call is firm-scoped server-side. Mirrors the staff login shape (mfaRequired /
+  // challenge). The invite-accept reuses the shared /auth/accept (the invite's
+  // stored kind routes it), so `acceptInvite` above is used for a tpo invite too.
+  tpoLogin:       (email, password) => req('POST', '/auth/tpo/login', { email, password }),
+  tpoMfaVerify:   (challenge, code) => req('POST', '/auth/tpo/mfa/verify', { challenge, code }),
+  tpoMe:          () => req('GET', '/api/tpo/me'),
+  tpoApplications:() => req('GET', '/api/tpo/applications'),
+  tpoTeam:        () => req('GET', '/api/tpo/team'),
+  tpoTeamInvite:  (b) => req('POST', '/api/tpo/team/invite', b),   // {email, fullName?, role?}
+
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),
   staffMfaVerify: (challenge, code) => req('POST', '/auth/staff/mfa/verify', { challenge, code }),

@@ -186,8 +186,10 @@ router.post('/', async (req, res) => {
     const code = b.officerCode ? String(b.officerCode).toLowerCase().replace(/[^a-z0-9._-]/g, '') : '';
     if (code) {
       const o = await db.query(
+        // is_external=false: a public ?lo= marketing code must never resolve to
+        // an external (TPO / broker) user (TPO PORTAL invariant, CLAUDE.md).
         `SELECT id, full_name, email FROM staff_users
-          WHERE lower(split_part(email,'@',1))=$1 AND is_active=true
+          WHERE lower(split_part(email,'@',1))=$1 AND is_active=true AND is_external=false
           ORDER BY created_at ASC, id ASC LIMIT 1`, [code]);
       if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; }
     }

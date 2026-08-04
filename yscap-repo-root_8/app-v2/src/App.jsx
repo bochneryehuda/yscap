@@ -77,33 +77,52 @@ import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
 import StaffNotificationCenter from './screens/StaffNotificationCenter.jsx';
+// TPO (broker) portal — the third front door (kind='tpo', firm-scoped).
+import TpoLayout from './components/TpoLayout.jsx';
+import TpoLogin from './screens/TpoLogin.jsx';
+import TpoAccept from './screens/TpoAccept.jsx';
+import TpoPipeline from './screens/TpoPipeline.jsx';
+import TpoTeam from './screens/TpoTeam.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console.
    An unauthenticated hit carries the intended route through sign-in (`from`) so
    an email deep-link (e.g. a chat conversation) lands ON its target after login
    instead of dumping the user on the portal home (owner-reported 2026-07-14). */
 function Private({ children }) {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   const loc = useLocation();
   if (!isAuthed) return <Navigate to="/login" state={{ from: loc.pathname + loc.search }} replace />;
   if (isStaff) return <Navigate to="/internal" replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
   return <Layout>{children}</Layout>;
 }
 
 /* Internal-only area. Borrowers who land here are bounced to their dashboard. */
 function StaffPrivate({ children }) {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   const loc = useLocation();
   if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
   return <StaffLayout>{children}</StaffLayout>;
 }
 
+/* Broker (TPO) area. Anyone who is not a signed-in external broker is bounced to
+   their own door — a borrower to their dashboard, a staffer to the console. */
+function TpoPrivate({ children }) {
+  const { isAuthed, isTpo, isStaff } = useAuth();
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/tpo/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isStaff) return <Navigate to="/internal" replace />;
+  if (!isTpo) return <Navigate to="/dashboard" replace />;
+  return <TpoLayout>{children}</TpoLayout>;
+}
+
 /* Anyone hitting an unknown path: route by who they are. */
 function Fallback() {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   if (!isAuthed) return <Navigate to="/login" replace />;
-  return <Navigate to={isStaff ? '/internal' : '/dashboard'} replace />;
+  return <Navigate to={isStaff ? '/internal' : isTpo ? '/tpo' : '/dashboard'} replace />;
 }
 
 /* The internal console used to live under /staff — keep old links (emails,
@@ -151,6 +170,9 @@ export default function App() {
           {/* Staff console has its OWN reset screen so a dual borrower+staff
               account is never sent two different reset emails (owner 2026-07-14). */}
           <Route path="/internal/forgot" element={<Forgot scope="staff" />} />
+          {/* TPO (broker) portal — the third front door. Public entry points. */}
+          <Route path="/tpo/login" element={<TpoLogin />} />
+          <Route path="/tpo/accept" element={<TpoAccept />} />
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
@@ -162,6 +184,10 @@ export default function App() {
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
           <Route path="/pricing" element={<Private><PricingStudio /></Private>} />
           <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
+
+          {/* broker (TPO) portal */}
+          <Route path="/tpo" element={<TpoPrivate><TpoPipeline /></TpoPrivate>} />
+          <Route path="/tpo/team" element={<TpoPrivate><TpoTeam /></TpoPrivate>} />
 
           {/* internal console */}
           <Route path="/internal" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
