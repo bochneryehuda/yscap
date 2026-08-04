@@ -20,10 +20,49 @@ import { useAuth } from '../lib/auth.jsx';
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
 const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
 
+// Per-experience-tier markup (item 15). Company defaults shaped
+// { standard:{1,2,3}, gold, silver } of percents — Tier 1 = the MOST-experienced
+// tier. A blank cell keeps that program/tier's normal markup (for Gold the top
+// tier is normally 0). Programs/tiers listed here drive both the form + save.
+const PROGRAMS = [
+  { key: 'standard', label: 'Standard' },
+  { key: 'gold', label: 'Gold Standard' },
+  { key: 'silver', label: 'Silver' },
+];
+const TIERS = ['1', '2', '3'];
+
 const toForm = (o) => {
   const f = {};
   for (const k of KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : '';
   return f;
+};
+// Build the editable per-tier grid from a settings object's markupTiers map.
+const tiersToForm = (o) => {
+  const mt = (o && o.markupTiers) || {};
+  const out = {};
+  for (const p of PROGRAMS) {
+    out[p.key] = {};
+    for (const t of TIERS) {
+      const v = mt[p.key] && mt[p.key][t];
+      out[p.key][t] = (v != null && v !== '') ? String(v) : '';
+    }
+  }
+  return out;
+};
+// Reduce the grid to the map the API stores: only filled, valid (>=0) cells; a
+// program with no filled cell is dropped; all-empty → {} (server stores NULL =
+// feature off, so every tier keeps its historic markup).
+const tiersToBody = (t) => {
+  const out = {};
+  for (const p of PROGRAMS) {
+    const row = {};
+    for (const tk of TIERS) {
+      const v = t[p.key] && t[p.key][tk];
+      if (v != null && v !== '' && isFinite(Number(v)) && Number(v) >= 0) row[tk] = Number(v);
+    }
+    if (Object.keys(row).length) out[p.key] = row;
+  }
+  return out;
 };
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const pct = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : Number(v) + '%';
@@ -46,6 +85,7 @@ export default function StaffCompanyPricing() {
   const isAdmin = can('manage_pricing');
   const [data, setData] = useState(null);       // { current, systemDefaults, history }
   const [form, setForm] = useState(toForm(null));
+  const [tiers, setTiers] = useState(tiersToForm(null));   // per-tier markup grid
   const [fees, setFees] = useState([]);         // extra fees: [{ name, amount, state }]
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -57,7 +97,7 @@ export default function StaffCompanyPricing() {
     .map((f) => ({ name: String(f.name || ''), amount: String(f.amount == null ? '' : f.amount), state: String(f.state || '') }));
 
   const load = () => api.adminPricingGet()
-    .then((d) => { setData(d); setForm(toForm(d.current)); setFees(feesFrom(d.current)); })
+    .then((d) => { setData(d); setForm(toForm(d.current)); setTiers(tiersToForm(d.current)); setFees(feesFrom(d.current)); })
     .catch((e) => flash(false, e.message || 'could not load pricing settings'));
   useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
 
@@ -75,13 +115,15 @@ export default function StaffCompanyPricing() {
   const removeFee = (i) => setFees((fs) => fs.filter((_, j) => j !== i));
   const cleanFees = (arr) => arr.map((f) => ({ name: (f.name || '').trim(), amount: Number(f.amount), state: (f.state || '').toUpperCase() }))
     .filter((f) => f.name && isFinite(f.amount) && f.amount > 0);
+  const setTier = (prog, t, v) => setTiers((tt) => ({ ...tt, [prog]: { ...tt[prog], [t]: String(v).replace(/[^0-9.]/g, '') } }));
   const feesDirty = JSON.stringify(cleanFees(fees)) !== JSON.stringify(cleanFees(feesFrom(cur)));
-  const dirty = feesDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
+  const tiersDirty = JSON.stringify(tiersToBody(tiers)) !== JSON.stringify(tiersToBody(tiersToForm(cur)));
+  const dirty = feesDirty || tiersDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
 
   async function save() {
     setBusy(true);
     try {
-      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees) };
+      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees), markupTiers: tiersToBody(tiers) };
       for (const k of KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
       await api.adminPricingPut(body);
       setNote('');
@@ -93,6 +135,7 @@ export default function StaffCompanyPricing() {
 
   const loadDefaults = () => {
     setForm(toForm(data.systemDefaults));
+    setTiers(tiersToForm(data.systemDefaults));
     setFees(feesFrom(data.systemDefaults));
     flash(true, 'Loaded the original system defaults into the form — review them, then Save to apply.');
   };
@@ -116,6 +159,37 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="markupStdPct" label="Standard program markup (%)" />
           <Field form={form} set={set} k="markupGoldPct" label="Gold Standard program markup (%)" />
           <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%, max 1.00)" />
+        </div>
+
+        <h3 style={{ margin: '18px 0 0' }}>Markup by experience tier (optional)</h3>
+        <p className="muted small" style={{ margin: '2px 0 8px', maxWidth: 640 }}>
+          Set the markup separately for each experience tier of each program.
+          {' '}<strong>Tier 1 is the most-experienced tier.</strong> Leave a cell blank to keep
+          that program’s normal markup for that tier — for the <strong>Gold Standard</strong> program
+          the top tier normally carries <strong>no markup (0%)</strong>. Type a percent to set that
+          exact tier’s markup (Silver stays capped at 1.00%). This is a fine-tune on top of the
+          per-program markup above.
+        </p>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr><th>Program</th><th>Tier 1 (top)</th><th>Tier 2</th><th>Tier 3</th></tr>
+            </thead>
+            <tbody>
+              {PROGRAMS.map((p) => (
+                <tr key={p.key}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{p.label}</td>
+                  {TIERS.map((t) => (
+                    <td key={t}>
+                      <input className="input" inputMode="decimal" style={{ maxWidth: 120 }}
+                        value={tiers[p.key][t]} placeholder="normal"
+                        onChange={(e) => setTier(p.key, t, e.target.value)} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Origination points</h3>

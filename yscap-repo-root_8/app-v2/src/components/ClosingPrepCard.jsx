@@ -64,7 +64,7 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium'
    order and we should also have the preview button". Checking that the term sheet
    and the binder about to go to the attorney are the right files is the point of
    showing the list at all. */
-function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
+function DocumentPreview({ documents, isAssignment, vestsIndividually, isRefinance, onPreview, onDownload }) {
   const [open, setOpen] = useState(false);
   const groups = documents.groups || [];
   const total = groups.reduce((n, g) => n + g.docs.length, 0);
@@ -79,8 +79,16 @@ function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
   // to warn about" rather than warning on every multi-part package.
   const partCap = Number(documents.maxParts) || 0;
   const overParts = partCap > 0 && partsNeeded > partCap;
-  // An assignment set is only "missing" on a deal that IS an assignment.
-  const missing = (documents.missing || []).filter((m) => !(m.key === 'assignment' && !isAssignment));
+  // The server already drops the groups this deal does not need (assignment on a
+  // straight purchase, purchase contract on a refinance, entity documents on an
+  // individual). This mirror-filter is belt-and-suspenders so a stale bundle can
+  // never show a document as outstanding that the deal does not require.
+  const missing = (documents.missing || []).filter((m) => {
+    if (m.key === 'assignment' && !isAssignment) return false;
+    if (m.key === 'contract' && isRefinance) return false;
+    if (m.key === 'llc' && vestsIndividually) return false;
+    return true;
+  });
   const ins = documents.insurance || {};
   return (
     <div style={{ marginTop: 10 }}>
@@ -161,6 +169,13 @@ function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
             These are on the file already. Only documents somebody has accepted go to the attorney —
             accept them on their condition and they will be included.
           </div>
+        </div>
+      )}
+
+      {vestsIndividually && (
+        <div className="small" style={{ color: MUTED, marginTop: 6 }}>
+          This file closes in the borrower&rsquo;s <b style={{ color: INK }}>personal name</b> — no entity (LLC)
+          documents are required, and the attorney email says so.
         </div>
       )}
 
@@ -348,6 +363,8 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
   const orderOnChain = ((data.chain && data.chain.messages) || [])
     .some((m) => m.event_kind === 'order' && (m.status === 'sent' || m.status === 'carried'));
   const isAssignment = !!(data.file || {}).isAssignment;
+  const vestsIndividually = !!(data.file || {}).vestsIndividually;
+  const isRefinance = !!(data.file || {}).isRefinance;
   const ready = blockers.length === 0;
 
   return (
@@ -387,6 +404,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
       </div>
 
       <DocumentPreview documents={data.documents || {}} isAssignment={isAssignment}
+        vestsIndividually={vestsIndividually} isRefinance={isRefinance}
         onPreview={setPreviewDoc} onDownload={download} />
 
       <Recipients recipients={data.recipients || { to: [], cc: [] }} team={data.team || {}}

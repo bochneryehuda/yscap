@@ -683,7 +683,11 @@
                     <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspSilver">Silver (%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
                 </div>
-                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
+                <div class="ts-admin-group">Gold top tier — manual markup</div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsYspGoldT1">Gold top tier (%)</label><div class="input"><input id="tsYspGoldT1" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0 (no markup)"></div></div>
+                </div>
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — <strong>normally carries no markup (0%)</strong>. To add one for <em>this file</em>, type it in <strong>Gold top tier</strong> above; leave it blank to keep the top tier at zero. The <strong>Gold (%)</strong> field applies to every other Gold tier. For company-wide markup per tier across all programs, use the <strong>Pricing Admin Center</strong>. Enter <strong>0</strong> in any field to waive that markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
 
                 <div class="ts-admin-group">Origination points</div>
                 <div class="ts-admin-grid2">
@@ -905,7 +909,13 @@
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
                 <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
                 <div class="ts-line" id="rExtraWrap" style="display:none"><span class="k" id="rExtraLbl">Additional fees</span><span class="v" id="rExtra">—</span></div>
-                <div class="ts-line"><span class="k">Down payment<span class="tip" tabindex="0" role="note" aria-label="The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”">i<span class="tip-bub">The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”</span></span></span><span class="v" id="rDown">$0</span></div>
+                <!-- REFINANCE reconciliation (rate-and-term only): the existing loan
+                     payoff the borrower brings, less the funds that advance at closing,
+                     so the fee list adds up to the cash-to-close total. Shown by the JS
+                     only on a rate-and-term refi with a payoff (owner-directed 2026-08-04). -->
+                <div class="ts-line" id="rRefiPayoffWrap" style="display:none"><span class="k">Existing loan payoff</span><span class="v" id="rRefiPayoff">—</span></div>
+                <div class="ts-line" id="rRefiAdvWrap" style="display:none"><span class="k">Less funds advanced at closing (initial advance)</span><span class="v" id="rRefiAdv">—</span></div>
+                <div class="ts-line" id="rDownWrap"><span class="k">Down payment<span class="tip" tabindex="0" role="note" aria-label="The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”">i<span class="tip-bub">The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”</span></span></span><span class="v" id="rDown">$0</span></div>
             </div>
             <div class="ts-line em gold"><span class="k">Estimated cash to close<span class="tip" tabindex="0" role="note" aria-label="What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.">i<span class="tip-bub">What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.</span></span></span><span class="v" id="rCash">$0</span></div>
             <div class="ts-line"><span class="k">Estimated liquidity to show<span class="tip" tabindex="0" role="note" aria-label="Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.">i<span class="tip-bub">Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.</span></span></span><span class="v" id="rLiquidity">$0</span></div>
@@ -985,12 +995,12 @@
 
 <script src="../suite.js?v=admin8"></script>
 <script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller18-asgelig"></script>
-<script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver9-bandeps"></script>
+<script src="standard-program.js?v=asgseller18-asgelig-tiermk1"></script>
+<script src="gold-standard.js?v=asgseller19-tiermk1"></script>
+<script src="silver-program.js?v=silver9-bandeps-tiermk1"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

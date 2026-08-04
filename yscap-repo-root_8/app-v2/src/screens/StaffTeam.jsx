@@ -139,6 +139,8 @@ export default function StaffTeam() {
   const [pwFor, setPwFor] = useState(null);
   const [pwVal, setPwVal] = useState('');
   const [permFor, setPermFor] = useState(null);   // staffer id whose permissions panel is open
+  const [contactFor, setContactFor] = useState(null);   // staffer id whose contact-edit panel is open
+  const [contactVals, setContactVals] = useState({});   // { title, phone, cell, ext } being edited
   const [shareOpen, setShareOpen] = useState(false); // "see specific officers' files" picker expanded
   // Guards the welcome / password-reset email actions — a double-click was
   // sending the same email twice.
@@ -194,6 +196,20 @@ export default function StaffTeam() {
   async function patch(id, patchBody, okMsg) {
     try { await api.adminUpdateStaff(id, patchBody); if (okMsg) flash(okMsg); await load(); }
     catch (e) { flashErr(e.message); }
+  }
+  function openContact(s) {
+    setContactFor(contactFor === s.id ? null : s.id);
+    setContactVals({ title: s.title || '', phone: s.phone || '', cell: s.cell || '', ext: s.ext || '' });
+  }
+  async function saveContact(id) {
+    try {
+      await api.adminUpdateStaff(id, {
+        title: contactVals.title.trim(), phone: contactVals.phone.trim(),
+        cell: contactVals.cell.trim(), ext: contactVals.ext.trim(),
+      });
+      setContactFor(null); flash('Contact details updated.');
+      await load();
+    } catch (e) { flashErr(e.message); }
   }
   async function savePassword(id) {
     try {
@@ -346,6 +362,9 @@ export default function StaffTeam() {
                   <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
                     {permFor === s.id ? 'Hide permissions' : 'Permissions'}
                   </button>
+                  <button className="btn link" onClick={() => openContact(s)} title="Edit title, phone, cell & extension">
+                    {contactFor === s.id ? 'Hide contact' : 'Edit contact'}
+                  </button>
                   <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }} title="Show on public site roster">
                     <input type="checkbox" checked={!!s.site_selectable}
                       onChange={e => patch(s.id, { siteSelectable: e.target.checked }, 'Roster updated.')} /> Site
@@ -370,6 +389,22 @@ export default function StaffTeam() {
                     Send password reset
                   </button>
                 </div>
+                {contactFor === s.id && (
+                  <div style={{ width: '100%', marginTop: 8 }}>
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      <input className="input" style={{ maxWidth: 220 }} type="text" placeholder="Title (e.g. Loan Officer)"
+                        value={contactVals.title} onChange={e => setContactVals(v => ({ ...v, title: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 170 }} type="text" placeholder="Direct phone"
+                        value={contactVals.phone} onChange={e => setContactVals(v => ({ ...v, phone: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 170 }} type="text" placeholder="Cell"
+                        value={contactVals.cell} onChange={e => setContactVals(v => ({ ...v, cell: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 100 }} type="text" placeholder="Ext"
+                        value={contactVals.ext} onChange={e => setContactVals(v => ({ ...v, ext: e.target.value }))} />
+                      <button className="btn primary" onClick={() => saveContact(s.id)}>Save contact</button>
+                      <button className="btn ghost" onClick={() => setContactFor(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
                 {pwFor === s.id && (
                   <div style={{ width: '100%', marginTop: 8 }}>
                     <div className="row" style={{ gap: 8 }}>

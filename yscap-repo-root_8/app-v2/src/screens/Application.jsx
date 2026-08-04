@@ -195,11 +195,40 @@ function CardCondition({ it, appId, onSaved }) {
   );
 }
 
-/* One row in the conditions list: dot + title + status pill + right action,
-   with optional expandable body. Every condition on the file renders through
-   this so the whole section reads as one uniform list. */
-function ConditionRow({ done, issue, title, subtitle, status, action, children, open, onDropFiles }) {
+/* One row in the conditions list — the COMPACT, staff-like line (owner-directed
+   2026-08: "cleaner conditions design like staff"). Every condition reads as one
+   tidy header you scan — chevron, status dot, name, what's needed, one action —
+   and clicks open to reveal its documents / form / downloads underneath, exactly
+   like the staff `.cnd` line. Two things are kept deliberately: the borrower's
+   subtitle stays visible (a borrower needs the guidance a power user does not),
+   and a LOUD requirement banner (`loud`) is rendered OUTSIDE the collapse so it
+   is never hidden (owner-directed — never strip the loud bank-statement banner). */
+function ConditionRow({ done, issue, title, subtitle, status, action, children, open: openProp, onDropFiles, loud }) {
   const [over, setOver] = useState(false);
+  // A row that carries a body (documents, a form, downloads) collapses; the
+  // header stays. Rows passed no children (photo ID, e-sign, read-only flags)
+  // are plain single-line rows with no chevron.
+  const collapsible = children != null && children !== false;
+  // Controlled "force open": whatever the caller's `open` prop reflects — docs
+  // present, a sub-form opened (a sub-component's own state flows in via
+  // `openProp`), or a fix requested. It is deliberately NOT `issue` on its own:
+  // the doc/assets callers already fold `issue` into their `open` prop where the
+  // body must reveal a rejection reason, and a sub-component (Card/Contact/Info/
+  // LLC) that pins itself CLOSED via its own button must be able to collapse —
+  // pinning on `issue` would keep its form stuck open. The borrower can also
+  // click the header to open/close it.
+  const forceOpen = !!openProp;
+  const [open, setOpen] = useState(forceOpen);
+  const mounted = useRef(false);
+  useEffect(() => {
+    // After mount, follow the controlled state whenever it actually changes (an
+    // upload landed, a form toggled), but let the borrower's own click stand in
+    // between — so clicking a row closed doesn't spring back open on every render.
+    if (mounted.current) setOpen(forceOpen);
+    else mounted.current = true;
+  }, [forceOpen]);
+  const bodyOpen = collapsible && open;
+  const toggle = () => setOpen((o) => !o);
   // When onDropFiles is provided the whole row accepts a dragged-in document —
   // same upload as the button, you just drop the file onto the condition.
   const dropProps = onDropFiles ? {
@@ -208,20 +237,32 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
     onDrop: (e) => { e.preventDefault(); setOver(false); onFilesDropped(e, onDropFiles); },
   } : {};
   return (
-    <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
-      style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }} {...dropProps}>
-      <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        {/* Same colours as before — the red is now a class, not an inline style,
-            so every condition dot in the portal is painted from one place. */}
-        <span className={`dot ${issue ? 'cond-issue' : done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600 }}>{title}</div>
-          {subtitle && <div className="muted small">{subtitle}</div>}
+    <div className={`checkitem bcond${collapsible ? ' clickable' : ''}${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
+      {...dropProps}>
+      <div className="bcond-head"
+        role={collapsible ? 'button' : undefined} tabIndex={collapsible ? 0 : undefined}
+        aria-expanded={collapsible ? bodyOpen : undefined}
+        onClick={collapsible ? toggle : undefined}
+        onKeyDown={collapsible ? (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } } : undefined}>
+        {collapsible
+          ? <span className={`bcond-chev${bodyOpen ? ' open' : ''}`} aria-hidden="true">▶</span>
+          : <span className="bcond-chev spacer" aria-hidden="true" />}
+        {/* Same colours as before — the red is a class, not an inline style, so
+            every condition dot in the portal is painted from one place. */}
+        <span className={`dot ${issue ? 'cond-issue' : done ? 'done' : 'outstanding'}`} style={{ flex: 'none', marginTop: 6 }} />
+        <div className="bcond-main">
+          <div className="bcond-title">{title}</div>
+          {subtitle && <div className="bcond-sub">{subtitle}</div>}
         </div>
-        <span className="muted small" style={{ whiteSpace: 'nowrap' }}>{status}</span>
-        {action}
+        {status && <span className="bcond-status">{status}</span>}
+        {/* stopPropagation so pressing the action acts on the condition instead
+            of toggling the row open/closed underneath it. */}
+        {action && <span className="bcond-act" onClick={(e) => e.stopPropagation()}>{action}</span>}
       </div>
-      {open && <div style={{ width: '100%', paddingLeft: 20 }}>{children}</div>}
+      {/* The LOUD requirement banner stays visible whether or not the row is
+          expanded — never hidden behind the collapse (owner-directed). */}
+      {loud && <LoudBanner text={loud} style={{ marginTop: 8 }} />}
+      {bodyOpen && <div className="bcond-body">{children}</div>}
       {over && onDropFiles && <div className="drop-hint">Drop file to upload</div>}
     </div>
   );
@@ -1215,11 +1256,11 @@ export default function Application() {
                         + '. Upload the bank statements that show it.'
                       : [lh.loud ? lh.rest : assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
-                    open={docs.length > 0 || assetsItem.status === 'issue' || !!q || !!lh.loud}
+                    open={docs.length > 0 || assetsItem.status === 'issue' || !!q}
+                    loud={lh.loud}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: assetsItem.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: assetsItem.id, slotBase: docs.length })}
                   >
-                    {lh.loud && <LoudBanner text={lh.loud} style={{ marginTop: 0, marginBottom: 8 }} />}
                     {regCond && regCond.detail && (
                       <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
                         {regCond.detail}
@@ -1270,6 +1311,10 @@ export default function Application() {
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
                   >
+                    {/* Only carry a body (and therefore a chevron) once there IS
+                        something to reveal — a fix note or uploaded documents.
+                        A brand-new, empty condition stays a plain one-line row. */}
+                    {(docs.length > 0 || needsFix) && (<>
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
                         Needs a new version: {it.rejection_reason}
@@ -1287,6 +1332,7 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    </>)}
                   </ConditionRow>
                 );
               })}

@@ -154,8 +154,14 @@ export default function StaffPropertyResearch() {
       }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16, alignItems: 'start' }}>
-        {/* ---------------- filters ---------------- */}
-        <aside style={{ ...S.panel, position: 'sticky', top: 12 }}>
+        {/* ---------------- filters ----------------
+            The search column scrolls INSIDE ITSELF (its own scrollbar, capped to
+            the viewport) so reaching the bottom filters no longer drags the whole
+            page — which used to move the results with it. The results column keeps
+            the page scroll, so the two panes move independently (owner-directed
+            2026-08-04). minHeight:0 lets the sticky box actually cap its height. */}
+        <aside style={{ ...S.panel, position: 'sticky', top: 80,
+          maxHeight: 'calc(100vh - 92px)', overflowY: 'auto', minHeight: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <strong style={{ color: INK }}>Search</strong>
             {activeCount > 0 && (
@@ -442,7 +448,10 @@ function Field({ label, children }) {
   return <div style={{ marginBottom: 10 }}><label style={S.label}>{label}</label>{children}</div>;
 }
 function Row({ children }) {
-  return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>{children}</div>;
+  // minmax(0,1fr) — a bare 1fr track floors at min-content, so a native date
+  // input (its own ~130px minimum) refuses to shrink and overflows the narrow
+  // search column. minmax(0,…) lets each cell shrink to the track.
+  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 6 }}>{children}</div>;
 }
 // `filters` is the APPLIED state and is what blur must compare against. Testing
 // `draft[lo] !== undefined` was always true — every key exists on the draft — so

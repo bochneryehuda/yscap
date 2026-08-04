@@ -1116,6 +1116,12 @@ export const api = {
   staffConditionMeta:        () => req('GET', '/api/staff/conditions/meta'),
   staffAddCustomCondition:   (appId, b) => req('POST', `/api/staff/applications/${appId}/conditions/custom`, b),
   staffAttachCondition:      (appId, templateId) => req('POST', `/api/staff/applications/${appId}/conditions/attach`, { templateId }),
+  // Manual-condition deletion (owner-directed 2026-08-04). Delete works for the
+  // adder / an admin; otherwise the server returns 403 code needs_delete_request
+  // and the caller offers to ask the adder instead.
+  staffDeleteCondition:      (appId, itemId) => req('DELETE', `/api/staff/applications/${appId}/conditions/${itemId}`),
+  staffRequestDeleteCondition:(appId, itemId, reason) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-delete`, { reason }),
+  staffDismissDeleteRequest: (appId, itemId) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/dismiss-delete-request`),
   staffReevaluateConditions: (appId) => req('POST', `/api/staff/applications/${appId}/conditions/reevaluate`),
 
   // ---- Condition Center: borrower answers an information condition ----

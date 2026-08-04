@@ -4,6 +4,7 @@ const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
 const { termWritebackText } = require('./term-text');
 const { sqftForType } = require('./fields');
+const { fmtRatePct } = require('./rate-format');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 // The EXPLICIT experience claim a register carried for one bucket, or null when
@@ -25,10 +26,21 @@ function productName(quote) {
 function assetDetail(quote) {
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
+  // On a REFINANCE the cash to close is the payoff shortfall (payoff + closing
+  // costs − the funds that advance at closing), not a purchase down payment.
+  // On a CASH-OUT refi the loan covers the payoff + closing (cash-to-close is $0),
+  // so the "payoff − advanced" equation would sum negative; state the cash-out.
+  // Rate-and-term reconciles as the payoff shortfall the borrower brings. Must read
+  // the same as liquidity.js.
+  const cashToCloseDetail = quote.refi
+    ? (quote.refi.cashOut > 0
+        ? `Cash to close: ${money(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money(quote.refi.cashOut)} cash out.`
+        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
+    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
-    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${(quote.noteRate * 100).toFixed(2)}%` : ''}.`,
-    `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`,
+    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${fmtRatePct(quote.noteRate)}%` : ''}.`,
+    cashToCloseDetail,
     `Assets/liquidity to verify: ${money(quote.liquidityRequired || quote.liquidity)} (${money(quote.cashToClose)} cash to close + ${money(quote.reserveRequirement)} reserve requirement).`,
   ];
   if (quote.reserveBasis) lines.push(`Reserve basis: ${quote.reserveBasis}.`);
@@ -513,11 +525,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
  * @param {number} [p.termMonths] loan term in months (from inputs.term)
  * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
  */
-function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions } = {}) {
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut } = {}) {
   quote = quote || {};
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
-  const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
+  const rate = quote.noteRate != null ? fmtRatePct(quote.noteRate) + '%' : null;
   const programLabel = quote.programLabel || 'your program';
   // Term-sheet options (owner-directed 2026-07-22): only surface what applies.
   const to = termOptions && typeof termOptions === 'object' ? termOptions : {};
@@ -547,7 +559,20 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     // borrower funds themselves over construction (0 unless an approved exception).
     num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
-    quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    // On a CASH-OUT refinance the borrower RECEIVES money at closing, so cash-to-close
+    // is $0 and the figure they actually care about is "cash to you". Showing the plain
+    // "Estimated cash to close: $0" told a cash-out borrower nothing (owner-directed
+    // 2026-08-04). `cashOut` is the figure of record — a per-file typed amount if one
+    // was entered, else the structure's implied proceeds (quote.refi.cashOut). It is
+    // >0 only on a cash-out; a rate-and-term keeps the ordinary cash-to-close (the
+    // shortfall the borrower brings).
+    // Show "cash to you" ONLY when the STRUCTURE is a cash-out (funds advanced exceed
+    // payoff + closing). Gating on the figure-of-record alone would let a typed
+    // cash-out entered on a rate-and-term (a real shortfall the borrower BRINGS)
+    // suppress that shortfall — the web tool gates the same line on isCashOut().
+    (quote.refi && quote.refi.cashOut > 0 && num(cashOut) > 0)
+      ? { label: 'Estimated cash to you (paid to you at closing)', value: money(cashOut) }
+      : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null),
     // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower
     // knows the extra cushion is part of what they must show. Hidden when waived.
     num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money(quote.closingBuffer) } : null,

@@ -86,6 +86,12 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
   ovrRate:       { label: 'Manual note rate',                          unit: 'frac'  },
   ovrIrMonths:   { label: 'Manual interest-reserve months',            unit: 'num'   },
   ovrEffPrice:   { label: 'Approved effective purchase price',         unit: 'money' },
+  // Manual GOLD top-tier (Tier 1) markup (owner-directed item 15) — the studio's
+  // "manual section for the top tier". The top experience tier historically
+  // carries NO markup, so ANY value here is a deliberate exception → routes to
+  // an admin for approval, exactly like the other admin-zone knobs. A value of 0
+  // is not engaged (it IS the historic default), so it never triggers approval.
+  markupGoldT1Pct: { label: 'Gold top-tier (Tier 1) markup',           unit: 'pct'   },
   // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount of
   // rehab brought out of pocket so the initial advance rises toward the acquisition
   // cap. Off by default; any real amount (or the "raise initial to max" toggle) needs

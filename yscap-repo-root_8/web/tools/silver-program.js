@@ -68,7 +68,19 @@
   var MARKUP_MAX = 0.01;         // hard cap (owner-directed 2026-07-29): the program's buy-rate floor is the note
                                  // rate minus 1.00pt, so any spread above 1 point is never earned — cap it here.
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default; clamped to MARKUP_MAX
-  function effMarkup() { var m = (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; return (m > MARKUP_MAX) ? MARKUP_MAX : m; }
+  // Per-experience-tier markup (owner-directed item 15): { 1:frac, 2:frac, 3:frac },
+  // each tier OPTIONAL and each still clamped to MARKUP_MAX. A tier absent here
+  // falls back to the per-program override/default — so an UNSET map prices
+  // byte-identically to before. tier 1 = the program's TOP experience tier.
+  var MARKUP_TIERS = null;
+  function setMarkupTiers(m) { MARKUP_TIERS = (m && typeof m === "object") ? m : null; }
+  function effMarkup(tier) {
+    var m;
+    if (MARKUP_TIERS && tier != null && typeof MARKUP_TIERS[tier] === "number"
+        && isFinite(MARKUP_TIERS[tier]) && MARKUP_TIERS[tier] >= 0) m = MARKUP_TIERS[tier];
+    else m = (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR;
+    return (m > MARKUP_MAX) ? MARKUP_MAX : m;
+  }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? Math.min(f, MARKUP_MAX) : null; }
   var ORIG_PCT = 0.0125;         // 1.25% origination on the total loan (same as Standard)
   var MIN_LOAN = 100000;         // grid floor: "Loan Sizes $100k–$2.5m" / "$2.5m–$4.5m"
@@ -803,7 +815,7 @@
     var g = gridRate(o.market, o.sizeBand, prodToken(o.strategyCode), o.loanType === "Refinance" ? "R" : "P",
       termToken(o.term), o.tier, arBand(o.arltv), ficoBand(o.tier, o.fico), ltcBand(o.ltc));
     if (g == null) return null;
-    return g + effMarkup();
+    return g + effMarkup(o.tier);
   }
 
   /* ---------------- evaluate ---------------- */
@@ -1058,7 +1070,7 @@
       return denom > 0 ? (s.totalLoan / denom) : 0;
     };
     var guess = rateOvr || (gridRate(market, sizeBand, pTok, purp, termTok, tier,
-      arBand(Math.min(capsEff.maxARLTV, 0.75)), ficoBand(tier, fico || 700), ltcBand(Math.min(capsEff.maxLTC, 0.925))) || 0.10) + (rateOvr ? 0 : effMarkup());
+      arBand(Math.min(capsEff.maxARLTV, 0.75)), ficoBand(tier, fico || 700), ltcBand(Math.min(capsEff.maxLTC, 0.925))) || 0.10) + (rateOvr ? 0 : effMarkup(tier));
     dealForSize.noteRateForIR = guess;
     var sizing = YSP.sizeLoan(dealForSize, capsEff);
     var rate = rateOvr || rateAt(sizing);
@@ -1122,7 +1134,7 @@
       var g = gridRate(market, sizeBand, pTok, purp, termTok, tier,
         arBand(atCap(arForBand(s), capsEff.maxARLTV)), ficoBand(tier, fico || 700),
         ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC, capsEff.maxLTC)));
-      return g == null ? null : g + effMarkup();
+      return g == null ? null : g + effMarkup(tier);
     }
 
     // ---- grid-aware leverage step-down -------------------------------------
@@ -1174,14 +1186,14 @@
         var d2 = {
           loanType: loanType, purchasePrice: effPurchase, asIsValue: aiv, arv: arv,
           rehabBudget: rehab, irMonths: irMonthsEff, irAmount: irAmountReq, accrual: input.accrual,
-          noteRateForIR: (seed == null ? 0.10 : seed) + effMarkup(),
+          noteRateForIR: (seed == null ? 0.10 : seed) + effMarkup(tier),
           reserveCapMonths: termMonths, reserveInCost: true, bridge: (sc === "BR")
         };
         var s2 = YSP.sizeLoan(d2, capsTry);
         if (!(s2.totalLoan > 0)) return null;
         var g2 = gridAt(s2, capsTry);
         if (g2 == null) return null;
-        d2.noteRateForIR = g2 + effMarkup();
+        d2.noteRateForIR = g2 + effMarkup(tier);
         var s3 = YSP.sizeLoan(d2, capsTry);
         // The re-size produced no loan at all, so the FIRST-pass structure stands —
         // and (s2, g2) is a consistent pair, because g2 IS gridAt(s2).
@@ -1314,7 +1326,7 @@
            the published `pricedCeiling` (clamped to the same maximum). */
         var cutLtc = best.caps.maxLTC < capsEff.maxLTC - 1e-9;
         var cutAr = best.caps.maxARLTV < capsEff.maxARLTV - 1e-9;
-        rate = best.grid + effMarkup();
+        rate = best.grid + effMarkup(tier);
         sizing = best.sizing;
         capsEff = best.caps;
         // NAME the guideline that actually holds the deal back — blaming
@@ -1534,7 +1546,7 @@
   return {
     evaluate: evaluate,
     priceLadder: priceLadder,
-    setMarkup: setMarkup,
+    setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     // exposed for tooling / tests
     marketOf: marketOf, geoCheck: geoCheck, tierOf: tierOf, projectCount: projectCount,
     caps: caps, gridRate: gridRate, rateKey: rateKey, noteRate: noteRate,

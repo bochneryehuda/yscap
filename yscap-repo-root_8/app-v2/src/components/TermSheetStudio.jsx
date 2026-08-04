@@ -251,6 +251,8 @@ function readSnapshot(win) {
       tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
+      // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
+      tsYspGoldT1: val('tsYspGoldT1'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
       tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
@@ -308,6 +310,7 @@ export function adminStateFromEngineInputs(inp) {
   const v = {};
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
   put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
+  put('tsYspGoldT1', inp.markupGoldT1Pct);   // manual Gold top-tier markup (item 15)
   put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
   put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);

@@ -102,7 +102,11 @@ export const severityColor = (s) => (s === 'fatal' ? '#B4423A' : s === 'warning'
    them; the surrounding page keeps the app's own `card`/`btn`/`chip` classes. */
 export const S = {
   label: { display: 'block', fontSize: 12, color: MUTED, marginBottom: 3, fontWeight: 600 },
-  input: { width: '100%', padding: '7px 9px', border: '1px solid #DDD6C7', borderRadius: 6,
+  // minWidth:0 lets an input SHRINK inside a grid/flex track. Without it a native
+  // date input keeps its intrinsic ~130px min-content width and, in the narrow
+  // sticky search column, overflows the panel — the "sold date coming outside of
+  // this section" bug. A width:100% input never wants an intrinsic minimum here.
+  input: { width: '100%', minWidth: 0, padding: '7px 9px', border: '1px solid #DDD6C7', borderRadius: 6,
     fontSize: 14, color: INK, background: '#fff' },
   cell: { padding: '7px 9px', borderBottom: '1px solid #EEE9DD', fontSize: 13, color: INK, verticalAlign: 'top' },
   th: { padding: '7px 9px', borderBottom: '2px solid #DDD6C7', fontSize: 12, color: MUTED,
