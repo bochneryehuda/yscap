@@ -900,14 +900,19 @@ t('a non-url is refused with a plain reason', () => {
       assert.strictEqual(twoLoan.otherFormat, 4, 'all four unparsable resources are still counted');
     });
 
-    t('and the companions are still reported — bounded, in their own list', () => {
-      // The other half: splitting the budgets must not silence the companion
-      // class altogether. One is a sample; the count carries the rest.
+    t('and SPLITTING the budget did not SHRINK the companion class', () => {
+      // The other half, and the reason both classes share ONE cap. Splitting must
+      // be purely additive: the filename backstop exists for a delivery whose type
+      // URN ALSO changed, which arrives matched by name only — so giving that class
+      // fewer slots than it had would make it worse at its one job while fixing the
+      // URN class. All three distinct companions are still named.
       const companions = twoLoan.otherFormatCompanions || [];
-      assert.strictEqual(companions.length, M._internals.MAX_OTHER_FORMAT_COMPANION,
-        `the companion budget is spent to its cap and no further, saw ${JSON.stringify(companions)}`);
+      assert.strictEqual(companions.length, 3,
+        `all three distinct companions must still be named, saw ${JSON.stringify(companions)}`);
       assert.ok(companions.every((n) => /\.pdf/i.test(n)),
-        'and it holds only the filename-matched documents');
+        'and the list holds only the filename-matched documents');
+      assert.ok(companions.length <= M._internals.MAX_OTHER_FORMAT_NAMED,
+        'bounded by the same cap as the URN class — neither may exceed it');
     });
 
     t('and the naming is BOUNDED — a tenant-wide format change cannot drain the budget', () => {
@@ -973,6 +978,53 @@ t('a non-url is refused with a plain reason', () => {
         && payload.otherFormatCompanions.some((n) => /Appraiser_License\.pdf/.test(n)),
         `and its own otherFormatCompanions must carry the companion, saw: ${
           JSON.stringify(payload.otherFormatCompanions)}`);
+    });
+
+    // ── A VENDOR STRING IS BOUNDED BEFORE IT IS KEPT ──────────────────────────
+    // The shape is built from res.mimeType + res.name, both VENDOR values off an
+    // API response, and it is then retained for the whole sweep, pushed to
+    // errors[], printed by console.error and JSON.stringified into the log line.
+    // Nothing bounds a vendor filename at the source. Without the t500 this one
+    // resource puts several kilobytes into every one of those places — and the
+    // guard was previously untested, so deleting it left both suites green.
+    const LONG_NAME = `Appraisal_${'X'.repeat(4000)}.zip`;
+    let longSweep;
+    {
+      const og = enc3.apiGet, op = enc3.pipelineSearch, oc = enc3.configured;
+      const oe = console.error, ol4 = console.log;
+      try {
+        console.error = () => {}; console.log = () => {};
+        enc3.configured = () => true;
+        enc3.pipelineSearch = async () => [{ loanId: 'll1', fields: { 'Loan.LoanNumber': 'LL1' } }];
+        enc3.apiGet = async (p) => {
+          if (/serviceOrders\/[^/?]+\?/.test(String(p))) {
+            return { response: { resources: [{
+              id: 'long-1', name: LONG_NAME, mimeType: 'application/zip',
+              type: 'urn:ice:epc:partner:appraisal:report:version:V3.6',
+              location: 'https://skydrive.ellieservices.com/l?validity=zzz', authorization: 'sig',
+            }] } };
+          }
+          if (/serviceOrders$/.test(String(p))) return [{ id: 'o-long', serviceSetup: { category: 'APPRAISAL' } }];
+          return [];
+        };
+        longSweep = await M._internals.makeTick(db)();
+      } finally {
+        console.error = oe; console.log = ol4;
+        enc3.apiGet = og; enc3.pipelineSearch = op; enc3.configured = oc;
+      }
+    }
+
+    t('a vendor filename is LENGTH-BOUNDED before it is kept, printed or logged', () => {
+      const names = longSweep.otherFormatNames || [];
+      assert.strictEqual(names.length, 1, 'fixture check: the one resource was named');
+      assert.ok(names[0].length <= 520,
+        `the retained shape must be bounded, saw ${names[0].length} chars`);
+      assert.ok(names[0].length < LONG_NAME.length,
+        'and it must actually be shorter than the vendor string it came from');
+      const mine = (longSweep.errors || []).filter((e) => /do not parse/.test(e));
+      assert.strictEqual(mine.length, 1, 'fixture check: one error line');
+      assert.ok(mine[0].length <= 900,
+        `the error line carries the bounded shape, saw ${mine[0].length} chars`);
     });
 
     t('the type URN is matched as a PREFIX, so a new MISMO/UAD version needs no code change', () => {

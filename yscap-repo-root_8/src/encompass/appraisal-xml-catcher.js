@@ -85,24 +85,40 @@ const encompass = require('../lib/integrations/encompass');
 // sample and COUNT the rest — a silent truncation would read as "only three
 // things went wrong".
 const MAX_ERRORS = 50;
-// How many DISTINCT unparsable shapes a sweep names, and the two budgets are
-// SEPARATE on purpose — see appraisalMatchKind.
+// How many DISTINCT unparsable shapes a sweep names PER MATCH CLASS. The two
+// classes get SEPARATE budgets of this size — see appraisalMatchKind.
 //
-// A resource carrying the appraisal TYPE URN is the vendor saying "this is the
-// report", so an unparsable one is the signal worth a slot. A resource matched
-// only by the word "apprais" in its filename is the generous backstop, and in
-// practice it is an invoice or a licence.
+// A resource carrying the appraisal TYPE URN is the vendor saying "this IS the
+// report", so an unparsable one is the signal this alarm exists to raise. A
+// resource matched only by the word "apprais" in its filename is the generous
+// backstop. On ONE shared budget the second class can crowd out the first, and
+// since the naming is capped, whatever is crowded out is reported nowhere but in
+// the count.
 //
-// ONE shared budget was not enough, and the reason is specific: AMCs stamp the
-// order number and the property into companion filenames, so
-// "Appraisal Invoice 884120.pdf" and "Appraisal UCDP SSR 884120.pdf" are two
-// DISTINCT shapes on one order. Three of those on an early loan filled a single
-// 3-slot budget and a genuine UAD 3.6 ZIP on a later loan was named nowhere —
-// the exact failure the distinct-shape rule was written to fix, made three times
-// less likely rather than fixed. A companion can now only ever crowd out another
-// companion.
+// BE HONEST ABOUT THE EVIDENCE, because an earlier version of this comment was
+// not. It asserted that appraisal management companies stamp order numbers into
+// companion filenames, so one order would present three distinct "Appraisal …"
+// PDFs. That was reasoning from a plausible story, not from the data, and the
+// data says otherwise. Measured over the discovery snapshot of this tenant (580
+// APPRAISAL orders, 2,392 resources — docs/ENCOMPASS-APPRAISAL-XML-DISCOVERY.md)
+// using the matchers in this file:
+//
+//   • filename-matched unparsable resources, tenant-wide:  1
+//     ("appraisal dispute.xlsx"; the ordinary companions are named with bare
+//      numerics like 16412716.pdf and match nothing here)
+//   • most distinct filename-matched shapes on any ONE order:  1
+//   • orders carrying 3 or more such shapes:  0
+//   • unparsable resources carrying the appraisal type URN:  0
+//     (this tenant is still on MISMO 2.6 — all 275 URN-carrying resources parse)
+//
+// So the crowding this guards against has never actually happened here, and on
+// today's data the naming branch is close to dormant. The split is kept anyway
+// because it is free at this size and the failure it prevents is the silent one:
+// the whole point of the branch is the day a delivery format changes, which is
+// exactly when the observed shape stops describing reality. It is a structural
+// precaution, NOT a response to a measured failure — do not re-describe it as
+// one, and do not tune these caps on the strength of the invented story.
 const MAX_OTHER_FORMAT_NAMED = 3;
-const MAX_OTHER_FORMAT_COMPANION = 1;
 function pushErr(out, msg) {
   if (out.errors.length < MAX_ERRORS) out.errors[out.errors.length] = msg;
   else out.errorsDropped = (out.errorsDropped || 0) + 1;
@@ -268,10 +284,11 @@ function isAppraisalXml(res) {
   // sweep retries and which reads to an operator as a breakage rather than "not
   // applicable".
   //
-  // The type URN is read by `isAppraisalResource` below, whose job is the OTHER
-  // question — "was this an appraisal delivery at all?" — which is what makes a
-  // format we cannot parse VISIBLE instead of silent. Keep the two apart: folding
-  // the URN into this test is what would start the ZIP downloads.
+  // The type URN is read by `appraisalMatchKind` below, whose job is the OTHER
+  // question — "was this an appraisal delivery at all, and how do we know?" —
+  // which is what makes a format we cannot parse VISIBLE instead of silent. Keep
+  // the two apart: folding the URN into this test is what would start the ZIP
+  // downloads.
   return mime.includes('xml') || /\.xml$/i.test(name);
 }
 
@@ -913,11 +930,22 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             //
             // t500 because both halves are VENDOR strings off an API response and
             // this one is retained for the whole sweep, pushed to errors[], printed
-            // and JSON-stringified. Nothing else in this module lets an unbounded
-            // vendor string through to a log line.
+            // and JSON-stringified. It is NOT the only unbounded vendor string that
+            // can reach a log line — `capture()`'s verdict embeds the filename raw,
+            // and the pushErr calls below embed raw resource/order ids, both of
+            // which predate this and can produce a multi-kilobyte line. Bounding
+            // those is a separate change; this one is bounded because it is the
+            // string this branch introduced.
             const byType = matchKind === 'type';
             const named = byType ? out.otherFormatNames : out.otherFormatCompanions;
-            const cap = byType ? MAX_OTHER_FORMAT_NAMED : MAX_OTHER_FORMAT_COMPANION;
+            // SAME cap per class, deliberately. Splitting the budget must not
+            // SHRINK either class: giving the filename backstop fewer slots than it
+            // had would make it worse at the one job the docblock keeps it for — a
+            // delivery whose type URN ALSO changed, which arrives matched by name
+            // only. Worst case is 2 x MAX_OTHER_FORMAT_NAMED of the MAX_ERRORS
+            // slots, still a small fraction, and on measured data neither class
+            // fills even one.
+            const cap = MAX_OTHER_FORMAT_NAMED;
             const shape = t500(`${res.mimeType || 'no mime'} / ${res.name || 'no name'}`);
             if (!named.includes(shape) && named.length < cap) {
               named[named.length] = shape;
@@ -1166,7 +1194,7 @@ module.exports = {
   _internals: {
     validityOf, isAppraisalXml, isAppraisalResource, APPRAISAL_TYPE_PREFIX,
     assertStorageHost, STORAGE_HOST_RE, makeTick,
-    MAX_OTHER_FORMAT_NAMED, MAX_OTHER_FORMAT_COMPANION, appraisalMatchKind,
+    MAX_OTHER_FORMAT_NAMED, appraisalMatchKind,
     decodeHead, looksLikeXml, tsOrNull, recordSighting, envNum,
   },
 };
