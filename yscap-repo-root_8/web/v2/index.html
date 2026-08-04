@@ -1062,6 +1062,47 @@ section[id], main[id]{ scroll-margin-top:96px; }
   });
   paint('gold');   // best-case Gold is the default landing view
 })();
+
+/* Hydrate the "Meet our team" section from the LIVE staff roster (/api/roster),
+   so a user marked "show on public site roster" actually appears here (owner-
+   directed 2026-08-04). Progressive enhancement: the static cards below stay as
+   a fallback if the fetch fails or the roster is empty. */
+(function(){
+  var section = document.getElementById('team');
+  if (!section || !window.fetch) return;
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]; }); }
+  function card(p){
+    var lines = [];
+    if (p.nmls) lines.push('<p>NMLS #' + esc(p.nmls) + '</p>');
+    var ln = [];
+    if (p.ext) ln.push('Ext ' + esc(p.ext));
+    if (p.phone) ln.push('Direct ' + esc(p.phone));
+    if (ln.length) lines.push('<p>' + ln.join(' · ') + '</p>');
+    if (p.cell) lines.push('<p>Cell ' + esc(p.cell) + '</p>');
+    var email = p.email ? '<a href="mailto:' + esc(p.email) + '">' + esc(p.email) + '</a>' : '';
+    var role = esc(p.title || p.role || '');
+    return '<article class="member"><img src="assets/images/profile-placeholder.png" alt="">'
+      + '<h3>' + esc(p.name) + '</h3>'
+      + (role ? '<span class="role">' + role + '</span>' : '')
+      + lines.join('') + email + '</article>';
+  }
+  function grid(people){ return '<div class="team-grid">' + people.map(card).join('') + '</div>'; }
+  fetch('/api/roster').then(function(r){ return r.ok ? r.json() : null; }).then(function(data){
+    if (!data || !data.groups || !data.groups.length) return;   // keep the static fallback
+    var total = data.groups.reduce(function(n, g){ return n + ((g.people || []).length); }, 0);
+    if (!total) return;
+    var head = section.querySelector('.section-head');
+    Array.prototype.forEach.call(section.querySelectorAll('.team-grid, .team-subhead'), function(el){ el.remove(); });
+    var html = '';
+    data.groups.forEach(function(g, i){
+      if (!(g.people || []).length) return;
+      if (i > 0) html += '<h3 class="team-subhead">' + esc(g.label) + '</h3>';
+      html += grid(g.people);
+    });
+    if (head) head.insertAdjacentHTML('afterend', html);
+    else section.insertAdjacentHTML('beforeend', html);
+  }).catch(function(){ /* keep the static cards */ });
+})();
 </script>
 
 <!-- DSCR instant-pricing waitlist (coming soon) + shared lead capture -->
