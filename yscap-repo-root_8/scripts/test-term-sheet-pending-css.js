@@ -98,6 +98,47 @@ ok(/#rReasons\b/.test(all), 'the reason list is covered');
 ok(/#rStatus::after|\.pcard-badge::after/.test(all),
   'and the verdict is REPLACED with neutral wording, not merely dimmed (a grey "Not eligible" still says not eligible)');
 
+/* THE BIG NUMBER IS REPLACED TOO.
+   termsheet.js prints "$0" on all three cards while the quote is pending (the
+   page is `ready` and the status is not INELIGIBLE), so dimming alone leaves a
+   faint but perfectly readable "$0" standing as the answer. */
+ok(/\.pcard-loan\b/.test(all), 'the big loan figure is covered');
+ok(/\.pcard-loan::after/.test(all), 'and it is REPLACED with an em-dash, not merely dimmed (a grey "$0" still says $0)');
+
+/* ---------------------------------------------------------------------------
+   5. The declarations that carry the fix — not just the selectors
+   ---------------------------------------------------------------------------
+   Each of these is a single property whose removal silently restores a measured
+   defect, with nothing failing and nothing looking wrong in the source. */
+function ruleBody(selectorNeedle) {
+  // Grab the { … } that follows the first rule whose selector list mentions it.
+  const i = html.indexOf(selectorNeedle);
+  if (i < 0) return '';
+  const open = html.indexOf('{', i);
+  const close = html.indexOf('}', open);
+  return open < 0 || close < 0 ? '' : html.slice(open + 1, close);
+}
+
+{
+  const badge = ruleBody(`:root[${PENDING_ATTR}="1"] .pcard-badge,`);
+  ok(/font-size:\s*0\b/.test(badge),
+    'the pending badge COLLAPSES its real wording (font-size:0) so "Not eligible" cannot set the chip width');
+
+  const badgeAfter = ruleBody(`:root[${PENDING_ATTR}="1"] .pcard-badge::after,`);
+  ok(/position:\s*static/.test(badgeAfter),
+    'the badge\'s replacement text is IN FLOW (position:static) so the chip sizes on "Pricing…" — an absolute ::after contributes no width and the cards jump 23.7px per keystroke');
+  ok(/font-size:/.test(badgeAfter),
+    'and it sets its own font-size (the parent is collapsed to 0)');
+
+  const loanAfter = ruleBody(`:root[${PENDING_ATTR}="1"] .pcard-loan::after`);
+  ok(/position:\s*absolute/.test(loanAfter),
+    'the loan figure\'s em-dash is OVERLAID (position:absolute) — its width is not text-driven, so keeping the real figure in flow is what pins the box');
+
+  const sub = ruleBody(`:root[${PENDING_ATTR}="1"] .pcard-sub`);
+  ok(/min-height:/.test(sub),
+    'the card stats line reserves its height while pending (it empties mid-flight and collapsed the cards, lifting the second row 16.1px)');
+}
+
 // ---------------------------------------------------------------------------
 // 3. It covers BOTH places a figure is printed
 // ---------------------------------------------------------------------------
