@@ -41,7 +41,13 @@ assert.equal(L.hasRcnServicerAddress(OTHER_RICHMOND), false, 'a stranger\'s Rich
 assert.equal(L.clauseAddressState(OTHER_RICHMOND, { rcn: true }), 'present', 'a stranger\'s Richmond address is still flagged on an RCN file');
 assert.equal(L.hasRcnServicerAddress(RCN), true, 'the real servicer address is recognized');
 assert.equal(L.hasRcnServicerAddress(''), false, 'empty text is not the servicer address');
-ok('a different Richmond address is never mistaken for the servicer');
+// A stranger whose STREET NUMBER contains 15126 in Richmond 23227 must NOT read as
+// the servicer — the box is always written "PO Box 15126", so a bare street number
+// with those digits is not a match (pre-merge audit low-severity false positive).
+const STRANGER_15126 = 'YS Capital Group ISAOA ATIMA 15126 Forest Hill Ave Richmond VA 23227';
+assert.equal(L.hasRcnServicerAddress(STRANGER_15126), false, 'a street number containing 15126 is not the PO box');
+assert.equal(L.clauseAddressState(STRANGER_15126, { rcn: true }), 'present', 'a stranger at 15126-something is still flagged on an RCN file');
+ok('a different Richmond address (even one with 15126 in the street number) is never mistaken for the servicer');
 
 /* 5) The RCN detection agrees with the order-clause side (one shared helper). */
 for (const s of ['RCN', 'RCN Capital', 'RCN Capital, LLC']) assert.ok(isRcnNoteBuyer(s), `RCN detected: ${s}`);

@@ -28,7 +28,10 @@ function hasRcnServicerAddress(text) {
   const n = norm(text);
   if (!n) return false;
   const richmondZip = /richmond/.test(n) && /23227/.test(n);
-  return richmondZip && (/elite commercial/.test(n) || /15126/.test(n));
+  // The servicer name, or the PO BOX (not a bare "15126" — a street number that
+  // happens to contain 15126 in Richmond 23227 must not read as ours; the box is
+  // always written "PO Box 15126", so require the "box" context).
+  return richmondZip && (/elite commercial/.test(n) || /box 15126/.test(n));
 }
 
 // Does the captured clause text name OUR lender with the ISAOA/ATIMA (successors-and-assigns)
