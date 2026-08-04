@@ -54,6 +54,13 @@ const lower = (v) => String(v == null ? '' : v).trim().toLowerCase();
 function monitorsOf(calls) {
   const s = new Set();
   for (const c of calls) {
+    // The draw loop-in moved from a hidden Bcc to a VISIBLE Cc (owner-directed 2026-08-03:
+    // "everybody should be looped in one email so we can then keep responding … so we can see
+    // who else is looped in"). The 2026-07-28 REQUIREMENT this suite guards is unchanged — the
+    // coordinator, the desk and the officer are always on a borrower's draw email — so the
+    // assertions below stand as written; only the header carrying them changed. Both are
+    // collected so this suite keeps covering the Bcc monitors on every NON-draw email.
+    for (const e of [].concat(c.cc || [])) s.add(lower(e));
     for (const e of [].concat(c.bcc || [])) s.add(lower(e));
     if (c._skipCapture) for (const e of [].concat(c.to || [])) s.add(lower(e));
   }

@@ -22,6 +22,7 @@ const orchestrator = require('../sitewire/orchestrator');
 const sowLineEdit = require('../sitewire/sow-line-edit');
 const reconcile = require('../sitewire/reconcile');
 const rollupMod = require('../sitewire/rollup');
+const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
@@ -2314,8 +2315,16 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
             value: `${usd(d.net_release_cents)}${deductions.length ? ` (after the ${deductions.join(' and ')})` : ''}` };
         }
       } catch (_) { /* best-effort — the results email never waits on the money rollup */ }
+      // THE RANKED MONEY BLOCK — the release big, the approval / request / held-back beneath it
+      // (owner-directed 2026-08-03). Built from the same rollup the release line above and the
+      // attached PDF are built from, so all three agree by construction. The per-line breakdown
+      // stays in `meta` underneath: it is the DETAIL, and it reads as detail once the headline
+      // figures are no longer competing with it at the same size.
+      const blocks = await drawEmailBlocks(db, appId, { sitewireDrawId: drawId, borrower: true });
       const meta = [{ label: 'Property', value: addr }];
-      if (releaseLine) meta.push(releaseLine);
+      // The release is now stated by the figure band; repeating it as a meta row said the same
+      // number twice in two shapes.
+      if (releaseLine && !(blocks && blocks.figures)) meta.push(releaseLine);
       for (const l of flines.slice(0, CAP)) {
         meta.push({ label: scrub(l.name) || 'Line item',
           value: Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
@@ -2325,17 +2334,26 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       if (photos) pv.push(`${photos} photo${photos === 1 ? '' : 's'}`);
       if (videos) pv.push(`${videos} video${videos === 1 ? '' : 's'}`);
       const disputeLink = result.reply_token ? `/draw-accept/${result.reply_token}?tab=dispute` : `/app/${appId}`;
-      await notify.notifyAppBorrowers(appId, {
-        type: 'draw_findings', title: 'Your draw inspection results are ready',
-        badge: { text: 'Action needed', tone: 'action' },
-        hero: { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
-        body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, accept to release your draw — or push back on any line you disagree with.`,
+      // ONE email with the whole team visibly on it (owner-directed 2026-08-03) — the separate
+      // in-app-only staff marker below stays, so nobody on the file loses the event.
+      await notify.notifyAppThread(appId, {
+        type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+        badge: { text: 'Please confirm', tone: 'action' },
+        figures: (blocks && blocks.figures) || null,
+        facts: (blocks && blocks.facts) || null,
+        // The old hero survives only when the rollup could not be read, so the email never loses
+        // its headline number.
+        hero: (blocks && blocks.figures) ? null
+          : { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
+        body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, confirm to release your draw — or push back on any line you disagree with.`,
         meta,
-        callout: { title: 'What happens when you accept', body: `Accepting releases your draw${releaseLine ? ` — ${releaseLine.value.split(' (')[0]} is wired to you` : ''} — funds are typically sent within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).`, tone: 'action' },
-        applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
+        callout: { title: 'What happens when you confirm', body: `Confirming releases your draw${releaseLine ? ` — ${releaseLine.value.split(' (')[0]} is wired to you` : ''} — funds are typically sent within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).`, tone: 'action' },
+        applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,
-        bccExtra: await require('../lib/draw-recipients').drawTeamBcc(appId) }).catch(() => {});
+        // The team now rides a VISIBLE Cc, applied for every 'draws' notification at the notify
+        // chokepoint — so the reply-all thread includes them. No Bcc needed here any more.
+      }).catch(() => {});
     }
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own
