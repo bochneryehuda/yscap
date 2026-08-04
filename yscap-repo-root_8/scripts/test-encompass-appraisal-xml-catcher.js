@@ -1051,11 +1051,57 @@ t('a non-url is refused with a plain reason', () => {
       assert.ok(isAppraisalResource({ name: 'AppraisalReport.zip' }),
         'a delivery whose type URN ALSO changed must still be noticed by name');
       assert.ok(isAppraisalResource({ name: 'appraisal invoice.pdf' }),
-        'a companion document DOES match — that is accepted, and is why the alarm is once per sweep');
+        'a companion document DOES match — accepted, and why the naming is capped per class');
       assert.ok(!isAppraisalResource({ name: 'UCDP_Submission_Summary.pdf' }),
         'a real sibling document type from a fulfilled order must NOT fire');
       assert.ok(!isAppraisalResource({ name: '16341496.xml' }),
         "the XML's own bare-numeric name must not fire it either");
+    });
+
+    t('isAppraisalResource is exactly BOOLEAN, and agrees with appraisalMatchKind', () => {
+      // THE TRUTH TABLE THE #1012 COMMIT MESSAGE CLAIMED HAD BEEN RUN. It had been
+      // — in a scratch file that was never committed — so the claim described a
+      // verification that was not in the tree, and nothing pinned the contract it
+      // asserted. A post-merge audit proved that by mutation: making
+      // isAppraisalResource `return appraisalMatchKind(res)` — a STRING, not a
+      // boolean — left both suites green.
+      //
+      // Two things are pinned here. `strictEqual` against true/false, so a truthy
+      // non-boolean fails (assert.ok cannot tell 'type' from true, which is why the
+      // neighbouring checks missed it). And that the wrapper and the kind function
+      // never disagree, since the refactor's whole safety argument is that every
+      // pre-existing caller sees identical behaviour.
+      const { isAppraisalResource: isA, appraisalMatchKind: kind, APPRAISAL_TYPE_PREFIX: P } = M._internals;
+      const cases = [
+        [null, false], [undefined, false], [{}, false],
+        [{ type: `${P}:version:V2.6` }, true],
+        [{ type: String(P).toUpperCase() + ':X' }, true],
+        [{ type: `  ${P}` }, false],                       // leading space: not a prefix
+        [{ name: 'AppraisalReport.zip' }, true],
+        [{ name: 'APPRAISAL invoice.pdf' }, true],
+        [{ name: 'UCDP_Submission_Summary.pdf' }, false],
+        [{ name: '16341496.xml' }, false],
+        [{ type: 'urn:ice:epc:partner:title:report:version:V1' }, false],
+        [{ type: P, name: 'x.pdf' }, true],
+        [{ type: '', name: '' }, false],
+        [{ type: null, name: null }, false],
+        [{ type: 0, name: 0 }, false],                     // non-string, falsy
+        [{ type: {}, name: {} }, false],                   // non-string, truthy
+        [{ name: 'reappraisale' }, true],                  // substring match is deliberate
+        [{ type: 'urn:ice:epc:partner:appraisal:reportX' }, true],
+      ];
+      for (const [res, want] of cases) {
+        const got = isA(res);
+        assert.strictEqual(got, want,
+          `isAppraisalResource(${JSON.stringify(res)}) must be exactly ${want}, got ${JSON.stringify(got)}`);
+        assert.strictEqual(kind(res) !== null, want,
+          `appraisalMatchKind must agree for ${JSON.stringify(res)}`);
+      }
+      // And the kind is only ever one of the three the call site branches on.
+      for (const [res] of cases) {
+        assert.ok([null, 'type', 'name'].includes(kind(res)),
+          `kind must be null|type|name, got ${JSON.stringify(kind(res))}`);
+      }
     });
 
     t('a typo\'d poll interval falls back and SAYS SO, like every other knob', () => {
@@ -1090,6 +1136,40 @@ t('a non-url is refused with a plain reason', () => {
         `a bad poll interval must not be swallowed in silence, saw: ${JSON.stringify(warned)}`);
       assert.ok(logged.some((l) => /catcher on, sweeping every 300s/.test(l)),
         `and it must fall back to the 300s default, saw: ${JSON.stringify(logged)}`);
+    });
+
+    t('an UNCONFIGURED tenant arms no timer, and the log does not claim otherwise', () => {
+      // The other contract a post-merge audit proved unpinned by mutation: deleting
+      // `if (!encompass.configured()) return null` from start() left both suites
+      // green. The cost of losing it is small but real — a tenant with no Encompass
+      // credentials would arm a 5-minute timer forever AND log "catcher on", which
+      // is the log stating the opposite of the truth. (Nothing would actually be
+      // swept: sweepOnce gates on configured() independently and returns
+      // {disabled:true}. The guard buys the silence, not the safety.)
+      const enc5 = require(path.join(__dirname, '..', 'src', 'lib', 'integrations', 'encompass'));
+      const oc5 = enc5.configured, ol5 = console.log;
+      const logged = [];
+      let offTimer = null, onTimer = null;
+      try {
+        console.log = (...a) => { logged.push(a.join(' ')); };
+        enc5.configured = () => false;
+        offTimer = M.start(db);
+        // The CONTROL, and it is the half that makes this bite: without it a
+        // mutation making start() return null unconditionally would pass.
+        enc5.configured = () => true;
+        onTimer = M.start(db);
+      } finally {
+        if (offTimer) clearInterval(offTimer);
+        if (onTimer) clearInterval(onTimer);
+        console.log = ol5; enc5.configured = oc5;
+      }
+      assert.strictEqual(offTimer, null, 'an unconfigured tenant must arm nothing');
+      // Two start() calls, exactly one announcement — so the unconfigured one said
+      // nothing. Asserting the COUNT (not merely "some line matches") is what makes
+      // a stray "catcher on" from the unconfigured call fail.
+      assert.strictEqual(logged.filter((l) => /catcher on/.test(l)).length, 1,
+        `exactly one start() should have announced itself, saw: ${JSON.stringify(logged)}`);
+      assert.ok(onTimer, 'and a CONFIGURED tenant must still arm the timer');
     });
 
     t('a plain XML delivery is UNCHANGED by any of this', () => {
