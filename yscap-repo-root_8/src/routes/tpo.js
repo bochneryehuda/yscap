@@ -310,6 +310,9 @@ router.post('/applications', async (req, res, next) => {
     if (!email) return res.status(400).json({ error: 'borrower email required' });
     if (!addr || !(addr.oneLine || addr.street || addr.line1)) return res.status(400).json({ error: 'property address required' });
     { const numProblem = fields.applicationNumberProblem(b); if (numProblem) return res.status(400).json({ error: numProblem }); }
+    // Refuse an appraisal FORM code masquerading as a property type (the same
+    // guard every other write door runs — property-type.js).
+    { const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType); if (ptProblem) return res.status(400).json({ error: ptProblem }); }
 
     // ---- SAFE borrower resolution ----
     let borrowerId;

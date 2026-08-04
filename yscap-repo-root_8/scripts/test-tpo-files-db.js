@@ -70,6 +70,10 @@ function call(server, method, p, token, body) {
       'the file starts at file_intake, source tpo, portal ON by default');
     ok((await db.query(`SELECT count(*)::int n FROM checklist_items WHERE application_id=$1`, [appA])).rows[0].n > 0,
       'conditions were generated for the new file');
+    // an appraisal FORM code is refused as a property type (the shared guard)
+    ok((await call(server, 'POST', '/api/tpo/applications', tokA, {
+      borrower: { firstName: 'Form', lastName: 'Code', email: mail('formcode') }, propertyAddress: addrOf(9), loanType: 'Purchase', purchasePrice: 100000, propertyType: 'FNM1025' })).status === 400,
+      'entering a loan with an appraisal form code as the property type is refused (400)');
 
     // 2) THE BOOK + PII
     const book = await call(server, 'GET', '/api/tpo/borrowers', tokA);

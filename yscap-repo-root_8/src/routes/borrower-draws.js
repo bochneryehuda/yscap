@@ -78,12 +78,11 @@ async function normalizeDisputeMedia(items) {
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
-const OWN_FILE_SQL = (alias, p) => {
-  const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
-    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
-    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
-};
+// ONE definition of "which files a borrower owns" — delegated to the shared
+// helper (mirrors routes/borrower.js) so the TPO borrower-login toggle (and any
+// future change) applies here too. A local copy silently diverged: a
+// portal-disabled TPO file would still expose its draws (audit follow-up).
+const OWN_FILE_SQL = require('../lib/change-requests').OWN_FILE_SQL;
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 async function ownsApp(req, appId) {
   if (!isUuid(appId)) return false; // malformed id → no ownership (avoid a 22P02 async-rejection hang, audit F1)
