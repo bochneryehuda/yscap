@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
 /* The broker's firm pipeline — every TPO file their firm has brought to YS
@@ -32,11 +33,14 @@ export default function TpoPipeline() {
 
   return (
     <div>
-      <div className="page-head" style={{ marginBottom: 18 }}>
-        <h1 style={{ margin: 0 }}>Your pipeline</h1>
-        <p className="muted small" style={{ marginTop: 6 }}>
-          Every loan your firm has brought to YS Capital.
-        </p>
+      <div className="page-head" style={{ marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ margin: 0 }}>Your pipeline</h1>
+          <p className="muted small" style={{ marginTop: 6 }}>
+            Every loan your firm has brought to YS Capital.
+          </p>
+        </div>
+        <Link to="/tpo/new" className="btn primary">Enter a loan</Link>
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
@@ -46,7 +50,8 @@ export default function TpoPipeline() {
       {rows !== null && rows.length === 0 && !err && (
         <div className="card" style={{ padding: 24, textAlign: 'center' }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>No loans yet</div>
-          <div className="muted small">Loans you register with YS Capital will appear here.</div>
+          <div className="muted small" style={{ marginBottom: 12 }}>Enter your first loan with YS Capital to get started.</div>
+          <Link to="/tpo/new" className="btn primary">Enter a loan</Link>
         </div>
       )}
 
@@ -64,7 +69,7 @@ export default function TpoPipeline() {
             <tbody>
               {rows.map(r => (
                 <tr key={r.id}>
-                  <td>{r.ys_loan_number || <span className="muted">—</span>}</td>
+                  <td><Link to={`/tpo/file/${r.id}`}>{r.ys_loan_number || 'View'}</Link></td>
                   <td>{r.borrower_name || <span className="muted">—</span>}</td>
                   <td>{addr(r.property_address) || <span className="muted">—</span>}</td>
                   <td><span className="pill">{STATUS_LABEL[r.status] || r.status || '—'}</span></td>

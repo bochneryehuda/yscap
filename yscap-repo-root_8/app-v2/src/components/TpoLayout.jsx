@@ -38,6 +38,8 @@ export default function TpoLayout({ children }) {
           {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
           <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/tpo" end>Pipeline</NavLink>
+            <NavLink to="/tpo/borrowers">Borrowers</NavLink>
+            <NavLink to="/tpo/new">Enter a loan</NavLink>
             {isFirmAdmin && <NavLink to="/tpo/team" title="Your firm's users — invite your processors">Team</NavLink>}
             <button className="btn ghost small" onClick={() => { signOut(); nav('/tpo/login'); }}>Sign out</button>
           </nav>

@@ -409,8 +409,17 @@ export const api = {
   tpoMfaVerify:   (challenge, code) => req('POST', '/auth/tpo/mfa/verify', { challenge, code }),
   tpoMe:          () => req('GET', '/api/tpo/me'),
   tpoApplications:() => req('GET', '/api/tpo/applications'),
+  tpoApplication: (id) => req('GET', `/api/tpo/applications/${id}`),
+  tpoEnterLoan:   (b) => req('POST', '/api/tpo/applications', b),
+  tpoSetBorrowerPortal: (id, enabled) => req('POST', `/api/tpo/applications/${id}/borrower-portal`, { enabled }),
   tpoTeam:        () => req('GET', '/api/tpo/team'),
   tpoTeamInvite:  (b) => req('POST', '/api/tpo/team/invite', b),   // {email, fullName?, role?}
+  // Phase 3 — the firm's borrowers + full PII.
+  tpoBorrowers:      () => req('GET', '/api/tpo/borrowers'),
+  tpoBorrower:       (id) => req('GET', `/api/tpo/borrowers/${id}`),
+  tpoBorrowerSsn:    (id) => req('GET', `/api/tpo/borrowers/${id}/ssn`),      // reveal (audited)
+  tpoSetBorrowerSsn: (id, ssn) => req('POST', `/api/tpo/borrowers/${id}/ssn`, { ssn }),
+  tpoUpdateBorrower: (id, b) => req('PATCH', `/api/tpo/borrowers/${id}`, b),
 
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),

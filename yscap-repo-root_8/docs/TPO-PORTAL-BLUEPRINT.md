@@ -126,8 +126,19 @@ internal workflow condition.
    actor to `/tpo`). **The internal-roster `is_external` sweep is DONE** (see §6).
    Tests `scripts/test-tpo-identity-db.js` (onboarding → scoping → cross-door
    isolation → roster/notification exclusion → suspend/revoke → invariants).
-3. **Files, borrowers & PII** — a broker creates borrowers, enters TPO loans,
-   sees their book with full PII; the borrower-portal-off toggle.
+3. **Files, borrowers & PII** ✅ — the `/api/tpo` surface for entering loans and
+   working the firm's book. `POST /applications` (enter a loan — SAFE borrower
+   resolution that never adopts a retail/other-firm profile by email; a fresh
+   `shares_email=true` row when the email is already owned; TPO-stamped file with
+   the broker as loan officer + conditions generated). `GET /borrowers` (the firm
+   book), `GET/PATCH /borrowers/:id` (full PII), `GET/POST /borrowers/:id/ssn`
+   (reveal/set, audited; a clash is refused GENERICALLY — no cross-profile leak),
+   `GET /applications/:id` (borrower-safe file detail — no note buyer / internal
+   contacts). The borrower-login toggle: `POST /applications/:id/borrower-portal`,
+   enforced borrower-side in the ONE `OWN_FILE_SQL` chokepoint (a portal-disabled
+   TPO file is hidden from the borrower; a NO-OP for every retail file, since
+   `is_tpo=false`). `app-v2`: `TpoNewLoan`, `TpoBorrowers`, `TpoBorrowerDetail`,
+   `TpoFile`. Test `scripts/test-tpo-files-db.js` (29 assertions).
 4. **Pricing, conditions & documents** — Term Sheet Studio (price/register/
    generate), the TPO condition set (reveal/hide), uploads, tools. **The
    term-sheet-send lock lands here**: add a `send_term_sheet` capability, grant

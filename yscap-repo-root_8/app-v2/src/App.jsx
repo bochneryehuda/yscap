@@ -83,6 +83,10 @@ import TpoLogin from './screens/TpoLogin.jsx';
 import TpoAccept from './screens/TpoAccept.jsx';
 import TpoPipeline from './screens/TpoPipeline.jsx';
 import TpoTeam from './screens/TpoTeam.jsx';
+import TpoNewLoan from './screens/TpoNewLoan.jsx';
+import TpoBorrowers from './screens/TpoBorrowers.jsx';
+import TpoBorrowerDetail from './screens/TpoBorrowerDetail.jsx';
+import TpoFile from './screens/TpoFile.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console.
    An unauthenticated hit carries the intended route through sign-in (`from`) so
@@ -187,6 +191,10 @@ export default function App() {
 
           {/* broker (TPO) portal */}
           <Route path="/tpo" element={<TpoPrivate><TpoPipeline /></TpoPrivate>} />
+          <Route path="/tpo/new" element={<TpoPrivate><TpoNewLoan /></TpoPrivate>} />
+          <Route path="/tpo/file/:id" element={<TpoPrivate><TpoFile /></TpoPrivate>} />
+          <Route path="/tpo/borrowers" element={<TpoPrivate><TpoBorrowers /></TpoPrivate>} />
+          <Route path="/tpo/borrower/:id" element={<TpoPrivate><TpoBorrowerDetail /></TpoPrivate>} />
           <Route path="/tpo/team" element={<TpoPrivate><TpoTeam /></TpoPrivate>} />
 
           {/* internal console */}
