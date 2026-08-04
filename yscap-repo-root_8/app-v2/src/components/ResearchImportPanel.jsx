@@ -228,7 +228,8 @@ export default function ResearchImportPanel({ onDone }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: MUTED }}>
-                    <th style={TH}>File</th><th style={TH}>Property</th><th style={TH}>Appraiser</th>
+                    <th style={TH}>File</th><th style={TH}>Came from</th>
+                    <th style={TH}>Property</th><th style={TH}>Appraiser</th>
                     <th style={TH}>Comps</th><th style={TH}>Result</th>
                   </tr>
                 </thead>
@@ -236,6 +237,15 @@ export default function ResearchImportPanel({ onDone }) {
                   {history.map((h) => (
                     <tr key={h.id} style={{ borderTop: '1px solid #F0ECE2' }}>
                       <td style={TD}>{h.filename || '—'}</td>
+                      {/* WHERE IT CAME FROM (db/462). Every appraisal XML that enters
+                          PILOT now feeds this database — a borrower attaching the data
+                          file, a staffer filing it on any condition, a vendor emailing
+                          it back on an order, the sweep over what was already on the
+                          files — and without this column the one question that makes
+                          that visible ("did the reports on our loan files come in?")
+                          cannot be answered from the screen. NULL on every row that
+                          predates the column, and on the Encompass catcher's rows. */}
+                      <td style={{ ...TD, color: MUTED }}>{h.source || '—'}</td>
                       <td style={TD}>
                         {h.subject_property_id
                           ? <Link to={`/internal/research/property/${h.subject_property_id}`} style={{ color: INK }}>

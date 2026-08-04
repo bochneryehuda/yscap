@@ -145,6 +145,14 @@ const fs = require('fs');
 const SRC = (p) => fs.readFileSync(path.join(__dirname, '..', 'src', p), 'utf8');
 for (const [file, needle, what] of [
   ['routes/staff.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: buf,/, 'the staff upload door passes the uploaded bytes'],
+  // THE DOORS AN AUDIT FOUND UNCOVERED. The first is the one the report most often
+  // arrives through: the vendor replies to the order with the PDF and the MISMO XML.
+  ['lib/order-inbox.js', /xml-catch'\)\.fireCatch\(/, 'a vendor emailing the report back on an order feeds the warehouse'],
+  ['lib/chat-attach.js', /xml-catch'\)\.fireCatch\(/, 'an XML dropped in the file chat feeds the warehouse'],
+  ['lib/closing-inbox.js', /xml-catch'\)\.fireCatch\(/, 'an XML forwarded on the closing chain feeds the warehouse'],
+  // AND THE ONE PLACE IT MUST *NOT* FIRE: a SUCCESSFUL desk import already feeds the
+  // warehouse, richer, and firing both on the same bytes files the report twice.
+  ['routes/staff.js', /if \(!\(apprImport && apprImport\.ok\)\) \{/, 'the catch stands down when the desk import just succeeded'],
   ['routes/borrower.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: buf,/, 'the borrower upload door passes the uploaded bytes'],
   ['routes/staff.js', /fireCatchById\(doc\.id,/, 'the slot route catches the document it just re-slotted'],
   ['routes/appraisal.js', /rescueGrid\(\); return res\.status\(422\)/, 'a refused appraisal import still files its grid'],
@@ -156,8 +164,10 @@ for (const [file, needle, what] of [
 // references `staff_users`, and the actor on that door is a borrower — passing it
 // would raise a foreign-key violation inside the import and lose the whole report
 // over a bookkeeping column.
-ok(/why: 'a loan file \(borrower upload\)'/.test(SRC('routes/borrower.js'))
-  && /uploadedByStaffId: null,\s*\n\s*why: 'a loan file \(borrower upload\)'/.test(SRC('routes/borrower.js')),
+ok(/untrusted: true,\s*\n\s*why: 'a loan file \(borrower upload\)'/.test(SRC('routes/borrower.js')),
+  'the borrower door marks its provenance untrusted — its report files, but may not rewrite the appraiser roster');
+ok(/uploadedByStaffId: null,/.test(SRC('routes/borrower.js'))
+  && /why: 'a loan file \(borrower upload\)'/.test(SRC('routes/borrower.js')),
   'the borrower door passes uploadedByStaffId: null — a borrower id can never reach a staff foreign key');
 
 console.log(fails ? `\ntest-research-xml-catch-pure: ${fails} FAILED` : '\ntest-research-xml-catch-pure: all passed');

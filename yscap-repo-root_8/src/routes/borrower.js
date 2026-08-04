@@ -3158,6 +3158,11 @@ router.post('/documents', async (req, res) => {
   require('../lib/research/xml-catch').fireCatch({
     bytes: buf, filename: b.filename, contentType: b.contentType,
     documentId: r.rows[0].id, uploadedByStaffId: null,
+    // UNTRUSTED PROVENANCE. The report's property facts land exactly as they do from
+    // any other door — a comparable sale that happened, happened. What a borrower's
+    // file may not do is REWRITE the shared, every-staff-user appraiser roster, which
+    // until now only staff could write to. See ingest.upsertAppraiser's `fillOnly`.
+    untrusted: true,
     why: 'a loan file (borrower upload)',
   });
   // Live cross-user refresh (#112): a doc answering a track-record line-item

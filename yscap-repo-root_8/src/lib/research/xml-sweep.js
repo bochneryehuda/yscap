@@ -43,8 +43,34 @@
  */
 const catcher = require('./xml-catch');
 
-/** Documents considered per pass. Small: each one is a storage read and a full parse. */
-const DEFAULT_LIMIT = Number(process.env.RESEARCH_XML_SWEEP_FILES || 25);
+/* Documents considered per pass. In line with its siblings in the same boot block
+   (the ingest back-fill runs 400, the roll-up refresh 500, subject placement 200) —
+   the first cut ran 25, which on a ten-thousand-document back book is FOUR HUNDRED
+   DEPLOYS to satisfy a rule whose name is "previous AND future". Each one is a
+   storage read and a parse, but the pass is fire-and-forget behind an already-
+   listening server, so the cost is background time, not latency. */
+const DEFAULT_LIMIT = Number(process.env.RESEARCH_XML_SWEEP_FILES || 200);
+
+/* After this many failed READS a document is settled and stops being asked. See
+   db/462 §2b: not stamping a failed read is right, and on its own it starves the
+   queue, because the oldest rows are exactly the ones whose storage is gone. */
+const MAX_READ_ATTEMPTS = 3;
+
+/* The work queue, written once and used by BOTH the selection and the count. The
+   count used to omit the size filter, so an oversized XML — never selectable, so
+   never stamped — inflated "still to look at" forever, and because the boot log is
+   gated on `looked` it was reported once as phantom work and then never mentioned
+   again. A silent cap is the one thing this repo's boot passes are not allowed to be. */
+const QUEUE_SQL = `
+  research_xml_checked_at IS NULL
+  AND storage_ref IS NOT NULL
+  AND coalesce(research_xml_attempts, 0) < ${MAX_READ_ATTEMPTS}
+  AND (lower(coalesce(filename,'')) LIKE '%.xml'
+       OR lower(coalesce(content_type,'')) LIKE '%xml%')
+  AND coalesce(size_bytes, 0) <= $SIZE$`;
+/* `$SIZE$` is replaced with the BIND MARKER ('$1'/'$2'), not with a number — the two
+   consumers bind the ceiling in different positions. Substituting a bare '2' produces
+   `<= 2`, a literal two bytes, and the queue silently matches nothing at all. */
 
 /**
  * One bounded pass. Returns a shaped summary — every number a person might ask for,
@@ -56,7 +82,7 @@ const DEFAULT_LIMIT = Number(process.env.RESEARCH_XML_SWEEP_FILES || 25);
 async function sweepOnce(db, { limit = DEFAULT_LIMIT } = {}) {
   const out = {
     ran: false, looked: 0, filed: 0, alreadyThere: 0,
-    notAppraisals: 0, unreadable: 0, readFailed: 0, remaining: null,
+    notAppraisals: 0, unreadable: 0, readFailed: 0, gaveUp: 0, remaining: null,
     comparables: 0, properties: 0,
   };
   if (process.env.RESEARCH_XML_SWEEP_DISABLED === '1') return out;
@@ -68,13 +94,9 @@ async function sweepOnce(db, { limit = DEFAULT_LIMIT } = {}) {
     // report had been filed as it arrived, so a later report's roll-up wins over an
     // earlier one exactly as it would have at the time.
     rows = (await db.query(
-      `SELECT id
+      `SELECT id, coalesce(research_xml_attempts, 0) AS attempts
          FROM documents
-        WHERE research_xml_checked_at IS NULL
-          AND storage_ref IS NOT NULL
-          AND (lower(coalesce(filename,'')) LIKE '%.xml'
-               OR lower(coalesce(content_type,'')) LIKE '%xml%')
-          AND coalesce(size_bytes, 0) <= $2
+        WHERE ${QUEUE_SQL.replace('$SIZE$', '$2')}
         ORDER BY created_at
         LIMIT $1`,
       [limit, catcher.MAX_XML_BYTES])).rows;
@@ -98,7 +120,22 @@ async function sweepOnce(db, { limit = DEFAULT_LIMIT } = {}) {
     }
     out.looked++;
 
-    if (r.readFailed) { out.readFailed++; continue; }   // NOT stamped — try again later
+    if (r.readFailed) {
+      /* NOT STAMPED — the whole point is that a storage outage must not settle a real
+         report. But the attempt IS counted, so a document whose bytes are genuinely
+         gone stops holding the front of the queue after MAX_READ_ATTEMPTS. An outage
+         is one attempt; three failures across three boots is not an outage. The
+         give-up is COUNTED and named in the log, never silent. */
+      out.readFailed++;
+      const next = Number(row.attempts || 0) + 1;
+      if (next >= MAX_READ_ATTEMPTS) out.gaveUp++;
+      try {
+        await db.query(
+          `UPDATE documents SET research_xml_attempts = coalesce(research_xml_attempts,0) + 1
+            WHERE id = $1`, [row.id]);
+      } catch (_) { /* the counter is a courtesy; the read failure already stands */ }
+      continue;
+    }
     if (r.filed) {
       out.filed++;
       out.comparables += r.comparables || 0;
@@ -122,13 +159,12 @@ async function sweepOnce(db, { limit = DEFAULT_LIMIT } = {}) {
   }
 
   try {
+    // THE SAME PREDICATE THE WORK QUEUE USES, so "still to look at" means documents
+    // this pass could actually reach. Anything else is a number an operator cannot act
+    // on, and it never falls to zero.
     out.remaining = (await db.query(
-      `SELECT count(*)::int AS n
-         FROM documents
-        WHERE research_xml_checked_at IS NULL
-          AND storage_ref IS NOT NULL
-          AND (lower(coalesce(filename,'')) LIKE '%.xml'
-               OR lower(coalesce(content_type,'')) LIKE '%xml%')`)).rows[0].n;
+      `SELECT count(*)::int AS n FROM documents WHERE ${QUEUE_SQL.replace('$SIZE$', '$1')}`,
+      [catcher.MAX_XML_BYTES])).rows[0].n;
   } catch (_) { /* the count is a courtesy */ }
 
   return out;
@@ -148,6 +184,7 @@ async function sweepOnBoot(db, opts = {}) {
         + `${r.alreadyThere} already there, ${r.notAppraisals} not appraisals, `
         + `${r.unreadable} unreadable`
         + (r.readFailed ? `, ${r.readFailed} could not be read (will retry)` : '')
+        + (r.gaveUp ? `, ${r.gaveUp} given up on after ${MAX_READ_ATTEMPTS} tries — their stored copy is gone` : '')
         + (r.remaining ? ` — ${r.remaining} still to look at` : ''));
     }
     return r;

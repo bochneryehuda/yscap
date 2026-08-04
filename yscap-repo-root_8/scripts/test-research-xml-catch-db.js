@@ -27,6 +27,17 @@
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-research-xml-catch-db (no DATABASE_URL)'); process.exit(0); }
 
+/* THE BOOT SWEEP MUST NOT RACE THIS TEST. Requiring `src/server.js` below starts the
+   real boot block, which fires a back-book sweep over the whole `documents` table —
+   and this file's whole job is to observe what a sweep does to documents it creates.
+   With the two running together the boot pass drains the queue first and every
+   assertion here reads zero.
+   `RESEARCH_XML_SWEEP_FILES` is read at MODULE LOAD to set the default budget, so
+   setting it to 0 here (before the require) makes the boot pass a no-op while every
+   explicit `sweepOnce(db, { limit: N })` below still runs exactly as it does in
+   production. */
+process.env.RESEARCH_XML_SWEEP_FILES = '0';
+
 const http = require('http');
 const db = require('../src/db');
 const C = require('../src/lib/crypto');
@@ -109,6 +120,7 @@ async function landed(importId) {
 
   const madeImports = [];
   let cleanupAppId = null;
+  let apprItemId = null;
   try {
     // THIS TEST SHARES A DATABASE WITH EVERY OTHER ONE, and it deliberately leaves an
     // unreadable document behind (the "one outage never costs a report" case, which is
@@ -207,10 +219,11 @@ async function landed(importId) {
     const apprTpl = (await db.query(
       `SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs' LIMIT 1`)).rows[0];
     if (apprTpl) {
-      const apprItem = (await db.query(
+      apprItemId = (await db.query(
         `INSERT INTO checklist_items (application_id, template_id, scope, label, audience, item_kind, status, is_required)
          VALUES ($1,$2,'application','Appraisal documents','staff','document','outstanding',true) RETURNING id`,
         [appId, apprTpl.id])).rows[0].id;
+      const apprItem = apprItemId;
 
       // A document that arrived BEFORE any of this existed: stored, on the condition,
       // in no slot, and already marked as looked-at so the sweep cannot be the thing
@@ -312,6 +325,44 @@ async function landed(importId) {
     ok((await db.query(`SELECT research_xml_checked_at IS NULL AS u FROM documents WHERE id=$1`, [docGone])).rows[0].u === true,
       '  …and left UNSTAMPED, so one storage outage never costs a report');
 
+    /* …AND YET THE SWEEP STILL DRAINS. Not stamping a failed read is right and, on its
+       own, STARVES the queue: it is ordered oldest-first, so a handful of permanently
+       dead documents at the front consume the entire per-boot budget on every boot,
+       forever, and the real reports behind them are never reached. An audit reproduced
+       exactly that — three dead documents and a real appraisal at limit 3 filed nothing
+       across four boots — and storage's own temp-dir fallback guarantees a supply of
+       them, because anything written there is unreadable after the next deploy and
+       those are the OLDEST rows. So a read failure buys a few more tries and then
+       settles. An outage is one attempt, not three. */
+    const deadDoc = async (name) => {
+      const sv = await storage.save(Buffer.from(report(9), 'utf8'), { filename: name });
+      return (await db.query(
+        `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
+                                storage_provider, storage_ref, uploaded_by_kind, created_at)
+         VALUES ($1,$2,$3,'application/xml',999,$4,$5,'borrower', now() - interval '10 years') RETURNING id`,
+        [appId, borrowerId, name, sv.provider, `${sv.ref}-gone`])).rows[0].id;
+    };
+    await deadDoc('dead-a.xml'); await deadDoc('dead-b.xml');
+    // A REAL report, newest, so oldest-first puts it BEHIND all three dead ones.
+    const LIVE = report(10, { comps: 3 });
+    const svLive = await storage.save(Buffer.from(LIVE, 'utf8'), { filename: 'live-behind-the-dead.xml' });
+    await db.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
+                              storage_provider, storage_ref, uploaded_by_kind)
+       VALUES ($1,$2,'live-behind-the-dead.xml','application/xml',$3,$4,$5,'borrower')`,
+      [appId, borrowerId, Buffer.byteLength(LIVE), svLive.provider, svLive.ref]);
+
+    let gaveUp = 0;
+    for (let boot = 0; boot < 4; boot++) {
+      const s = await sweep.sweepOnce(db, { limit: 3 });   // budget SMALLER than the dead set
+      gaveUp += s.gaveUp || 0;
+    }
+    ok(gaveUp >= 3, `dead documents are given up on rather than held at the front forever (${gaveUp})`);
+    const liveImp = await settled(sha(LIVE), 2000);
+    ok(liveImp && liveImp.status === 'ok',
+      `  …so the real report queued BEHIND them is reached (${liveImp ? liveImp.status : 'never reached'})`);
+    ok((await landed(liveImp.id)).comps === 3, '  …with its comparables');
+
     // ---- the same report, twice, is filed once --------------------------------
     const before = (await db.query(`SELECT count(*)::int n FROM property_observations WHERE import_id=$1`, [impA ? impA.id : null])).rows[0].n;
     const again = await catcher.catchDocumentXml(db, {
@@ -321,6 +372,45 @@ async function landed(importId) {
       'the same report arriving by a SECOND door is recognised and stood down from');
     ok((await db.query(`SELECT count(*)::int n FROM property_observations WHERE import_id=$1`, [impA ? impA.id : null])).rows[0].n === before,
       '  …and nothing was written twice');
+
+    /* ---- THE DESK IMPORT AND THE CATCH MUST NOT RACE ---------------------------
+       On the appraisal condition's XML slot, `runAppraisalImport` feeds the warehouse
+       itself (richer — it carries the photographs) while the catch fires on the same
+       bytes. Both de-dup guards stand down on a report carrying neither an effective
+       date nor a named appraiser — deliberately, because such a report has no
+       fingerprint — so an audit measured every property in one landing TWICE, with no
+       later pass healing it. The catch is therefore skipped when the desk import
+       succeeded, which is exactly what this asserts, on a report with no fingerprint. */
+    if (apprItemId) {
+      const NOFP = `<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6">
+ <REPORT AppraisalFormType="FNM1004">
+  <PROPERTY _StreetAddress="88 Race${NONCE} Way" _City="Trenton" _State="NJ" _PostalCode="08608">
+   <SALES_COMPARISON>
+    <COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="401000">
+     <LOCATION PropertyStreetAddress="1 Race${NONCE} Ave" PropertyCity="Trenton" PropertyState="NJ" PropertyPostalCode="08608"/>
+    </COMPARABLE_SALE>
+   </SALES_COMPARISON>
+  </PROPERTY>
+ </REPORT></VALUATION_RESPONSE>`;
+      const rr = await call(server, 'POST', `/api/staff/applications/${appId}/documents`, staffTok, {
+        filename: 'race.xml', contentType: 'application/xml', dataBase64: b64(NOFP),
+        checklistItemId: apprItemId, slot: 'Appraisal XML',
+      });
+      ok(rr.status === 201 || rr.status === 200, `the appraisal-slot upload succeeds (${rr.status})`);
+      // Let both the desk's own ingest and any stray catch settle.
+      await new Promise((s) => setTimeout(s, 4000));
+      const dupes = (await db.query(
+        `SELECT p.display_address, count(*)::int AS n
+           FROM property_observations o JOIN properties p ON p.id = o.property_id
+          WHERE p.display_address ILIKE $1 GROUP BY 1 HAVING count(*) > 1`,
+        [`%Race${NONCE}%`])).rows;
+      ok(dupes.length === 0,
+        `  …and no property carries that report twice (${JSON.stringify(dupes)})`);
+      const stray = (await db.query(
+        `SELECT count(*)::int n FROM research_imports WHERE sha256 = $1`, [sha(NOFP)])).rows[0].n;
+      ok(stray === 0,
+        '  …because the catch stands down entirely when the desk import succeeded');
+    }
 
     // ---- the loan file's own copy always wins ---------------------------------
     // `xml-import` stands down when a loan file already carries the same report (it
@@ -344,14 +434,24 @@ async function landed(importId) {
     const huge = await catcher.catchDocumentById(db, docBig, { why: 'test' });
     ok(!huge.considered && !huge.readFailed && /larger than/i.test(huge.reason || ''),
       `a file bigger than the parser's own ceiling is refused with a sentence, not read ("${huge.reason}")`);
-    // …and the sweep's own SQL filters it out, so it is never even fetched. Asserted on
-    // the queue itself rather than on `looked`, because the unreadable document above
-    // is deliberately still in there.
-    const inQueue = (await db.query(
-      `SELECT count(*)::int n FROM documents
-        WHERE id = $1 AND research_xml_checked_at IS NULL
-          AND coalesce(size_bytes,0) <= $2`, [docBig, catcher.MAX_XML_BYTES])).rows[0].n;
-    ok(inQueue === 0, '  …and the sweep\'s work queue never picks it up at all');
+    /* …AND THE SWEEP ITSELF NEVER FETCHES IT. Asserted by RUNNING the sweep, not by
+       re-stating its WHERE clause in the test's own SQL — that earlier version asserted
+       arithmetic (`MAX+1 <= MAX` is false) and passed with the size filter deleted from
+       the product entirely, which an audit proved by deleting it. The oversized document
+       is the only thing left in the queue at this point, so a pass that looks at nothing
+       is the real evidence. */
+    const sBig = await sweep.sweepOnce(db, { limit: 200 });
+    const bigAfter = (await db.query(
+      `SELECT research_xml_checked_at IS NULL AS unstamped, coalesce(research_xml_attempts,0) AS tries
+         FROM documents WHERE id = $1`, [docBig])).rows[0];
+    ok(bigAfter.unstamped === true && Number(bigAfter.tries) === 0,
+      `the sweep never fetches a file past the ceiling — it was neither read nor stamped (tries ${bigAfter.tries})`);
+    /* AND IT IS NOT COUNTED AS OUTSTANDING WORK EITHER. `remaining` used to omit the
+       size filter the work queue has, so an unreachable document inflated "still to look
+       at" forever — and because the boot log is gated on `looked`, it was reported once
+       as phantom work and then never mentioned again. A silent drop. */
+    ok(sBig.remaining === 0,
+      `  …and it is not counted as still-to-do, which would never fall to zero (${sBig.remaining})`);
     const junk = await catcher.catchDocumentXml(db, { bytes: Buffer.from('%PDF-1.7'), filename: 'a.pdf', contentType: 'application/pdf', why: 'test' });
     ok(!junk.considered && !junk.attempted, 'a PDF is not considered at all');
 
@@ -369,6 +469,69 @@ async function landed(importId) {
     let threwById = null;
     try { await catcher.catchDocumentById(db, '00000000-0000-0000-0000-000000000000'); } catch (e) { threwById = e; }
     ok(!threwById, 'and catch-by-id never throws on a document that is not there');
+
+    /* ---- A BORROWER MAY NOT REWRITE THE SHARED APPRAISER ROSTER ----------------
+       `appraisers` is cross-file and every staff user reads it. Until this change only
+       STAFF could write to it (a desk import or the hand-upload screen); now a borrower
+       attaching one document reaches it, and an audit measured a borrower-supplied file
+       replacing a real appraiser's company, phone and email for the whole firm. The
+       report's PROPERTY facts still land in full — a comparable sale that happened,
+       happened, and that is what the warehouse is for. */
+    {
+      const lic = `RG-TRUST-${NONCE}`;
+      const withAppraiser = (co, phone, email) => `<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6">
+ <REPORT AppraisalFormType="FNM1004">
+  <PROPERTY _StreetAddress="5 Trust${NONCE} ${co.length} Way" _City="Trenton" _State="NJ" _PostalCode="08608">
+   <SALES_COMPARISON><COMPARABLE_SALE PropertySequenceIdentifier="1" SalesPriceAmount="405000">
+    <LOCATION PropertyStreetAddress="9 Trust${NONCE} ${co.length} Ave" PropertyCity="Trenton" PropertyState="NJ" PropertyPostalCode="08608"/>
+   </COMPARABLE_SALE></SALES_COMPARISON></PROPERTY>
+  <APPRAISER _Name="Pat Trust" _CompanyName="${co}">
+   <APPRAISER_LICENSE _Identifier="${lic}" _State="NJ"/>
+   <CONTACT_POINT _Type="Phone" _Value="${phone}"/>
+   <CONTACT_POINT _Type="Email" _Value="${email}"/>
+  </APPRAISER>
+  <SIGNATURE _SignatureDate="2026-04-01" AppraisalEffectiveDate="2026-04-01"/>
+ </REPORT></VALUATION_RESPONSE>`;
+
+      const good = withAppraiser('Honest Appraisal LLC', '(973) 555-0000', 'pat@honest.test');
+      await catcher.catchDocumentXml(db, { bytes: Buffer.from(good, 'utf8'), filename: 'staff.xml', why: 'test staff' });
+      const before = (await db.query(
+        `SELECT company FROM appraisers WHERE license_id = $1 ORDER BY updated_at DESC LIMIT 1`, [lic])).rows[0];
+      ok(before && /Honest/.test(before.company || ''),
+        `a staff-filed report records the appraiser normally (${before && before.company})`);
+
+      // The SAME appraiser licence, a LATER report date, different contact details, via
+      // the borrower door's provenance.
+      const bad = withAppraiser('Totally Different Co', '(000) 000-0000', 'someone@elsewhere.test')
+        .replace('2026-04-01" AppraisalEffectiveDate="2026-04-01', '2026-06-01" AppraisalEffectiveDate="2026-06-01');
+      const br = await catcher.catchDocumentXml(db, {
+        bytes: Buffer.from(bad, 'utf8'), filename: 'borrower.xml', untrusted: true, why: 'test borrower' });
+      ok(br.filed, 'an untrusted report still FILES — its property facts are facts');
+      const after = (await db.query(
+        `SELECT company FROM appraisers WHERE license_id = $1 ORDER BY updated_at DESC LIMIT 1`, [lic])).rows[0];
+      ok(after && /Honest/.test(after.company || ''),
+        `  …but it never rewrites the shared appraiser roster (${after && after.company})`);
+      ok((await landed(br.importId)).comps === 1,
+        '  …while its comparable sale lands in full');
+    }
+
+    /* ---- WHERE A REPORT CAME FROM IS HISTORY, NOT A FIELD TO REWRITE -----------
+       The first door to file a report is the one that actually brought it in, so a
+       later re-file must not restate it. Unguarded, this is a one-word change
+       (`COALESCE(...)` → `EXCLUDED.source`) that no other assertion notices. */
+    {
+      const H = report(11);
+      const first = await catcher.catchDocumentXml(db, {
+        bytes: Buffer.from(H, 'utf8'), filename: 'hist.xml', why: 'the first door' });
+      ok(first.filed, 'a report records the door it came in through');
+      // Force a re-file by clearing the ledger's settled status, then catch again.
+      await db.query(`UPDATE research_imports SET status='error' WHERE sha256=$1`, [sha(H)]);
+      await catcher.catchDocumentXml(db, {
+        bytes: Buffer.from(H, 'utf8'), filename: 'hist.xml', why: 'a much later door' });
+      const src = (await db.query(`SELECT source FROM research_imports WHERE sha256=$1`, [sha(H)])).rows[0];
+      ok(src && src.source === 'the first door',
+        `  …and a later re-file never rewrites that history (${src && src.source})`);
+    }
 
     // ---- the off switch -------------------------------------------------------
     process.env.RESEARCH_XML_SWEEP_DISABLED = '1';

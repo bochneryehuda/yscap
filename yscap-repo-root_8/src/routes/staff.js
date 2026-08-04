@@ -14273,12 +14273,26 @@ router.post('/applications/:id/documents', async (req, res) => {
   // unnamed slot, or on a condition whose appraisal import then failed, still carries
   // every comparable sale in the report. Fire-and-forget: it never touches the loan
   // file, never slows the upload, and never fails it.
-  require('../lib/research/xml-catch').fireCatch({
-    bytes: buf, filename: b.filename, contentType: b.contentType,
-    documentId: r.rows[0].id,
-    uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
-    why: 'a loan file (staff upload)',
-  });
+  //
+  // …EXCEPT WHEN THE DESK IMPORT ABOVE JUST SUCCEEDED, and that exception is the
+  // whole reason this line has a condition on it. `runAppraisalImport` feeds the
+  // warehouse itself through `desk.fireResearchIngest`, richer — it carries the
+  // photographs. Firing both on the same bytes RACES them: the catch's "is this
+  // already here from a loan file?" read happens before the desk commits, and the
+  // desk's "retire the uploaded copy" runs before the catch commits, so on a report
+  // carrying neither an effective date nor a named appraiser — which has no
+  // fingerprint, so BOTH de-dup guards stand down by design — every property in it
+  // ends up carrying the report TWICE, and no later pass heals it. Reproduced on
+  // real Postgres by a post-merge audit. A FAILED desk import still falls through
+  // here, which is what closes that gap.
+  if (!(apprImport && apprImport.ok)) {
+    require('../lib/research/xml-catch').fireCatch({
+      bytes: buf, filename: b.filename, contentType: b.contentType,
+      documentId: r.rows[0].id,
+      uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
+      why: 'a loan file (staff upload)',
+    });
+  }
 
   // AI classifier auto-hook (R3.13, owner-directed 2026-07-22, HARD RULE — never
   // moves the document itself; never clears/reopens a condition). When the Azure

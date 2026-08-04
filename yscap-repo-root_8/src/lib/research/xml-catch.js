@@ -75,8 +75,15 @@ const MAX_XML_BYTES = 80 * 1024 * 1024;
  */
 const SNIFF_BYTES = 2 * 1024 * 1024;
 
-const sha256 = (b) => crypto.createHash('sha256')
-  .update(Buffer.isBuffer(b) ? b : Buffer.from(String(b), 'utf8')).digest('hex');
+/* KEYED EXACTLY THE WAY `importXml` KEYS ITS LEDGER ROW, which hashes the STRING it
+   is handed (`Buffer.byteLength(bytes,'utf8')` / `sha256(bytes)` over `String(xml)`).
+   Hashing the raw BYTES here instead looks equivalent and is not: for a file that is
+   not valid UTF-8, `buf.toString('utf8')` substitutes replacement characters, so the
+   two digests differ and `alreadyFiled` can never match its own earlier import — the
+   same report re-files on every single upload, forever. Measured on a Latin-1
+   appraisal. So the catch hashes the same text `importXml` will hash. */
+const sha256 = (s) => crypto.createHash('sha256')
+  .update(Buffer.isBuffer(s) ? s : Buffer.from(String(s), 'utf8')).digest('hex');
 
 // The MISMO 2.6 root PILOT reads, and the attribute its parser reads first. Both are
 // namespace-tolerant in the same way `detectMismo` is, because a vendor prefixing the
@@ -205,12 +212,15 @@ async function staffUploader(db, id) {
  * @param {string}  [o.documentId]           for the log line only — nothing is written to it
  * @param {string}  [o.uploadedByStaffId]    a STAFF id, or null. Named so a borrower id
  *                                           cannot be passed by habit; verified anyway.
+ * @param {boolean} [o.untrusted]            the bytes came from a borrower. The report's
+ *                                           PROPERTY facts land exactly as always; it just
+ *                                           may not rewrite the shared appraiser roster.
  * @param {string}  [o.why]                  how it arrived, recorded on the ledger row
  * @returns {Promise<{considered, attempted, filed, status, reason, importId, comparables, properties, observations}>}
  */
 async function catchDocumentXml(db, {
   bytes, filename = null, contentType = null, documentId = null,
-  uploadedByStaffId = null, why = 'upload',
+  uploadedByStaffId = null, untrusted = false, why = 'upload',
 } = {}) {
   const out = {
     considered: false, attempted: false, filed: false,
@@ -230,7 +240,10 @@ async function catchDocumentXml(db, {
     if (!look.maybe) { out.reason = look.why; return out; }
     out.considered = true;
 
-    const hash = sha256(buf);
+    // The TEXT, not the bytes — see `sha256` above. This is also the exact value
+    // handed to `importXml`, so the digest and the import can never disagree.
+    const text = buf.toString('utf8');
+    const hash = sha256(text);
     const seen = await alreadyFiled(db, hash);
     if (seen) {
       out.importId = seen.id;
@@ -242,10 +255,11 @@ async function catchDocumentXml(db, {
 
     out.attempted = true;
     const r = await XI.importXml(db, {
-      xml: buf.toString('utf8'),
+      xml: text,
       filename,
       uploadedBy: await staffUploader(db, uploadedByStaffId),
       source: why,
+      untrusted,
     });
     out.importId = (r && r.importId) || null;
     out.status = (r && r.status) || 'error';
@@ -289,13 +303,17 @@ async function catchDocumentById(db, documentId, { why = 'stored document' } = {
   if (!row) { out.reason = 'no such document'; return out; }
   if (!row.storage_ref) { out.reason = 'the document has no stored copy'; return out; }
 
-  // The cheapest possible refusal: the name and the type say it is not XML, so the
-  // bytes never have to be read at all. `looksLikeAppraisalXml` would answer the same
-  // way — this only spares the download.
-  if (!looksLikeXmlContainer({ filename: row.filename, contentType: row.content_type, head: '' })) {
-    out.reason = 'not an XML file';
-    return out;
-  }
+  /* THERE IS DELIBERATELY NO METADATA SHORTCUT HERE. An earlier cut refused on the
+     name and the content type alone, with an empty head — which made this door
+     DISAGREE with the bytes door about the same file: both upload routes default
+     `contentType` to `application/octet-stream`, so a report saved under a name that
+     does not end `.xml` was filed happily when the bytes were handed over, and
+     refused — AND STAMPED, draining it out of the sweep forever — when the same
+     document was looked up by id. Sparing one storage read is not worth two doors
+     that answer differently, so the bytes always decide. (The sweep's SQL still
+     selects on the name or the type; a document with neither is invisible to it and
+     reachable only through the byte doors, which is a documented limit, not a
+     silently different verdict.) */
   if (Number(row.size_bytes) > MAX_XML_BYTES) {
     out.reason = 'larger than any appraisal data file we have seen';
     return out;
@@ -313,6 +331,9 @@ async function catchDocumentById(db, documentId, { why = 'stored document' } = {
     return out;
   }
 
+  // The filename and the type ride along as they are: `looksLikeXmlContainer` treats
+  // them as evidence FOR being XML and falls through to the bytes when they are
+  // silent, so an `application/octet-stream` never has to be argued with.
   const r = await catchDocumentXml(db, {
     bytes: buf, filename: row.filename, contentType: row.content_type,
     documentId: row.id, why,

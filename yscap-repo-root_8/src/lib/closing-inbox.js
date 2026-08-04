@@ -174,6 +174,15 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
          a.contentType || 'application/octet-stream', buf.length, provider, ref, DOC_KIND, sha256 || null]);
       saved += 1;
       names.push(String(a.filename));
+      // An appraisal data file forwarded onto the closing chain feeds the warehouse
+      // like any other (db/462) — warehouse-only, fire-and-forget, and it can neither
+      // affect the chain nor fail this filing.
+      try {
+        require('./research/xml-catch').fireCatch({
+          bytes: buf, filename: a.filename, contentType: a.contentType,
+          why: 'a closing-chain email',
+        });
+      } catch (_) { /* never let the warehouse touch the closing chain */ }
     } catch (e) {
       // A storage or DB failure IS transient and IS recoverable — but only if
       // somebody knows, AND only if the caller is allowed to try again. Swallowed and

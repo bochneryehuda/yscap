@@ -28,6 +28,26 @@
  * licensed professional's published business contact information, printed on
  * every report they sign.
  *
+ * TWO THINGS THAT PARAGRAPH HAS TO BE PRECISE ABOUT (db/462, 2026-08-04).
+ *
+ * FIRST, `owner_of_record` ON A SUBJECT PROPERTY IS THE BORROWER or their entity. It
+ * always was — nothing about this changed it — and it is the one field in here that
+ * names a person connected to a deal. It is a fact the appraiser read off the public
+ * record, which is what makes it defensible; it is not "no borrower name", which is
+ * why it is now said out loud rather than left to the reader.
+ *
+ * SECOND, WHO CAN PUT DATA HERE CHANGED. Until db/462 only STAFF could feed this
+ * warehouse — a desk import or the hand-upload screen. Now every appraisal XML that
+ * enters PILOT does, INCLUDING one a borrower attaches to their own condition, and
+ * nothing checks that the report's subject has anything to do with their file. So a
+ * borrower can seed rows other staff read. Three things bound it: only the report's
+ * PROPERTY facts are taken (a comparable sale that happened, happened, which is the
+ * whole point of the warehouse); an untrusted report may FILL but never REWRITE the
+ * shared appraiser roster (`ingest.upsertAppraiser`'s `fillOnly`, threaded from the
+ * borrower door); and the document BYTES stay unreachable, because `property_photos`
+ * is written only for a report that came in on a loan file, so `GET
+ * /photos/:documentId` can never serve one of these.
+ *
  * BORROWERS NEVER REACH ANY OF THIS. It is mounted behind requireStaff as a whole
  * router, not per-endpoint, so there is no path in without a staff session.
  */

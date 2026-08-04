@@ -254,6 +254,18 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         [applicationId, borrowerId, itemId, String(a.filename).slice(0, 300),
          a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null]);
       saved += 1;
+      /* AND IF THE APPRAISER JUST EMAILED US THE DATA FILE, THE MARKET DATA IN IT GOES
+         TO THE RESEARCH WAREHOUSE (db/462). This is the door the report most often
+         arrives through — the vendor replies to the order with the PDF and the MISMO
+         XML attached — and it was filing the bytes and throwing every comparable sale
+         away. Fire-and-forget, warehouse-only: it cannot affect the order, the
+         condition or the loan file, and it cannot fail this filing. */
+      try {
+        require('./research/xml-catch').fireCatch({
+          bytes: buf, filename: a.filename, contentType: a.contentType,
+          why: 'a vendor emailed it back on an order',
+        });
+      } catch (_) { /* never let the warehouse touch an order return */ }
     } catch (e) {
       // A storage or DB failure IS transient and IS recoverable — but only if somebody
       // knows, AND only if the caller is allowed to try again. Swallowed and uncounted,

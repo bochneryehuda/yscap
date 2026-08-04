@@ -162,7 +162,16 @@ const dateOnly = (v) => {
  * @param {{query:Function, getClient?:Function}} db
  * @returns {{ok, status, importId, reason, ...counts}}
  */
-async function importXml(db, { xml, filename = null, uploadedBy = null, source = null } = {}) {
+/**
+ * @param {object} o
+ * @param {boolean} [o.untrusted]  the bytes came from somewhere we do not vouch for —
+ *   today, a BORROWER upload (db/462). The report's PROPERTY facts are taken exactly as
+ *   they always were: a comparable sale that happened, happened, and that is what this
+ *   warehouse is for. What it may not do is REWRITE the shared appraiser roster, which
+ *   every staff user reads and which was previously staff-write-only. See
+ *   `ingest.upsertAppraiser`'s `fillOnly`.
+ */
+async function importXml(db, { xml, filename = null, uploadedBy = null, source = null, untrusted = false } = {}) {
   const out = {
     ok: false, status: 'error', importId: null, filename, reason: null,
     subjectAddress: null, appraiserName: null, comparables: 0,
@@ -260,7 +269,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
   // own connection; a caller inside its own transaction keeps ownership.
   const runner = async (client) => {
     const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], appraiserId: null };
-    await ingest.writeReport(client, { a, comps, rentals, link: { importId }, out: w });
+    await ingest.writeReport(client, { a, comps, rentals, link: { importId, untrusted }, out: w });
     return w;
   };
 
@@ -320,14 +329,14 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
  * roll-ups are read-modify-write per property (two reports on one street landing at
  * once would fight over the same rows).
  */
-async function importMany(db, files = [], { uploadedBy = null, onProgress = null, source = 'hand upload' } = {}) {
+async function importMany(db, files = [], { uploadedBy = null, onProgress = null, source = 'hand upload', untrusted = false } = {}) {
   const results = [];
   const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0 };
   for (let i = 0; i < files.length; i++) {
     const f = files[i] || {};
     let r;
     try {
-      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy, source });
+      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy, source, untrusted });
     } catch (e) {
       // importXml is written never to throw; this is the belt to its braces, so one
       // pathological file can never end a hundred-file upload.
