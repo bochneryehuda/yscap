@@ -55,7 +55,7 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   // The signed document (visibility='borrower') stays visible in the borrower library.
   await db.query(
     `INSERT INTO documents (borrower_id, application_id, checklist_item_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, doc_kind, visibility)
-     VALUES ($1,$2,$3,'term-sheet-signed.pdf','application/pdf',100,'local','x','system','term_sheet_signed','borrower')`,
+     VALUES ($1,$2,$3,'term-sheet-signed.pdf','application/pdf',100,'local','x','staff','term_sheet_signed','borrower')`,
     [br.id, app.id, item.id]);
   const lib = await db.query(
     `SELECT id FROM documents WHERE borrower_id=$1 AND application_id=$2 AND visibility='borrower' AND source_type <> 'chat_attachment'`,
