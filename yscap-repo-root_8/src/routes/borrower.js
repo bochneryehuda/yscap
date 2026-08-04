@@ -3146,6 +3146,20 @@ router.post('/documents', async (req, res) => {
   if (b.llcId) { try { await llcLib.syncLlcConditions(b.llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+
+  // EVERY APPRAISAL XML FEEDS THE RESEARCH WAREHOUSE (owner-directed 2026-08-04,
+  // db/462). This door had NO appraisal detection whatsoever, so a borrower attaching
+  // the appraiser's data file — which is exactly what many of them do, because it came
+  // in the same email as the PDF — filed the bytes and threw every comparable sale in
+  // it away. Nothing about the LOAN FILE changes: the catch writes only into the
+  // research warehouse, never an appraisal row, a condition, a finding or a value.
+  // `uploadedByStaffId` is null and must stay null — the actor here is a borrower, and
+  // `research_imports.uploaded_by` points at the staff roster.
+  require('../lib/research/xml-catch').fireCatch({
+    bytes: buf, filename: b.filename, contentType: b.contentType,
+    documentId: r.rows[0].id, uploadedByStaffId: null,
+    why: 'a loan file (borrower upload)',
+  });
   // Live cross-user refresh (#112): a doc answering a track-record line-item
   // request lands on the line — staff viewing it reload to see the new evidence.
   if (trackRecordId) require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});

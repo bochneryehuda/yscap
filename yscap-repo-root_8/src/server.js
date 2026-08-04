@@ -766,6 +766,18 @@ if (require.main === module) {
         require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
           .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
+        // THE XMLs THAT ARE ALREADY ON THE FILES (db/462, owner-directed 2026-08-04).
+        // The backfill above walks `appraisals` — reports that imported CLEANLY onto a
+        // loan file. It cannot see an appraisal data file that only ever existed as a
+        // stored document: attached by a borrower, filed on a condition other than the
+        // appraisal one, dropped in an unnamed slot, or belonging to an import that
+        // failed. Every one of those still carries a full grid of comparable sales we
+        // have already paid for. `xml-catch` closes those doors going forward; this is
+        // the previous half. Bounded, self-draining (each document is stamped whatever
+        // the verdict — but NEVER when the read itself failed), never touches a loan
+        // file, never throws. Off with RESEARCH_XML_SWEEP_DISABLED=1.
+        require('./lib/research/xml-sweep').sweepOnBoot(require('./db'))
+          .catch((e) => console.error('[boot] research XML sweep failed:', e.message));
         // PUTTING THOSE PROPERTIES ON THE MAP (db/412) — what makes "find me every
         // comparable within half a mile" possible. Only comparables the appraiser's
         // own software happened to geocode carry coordinates, and a SUBJECT property

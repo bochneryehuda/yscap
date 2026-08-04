@@ -6086,6 +6086,12 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
     if (!c.ok) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
     await db.query(`UPDATE documents SET slot_label=$2 WHERE id=$1`, [doc.id, c.slot]);
     await audit(req, 'condition_doc_slotted', 'application', appId, { templateCode: doc.template_code, slot: c.slot || 'unassigned' });
+    // UPLOAD FIRST, NAME THE SLOT SECOND is the ordinary way people work, and this
+    // route only ever ran an UPDATE — so a document that arrived before db/462, or one
+    // whose earlier catch could not read storage, gets its chance here. Idempotent:
+    // the catch is keyed on the bytes and stands down against a report already filed,
+    // so re-slotting the same document ten times does the work once.
+    require('../lib/research/xml-catch').fireCatchById(doc.id, 'a loan file (document slotted)');
     res.json({ ok: true, slot: c.slot });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -14258,6 +14264,21 @@ router.post('/applications/:id/documents', async (req, res) => {
 
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+
+  // EVERY APPRAISAL XML FEEDS THE RESEARCH WAREHOUSE, WHEREVER IT WAS FILED
+  // (owner-directed 2026-08-04, db/462). Deliberately OUTSIDE the auto-import block
+  // above: that one is gated on the slot being named /xml/i on the appraisal
+  // condition, which is the right gate for deciding a FILE's official appraisal and
+  // the wrong one for market data. A data file dropped on any other condition, in an
+  // unnamed slot, or on a condition whose appraisal import then failed, still carries
+  // every comparable sale in the report. Fire-and-forget: it never touches the loan
+  // file, never slows the upload, and never fails it.
+  require('../lib/research/xml-catch').fireCatch({
+    bytes: buf, filename: b.filename, contentType: b.contentType,
+    documentId: r.rows[0].id,
+    uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
+    why: 'a loan file (staff upload)',
+  });
 
   // AI classifier auto-hook (R3.13, owner-directed 2026-07-22, HARD RULE — never
   // moves the document itself; never clears/reopens a condition). When the Azure

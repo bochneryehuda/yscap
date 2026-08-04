@@ -1940,7 +1940,7 @@ router.post('/imports', async (req, res, next) => {
     let dropped = 0;
     if (files.length > MAX_BULK) { dropped = files.length - MAX_BULK; files = files.slice(0, MAX_BULK); }
 
-    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id });
+    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id, source: 'hand upload' });
     if (dropped) {
       out.summary.dropped = dropped;
       out.summary.note = `Only the first ${MAX_BULK} files were read this time — ${dropped} more were left out. Send them in another batch.`;
@@ -1960,7 +1960,11 @@ router.get('/imports', async (req, res, next) => {
     const status = txt(req.query.status);
     if (status && ['ok', 'skipped', 'error', 'pending'].includes(status)) where.push(`i.status = ${P(status)}`);
     const r = await db.query(
-      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date,
+      // `source` (db/462) is how the report ARRIVED — a hand upload, a loan file, the
+      // back-book sweep. Without it the list showed a filename and nothing else, so
+      // "did the ones on our loan files actually come in?" could not be answered from
+      // the screen at all. NULL on every row that predates the column.
+      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date, i.source,
               i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
               i.subject_property_id, i.appraiser_id, i.appraisal_id,
               i.comparables_seen, i.properties_written, i.observations_written, i.sales_written,
