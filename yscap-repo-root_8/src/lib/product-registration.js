@@ -519,7 +519,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
  * @param {number} [p.termMonths] loan term in months (from inputs.term)
  * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
  */
-function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions } = {}) {
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut } = {}) {
   quote = quote || {};
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
@@ -553,7 +553,16 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     // borrower funds themselves over construction (0 unless an approved exception).
     num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
-    quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    // On a CASH-OUT refinance the borrower RECEIVES money at closing, so cash-to-close
+    // is $0 and the figure they actually care about is "cash to you". Showing the plain
+    // "Estimated cash to close: $0" told a cash-out borrower nothing (owner-directed
+    // 2026-08-04). `cashOut` is the figure of record — a per-file typed amount if one
+    // was entered, else the structure's implied proceeds (quote.refi.cashOut). It is
+    // >0 only on a cash-out; a rate-and-term keeps the ordinary cash-to-close (the
+    // shortfall the borrower brings).
+    (num(cashOut) > 0)
+      ? { label: 'Estimated cash to you (paid to you at closing)', value: money(cashOut) }
+      : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null),
     // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower
     // knows the extra cushion is part of what they must show. Hidden when waived.
     num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money(quote.closingBuffer) } : null,

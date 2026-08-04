@@ -151,15 +151,31 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       // 0 when waived per file (applications.liquidity_buffer_waived).
       closingBuffer: Number(quote.closingBuffer) || 0,
       closingBufferWaived: !!quote.closingBufferWaived,
+      // The REFINANCE breakdown, so the cash-to-close is explained as the payoff
+      // shortfall instead of a purchase down payment (null on a purchase). Mirrors
+      // product-registration.assetDetail — the two must read the same.
+      refi: (quote && quote.refi) ? {
+        payoff: Number(quote.refi.payoff) || 0,
+        closing: Number(quote.refi.closing) || 0,
+        fundedAtClose: Number(quote.refi.fundedAtClose) || 0,
+        cashOut: Number(quote.refi.cashOut) || 0,
+      } : null,
       computedAt: new Date().toISOString(),
     };
+    // On a REFINANCE the cash to close is the payoff shortfall (payoff + closing
+    // − funds advanced at closing), NOT "down payment + closing" — which on a refi
+    // reads "Down payment $0.00 + closing $X = cash to close $Y", an equation that
+    // is internally false. Owner-directed 2026-08-04.
+    const cashToCloseSeg = breakdown.refi
+      ? `Loan payoff ${money2(breakdown.refi.payoff)} + closing costs due at closing ${money2(breakdown.refi.closing)} ` +
+        `− funds advanced at closing ${money2(breakdown.refi.fundedAtClose)} = cash to close ${money2(breakdown.cashToClose)}`
+      : `Down payment ${money2(breakdown.downPayment)} + ` +
+        `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
+        `closing costs due at closing ${money2(breakdown.closingCosts)} = cash to close ${money2(breakdown.cashToClose)}`;
     const hint =
       `${bankStatementLine(program, assetMonths, noteBuyer)} ` +
       `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
-      `Down payment ${money2(breakdown.downPayment)} + ` +
-      `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
-      `closing costs due at closing ${money2(breakdown.closingCosts)} ` +
-      `= cash to close ${money2(breakdown.cashToClose)}; plus reserves ${money2(breakdown.reserveRequirement)}` +
+      `${cashToCloseSeg}; plus reserves ${money2(breakdown.reserveRequirement)}` +
       `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}` +
       `${breakdown.closingBuffer > 0 ? `; plus a closing-cost buffer ${money2(breakdown.closingBuffer)} (1% of the loan amount, for extra closing charges)` : (breakdown.closingBufferWaived ? '; closing-cost buffer waived on this file' : '')}.`;
 

@@ -33,6 +33,10 @@ const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Progr
 const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
 const { parseAddress } = require('./address');   // city recovery from composed/string addresses
+// THE shared "does this deal size on the as-is value (a refinance)?" predicate —
+// the engine's own `!== 'Purchase'` meaning, so a raw label ("Cash-Out Refinance")
+// can never make normalize() treat as a purchase a deal the engine sized as a refi.
+const { sizesOnAsIsValue } = require('./deal-basis');
 
 /* ---- small coercers ---- */
 // Strips thousands-separator commas before parsing (#143): the studio's dollar
@@ -295,7 +299,7 @@ function buildInputs(app, experience, overrides) {
      engine a refinance whose "purchase price" was a leftover purchase figure. On a
      refinance the two ARE one number by definition, so bind them rather than trust
      the caller to. A purchase is untouched. */
-  if (out.loanType === 'Refinance') {
+  if (sizesOnAsIsValue(out.loanType)) {
     out.purchasePrice = num(out.asIsValue);
     out.asIsDefaulted = false;
     out.asIsMissing = !(num(out.asIsValue) > 0);
@@ -448,7 +452,10 @@ function normalize(program, input, ev, ladder) {
      owner's example (initial 173,550, payoff 220,000, closing 10,254.38) it is
      max(0, 220,000 + 10,254.38 − 173,550) = 56,704.38. No frozen number moves —
      this is the reported cash-to-close only, and a purchase is byte-identical. */
-  const isRefinanceDeal = input.loanType === 'Refinance';
+  // Refinance by MEANING, not by an exact string — same test the engine uses to
+  // pick its as-is denominator, so normalize can never disagree with what the
+  // engine actually sized (owner-directed refinance hardening 2026-08-04).
+  const isRefinanceDeal = sizesOnAsIsValue(input.loanType);
   const payoffAmount = isRefinanceDeal ? Math.max(0, num(input.payoff)) : 0;
   const fundedAtClose = initialAdvance;   // rehab holdback funds later, in draws
   const cashToClose = isRefinanceDeal
@@ -580,7 +587,14 @@ function normalize(program, input, ev, ladder) {
       payoff: payoffAmount,
       fundedAtClose,
       closing: closingDueAtClose,
-      shortfall: cashToClose,   // == max(0, payoff + closing − fundedAtClose)
+      shortfall: cashToClose,   // == max(0, payoff + closing − fundedAtClose) — what the borrower BRINGS
+      // The MIRROR: what the borrower RECEIVES when the funds advanced exceed the
+      // payoff + closing (a cash-out). Exactly one of {shortfall, cashOut} is > 0,
+      // so a cash-out refi carries a real "cash to you" figure instead of the $0
+      // cash-to-close that a purchase-shaped reading produced. This is the STRUCTURAL
+      // figure (the sized loan implies it); a per-file typed override lives on
+      // applications.estimated_cash_out and is applied by payoff.js above this.
+      cashOut: round2(Math.max(0, fundedAtClose - payoffAmount - closingDueAtClose)),
     } : null,
     reserveRequirement,
     reserveMonths: reserveMo,
