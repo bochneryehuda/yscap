@@ -179,8 +179,57 @@ const visibleOfficersSql = (alias, p) =>
   ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
   ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 
+// ============================================================================
+// TPO PORTAL (owner-directed 2026-08-04; db/464 + db/465; design
+// docs/TPO-PORTAL-BLUEPRINT.md). A TPO user is an EXTERNAL staff_users row
+// (`is_external=true`, `tpo_firm_id` set, role tpo_officer / tpo_processor) whose
+// SESSION carries `kind='tpo'`. They are deliberately NOT in the ROLES array
+// above — that array drives the INTERNAL roster + the internal-invite
+// ASSIGNABLE_ROLES set, and an external role must never be assignable to an
+// internal staffer. `can()` returns false for a tpo actor (kind !== 'staff'),
+// so a tpo session can never satisfy a staff capability gate.
+// ============================================================================
+
+// The two external roles, for display only (a firm-side roster in the TPO
+// portal). Kept OUT of ROLES/ROLE_KEYS on purpose (see the note above).
+const TPO_ROLES = [
+  { key: 'tpo_officer', label: 'Loan Officer (Broker)' },
+  { key: 'tpo_processor', label: 'Processor' },
+];
+const TPO_ROLE_KEYS = TPO_ROLES.map((r) => r.key);
+const TPO_ROLE_LABEL = Object.fromEntries(TPO_ROLES.map((r) => [r.key, r.label]));
+
+/** Is this actor a TPO (external brokerage) user? */
+function isTpoActor(actor) {
+  return !!(actor && actor.kind === 'tpo');
+}
+
+// THE definition of "which files a TPO user may see" — their own firm's TPO
+// files, and ONLY those. Every /api/tpo file/borrower query routes through this
+// so firm isolation lives in ONE place (the same discipline as
+// visibleOfficersSql). `p` is the acting external-staff-id placeholder; it is
+// ALWAYS referenced (a TPO actor is always firm-bounded — there is no
+// see_all_files escape for an external user). The `is_external=true` guard means
+// only a genuine external row ever resolves a firm — an internal id resolves
+// NULL, and `tpo_firm_id = NULL` matches nothing, so a stray internal caller is
+// scoped to zero files rather than to everything.
+const tpoFirmScopeSql = (alias, p) =>
+  `(${alias}.is_tpo = true AND ${alias}.tpo_firm_id = ` +
+  `(SELECT tpo_firm_id FROM staff_users WHERE id=${p} AND is_external=true))`;
+
+// Which BORROWERS a TPO firm may see: anyone who is the borrower or co-borrower
+// on one of the firm's TPO files. `alias` is the borrowers alias; `p` the
+// acting external-staff-id placeholder.
+const tpoBorrowerScopeSql = (alias, p) =>
+  `EXISTS (SELECT 1 FROM applications a2 WHERE a2.deleted_at IS NULL` +
+  ` AND (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id)` +
+  ` AND ${tpoFirmScopeSql('a2', p)})`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
   defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
   visibleOfficersSql,
+  // TPO portal
+  TPO_ROLES, TPO_ROLE_KEYS, TPO_ROLE_LABEL, isTpoActor,
+  tpoFirmScopeSql, tpoBorrowerScopeSql,
 };

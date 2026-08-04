@@ -381,6 +381,11 @@ app.use('/api/borrower-view', require('./routes/borrower-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
+// TPO PORTAL — the external brokerage front door (db/464/465). The router
+// applies requireAuth + requireTpo + firm scoping itself; a tpo session is
+// structurally refused by /api/staff and /api/borrower (requireStaff /
+// requireBorrower), and an internal/borrower session is refused here.
+app.use('/api/tpo', require('./routes/tpo'));
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
