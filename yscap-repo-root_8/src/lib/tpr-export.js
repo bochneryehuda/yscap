@@ -112,7 +112,7 @@ const CODE_CATEGORY = {
   cond_emd_corrfirst: C.EMD,
   // The non-owner-occupied affidavit files with the ENTITY documents: on an
   // individual-vested file it is what stands in for the entity file (db/417).
-  cond_noo_affidavit_individual: C.ENTITY,
+  cond_noo_affidavit_individual: C.LLC,
   // LLC / vesting entity documents
   llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
   rtl_llc_formation: C.LLC, rtl_llc_ein: C.LLC, rtl_llc_opagmt: C.LLC, rtl_llc_goodstanding: C.LLC,

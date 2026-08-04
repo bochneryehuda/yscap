@@ -43,6 +43,12 @@ const CAPABILITIES = [
   // WITHOUT gaining the processor's power to sign off conditions. The processor
   // still signs off the credit condition; the LO just imports + marks it done.
   { key: 'pull_credit', label: 'Pull / import credit reports', hint: 'Import (pull or upload) a borrower credit report. Loan officers have this; processors / underwriters / admins do too.' },
+  // Switching a file's vesting to INDIVIDUAL (personal name) — which waives the
+  // LLC/entity condition and populates the Non-Owner-Occupied certification.
+  // Owner-directed 2026-08-04: loan officers get this too, not only processors/
+  // admins. A dedicated capability so it does NOT grant the broader
+  // sign_off_conditions power.
+  { key: 'waive_vesting_llc', label: 'Switch vesting to individual (waive LLC)', hint: 'Mark a file as closing in the borrower\'s personal name — waives the LLC condition and adds the Non-Owner-Occupied certification. Loan officers, processors, closers, underwriters and admins hold it.' },
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
   { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
@@ -70,13 +76,13 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen. They also export
   // capital-provider data tapes (owner-directed 2026-07-26) and pull credit.
-  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_conditions', 'export_data_tapes'],
-  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit'],
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'waive_conditions', 'export_data_tapes'],
+  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc'],
   // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
   // desk across all files. Admin-overridable per the coordinator rules.
   draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
@@ -87,7 +93,7 @@ const ROLE_DEFAULTS = {
   // — instead of being forced to escalate it to a super-admin. The decision is still
   // fully attributed (who/why/when on the finding + the audit log), and an admin can
   // revoke it for a specific person from the Team screen.
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions'],
+  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'waive_vesting_llc'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They CAN pull_credit (owner-directed 2026-07-23): the LO pulls credit at point of
   // sale, then marks the credit condition Done (the reviewed stamp) — the processor
@@ -96,12 +102,12 @@ const ROLE_DEFAULTS = {
   // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
   // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
-  loan_officer: ['review_conditions', 'pull_credit'],
+  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc'],
   // Closers see the whole pipeline (they need the closing queue across files) and
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow
   // per-person from the Team screen.
-  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing'],
+  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing', 'waive_vesting_llc'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

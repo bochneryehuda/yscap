@@ -2160,8 +2160,12 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
 router.post('/applications/:id/vesting/personal-name', async (req, res) => {
   try {
     const b = req.body || {};
-    if (!can(req.actor, 'sign_off_conditions'))
-      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    // Owner-directed 2026-08-04: loan officers may also switch vesting to
+    // individual (waive the LLC condition + populate the Non-Owner-Occupied
+    // certification), via the dedicated waive_vesting_llc capability — not only
+    // processors/admins, and without granting the broader sign_off_conditions power.
+    if (!can(req.actor, 'waive_vesting_llc'))
+      return res.status(403).json({ error: 'You do not have permission to switch this file to an individual (personal-name) vesting.' });
     const app = (await db.query(
       `SELECT a.id, a.status, a.borrower_id, a.llc_id, a.lender, l.is_verified AS llc_verified,
               (SELECT r.program FROM product_registrations r
@@ -6229,6 +6233,12 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         // Drives whether the card treats a missing assignment as a real gap — a
         // straight purchase has no assignment and must not be nagged for one.
         isAssignment: data.isAssignment,
+        // Vesting / purpose awareness (owner-directed 2026-08-04): an individual
+        // needs no entity documents, and a refinance has no purchase contract —
+        // so the card must not show them as outstanding, and the attorney email
+        // says it is an individual. The missing list below is already filtered.
+        vestsIndividually: data.vestsIndividually,
+        isRefinance: data.transactionType === 'Refinance',
       },
       deal: closingPrep.dealMeta(data),
       order: {
@@ -6251,7 +6261,11 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
           })),
         })),
         counts: pkg.counts,
-        missing: pkg.missing,
+        // Only the documents THIS deal actually needs — a refinance drops the
+        // purchase contract, an individual drops the entity documents, a straight
+        // purchase drops the assignment (owner-directed 2026-08-04). Same helper
+        // the attorney email uses, so the screen and the email never disagree.
+        missing: closingPrep.applicableMissing(pkg.missing, data),
         // Held back because nobody has accepted them yet (owner-directed
         // 2026-08-03). NOT attached, and named here so the sender sees it BEFORE
         // they send — the alternative is an attorney one document short and a
