@@ -122,6 +122,10 @@ const CODE_CATEGORY = {
   insurance_binder: C.INSURANCE, rtl_cond_insurance: C.INSURANCE,
   // Title
   title_commitment: C.TITLE, rtl_cond_title: C.TITLE,
+  // Refinance payoff (db/464) — the borrower's current mortgage / payoff
+  // statement (external) and the ordered/verified payoff (internal) file with
+  // Title: they clear the existing lien on the property.
+  cond_payoff_external: C.TITLE, cond_payoff_internal: C.TITLE,
   // Flood
   rtl_cond_flood: C.FLOOD,
   // Bank statements / assets
