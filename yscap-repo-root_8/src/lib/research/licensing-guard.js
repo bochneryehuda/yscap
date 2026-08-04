@@ -293,17 +293,29 @@ async function checkGeoLicensing(dbc, opts) {
           + 'stops a Google coordinate being stored permanently in the property warehouse.' };
     }
     if (probe && probe.tested && probe.refused) {
-      /* The text is not the one db/459 installs, but the database DID refuse when
-         asked. That is a rule somebody rewrote — `NOT ILIKE`, a regex, a narrowing
-         to rows that carry a coordinate — not a breach, and it must not be
-         reported as one. Still worth flagging: it is no longer the reviewed text,
-         and db/459 will overwrite it on the next boot. */
+      /* The text is not db/459's and the database refused OUR ROW — which is not
+         the same thing as being protected, and saying so was a false all-clear.
+         A refusal proves nothing about any other row; that invariant is stated at
+         the top of this file and this branch broke it. The probe row carries only
+         the geo columns, so an exemption keyed on ANY other column — `OR zip IS
+         NOT NULL`, `OR year_built IS NOT NULL`, `OR created_at < '<date>'` to
+         grandfather the back book — refuses the probe and lets every real row
+         through. Two of those three were measured storing a real Google UPDATE
+         while this branch called the warehouse protected. The `created_at` one is
+         the realistic case precisely BECAUSE of the advice above: told the rows
+         must be cleared before db/459 can be re-applied, grandfathering them is
+         the obvious way to keep a rule without deleting warehouse rows.
+         So: report what was actually observed, and say plainly what it does not
+         prove. It is still a real improvement over the previous wording, which
+         asserted the opposite — that it refuses nothing. */
       return { ok: false, checked: true, present: false, offenders,
         probeTested: true, probeBlockedBy: null,
         why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its `
-          + 'text has been rewritten. The database DID refuse a Google-sourced coordinate when '
-          + 'asked, so the warehouse is protected right now, but this is no longer the reviewed '
-          + 'rule and db/459 will replace it on the next deploy. Check who changed it.' };
+          + 'text has been rewritten. It refused our test row, but that is NOT proof it refuses '
+          + 'every write: the test row carries only the coordinate columns, so a rule that exempts '
+          + 'rows by any other column (a zip, a year built, an older created_at) would refuse ours '
+          + `and still let a real property through.${rows} Restore the reviewed rule and check who `
+          + 'changed it.' };
     }
     // Named, text not canonical, and we could not test the behaviour. Say exactly
     // that — never that it refuses nothing.

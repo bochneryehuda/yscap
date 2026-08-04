@@ -453,9 +453,58 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         const r = await G.checkGeoLicensing(client, { verifyWrite: true });
         ok(!/does NOT refuse/.test(r.why || ''),
           `  …so the guard must NOT claim it does not refuse (${(r.why || '').slice(0, 55)})`);
-        ok(/protected right now/.test(r.why || '') && /rewritten/.test(r.why || ''),
-          '  …it says the text was rewritten but the database still refuses');
+        ok(/rewritten/.test(r.why || '') && /NOT proof/.test(r.why || ''),
+          '  …it says the text was rewritten and that our test row proves nothing about the rest');
+        // AND IT MUST NOT CLAIM PROTECTION. A refusal of the probe row is not
+        // evidence about any other row — see (h2), where two rewrites refuse the
+        // probe and store a real write.
+        ok(!/protected right now|warehouse is protected/.test(r.why || ''),
+          '  …and never says the warehouse is protected on the strength of one refused row');
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+      }
+
+      /* (h2) WHY THAT BRANCH MAY NEVER CLAIM PROTECTION. These rewrites REFUSE the
+         probe row and STORE a real Google write, because the probe row carries
+         only the coordinate columns while a real property carries a zip and a year
+         built. `created_at` is the realistic one — told by this very guard that the
+         rows must be cleared before db/459 can be re-applied, grandfathering them
+         by date is the obvious way to keep a rule without deleting warehouse rows.
+         The verdict is correctly NOT-installed either way; what is being pinned is
+         that the WORDING never reassures. */
+      {
+        const realId = (await client.query(
+          `INSERT INTO properties (address_key, display_address, city, state, zip, year_built, created_at)
+           VALUES ($1,'x','Trenton','NJ','08608',1962, now() - interval '30 days') RETURNING id`,
+          [`nj|realrow|${sfx}`])).rows[0].id;
+        for (const [body, label] of [
+          [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR zip IS NOT NULL)`,
+            'an exemption on zip'],
+          [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR year_built IS NOT NULL)`,
+            'an exemption on year built'],
+          [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR created_at < now() - interval '1 day')`,
+            'a created_at grandfather clause'],
+        ]) {
+          await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT} ${body}`);
+          const v = await G._internals.verifyRefusesGoogle(client);
+          ok(v.tested === true && v.refused === true,
+            `${label} REFUSES the probe row…`);
+          // …and yet stores the write geocode.js actually performs.
+          await client.query('SAVEPOINT ev2');
+          let stored = true;
+          try {
+            await client.query(
+              `UPDATE properties SET geo_latitude=40.1, geo_longitude=-74.1, geo_source='google_places',
+                 geo_precision='rooftop', geo_at=now(), geo_attempted_at=now() WHERE id=$1`, [realId]);
+          } catch (_) { stored = false; }
+          await client.query('ROLLBACK TO SAVEPOINT ev2');
+          const r2 = await G.checkGeoLicensing(client, { verifyWrite: true });
+          ok(r2.ok === false && r2.present === false,
+            `  …and is still reported NOT installed (stored a real write: ${stored})`);
+          ok(!/protected right now|warehouse is protected/.test(r2.why || ''),
+            '  …with no claim that the warehouse is protected');
+          await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+        }
+        await client.query(`DELETE FROM properties WHERE address_key = $1`, [`nj|realrow|${sfx}`]);
       }
 
       /* (i) THE OFFENDER COUNT IS THE ONLY NUMBER ANYBODY CAN ACT ON, and the
