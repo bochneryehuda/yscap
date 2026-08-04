@@ -389,8 +389,15 @@ function markupTiersFor(program, input, cd) {
       if (v != null && v !== '' && isFinite(num(v)) && num(v) >= 0) out[t] = num(v) / 100;
     }
   }
-  // Per-file studio override for the Gold top tier wins over the company default.
-  if (program === 'gold' && hasInput(input, 'markupGoldT1Pct')) out[1] = num(input.markupGoldT1Pct) / 100;
+  // Per-file studio override for the Gold top tier wins over the company default —
+  // but ONLY a valid, finite, non-negative value (same guard as the company path
+  // above): a nonsensical negative must never clobber a configured company Gold
+  // Tier-1 default. An invalid value falls through, so the company/historic value
+  // governs.
+  if (program === 'gold' && hasInput(input, 'markupGoldT1Pct')) {
+    const t1 = num(input.markupGoldT1Pct);
+    if (isFinite(t1) && t1 >= 0) out[1] = t1 / 100;
+  }
   return Object.keys(out).length ? out : null;
 }
 function setEngineMarkupTiers(program, tiers) {
