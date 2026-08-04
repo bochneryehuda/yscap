@@ -1532,6 +1532,23 @@
       if (w) { if (xf.length) { w.style.display = ""; var t = xf.reduce(function (a2, f) { return a2 + f.amount; }, 0);
         YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
+    /* ON-SCREEN refinance cash-to-close, matching the PDF: hide the purchase
+       "Down payment" row on a refi, and on a RATE-AND-TERM show the existing-loan
+       payoff and the funds advanced so the visible line items sum to the shown
+       cash-to-close (the PDF/xlsx already reconcile; the panel did not). A cash-out
+       shows neither row — cash-to-close is $0 and the "cash to you" figure lives in
+       the refinance note below (owner-directed 2026-08-04). */
+    (function () {
+      var refi = isRefi(), rt = refi && !isCashOut() && num("payoff") > 0;
+      var row = function (wrapId, valId, show, v) {
+        var w = el(wrapId); if (!w) return;
+        w.style.display = show ? "" : "none";
+        if (show && valId) YS.put(valId, v);
+      };
+      row("rDownWrap", null, !refi);
+      row("rRefiPayoffWrap", "rRefiPayoff", sized && rt, YS.fmtUSD(num("payoff")));
+      row("rRefiAdvWrap", "rRefiAdv", sized && rt, "−" + YS.fmtUSD(fundedAtClose(d)));
+    })();
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     // 1% closing-cost buffer inside the liquidity to show (owner-authorized
     // 2026-07-31) — the amount, or "Waived" when the portal host waived it.
@@ -1755,7 +1772,10 @@
            states the payoff and stops \u2014 quoting a "cash to you" figure there would
            invite exactly the cash-out the structure is not. */
         if (payoff > 0) {
-          var netOut = structuralCashOut(d);
+          // cashOutOfRecord (typed override, else structural) — the SAME figure the
+          // PDF and the cash-out box print, so the on-screen note can never show a
+          // different "cash to you" than the sheet (owner-directed 2026-08-04).
+          var netOut = cashOutOfRecord(d);
           refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " pays off " + YS.fmtUSD(payoff) + payoffWhoTxt() + ".";
           if (isCashOut()) {
             refiTxt += " Of that loan, " + YS.fmtUSD(fundedAtClose(d)) + " funds at the closing table; after the payoff and " + YS.fmtUSD(d.closing || 0) + " of closing costs, cash to you \u2248 <strong>" + YS.fmtUSD(netOut) + "</strong>.";
@@ -1886,7 +1906,12 @@
       ["Borrower / entity", borrowerOfRecord() || EM]
     ];
     var costs = [
-      ["Purchase price", num("price") ? money(num("price")) : EM],
+      // A REFINANCE has no purchase price — it is sized on the as-is value (shown on
+      // the next row). Every other surface (studio detail, PDF, deal-profile) drops
+      // the purchase-price row on a refi; the xlsx alone kept it, and because `price`
+      // is not cleared on switching to refinance it could print a stale figure
+      // (owner-directed 2026-08-04).
+      isRefi() ? null : ["Purchase price", num("price") ? money(num("price")) : EM],
       ["Construction / rehab budget", money(num("construction"))],
       ["As-is value", num("asIs") ? money(num("asIs")) : EM],
       ["After-repair value (ARV)", num("arv") ? money(num("arv")) : EM],
@@ -1922,7 +1947,7 @@
       // the derivation page and the registration all carry. It is NOT months x payment, and
       // it differs per program, which is why every section states its own (2026-07-30).
       ["Financed interest reserve", stdOk ? money(d.financedIR) : EM],
-      ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
+      isRefi() ? null : ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
       xlsxTierMaxRow(d, pct), xlsxPricedRow(d, pct),
       ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
@@ -1951,7 +1976,7 @@
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         (gOk && gd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(gd.oopRehab)] : null,
         ["Financed interest reserve", gOk ? money(gd.financedIR) : EM],
-        ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
+        isRefi() ? null : ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
         xlsxTierMaxRow(gd, pct), xlsxPricedRow(gd, pct),
         ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
@@ -1994,7 +2019,7 @@
         ["Rehab / construction holdback", sOk ? money(sd.rehabHoldback) : EM],
         (sOk && sd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(sd.oopRehab)] : null,
         ["Financed interest reserve", sOk ? money(sd.financedIR) : EM],
-        ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
+        isRefi() ? null : ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
         ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
         xlsxTierMaxRow(sd, pct), xlsxPricedRow(sd, pct),
         ["Origination (" + origPctStr((sd.origPct != null ? sd.origPct : 0.0125)) + ")", (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
@@ -2016,7 +2041,7 @@
     // existing-loan payoff and the funds advanced at closing (owner-directed
     // 2026-08-04) — otherwise a refi's fees sum to closing costs while cash-to-close
     // includes the payoff shortfall, which looks like an error.
-    if (isRefi() && num("payoff") > 0) {
+    if (isRefi() && !isCashOut() && num("payoff") > 0) {
       [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
         var rows = pr[0], dd = pr[1], ok = pr[2];
         if (!ok || !dd) return;
@@ -2034,7 +2059,7 @@
     // the admin basis) — title it honestly so the export never claims a Standard
     // registration the server wouldn't record.
     var stdTitle = manualBasisOn() ? "Manual Program (admin-set basis)" : "Standard Program";
-    return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: "Purchase & project costs", items: costs.filter(Boolean) },
+    return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: isRefi() ? "Property & project costs" : "Purchase & project costs", items: costs.filter(Boolean) },
             { title: stdTitle, items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
             { title: "Silver Program", items: silver.filter(Boolean) }];
   }
@@ -2531,7 +2556,12 @@
       // advance at closing (the initial advance), on top of the closing costs above.
       // These two rows make the section reconcile to the cash-to-close total
       // (fees + payoff \u2212 funds advanced). Owner-directed 2026-08-04.
-      if (isRefi() && sized && num("payoff") > 0) {
+      // ONLY rate-and-term: there the borrower brings a positive shortfall, so
+      // "fees + payoff \u2212 funds advanced = cash to close" reconciles. On a CASH-OUT
+      // the funds advanced exceed payoff + closing, so cash-to-close is $0 and these
+      // two rows would sum NEGATIVE against it; the cash-out already carries its own
+      // "cash to you" line in the loan-structure column (owner-directed 2026-08-04).
+      if (isRefi() && !isCashOut() && sized && num("payoff") > 0) {
         yR = rowIn(xR, colW, "Existing loan payoff", money(num("payoff")), yR);
         yR = rowIn(xR, colW, "Less funds advanced at closing (initial advance)", "\u2212" + money(fundedAtClose(d)), yR);
       }

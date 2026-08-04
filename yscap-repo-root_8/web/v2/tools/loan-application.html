@@ -929,7 +929,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                 </div>
             </div>
             <div class="result-grid">
-                <div class="result"><div class="r-label">Effective purchase price</div><div class="r-value" id="snEffPrice">$0</div><div class="r-hint" id="snEffHint">price you pay</div></div>
+                <div class="result"><div class="r-label" id="snEffLbl">Effective purchase price</div><div class="r-value" id="snEffPrice">$0</div><div class="r-hint" id="snEffHint">price you pay</div></div>
                 <div class="result"><div class="r-label">Total rehab budget</div><div class="r-value" id="snRehab">$0</div></div>
                 <div class="result"><div class="r-label">Total project cost</div><div class="r-value" id="snTotalCost">$0</div><div class="r-hint">purchase + rehab</div></div>
                 <div class="result"><div class="r-label">Experience tier</div><div class="r-value" id="snTier" style="font-size:1.02rem">—</div></div>
@@ -1562,7 +1562,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     };
     var R = YSP.evaluate(inp), s = R.sizing || {}, c = R.caps;
     var asg = R.assignment;
-    var basisPrice = (asg ? asg.recognizedPrice : totalPrice);   // price leverage is sized on
+    // A REFINANCE is sized on the AS-IS value, not a purchase price — so the cost
+    // basis and the "effective price" shown here must be the as-is value, matching
+    // the term-sheet tool (termsheet.js: isRefi() ? num("asIs")) and the engine's
+    // own LTC shown beside it. effPurchase() returns the PAYOFF on a refi, which is
+    // not the basis anything is leveraged on (owner-directed 2026-08-04).
+    var basisPrice = isRefi() ? num("asIs") : (asg ? asg.recognizedPrice : totalPrice);   // price/value leverage is sized on
     var totalCost = basisPrice + rehab;
     // Rounding policy (owner-directed 2026-07-09, extended to this snapshot 2026-07-17):
     // report the loan floored DOWN to whole dollars and reconcile the breakdown EXACTLY —
@@ -1585,12 +1590,24 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var titleEst = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(val("pState"), totalLoan, isRefi() ? "Refinance" : "Purchase") : { total: 0 };
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (titleEst.total || 0);
-    var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost + laExtraFeesTotal();   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    var closingFees = origFee + adminFeeUW() + adminFeeCredit() + titleCost + laExtraFeesTotal();   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    // On a REFINANCE the cash to close is the payoff shortfall the borrower BRINGS
+    // (payoff + closing − the funds that advance at closing = the initial advance),
+    // floored at 0 — the same figure the term-sheet tool and server compute. The
+    // purchase down-payment formula gave a refi just the fees (down payment is 0),
+    // ignoring the payoff entirely (owner-directed 2026-08-04). A cash-out floors to
+    // $0 here (funds advanced exceed payoff + closing).
+    var cashToClose = isRefi()
+      ? Math.max(0, num("payoff") + closingFees - snInitialR)
+      : ((s.downPayment || 0) + excessOOP + closingFees);
     var financedIR = snFinancedIR;
     var totalCostDisp = totalCost + financedIR;
 
     YS.put("snEffPrice", YS.fmtUSD(basisPrice));
-    YS.put("snEffHint", isAssign ? (asg && asg.overLimit ? "effective price: seller + fee counted up to 15% of the seller's price" : "seller + assignment fee") : (isRefi() ? "current payoff" : "price you pay"));
+    // A refinance has no purchase price — it is sized on the as-is value, so the
+    // label and hint say so (owner-directed 2026-08-04).
+    YS.put("snEffLbl", isRefi() ? "As-is value" : "Effective purchase price");
+    YS.put("snEffHint", isAssign ? (asg && asg.overLimit ? "effective price: seller + fee counted up to 15% of the seller's price" : "seller + assignment fee") : (isRefi() ? "what the property is worth now" : "price you pay"));
     YS.put("snRehab", YS.fmtUSD(rehab));
     YS.put("snTotalCost", YS.fmtUSD(totalCostDisp));
     YS.put("snMaxLoan", (ready && sized) ? YS.fmtUSD(totalLoan) : EM);
