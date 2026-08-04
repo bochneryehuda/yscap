@@ -14,13 +14,30 @@
  *     fee), and the old gate accepted a positive amount as proof of payment.
  *   · 105-107 N 10th St draw #2 (fc514778…) — APPROVED but disbursed_at still NULL: approved
  *     is not wired, and must stay silent too.
- *   · 105-107 N 10th St draw #1 (f935fab0…) — COMPLETED, disbursed_at '2026-07-21': the one
+ *   · 105-107 N 10th St draw #1 (f935fab0…) — COMPLETED, with a real wire date: the one
  *     shape that IS a real release.
+ *
+ * THE WIRE DATES ARE RELATIVE TO TODAY, DELIBERATELY. The amounts and ids above are the real
+ * records; the DATES are not, and must not be. `mirror.js` stays silent about a wire older than
+ * 14 days (a "your money is on its way, 1–2 business days" email about a weeks-old wire would
+ * be nonsense), so a hard-coded `disbursed_at: '2026-07-21'` was a fixture that MEANT "a fresh
+ * wire" and silently stopped meaning it 14 days later — this suite began failing on every PR in
+ * the repo at midnight UTC, having passed hours earlier on the same commit. State what the case
+ * MEANS (`daysAgo(1)`), never a literal that ages out of its own intent.
  */
 const path = require('path');
 const assert = require('assert');
 
 const SRC = path.join(__dirname, '..', 'src');
+
+// A wire date N days before today, as the 'YYYY-MM-DD' string the mirror is handed. Anchored on
+// UTC midnight so the offset is exact whatever hour the suite happens to run at.
+function daysAgo(n) {
+  const now = new Date();
+  const midnightUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return new Date(midnightUtc - n * 86400000).toISOString().slice(0, 10);
+}
+
 let queries = [];
 let notes = [];
 let nextRows = {};          // substring of SQL -> { rows, rowCount }
@@ -85,7 +102,7 @@ async function releaseGate() {
   reset();
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'draft-1', number: 1, status: 'DRAFT',
-    approved_cents: cents(10000), disbursed_cents: cents(9750), disbursed_at: '2026-07-21',
+    approved_cents: cents(10000), disbursed_cents: cents(9750), disbursed_at: daysAgo(1),
     to_disburse_cents: null, fees: null,
   });
   assert.strictEqual(r.skipped, 'not_disbursed', 'a DRAFT draw must never announce a release');
@@ -96,7 +113,7 @@ async function releaseGate() {
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'f935fab0', number: 1, status: 'COMPLETED',
     requested_cents: cents(17000), approved_cents: cents(10687.5), disbursed_cents: cents(10437.5),
-    disbursed_at: '2026-07-21', to_disburse_cents: null, fees: [{ name: 'Per Draw Fee', amount: 250 }],
+    disbursed_at: daysAgo(1), to_disburse_cents: null, fees: [{ name: 'Per Draw Fee', amount: 250 }],
   }, { addr: '105-107 N 10th St' });
   assert.strictEqual(r.ok, true, 'a genuinely wired draw must still be announced');
   assert.strictEqual(r.net, cents(10437.5), 'the net is the amount the administrator says went out');
@@ -121,10 +138,34 @@ async function releaseGate() {
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'old-1', number: 1, status: 'COMPLETED',
     approved_cents: cents(20000), disbursed_cents: cents(19750),
-    disbursed_at: '2026-01-05', to_disburse_cents: null, fees: null,
+    disbursed_at: daysAgo(120), to_disburse_cents: null, fees: null,
   });
   assert.strictEqual(r.silent, true, 'a months-old wire is history, not news');
   assert.strictEqual(notes.length, 0);
+
+  // (f) THE WINDOW ITSELF, pinned on both sides. Every case above depends on where the
+  // go-forward cutoff sits, and NOTHING asserted it — which is exactly how a fixture could
+  // drift across the boundary and take the whole suite down without anyone having touched
+  // the rule. Just inside must announce; just outside must not.
+  for (const [days, wantSilent] of [[13, false], [15, true]]) {
+    reset();
+    nextRows['INSERT INTO draw_disbursements'] = { rows: [{ id: 9 }], rowCount: 1 };
+    const w = await mirror.mirrorDisbursement(APP, {
+      tp_draw_id: `edge-${days}`, number: 1, status: 'COMPLETED',
+      approved_cents: cents(20000), disbursed_cents: cents(19750),
+      disbursed_at: daysAgo(days), to_disburse_cents: null, fees: null,
+    });
+    if (wantSilent) {
+      assert.strictEqual(w.silent, true, `a wire ${days} days old is past the window — stay silent`);
+      assert.strictEqual(notes.length, 0, `nothing may be sent for a ${days}-day-old wire`);
+    } else {
+      assert.strictEqual(w.ok, true, `a wire ${days} days old is inside the window — announce it`);
+      assert.ok(notes.some((n) => n.to === 'borrower'), `the borrower hears about a ${days}-day-old wire`);
+    }
+    // Either way the ledger records it — the window governs the ANNOUNCEMENT, never the record.
+    assert.ok(queries.some((q) => q.sql.includes('INSERT INTO draw_disbursements')),
+      `a ${days}-day-old wire is still written to the ledger`);
+  }
   console.log('  ✓ release gate: only a decided draw with a real wire date announces money');
 }
 

@@ -213,7 +213,9 @@ const rowFor = async (id) => (await db.query(
     });
     const origGet = enc.apiGet, origConfigured = enc.configured, origFetch = global.fetch;
     const origSave = storage.save, origImport = xmlImport.importXml, origErr = console.error;
+    const origPipeline = enc.pipelineSearch, origLog = console.log;
     const errs = [];
+    const tickLog = [];
     let r;
     try {
       console.error = (...a) => { errs.push(a.join(' ')); };
@@ -228,10 +230,19 @@ const rowFor = async (id) => (await db.query(
         return { ref, provider: 'local', bytes: buf.length };
       };
       xmlImport.importXml = async () => ({ ok: true, status: 'ok', importId: null, reason: null });
-      r = await M.sweepOnce(flaky, { loans: [{ loanId: `${TAG}guid`, loanNumber: 'L1' }] });
+      // THROUGH makeTick, not sweepOnce. The counter added for this case is only
+      // useful if it reaches the ONE line an operator reads, and asserting on
+      // sweepOnce's return value alone left that wiring uncovered: deleting
+      // `capturedBookkeepingFailed` from the payload kept every suite green.
+      // makeTick owns the real gate and the real log call, and hands back the same
+      // result object, so every assertion below is unchanged.
+      enc.pipelineSearch = async () => [{ loanId: `${TAG}guid`, fields: { 'Loan.LoanNumber': 'L1' } }];
+      console.log = (...a) => { tickLog.push(a.join(' ')); };
+      r = await M._internals.makeTick(flaky)();
     } finally {
       enc.apiGet = origGet; enc.configured = origConfigured; global.fetch = origFetch;
       storage.save = origSave; xmlImport.importXml = origImport; console.error = origErr;
+      enc.pipelineSearch = origPipeline; console.log = origLog;
     }
 
     ok(thrown === 1, `fixture check: the capture UPDATE was made to throw exactly once (saw ${thrown})`);
@@ -252,6 +263,33 @@ const rowFor = async (id) => (await db.query(
     // recovery UPDATE cannot leave the row 'captured' with a storage_ref on it.
     ok(row && row.attempts >= 1,
       'the attempt is still counted, so a retry is visible in the ledger');
+
+    // THE SWEEP SUMMARY MUST SAY THIS HAPPENED. The verdict string starts
+    // 'captured-bookkeeping-failed', and the routing below it is
+    // `if (verdict.startsWith('captured')) out.captured++` — so without its own
+    // counter this rolls silently into `captured` and the sweep line is
+    // indistinguishable from a clean capture. It is NOT clean: the row is
+    // 'captured' with a storage_ref but NULL captured_at / sha256 / byte_size /
+    // research_import_id, so the file is held but not fully filed, and nothing
+    // downstream would ever say so.
+    ok(r.capturedBookkeepingFailed === 1,
+      `the sweep must COUNT the half-filed capture separately, saw ${r.capturedBookkeepingFailed}`);
+    ok(r.captured === 1,
+      `and still count it as captured — we do hold the bytes (saw ${r.captured})`);
+    ok(r.failed === 0,
+      `and never as a failure — that is the reading this whole path exists to prevent (saw ${r.failed})`);
+
+    // AND IT MUST REACH THE SWEEP LINE. Parsed off the payload, never matched
+    // against the raw string: several other fields would carry the word, so a
+    // substring test here would pass with the payload key deleted — the exact
+    // vacuity the sibling suite's shape-name test was caught on.
+    const tickLine = tickLog.find((l) => /\[encompass-xml\] sweep:/.test(l));
+    ok(tickLine, 'the sweep must have logged its summary at all');
+    let payload = null;
+    try { payload = JSON.parse(String(tickLine).slice(String(tickLine).indexOf('{'))); } catch (e) { payload = null; }
+    ok(payload && payload.capturedBookkeepingFailed === 1,
+      `the sweep LINE must report the half-filed capture, saw ${
+        payload ? JSON.stringify(payload.capturedBookkeepingFailed) : 'unparsable line'}`);
   }
 
   /* ── 4. Every status the code writes satisfies the CHECK ─────────────────── */
