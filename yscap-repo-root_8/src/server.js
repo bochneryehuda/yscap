@@ -270,11 +270,22 @@ app.get('/api/health', async (req, res) => {
     // `why` carries a database error verbatim — host, port, role name — plus a
     // count of violating rows. "The licensing control is OFF and 37 rows breach
     // it" is a sentence for the boot log and for staff, not for anonymous callers.
+    //
+    // BUT A QUALIFIED YES MUST NOT READ AS A PLAIN ONE. `ok:true` alone is
+    // published for two different states: the database was ASKED to store a Google
+    // coordinate and refused, and the constraint's TEXT merely reads right while
+    // the write probe could not run (an unrelated CHECK, a new NOT NULL column, a
+    // read-only replica). The boot log and the staff card already distinguish
+    // them — this endpoint flattened both to green, which was measured on a
+    // shadowed `lower()` where a Google coordinate was in fact being STORED.
+    // `confirmedByWrite` is one boolean and leaks nothing: no `why`, no counts, no
+    // host names, no constraint names.
     researchGeoLicensing: (() => {
       try {
         const h = require('./lib/research/licensing-guard').health();
-        return { ok: !!h.ok, checked: !!h.checked, at: h.at || null };
-      } catch (_e) { return { ok: false, checked: false, at: null }; }
+        return { ok: !!h.ok, checked: !!h.checked, confirmedByWrite: h.probeTested === true,
+          at: h.at || null };
+      } catch (_e) { return { ok: false, checked: false, confirmedByWrite: false, at: null }; }
     })(),
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).

@@ -75,7 +75,14 @@ const PROBE_SOURCES = ['google_places', 'GOOGLE'];
 const PROBE_SHAPES = [
   { name: 'populated',
     cols: 'city, state, zip, year_built, beds, created_at, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at, geo_attempts',
-    vals: `'Licensing Probe', 'NJ', '08608', 1962, 3, now() - interval '400 days', 40.1, -74.1, 'rooftop', now(), now(), 1` },
+    /* `geo_precision` is 'address' because that is the ONLY value the application
+       ever writes — geocode.js writes it on both of its paths and place-subjects.js
+       says so in as many words. 'rooftop' was a plausible-looking invention, and a
+       rule reading `… OR geo_precision <> 'address'` — which refuses every real
+       write and nothing else — stored the probe row and was reported as refusing
+       nothing. A probe row that does not carry the app's own values is testing a
+       write the app never makes. */
+    vals: `'Licensing Probe', 'NJ', '08608', 1962, 3, now() - interval '400 days', 40.1, -74.1, 'address', now(), now(), 1` },
   { name: 'bare',
     cols: 'geo_latitude, geo_longitude',
     vals: '40.1, -74.1' },
@@ -122,13 +129,27 @@ const PROBE_SHAPES = [
 async function verifyRefusesGoogle(client) {
   // Not the pool, not the db module: a checked-out client has `release`.
   if (!client || typeof client.release !== 'function' || typeof client.query !== 'function') {
-    return { tested: false, refused: null, by: null };
+    return { tested: false, refused: null, by: null, shape: null };
   }
+  /* ONE BLOCKED SHAPE MUST NOT ABANDON THE OTHERS. Returning `tested:false` the
+     moment anything OTHER than our rule stopped a row made the two-shape probe
+     BLINDER than the single-shape one it replaced: the populated row fills a dozen
+     columns, so any unrelated CHECK or NOT NULL on `city, state, zip, year_built,
+     beds, created_at, geo_precision, geo_at, geo_attempted_at, geo_attempts`
+     disabled the probe entirely — measured on `CHECK (true)` plus an unrelated
+     `year_built >= 1970`, where the bare shape alone would have been STORED and
+     the guard reported UNKNOWN about a constraint protecting nothing. `properties`
+     is an actively growing table, so this is the ordinary case, not the exotic one.
+     A shape we could not ask is skipped; only when EVERY shape is blocked do we
+     say we could not ask at all. */
+  let answered = false;   // at least one shape got a real answer from OUR rule
+  let blockedBy = null;   // the first unrelated constraint that stopped a shape
   for (const shape of PROBE_SHAPES) {
+    let asked = true;
     for (const value of PROBE_SOURCES) {
       // ALSO THE TRANSACTION GUARD — 25P01 outside a transaction block.
       try { await client.query('SAVEPOINT geo_licensing_probe'); }
-      catch (_) { return { tested: false, refused: null, by: null }; }
+      catch (_) { return { tested: false, refused: null, by: null, shape: null }; }
       let err = null;
       try {
         await client.query(
@@ -139,19 +160,24 @@ async function verifyRefusesGoogle(client) {
       // Undo it either way: on success the row must never survive, and on refusal
       // this is what lets the caller's transaction carry on.
       try { await client.query('ROLLBACK TO SAVEPOINT geo_licensing_probe'); }
-      catch (_) { return { tested: false, refused: null, by: null }; }
+      catch (_) { return { tested: false, refused: null, by: null, shape: null }; }
 
-      // STORED UNDER ANY SHAPE IS PROOF — that is what makes adding a shape
-      // monotone. Stop at the first acceptance.
+      // STORED UNDER ANY SHAPE IS PROOF THAT SOMETHING GETS THROUGH — and WHICH
+      // shape got through decides how strongly the caller may word it, so the name
+      // is returned. Stop at the first acceptance; `populated` runs first, so a
+      // `bare` acceptance always means the fuller row was refused.
       if (!err) return { tested: true, refused: false, by: null, shape: shape.name };
-      if (err.code !== '23514') return { tested: false, refused: null, by: null }; // could not ask
-      if (err.constraint !== CONSTRAINT) {
-        // Refused, but by something else. That is not evidence about OUR rule.
-        return { tested: false, refused: null, by: err.constraint || null };
+      if (err.code !== '23514' || err.constraint !== CONSTRAINT) {
+        if (!blockedBy) blockedBy = err.constraint || null;
+        asked = false;
+        break;   // this shape cannot be put to our rule — try the next one
       }
     }
+    if (asked) answered = true;   // OUR rule refused this shape, for every source
   }
-  return { tested: true, refused: true, by: CONSTRAINT };
+  return answered
+    ? { tested: true, refused: true, by: CONSTRAINT, shape: null }
+    : { tested: false, refused: null, by: blockedBy, shape: null };
 }
 
 /**
@@ -166,7 +192,8 @@ async function checkGeoLicensing(dbc, opts) {
   let present;
   let neutered = false;
   let named = false;
-  let neuteredBy = null;   // 'probe' (we stored one) | 'stored-row' (rows already there)
+  let namedAny = false;    // a CHECK of that name exists, VALIDATED OR NOT
+  let neuteredBy = null;   // 'probe' | 'probe-bare' | 'stored-row' — see below
   let probe = null;
   try {
     /* KEYED ON THE TABLE THE APP ACTUALLY WRITES TO, AND ON A CONSTRAINT THAT
@@ -177,12 +204,24 @@ async function checkGeoLicensing(dbc, opts) {
        VALID is present, does not apply to a single existing row, and would read
        as fully installed. And the DEFINITION is compared, because a constraint
        wearing the right name over `CHECK (true)` is the most plausible way this
-       ends up switched off without anyone noticing. */
+       ends up switched off without anyone noticing.
+
+       BUT `convalidated` IS READ, NOT FILTERED ON — and that distinction closed a
+       real blind spot. Filtering it out of the query made a NOT VALID constraint
+       INVISIBLE here, so the probe (gated on the constraint existing) never ran and
+       the guard fell through to "db/459 did not apply … nothing at the database
+       level stops a Google coordinate being stored" about a rule that was measured
+       REFUSING the real write. NOT VALID is exactly the shortcut somebody reaches
+       for when the migration will not apply over the rows already there — this
+       module's own scenario — so it must be recognised and described, not missed.
+       `named` keeps its old meaning (validated), so every verdict below is
+       unchanged; `namedAny` only decides whether we bother to ASK the database. */
     const r = await db.query(
-      `SELECT pg_get_constraintdef(c.oid) AS def
+      `SELECT pg_get_constraintdef(c.oid) AS def, c.convalidated
          FROM pg_constraint c
         WHERE c.conrelid = to_regclass($1)::oid
-          AND c.conname = $2 AND c.contype = 'c' AND c.convalidated
+          AND c.conname = $2 AND c.contype = 'c'
+        ORDER BY c.convalidated DESC
         LIMIT 1`, [TABLE, CONSTRAINT]);
     /* THE PREDICATE ITSELF, NOT A SMELL TEST. Asking only whether the definition
        MENTIONS `geo_source` and `google` passes three constraints that protect
@@ -212,7 +251,8 @@ async function checkGeoLicensing(dbc, opts) {
        db/459 re-applies this exact text on every boot, and the behavioural probe
        below can only ever make this answer STRICTER, never laxer. */
     const def = String((r.rows[0] || {}).def || '').replace(/\s+/g, ' ').trim();
-    named = r.rows.length > 0;   // a validated CHECK of that name IS on the table
+    namedAny = r.rows.length > 0;                        // it exists, validated or not
+    named = namedAny && (r.rows[0] || {}).convalidated === true;   // …and Postgres checked it
     present = named && EXACT_DEF.test(def);
 
     /* AND WHERE WE CAN, WE ALSO ASK THE DATABASE — but ONLY to say NO.
@@ -230,7 +270,7 @@ async function checkGeoLicensing(dbc, opts) {
        protection: `!~*`, `position(... ) = 0`, `NOT ILIKE`, and the "legitimate
        narrowing" this file's own docstring names. It can still only DOWNGRADE:
        `present` is already false on that path, and nothing below sets it true. */
-    if (named && opts && opts.verifyWrite) {
+    if (namedAny && opts && opts.verifyWrite) {
       probe = await verifyRefusesGoogle(db);
       if (probe.tested && !probe.refused) { present = false; neutered = true; }
     }
@@ -247,11 +287,17 @@ async function checkGeoLicensing(dbc, opts) {
        actively growing table. Without this the authoritative half would quietly
        stop running and the answer would still be a confident `ok:true, why:null`,
        which is the shape of every failure this module exists to prevent. */
+    /* `by` NAMES THE BLOCKER, and only a BLOCKED probe has one. A refusal by our
+       own rule sets `by` to that rule's name — correct as a refusal attribution,
+       and wrong as a "something else stopped us" report, which is what this field
+       means everywhere it is read (it is returned verbatim by the admin route). On
+       a perfectly healthy database it was publishing `probeBlockedBy:
+       "properties_no_google_geo_ck"` beside `ok:true`. */
     const blocked = opts && opts.verifyWrite && probe && !probe.tested;
     return {
       ok: true, checked: true, present: true, offenders: 0,
       probeTested: probe ? probe.tested : null,
-      probeBlockedBy: probe ? probe.by : null,
+      probeBlockedBy: probe && probe.tested === false ? probe.by : null,
       why: blocked
         ? `the Google-coordinate rule (${CONSTRAINT}) reads as installed, but the write probe `
           + `could NOT run${probe.by ? ` (the probe row was refused by ${probe.by})` : ''} — so this `
@@ -291,8 +337,25 @@ async function checkGeoLicensing(dbc, opts) {
      So the two are tracked apart and worded apart. `convalidated` is also not a
      present-tense guarantee: a CHECK calling a function that is later CREATE OR
      REPLACEd keeps its validated flag while its meaning changes. */
+  /* AND WHICH ROW THE DATABASE ACCEPTED DECIDES HOW STRONGLY WE MAY WORD IT — the
+     two halves of the previous commit cancelled each other without this. That
+     commit reserved the general "nothing at the database level stops a Google
+     coordinate being stored" sentence for the write probe, on the stated grounds
+     that `… OR geo_at IS NULL` and `… OR geo_precision IS NULL` refuse every real
+     geocode write; and in the same commit it added a BARE probe shape carrying
+     only a latitude and a longitude — which sets neither of those columns, so
+     those exact two rules STORED the probe row and emitted the very sentence the
+     other half had just forbidden. Measured on `geo_at IS NULL`,
+     `geo_precision IS NULL`, `city IS NULL`, `street IS NULL`, `geo_attempts = 0`
+     and five more: the real write REFUSED, the guard LOUD.
+     `populated` is tried first, so a `bare` acceptance always means the fuller row
+     was refused — the question is answered, not unknown, and the two get different
+     words. The bare acceptance is still a real finding (a rule that turns on which
+     other columns a row happens to carry is not the reviewed rule, and an import
+     or a hand-run statement writes sparse rows), it just cannot carry a claim
+     about the write the app itself makes. */
   if (named && storedGoogleCoords > 0 && !neutered) neuteredBy = 'stored-row';
-  else if (neutered) neuteredBy = 'probe';
+  else if (neutered) neuteredBy = probe && probe.shape === 'populated' ? 'probe' : 'probe-bare';
 
 
   /* THREE OUTCOMES, NOT TWO. `offenders` is null when the count itself FAILED —
@@ -332,15 +395,37 @@ async function checkGeoLicensing(dbc, opts) {
         : ' Nothing is currently in violation, so re-running db/459 will restore it.';
 
     if (neuteredBy === 'probe') {
-      // PROVEN ABOUT EVERY ROW: we asked the database to store a Google coordinate
-      // and it did. That is the one piece of evidence that earns the general
-      // sentence at the end of this message.
-      return { ok: false, checked: true, present: false, offenders,
+      // THE FULL PROPERTY ROW WENT IN. That is the one piece of evidence that earns
+      // the general sentence at the end of this message — a row carrying every
+      // column a real geocoded property carries was stored with a Google source.
+      return { ok: false, checked: true, present: false, offenders, neuteredBy,
         probeTested: true, probeBlockedBy: null,
         why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does NOT refuse a `
-          + 'Google-sourced coordinate — the database accepted one when asked. It has been altered '
-          + `since db/459 installed it.${rows} Until it is restored, nothing at the database level `
-          + 'stops a Google coordinate being stored permanently in the property warehouse.' };
+          + 'Google-sourced coordinate — the database accepted a full property row carrying one '
+          + `when asked. It has been altered since db/459 installed it.${rows} Until it is `
+          + 'restored, nothing at the database level stops a Google coordinate being stored '
+          + 'permanently in the property warehouse.' };
+    }
+    if (neuteredBy === 'probe-bare') {
+      /* A SPARSE ROW WENT IN AND THE FULL ONE DID NOT — so the question the general
+         sentence answers has already been answered the other way, and must not be
+         asserted here. `populated` is tried first, so reaching this branch means the
+         fuller row was REFUSED. The rules that land here key on a column the sparse
+         row leaves NULL (`… OR geo_at IS NULL`, `… OR geo_precision IS NULL`,
+         `… OR city IS NULL`) and a CHECK PASSES WHEN ITS EXPRESSION IS NULL.
+         It is still a real finding and still NOT installed: db/459's rule does not
+         care what else a row carries, and anything that writes a sparse row — an
+         import, a hand-run statement, a future code path — stores a Google
+         coordinate permanently under this one. */
+      return { ok: false, checked: true, present: false, offenders, neuteredBy,
+        probeTested: true, probeBlockedBy: null,
+        why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does not refuse EVERY `
+          + 'Google-sourced coordinate — the database stored one on a bare row carrying nothing '
+          + 'but a latitude and a longitude, while refusing the fuller property row. So it turns '
+          + 'on which OTHER columns a row happens to carry, which db/459\'s rule never did: an '
+          + 'import or a hand-run statement writing a sparse row stores a Google coordinate '
+          + `permanently. It has been altered since db/459 installed it.${rows} Restore the `
+          + 'reviewed rule and check who changed it.' };
     }
     if (neuteredBy === 'stored-row') {
       /* PROVEN ABOUT THOSE ROWS ONLY, AND THE WORDING MUST SAY SO. The rows are
@@ -353,22 +438,34 @@ async function checkGeoLicensing(dbc, opts) {
          So the general sentence is emitted ONLY under `neuteredBy === 'probe'`
          above, and the probe fields report what the probe actually did rather than
          a hard-coded pass. */
+      /* AND WHEN THE PROBE REFUSED, THE (h) CAVEAT MUST COME WITH IT. This branch
+         supersedes the one below, so wording it as "it still stops some writes"
+         and stopping there DROPPED that branch's whole point — and left the guard
+         WEAKER than the truth: measured on `… OR street IS NOT NULL` with one
+         legacy row present, the real geocode write was being STORED while this
+         sentence told the operator the only exposure was historical. */
       const asked = probe && probe.tested && probe.refused
-        ? ' A fresh write of our own test row WAS refused, so it still stops some writes — but not '
-          + 'the ones already stored.'
+        ? ' A fresh write of our own test row WAS refused — but that is NOT proof it refuses every '
+          + 'write: a rule can exempt rows by a column our test row does not happen to match, '
+          + 'refusing ours while letting a real property through.'
         : probe && probe.tested === false
           ? ` The write probe could NOT run${probe.by ? ` (the probe row was refused by ${probe.by})` : ''}, `
             + 'so whether it refuses a fresh Google write is UNKNOWN.'
           : ' Whether it refuses a fresh Google write is UNKNOWN.';
-      return { ok: false, checked: true, present: false, offenders,
+      /* TWO DIFFERENT COUNTS, SO TWO DIFFERENT SENTENCES. `offenders` is every
+         Google-sourced row and `storedGoogleCoords` only those holding an actual
+         coordinate, and wording both as "already carr… a Google-sourced
+         coordinate" printed "1 property already carries…" and "3 properties
+         already carry…" in one message, about the same table. */
+      const stored = ` ${storedGoogleCoords} of them also hold${storedGoogleCoords === 1 ? 's' : ''} `
+        + 'a STORED latitude and longitude, which Postgres VALIDATED this rule over — so it permits '
+        + 'at least those.';
+      return { ok: false, checked: true, present: false, offenders, neuteredBy,
         probeTested: probe ? probe.tested : null,
         probeBlockedBy: probe && probe.tested === false ? probe.by : null,
         why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its text `
-          + `has been rewritten — and ${storedGoogleCoords} propert`
-          + `${storedGoogleCoords === 1 ? 'y' : 'ies'} already `
-          + `carr${storedGoogleCoords === 1 ? 'ies' : 'y'} a Google-sourced coordinate AND Postgres `
-          + 'VALIDATED this rule over them, so it permits at least those.'
-          + `${asked}${rows} Restore the reviewed rule and check who changed it.` };
+          + `has been rewritten.${rows}${stored}${asked} Restore the reviewed rule and check who `
+          + 'changed it.' };
     }
     if (probe && probe.tested && probe.refused) {
       /* The text is not db/459's and the database refused OUR ROW — which is not
@@ -397,13 +494,44 @@ async function checkGeoLicensing(dbc, opts) {
     }
     // Named, text not canonical, and we could not test the behaviour. Say exactly
     // that — never that it refuses nothing.
-    return { ok: false, checked: true, present: false, offenders,
+    return { ok: false, checked: true, present: false, offenders, neuteredBy,
       probeTested: probe ? probe.tested : null,
-      probeBlockedBy: probe ? probe.by : null,
+      probeBlockedBy: probe && probe.tested === false ? probe.by : null,
       why: `the Google-coordinate rule (${CONSTRAINT}) is NOT the rule db/459 installs — its text `
         + 'has been rewritten — and the write probe could NOT run'
         + `${probe && probe.by ? ` (the probe row was refused by ${probe.by})` : ''}, so whether it `
         + `still refuses a Google-sourced coordinate is UNKNOWN.${rows} Check who changed it.` };
+  }
+
+  /* A CONSTRAINT ADDED `NOT VALID` IS NOT MISSING, AND SAYING IT IS MISSES THE
+     POINT TWICE OVER. Postgres has never checked such a rule against a single row
+     already in the table, so it is genuinely not db/459's install even when its
+     text is byte-identical — but it IS enforced on every new write, which the
+     "db/459 did not apply … nothing at the database level stops a Google
+     coordinate being stored" message below flatly denies. Measured: the canonical
+     rule added NOT VALID refuses the real geocode write while that message claimed
+     nothing stopped it. And this is not an exotic state: NOT VALID is precisely
+     the shortcut somebody reaches for when db/459 will not apply over the rows
+     already there, which is the scenario this whole module exists for. */
+  if (namedAny) {
+    const rows = offenders == null
+      ? ' The rows it was never checked against could not be counted.'
+      : offenders
+        ? ` ${offenders} propert${offenders === 1 ? 'y' : 'ies'} already `
+          + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate, and those are exactly `
+          + 'the rows it has never been checked against.'
+        : ' Nothing is currently in violation, so it can be validated as it stands.';
+    const refusedNew = !!(probe && probe.tested && probe.refused);
+    return { ok: false, checked: true, present: false, offenders, neuteredBy: null,
+      probeTested: probe ? probe.tested : null,
+      probeBlockedBy: probe && probe.tested === false ? probe.by : null,
+      why: `the Google-coordinate rule (${CONSTRAINT}) is on the table but was added NOT VALID — `
+        + 'Postgres has never checked it against the rows already there, so it is not the '
+        + `guarantee db/459 installs.${rows}`
+        + (refusedNew
+          ? ' It DID refuse our test row, so it is enforcing NEW writes; what is missing is the '
+            + 'back book. Validate it, or clear those rows and let db/459 re-apply it.'
+          : ' Whether it refuses a Google-sourced coordinate at all is UNKNOWN.') };
   }
 
   const head = `the Google-coordinate rule (${CONSTRAINT}) is NOT installed`;

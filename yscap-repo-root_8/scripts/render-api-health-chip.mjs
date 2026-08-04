@@ -118,8 +118,16 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     const bail = (sig) => { dropBlocker().finally(() => process.exit(sig === 'SIGINT' ? 130 : 143)); };
     process.once('SIGINT', bail); process.once('SIGTERM', bail);
     await dropBlocker();
+    /* IT HAS TO BLOCK EVERY PROBE SHAPE TO MEAN "the probe could not run". The
+       probe tries a fully-populated property row AND a bare one carrying only a
+       latitude and a longitude, and moves on to the next shape when something
+       OTHER than the licensing rule refuses one — so a blocker keyed on `city`
+       (which the bare row leaves NULL, and a CHECK passes on NULL) stops only the
+       first shape and the probe still gets a real answer. `geo_latitude` is the
+       one column BOTH shapes carry, which is what makes this fixture genuine. */
     await db.query(
-      `ALTER TABLE properties ADD CONSTRAINT lic_render_blocker CHECK (city <> 'Licensing Probe')`);
+      `ALTER TABLE properties ADD CONSTRAINT lic_render_blocker
+         CHECK (geo_latitude IS NULL OR geo_latitude <> 40.1)`);
     try {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(11000);
