@@ -228,6 +228,11 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
+    // top-tier section, persisted like the sticky whole-program markups above so
+    // a re-quote never drops it. NULL/absent → the company per-tier default (or
+    // the historic Gold Tier 1 = 0) governs, so existing files are unchanged.
+    ...(app.file_markup_gold_t1_pct != null ? { markupGoldT1Pct: num(app.file_markup_gold_t1_pct) } : {}),
     // 1% closing-cost buffer waiver (db/390, owner-authorized 2026-07-31) —
     // file-owned; an admin waives it through its own audited endpoint.
     waiveLiqBuffer: !!app.liquidity_buffer_waived,
@@ -243,6 +248,12 @@ function buildInputs(app, experience, overrides) {
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section
+    // for the top tier"). A percent; overlays the company per-tier default for the
+    // Gold engine's Tier 1 only. Blank/absent leaves the historic Gold Tier 1 = 0
+    // (or the company per-tier default if one is set) — so it never changes a file
+    // that doesn't use it. See markupTiersFor().
+    'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
@@ -288,6 +299,7 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
+    if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -352,6 +364,38 @@ function markupOverride(input, program) {
 function setEngineMarkup(program, value) {
   const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
   if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
+}
+
+/* PER-EXPERIENCE-TIER MARKUP (owner-directed item 15) — an OVERLAY on top of the
+   frozen per-program markup, never a change to it. Two sources, per-tier:
+     1) COMPANY defaults from the Pricing Admin Center — cd.markupTiers, shaped
+        { standard:{1,2,3}, gold:{1,2,3}, silver:{1,2,3} } as PERCENTS (mirrors
+        markupStdPct etc.). A manual product prices on the Standard engine, so it
+        reads the 'standard' map — same normalization as markupKeyFor().
+     2) A PER-FILE studio override for the Gold TOP tier (markupGoldT1Pct, the
+        studio's "manual section for the top tier"), which wins for Gold Tier 1.
+   Returns { tier: fraction } for ONLY the tiers actually configured, or null when
+   nothing is set. null → setMarkupTiers is never called → the engine keeps its
+   historic behavior byte-for-byte (Gold Tier 1 = 0, every other tier the base/
+   override markup). A configured value is what makes Gold Tier 1 controllable —
+   exactly the owner's "we don't even have an option to control the best tier". */
+function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : 'standard'; }
+function markupTiersFor(program, input, cd) {
+  const out = {};
+  const comp = cd && cd.markupTiers && typeof cd.markupTiers === 'object' ? cd.markupTiers[tierMapKey(program)] : null;
+  if (comp && typeof comp === 'object') {
+    for (const t of [1, 2, 3]) {
+      const v = comp[t];
+      if (v != null && v !== '' && isFinite(num(v)) && num(v) >= 0) out[t] = num(v) / 100;
+    }
+  }
+  // Per-file studio override for the Gold top tier wins over the company default.
+  if (program === 'gold' && hasInput(input, 'markupGoldT1Pct')) out[1] = num(input.markupGoldT1Pct) / 100;
+  return Object.keys(out).length ? out : null;
+}
+function setEngineMarkupTiers(program, tiers) {
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
+  if (engine && typeof engine.setMarkupTiers === 'function') engine.setMarkupTiers(tiers);
 }
 
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
@@ -653,13 +697,18 @@ function quoteProgram(program, input) {
   // Markup: per-file override → COMPANY default → engine's built-in markup.
   // Applied through the SAME frozen setMarkup hook and reset in finally — the
   // engine math is never changed, only which markup input it runs with.
+  const cd = pricingSettings.current();
   let m = markupOverride(input, program);
   if (m == null) {
-    const cd = pricingSettings.current();
     const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
     if (companyMarkup != null) m = num(companyMarkup) / 100;
   }
   if (m != null) setEngineMarkup(program, m);
+  // Per-tier markup overlay (item 15). Inert when nothing is configured, so an
+  // unconfigured file prices byte-for-byte as before. Reset in each finally,
+  // exactly like setEngineMarkup — the engine is only ever "hot" during a quote.
+  const tiers = markupTiersFor(program, input, cd);
+  if (tiers) setEngineMarkupTiers(program, tiers);
   if (program === 'silver') {
     // The Silver program prices on its own frozen engine (EMCAP grid). Its
     // ladder varies by LTC band exactly like Standard's, so it ships one too.
@@ -676,6 +725,7 @@ function quoteProgram(program, input) {
       return normalize('silver', input, ev, ladder);
     } finally {
       if (m != null) setEngineMarkup(program, null);
+      if (tiers) setEngineMarkupTiers(program, null);
     }
   }
   if (program === 'gold') {
@@ -685,6 +735,7 @@ function quoteProgram(program, input) {
       return normalize('gold', input, ev, null);
     } finally {
       if (m != null) setEngineMarkup(program, null);
+      if (tiers) setEngineMarkupTiers(program, null);
     }
   }
   try {
@@ -702,6 +753,7 @@ function quoteProgram(program, input) {
     return normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder);
   } finally {
     if (m != null) setEngineMarkup(program, null);
+    if (tiers) setEngineMarkupTiers(program, null);
   }
 }
 

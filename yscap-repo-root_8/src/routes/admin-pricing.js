@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
     const cur = await pricingSettings.load();
     const hist = await db.query(
       `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
-              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.note,
+              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
          LEFT JOIN staff_users s ON s.id = cps.updated_by
@@ -65,8 +65,27 @@ router.put('/', async (req, res) => {
   if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
     return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
   }
-  // extra_fees is a jsonb column, appended after the scalar columns below.
+  // Per-experience-tier markup map (item 15). Like extraFees, a caller that does
+  // NOT send markupTiers PRESERVES the current map (the legacy V1 pricing screen
+  // never sends it). Same guardrails as the whole-program markups: percents 0-100,
+  // and Silver's per-tier values are capped at the same 1.00% ceiling.
+  let markupTiers;
+  if (b.markupTiers !== undefined) {
+    markupTiers = pricingSettings.cleanMarkupTiers(b.markupTiers);
+    if (markupTiers) {
+      for (const prog of Object.keys(markupTiers)) {
+        for (const [t, v] of Object.entries(markupTiers[prog])) {
+          if (v < 0 || v > 100) return res.status(400).json({ error: `${prog} tier ${t} markup must be between 0 and 100` });
+          if (prog === 'silver' && v > 1) return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+        }
+      }
+    }
+  } else {
+    markupTiers = pricingSettings.current().markupTiers;
+  }
+  // extra_fees + markup_tiers are jsonb columns, appended after the scalar columns.
   cols.extra_fees = F.jsonbText(extraFees);
+  cols.markup_tiers = markupTiers ? F.jsonbText(markupTiers) : null;
   const client = await db.getClient();
   try {
     await client.query('BEGIN');

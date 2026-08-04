@@ -26,7 +26,7 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -1107,12 +1107,38 @@
     } catch (e) { finish(false); }
   }
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
-  // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
+  // Build the per-tier markup map (fractions) for a program from the company
+  // defaults (percents in CO.markupTiers). Returns null when nothing is set for
+  // that program → the engine keeps its historic per-tier behavior for it.
+  function tierMapFor(prog) {
+    var src = (CO.markupTiers && CO.markupTiers[prog]) || null;
+    var out = null;
+    if (src) {
+      for (var t = 1; t <= 3; t++) {
+        var v = src[t] != null ? src[t] : src[String(t)];
+        if (v != null && v !== "" && isFinite(Number(v)) && Number(v) >= 0) { out = out || {}; out[t] = Number(v) / 100; }
+      }
+    }
+    return out;
+  }
+  // Read the admin markup fields (default 0.5% each) and push into every engine.
+  // Item 15: ALSO push the per-experience-tier markup overlay — the company
+  // per-tier defaults, plus the studio's manual GOLD top-tier field — so the
+  // studio prices exactly what would register. null keeps the historic per-tier
+  // behavior (Gold Tier 1 = 0). setMarkupTiers is set on EVERY sync (never left
+  // stale), so an unconfigured studio prices byte-for-byte as before.
   function syncAdminMarkup() {
     var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold), silver = adminNum("tsYspSilver", CO.markupSilver);
     try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(std / 100); } catch (e) {}
     try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkup) GSP.setMarkup(gold / 100); } catch (e) {}
     try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkup) SVP.setMarkup(silver / 100); } catch (e) {}
+    var stdT = tierMapFor("standard"), goldT = tierMapFor("gold"), silvT = tierMapFor("silver");
+    // The studio's manual Gold top-tier field overlays the company default for Gold Tier 1.
+    var goldT1 = adminNumRaw("tsYspGoldT1");
+    if (goldT1 != null) { goldT = goldT || {}; goldT[1] = goldT1 / 100; }
+    try { if (typeof YSP !== "undefined" && YSP.setMarkupTiers) YSP.setMarkupTiers(stdT); } catch (e) {}
+    try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkupTiers) GSP.setMarkupTiers(goldT); } catch (e) {}
+    try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkupTiers) SVP.setMarkupTiers(silvT); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
   // MANUAL has its own knob (owner-reported 2026-07-30: "we don't have a word to
@@ -1429,6 +1455,7 @@
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
       setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
+      setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -3478,6 +3505,10 @@
             if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
             CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
             CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
+            // Per-tier markup company defaults (item 15) — { standard:{1,2,3},
+            // gold, silver } of percents, or null (feature off). syncAdminMarkup
+            // pushes it into the engines; null keeps the historic per-tier markup.
+            CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
           }
         }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
       } catch (e) { recompute(); }

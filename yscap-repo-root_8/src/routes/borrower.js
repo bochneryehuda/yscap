@@ -811,7 +811,7 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, fico, ...rest } = inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
   return rest;
 }
 // Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
@@ -1540,7 +1540,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
     }
     if (it.tool_payload && typeof it.tool_payload === 'object') {
-      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
       it.tool_payload = rest;
     }
   }

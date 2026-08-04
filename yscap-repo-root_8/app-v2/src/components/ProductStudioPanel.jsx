@@ -197,6 +197,9 @@ export function overridesFromSnapshot(snap, mode) {
     ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
     ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
     ...(f.tsYspSilver === '' ? { markupSilverPct: '' } : f.tsYspSilver != null ? { markupSilverPct: f.tsYspSilver } : {}),
+    // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
+    // value (company/historic default governs); a value overrides Gold Tier 1.
+    ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
   };
 }
 
@@ -1037,7 +1040,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };
     const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario',
-      oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)' };
+      oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)',
+      // Manual Gold top-tier markup (item 15): mirrors the server's placement in
+      // ENGAGED_OVERRIDE_KEYS — any non-zero value is a deliberate override → approval.
+      markupGoldT1Pct: 'Gold top-tier markup' };
     // A knob with no company default of its own borrows another's — the exact
     // mirror of pricing-overrides.js `defaultKey`, which is what the server
     // re-checks with. Without it the Manual origination has no `cd` entry at

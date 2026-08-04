@@ -38,7 +38,17 @@
      --------------------------------------------------------------------- */
   var MARKUP = 0.005;          // YS markup applied to the program buy rate (borrower pays buy + 0.5%)
   var MARKUP_OVR = null;       // admin-set markup override (fraction); null = use default MARKUP
-  function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
+  // Per-experience-tier markup (owner-directed item 15): { 1:frac, 2:frac, 3:frac },
+  // each tier OPTIONAL. A tier absent here falls back to the per-program override/
+  // default below — so an UNSET map (setMarkupTiers never called, or null) prices
+  // byte-identically to before. tier 1 = the program's TOP experience tier.
+  var MARKUP_TIERS = null;
+  function setMarkupTiers(m) { MARKUP_TIERS = (m && typeof m === "object") ? m : null; }
+  function effMarkup(tier) {
+    if (MARKUP_TIERS && tier != null && typeof MARKUP_TIERS[tier] === "number"
+        && isFinite(MARKUP_TIERS[tier]) && MARKUP_TIERS[tier] >= 0) return MARKUP_TIERS[tier];
+    return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR;
+  }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? f : null; }
   var ORIG_PCT = 0.0125;       // origination fee — always 1.25% of the total loan
   var RA = {
@@ -208,7 +218,7 @@
       + (o.foreclosure === "Judicial" ? RA.judicial : RA.nonjudicial)
       + (o.heavy ? RA.heavy : 0);
     buy = Math.max(RA.floor, Math.min(RA.cap, buy));   // floor/cap applies to the buy rate
-    return buy + effMarkup();                          // borrower note rate (only this leaves the module)
+    return buy + effMarkup(o.tier);                    // borrower note rate (only this leaves the module)
   }
 
   /* ---------------------------------------------------------------------
@@ -673,7 +683,7 @@
   return {
     evaluate: evaluate,
     priceLadder: priceLadder,
-    setMarkup: setMarkup,
+    setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     // exposed for tooling / tests
     regimeOf: regimeOf, normStrategy: normStrategy, foreclosureType: foreclosureType,
     cityIneligible: cityIneligible, cityCheck: cityCheck, exitShortfall: exitShortfall,
