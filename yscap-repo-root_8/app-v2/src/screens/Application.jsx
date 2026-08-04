@@ -209,10 +209,15 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
   // header stays. Rows passed no children (photo ID, e-sign, read-only flags)
   // are plain single-line rows with no chevron.
   const collapsible = children != null && children !== false;
-  // Controlled "force open": docs present, a sub-form opened (a sub-component's
-  // own state flows in via `openProp`), or a fix requested — the row opens
-  // itself. The borrower can also click the header to open/close it.
-  const forceOpen = !!openProp || !!issue;
+  // Controlled "force open": whatever the caller's `open` prop reflects — docs
+  // present, a sub-form opened (a sub-component's own state flows in via
+  // `openProp`), or a fix requested. It is deliberately NOT `issue` on its own:
+  // the doc/assets callers already fold `issue` into their `open` prop where the
+  // body must reveal a rejection reason, and a sub-component (Card/Contact/Info/
+  // LLC) that pins itself CLOSED via its own button must be able to collapse —
+  // pinning on `issue` would keep its form stuck open. The borrower can also
+  // click the header to open/close it.
+  const forceOpen = !!openProp;
   const [open, setOpen] = useState(forceOpen);
   const mounted = useRef(false);
   useEffect(() => {
@@ -238,7 +243,7 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
         role={collapsible ? 'button' : undefined} tabIndex={collapsible ? 0 : undefined}
         aria-expanded={collapsible ? bodyOpen : undefined}
         onClick={collapsible ? toggle : undefined}
-        onKeyDown={collapsible ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } } : undefined}>
+        onKeyDown={collapsible ? (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } } : undefined}>
         {collapsible
           ? <span className={`bcond-chev${bodyOpen ? ' open' : ''}`} aria-hidden="true">▶</span>
           : <span className="bcond-chev spacer" aria-hidden="true" />}
@@ -1306,6 +1311,10 @@ export default function Application() {
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
                   >
+                    {/* Only carry a body (and therefore a chevron) once there IS
+                        something to reveal — a fix note or uploaded documents.
+                        A brand-new, empty condition stays a plain one-line row. */}
+                    {(docs.length > 0 || needsFix) && (<>
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
                         Needs a new version: {it.rejection_reason}
@@ -1323,6 +1332,7 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    </>)}
                   </ConditionRow>
                 );
               })}
