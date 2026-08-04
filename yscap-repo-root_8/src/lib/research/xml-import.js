@@ -162,7 +162,16 @@ const dateOnly = (v) => {
  * @param {{query:Function, getClient?:Function}} db
  * @returns {{ok, status, importId, reason, ...counts}}
  */
-async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
+/**
+ * @param {object} o
+ * @param {boolean} [o.untrusted]  the bytes came from somewhere we do not vouch for —
+ *   today, a BORROWER upload (db/462). The report's PROPERTY facts are taken exactly as
+ *   they always were: a comparable sale that happened, happened, and that is what this
+ *   warehouse is for. What it may not do is REWRITE the shared appraiser roster, which
+ *   every staff user reads and which was previously staff-write-only. See
+ *   `ingest.upsertAppraiser`'s `fillOnly`.
+ */
+async function importXml(db, { xml, filename = null, uploadedBy = null, source = null, untrusted = false } = {}) {
   const out = {
     ok: false, status: 'error', importId: null, filename, reason: null,
     subjectAddress: null, appraiserName: null, comparables: 0,
@@ -182,14 +191,20 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   // refresh its own row instead of adding a second copy of every property.
   let importId;
   try {
+    // `source` (db/462) records HOW the report arrived — a hand upload, a loan-file
+    // door, the back-book sweep, the Encompass catcher. A label for a human reading
+    // the import list, never a key anything branches on. It is COALESCEd on conflict
+    // for the same reason the filename is: the first door to file a report is the one
+    // that actually brought it in, and a later re-file must not rewrite that history.
     importId = (await db.query(
-      `INSERT INTO research_imports (sha256, filename, byte_size, uploaded_by, status)
-       VALUES ($1,$2,$3,$4,'pending')
+      `INSERT INTO research_imports (sha256, filename, byte_size, uploaded_by, source, status)
+       VALUES ($1,$2,$3,$4,$5,'pending')
        ON CONFLICT (sha256) DO UPDATE SET
          filename = COALESCE(research_imports.filename, EXCLUDED.filename),
+         source = COALESCE(research_imports.source, EXCLUDED.source),
          status = 'pending', error = NULL
        RETURNING id`,
-      [hash, filename, Buffer.byteLength(bytes, 'utf8'), uploadedBy])).rows[0].id;
+      [hash, filename, Buffer.byteLength(bytes, 'utf8'), uploadedBy, source ? String(source).slice(0, 120) : null])).rows[0].id;
   } catch (e) {
     out.reason = (e && e.message) || String(e);
     return out;
@@ -254,7 +269,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   // own connection; a caller inside its own transaction keeps ownership.
   const runner = async (client) => {
     const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], appraiserId: null };
-    await ingest.writeReport(client, { a, comps, rentals, link: { importId }, out: w });
+    await ingest.writeReport(client, { a, comps, rentals, link: { importId, untrusted }, out: w });
     return w;
   };
 
@@ -314,14 +329,14 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
  * roll-ups are read-modify-write per property (two reports on one street landing at
  * once would fight over the same rows).
  */
-async function importMany(db, files = [], { uploadedBy = null, onProgress = null } = {}) {
+async function importMany(db, files = [], { uploadedBy = null, onProgress = null, source = 'hand upload', untrusted = false } = {}) {
   const results = [];
   const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0 };
   for (let i = 0; i < files.length; i++) {
     const f = files[i] || {};
     let r;
     try {
-      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy });
+      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy, source, untrusted });
     } catch (e) {
       // importXml is written never to throw; this is the belt to its braces, so one
       // pathological file can never end a hundred-file upload.

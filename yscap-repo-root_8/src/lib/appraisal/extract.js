@@ -1835,4 +1835,8 @@ function extract(xml) {
   };
 }
 
-module.exports = { extract, _internals: { toNum, money, clean, normDate, upState, zip, year } };
+// `detectMismo` is exposed because it is this repo's ONE definition of "is there an
+// appraisal in this file at all" — the research-warehouse catch (db/462) has to answer
+// exactly that question on every uploaded XML, and a second opinion living somewhere
+// else would eventually disagree with the parser about what an appraisal is.
+module.exports = { extract, _internals: { toNum, money, clean, normDate, upState, zip, year, detectMismo } };

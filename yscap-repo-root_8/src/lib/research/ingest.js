@@ -330,7 +330,18 @@ const AS_IS_ONLY = new Set([
  * Upsert the appraiser who signed this report and record every contact detail it
  * carries. Returns the appraiser id, or null when the report names nobody.
  */
-async function upsertAppraiser(db, a) {
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.fillOnly]  the report's provenance is UNTRUSTED (db/462) — it
+ *   may CREATE an appraiser and FILL a column nobody has filled, and it may never
+ *   OVERWRITE one. `appraisers` is a shared, cross-file, every-staff-user roster, and
+ *   since every XML entering PILOT feeds this warehouse, a BORROWER's uploaded file
+ *   reaches it. Without this a borrower could rewrite a real appraiser's company,
+ *   phone and email for the whole company by attaching one document — measured. The
+ *   report still lands: its comparables, its sales and its observations are facts
+ *   about property, which is what the warehouse is for.
+ */
+async function upsertAppraiser(db, a, opts = {}) {
   const identity = ID.appraiserIdentity({
     name: a.appraiser_name, company: a.appraiser_company,
     licenseId: a.license_id, licenseState: a.license_state,
@@ -348,7 +359,10 @@ async function upsertAppraiser(db, a) {
   const existing = (await db.query(
     `SELECT id, last_report_date FROM appraisers WHERE identity_key = $1`, [identity.key])).rows[0];
   const prevDate = existing ? dateOnly(existing.last_report_date) : null;
-  const newer = !existing || !prevDate || (reportDate && reportDate >= prevDate);
+  // `fillOnly` forces this false: every scalar below is then COALESCE-guarded against
+  // the value already on the row, so an untrusted report can add but never replace.
+  const newer = !opts.fillOnly
+    && (!existing || !prevDate || (reportDate && reportDate >= prevDate));
 
   const vals = [identity.key, name, identity.nameKey, txt(a.appraiser_company), identity.companyKey,
     txt(a.appraiser_phone), txt(a.appraiser_email), txt(a.appraiser_company_address),
@@ -1596,7 +1610,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
   const appraisalId = link.appraisalId || null;
   const importId = link.importId || null;
 
-  const appraiserId = await upsertAppraiser(db, a);
+  const appraiserId = await upsertAppraiser(db, a, { fillOnly: !!(link && link.untrusted) });
   out.appraiserId = appraiserId;
   if (appraiserId && appraisalId) {
     await db.query(`UPDATE appraisals SET appraiser_id = $2 WHERE id = $1`, [appraisalId, appraiserId]);

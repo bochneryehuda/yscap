@@ -312,13 +312,41 @@ router.post('/:appId/import', async (req, res, next) => {
         [app.id, xmlDocId, pdfDocId]);
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
 
+    /* AN APPRAISAL IMPORT THAT BLOWS UP MUST NOT COST THE COMPARABLES (owner-directed
+       2026-08-04, db/462). The desk import does far more than read a grid — it
+       reconciles against the file, materialises two conditions, extracts photos, may
+       move the As-Is and reprice — and ANY of that THROWING used to take the market
+       data down with it, even when the comparable-sales grid itself read perfectly.
+       On a SUCCESS the warehouse is already fed, richer, through
+       `desk.fireResearchIngest` (with the photographs), so the rescue must not run
+       there or the two race each other and file the report twice.
+
+       ON THE ORDINARY 422 IT IS DELIBERATELY A NO-OP, and that is worth stating rather
+       than leaving as a false promise: `runAppraisalImport` answers `ok:false` only
+       when `extract()` could not read the file, and `importXml` bails on exactly the
+       same condition — so there is no grid to rescue, and the ledger row it would
+       write says only what the 422 already says. It is still called there because
+       `ok:false` is not a contract anybody should have to re-derive: if a future
+       refusal happens for some reason OTHER than an unreadable file, the grid is
+       rescued for free. It writes nothing to the loan file, so it cannot make a
+       failed import worse either way. */
+    const rescueGrid = () => require('../lib/research/xml-catch').fireCatch({
+      bytes: Buffer.from(xml, 'utf8'), filename: b.filename || 'appraisal.xml',
+      contentType: 'application/xml', documentId: xmlDocId,
+      uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
+      why: 'a loan file (appraisal import that did not complete)',
+    });
+
     // Shared desk flow: import + reconcile + materialize the two internal conditions +
     // fire the advisory OCR. Identical to the auto-import from the appraisal-docs condition.
-    const out = await runAppraisalImport({
-      appId: app.id, xml, importedBy: req.actor.id,
-      xmlDocumentId: xmlDocId, pdfDocumentId: pdfDocId, pdfBase64: pdfB64,
-    });
-    if (!out.ok) return res.status(422).json({ error: out.error });
+    let out;
+    try {
+      out = await runAppraisalImport({
+        appId: app.id, xml, importedBy: req.actor.id,
+        xmlDocumentId: xmlDocId, pdfDocumentId: pdfDocId, pdfBase64: pdfB64,
+      });
+    } catch (e) { rescueGrid(); throw e; }
+    if (!out.ok) { rescueGrid(); return res.status(422).json({ error: out.error }); }
 
     await audit(req.actor.id, 'appraisal_import', app.id,
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });

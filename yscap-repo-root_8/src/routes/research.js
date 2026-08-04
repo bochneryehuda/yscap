@@ -28,6 +28,26 @@
  * licensed professional's published business contact information, printed on
  * every report they sign.
  *
+ * TWO THINGS THAT PARAGRAPH HAS TO BE PRECISE ABOUT (db/462, 2026-08-04).
+ *
+ * FIRST, `owner_of_record` ON A SUBJECT PROPERTY IS THE BORROWER or their entity. It
+ * always was — nothing about this changed it — and it is the one field in here that
+ * names a person connected to a deal. It is a fact the appraiser read off the public
+ * record, which is what makes it defensible; it is not "no borrower name", which is
+ * why it is now said out loud rather than left to the reader.
+ *
+ * SECOND, WHO CAN PUT DATA HERE CHANGED. Until db/462 only STAFF could feed this
+ * warehouse — a desk import or the hand-upload screen. Now every appraisal XML that
+ * enters PILOT does, INCLUDING one a borrower attaches to their own condition, and
+ * nothing checks that the report's subject has anything to do with their file. So a
+ * borrower can seed rows other staff read. Three things bound it: only the report's
+ * PROPERTY facts are taken (a comparable sale that happened, happened, which is the
+ * whole point of the warehouse); an untrusted report may FILL but never REWRITE the
+ * shared appraiser roster (`ingest.upsertAppraiser`'s `fillOnly`, threaded from the
+ * borrower door); and the document BYTES stay unreachable, because `property_photos`
+ * is written only for a report that came in on a loan file, so `GET
+ * /photos/:documentId` can never serve one of these.
+ *
  * BORROWERS NEVER REACH ANY OF THIS. It is mounted behind requireStaff as a whole
  * router, not per-endpoint, so there is no path in without a staff session.
  */
@@ -1940,7 +1960,7 @@ router.post('/imports', async (req, res, next) => {
     let dropped = 0;
     if (files.length > MAX_BULK) { dropped = files.length - MAX_BULK; files = files.slice(0, MAX_BULK); }
 
-    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id });
+    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id, source: 'hand upload' });
     if (dropped) {
       out.summary.dropped = dropped;
       out.summary.note = `Only the first ${MAX_BULK} files were read this time — ${dropped} more were left out. Send them in another batch.`;
@@ -1960,7 +1980,11 @@ router.get('/imports', async (req, res, next) => {
     const status = txt(req.query.status);
     if (status && ['ok', 'skipped', 'error', 'pending'].includes(status)) where.push(`i.status = ${P(status)}`);
     const r = await db.query(
-      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date,
+      // `source` (db/462) is how the report ARRIVED — a hand upload, a loan file, the
+      // back-book sweep. Without it the list showed a filename and nothing else, so
+      // "did the ones on our loan files actually come in?" could not be answered from
+      // the screen at all. NULL on every row that predates the column.
+      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date, i.source,
               i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
               i.subject_property_id, i.appraiser_id, i.appraisal_id,
               i.comparables_seen, i.properties_written, i.observations_written, i.sales_written,

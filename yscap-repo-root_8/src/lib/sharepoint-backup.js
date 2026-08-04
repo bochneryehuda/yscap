@@ -890,11 +890,11 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
 // composite provider (the dual-read wrapper: S3, falling back to local disk for a
 // doc still mid-migration). storage._local is exported by src/lib/storage.js in
 // BOTH modes; in local mode it IS storage, so this is a no-op there.
-function providerForRow(row) {
-  const prov = (row && row.storage_provider) || 'local';
-  if (prov === 'local' && storage._local) return storage._local;
-  return storage;
-}
+// The rule itself now lives in storage.js as `forRow` (db/462 needed the same
+// decision for the research-warehouse sweep, and two copies of "which disk holds
+// this document" is exactly the drift this repo keeps paying for). Behaviour is
+// unchanged — this is the same three lines, in one place.
+function providerForRow(row) { return storage.forRow(row); }
 
 // `retried` guards the one self-heal: when a cached folder id has gone stale
 // (a human deleted/moved the folder in SharePoint → Graph itemNotFound), the

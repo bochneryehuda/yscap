@@ -36,6 +36,20 @@ async function saveChatAttachment({ applicationId, borrowerId, filename, content
     [applicationId || null, borrowerId || null, String(filename || 'attachment').slice(0, 300),
      contentType || 'application/octet-stream', buf.length, provider, ref, byKind, byId, visibility]);
   try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
+  /* AN APPRAISAL XML DROPPED INTO THE FILE'S CHAT IS STILL AN APPRAISAL XML (db/462).
+     "Here's the data file" in the chat thread is an ordinary way for one to arrive, and
+     the owner's rule is every door. Warehouse-only and fire-and-forget: nothing about
+     the message, the file or the attachment changes. A staff sender's id is passed so
+     the import list records who brought it in; a borrower's is not — the ledger's
+     `uploaded_by` references the staff roster. */
+  try {
+    require('./research/xml-catch').fireCatch({
+      bytes: buf, filename, contentType,
+      documentId: r.rows[0].id,
+      uploadedByStaffId: byKind === 'staff' ? byId : null,
+      why: 'a chat attachment',
+    });
+  } catch (_) { /* never let the warehouse break a chat message */ }
   return { documentId: r.rows[0].id, kind: kindOf(contentType, filename), size: buf.length };
 }
 
