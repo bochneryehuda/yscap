@@ -28,8 +28,14 @@ function assetDetail(quote) {
   const cc = quote.closingCosts || {};
   // On a REFINANCE the cash to close is the payoff shortfall (payoff + closing
   // costs − the funds that advance at closing), not a purchase down payment.
+  // On a CASH-OUT refi the loan covers the payoff + closing (cash-to-close is $0),
+  // so the "payoff − advanced" equation would sum negative; state the cash-out.
+  // Rate-and-term reconciles as the payoff shortfall the borrower brings. Must read
+  // the same as liquidity.js.
   const cashToCloseDetail = quote.refi
-    ? `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`
+    ? (quote.refi.cashOut > 0
+        ? `Cash to close: ${money(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money(quote.refi.cashOut)} cash out.`
+        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
     : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
@@ -560,7 +566,11 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     // was entered, else the structure's implied proceeds (quote.refi.cashOut). It is
     // >0 only on a cash-out; a rate-and-term keeps the ordinary cash-to-close (the
     // shortfall the borrower brings).
-    (num(cashOut) > 0)
+    // Show "cash to you" ONLY when the STRUCTURE is a cash-out (funds advanced exceed
+    // payoff + closing). Gating on the figure-of-record alone would let a typed
+    // cash-out entered on a rate-and-term (a real shortfall the borrower BRINGS)
+    // suppress that shortfall — the web tool gates the same line on isCashOut().
+    (quote.refi && quote.refi.cashOut > 0 && num(cashOut) > 0)
       ? { label: 'Estimated cash to you (paid to you at closing)', value: money(cashOut) }
       : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null),
     // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower

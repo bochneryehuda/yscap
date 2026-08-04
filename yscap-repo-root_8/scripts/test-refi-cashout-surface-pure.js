@@ -76,11 +76,20 @@ ok(p.refi == null, 'purchase: no refi block (unchanged)');
   ok(line && /cash to close/i.test(line.label), 'purchase: email shows "cash to close" (unchanged)');
 }
 
-// ---- A TYPED cash-out override wins over the structural figure (payoff.cashOutOfRecord order).
+// ---- A TYPED cash-out override wins over the structural figure ON A CASH-OUT DEAL.
 {
   const typed = 42000;
   const line = emailLine(co, typed);
-  ok(line && line.value.includes('42,000'), 'typed cash-out override is what the borrower email shows');
+  ok(line && line.value.includes('42,000'), 'typed cash-out override is what the borrower email shows on a cash-out');
+}
+
+// ---- CONTRADICTORY DATA: a typed cash-out entered on a RATE-AND-TERM (a real
+// shortfall the borrower brings) must NOT suppress the shortfall — the deal is not
+// structurally a cash-out, so the email shows "cash to close", never "cash to you".
+{
+  const line = emailLine(rt, 42000);
+  ok(line && /cash to close/i.test(line.label),
+     'rate-&-term with a stray typed cash-out still shows "cash to close" (the shortfall), not "cash to you"');
 }
 
 console.log(failed ? `\n${failed} assertion(s) failed` : '\nALL refinance cash-out surfacing assertions passed');

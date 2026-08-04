@@ -167,8 +167,15 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     // reads "Down payment $0.00 + closing $X = cash to close $Y", an equation that
     // is internally false. Owner-directed 2026-08-04.
     const cashToCloseSeg = breakdown.refi
-      ? `Loan payoff ${money2(breakdown.refi.payoff)} + closing costs due at closing ${money2(breakdown.refi.closing)} ` +
-        `− funds advanced at closing ${money2(breakdown.refi.fundedAtClose)} = cash to close ${money2(breakdown.cashToClose)}`
+      // CASH-OUT: the funds advanced exceed the payoff + closing, so cash-to-close is
+      // $0 and the payoff/less-funds equation would sum NEGATIVE against it (the exact
+      // "doesn't add up" problem the term-sheet display gates out). State the cash-out
+      // instead. RATE-AND-TERM: the borrower brings a positive shortfall, so the
+      // reconciliation reads correctly.
+      ? (breakdown.refi.cashOut > 0
+          ? `Cash to close ${money2(breakdown.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money2(breakdown.refi.cashOut)} cash out`
+          : `Loan payoff ${money2(breakdown.refi.payoff)} + closing costs due at closing ${money2(breakdown.refi.closing)} ` +
+            `− funds advanced at closing ${money2(breakdown.refi.fundedAtClose)} = cash to close ${money2(breakdown.cashToClose)}`)
       : `Down payment ${money2(breakdown.downPayment)} + ` +
         `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
         `closing costs due at closing ${money2(breakdown.closingCosts)} = cash to close ${money2(breakdown.cashToClose)}`;
