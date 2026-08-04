@@ -56,6 +56,21 @@ const APP = '00000000-0000-0000-0000-000000000001';
 const reset = () => { queries = []; notes = []; nextRows = {}; };
 const cents = (dollars) => Math.round(dollars * 100);
 
+/* A WIRE DATE IN THIS FIXTURE MUST BE RELATIVE, NEVER A LITERAL — mirror.js treats a
+   wire older than 14 days as HISTORY ("record it, tell no one"), so a hard-coded
+   date silently ages out of the announcing path and takes every assertion about the
+   announcement with it.
+   That is not hypothetical: the real draw's date, '2026-07-21', went stale at
+   midnight UTC on 2026-08-04 and this suite began failing with `r.net` undefined —
+   on main, on every branch, and on every future run. Main's own CI passed at
+   23:53Z on the 3rd and the next run after midnight failed, which is exactly the
+   shape of a fixture that expires.
+   The real dates are kept in the comments, where they document the incident without
+   deciding the test's behaviour. */
+const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+const RECENT_WIRE = daysAgo(3);      // comfortably inside the 14-day announcing window
+const OLD_WIRE = daysAgo(180);       // comfortably outside it — the deliberate history case
+
 // ---------------------------------------------------------------------------
 // 1. The release gate — a borrower hears about money only when money moved.
 // ---------------------------------------------------------------------------
@@ -85,7 +100,7 @@ async function releaseGate() {
   reset();
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'draft-1', number: 1, status: 'DRAFT',
-    approved_cents: cents(10000), disbursed_cents: cents(9750), disbursed_at: '2026-07-21',
+    approved_cents: cents(10000), disbursed_cents: cents(9750), disbursed_at: RECENT_WIRE,
     to_disburse_cents: null, fees: null,
   });
   assert.strictEqual(r.skipped, 'not_disbursed', 'a DRAFT draw must never announce a release');
@@ -96,7 +111,7 @@ async function releaseGate() {
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'f935fab0', number: 1, status: 'COMPLETED',
     requested_cents: cents(17000), approved_cents: cents(10687.5), disbursed_cents: cents(10437.5),
-    disbursed_at: '2026-07-21', to_disburse_cents: null, fees: [{ name: 'Per Draw Fee', amount: 250 }],
+    disbursed_at: RECENT_WIRE, to_disburse_cents: null, fees: [{ name: 'Per Draw Fee', amount: 250 }],
   }, { addr: '105-107 N 10th St' });
   assert.strictEqual(r.ok, true, 'a genuinely wired draw must still be announced');
   assert.strictEqual(r.net, cents(10437.5), 'the net is the amount the administrator says went out');
@@ -121,7 +136,7 @@ async function releaseGate() {
   r = await mirror.mirrorDisbursement(APP, {
     tp_draw_id: 'old-1', number: 1, status: 'COMPLETED',
     approved_cents: cents(20000), disbursed_cents: cents(19750),
-    disbursed_at: '2026-01-05', to_disburse_cents: null, fees: null,
+    disbursed_at: OLD_WIRE, to_disburse_cents: null, fees: null,
   });
   assert.strictEqual(r.silent, true, 'a months-old wire is history, not news');
   assert.strictEqual(notes.length, 0);
