@@ -8834,7 +8834,12 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    // A borrower with NO active file has nothing to be invited TO. Rather than a
+    // dead end, the profile offers to START an application for them and invite them
+    // to fill it in — a `code` the client keys on to reach the invite-only new-file
+    // path (owner-directed 2026-08-04, #23). Passing borrowerId there links the new
+    // file to THIS exact profile, so their records carry over.
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to', code: 'no_active_file' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
     res.json({ ok: true, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
