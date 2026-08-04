@@ -316,12 +316,14 @@ const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
  * alarm and a slot out of the shared error budget on every sweep forever.
  *
  * That is what the call site's caps are for, and why a filename-only match gets
- * its OWN small budget rather than sharing one: companion filenames carry order
- * numbers, so a single order can present several DISTINCT ones, and on a shared
- * budget those crowd out the resource that actually carries the appraisal type
- * URN. With the split, the residual cost of this generosity is a bounded sample
- * of companion shapes per sweep, and the alarm text says which test matched
- * rather than claiming nothing is being caught.
+ * its OWN budget rather than sharing one: on a shared budget a burst of
+ * filename-matched documents can crowd out the resource that actually carries the
+ * appraisal type URN, which is the one this alarm exists to surface. That burst
+ * has never been observed on this tenant — see the measurement beside
+ * MAX_OTHER_FORMAT_NAMED — so the split is a structural precaution, not a fix for
+ * something seen. With it, the residual cost of this generosity is a bounded
+ * sample of companion shapes per sweep, and the alarm text says which test
+ * matched rather than claiming nothing is being caught.
  *
  * The trade is deliberate in this direction: a false negative is the silence this
  * exists to break, and the six sibling document types recorded on a real Class
@@ -333,9 +335,11 @@ const APPRAISAL_TYPE_PREFIX = 'urn:ice:epc:partner:appraisal:report';
 // `type` match is the vendor's own machine-readable claim that this resource IS
 // the appraisal report — an unparsable one is the tenant-wide signal this alarm
 // exists to raise. A `name` match is the generous backstop described above, and
-// in practice it is nearly always a companion document. Collapsing both to a
-// boolean is what let three invoices crowd a genuine delivery out of the naming
-// budget; see the two budgets at the call site.
+// in practice it is nearly always a companion document. Collapsed to a boolean
+// the two classes share one budget, so filename matches can crowd a genuine
+// delivery out of the naming slots — see the two budgets at the call site, and
+// the measurement beside MAX_OTHER_FORMAT_NAMED for how often that has actually
+// happened here (it has not).
 function appraisalMatchKind(res) {
   if (!res) return null;
   if (String(res.type || '').toLowerCase().startsWith(APPRAISAL_TYPE_PREFIX)) return 'type';
@@ -905,15 +909,21 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // a later one and the ZIP appeared nowhere but in the count.
             //
             // DISTINCT SHAPES ON ONE SHARED BUDGET also shipped, and it only made
-            // that three times less likely — AMCs stamp the order number into
-            // companion filenames, so a single order really does carry three
-            // distinct "Appraisal …" PDFs, which is enough to fill a 3-slot budget
-            // before a later loan's genuine package is ever reached.
+            // that less likely rather than impossible: enough distinct
+            // filename-matched shapes on the loans reached first still fill a shared
+            // budget before a later loan's genuine package is reached. How MANY it
+            // takes is the cap; how often it happens here is measured beside
+            // MAX_OTHER_FORMAT_NAMED, and the answer is that it never has.
             //
-            // So the budgets are SPLIT BY HOW THE RESOURCE MATCHED. A companion can
-            // now only crowd out another companion. Past either cap the count still
-            // rises and the names stop — that is the deliberate bound, NOT a
-            // guarantee that every distinct shape gets named.
+            // So the budgets are SPLIT BY HOW THE RESOURCE MATCHED, and a
+            // filename-matched resource can now only crowd out another
+            // filename-matched one. Note that is a statement about the MATCH, not
+            // about the document: a companion that carried the appraisal type URN
+            // would sit in the URN class and could crowd out a real delivery — no
+            // resource in the measured tenant does, but the guarantee is worded on
+            // the match because that is what the code can actually promise. Past
+            // either cap the count still rises and the names stop — the deliberate
+            // bound, NOT a guarantee that every distinct shape gets named.
             //
             // WHAT TO READ THIS WITH, stated precisely because the obvious answer
             // is wrong twice over. `captured` is not it: an XML we already hold
@@ -943,8 +953,10 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
             // had would make it worse at the one job the docblock keeps it for — a
             // delivery whose type URN ALSO changed, which arrives matched by name
             // only. Worst case is 2 x MAX_OTHER_FORMAT_NAMED of the MAX_ERRORS
-            // slots, still a small fraction, and on measured data neither class
-            // fills even one.
+            // slots, still a small fraction. On measured data the URN class spends
+            // none and the filename class spends one — the single "appraisal
+            // dispute.xlsx" in the whole tenant — so the real cost today is one
+            // slot, not the worst case.
             const cap = MAX_OTHER_FORMAT_NAMED;
             const shape = t500(`${res.mimeType || 'no mime'} / ${res.name || 'no name'}`);
             if (!named.includes(shape) && named.length < cap) {

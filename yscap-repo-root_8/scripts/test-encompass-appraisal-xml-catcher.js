@@ -841,10 +841,15 @@ t('a non-url is refused with a plain reason', () => {
 
     // ── THE AUDIT'S REPRODUCED FAILURE, ACROSS TWO LOANS ──────────────────────
     // The pre-merge audit of the first cut ran exactly this and got
-    // `ZIP named anywhere: false`. AMCs stamp the order number and the property
-    // into companion filenames, so ONE order really does carry three DISTINCT
-    // "Appraisal …" PDFs — enough to fill a single 3-slot budget before the loop
-    // ever reaches the loan whose genuine UAD 3.6 package we cannot read.
+    // `ZIP named anywhere: false`: three DISTINCT filename-matched shapes are
+    // enough to fill a single 3-slot budget before the loop ever reaches the loan
+    // whose genuine UAD 3.6 package we cannot read.
+    //
+    // THE FILENAMES HERE ARE CONSTRUCTED, NOT OBSERVED. The measured tenant holds
+    // exactly ONE filename-matched unparsable resource in total (see the
+    // measurement beside MAX_OTHER_FORMAT_NAMED), so this is the shape the split
+    // is a precaution AGAINST, not a shape anyone has seen. That is precisely why
+    // it belongs in a test: it is the only place it exists.
     //
     // Two loans, because that is the shape of the finding: the companions are on
     // the loan reached FIRST. Nothing resets the naming lists per loan (`out` is
