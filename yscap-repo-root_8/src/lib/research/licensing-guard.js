@@ -55,9 +55,39 @@ const TABLE = 'properties';
 const EXACT_DEF =
   /^CHECK \(+\(geo_source IS NULL\) OR \(lower\(geo_source\) !~~ '%google%'::text\)\)+$/;
 
-/* What the app actually writes, plus the casing that the first version of this
-   guard let through. A rule that refuses one and admits the other is not a rule. */
-const PROBE_SOURCES = ['google_places', 'GOOGLE'];
+/* What the app actually writes, plus the spellings a rewritten rule lets through.
+   A rule that refuses one and admits another is not a rule.
+
+   WIDENED after a post-merge audit measured the exact hole two spellings leave.
+   With only `google_places` and `GOOGLE`, this pair of constraints — neither of
+   them a licensing rule — refused BOTH probe values:
+
+     CHECK (geo_source IS NULL OR geo_source = lower(geo_source))      -- hygiene
+     CHECK (geo_source IS NULL OR geo_source NOT LIKE '%places%')      -- a "places" API
+
+   …while `geo_source = 'google'` — the spelling db/459's own header names FIRST —
+   wrote straight in. The probe reported "we could not ask", and the guard then
+   inferred protection from the control row and DELETED the one true sentence in
+   its own message.
+
+   ADDING A VALUE IS MONOTONE: the loop returns on the FIRST acceptance, so a
+   further spelling can only ever catch more, never less. That is the opposite of
+   adding a COLUMN to a probe row, which trades detections (see PROBE_SHAPES) —
+   which is why this list may be widened freely and that one may not. */
+const PROBE_SOURCES = ['google_places', 'GOOGLE', 'google', 'geocoded by Google'];
+
+/* THE CONTROL'S SOURCES ARE VALUES THE APPLICATION PROVABLY WRITES — geocode.js
+   writes 'census' and 'osm', place-subjects.js writes 'comp_trilateration'.
+   Nothing anywhere writes 'us_census', which is what this used to send, and the
+   difference is not cosmetic: the single most plausible replacement rule is a
+   SOURCE WHITELIST, `geo_source IN ('census','osm','comp_trilateration')`, which
+   gives COMPLETE protection against every Google spelling — and it refused the old
+   control row, so the guard classified it as keyed on the row and announced that
+   nothing stopped a Google coordinate. Measured against real Postgres.
+
+   Accepted under ANY of them is the finding ("that constraint is keyed on the
+   source"), so a whitelist naming only one of the three still reads correctly. */
+const CONTROL_SOURCES = ['census', 'osm', 'comp_trilateration'];
 
 /* MORE THAN ONE ROW SHAPE, BECAUSE ENRICHING ONE ROW TRADES DETECTIONS RATHER THAN
    ADDING THEM. A CHECK constraint PASSES when its expression is NULL, so filling a
@@ -73,7 +103,28 @@ const PROBE_SOURCES = ['google_places', 'GOOGLE'];
    because a real geocoded row always carries at least 1 while a never-attempted row
    carries 0, and an exemption can key on either. */
 const PROBE_SHAPES = [
+  /* THE ROW THE INGEST ITSELF WRITES — the only shape that earns the loud sentence.
+     `ingest.js` inserts EVERY property with `first_seen_at, last_seen_at = now()`,
+     unconditionally, and the populated shape below sets neither. A CHECK PASSES WHEN
+     ITS EXPRESSION IS NULL, so `… OR first_seen_at IS NULL` was accepted on the probe
+     row and FALSE for every real property — a rule that refuses every write the
+     warehouse makes, reported as one that stops nothing. Measured on real Postgres,
+     both columns, after the five rewrites the previous round closed.
+     These two are STRICTLY STRONGER evidence than the columns below: a county, a city
+     or a ZIP can legitimately be blank on a real property; a first-seen stamp never
+     is. So this shape is tried FIRST and it alone carries `loud`.
+     ADDING A SHAPE IS MONOTONE — "stored under ANY shape" is the proof, so a further
+     shape can only catch more. ENRICHING one is not. That is why this is a new entry
+     and not two more columns on the row below. */
+  { name: 'ingest',
+    loud: true,
+    describe: 'a full property row of exactly the shape the warehouse itself writes — a street, a '
+      + 'town, a coordinate, a precision, and the first-seen and last-seen stamps every property carries',
+    cols: 'street, city, state, zip, observation_count, year_built, beds, created_at, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at, geo_attempts, first_seen_at, last_seen_at',
+    vals: `'Licensing Probe St', 'Licensing Probe', 'NJ', '08608', 1, 1962, 3, now() - interval '400 days', 40.1, -74.1, 'address', now(), now(), 1, now(), now()` },
   { name: 'populated',
+    loud: false,
+    describe: 'a full property row carrying a street, a town, a coordinate and a precision',
     cols: 'street, city, state, zip, observation_count, year_built, beds, created_at, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at, geo_attempts',
     /* EVERY VALUE HERE IS ONE THE APPLICATION ITSELF WOULD WRITE, and each one that
        is missing is a rule this shape reports backwards.
@@ -109,9 +160,26 @@ const PROBE_SHAPES = [
        bare, or this becomes a trade again. */
     vals: `'Licensing Probe St', 'Licensing Probe', 'NJ', '08608', 1, 1962, 3, now() - interval '400 days', 40.1, -74.1, 'address', now(), now(), 1` },
   { name: 'bare',
+    loud: false,
+    describe: 'a bare row carrying nothing but a latitude and a longitude',
     cols: 'geo_latitude, geo_longitude',
     vals: '40.1, -74.1' },
 ];
+
+/** The shape that, if the database accepts it, proves a real warehouse write gets through. */
+const LOUD_SHAPE = PROBE_SHAPES.find((s) => s.loud).name;
+const shapeByName = (n) => PROBE_SHAPES.find((s) => s.name === n) || null;
+
+/* THE ONE SHAPE EVERY RETURN FROM `verifyRefusesGoogle` HAS. Three early returns
+   used to hand back a shorter object than the docstring promises, so a consumer
+   reading `priorBlockedBy` or `controlAccepted` got `undefined` rather than `null`.
+   Behaviourally identical today — both are falsy everywhere they are read — and
+   exactly the kind of drift that becomes a defect the day somebody writes
+   `=== null`. "We could not ask" is a real answer and it has one shape. */
+const NOT_ASKED = () => ({
+  tested: false, refused: null, by: null, shape: null,
+  priorBlockedBy: null, blockers: [], loudShapeAnswered: false, controlAccepted: null,
+});
 
 /**
  * DOES THE DATABASE ACTUALLY REFUSE A GOOGLE COORDINATE?
@@ -159,7 +227,7 @@ const PROBE_SHAPES = [
 async function verifyRefusesGoogle(client) {
   // Not the pool, not the db module: a checked-out client has `release`.
   if (!client || typeof client.release !== 'function' || typeof client.query !== 'function') {
-    return { tested: false, refused: null, by: null, shape: null, priorBlockedBy: null };
+    return NOT_ASKED();
   }
   /* ONE BLOCKED SHAPE MUST NOT ABANDON THE OTHERS. Returning `tested:false` the
      moment anything OTHER than our rule stopped a row made the two-shape probe
@@ -174,12 +242,25 @@ async function verifyRefusesGoogle(client) {
      say we could not ask at all. */
   let answered = false;   // at least one shape got a real answer from OUR rule
   let blockedBy = null;   // the first unrelated constraint that stopped a shape
+  /* EVERY blocker's name, not just the first. With two unrelated constraints on the
+     table — the ordinary state of a growing one — a single name plus a single yes/no
+     control answer cannot say which of them refused what, and the guard read a
+     row-keyed blocker's refusal as proof that a SOURCE-keyed one beside it was not
+     there. Measured on a renamed `properties_no_google_geo_ck_v2` (protecting
+     everything) beside `display_address <> 'licensing probe'`. */
+  const blockers = new Set();
+  /* PER SHAPE, NOT PER PROBE. `blockedBy` is global across every shape and value, so
+     the bare-row branch read ANY blocker anywhere as proof that the fuller row was
+     never put to our rule — and then reported UNKNOWN about a question it had in fact
+     answered twice, naming an innocent constraint while doing it. What that branch
+     actually needs is whether THE LOUD SHAPE got a real answer. */
+  const answeredByShape = Object.create(null);
   for (const shape of PROBE_SHAPES) {
     let anyAnswered = false;
     for (const value of PROBE_SOURCES) {
       // ALSO THE TRANSACTION GUARD — 25P01 outside a transaction block.
       try { await client.query('SAVEPOINT geo_licensing_probe'); }
-      catch (_) { return { tested: false, refused: null, by: null, shape: null }; }
+      catch (_) { return NOT_ASKED(); }
       let err = null;
       try {
         await client.query(
@@ -190,7 +271,7 @@ async function verifyRefusesGoogle(client) {
       // Undo it either way: on success the row must never survive, and on refusal
       // this is what lets the caller's transaction carry on.
       try { await client.query('ROLLBACK TO SAVEPOINT geo_licensing_probe'); }
-      catch (_) { return { tested: false, refused: null, by: null, shape: null }; }
+      catch (_) { return NOT_ASKED(); }
 
       // STORED UNDER ANY SHAPE IS PROOF THAT SOMETHING GETS THROUGH — and WHICH
       // shape got through decides how strongly the caller may word it, so the name
@@ -203,9 +284,14 @@ async function verifyRefusesGoogle(client) {
          populated row was reported as a rule that "refused the fuller property row"
          and "turns on which OTHER columns a row happens to carry", when it refuses
          nothing whatsoever and the ordinary geocoding path writes straight through. */
-      if (!err) return { tested: true, refused: false, by: null, shape: shape.name, priorBlockedBy: blockedBy };
+      if (!err) {
+        return { tested: true, refused: false, by: null, shape: shape.name,
+          priorBlockedBy: blockedBy, blockers: [...blockers],
+          loudShapeAnswered: !!answeredByShape[LOUD_SHAPE], controlAccepted: null };
+      }
       if (err.code !== '23514' || err.constraint !== CONSTRAINT) {
         if (!blockedBy) blockedBy = err.constraint || null;
+        if (err.constraint) blockers.add(err.constraint);
         // NEXT VALUE, not next shape. Breaking here abandoned the second source
         // spelling for this shape, so an unrelated `CHECK (geo_source <>
         // 'google_places')` beside a CASE-SENSITIVE rule that happily stores
@@ -214,11 +300,13 @@ async function verifyRefusesGoogle(client) {
       }
       anyAnswered = true;   // OUR rule refused this shape for this source value
     }
+    answeredByShape[shape.name] = anyAnswered;
     if (anyAnswered) answered = true;
   }
   if (answered) {
     return { tested: true, refused: true, by: CONSTRAINT, shape: null,
-      priorBlockedBy: blockedBy, controlAccepted: null };
+      priorBlockedBy: blockedBy, blockers: [...blockers],
+      loudShapeAnswered: !!answeredByShape[LOUD_SHAPE], controlAccepted: null };
   }
   /* NOTHING ANSWERED FOR OUR RULE — so WHO refused us, and were they refusing the
      GOOGLE SOURCE or the row? Those are different findings and a name alone cannot
@@ -232,29 +320,44 @@ async function verifyRefusesGoogle(client) {
   let controlAccepted = null;
   if (blockedBy) controlAccepted = await probeControlRow(client);
   return { tested: false, refused: null, by: blockedBy, shape: null,
-    priorBlockedBy: blockedBy, controlAccepted };
+    priorBlockedBy: blockedBy, blockers: [...blockers],
+    loudShapeAnswered: !!answeredByShape[LOUD_SHAPE], controlAccepted };
 }
 
 /**
- * The same populated row with a source no licensing rule forbids. Returns true when
- * the database stored it, false when something refused it too, null when we could
- * not ask. Rolled back exactly like the probe — it may never leave a row behind.
+ * The same row, under sources no licensing rule forbids — the values the application
+ * itself writes (see CONTROL_SOURCES). Returns true when the database stored it under
+ * ANY of them (so whatever refused the Google row is keyed on the SOURCE), false when
+ * every one of them was refused too (so the blocker is about the ROW, and says nothing
+ * about Google), null when we could not ask.
+ *
+ * Rolled back exactly like the probe — it may never leave a row behind.
+ *
+ * ACCEPTED UNDER ANY IS THE FINDING, and trying more than one matters: a replacement
+ * rule may be a whitelist naming only some of the three, and a single control value
+ * outside that whitelist reads as "keyed on the row" about a constraint that gives
+ * COMPLETE Google protection.
  */
 async function probeControlRow(client) {
   const shape = PROBE_SHAPES[0];
-  try { await client.query('SAVEPOINT geo_licensing_control'); }
-  catch (_) { return null; }
-  let err = null;
-  try {
-    await client.query(
-      `INSERT INTO ${TABLE} (address_key, display_address, geo_source, ${shape.cols})
-       VALUES ($1, $2, $3, ${shape.vals})`,
-      [`licensing-probe|control|${Date.now()}|${Math.random()}`, 'licensing probe', 'us_census']);
-  } catch (e) { err = e; }
-  try { await client.query('ROLLBACK TO SAVEPOINT geo_licensing_control'); }
-  catch (_) { return null; }
-  if (!err) return true;
-  return err.code === '23514' ? false : null;
+  let sawRefusal = false;
+  for (const source of CONTROL_SOURCES) {
+    try { await client.query('SAVEPOINT geo_licensing_control'); }
+    catch (_) { return null; }
+    let err = null;
+    try {
+      await client.query(
+        `INSERT INTO ${TABLE} (address_key, display_address, geo_source, ${shape.cols})
+         VALUES ($1, $2, $3, ${shape.vals})`,
+        [`licensing-probe|control|${Date.now()}|${Math.random()}`, 'licensing probe', source]);
+    } catch (e) { err = e; }
+    try { await client.query('ROLLBACK TO SAVEPOINT geo_licensing_control'); }
+    catch (_) { return null; }
+    if (!err) return true;                       // stored under a real source ⇒ source-keyed
+    if (err.code === '23514') { sawRefusal = true; continue; }
+    return null;                                 // an error we cannot read ⇒ never guessed
+  }
+  return sawRefusal ? false : null;
 }
 
 /**
@@ -271,7 +374,7 @@ async function checkGeoLicensing(dbc, opts) {
   let named = false;
   let namedAny = false;    // a CHECK of that name exists, VALIDATED OR NOT
   let defText = '';        // its deparsed predicate, for the NOT VALID branch below
-  let neuteredBy = null;   // 'probe' | 'probe-bare' | 'stored-row' — see below
+  let neuteredBy = null;   // 'probe' | 'probe-narrow' | 'stored-row' — see below
   let probe = null;
   try {
     /* KEYED ON THE TABLE THE APP ACTUALLY WRITES TO, AND ON A CONSTRAINT THAT
@@ -441,8 +544,15 @@ async function checkGeoLicensing(dbc, opts) {
      other columns a row happens to carry is not the reviewed rule, and an import
      or a hand-run statement writes sparse rows), it just cannot carry a claim
      about the write the app itself makes. */
+  /* WHICH SHAPE THE DATABASE ACCEPTED DECIDES HOW STRONGLY THIS MAY BE WORDED, and
+     the test is now the shape's OWN `loud` flag rather than a name spelled here.
+     Only the shape that matches what the ingest actually writes earns the general
+     "nothing stops it" sentence; every other acceptance is a real finding worded as
+     one that turns on which other columns a row happens to carry. Adding a shape is
+     then one entry in PROBE_SHAPES and nothing else. */
+  const acceptedShape = probe && probe.refused === false ? shapeByName(probe.shape) : null;
   if (named && storedGoogleCoords > 0 && !neutered) neuteredBy = 'stored-row';
-  else if (neutered) neuteredBy = probe && probe.shape === 'populated' ? 'probe' : 'probe-bare';
+  else if (neutered) neuteredBy = acceptedShape && acceptedShape.loud ? 'probe' : 'probe-narrow';
 
 
   /* THREE OUTCOMES, NOT TWO. `offenders` is null when the count itself FAILED —
@@ -482,49 +592,60 @@ async function checkGeoLicensing(dbc, opts) {
         : ' Nothing is currently in violation, so re-running db/459 will restore it.';
 
     if (neuteredBy === 'probe') {
-      // THE FULL PROPERTY ROW WENT IN. That is the one piece of evidence that earns
-      // the general sentence at the end of this message — a row carrying every
-      // column a real geocoded property carries was stored with a Google source.
+      /* THE ROW THE WAREHOUSE ITSELF WRITES WENT IN. That is the ONE piece of
+         evidence that earns the general sentence at the end of this message: a row
+         carrying every column the ingest sets on every property — including the
+         first-seen and last-seen stamps it sets unconditionally — was stored with a
+         Google source, so a real write gets through.
+         THE DESCRIPTION IS THE SHAPE'S OWN. It used to be spelled out here and drifted:
+         it named "a county", a column the probe row deliberately does NOT carry, and
+         under `… OR county IS NULL` the rule refuses exactly the row this sentence
+         claimed went in. A sentence describing a row must be built from that row. */
       return { ok: false, checked: true, present: false, offenders, neuteredBy,
         probeTested: true, probeBlockedBy: null,
         why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does NOT refuse a `
-          + 'Google-sourced coordinate — the database accepted a full property row carrying one '
-          + 'when asked, of the shape geocode.js itself writes (a street, a town, a county, a '
-          + `coordinate and a precision). It has been altered since db/459 installed it.${rows} `
+          + 'Google-sourced coordinate — the database accepted '
+          + `${acceptedShape.describe} when asked. `
+          + `It has been altered since db/459 installed it.${rows} `
           + 'At least rows of that shape go straight in, so until it is restored, nothing at the '
           + 'database level stops a Google coordinate being stored permanently in the property '
           + 'warehouse.' };
     }
-    if (neuteredBy === 'probe-bare') {
-      /* A SPARSE ROW WENT IN AND THE FULL ONE DID NOT — so the question the general
-         sentence answers has already been answered the other way, and must not be
-         asserted here. `populated` is tried first, so reaching this branch means the
-         fuller row was REFUSED. The rules that land here key on a column the sparse
-         row leaves NULL (`… OR geo_at IS NULL`, `… OR geo_precision IS NULL`,
-         `… OR city IS NULL`) and a CHECK PASSES WHEN ITS EXPRESSION IS NULL.
+    if (neuteredBy === 'probe-narrow') {
+      /* A NARROWER ROW WENT IN AND THE WAREHOUSE'S OWN SHAPE DID NOT — so the question
+         the general sentence answers has already been answered the other way, and must
+         not be asserted here. The loud shape is tried FIRST, so reaching this branch
+         means it was refused, or could not be asked. The rules that land here key on a
+         column the accepted row leaves NULL (`… OR first_seen_at IS NULL`,
+         `… OR geo_at IS NULL`, `… OR city IS NULL`) and a CHECK PASSES WHEN ITS
+         EXPRESSION IS NULL.
          It is still a real finding and still NOT installed: db/459's rule does not
-         care what else a row carries, and anything that writes a sparse row — an
+         care what else a row carries, and anything that writes a narrower row — an
          import, a hand-run statement, a future code path — stores a Google
          coordinate permanently under this one. */
-      /* AND "THE FULLER ROW WAS REFUSED" MUST BE TRUE BEFORE IT IS SAID. The
-         populated shape is skipped when an UNRELATED constraint blocks it, so
-         reaching here does not by itself mean OUR rule refused it — `CHECK (true)`
+      /* AND "THE FULLER ROW WAS REFUSED" MUST BE TRUE BEFORE IT IS SAID, ABOUT THE
+         RIGHT SHAPE. The loud shape is skipped when an UNRELATED constraint blocks it,
+         so reaching here does not by itself mean OUR rule refused it — `CHECK (true)`
          beside an unrelated blocker was reported as a rule that "refused the fuller
-         property row" and "turns on which OTHER columns a row happens to carry",
-         when it refuses nothing at all and the ordinary geocoding path writes
-         straight through. `priorBlockedBy` is the discriminator. */
-      const fuller = probe && probe.priorBlockedBy
-        ? `The fuller property row could NOT be put to it at all (${probe.priorBlockedBy} refused `
-          + 'that row first), so whether it refuses a full property row is UNKNOWN — and a rule '
-          + 'that stores a bare one is not db/459\'s either way.'
-        : 'It refused the fuller property row, so it turns on which OTHER columns a row happens '
-          + 'to carry, which db/459\'s rule never did.';
+         property row" and "turns on which OTHER columns a row happens to carry", when
+         it refuses nothing at all and the ordinary geocoding path writes straight
+         through. The discriminator is whether THAT SHAPE got a real answer, which is
+         `loudShapeAnswered` — the global `priorBlockedBy` named any blocker anywhere,
+         so a constraint that only ever stopped the BARE row was reported as the reason
+         the fuller one was never tested, about a question it had answered twice. */
+      const fuller = probe && probe.loudShapeAnswered
+        ? 'It refused the fuller property row, so it turns on which OTHER columns a row happens '
+          + 'to carry, which db/459\'s rule never did.'
+        : `The fuller property row could NOT be put to it at all${probe && probe.priorBlockedBy
+            ? ` (${probe.priorBlockedBy} refused that row first)` : ''}, so whether it refuses a `
+          + 'full property row is UNKNOWN — and a rule that stores a narrower one is not '
+          + 'db/459\'s either way.';
       return { ok: false, checked: true, present: false, offenders, neuteredBy,
         probeTested: true, probeBlockedBy: null,
         why: `the Google-coordinate rule (${CONSTRAINT}) EXISTS but does not refuse EVERY `
-          + 'Google-sourced coordinate — the database stored one on a bare row carrying nothing '
-          + `but a latitude and a longitude. ${fuller} An import or a hand-run statement writing `
-          + 'a sparse row stores a Google coordinate permanently. It has been altered since '
+          + 'Google-sourced coordinate — the database stored one on '
+          + `${acceptedShape.describe}. ${fuller} An import or a hand-run statement writing `
+          + 'such a row stores a Google coordinate permanently. It has been altered since '
           + `db/459 installed it.${rows} Restore the reviewed rule and check who changed it.` };
     }
     if (neuteredBy === 'stored-row') {
@@ -614,19 +735,30 @@ async function checkGeoLicensing(dbc, opts) {
      the shortcut somebody reaches for when db/459 will not apply over the rows
      already there, which is the scenario this whole module exists for. */
   if (namedAny) {
+    /* `pg_get_constraintdef` APPENDS ' NOT VALID' to the predicate, so testing the
+       raw text against EXACT_DEF (which is anchored) answers false for db/459's own
+       rule as well as for a rewritten one — and the whole point of this line is to
+       tell those two apart. Strip the suffix, then compare.
+       COMPUTED BEFORE `rows`, because `rows` needs it: see below. */
+    const canonicalText = EXACT_DEF.test(defText.replace(/\s+NOT VALID$/, ''));
     const rows = offenders == null
       ? ' The rows it was never checked against could not be counted.'
       : offenders
         ? ` ${offenders} propert${offenders === 1 ? 'y' : 'ies'} already `
           + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate, and those are exactly `
           + 'the rows it has never been checked against.'
-        : ' Nothing is currently in violation, so it can be validated as it stands.';
+        /* "IT CAN BE VALIDATED AS IT STANDS" IS ONLY TRUE OF db/459's OWN PREDICATE.
+           Said about a REWRITTEN rule it means "make the rewrite permanent" — the
+           opposite of the instruction — and it was said unconditionally, one sentence
+           before the message went on to say "do not simply validate it". Worse, with
+           the write probe BLOCKED there is no counterweight at all: the branch below
+           that hedges this is gated on the probe having refused something, so a
+           rewrite of unknown behaviour was recommended for validation with nothing
+           anywhere contradicting it. Measured on `… OR apn IS NOT NULL` NOT VALID. */
+        : canonicalText
+          ? ' Nothing is currently in violation, so it can be validated as it stands.'
+          : ' Nothing is currently in violation.';
     const refusedNew = !!(probe && probe.tested && probe.refused);
-    /* `pg_get_constraintdef` APPENDS ' NOT VALID' to the predicate, so testing the
-       raw text against EXACT_DEF (which is anchored) answers false for db/459's own
-       rule as well as for a rewritten one — and the whole point of this line is to
-       tell those two apart. Strip the suffix, then compare. */
-    const canonicalText = EXACT_DEF.test(defText.replace(/\s+NOT VALID$/, ''));
     return { ok: false, checked: true, present: false, offenders, neuteredBy: null,
       probeTested: probe ? probe.tested : null,
       probeBlockedBy: probe && probe.tested === false ? probe.by : null,
@@ -657,23 +789,63 @@ async function checkGeoLicensing(dbc, opts) {
      `properties_no_google_geo_ck_v2` carrying db/459's own predicate, where this
      branch said "nothing at the database level stops a Google coordinate being
      stored" about a warehouse that was in fact refusing every Google write. */
-  const elsewhere = probe && probe.by && probe.by !== CONSTRAINT && probe.controlAccepted === true
-    ? ` Something else DID refuse our test row (${probe.by}), and it accepted the same row under a `
-      + 'non-Google source — so that constraint IS keyed on the source and the warehouse may well '
-      + 'be protected by it. It is still not the reviewed rule, under the reviewed name, so nobody '
-      + 'reading db/459 would know it is there.'
+  /* THE LOUD SENTENCE IS EARNED BY A DEMONSTRATED ACCEPTANCE, NEVER INFERRED FROM AN
+     ABSENT NAME. That is the module's founding rule — a negative oracle only — and
+     this branch was the one place it did not hold: with no constraint of our name it
+     announced that nothing stops a Google coordinate, on the strength of the name
+     being missing. Three states, and only the first may say it:
+
+       the database ACCEPTED a Google row  → say it, we watched it happen
+       something REFUSED the row           → we know a rule is enforcing something;
+                                             whether it covers every spelling is the
+                                             question the control row answers
+       we never asked / could not ask      → UNKNOWN, and say so
+
+     The middle state is where the renamed rule lives (`…_ck_v2` carrying db/459's own
+     predicate), and where a row-keyed blocker beside it lives too. `controlAccepted`
+     separates them, and it is now the only thing that does — the previous version
+     leaned on `probe.by`, the FIRST blocker's name, which on a table carrying two
+     constraints is whichever one Postgres happened to report. */
+  const acceptedGoogleRow = !!(probe && probe.tested === true && probe.refused === false);
+  const refusedByOther = !!(probe && probe.by && probe.by !== CONSTRAINT);
+  const blockerNames = probe && probe.blockers && probe.blockers.length
+    ? probe.blockers.join(', ') : (probe && probe.by) || null;
+
+  let elsewhere = '';
+  if (!acceptedGoogleRow && refusedByOther) {
+    elsewhere = probe.controlAccepted === true
+      ? ` Something else DID refuse our test row (${blockerNames}), under every Google spelling we `
+        + `tried (${PROBE_SOURCES.join(', ')}), and accepted the same row under a source the app `
+        + 'itself writes — so that constraint is keyed on the SOURCE and may well be the reviewed '
+        + 'rule re-created under another name. That is not proof it refuses every spelling there '
+        + 'is, and it is not the reviewed rule under the reviewed name, so nobody reading db/459 '
+        + 'would know it is there.'
+      : probe.controlAccepted === false
+        ? ` Our test row could NOT be put to the database at all — ${blockerNames} refused it under `
+          + 'every source we tried, including ones no licensing rule cares about — so whether '
+          + 'anything stops a Google coordinate is UNKNOWN. Clear that constraint out of the way, '
+          + 'or check by hand.'
+        : ` Something refused our test row (${blockerNames}) and we could not establish whether it `
+          + 'was refusing the Google SOURCE or the row itself, so whether anything stops a Google '
+          + 'coordinate is UNKNOWN.';
+  } else if (!acceptedGoogleRow) {
+    // Never asked (no write probe) or the probe could not run at all.
+    elsewhere = ' The write probe did not run, so whether anything else is enforcing the same rule '
+      + 'is UNKNOWN.';
+  }
+  const stops = acceptedGoogleRow
+    ? ' The database accepted a Google-sourced coordinate when asked, so until it is on, nothing at '
+      + 'the database level stops one being stored permanently in the property warehouse.'
     : '';
   const why = offenders == null
     ? `${head}, and the rows in violation could NOT be counted — so the reason it cannot apply is `
-      + `still unknown.${elsewhere} Check the [migrate] log for its FAILED line.`
+      + `still unknown.${elsewhere}${stops} Check the [migrate] log for its FAILED line.`
     : offenders
       ? `${head}, and ${offenders} propert${offenders === 1 ? 'y' : 'ies'} already `
         + `carr${offenders === 1 ? 'ies' : 'y'} a Google-sourced coordinate — that is why db/459 cannot `
-        + `apply.${elsewhere} Re-source or clear those rows and redeploy.`
+        + `apply.${elsewhere}${stops} Re-source or clear those rows and redeploy.`
       : `${head} — db/459 did not apply, and nothing is in violation, so it is not the data. Check the `
-        + `[migrate] log for its FAILED line.${elsewhere}`
-        + (elsewhere ? '' : ' Until it is on, nothing at the database level stops a '
-          + 'Google coordinate being stored permanently in the property warehouse.');
+        + `[migrate] log for its FAILED line.${elsewhere}${stops}`;
   return { ok: false, checked: true, present: false, offenders,
     probeTested: probe ? probe.tested : null,
     probeBlockedBy: probe && probe.tested === false ? probe.by : null, why };

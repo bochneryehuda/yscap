@@ -283,7 +283,16 @@ app.get('/api/health', async (req, res) => {
     researchGeoLicensing: (() => {
       try {
         const h = require('./lib/research/licensing-guard').health();
-        return { ok: !!h.ok, checked: !!h.checked, confirmedByWrite: h.probeTested === true,
+        // `confirmedByWrite` answers ONE question — "did the database itself confirm
+        // the rule is on?" — so it is only ever true alongside `ok`. The probe ran on
+        // the NOT-INSTALLED path too (that is how it proves nothing stops a Google
+        // coordinate), and reporting `confirmedByWrite:true` there said a write had
+        // confirmed a warehouse that has no licensing constraint at all. `ok:false`
+        // already dominates every screen, so nobody was shown green — but the boolean
+        // itself was untrue, and a boolean nobody can read literally is worse than no
+        // boolean.
+        return { ok: !!h.ok, checked: !!h.checked,
+          confirmedByWrite: h.ok === true && h.probeTested === true,
           at: h.at || null };
       } catch (_e) { return { ok: false, checked: false, confirmedByWrite: false, at: null }; }
     })(),
