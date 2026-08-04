@@ -10391,8 +10391,10 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
-    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    // Default = raise an issue INTERNALLY (no borrower email). Only an explicit
+    // postCondition:true posts a borrower-facing condition (owner-directed 2026-08-04).
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_track_record_condition' : 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
@@ -10435,8 +10437,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
     if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_llc_condition' : 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
