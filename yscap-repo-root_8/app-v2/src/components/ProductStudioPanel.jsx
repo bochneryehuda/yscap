@@ -545,6 +545,43 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const history = (data && data.history) || [];
   const superseded = history.filter((h) => !h.is_current);
 
+  // Products & Pricing is part of the SAME system as Application Details — not a
+  // separate integration — so an edit to the file's economics/identity must show
+  // up here WITHOUT a page reload (owner-reported 2026-08: "I edited application
+  // details, then opened Products and Pricing and it was not yet updated — I had
+  // to refresh"). The prefill below reads the file's CURRENT numbers straight off
+  // the `app` prop, and the pricing snapshot (`data`) is the server's view of the
+  // same file, so BOTH must follow a details edit. A stable signature of exactly
+  // the fields those two reads depend on drives the refresh — so it happens on a
+  // real change, not on every unrelated re-render (which could reset a scenario
+  // the user is mid-edit).
+  const appPrefillSig = app ? JSON.stringify([
+    app.purchase_price, app.as_is_value, app.arv, app.rehab_budget, app.rehab_type,
+    app.requested_exp_flips, app.requested_exp_holds, app.requested_exp_ground,
+    app.term, app.requested_ir_months, app.requested_ir_amount,
+    app.is_assignment, app.underlying_contract_price, app.assignment_fee,
+    app.payoff_amount, app.payoff_lender, app.payoff_loan_number, app.estimated_cash_out,
+    app.loan_type, app.program, app.property_type, app.units, app.fico,
+    app.entity_name, app.co_borrower_id, app.co_borrower_pg_waived, app.liquidity_buffer_waived,
+    app.est_closing_date, app.expected_closing, app.property_address,
+    app.first_name, app.middle_name, app.last_name, app.name_suffix, app.full_name,
+    app.co_first_name, app.co_middle_name, app.co_last_name, app.co_name_suffix,
+  ]) : '';
+  // Re-pull the server pricing snapshot when the file's economics/identity change
+  // (a details edit reopens the P&P condition), so `data.quote`/`data.current`
+  // reflect the CURRENT file too. Skips the first run (the mount effect already
+  // loaded it) and never disturbs an OPEN studio — you can't edit details behind
+  // the full-screen sheet, and a register handles its own refresh.
+  const econSynced = useRef(false);
+  useEffect(() => {
+    if (!econSynced.current) { econSynced.current = true; return; }
+    if (openStudio) return;
+    let alive = true;
+    loadPricing().then((d) => { if (alive) setData(d); }).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appPrefillSig]);
+
   // Prefill: the registered scenario when there is one (so a re-open shows
   // exactly what was registered), otherwise the loan file itself.
   const prefill = useMemo(() => {
@@ -755,8 +792,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       });
     }
     return st;
+    // appPrefillSig makes this recompute when the file's own economics/identity
+    // change (a details edit) — the fix for "P&P didn't update without a reload".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, profile, savedStudio]);
+  }, [data, profile, savedStudio, appPrefillSig]);
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
