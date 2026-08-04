@@ -56,9 +56,21 @@ for (const a of classAttrs) for (const c of a.split(/\s+/)) if (c) present.add(c
 // set from js, so a dynamically-added hook is not reported as a typo.
 const js = fs.readFileSync(path.join(ROOT, 'web/v2/tools/termsheet.js'), 'utf8');
 
+/* IDs count too. The first version of this check demanded that every selector
+   name a CLASS, which was true of the rule as first written and became wrong
+   the moment the rule had to reach elements the page identifies by id (the
+   program-maximum figures, the verdict, the reason list). The property being
+   guarded was never "uses a class" — it is "names something that is actually on
+   the page", so ask that question of ids as well. */
+const idAttrs = new Set([...html.matchAll(/id="([^"]*)"/g)].map((m) => m[1]));
+
 for (const sel of selectors) {
-  const classes = [...sel.matchAll(/\.([A-Za-z_][\w-]*)/g)].map((m) => m[1]);
-  ok(classes.length > 0, `selector "${sel}" names at least one class`);
+  // Strip pseudo-elements before reading targets: `#rStatus::after` styles
+  // `#rStatus`, and `::after` is not a thing to look for in the markup.
+  const bare = sel.replace(/::?[a-z-]+(\([^)]*\))?/g, '');
+  const classes = [...bare.matchAll(/\.([A-Za-z_][\w-]*)/g)].map((m) => m[1]);
+  const ids = [...bare.matchAll(/#([A-Za-z_][\w-]*)/g)].map((m) => m[1]);
+  ok(classes.length + ids.length > 0, `selector "${sel}" names a class or an id`);
   for (const c of classes) {
     const inMarkup = present.has(c);
     const inScript = new RegExp(`["'\`][^"'\`]*\\b${c}\\b`).test(js);
@@ -67,7 +79,24 @@ for (const sel of selectors) {
       `"${sel}" -> .${c} exists on the page${inMarkup ? '' : inScript ? ' (added by termsheet.js)' : ''}`,
     );
   }
+  for (const i of ids) {
+    ok(idAttrs.has(i), `"${sel}" -> #${i} exists on the page`);
+  }
 }
+
+/* THE VERDICT IS COVERED, NOT ONLY THE NUMBERS.
+   The pending quote renders through termsheet.js's ordinary path, which maps
+   any non-ELIGIBLE/MANUAL status to the badge "Not eligible" and prints its
+   "we couldn't size a loan from these inputs" reason — so a rule that dims the
+   figures and leaves the verdict alone paints a full-colour rejection on a
+   perfectly good deal, once per keystroke. That is worse than showing a stale
+   number, which is the thing this whole mechanism exists to avoid. */
+const all = selectors.join(' | ');
+ok(/\.pcard-badge\b/.test(all), 'the card badge is covered (it says "Not eligible" while pending)');
+ok(/#rStatus\b/.test(all), 'the verdict line is covered');
+ok(/#rReasons\b/.test(all), 'the reason list is covered');
+ok(/#rStatus::after|\.pcard-badge::after/.test(all),
+  'and the verdict is REPLACED with neutral wording, not merely dimmed (a grey "Not eligible" still says not eligible)');
 
 // ---------------------------------------------------------------------------
 // 3. It covers BOTH places a figure is printed

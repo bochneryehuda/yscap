@@ -312,6 +312,53 @@ const DEAL = {
     eq(inel.body.standard.evaluate.status, 'INELIGIBLE', 'and it says so plainly');
     ok(Array.isArray(inel.body.standard.evaluate.reasons) && inel.body.standard.evaluate.reasons.length > 0, 'with a reason');
 
+    /* == H2. A REFUSED DEAL CARRIES NO LEVERAGE ROW — AT EITHER LEVEL ==
+       `caps` lives at TWO levels and the first cut of the rule only closed one.
+       standard-program.js returns `caps: null` on an INELIGIBLE deal, so
+       nulling the BLOCK-level copy LOOKED complete — and the B3b unit test
+       above passes a Standard-shaped payload, so it could not see the other
+       half. Gold and Silver populate `evaluate.caps` regardless of the verdict,
+       and `caps` is on the evaluate allowlist, so a refusal still shipped the
+       row (measured 2026-08-03: a FICO-560 refusal shipped Silver's
+       {maxLoan, minFico, maxAcqLTV, maxARLTV, maxLTC}).
+
+       So this sweeps EVERY program on EVERY refusal shape rather than asserting
+       one hand-picked block: a program that starts populating a third copy of
+       the row, or a fourth program, is caught without anyone remembering to
+       come back here. It also asserts each shape really did refuse SOMETHING —
+       otherwise a change that made these deals eligible would turn the whole
+       section into a green no-op. */
+    console.log('\n== H2. a refused deal carries no leverage row at EITHER level ==');
+    {
+      const LEVERAGE_KEYS = ['caps', 'pricedCeiling'];
+      for (const [label, deal] of [
+        ['an unsupported state', { ...DEAL, state: 'IN' }],
+        ['a FICO below every minimum', { ...DEAL, fico: 560 }],
+        ['no profit at exit', { ...DEAL, arv: 405000, rehabBudget: 150000 }],
+      ]) {
+        const res = await call(server, deal);
+        ok(res.status === 200, `${label}: answers 200 (${res.status})`);
+        let refusals = 0;
+        for (const p of ['standard', 'gold', 'silver']) {
+          const block = (res.body || {})[p];
+          if (!block || !block.evaluate || block.evaluate.status !== 'INELIGIBLE') continue;
+          refusals++;
+          for (const k of LEVERAGE_KEYS) {
+            eq(block.evaluate[k] == null, true, `${label}: ${p}.evaluate.${k} is withheld on a refusal`);
+          }
+          eq(block.caps == null, true, `${label}: ${p}.caps is withheld on a refusal`);
+        }
+        ok(refusals > 0, `${label}: at least one program actually refused it (${refusals})`);
+      }
+      // And the rule lives in publicEvaluate itself, not only in the caller.
+      const ref = _int.publicEvaluate({ status: 'INELIGIBLE', reasons: [], caps: { maxLTC: 0.9 }, pricedCeiling: 1200000 });
+      eq(ref.caps, null, 'publicEvaluate nulls a refused deal\'s caps');
+      eq(ref.pricedCeiling, null, 'publicEvaluate nulls a refused deal\'s pricedCeiling');
+      const okEval = _int.publicEvaluate({ status: 'ELIGIBLE', caps: { maxLTC: 0.9 }, pricedCeiling: 1200000 });
+      ok(okEval.caps && okEval.caps.maxLTC === 0.9, 'a priced deal keeps the caps the sheet prints');
+      eq(okEval.pricedCeiling, 1200000, 'and keeps its priced ceiling');
+    }
+
     console.log('\n== I. one caller cannot leave a markup behind for the next ==');
     const a1 = await call(server, DEAL);
     await call(server, { ...DEAL, markupStdPct: 99 });

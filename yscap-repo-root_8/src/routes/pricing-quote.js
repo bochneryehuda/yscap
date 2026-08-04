@@ -203,6 +203,19 @@ function publicEvaluate(e) {
   if (!e || typeof e !== 'object') return e;
   const out = {};
   for (const k of Object.keys(e)) if (PUBLIC_EVALUATE_FIELDS.has(k)) out[k] = e[k];
+  /* NEVER A LEVERAGE ROW FOR A DEAL WE REFUSED TO PRICE — and `caps` lives at
+     TWO levels, which the first cut of this rule missed.
+     standard-program.js returns `caps: null` on an INELIGIBLE deal ("never
+     price an ineligible deal"), so nulling the BLOCK-level copy looked like it
+     closed the hole. It did for Standard only: Gold and Silver populate
+     `evaluate.caps` regardless, and `caps` is on the allowlist above. Measured
+     (audit 2026-08-03, one anonymous request each): a FICO-560 refusal still
+     shipped silver.evaluate.caps {maxLoan:950000, minFico:680, maxAcqLTV:0.75,
+     maxARLTV:0.65, maxLTC:0.85}, and an exit-shortfall refusal shipped Gold's
+     row (maxLTC 0.93) AND Silver's (0.925).
+     `pricedCeiling` goes with it: on a refused deal it describes a ceiling for
+     a loan that does not exist. */
+  if (out.status === 'INELIGIBLE') { out.caps = null; out.pricedCeiling = null; }
   return out;
 }
 

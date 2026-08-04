@@ -835,6 +835,13 @@
 
         <div class="ts-missing" id="rMissing" style="display:none"></div>
 
+        <!-- Shown ONLY when the seam stamps data-ts-note="unavailable" — i.e. the
+             server-backed source could not answer (offline, an error, or this
+             visitor's own request cap). It is plain HTML with no script: the
+             attribute is the whole mechanism, so a page running the local
+             engines never has any way to display it. -->
+        <div class="ts-note-unavail">Pricing is temporarily unavailable, so the figures below may be incomplete. Nothing here is a decision on your deal — try again in a moment.</div>
+
         <div class="panel elig-card">
             <div class="elig-head">
                 <div class="ts-sub first" style="margin:0;padding:0;border:0">Eligibility</div>
@@ -994,7 +1001,7 @@
      the page uses, exactly as before; with ?engine=server (or YS_ENGINE_SOURCE)
      it replaces those globals with a server-backed view. termsheet.js is not
      touched either way. -->
-<script src="engine-source.js?v=srcseam1"></script>
+<script src="engine-source.js?v=srcseam2-current"></script>
 <style>
 /* The owner's choice (2026-08-03): while the server is still pricing a deal,
    the figures DIM rather than keep showing the previous deal's numbers. A stale
@@ -1013,7 +1020,72 @@
    HTML, because a selector typo is silent by nature. */
 :root[data-ts-pending="1"] .ts-line .v,
 :root[data-ts-pending="1"] .pcard-loan,
-:root[data-ts-pending="1"] .pcard-statnum { opacity: .45; transition: opacity .12s ease; }
+:root[data-ts-pending="1"] .pcard-statnum,
+/* The program-maximum box is a figure too. It rendered an em-dash at FULL
+   opacity while pending, which reads as a settled "there is no limit for you"
+   rather than "not worked out yet" (audit 2026-08-03). */
+:root[data-ts-pending="1"] #rMaxLtc,
+:root[data-ts-pending="1"] #rMaxLtv,
+:root[data-ts-pending="1"] #rMaxArv,
+:root[data-ts-pending="1"] #rMaxLoan { opacity: .45; transition: opacity .12s ease; }
+
+/* WHILE WE ARE STILL PRICING, THE PAGE MUST NOT SAY "NOT ELIGIBLE".
+   ===========================================================================
+   THE DEFECT, measured by two independent audits on 2026-08-03. The seam's
+   pending quote is shaped like a real one so termsheet.js needs no special
+   case — but termsheet.js maps any status that is not ELIGIBLE/MANUAL to the
+   badge "Not eligible" (badgeText), and reserves its em-dash for INELIGIBLE
+   specifically, so PENDING falls into the "$0" branch. The dim rule above
+   covered the numbers and NOT the verdict, so every in-flight moment painted
+   a full-colour red "Not eligible", "$0" on all three cards, and the sentence
+   "We couldn't size a loan from these inputs — see why below". The page
+   recomputes on every keystroke with no debounce, so on a real connection
+   that is roughly a second of a false rejection per field typed.
+
+   Fixed HERE rather than in termsheet.js because termsheet.js is FROZEN and
+   the safest change to a frozen pricing path is no change at all. The verdict
+   is neutralised, not merely dimmed: a grey "Not eligible" still says not
+   eligible. */
+:root[data-ts-pending="1"] .pcard-badge,
+:root[data-ts-pending="1"] #rStatus {
+  color: transparent !important;
+  background: #EEF1F2 !important;
+  border-color: #DCE2E4 !important;
+  position: relative;
+}
+:root[data-ts-pending="1"] .pcard-badge::after,
+:root[data-ts-pending="1"] #rStatus::after {
+  content: "Pricing…";
+  color: #4B585C;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  letter-spacing: normal;
+}
+/* The refusal paragraph is not dimmed — it is REMOVED. There is nothing to
+   explain yet, and a faint "we couldn't size a loan" is still that sentence. */
+:root[data-ts-pending="1"] #rReasons { visibility: hidden; }
+
+/* PRICING IS UNAVAILABLE — say so.
+   `finish(null)` (a failed, timed-out or rate-limited request) used to leave
+   the page dimmed forever with no wording anywhere, which reads as a settled
+   refusal. The seam now clears the dim and stamps this instead. */
+:root[data-ts-note="unavailable"] .ts-note-unavail { display: block; }
+.ts-note-unavail {
+  display: none;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #E4D9BE;
+  border-left: 3px solid #AE8746;
+  border-radius: 6px;
+  background: #FBF7EC;
+  color: #141B22;
+  font-size: 14px;
+  line-height: 1.45;
+}
 </style>
 
 <script src="address-autocomplete.js?v=admin9"></script>

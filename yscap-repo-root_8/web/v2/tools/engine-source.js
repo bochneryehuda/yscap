@@ -111,7 +111,22 @@
     var finish = function (answer) {
       if (done) return; done = true;
       delete inflight[key];
-      if (answer) { cache[key] = answer; announce(key); }
+      if (answer) { cache[key] = answer; announce(key); return; }
+      /* THE ANSWER IS NOT COMING. Clear the pending mark anyway.
+         Before this, `finish(null)` deleted the in-flight entry and returned —
+         so markPending(false) was never reached on an aborted fetch, an HTTP
+         500, a 429 from this door's own rate limit, `available:false`, or even
+         from the 12-second timeout below. Measured (audit 2026-08-03, all four
+         cases identical): the page stayed dimmed past 15 seconds, kept
+         asserting "Not eligible / $0 / Couldn't size a loan from these
+         inputs", showed no error wording anywhere, and re-fired the same
+         request about 47 times a minute forever with no backoff — which under
+         a 429 keeps the visitor's own bucket pinned.
+         Leaving it dimmed forever is the worst of the options: it reads as a
+         settled refusal. Clear the mark and say plainly that pricing is
+         unavailable, so the page is honest about not knowing. */
+      markPending(false);
+      note('unavailable');
     };
     try {
       var timer = root.setTimeout(function () { finish(null); }, 12000);
@@ -126,7 +141,45 @@
     } catch (e) { finish(null); }
   }
 
-  function answerFor(deal) { return cache[keyOf(deal)] || null; }
+  /* THE DEAL ON SCREEN, not the fetch that happened to land last.
+     ==========================================================================
+     `lastAnswer` used to be stamped ONLY by onSettled — i.e. by whichever
+     request resolved most recently — and three helpers resolve through it:
+     YSTitle.estimate, caps, and the two pure helpers' fallbacks. None of those
+     is called with anything that identifies the deal (the title global takes
+     state/loan/txnType; caps takes four values read off the evaluation), so
+     "the last answer" was standing in for "the deal being rendered". They are
+     not the same thing, and the gap is not a flicker — it is sticky, because
+     nothing fires another fetch to correct it.
+
+     Measured (audit 2026-08-03, three independent passes over ~9.1M fields):
+       * termsheet.js goldLadder() evaluates the deal once PER LEVERAGE RUNG
+         with a different targetLTC. Each rung is its own cache key and its own
+         POST, so the last rung to land leaves lastAnswer on a REDUCED-leverage
+         deal. YSTitle.estimate then misses, returns {total:0}, and
+         termsheet.js's `titleCost = title.total || 0` drops the whole title
+         estimate out of cash-to-close and liquidity — rendered as a SETTLED
+         number, and carried into the exported XLSX. Gold + slider: 7 of 7
+         rungs wrong, deterministically. Cash to close $130,190 -> $126,845.
+       * A plain retype (backspace, type the same digit back) is a CACHE HIT,
+         which announced nothing, so lastAnswer stayed on the intermediate
+         deal and the same title dropped out.
+       * caps() answered from that stale deal too, printing "Max LTC 85%" on a
+         card whose true program maximum is 92.5%.
+
+     The fix is to make the seam track the deal it is CURRENTLY ANSWERING
+     ABOUT. `evaluate(deal)` and `priceLadder(deal)` DO receive the deal, so
+     they stamp it; everything that cannot identify a deal resolves through
+     `current()` instead. `lastAnswer` is kept as the fallback for the window
+     before the first evaluate, and is still refreshed on settle. */
+  var currentKey = null;
+  function answerFor(deal) {
+    var a = cache[keyOf(deal)] || null;
+    if (a) lastAnswer = a;          // a cache HIT is an answer too — announce() never fires for one
+    return a;
+  }
+  function noteCurrent(deal) { currentKey = keyOf(deal); }
+  function current() { return (currentKey && cache[currentKey]) || lastAnswer || null; }
 
   /* A PENDING quote, shaped exactly like a real one so the page's own rendering
      path handles it without a special case: no sizing, no numbers, an empty
@@ -147,17 +200,36 @@
     } catch (e) { /* cosmetic only */ }
   }
 
+  /* SAY WHEN PRICING IS UNAVAILABLE. A page that silently shows nothing is
+     indistinguishable from a page that has decided against you — which is
+     exactly what a visitor saw when this door was slow, erroring or rate
+     limited. `data-ts-note` is a plain hook the host page styles; it is
+     cleared the moment a real answer lands. */
+  function note(kind) {
+    try {
+      var el = root.document && root.document.documentElement;
+      if (!el) return;
+      if (kind) el.setAttribute('data-ts-note', kind);
+      else el.removeAttribute('data-ts-note');
+    } catch (e) { /* cosmetic only */ }
+  }
+
   /* One program's view. The signatures are the frozen engines' signatures —
      this is a drop-in, not a new interface. */
   function viewFor(name) {
     return {
       evaluate: function (deal) {
+        noteCurrent(deal);          // whatever else runs, THIS is the deal on screen
         var a = answerFor(deal);
         if (!a) { want(deal); markPending(true); return pendingQuote(); }
         markPending(false);
         return (a[name] && a[name].evaluate) || pendingQuote();
       },
       priceLadder: function (deal) {
+        // NOT noteCurrent: the ladder is asked about the SAME deal the card is
+        // showing, and stamping here would be harmless — but goldLadder() walks
+        // the rungs through evaluate(), which is where the deal genuinely
+        // changes, so leave the stamp to the one caller that means it.
         var a = answerFor(deal);
         if (!a) { want(deal); return pendingLadder(); }
         return (a[name] && a[name].ladder) || pendingLadder();
@@ -165,9 +237,11 @@
       caps: function () {
         // The page asks for caps using values it read off the evaluation it just
         // got, so the answer is already in that same payload — there is nothing
-        // to look up by argument.
-        var last = lastAnswer;
-        return (last && last[name] && last[name].caps) || null;
+        // to look up by argument. Resolve it from the deal being RENDERED, not
+        // from whichever fetch landed last (audit 2026-08-03: that printed a
+        // 85% program maximum on a card whose real ceiling is 92.5%).
+        var a = current();
+        return (a && a[name] && a[name].caps) || null;
       },
       normStrategy: function (s) { return strategyCode(s); },
       projectCount: function (code, exp) { return projectCount(code, exp); },
@@ -194,8 +268,9 @@
     // for anything else say "not known yet" rather than hand back the code of a
     // DIFFERENT strategy, which is what the previous version did (both of its
     // branches returned the same expression, so the test above was dead code).
-    if (lastAnswer && lastAnswer.deal && String(lastAnswer.deal.strategy) === String(s)) {
-      return (lastAnswer.derived && lastAnswer.derived.strategyCode) || null;
+    var a = current();
+    if (a && a.deal && String(a.deal.strategy) === String(s)) {
+      return (a.derived && a.derived.strategyCode) || null;
     }
     return null;
   }
@@ -204,8 +279,9 @@
     // Same rule: only answer about the deal that was priced. `null` rather than
     // 0 — "we do not know" and "the borrower has done none" are different
     // claims, and this number is printed on the term sheet.
-    var d = lastAnswer && lastAnswer.deal;
-    var derived = lastAnswer && lastAnswer.derived;
+    var a = current();
+    var d = a && a.deal;
+    var derived = a && a.derived;
     if (!d || !derived) return null;
     var sameCode = code == null || String(derived.strategyCode) === String(code);
     var sameExp = !exp || (
@@ -230,7 +306,11 @@
        numbers. Match on everything the estimate depends on, and NEVER
        substitute one loan's title for another's. */
     estimate: function (state, loan, loanType) {
-      var last = lastAnswer;
+      // The deal being RENDERED — not the last fetch to resolve. Reading
+      // lastAnswer here is what silently dropped the whole title estimate out
+      // of cash-to-close and liquidity on every Gold leverage rung; see the
+      // note above answerFor().
+      var last = current();
       if (!last || !last.title || !last.titleFor) return { total: 0, pending: true };
       var names = ['standard', 'gold', 'silver'];
       var want = Math.floor(Number(loan) || 0);
@@ -253,6 +333,7 @@
      nudge whichever exists rather than reaching into its internals. */
   onSettled(function () {
     markPending(false);
+    note(null);                 // a real answer landed — drop any 'unavailable' mark
     try {
       if (root.YS && typeof root.YS.recompute === 'function') { root.YS.recompute(); return; }
       var el = root.document && root.document.getElementById('price');
