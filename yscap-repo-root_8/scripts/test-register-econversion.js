@@ -3,9 +3,19 @@
  * optimistic-concurrency fingerprint of the file's pricing basis (econVersion),
  * every refusal is audited, and an LO is never stuck on a file whose current
  * registration carries an admin manual-pricing basis (the fixed studio simply
- * doesn't echo the admin knobs, and the server keeps refusing them loudly).
+ * doesn't echo the admin knobs; an LO who sends them anyway now REGISTERS and
+ * the change is routed to an admin for approval — the 2026-07-27 rule that
+ * replaced the old loud refusal).
  * Run: node scripts/test-register-econversion.js
  */
+/* NEEDS A REAL DATABASE. CI runs `npm test` twice — once with Postgres and
+   once WITHOUT — so say so and exit 0 in the second, BEFORE anything opens a
+   pool. The default below is CI's own test-db URL, which is why this cannot be
+   a truthiness check further down: by then DATABASE_URL is always set. */
+if (!process.env.DATABASE_URL) {
+  console.log('SKIP test-register-econversion (no DATABASE_URL)');
+  process.exit(0);
+}
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
 process.env.JWT_SECRET = 'test-secret-econv';
 process.env.EMAIL_PROVIDER = 'none';
@@ -101,11 +111,41 @@ async function main() {
       { ...vanilla, overrides: { ...vanilla.overrides, purchasePrice: 320000, asIsValue: 320000 }, econVersion: r.body.econVersion }, loTok);
     ok(r.status === 201, `LO re-register AFTER an admin manual registration succeeds (got ${r.status}) — the #148 dead-end is gone`);
 
-    // (8) the server guard itself is intact: an LO who DOES send manual keys is
-    // still refused loudly.
+    /* (8) AN LO SENDING THE ADMIN KNOBS REGISTERS — AND IT GOES FOR APPROVAL.
+       ----------------------------------------------------------------------
+       This block used to assert a 403 and an `admin_override_stripped` audit
+       row. Both were correct until 2026-07-27, when the owner replaced that
+       rule outright: "every single time somebody is changing the defaults and
+       he's overriding something in the admin section this should be sent to
+       the admin for approval, no matter if it's reducing the rate, reducing
+       the fee, or manual programs." So nothing is stripped and no role is
+       refused — `sanitizeStaffOverrides` is a pass-through for every staff
+       role and the 403 branches are gone.
+       The control did not disappear, it MOVED: the file registers, an
+       escalation is opened for an admin, and the borrower's terms email is
+       withheld exactly as a manual product's is. That is what this now pins,
+       so the suite tests the rule the business actually runs on. */
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`,
       { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, loTok);
-    ok(r.status === 403, `LO sending engaged manual keys is still 403 (got ${r.status})`);
+    ok(r.status === 201, `LO sending the admin knobs now REGISTERS (got ${r.status}) — the refusal became an approval`);
+
+    // The approval is the control. Without this the register above would just
+    // be an unguarded pricing change by someone with no authority to make it.
+    const esc = await db.query(
+      `SELECT summary FROM manual_program_escalations WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [APP]);
+    ok(esc.rows.length > 0, 'an approval escalation was opened for an admin');
+    const kind = esc.rows[0] && esc.rows[0].summary
+      && (typeof esc.rows[0].summary === 'string' ? JSON.parse(esc.rows[0].summary) : esc.rows[0].summary).kind;
+    ok(kind === 'pricing_override' || kind === 'manual_program',
+      `the escalation says WHY it needs approval (kind=${JSON.stringify(kind)})`);
+
+    // And the term sheet is held until a human approves — the stored flag is
+    // what the issuance gate reads (db/343); re-deriving it from program/status
+    // would read "Standard / ELIGIBLE" and let the sheet go out.
+    const reg = await db.query(
+      `SELECT needs_approval FROM product_registrations WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [APP]);
+    ok(reg.rows.length > 0 && reg.rows[0].needs_approval === true,
+      'the registration is flagged as needing approval, so the term sheet is withheld');
 
     // (9) every refusal left an audit trail (#149: diagnosable from logs alone).
     const audits = await db.query(
@@ -113,7 +153,6 @@ async function main() {
         WHERE action='register_product_refused' AND entity_id=$1`, [APP]);
     const reasons = new Set(audits.rows.map((x) => x.reason));
     ok(reasons.has('econ_version_conflict'), 'refusal AUDITED: econ_version_conflict');
-    ok(reasons.has('admin_override_stripped'), 'refusal AUDITED: admin_override_stripped');
 
     // (10) borrower surface has the same guard.
     r = await api('GET', `/api/borrower/applications/${APP}/pricing`, null, bTok);

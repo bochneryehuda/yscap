@@ -1,12 +1,22 @@
 /**
  * #130 (Pinchus Wieder) — re-register saves the new terms, and a vanilla
  * non-admin register is NEVER wrongly refused.
- *   - a non-admin who MEANINGFULLY engages a manual-pricing knob → 403 (loud,
- *     not silently registered with different terms)
+ *   - a non-admin who MEANINGFULLY engages a manual-pricing knob → registers,
+ *     and an approval escalation is opened (loud, not silently registered with
+ *     different terms). It was a 403 until the owner replaced the refusal with
+ *     an approval on 2026-07-27 — see the comment at that assertion.
  *   - a non-admin's NORMAL register (manualPricing:false, experience present) → OK
  *   - an admin's manual-pricing register → OK
  * Run: node scripts/test-reregister-save.js
  */
+/* NEEDS A REAL DATABASE. CI runs `npm test` twice — once with Postgres and
+   once WITHOUT — so say so and exit 0 in the second, BEFORE anything opens a
+   pool. The default below is CI's own test-db URL, which is why this cannot be
+   a truthiness check further down: by then DATABASE_URL is always set. */
+if (!process.env.DATABASE_URL) {
+  console.log('SKIP test-reregister-save (no DATABASE_URL)');
+  process.exit(0);
+}
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
 process.env.JWT_SECRET = 'test-secret-rereg';
 process.env.EMAIL_PROVIDER = 'none';
@@ -67,9 +77,22 @@ async function main() {
     const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : reg.inputs;
     ok(Number(inp.rehabBudget) === 40000 && Number(inp.term) === 18, `re-register PERSISTED the new terms (budget=${inp && inp.rehabBudget}, term=${inp && inp.term})`);
 
-    // A non-admin who MEANINGFULLY engages manual pricing → refused loudly.
+    /* A non-admin who MEANINGFULLY engages manual pricing REGISTERS — and an
+       admin is asked to approve it.
+       ----------------------------------------------------------------------
+       This asserted a 403 until 2026-07-27, when the owner opened the pricing
+       admin zone to every staff role and replaced the refusal with an approval:
+       "every single time somebody is changing the defaults ... this should be
+       sent to the admin for approval". The 403 branch no longer exists.
+       The point this assertion was really making — "not SILENTLY registered" —
+       is still the point, so it is what is checked: the register goes through,
+       and it leaves a record for an admin to act on. Asserting only the 201
+       would turn a test about authority into a test that the button works. */
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`, { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, loTok);
-    ok(r.status === 403, `non-admin with manual pricing ENGAGED is refused (not silently registered) — got ${r.status}`);
+    ok(r.status === 201, `non-admin with manual pricing ENGAGED now registers — got ${r.status}`);
+    const escRows = await db.query(
+      `SELECT 1 FROM manual_program_escalations WHERE application_id=$1`, [APP]);
+    ok(escRows.rows.length > 0, 'and it was NOT silent — an approval escalation is waiting for an admin');
 
     // An admin CAN use manual pricing.
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`, { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, admTok);
