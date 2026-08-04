@@ -397,7 +397,11 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
       `SELECT ci.id, COALESCE(NULLIF(ci.borrower_label,''),'An item your loan team needs') AS label,
               ci.status, ci.item_kind, ci.phase, ci.borrower_hint AS hint, ci.is_required, ci.due_date,
               ci.field_key, ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted,
-              (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
+              -- template_code is deliberately NOT returned: a template CODE can
+              -- encode a note-buyer name (e.g. cond_emd_corrfirst,
+              -- cond_ssn_verify_corrfirst), and a capital-partner name must never
+              -- reach an external broker surface (TPO OUT rule). The broker UI
+              -- keys off status/item_kind, not the code.
               -- issue_reason is a borrower-SAFE reason; fall back to the latest
               -- rejected document's reason. ci.notes (internal) is NEVER selected.
               COALESCE(ci.issue_reason,

@@ -147,8 +147,9 @@ function call(server, method, p, token, body) {
     ok(chk.body.checklist.every((c) => !('notes' in c)), 'the internal note is never returned to a broker');
     // seed a STAFF-only condition on the file and confirm the broker never sees it
     const tmpl = (await db.query(`SELECT id FROM checklist_templates WHERE audience='staff' AND is_active=true LIMIT 1`)).rows[0];
+    let staffCondId = null;
     if (tmpl) {
-      await db.query(`INSERT INTO checklist_items (application_id, template_id, label, audience, status, item_kind, scope) VALUES ($1,$2,'INTERNAL SECRET','staff','outstanding','document','application')`, [appA, tmpl.id]);
+      staffCondId = (await db.query(`INSERT INTO checklist_items (application_id, template_id, label, audience, status, item_kind, scope) VALUES ($1,$2,'INTERNAL SECRET','staff','outstanding','document','application') RETURNING id`, [appA, tmpl.id])).rows[0].id;
       const chk2 = await call(server, 'GET', `/api/tpo/applications/${appA}/checklist`, tokA);
       ok(!(chk2.body.checklist || []).some((c) => c.label === 'INTERNAL SECRET'), 'a staff-only condition is NEVER shown to the broker');
     }
@@ -172,6 +173,11 @@ function call(server, method, p, token, body) {
     await db.query(`INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, visibility, review_status) VALUES ($1,$2,'INTERNAL.pdf','application/pdf',10,'local','x/y','staff',$3,'staff_only','pending')`, [appA, jane.id, brokerA]);
     ok(!((await call(server, 'GET', `/api/tpo/applications/${appA}/documents`, tokA)).body.documents || []).some((d) => d.filename === 'INTERNAL.pdf'),
       'a staff_only document is NEVER shown to the broker');
+    // a broker cannot upload against a STAFF-ONLY condition even on their OWN firm's file
+    if (staffCondId) {
+      ok((await call(server, 'POST', '/api/tpo/documents', tokA, { filename: 'y.pdf', dataBase64: b64, applicationId: appA, checklistItemId: staffCondId })).status === 404,
+        'a broker cannot upload against a staff-only condition (404) — only borrower-facing ones');
+    }
     // cross-firm: broker B cannot upload to firm A's file
     ok((await call(server, 'POST', '/api/tpo/documents', tokB, { filename: 'x.pdf', dataBase64: b64, applicationId: appA })).status === 404, 'broker B cannot upload to a firm A file (404)');
     ok((await call(server, 'GET', `/api/tpo/applications/${appA}/documents`, tokB)).status === 404, 'broker B cannot list firm A documents (404)');
