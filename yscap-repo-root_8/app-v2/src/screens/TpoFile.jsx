@@ -1,11 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 
-/* A single TPO file — the loan's basics, the conditions we need, the documents
-   provided, and the borrower-login toggle. A broker uploads documents against a
-   condition; the lender reviews and signs off (a broker never signs off or
-   waives). Pricing / term-sheet generation arrive in a later phase. */
+/* A single TPO file — the loan's basics, PRICE & register the deal (the Term
+   Sheet Studio), the conditions we need, the documents provided, and the
+   borrower-login toggle. A broker prices and registers a product and the studio
+   generates the term sheet, but SENDING the official DocuSign package is
+   lender-only, and a broker uploads documents against a condition while the
+   lender reviews and signs off (a broker never signs off or waives). */
 
 const STATUS_LABEL = {
   file_intake: 'Intake', new: 'New', in_review: 'In review', processing: 'Processing',
@@ -114,6 +117,17 @@ export default function TpoFile() {
         {a.arv != null && row('After-repair value', money(a.arv))}
         {a.rehab_budget != null && row('Rehab budget', money(a.rehab_budget))}
         {a.loan_amount != null && row('Loan amount', money(a.loan_amount))}
+      </div>
+
+      {/* Pricing — the Term Sheet Studio (price / register / generate the term
+          sheet). The broker prices exactly what the borrower/staff studio does,
+          minus the internal margin; WE still send the official signed term sheet. */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Loan structure &amp; pricing</div>
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
+          Price the deal and register a product. Your loan team reviews it and sends the official term sheet.
+        </p>
+        <ProductStudioPanel mode="tpo" appId={id} app={a} onRegistered={() => { loadFile(); loadChecklist(); loadDocuments(); }} />
       </div>
 
       {/* Conditions */}

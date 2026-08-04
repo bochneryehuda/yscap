@@ -424,6 +424,12 @@ export const api = {
   tpoChecklist:      (id) => req('GET', `/api/tpo/applications/${id}/checklist`),
   tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
   tpoUploadDocument: (b) => req('POST', '/api/tpo/documents', normalizeUpload(b)),
+  // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
+  // sheet (borrower-safe; sending the DocuSign package stays lender-only).
+  tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),
+  tpoPricingQuote: (appId, overrides) => req('POST', `/api/tpo/applications/${appId}/pricing/quote`, { overrides }),
+  tpoRegisterProduct: (appId, program, overrides, econVersion, submitException, termOptions) =>
+    req('POST', `/api/tpo/applications/${appId}/pricing/register`, { program, overrides, econVersion, submitException, termOptions }),
 
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),

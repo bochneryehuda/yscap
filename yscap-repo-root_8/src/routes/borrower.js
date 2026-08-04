@@ -7,7 +7,8 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText, scrubFields } = require('../lib/borrower-safe');
+const { scrubText, scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
+const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
@@ -804,23 +805,10 @@ function stripInternalAppFields(row) {
 // stored inputs also carry the markup knobs and the PRIMARY borrower's FICO (which
 // a co-borrower must not read). A borrower may see their loan STRUCTURE (rate,
 // loan amount, values) but never the markup. Staff pricing is a separate endpoint.
-function stripQuoteInternal(q) {
-  if (!q || typeof q !== 'object') return q;
-  const { adminPricing, ...rest } = q;
-  return rest;
-}
-function stripInputsInternal(inp) {
-  if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
-  return rest;
-}
-// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
-function borrowerSafeQuoteBundle(out) {
-  if (!out || typeof out !== 'object') return out;
-  return { ...out, inputs: stripInputsInternal(out.inputs),
-    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
-    silver: stripQuoteInternal(out.silver) };
-}
+// stripQuoteInternal / stripInputsInternal / borrowerSafeQuoteBundle now live in
+// src/lib/borrower-safe.js (single definition, shared with routes/tpo.js) —
+// required at the top of this file. A change to the margin scrub must reach every
+// non-lender surface at once, so it can never leak on one and not the other.
 
 // Scrub capital-partner names out of an LLC bundle's document slots before it
 // reaches a borrower: label/hint COALESCE to the INTERNAL wording (llc.js) and
@@ -886,31 +874,10 @@ async function loadFileForPricing(appId, borrowerId) {
   return { app, exp };
 }
 
-// The borrower may only pass the scenario knobs the Term Sheet Studio lets a
-// borrower choose (leverage, term, reserve, estimated FICO and requested
-// experience). Deal economics (price / values / budget / state) always come
-// from the loan file itself, so a tampered client can't inject a fabricated
-// basis. Every value is coerced + clamped to the studio's own input ranges.
-function borrowerPricingOverrides(raw) {
-  const out = {};
-  const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
-  const targetLTC = Number(raw && raw.targetLTC);
-  if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
-  // An explicit blank clears the reserve: pass '' through so buildInputs resolves
-  // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
-  // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
-  if (raw && raw.irMonths === '') { out.irMonths = ''; }
-  else if (raw && raw.irMonths != null) { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
-  // Interest reserve may instead be an exact dollar amount (the engine caps it at
-  // the loan term). 0 is allowed and clears any prior amount → months path.
-  if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
-  if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
-  if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
-  for (const k of ['expFlips', 'expHolds', 'expGround']) {
-    if (raw && raw[k] != null && raw[k] !== '') { const v = clamp(raw[k], 0, 999); if (v != null) out[k] = Math.round(v); }
-  }
-  return out;
-}
+// borrowerPricingOverrides now lives in src/lib/pricing-overrides.js (single
+// definition, shared with routes/tpo.js) — required at the top of this file — so
+// an external broker can never be handed a wider override allowlist than a
+// borrower by drift. Deal economics still come from the loan file itself.
 // SECURITY (audit S1-04, owner-directed 2026-07-12): the borrower-side "admin
 // pricing unlock" was REMOVED. A borrower session may only ever send the safe,
 // clamped knobs from borrowerPricingOverrides() — never the staff-grade

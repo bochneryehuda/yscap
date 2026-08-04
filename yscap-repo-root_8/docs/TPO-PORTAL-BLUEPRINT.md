@@ -157,14 +157,27 @@ internal workflow condition.
      PROVIDES, the lender still signs off — new evidence clears any prior
      sign-off). `app-v2 TpoFile` shows both with an upload control.
    - Test `scripts/test-tpo-files-db.js` (now 40 assertions).
-   - **DEFERRED to Phase 4b:** the TPO Term Sheet Studio (price / register /
-     generate the term-sheet PDF), the info-field condition writer, and the
-     staff-condition REVEAL (flood cert / credit / appraisal received / EMD).
-     The order-driven borrower-facing conditions (EMD, insurance/title contact)
-     are already `audience IN ('borrower','both')` and thus shown; the staff-only
-     order conditions carry NO `borrower_label` today, so the "no safe wording →
-     hide" rule keeps them out — revealing them needs a deliberate migration that
-     adds borrower-safe wording, done with the pricing slice.
+   - **Phase 4b — the TPO Term Sheet Studio ✅ (BUILT).** A broker prices /
+     registers a product and the studio generates the term-sheet PDF, exactly as
+     the borrower does — the SAME frozen engine, the SAME borrower-safe scrub (no
+     internal margin), the SAME override allowlist. `GET/POST /api/tpo/
+     applications/:id/pricing` (+ `/quote`, `/register`); the register mirrors the
+     borrower guards + condition side effects, firm-scoped, `registered_by` = the
+     broker, and returns `termSheetFinal` (a fresh file is INITIAL — WE send the
+     official sheet, lender-only). The scrub + allowlist moved to single-definition
+     shared modules (`borrower-safe.js` + `pricing-overrides.js`), consumed by both
+     `routes/borrower.js` and `routes/tpo.js`. The studio's PDF uploads through the
+     term-sheet-only branch of `POST /api/tpo/documents` (born accepted, on the
+     pricing condition, supersedes prior). `app-v2 ProductStudioPanel` gained a
+     `mode='tpo'`; mounted as a card in `TpoFile`. Test `scripts/test-tpo-pricing-db.js`.
+   - **STILL DEFERRED (a follow-up increment):** the info-field condition writer,
+     and the staff-condition REVEAL (flood cert / credit / appraisal received /
+     EMD). The order-driven borrower-facing conditions (EMD, insurance/title
+     contact) are already `audience IN ('borrower','both')` and thus shown; the
+     staff-only order conditions carry NO `borrower_label` today, so the "no safe
+     wording → hide" rule keeps them out — revealing them needs a deliberate
+     migration that adds borrower-safe wording (and must respect the
+     flood-cert-staff-only HARD RULE — that one is never borrower/broker-facing).
 5. **Orders + own-Xactus** — title / insurance / flood / credit on the TPO
    surface; then per-firm encrypted Xactus credentials for **credit** (refactor
    `credit/provider.js pull()` to take a credentials arg resolved from the file's

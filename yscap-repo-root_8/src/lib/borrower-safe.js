@@ -140,4 +140,33 @@ function hasPartnerName(value) {
   return PARTNER_PATTERNS.some((re) => { re.lastIndex = 0; return re.test(value); });
 }
 
-module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS };
+// ---------------------------------------------------------------------------
+// Borrower-safe PRICING scrub — the ONE place internal lender margin is removed
+// before a quote/registration leaves for a NON-LENDER surface (a borrower OR an
+// external broker). A borrower/broker may see loan STRUCTURE (rate, loan amount,
+// values, LTC/LTV/ARV, cash-to-close, liquidity) but never the internal markup /
+// spread. Kept here (single definition) so a change can never reach one surface
+// and leak on another — routes/borrower.js AND routes/tpo.js both consume these.
+// (moved out of routes/borrower.js unchanged; the `fico` drop is deliberate — the
+// pricing FICO is the higher-of-two internal figure, not the borrower's to re-read
+// from a quote result.)
+function stripQuoteInternal(q) {
+  if (!q || typeof q !== 'object') return q;
+  const { adminPricing, ...rest } = q;
+  return rest;
+}
+function stripInputsInternal(inp) {
+  if (!inp || typeof inp !== 'object') return inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
+  return rest;
+}
+// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
+function borrowerSafeQuoteBundle(out) {
+  if (!out || typeof out !== 'object') return out;
+  return { ...out, inputs: stripInputsInternal(out.inputs),
+    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
+    silver: stripQuoteInternal(out.silver) };
+}
+
+module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS,
+  stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle };

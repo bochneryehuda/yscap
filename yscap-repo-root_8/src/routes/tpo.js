@@ -26,9 +26,19 @@ const mail = require('../lib/email/catalog');
 const fields = require('../lib/fields');
 const storage = require('../lib/storage');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
-const { scrubFields } = require('../lib/borrower-safe');
+const { scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
+const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
+const pricing = require('../lib/pricing');
+const { RECENT_EXIT_SQL } = require('../lib/experience');
+const { persistProductRegistration } = require('../lib/product-registration');
+const notify = require('../lib/notify');
+const termOpts = require('../lib/term-options');
+const manualProgram = require('../lib/manual-program');
+const conditionEngine = require('../lib/conditions/engine');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
+
+const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 
 // Every TPO route is gated: a valid session AND the tpo kind.
 router.use(requireAuth, requireTpo);
@@ -63,6 +73,41 @@ async function appInFirm(actorId, appId) {
     `SELECT 1 FROM applications a WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
     [actorId, appId]);
   return r.rows.length > 0;
+}
+
+// Load a firm's file for pricing — the exact same {app, exp} the borrower + staff
+// pricing loaders return (so the frozen engine sizes identically), but scoped
+// through the ONE firm-isolation definition instead of OWN_FILE_SQL. The pricing
+// FICO is the higher-of-two across the file's borrowers (#99); the experience is
+// the CLAIMED-of-record (requested_exp_*), falling back to the verified
+// track-record count — funding stays gated by the experience condition, so this
+// never over-lends (owner-directed #85, mirrored on every pricing loader).
+async function loadTpoFileForPricing(actorId, appId) {
+  const a = await db.query(
+    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+      WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
+    [actorId, appId]);
+  const app = a.rows[0];
+  if (!app) return null;
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
+  const tr = await db.query(
+    `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
+  const verified = { flips: 0, holds: 0, ground: 0 };
+  for (const row of tr.rows) {
+    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) verified.ground += row.n;
+    else if (row.dt.indexOf('flip') > -1) verified.flips += row.n;
+    else verified.holds += row.n;
+  }
+  const claimed = (v, fb) => (v != null ? (Number(v) || 0) : fb);
+  const exp = {
+    flips:  claimed(app.requested_exp_flips,  verified.flips),
+    holds:  claimed(app.requested_exp_holds,  verified.holds),
+    ground: claimed(app.requested_exp_ground, verified.ground),
+  };
+  return { app, exp };
 }
 
 // Who am I + which firm do I belong to. (Mirrors /auth/me's tpo branch so the
@@ -271,16 +316,35 @@ router.patch('/borrowers/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// A single TPO file (firm-scoped). Borrower-safe fields only — NO note buyer /
-// capital partner, no internal contacts, no internal pricing margin.
+// A single TPO file (firm-scoped). The BORROWER-SAFE application shape — every
+// field the Term Sheet Studio prefills from (deal economics, the parties' names,
+// the refinance payoff, the waiver flags, the higher-of-two pricing FICO) so the
+// broker's studio opens showing what the file already knows. Deliberately absent:
+// `applications.lender` (the NOTE BUYER / capital partner — staff-only) and any
+// internal pricing margin. NOTE `payoff_lender` IS returned and is borrower-safe:
+// it is the borrower's EXISTING loan being paid off on a refinance, never our
+// capital partner.
 router.get('/applications/:id', async (req, res, next) => {
   try {
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.property_address, a.property_type, a.units,
               a.program, a.loan_type, a.rehab_type, a.purchase_price, a.as_is_value, a.arv,
-              a.rehab_budget, a.loan_amount, a.is_assignment, a.borrower_portal_enabled, a.created_at,
-              b.id AS borrower_id, NULLIF(b.full_name,'') AS borrower_name, b.email AS borrower_email
-         FROM applications a LEFT JOIN borrowers b ON b.id=a.borrower_id
+              a.rehab_budget, a.loan_amount, a.is_assignment, a.underlying_contract_price, a.assignment_fee,
+              a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
+              a.term, a.requested_ir_months, a.requested_ir_amount,
+              a.est_closing_date, a.expected_closing, a.co_borrower_pg_waived, a.liquidity_buffer_waived,
+              a.payoff_amount, a.payoff_lender, a.payoff_loan_number, a.estimated_cash_out,
+              a.co_borrower_id, a.borrower_portal_enabled, a.created_at,
+              NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
+              b.id AS borrower_id, NULLIF(b.full_name,'') AS borrower_name, b.email AS borrower_email,
+              b.first_name, b.middle_name, b.last_name, b.name_suffix, b.full_name,
+              l.llc_name AS entity_name,
+              cb.first_name AS co_first_name, cb.middle_name AS co_middle_name,
+              cb.last_name AS co_last_name, cb.name_suffix AS co_name_suffix, cb.full_name AS co_full_name
+         FROM applications a
+         LEFT JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+         LEFT JOIN llcs l ON l.id=a.llc_id
         WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
       [req.actor.id, req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'file not found' });
@@ -377,6 +441,273 @@ router.post('/applications/:id/borrower-portal', async (req, res, next) => {
 });
 
 // ============================================================================
+// PHASE 4B — the TPO Term Sheet Studio: PRICE the deal, REGISTER a product, and
+// generate the term-sheet PDF. A broker prices exactly what a borrower can — the
+// SAME frozen engine, the SAME borrower-safe override allowlist (no markup /
+// origination / fees / manual basis), and the internal margin is stripped from
+// every quote result. A broker REGISTERS a product onto their firm's file and the
+// studio uploads the exact term-sheet PDF, but SENDING that package on DocuSign is
+// lender-only (the `send_term_sheet` capability a TPO can never hold — Phase 4a),
+// and the broker never gets a borrower "your terms are ready" email — WE send the
+// official term sheet after we've reviewed it. Every read/write is firm-scoped.
+// ============================================================================
+
+// The current registration + a borrower-safe live what-if quote. Mirrors the
+// borrower GET (routes/borrower.js) exactly, firm-scoped, with the internal
+// margin stripped from history rows AND the live quote. `termSheetFinal` mirrors
+// the STAFF response so the studio opens with the right INITIAL/FINAL wording.
+router.get('/applications/:id/pricing', async (req, res, next) => {
+  try {
+    const f = await loadTpoFileForPricing(req.actor.id, req.params.id);
+    if (!f) return res.status(404).json({ error: 'file not found' });
+    const hist = await db.query(
+      `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
+              r.is_current, r.created_at, r.inputs, r.quote, r.term_options
+         FROM product_registrations r
+        WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
+    // Strip internal lender pricing (markup/spread) from anything sent to a broker
+    // — a staff-created registration's quote AND inputs embed it. Never send
+    // registered_by (WHICH staffer priced it is internal). The rest of `inputs` is
+    // the file's own registered scenario, which the studio renders from.
+    const redactRow = (row) => row ? { ...row, quote: stripQuoteInternal(row.quote), inputs: stripInputsInternal(row.inputs) } : row;
+    const history = hist.rows.map(redactRow);
+    const current = history.find((x) => x.is_current) || null;
+    let quote = null;
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // Manual-review exception status only (never the internal summary / decision note).
+    let manualEscalation = null;
+    try {
+      const d = await db.query(
+        `SELECT status FROM manual_program_escalations
+          WHERE application_id=$1 ORDER BY (status='pending') DESC, created_at DESC LIMIT 1`, [req.params.id]);
+      manualEscalation = d.rows[0] || null;
+    } catch (_) {}
+    let termSheetHold = null;
+    try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
+    if (termSheetHold) termSheetHold = 'The terms are being finalized — the loan team is reviewing the appraisal. A term sheet will be available shortly.';
+    let termSheetFinal = false;
+    try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(req.params.id, { db })).final; } catch (_) { termSheetFinal = false; }
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(),
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal });
+  } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// A live what-if quote — borrower-safe, firm-scoped. Deal economics come from the
+// file; only the safe clamped knobs from the broker are honored.
+router.post('/applications/:id/pricing/quote', async (req, res, next) => {
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const f = await loadTpoFileForPricing(req.actor.id, req.params.id);
+    if (!f) return res.status(404).json({ error: 'file not found' });
+    const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    res.json({ ...out, experience: f.exp });
+  } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// REGISTER a product onto the firm's file + let the studio attach the term-sheet
+// PDF. Mirrors the borrower register (same guards, same frozen engine, same
+// condition side effects) with three deliberate TPO differences:
+//   1. firm-scoped, and registered_by is the BROKER (a staff_users row, a valid
+//      FK) so the file records who priced it;
+//   2. NO borrower "your terms are ready" email — WE send the official term sheet
+//      after review; a broker register never notifies the borrower of terms;
+//   3. it returns `termSheetFinal` (like the STAFF route) so the studio can stamp
+//      the exact PDF FINAL/INITIAL correctly before capturing it — but sending it
+//      on DocuSign stays lender-only (Phase 4a `send_term_sheet`).
+router.post('/applications/:id/pricing/register', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  const refuse = async (status, payload, reason, extra) => {
+    try { await tpoAudit(req, 'tpo_register_product_refused', 'application', appId, { reason, ...(extra || {}) }); } catch (_) {}
+    return res.status(status).json(payload);
+  };
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    // A frozen/registered file (term-sheet sent, clear-to-close, funded) can't be
+    // re-registered — same guard as every register door, actor-less so a broker
+    // never inherits a super-admin unlock.
+    const locked = await require('../lib/file-lock').structuralLockReason(appId);
+    if (locked) return refuse(409, { error: locked }, 'structural_lock');
+    const f = await loadTpoFileForPricing(req.actor.id, appId);
+    if (!f) return res.status(404).json({ error: 'file not found' });
+    // Optimistic concurrency: a stale studio session must never re-register
+    // economics the file no longer has (#148).
+    if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
+      return refuse(409, {
+        error: 'This file’s pricing inputs changed since the studio was opened. The latest values have been reloaded — review the scenario and register again.',
+        code: 'econ_version_conflict',
+      }, 'econ_version_conflict');
+    }
+    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
+    const overrides = borrowerPricingOverrides(b.overrides || {});
+    // A broker never injects the claimed-experience counts on register — the
+    // registered basis uses the file's experience of record (funding stays gated
+    // by the experience condition). Same as the borrower door.
+    delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // Gold does not lend to an individual (owner-directed 2026-08-02) — refused on
+    // top of the frozen engine, never inside it.
+    {
+      const vestRefusal = require('../lib/vesting-program-rule').registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
+    // A refinance is sized on the as-is value — with none on file there is no
+    // denominator and nothing to register (owner-directed 2026-08-02).
+    if (inputs.asIsMissing) {
+      return res.status(400).json({
+        error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
+        field: 'asIsValue' });
+    }
+    // Term-sheet options (display/record only). A broker registers Standard/Gold/
+    // Silver only (never manual), so min-interest defaults OFF unless set.
+    const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || f.app.expected_closing || null;
+    const kd = termOpts.keyDates(closingForDates, inputs.term);
+    const resolvedTermOptions = {
+      accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),
+      minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
+      deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
+      estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+      coBorrowerPgWaived: !!f.app.co_borrower_pg_waived,
+    };
+    const quote = pricing.quoteProgram(program, inputs);
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
+    if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
+    const total = quote.sizing ? quote.sizing.totalLoan : 0;
+    if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
+
+    // A MANUAL result is a manual-review EXCEPTION (below the minimum, over the
+    // maximum, or any other guideline exception). A broker can NEVER self-confirm
+    // such terms: block the plain register and, only when they explicitly submit
+    // the exception, register it pending and open a super-admin escalation. No
+    // terms go out unless a super-admin approves it.
+    const submitException = !!b.submitException;
+    const manualReasons = (quote.reasons || [])
+      .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
+    if (quote.status === 'MANUAL' && !submitException) {
+      return refuse(422, {
+        error: 'exception_required', code: 'exception_required',
+        message: `This scenario isn’t eligible as-is on the ${pricing.PROGRAM_LABEL[program]}. It needs a manual-review exception: ${manualReasons.join('; ') || 'a guideline exception'}. Submit an exception request and the loan team will review it — no terms are sent unless it’s approved.`,
+        reasons: quote.reasons, quote: stripQuoteInternal(quote),
+        exceptionRequired: true, manualReasons,
+      }, 'exception_required', { program });
+    }
+    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return res.status(400).json({ error: storeProblem });
+    }
+
+    const client = await db.getClient();
+    let regId;
+    let loanAmountChanged = false;
+    try {
+      await client.query('BEGIN');
+      const reg = await persistProductRegistration(client, {
+        appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+        termOptions: resolvedTermOptions,
+      });
+      regId = reg.id;
+      loanAmountChanged = reg.loanAmountChanged;
+      if (needsEscalation) {
+        await manualProgram.openEscalation(client, {
+          appId, registrationId: regId, assetMonths: null, overrides: {},
+          summary: {
+            kind: 'manual_review', program, status: quote.status,
+            totalLoan: total, noteRate: quote.noteRate,
+            acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
+            arvPct: quote.sizing ? quote.sizing.arvPct : null,
+            ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
+            manualReasons, requestedByTpo: true,
+            minInterest: resolvedTermOptions.minInterestEnabled,
+            minInterestDefault: termOpts.defaultMinInterest(program),
+            accrual: resolvedTermOptions.accrualType,
+          },
+          requestedBy: null,
+        });
+      } else {
+        await manualProgram.closePendingForApp(client, appId);
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    // A typed vesting entity fills the file's LLC when it has none — fill-only,
+    // best-effort (never renames an existing one).
+    try {
+      const typed = String((b.overrides && b.overrides.entityName) || b.entityName || '').trim();
+      const cur = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+      if (typed && !cur.llc_id && cur.borrower_id) {
+        const vestLlcId = await require('../lib/vesting').resolveEntityByName(cur.borrower_id, typed);
+        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'tpo', actor: req.actor.id });
+      }
+    } catch (e) { console.error('[tpo-register] vesting from studio failed:', db.describeError(e)); }
+    // Registration rewrites loan amount / rate / program — re-run condition rules,
+    // sync the liquidity requirement, enforce the Gold 5% SOW contingency, and
+    // clear a signed Heter Iska if the loan amount moved. Same as the borrower door.
+    try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign') });
+      } catch (e) { console.warn('[tpo-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
+    // (Re-)registering resets the Products & pricing condition to received and
+    // clears any prior sign-off — staff re-verify the new structure (mirrors the
+    // db/096 trigger reopen semantics).
+    try {
+      await db.query(
+        `UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL,
+             reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing'`, [appId]);
+    } catch (_) { /* condition may not exist on older files */ }
+
+    await tpoAudit(req, 'tpo_register_product', 'application', appId,
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+
+    // Tell OUR team a broker priced the file — reaches the internally-assigned AE /
+    // AM once assigned (notifyAppStaff filters out external users, so the broker is
+    // never a recipient). NO borrower terms email — WE send the official sheet.
+    try {
+      const rate = quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : 'n/a';
+      const ctx = await notify.fileContext(appId, [
+        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
+        { label: 'Total loan', value: `${money(total)} @ ${rate}` },
+        quote.cashToClose != null ? { label: 'Cash to close', value: money(quote.cashToClose) } : null,
+      ].filter(Boolean));
+      const label = ctx ? ctx.label : appId;
+      if (needsEscalation) {
+        await notify.notifyAdmins({
+          type: 'manual_escalation',
+          title: 'Broker exception request needs approval',
+          body: `A broker submitted a ${pricing.PROGRAM_LABEL[program]} exception request on ${label} (${manualReasons.join('; ') || 'guideline exception'}) — it’s waiting for approval in the Escalations box. No terms are sent unless it’s approved. Loan amount ${money(total)}.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+          link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        });
+      } else {
+        await notify.notifyAppStaff(appId, {
+          type: 'product_registered',
+          title: 'A broker registered a product',
+          body: `${pricing.PROGRAM_LABEL[program]} registered by the broker on ${label}: ${money(total)} @ ${rate}.`,
+          applicationId: appId, meta: (ctx && ctx.meta) || undefined,
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
+        });
+      }
+    } catch (_) { /* notifications are best-effort */ }
+
+    // The studio stamps the PDF FINAL/INITIAL from this — every send-gate
+    // requirement met EXCEPT the Products & pricing sign-off (which is exactly this
+    // step). Fails closed to INITIAL. The DocuSign SEND is still lender-only.
+    let termSheetFinal = false;
+    try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(appId, { db })).final; } catch (_) { termSheetFinal = false; }
+    res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote), pendingApproval: needsEscalation, termSheetFinal });
+  } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ============================================================================
 // PHASE 4 — the file's CONDITIONS (what we need) + DOCUMENTS (provide them).
 // A broker sees the BORROWER-SAFE condition set (audience borrower/both, the
 // borrower_label wording, capital-partner names scrubbed) — never an internal
@@ -444,8 +775,24 @@ router.post('/documents', async (req, res, next) => {
     if (!b.applicationId) return res.status(400).json({ error: 'applicationId required' });
     if (!(await appInFirm(req.actor.id, b.applicationId))) return res.status(404).json({ error: 'file not found' });
     const filename = safeFilename(b.filename);
+    // A broker may only ever set the ONE special kind — the Term Sheet Studio's own
+    // generated PDF captured at registration (the "that kind only" pattern, db/424
+    // §2b). It auto-attaches to the Products & pricing condition, is born ACCEPTED
+    // (studio-generated, not a human upload — lib/document-acceptance.js), records
+    // which stamp it PRINTS (db/404 — a description, never an authorization), and
+    // supersedes the prior term sheet so exactly one is current. Any other docKind
+    // is ignored — a broker cannot forge an arbitrary kind onto a document.
+    const isTermSheet = b.docKind === 'term_sheet' && !b.checklistItemId;
+    const docKind = isTermSheet ? 'term_sheet' : null;
+    const termSheetFinal = isTermSheet ? (b.termSheetFinal === true) : null;
     let itemId = null;
-    if (b.checklistItemId) {
+    let slot = null;
+    if (isTermSheet) {
+      const pp = await db.query(
+        `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
+        [b.applicationId]);
+      if (pp.rows[0]) { itemId = pp.rows[0].id; slot = 'Term sheet'; }
+    } else if (b.checklistItemId) {
       const it = await db.query(
         `SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both')`,
         [b.checklistItemId, b.applicationId]);
@@ -461,19 +808,31 @@ router.post('/documents', async (req, res, next) => {
     // Collapse a double-submit onto the already-saved document (mirrors the borrower door).
     const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
       filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
-      applicationId: b.applicationId, checklistItemId: itemId, llcId: null, trackRecordId: null, slotLabel: null, docKind: null, termSheetFinal: null });
+      applicationId: b.applicationId, checklistItemId: itemId, llcId: null, trackRecordId: null, slotLabel: slot, docKind, termSheetFinal });
     if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename });
     const r = await db.query(
-      `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,visibility,review_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'borrower','pending') RETURNING id`,
-      [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
-    if (itemId) {
+      `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final,visibility,review_status,reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,$12,'borrower',
+               CASE WHEN $10='term_sheet' THEN 'accepted' ELSE 'pending' END,
+               CASE WHEN $10='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
+      [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, docKind, slot, termSheetFinal]);
+    if (isTermSheet) {
+      // Exactly one term sheet is current — supersede the prior (the register
+      // already reopened the Products & pricing condition, so no extra flip here).
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
+        [b.applicationId, r.rows[0].id]);
+    } else if (itemId) {
+      // New evidence — clear any prior sign-off so the LENDER re-reviews.
       await db.query(
         `UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
           WHERE id=$1 AND audience IN ('borrower','both')`, [itemId]);
     }
-    await tpoAudit(req, 'tpo_upload_document', 'document', r.rows[0].id, { applicationId: b.applicationId, checklistItemId: itemId });
+    await tpoAudit(req, 'tpo_upload_document', 'document', r.rows[0].id, { applicationId: b.applicationId, checklistItemId: itemId, docKind });
+    try { require('../lib/sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { next(e); }
 });
