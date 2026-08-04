@@ -3829,6 +3829,12 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            -- Who manually added this condition + any pending "please delete" request,
+            -- so the row can offer Delete (to the adder / an admin) or Ask-to-delete
+            -- (owner-directed 2026-08-04).
+            ci.created_by_id, crb.full_name AS created_by_name,
+            ci.delete_requested_by, drb.full_name AS delete_requested_by_name,
+            ci.delete_requested_at, ci.delete_request_reason,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
             -- PILOT's advisory overlay (owner-directed 2026-07-24): its "ready / not_ready /
             -- agree / dispute" verdict + note on this condition, ON TOP of the human status.
@@ -3868,6 +3874,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
+       LEFT JOIN staff_users crb ON crb.id = ci.created_by_id
+       LEFT JOIN staff_users drb ON drb.id = ci.delete_requested_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
@@ -4091,6 +4099,91 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
     } catch (_) { /* best-effort */ }
   }
   res.status(201).json({ ok: true, itemId });
+});
+
+// ---- Delete / request-delete a MANUALLY-added condition (owner-directed 2026-08-04) ----
+// "If he was the one manually adding the condition, then he should be able to
+//  manually delete the condition. If somebody else manually added it, then he can
+//  request from that person to delete, and that person should get a prompt to delete."
+// Only manual conditions (origin_kind manual_custom / manual_library / exception) are
+// deletable — auto/rules/system conditions are engine-owned and must never be
+// hand-deleted (they clear themselves). documents.checklist_item_id is ON DELETE SET
+// NULL, so a misfiled document is unlinked, never destroyed.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+async function loadManualCondition(appId, itemId) {
+  const r = await db.query(
+    `SELECT ci.id, ci.application_id, ci.origin_kind, ci.created_by_id, ci.created_by_kind,
+            ci.label, ci.delete_requested_by, ci.delete_requested_at,
+            su.full_name AS created_by_name
+       FROM checklist_items ci
+       LEFT JOIN staff_users su ON su.id = ci.created_by_id
+      WHERE ci.id=$1 AND ci.application_id=$2`, [itemId, appId]);
+  return r.rows[0] || null;
+}
+
+router.delete('/applications/:id/conditions/:itemId', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — it cannot be deleted here. It clears itself when the file no longer needs it.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    const isAdmin = req.actor.role === 'super_admin' || req.actor.role === 'admin';
+    if (!isCreator && !isAdmin) {
+      return res.status(403).json({
+        error: `Only ${it.created_by_name || 'the person who added it'} can delete this condition. Use "Ask to delete" to request it.`,
+        code: 'needs_delete_request', creatorName: it.created_by_name || null });
+    }
+    await db.query(`DELETE FROM checklist_items WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    await audit(req, 'delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, byCreator: !!isCreator });
+    // If an admin (not the adder) removed it, tell the adder it's gone.
+    if (!isCreator && it.created_by_id) {
+      try {
+        await notify.notifyStaff(it.created_by_id, {
+          type: 'condition_deleted', title: 'A condition you added was deleted', inAppOnly: true,
+          body: `"${it.label}" was removed by ${req.actor.full_name || 'an admin'}.`,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+      } catch (_) { /* best-effort */ }
+    }
+    res.json({ ok: true, deleted: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/conditions/:itemId/request-delete', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — there is nobody to ask.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    if (isCreator) return res.status(400).json({ error: 'You added this condition — you can delete it directly.' });
+    if (!it.created_by_id) return res.status(400).json({ error: 'This condition has no recorded owner to ask; an admin can delete it.' });
+    const reason = String((req.body || {}).reason || '').trim().slice(0, 500) || null;
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=$1, delete_requested_at=now(), delete_request_reason=$2 WHERE id=$3 AND application_id=$4`,
+      [req.actor.id, reason, req.params.itemId, req.params.id]);
+    await audit(req, 'request_delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, reason });
+    try {
+      await notify.notifyStaff(it.created_by_id, {
+        type: 'condition_delete_requested', title: 'Please delete a condition you added',
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `${req.actor.full_name || 'A teammate'} asked you to delete "${it.label}"${reason ? ` — "${reason}"` : ''}. Open the file to delete it.`,
+        applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, requested: true, creatorName: it.created_by_name || null });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The adder dismisses a delete request without deleting (they disagree).
+router.post('/applications/:id/conditions/:itemId/dismiss-delete-request', async (req, res) => {
+  try {
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=NULL, delete_requested_at=NULL, delete_request_reason=NULL
+        WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Re-run the automatic condition rules for this one file.

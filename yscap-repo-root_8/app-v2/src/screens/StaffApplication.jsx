@@ -3178,6 +3178,63 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
   );
 }
 
+// Which conditions a person may hand-delete: only the MANUALLY-added ones
+// (owner-directed 2026-08-04). Auto/rules/system conditions are engine-owned.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+const isManualCondition = (it) => MANUAL_CONDITION_ORIGINS.includes(it && it.origin_kind);
+
+// Delete a manual condition. The adder / an admin succeeds; anyone else gets a
+// 403 and is offered to ASK the adder to delete it (the server records the request
+// and notifies them). The server is the sole authority — the client just tries.
+function ManualConditionDelete({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!isManualCondition(it)) return null;
+  async function doDelete() {
+    if (!window.confirm(`Delete "${it.label}"? This removes the condition from the file.`)) return;
+    setBusy(true);
+    try {
+      await api.staffDeleteCondition(appId, it.id);
+      onChanged && onChanged();
+    } catch (e) {
+      if (e && e.status === 403 && e.data && e.data.code === 'needs_delete_request') {
+        const who = e.data.creatorName || 'the person who added it';
+        if (window.confirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
+          const reason = window.prompt('Add a short note for them (optional):', '') || '';
+          try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); window.alert(`Asked ${who} to delete it. They'll get a prompt.`); }
+          catch (_) { window.alert('Could not send the request.'); }
+        }
+      } else {
+        window.alert((e && e.message) || 'Could not delete the condition.');
+      }
+    } finally { setBusy(false); }
+  }
+  return (
+    <button className="btn link small" style={{ marginLeft: 8, color: '#b3261e' }} disabled={busy} onClick={doDelete}>
+      {busy ? 'Working…' : 'Delete'}
+    </button>
+  );
+}
+
+// The prompt the ADDER sees when someone asked them to delete a condition. They
+// can delete it (they are the adder, so the server allows it) or keep it.
+function DeleteRequestBanner({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!it || !it.delete_requested_by) return null;
+  const who = it.delete_requested_by_name || 'A teammate';
+  async function del() { setBusy(true); try { await api.staffDeleteCondition(appId, it.id); onChanged && onChanged(); } catch (e) { window.alert((e && e.message) || 'Could not delete it.'); } finally { setBusy(false); } }
+  async function keep() { setBusy(true); try { await api.staffDismissDeleteRequest(appId, it.id); onChanged && onChanged(); } catch (_) {} finally { setBusy(false); } }
+  return (
+    <div className="notice" style={{ marginTop: 6, borderLeft: '3px solid var(--gold)', padding: '6px 10px', background: 'rgba(174,135,70,0.06)' }}>
+      <b style={{ color: '#141B22' }}>{who} asked to delete this condition.</b>
+      {it.delete_request_reason ? <span style={{ color: '#4B585C' }}> — “{it.delete_request_reason}”</span> : null}
+      <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+        <button className="btn small" disabled={busy} onClick={del}>Delete it</button>
+        <button className="btn ghost small" disabled={busy} onClick={keep}>Keep it</button>
+      </div>
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
@@ -3531,6 +3588,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ padding: '2px 10px' }}>
               <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={rowDone}
                 onToggle={() => toggleCond(it.id)} onPatch={onPatch} />
+              {/* A pending "please delete" request shows even on the collapsed row,
+                  so the adder notices it without opening the condition. */}
+              <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
             </div>
           );
         }
@@ -3564,7 +3624,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   )}
                   {/* Always offered — every row opens now, so every row must close. */}
                   <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>
+                  {/* Delete a manually-added condition (owner-directed 2026-08-04). */}
+                  <ManualConditionDelete it={it} appId={appId} onChanged={onChanged} />
                 </div>
+                <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
                 {it.pilot_advice && (
                   <div style={{ marginTop: 5 }}><PilotAdvice it={it} /></div>
                 )}
