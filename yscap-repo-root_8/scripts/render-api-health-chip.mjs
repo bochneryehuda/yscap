@@ -118,16 +118,20 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     const bail = (sig) => { dropBlocker().finally(() => process.exit(sig === 'SIGINT' ? 130 : 143)); };
     process.once('SIGINT', bail); process.once('SIGTERM', bail);
     await dropBlocker();
-    /* IT HAS TO BLOCK EVERY PROBE SHAPE TO MEAN "the probe could not run". The
-       probe tries a fully-populated property row AND a bare one carrying only a
-       latitude and a longitude, and moves on to the next shape when something
-       OTHER than the licensing rule refuses one — so a blocker keyed on `city`
-       (which the bare row leaves NULL, and a CHECK passes on NULL) stops only the
-       first shape and the probe still gets a real answer. `geo_latitude` is the
-       one column BOTH shapes carry, which is what makes this fixture genuine. */
+    /* IT HAS TO BLOCK EVERY PROBE SHAPE TO MEAN "the probe could not run" — and it
+       has to be UNABLE TO REFUSE A REAL PROPERTY, because unlike the sibling DB
+       suite this one COMMITS on a shared database for ~25 seconds and a SIGKILL
+       would leave it installed for good.
+       `geo_latitude <> 40.1` satisfies the first and fails the second: it refuses
+       any legitimate write at that latitude (measured — a realistic full-row INSERT
+       was rejected by this fixture rather than by the licensing rule). A blocker
+       keyed on `city` fails the first: the bare shape leaves city NULL, a CHECK
+       passes on NULL, and the probe still gets a real answer from the other shape.
+       `display_address` is both — every probe shape supplies the literal 'licensing
+       probe' and no real property ever will. */
     await db.query(
       `ALTER TABLE properties ADD CONSTRAINT lic_render_blocker
-         CHECK (geo_latitude IS NULL OR geo_latitude <> 40.1)`);
+         CHECK (display_address <> 'licensing probe')`);
     try {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(11000);

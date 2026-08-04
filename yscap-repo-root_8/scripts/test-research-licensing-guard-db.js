@@ -320,17 +320,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
          the obvious evasions directly — but it can never carry EVERY column, so
          an exemption keyed on one it lacks refuses the probe while admitting real
          rows. The probe row now carries a zip, a year built, beds and an old
-         created_at, so `county` is the honest example today — a column the probe
-         row does not carry under EITHER shape (the assertion below is what proves
-         that, rather than a claim in a comment). There will ALWAYS be such a
-         column: `properties` has ~60 of them and the probe row can never fill
-         them all, which is why the probe may only ever downgrade, however rich its
-         row becomes.
+         created_at, a street, a county, a coordinate and an observation count — so
+         `owner_of_record` is the honest example today, a column the probe row does
+         not carry under EITHER shape (the assertion below is what proves that,
+         rather than a claim in a comment). The example column has had to move twice
+         as the probe row grew, which IS the point: `properties` has ~60 columns and
+         the probe row can never fill them all, so the probe may only ever
+         downgrade, however rich its row becomes.
          So: the text check rejects this, the probe REFUSES it, and the verdict
          must still be NOT installed. A probe allowed to promote reports the
          control fully on. */
       await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
-        CHECK (geo_source IS NULL OR county IS NOT NULL
+        CHECK (geo_source IS NULL OR owner_of_record IS NOT NULL
                OR lower(geo_source) NOT LIKE '%google%')`);
       const probeSaysRefused = await G._internals.verifyRefusesGoogle(client);
       ok(probeSaysRefused.tested === true && probeSaysRefused.refused === true,
@@ -343,9 +344,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       let realWriteStored = true;
       try {
         await client.query(
-          `INSERT INTO properties (address_key, display_address, city, state, zip, county,
+          `INSERT INTO properties (address_key, display_address, city, state, zip, owner_of_record,
              geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
-           VALUES ($1,'x','Trenton','NJ','08608','Mercer','google_places',40.1,-74.1,'rooftop',now(),now())`,
+           VALUES ($1,'x','Trenton','NJ','08608','A Owner','google_places',40.1,-74.1,'address',now(),now())`,
           [`nj|evader|${sfx}`]);
       } catch (_) { realWriteStored = false; }
       await client.query('ROLLBACK TO SAVEPOINT ev');
@@ -386,11 +387,56 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         const v = await G._internals.verifyRefusesGoogle(client);
         ok(v.tested === true && v.refused === false && v.shape === 'bare',
           `a blocker on the populated shape falls through to the bare one (${JSON.stringify(v)})`);
+        ok(v.priorBlockedBy === 'lic_first_shape',
+          '  …and it REMEMBERS which unrelated constraint stopped the fuller row');
         const r = await G.checkGeoLicensing(client, { verifyWrite: true });
         ok(r.ok === false && r.probeTested === true,
           '  …so a constraint protecting nothing is still CAUGHT, not reported UNKNOWN');
+        /* AND THE WORDING MUST NOT INVENT A REFUSAL THAT NEVER HAPPENED. Skipping a
+           blocked shape and reporting only WHICH shape was accepted collapsed two
+           different states into one: "our rule refused the fuller row" and "the
+           fuller row was never put to our rule". This rule is `CHECK (true)` — it
+           refuses NOTHING, the ordinary geocoding path writes straight through it,
+           and the message said it "refused the fuller property row" and "turns on
+           which OTHER columns a row happens to carry". */
+        await client.query('SAVEPOINT f0real');
+        let realStored = true;
+        try {
+          await client.query(
+            `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+               geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
+             VALUES ($1,'x','Bishop St','Trenton','NJ','08608','google_places',40.1,-74.1,'address',now(),now())`,
+            [`nj|f0|${sfx}`]);
+        } catch (_) { realStored = false; }
+        await client.query('ROLLBACK TO SAVEPOINT f0real');
+        ok(realStored, '  …and CHECK (true) really does store the write geocode.js performs…');
+        ok(!/refused the fuller property row|turns on which OTHER columns/.test(r.why || ''),
+          '  …so the message must NOT claim our rule refused the fuller row — it never saw it');
+        ok(/could NOT be put to it at all \(lic_first_shape/.test(r.why || ''),
+          `  …it names what blocked it and calls the fuller row UNKNOWN (${(r.why || '').slice(0, 90)})`);
       }
       await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_first_shape`);
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* (f0b) A BLOCKED SOURCE VALUE MUST NOT ABANDON THE OTHER ONE EITHER. The
+         probe tries two spellings per shape, and breaking out of the value loop on
+         an unrelated refusal skipped the second — so an unrelated constraint keyed
+         on the literal 'google_places', beside a CASE-SENSITIVE rule that happily
+         stores 'GOOGLE', reported UNKNOWN instead of the acceptance sitting right
+         there. A rule that refuses one spelling and admits the other is not a rule. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK (geo_source IS NULL OR geo_source NOT LIKE '%google%')`);
+      await client.query(
+        `ALTER TABLE properties ADD CONSTRAINT lic_src_blocker CHECK (geo_source IS NULL OR geo_source <> 'google_places')`);
+      {
+        const v = await G._internals.verifyRefusesGoogle(client);
+        ok(v.tested === true && v.refused === false,
+          `the second source spelling is still tried, so the acceptance is found (${JSON.stringify(v)})`);
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(r.ok === false && !/UNKNOWN/.test(r.why || ''),
+          '  …and it is reported as a real finding, not as "we could not ask"');
+      }
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_src_blocker`);
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
 
       // (f) A PROBE THAT COULD NOT RUN SAYS SO, instead of reading as a pass.
@@ -689,7 +735,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             `  …and on the production path only the BARE row is stored (${r4w.neuteredBy})`);
           ok(!/nothing at the database level stops/.test(r4w.why || ''),
             '  …so it STILL must not claim nothing stops a Google coordinate being stored');
-          ok(/bare row/.test(r4w.why || '') && /while refusing the fuller/.test(r4w.why || ''),
+          ok(/bare row/.test(r4w.why || '') && /refused the fuller property row/.test(r4w.why || ''),
             `  …it says which row went in and which did not (${(r4w.why || '').slice(0, 80)})`);
         }
         await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
@@ -721,6 +767,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
          property row was REFUSED — the question the general sentence answers has
          been answered the other way and must not be asserted. */
       for (const [body, label, shape, realBreach, realYear] of [
+        /* THE TWO COLUMNS THAT KEEP THE LOUD SENTENCE HONEST. geocode.js's own work
+           queue is `… AND street IS NOT NULL`, so every row it writes to has a
+           street; and `observation_count` is `obs.length` at ingest, so a real
+           property carries at least 1. Strip either from the probe row and the
+           expression goes NULL/0 on it, the populated shape is STORED, and a rule
+           that refuses every real write earns "nothing at the database level stops
+           a Google coordinate being stored". */
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR street IS NULL)`,
+          'an exemption on a missing street', 'bare', false, 1962],
+        [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR observation_count = 0)`,
+          'an exemption on a never-observed row', 'bare', false, 1962],
         [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR geo_at IS NULL)`,
           'an exemption on geo_at', 'bare', false, 1962],
         [`CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR geo_precision IS NULL)`,
@@ -771,9 +828,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         let realStored = true;
         try {
           await client.query(
-            `INSERT INTO properties (address_key, display_address, city, state, zip, year_built,
+            /* A ROW geocode.js WOULD ACTUALLY TARGET — it selects on `street IS NOT
+               NULL`, and a warehouse property has been observed at least once. A
+               fixture without those tests a write the app never makes. */
+            `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+               observation_count, year_built,
                geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
-             VALUES ($1,'x','Trenton','NJ','08608',$2,'google_places',40.1,-74.1,'address',now(),now())`,
+             VALUES ($1,'x','Bishop St','Trenton','NJ','08608',2,$2,'google_places',40.1,-74.1,'address',now(),now())`,
             [`nj|h4|${sfx}`, realYear]);
         } catch (_) { realStored = false; }
         await client.query('ROLLBACK TO SAVEPOINT h4real');
@@ -805,8 +866,78 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           '  …and never as no protection at all, which is the claim it disproves');
         ok(r.probeTested === true,
           '  …the probe RAN, which it could not while the catalog query filtered on convalidated');
+        ok(/NOT proof it refuses every write/.test(r.why || ''),
+          '  …and a refused probe row carries the caveat here too, not "it is enforcing NEW writes"');
+        ok(/text IS db\/459's, so validating it is the fix/.test(r.why || ''),
+          `  …with "validate it" offered because the text really is db/459's (${(r.why || '').slice(-90)})`);
       }
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* (h5b) …AND "VALIDATE IT" IS THE WRONG ADVICE FOR A REWRITTEN RULE. Said
+         about this one it means "make the rewrite permanent", which is the opposite
+         of the instruction. Measured: our probe row is refused (neither shape
+         carries a parcel number) while a real property, which has one, is STORED —
+         so "it DID refuse our test row, so it is enforcing NEW writes; what is
+         missing is the back book" was false twice over. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
+        CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR apn IS NOT NULL) NOT VALID`);
+      {
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(/NOT VALID/.test(r.why || '') && /NOT proof it refuses every write/.test(r.why || ''),
+          'a NOT VALID REWRITE is described as both, with the caveat');
+        ok(/do not simply validate it/.test(r.why || '') && !/validating it is the fix/.test(r.why || ''),
+          `  …and is never told to validate a rewritten rule (${(r.why || '').slice(-100)})`);
+      }
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
+
+      /* (h8) A RULE RE-CREATED UNDER ANOTHER NAME. db/459's rule really is absent,
+         so "NOT installed" is right — but "nothing at the database level stops a
+         Google coordinate being stored" was said about a warehouse measured
+         REFUSING every Google write. Re-creating the rule under a new name is the
+         obvious move when the migration will not apply, so this is not exotic. */
+      await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}_v2
+        CHECK (geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%')`);
+      {
+        await client.query('SAVEPOINT h8real');
+        let realStored = true;
+        try {
+          await client.query(
+            `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+               geo_source, geo_latitude, geo_longitude, geo_precision, geo_at, geo_attempted_at)
+             VALUES ($1,'x','Bishop St','Trenton','NJ','08608','google_places',40.1,-74.1,'address',now(),now())`,
+            [`nj|h8|${sfx}`]);
+        } catch (_) { realStored = false; }
+        await client.query('ROLLBACK TO SAVEPOINT h8real');
+        ok(!realStored, 'a rule re-created under another name really does REFUSE the write…');
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(r.ok === false && r.present === false,
+          '  …and db/459\'s own rule is still correctly reported ABSENT');
+        ok(!/nothing at the database level stops/.test(r.why || ''),
+          '  …but never as "nothing at the database level stops a Google coordinate being stored"');
+        ok(new RegExp(`Something else DID refuse our test row \\(${G.CONSTRAINT}_v2`).test(r.why || ''),
+          `  …it names the constraint that did refuse us (${(r.why || '').slice(-110)})`);
+      }
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}_v2`);
+
+      /* (h8b) …AND A BLOCKER THAT IS NOT ABOUT GOOGLE MUST NOT BE MISTAKEN FOR ONE.
+         A name cannot tell them apart, so the CONTROL ROW does: the same row under a
+         non-Google source. Accepted → the blocker is keyed on the source (h8);
+         refused → it is about the row, and says nothing about Google. */
+      /* Keyed on a value ONLY the probe rows ever carry, so it cannot refuse a real
+         property and cannot fail to apply over the rows already in the table. */
+      await client.query(
+        `ALTER TABLE properties ADD CONSTRAINT lic_unrelated CHECK (display_address <> 'licensing probe')`);
+      {
+        const v = await G._internals.verifyRefusesGoogle(client);
+        ok(v.tested === false && v.by === 'lic_unrelated' && v.controlAccepted === false,
+          `an unrelated blocker refuses the control row too (${JSON.stringify(v)})`);
+        const r = await G.checkGeoLicensing(client, { verifyWrite: true });
+        ok(!/Something else DID refuse/.test(r.why || ''),
+          '  …so it is never reported as another rule protecting the warehouse');
+        ok(/nothing at the database level stops/.test(r.why || ''),
+          `  …and the honest "nothing is stopping this" stands (${(r.why || '').slice(-80)})`);
+      }
+      await client.query(`ALTER TABLE properties DROP CONSTRAINT lic_unrelated`);
 
       /* (h6) `probeBlockedBy` MEANS "something ELSE stopped us", and a healthy
          database was publishing the rule's OWN name there — beside `ok:true`, out
@@ -821,25 +952,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
 
       /* (h7) THE STORED-ROW BRANCH SUPERSEDES THE HEDGED ONE, so it must carry that
-         branch's caveat rather than drop it. `… OR street IS NOT NULL` is the case:
+         branch's caveat rather than drop it. `… OR apn IS NOT NULL` is the case:
          `IS NOT NULL` is never NULL, so NEITHER probe shape slips past it and the
-         probe honestly reports REFUSED — while a real property, which has a street,
-         takes a Google coordinate straight into the warehouse. Wording that as "it
+         probe honestly reports REFUSED — while a real property, which has a parcel
+         number, takes a Google coordinate straight into the warehouse. (It used to
+         be keyed on `street`; the populated probe row now carries one, because
+         geocode.js only ever writes to rows that have a street. The parcel number
+         is the same shape of fact and the probe row still lacks it.) Wording that as "it
          still stops some writes — but not the ones already stored" left the guard
          WEAKER than the truth, telling the operator the only exposure was
          historical at the moment a live write was going in. */
       await client.query(
-        `INSERT INTO properties (address_key, display_address, street, city, state, zip,
+        `INSERT INTO properties (address_key, display_address, street, apn, city, state, zip,
            geo_source, geo_latitude, geo_longitude)
-         VALUES ($1,'x','Bishop St','Trenton','NJ','08608','google_places',40.1,-74.1)`,
+         VALUES ($1,'x','Bishop St','21-00473-0002','Trenton','NJ','08608','google_places',40.1,-74.1)`,
         [`nj|h7|${sfx}`]);
+      /* A SECOND Google-sourced row with NO coordinate, so the two counts DIFFER.
+         Without it both fixtures that reach this branch had offenders ===
+         storedGoogleCoords === 1, which made the very distinction the two-count fix
+         exists to draw untestable — printing `offenders` in place of
+         `storedGoogleCoords` left the suite fully green. */
+      await client.query(
+        `INSERT INTO properties (address_key, display_address, street, apn, city, state, zip, geo_source)
+         VALUES ($1,'x','Bishop St','21-00473-0003','Trenton','NJ','08608','google_places')`,
+        [`nj|h7b|${sfx}`]);
       await client.query(`ALTER TABLE properties ADD CONSTRAINT ${G.CONSTRAINT}
-        CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR street IS NOT NULL)`);
+        CHECK ((geo_source IS NULL OR lower(geo_source) NOT LIKE '%google%') OR apn IS NOT NULL)`);
       {
         // THE PREMISE, both halves asserted rather than assumed.
         const v = await G._internals.verifyRefusesGoogle(client);
         ok(v.tested === true && v.refused === true,
-          `both probe shapes lack a street, so the probe is honestly REFUSED (${JSON.stringify(v)})`);
+          `both probe shapes lack a parcel number, so the probe is honestly REFUSED (${JSON.stringify(v)})`);
         await client.query('SAVEPOINT h7real');
         let realStored = true;
         try {
@@ -849,7 +992,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
              WHERE address_key = $1`, [`nj|h7|${sfx}`]);
         } catch (_) { realStored = false; }
         await client.query('ROLLBACK TO SAVEPOINT h7real');
-        ok(realStored, '  …while a real property, which HAS a street, takes one straight in');
+        ok(realStored, '  …while a real property, which HAS a parcel number, takes one straight in');
 
         const r = await G.checkGeoLicensing(client, { verifyWrite: true });
         ok(r.neuteredBy === 'stored-row',
@@ -858,9 +1001,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           `  …carrying the caveat, not dropping it (${(r.why || '').slice(-120)})`);
         ok(!/only exposure|but not the ones already stored/.test(r.why || ''),
           '  …and never implying the exposure is only historical');
+        /* THE TWO COUNTS, EACH IN ITS OWN SENTENCE. `offenders` is every
+           Google-sourced row; `storedGoogleCoords` only those holding a coordinate.
+           Wording both as "already carr… a Google-sourced coordinate" printed two
+           different numbers about the same table in one message. */
+        ok(r.offenders === 2,
+          `  …the file really does hold two Google-sourced rows (${r.offenders})`);
+        ok(/2 properties already carry a Google-sourced coordinate/.test(r.why || ''),
+          '  …the re-apply advice counts ALL of them');
+        ok(/1 of them also holds a STORED latitude and longitude/.test(r.why || ''),
+          `  …while the permits-at-least-those claim counts only the ones with a coordinate (${
+            (r.why || '').slice(0, 150)})`);
+        // …and the probe fields describe the probe that actually ran, not a default.
+        ok(r.probeTested === true && r.probeBlockedBy === null,
+          `  …and the probe fields report the run (${JSON.stringify({ t: r.probeTested, b: r.probeBlockedBy })})`);
       }
       await client.query(`ALTER TABLE properties DROP CONSTRAINT ${G.CONSTRAINT}`);
-      await client.query(`DELETE FROM properties WHERE address_key = $1`, [`nj|h7|${sfx}`]);
+      await client.query(`DELETE FROM properties WHERE address_key = ANY($1)`,
+        [[`nj|h7|${sfx}`, `nj|h7b|${sfx}`]]);
 
       /* (i) THE OFFENDER COUNT IS THE ONLY NUMBER ANYBODY CAN ACT ON, and the
          short-circuit had dropped it from the altered-constraint message. Also:
