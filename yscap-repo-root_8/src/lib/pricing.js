@@ -808,6 +808,8 @@ function econVersionFor(app) {
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
+
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
     (app.property_address && (app.property_address.zip || app.property_address.postal_code)) || '',
   ].map(f).join('|');
