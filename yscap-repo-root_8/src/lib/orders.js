@@ -23,6 +23,11 @@ const email = require('./email');
 const notify = require('./notify');
 const tpl = require('./email/template');
 const { orderReplyTo } = require('./file-address');
+// RCN detection is the ONE shared note-buyer helper (mirrors isFidelis/isEmcap/
+// isBlueLake), so the order clause and the underwriting mortgagee-address check
+// agree on which files are RCN. normNoteBuyer normalizes exactly as the old local
+// copy did (lowercase, non-alphanumerics stripped) — behavior unchanged.
+const { isRcnNoteBuyer } = require('./conditions/field-registry');
 
 const ORDER_TYPES = ['title', 'insurance'];
 // The service-contact type that fulfils each order (a title order needs the
@@ -49,16 +54,6 @@ const MORTGAGEE_CLAUSE_RCN = [
   'PO Box 15126',
   'Richmond, VA 23227-0526',
 ];
-
-/** Is this file's note buyer RCN? `applications.lender` is a free-text ClickUp
-    label, so "RCN", "RCN Capital", "RCN Capital, LLC" all count — a prefix match on
-    the normalized key (lowercase, non-alphanumerics stripped), the same shape as
-    isFidelisNoteBuyer. No other note buyer starts with "rcn", and this is confined
-    to the order email so it can never touch the data-tape access gate (which keys
-    on its own exact note-buyer set). */
-function isRcnNoteBuyer(lender) {
-  return /^rcn/.test(String(lender || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
-}
 
 /** The mortgagee clause LINES for a file, by note buyer (RCN → the servicer clause,
     everyone else → the standard YS Capital clause). The loan number is appended by

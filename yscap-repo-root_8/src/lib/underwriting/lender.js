@@ -10,8 +10,26 @@
 const LENDER_NAME = 'YS CAPITAL GROUP';
 const LENDER_MORTGAGEE_CLAUSE =
   'YS CAPITAL GROUP ISAOA/ATIMA\n5 NEW MONROSE AVE #BSMT BROOKLYN NY 11211';
+// On an RCN file the note is serviced by Elite Commercial Servicing, so PILOT
+// itself requests THIS notice address on the vendor order (lib/orders.js). The
+// insurance/title mortgagee-address check therefore recognizes it as ours too —
+// but ONLY when the file's note buyer is actually RCN (opts.rcn below), so a stray
+// Richmond address on a non-RCN file is still flagged. Owner-provided 2026-08-04.
+const LENDER_MORTGAGEE_CLAUSE_RCN =
+  'YS CAPITAL GROUP ISAOA ATIMA\nC/O ELITE COMMERCIAL SERVICING, LLC PO BOX 15126 RICHMOND VA 23227-0526';
 
 const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Does the clause carry the Elite Commercial Servicing notice address (the RCN
+// servicer)? The servicer name OR the PO box, together with the Richmond ZIP — any
+// one distinctive part alone could coincide, but a servicer/box marker AND 23227 in
+// Richmond is the address. Pure text test; the caller decides whether the file is RCN.
+function hasRcnServicerAddress(text) {
+  const n = norm(text);
+  if (!n) return false;
+  const richmondZip = /richmond/.test(n) && /23227/.test(n);
+  return richmondZip && (/elite commercial/.test(n) || /15126/.test(n));
+}
 
 // Does the captured clause text name OUR lender with the ISAOA/ATIMA (successors-and-assigns)
 // language? Returns true / false / null(unknown — nothing captured, so never a false accusation).
@@ -24,10 +42,13 @@ function clauseNamesLender(text) {
 }
 
 // Does the clause also carry the correct notice address? (Only meaningful once it names the lender.)
-function clauseHasAddress(text) {
+function clauseHasAddress(text, opts = {}) {
   const n = norm(text);
   if (!n) return null;
-  return /5 new monrose ave/.test(n) && /brooklyn/.test(n) && /11211/.test(n);
+  if (/5 new monrose ave/.test(n) && /brooklyn/.test(n) && /11211/.test(n)) return true;
+  // RCN files: the Elite Commercial Servicing address is also ours (see above).
+  if (opts.rcn && hasRcnServicerAddress(text)) return true;
+  return false;
 }
 
 // IS THERE A NOTICE ADDRESS AT ALL? (owner-directed 2026-07-26: the address notice "should auto-clear
@@ -46,10 +67,10 @@ function clauseHasAddress(text) {
 //
 // Returns 'ours' | 'present' | 'none', or null when nothing was captured (never an accusation off a
 // document we could not read).
-function clauseAddressState(text) {
+function clauseAddressState(text, opts = {}) {
   const n = norm(text);
   if (!n) return null;
-  if (clauseHasAddress(text)) return 'ours';
+  if (clauseHasAddress(text, opts)) return 'ours';
   // What counts as an address being PRINTED. Both patterns are deliberately anchored: a bare
   // "number followed by a word" matches "loan 12345 mortgagee", and a bare 5-digit run matches a
   // loan or policy number — either would have read a clause with NO address as having one and
@@ -63,4 +84,4 @@ function clauseAddressState(text) {
   return (hasStreet || hasZip) ? 'present' : 'none';
 }
 
-module.exports = { LENDER_NAME, LENDER_MORTGAGEE_CLAUSE, clauseNamesLender, clauseHasAddress, clauseAddressState, _norm: norm };
+module.exports = { LENDER_NAME, LENDER_MORTGAGEE_CLAUSE, LENDER_MORTGAGEE_CLAUSE_RCN, clauseNamesLender, clauseHasAddress, clauseAddressState, hasRcnServicerAddress, _norm: norm };

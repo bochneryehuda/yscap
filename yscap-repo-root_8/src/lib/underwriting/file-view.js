@@ -29,7 +29,10 @@ async function loadContext(client, appId) {
             -- looking at. OCCUPANCY is deliberately NOT in this list: the appraisal's occupancy is
             -- the SELLER's use today and our file's is the borrower's use after closing, so the two
             -- are never compared (owner-directed 2026-08-02, "the occupancy — skip").
-            seller_name, year_built, living_area_sqft, market_rent
+            seller_name, year_built, living_area_sqft, market_rent,
+            -- the note buyer (STAFF-ONLY) — the insurance mortgagee-address check needs it so an
+            -- RCN file's Elite Commercial Servicing notice address reads as ours, not "unrecognized"
+            lender
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
   const loadBorrower = async (id) => (id
@@ -232,6 +235,7 @@ function subjectFor(docType, ctx) {
         loan_amount: app && app.loan_amount, purchase_price: app && app.purchase_price,
         rehab_budget: app && app.rehab_budget, // so the insurance check knows this is a construction/rehab deal
         loan_number: (app && app.ys_loan_number) || null, // the policy must carry our loan number + mortgagee clause
+        note_buyer: (app && app.lender) || null, // RCN files: the Elite Commercial Servicing address is ours
       };
     case 'operating_agreement':
     case 'ein_letter':
