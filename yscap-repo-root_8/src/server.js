@@ -53,6 +53,30 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
+
+/* THE PUBLIC PRICING DOOR PAYS FOR ITS OWN SIZE, AND PAYS IT LAST (audit
+   2026-08-03). `/api/pricing/studio` is the one door here an ANONYMOUS visitor
+   can call. Its rate limit used to sit ~50 lines below the global parser, so
+   the order was: parse up to 32MB of JSON, walk every string in it, and only
+   then decide whether the caller was over their limit. Measured: a 24MB body
+   answered in 223ms of BLOCKED event loop — nothing else in PILOT is served
+   during it — and a body that was going to be 429'd still paid the full parse,
+   so the limiter protected nothing expensive.
+
+   Both halves are now in front of the global parser, in the order that makes
+   the cheap refusal cheap: the limit first, then a 32kb parser (a studio quote
+   is ~700 bytes; nothing legitimate comes near it). Same shape as the
+   TrustPoint webhook above, and for the same stated reason — an
+   unauthenticated caller must never be able to force a huge parse.
+
+   Mounting it HERE rather than at the route keeps everything downstream
+   unchanged: body-parser skips a body already parsed (`req._body`), so the
+   global parser below is a no-op for this path, and `nul-strip` — which runs
+   after and reads `req.body` — still scrubs it exactly as before. */
+const { rateLimit } = require('./lib/rate-limit');
+app.use('/api/pricing', rateLimit({ bucket: 'pricing-quote', windowMs: 60000, max: 240 }));
+app.use('/api/pricing', express.json({ limit: '32kb' }));
+
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -85,7 +109,8 @@ app.use(require('./lib/nul-strip').middleware);
 // The per-account lockout can't stop credential-stuffing across many accounts
 // or flooding of the public endpoints; this does, and it shields the scrypt
 // threadpool from a login flood. Generous enough never to hit a real user.
-const { rateLimit } = require('./lib/rate-limit');
+// (`rateLimit` is required above, where the public pricing door mounts its own
+// limit ahead of the global JSON parser.)
 app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
 app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
 app.use('/api/apply', rateLimit({ bucket: 'apply', windowMs: 60000, max: 10 }));   // public application submit (creates real files)
@@ -98,6 +123,19 @@ app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120
 // open the pricing controls). The password check moved off the browser, so the
 // only remaining attack is guessing — rate-limit it hard. Staff type it once.
 app.use('/api/pricing-admin', rateLimit({ bucket: 'pricing-admin', windowMs: 60000, max: 10 }));
+// The studio quote's rate limit (issue #7) is NOT here — it is mounted with its
+// own 32kb parser ABOVE the global JSON parser, so an over-limit caller is
+// refused before anything expensive happens. See the block up there.
+//
+// The term-sheet tool re-prices as the visitor types, so it is chatty BY DESIGN
+// — the limit is set for a person working a deal, not for someone walking the
+// guideline space. It answers ONE priced deal per call, through an allowlist,
+// and never the tables behind it (src/routes/pricing-quote.js).
+//
+// NOTE the page does NOT debounce — an earlier version of this comment claimed
+// it did. termsheet.js recomputes on every input event, so the limit is what
+// actually bounds the request rate; do not lower it on the strength of a
+// debounce that is not there.
 
 // A PER-USER API answer must never be STORED by the browser.
 //
@@ -325,6 +363,10 @@ app.get('/api/pricing-defaults', async (req, res) => {
 // with the PUBLIC routes and deliberately unauthenticated: the password is the
 // credential, so a staffer on a shared term-sheet link can still open the panel.
 app.use('/api/pricing-admin', require('./routes/pricing-admin'));
+// Studio quote (see src/routes/pricing-quote.js). Public for the same reason
+// the marketing term sheet is public — an anonymous visitor prices a deal — and
+// deliberately mounted with the other public routes.
+app.use('/api/pricing', require('./routes/pricing-quote'));
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)

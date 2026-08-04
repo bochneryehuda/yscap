@@ -68,6 +68,57 @@ const routeSrc = fs.readFileSync(path.join(ROOT, 'src/routes/pricing-admin.js'),
 ok(!routeSrc.includes(LEGACY_PW), 'pricing-admin.js: stores a digest, not the plaintext');
 
 // ---------------------------------------------------------------------------
+// 1b. THE WHOLE REPOSITORY — not a list of files somebody has to remember
+// ---------------------------------------------------------------------------
+// The SHIPPED list above asks "is the password in one of these six browser-
+// served files?", which is a much smaller question than "is the password in
+// the repository?" — and the difference was real: an audit (2026-08-03) found
+// FOUR copies of the live password sitting in docs/portal-audit/*.md, written
+// there by an earlier audit write-up that was documenting the very same
+// vulnerability. Nothing failed, because docs/ was not on anyone's list.
+//
+// A list of places to check can only ever cover the places somebody thought
+// of. So this walks the entire tree instead. docs/ is not served to a browser,
+// so that leak was repo-read disclosure rather than a live one — but a
+// credential in the repository is a credential handed to every clone, CI
+// artifact and contractor, and it must fail here.
+const SKIP_DIRS = new Set(['node_modules', '.git', 'uploads', 'dist', 'coverage']);
+const SCAN_EXT = new Set([
+  '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.json', '.html', '.css',
+  '.md', '.txt', '.yml', '.yaml', '.sql', '.sh', '.example', '.env',
+]);
+// This file necessarily knows the password (it is what it searches for), and
+// spells it in pieces so it is not a literal. Exempt it by path, not by
+// content, so a future edit that pastes it in whole still fails everywhere else.
+const SELF = path.relative(ROOT, __filename);
+
+function walkRepo(dir, out) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return out; }
+  for (const e of entries) {
+    if (SKIP_DIRS.has(e.name)) continue;
+    const abs = path.join(dir, e.name);
+    if (e.isDirectory()) { walkRepo(abs, out); continue; }
+    if (!SCAN_EXT.has(path.extname(e.name)) && !e.name.startsWith('.env')) continue;
+    out.push(abs);
+  }
+  return out;
+}
+
+const carriers = [];
+for (const abs of walkRepo(ROOT, [])) {
+  const rel = path.relative(ROOT, abs);
+  if (rel === SELF) continue;
+  let src = '';
+  try { src = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
+  if (src.includes(LEGACY_PW)) carriers.push(rel);
+}
+ok(
+  carriers.length === 0,
+  `no file anywhere in the repository carries the plaintext password${carriers.length ? ` (found in: ${carriers.join(', ')})` : ''}`,
+);
+
+// ---------------------------------------------------------------------------
 // 2. The route
 // ---------------------------------------------------------------------------
 const express = require('express');
