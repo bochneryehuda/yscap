@@ -5313,7 +5313,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     if (isOrderKind(String((req.body && req.body.scope) || ''))) {
       const kind = String(req.body.scope);
       const row = (await db.query(
-        `SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+        `SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
       // FAIL CLOSED, like the closing branch. Falling through would send a vendor
       // reply to the borrower — the exact outcome this branch exists to prevent — so
       // a scope the file cannot honour is refused, never redirected.
@@ -5335,19 +5335,27 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
       const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      // Reply on the SAME vendor chain the order was placed on (owner-directed
+      // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
+      const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`,
+        type: `${kind}_followup`, thread,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
       }
       // A reply IS a follow-up on this order — record it as one so the aging clock
-      // and the desk's "last chased" both reflect that somebody wrote to the vendor.
+      // and the desk's "last chased" both reflect that somebody wrote to the vendor,
+      // and advance the thread (lastMessageId) on a confirmed send.
       await db.query(
-        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
-          WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+                meta = CASE WHEN $3::text IS NOT NULL
+                         THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                         ELSE meta END,
+                updated_at=now()
+          WHERE application_id=$1 AND order_type=$2`, [appId, kind, sent.messageId || null]);
       await orderTracking.recordEvent({
         applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
@@ -5801,6 +5809,19 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       // may well have delivered it, and releasing would invite the re-send that
       // double-orders.
       await orderTracking.ensureAssignee(appId, kind);
+      // Anchor the vendor conversation on THIS order's Message-ID (the thread root)
+      // so a later follow-up / Email Center reply lands on the same chain in the
+      // vendor's inbox instead of a new one (owner-directed 2026-08-04). Only on a
+      // CONFIRMED send (an ambiguous send carries no id); best-effort — a missed
+      // stamp just means the follow-up threads by subject, not by header. A re-send
+      // re-anchors the thread, which is correct (the vendor sees a fresh order).
+      if (sendRes.messageId) {
+        await db.query(
+          `UPDATE file_orders
+              SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('rootMessageId', $3::text, 'lastMessageId', $3::text)
+            WHERE application_id=$1 AND order_type=$2`,
+          [appId, kind, sendRes.messageId]).catch(() => {});
+      }
       /* RE-SENDING A FINISHED ORDER IS A REOPEN, AND IT MUST BE RECORDED AS ONE.
          The retire sweep leaves an order alone only while a 'reopened' event is
          NEWER than the last 'completed' one — that is the whole mechanism by which
@@ -5862,7 +5883,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
   if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(`SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const row = (await db.query(`SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
       return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
     }
@@ -5886,19 +5907,30 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // follow-up the vendor never received whenever email was off or the API key had
     // rotated — so `last_followup_at` moved, the aging clock reset, and the order
     // looked chased. On this desk a false "we chased them" is worse than an error.
+    // The follow-up rides the SAME vendor conversation the order was placed on:
+    // reuse the order's subject + reference its Message-ID so it threads in the
+    // vendor's inbox instead of opening a new chain (owner-directed 2026-08-04).
+    const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
     const sendRes = await orders.sendOrderMail({
       appId, kind, data, to, cc, replyTo, built,
       fromName: meRow.full_name || meRow.email,
-      type: `${kind}_followup`,
+      type: `${kind}_followup`, thread,
     });
     if (!sendRes.ok && !sendRes.ambiguous) {
       return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
     }
     // An ambiguous send counts: the provider may have delivered it, and NOT
     // recording it would have the desk telling somebody to chase again immediately.
+    // A confirmed send also ADVANCES the thread (lastMessageId) so the next
+    // follow-up references this message; an ambiguous send carries no id, so the
+    // thread is left pointing at the last confirmed message.
     await db.query(
-      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
-        WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+              meta = CASE WHEN $3::text IS NOT NULL
+                       THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                       ELSE meta END,
+              updated_at=now()
+        WHERE application_id=$1 AND order_type=$2`, [appId, kind, sendRes.messageId || null]);
     await orderTracking.recordEvent({
       applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
       detail: { to: to.length, note: note ? note.slice(0, 200) : null, unconfirmed: !!sendRes.ambiguous },
