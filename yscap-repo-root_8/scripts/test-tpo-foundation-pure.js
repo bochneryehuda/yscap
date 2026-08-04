@@ -1,7 +1,7 @@
 'use strict';
 /**
  * TPO PORTAL foundation — pure tests for the permission / scoping helpers
- * (db/464 + db/465; no database needed). Guards the invariants that keep an
+ * (db/467 + db/468; no database needed). Guards the invariants that keep an
  * external brokerage user boxed into their own firm and out of internal gates.
  */
 const assert = require('assert');

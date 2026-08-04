@@ -352,7 +352,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 }
 
 /** Invitation to the TPO (external brokerage) portal — a broker or one of their
- *  processors sets up their account to start submitting loans (db/464/466). */
+ *  processors sets up their account to start submitting loans (db/467/469). */
 function tpoInvite({ fullName, firmName, role, acceptUrl, days = 7 } = {}) {
   const roleLabel = ({ tpo_officer: 'Loan Officer', tpo_processor: 'Processor' })[role] || 'team member';
   const meta = [{ label: 'Role', value: roleLabel }];

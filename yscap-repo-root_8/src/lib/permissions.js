@@ -193,7 +193,7 @@ const visibleOfficersSql = (alias, p) =>
   ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 
 // ============================================================================
-// TPO PORTAL (owner-directed 2026-08-04; db/464 + db/465; design
+// TPO PORTAL (owner-directed 2026-08-04; db/467 + db/468; design
 // docs/TPO-PORTAL-BLUEPRINT.md). A TPO user is an EXTERNAL staff_users row
 // (`is_external=true`, `tpo_firm_id` set, role tpo_officer / tpo_processor) whose
 // SESSION carries `kind='tpo'`. They are deliberately NOT in the ROLES array

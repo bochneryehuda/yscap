@@ -381,7 +381,7 @@ app.use('/api/borrower-view', require('./routes/borrower-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
-// TPO PORTAL — the external brokerage front door (db/464/465). The router
+// TPO PORTAL — the external brokerage front door (db/467/468). The router
 // applies requireAuth + requireTpo + firm scoping itself; a tpo session is
 // structurally refused by /api/staff and /api/borrower (requireStaff /
 // requireBorrower), and an internal/borrower session is refused here.
@@ -429,7 +429,7 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
-  // TPO firm onboarding (db/464/466). The router self-gates requireAuth +
+  // TPO firm onboarding (db/467/469). The router self-gates requireAuth +
   // requireStaff + manage_team; the mount adds the staff wall as defense-in-depth.
   app.use('/api/admin/tpo', requireAuth, requireStaff, require('./routes/admin-tpo'));
   // API Health — the status of every external API / integration (config presence + live reach).
