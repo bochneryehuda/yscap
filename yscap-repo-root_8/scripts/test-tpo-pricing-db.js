@@ -126,21 +126,44 @@ function noMargin(bundle) {
       filename: 'term-sheet.pdf', contentType: 'application/pdf', dataBase64: tsB64, applicationId: appA, docKind: 'term_sheet', termSheetFinal: false });
     ok(up1.status === 201 && up1.body.documentId, 'the studio uploads the term-sheet PDF (201)');
     const ts1 = (await db.query(`SELECT doc_kind, review_status, is_current, term_sheet_final, checklist_item_id FROM documents WHERE id=$1`, [up1.body.documentId])).rows[0];
-    ok(ts1 && ts1.doc_kind === 'term_sheet' && ts1.review_status === 'accepted' && ts1.is_current === true,
-      'the term sheet is born ACCEPTED and current (studio-generated, not a human upload)');
-    ok(ts1 && ts1.term_sheet_final === false, 'the term sheet records the stamp it PRINTS (initial)');
+    ok(ts1 && ts1.doc_kind === 'term_sheet' && ts1.review_status === 'pending' && ts1.is_current === true,
+      'a broker\'s term sheet is born PENDING (untrusted external party — the LENDER reviews it before it is accepted)');
+    ok(ts1 && ts1.term_sheet_final === false, 'a fresh file\'s term sheet is stamped INITIAL (server-derived)');
     ok(ts1 && ts1.checklist_item_id != null, 'the term sheet auto-attaches to the Products & pricing condition');
     const ts1cond = ts1 && ts1.checklist_item_id
       ? (await db.query(`SELECT tool_key FROM checklist_items WHERE id=$1`, [ts1.checklist_item_id])).rows[0] : null;
     ok(!ts1cond || ts1cond.tool_key === 'product_pricing', 'the term sheet condition is the pricing condition');
-    // a second term sheet supersedes the first — exactly one current
+    // a second term sheet supersedes the first — exactly one current — and a broker
+    // CANNOT forge FINAL: the client claims termSheetFinal:true, the server ignores
+    // it and re-derives INITIAL from the send gate (a fresh file has open blockers).
     const up2 = await call(server, 'POST', '/api/tpo/documents', tokA, {
       filename: 'term-sheet-2.pdf', contentType: 'application/pdf', dataBase64: Buffer.from('%PDF-1.4 second ' + sfx).toString('base64'), applicationId: appA, docKind: 'term_sheet', termSheetFinal: true });
     ok(up2.status === 201, 'the studio uploads a second (re-registered) term sheet');
+    ok((await db.query(`SELECT term_sheet_final FROM documents WHERE id=$1`, [up2.body.documentId])).rows[0].term_sheet_final === false,
+      'a broker\'s forged termSheetFinal:true is IGNORED — the server re-derives INITIAL (the send byte-check can\'t be defeated)');
     ok((await db.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='term_sheet' AND is_current=true`, [appA])).rows[0].n === 1,
       'exactly ONE term sheet is current — the prior was superseded');
     ok((await db.query(`SELECT is_current FROM documents WHERE id=$1`, [up1.body.documentId])).rows[0].is_current === false,
       'the first term sheet is no longer current');
+    // Fix (security audit): a STAFF registration's internal admin-override knobs
+    // (ovr*/forcePrice/manualPricing/markup*) must be STRIPPED from a broker's
+    // pricing-history view — internal underwriting-override disclosure.
+    await db.query(
+      `INSERT INTO product_registrations (application_id, program, product_label, status, note_rate, total_loan, is_current, inputs, quote, registered_by)
+       VALUES ($1,'standard','Standard','ELIGIBLE',0.1,150000,false,$2,$3,$4)`,
+      [appA,
+       JSON.stringify({ purchasePrice: 200000, asIsValue: 200000, arv: 300000, rehabBudget: 40000, term: 12, ovrLTC: 0.85, ovrRate: 0.0925, ovrEffPrice: 410000, forcePrice: true, manualPricing: true, markupStdPct: 2, fico: 700 }),
+       JSON.stringify({ noteRate: 0.1, adminPricing: { spread: 0.02 } }), brokerA]);
+    const pg2 = await call(server, 'GET', `/api/tpo/applications/${appA}/pricing`, tokA);
+    const staffHist = (pg2.body.history || []).find((h) => Number(h.total_loan) === 150000);
+    const si = (staffHist && staffHist.inputs) || {};
+    ok(staffHist && !('ovrLTC' in si) && !('ovrRate' in si) && !('ovrEffPrice' in si) && !('forcePrice' in si)
+        && !('manualPricing' in si) && !('markupStdPct' in si) && !('fico' in si),
+      'a staff registration\'s admin-override knobs are STRIPPED from the broker\'s pricing history');
+    ok(staffHist && si.purchasePrice === 200000 && si.term === 12,
+      'the borrower-safe scenario (price / term / values) survives the strip');
+    ok(staffHist && (!staffHist.quote || !('adminPricing' in staffHist.quote)),
+      'the staff registration\'s adminPricing (internal margin) is stripped from the history quote');
 
     // ---- 5) a broker cannot forge an arbitrary doc_kind ----
     const forge = await call(server, 'POST', '/api/tpo/documents', tokA, {

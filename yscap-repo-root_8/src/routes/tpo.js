@@ -26,7 +26,7 @@ const mail = require('../lib/email/catalog');
 const fields = require('../lib/fields');
 const storage = require('../lib/storage');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
-const { scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
+const { scrubText, scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
 const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
 const pricing = require('../lib/pricing');
 const { RECENT_EXIT_SQL } = require('../lib/experience');
@@ -39,6 +39,20 @@ const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+
+// Belt-and-suspenders for the untrusted external broker: scrub any capital-partner
+// name out of the STRING VALUES of a stored pricing object (inputs / quote /
+// term_options) before it reaches a broker. Recurses strings only — never the
+// structure — so it can't corrupt a number or reshape an object. The frozen
+// engines emit no partner name today (verified), so this is defense-in-depth, not
+// a live leak; it costs nothing and closes the whole class if a future engine or a
+// hand-edited registration ever stores one.
+function scrubDeepStrings(v) {
+  if (typeof v === 'string') return scrubText(v);
+  if (Array.isArray(v)) return v.map(scrubDeepStrings);
+  if (v && typeof v === 'object') { const o = {}; for (const [k, val] of Object.entries(v)) o[k] = scrubDeepStrings(val); return o; }
+  return v;
+}
 
 // Every TPO route is gated: a valid session AND the tpo kind.
 router.use(requireAuth, requireTpo);
@@ -469,7 +483,10 @@ router.get('/applications/:id/pricing', async (req, res, next) => {
     // — a staff-created registration's quote AND inputs embed it. Never send
     // registered_by (WHICH staffer priced it is internal). The rest of `inputs` is
     // the file's own registered scenario, which the studio renders from.
-    const redactRow = (row) => row ? { ...row, quote: stripQuoteInternal(row.quote), inputs: stripInputsInternal(row.inputs) } : row;
+    const redactRow = (row) => row ? { ...row,
+      quote: scrubDeepStrings(stripQuoteInternal(row.quote)),
+      inputs: scrubDeepStrings(stripInputsInternal(row.inputs)),
+      term_options: scrubDeepStrings(row.term_options) } : row;
     const history = hist.rows.map(redactRow);
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
@@ -704,6 +721,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     let termSheetFinal = false;
     try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(appId, { db })).final; } catch (_) { termSheetFinal = false; }
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote), pendingApproval: needsEscalation, termSheetFinal });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check a
+    // registered Silver scenario against the workbook transcription — watch-only,
+    // never blocks. Fired on every register surface, including the broker's.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -777,17 +802,30 @@ router.post('/documents', async (req, res, next) => {
     const filename = safeFilename(b.filename);
     // A broker may only ever set the ONE special kind — the Term Sheet Studio's own
     // generated PDF captured at registration (the "that kind only" pattern, db/424
-    // §2b). It auto-attaches to the Products & pricing condition, is born ACCEPTED
-    // (studio-generated, not a human upload — lib/document-acceptance.js), records
-    // which stamp it PRINTS (db/404 — a description, never an authorization), and
-    // supersedes the prior term sheet so exactly one is current. Any other docKind
-    // is ignored — a broker cannot forge an arbitrary kind onto a document.
+    // §2b). It auto-attaches to the Products & pricing condition and supersedes the
+    // prior term sheet so exactly one is current. Any other docKind is ignored — a
+    // broker cannot forge an arbitrary kind onto a document. A BROKER IS AN
+    // EXTERNAL, UNTRUSTED PARTY, so — unlike the borrower/staff studio (a trusted
+    // surface whose deterministic frozen-engine PDF is born accepted) — a broker's
+    // term sheet is handled like db/424's other untrusted system-written docs (a
+    // vendor order return, an adopted entity doc): (a) the FINAL/INITIAL stamp is
+    // RE-DERIVED server-side from the send gate, so a broker can NEVER forge
+    // `termSheetFinal:true` to defeat the DocuSign send's byte-integrity check
+    // (orchestrate.js); (b) it is born PENDING, so the LENDER reviews it before it
+    // is accepted or ships in any package — a broker provides, WE vouch.
     const isTermSheet = b.docKind === 'term_sheet' && !b.checklistItemId;
     const docKind = isTermSheet ? 'term_sheet' : null;
-    const termSheetFinal = isTermSheet ? (b.termSheetFinal === true) : null;
+    let termSheetFinal = null;
     let itemId = null;
     let slot = null;
     if (isTermSheet) {
+      // Never accept a term sheet while a fatal appraisal finding holds terms —
+      // parity with the borrower + staff upload doors (owner-directed 2026-07-31).
+      let hold = null;
+      try { hold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, b.applicationId); } catch (_) {}
+      if (hold) return res.status(422).json({ error: 'The terms are being finalized — the loan team is reviewing the appraisal. A term sheet will be available shortly.', code: 'appraisal_hold' });
+      // Re-derive the stamp server-side (ignore the client-forgeable flag).
+      try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(b.applicationId, { db })).final; } catch (_) { termSheetFinal = false; }
       const pp = await db.query(
         `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
         [b.applicationId]);
@@ -811,11 +849,13 @@ router.post('/documents', async (req, res, next) => {
       applicationId: b.applicationId, checklistItemId: itemId, llcId: null, trackRecordId: null, slotLabel: slot, docKind, termSheetFinal });
     if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename });
+    // Born PENDING — everything a broker uploads (a document OR their term sheet)
+    // is reviewed by the lender before it is accepted (see the term-sheet note
+    // above). `term_sheet_final` still records what the bytes PRINT (the send gate
+    // reads it), but it was re-derived server-side, not trusted from the request.
     const r = await db.query(
-      `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final,visibility,review_status,reviewed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,$12,'borrower',
-               CASE WHEN $10='term_sheet' THEN 'accepted' ELSE 'pending' END,
-               CASE WHEN $10='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
+      `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final,visibility,review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,$12,'borrower','pending') RETURNING id`,
       [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, docKind, slot, termSheetFinal]);
     if (isTermSheet) {
       // Exactly one term sheet is current — supersede the prior (the register

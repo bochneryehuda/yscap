@@ -157,8 +157,26 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
-  return rest;
+  // Remove the internal markup/spread, the pricing FICO, and EVERY admin OVERRIDE
+  // knob — the manual leverage caps (ovrAcqLTV / ovrLTC / ovrARLTV…), the approved
+  // effective-price exception (ovrEffPrice), the forced rate (ovrRate), the
+  // interest-reserve override (ovrIrMonths) and the flags that say the lender
+  // priced this file PAST its own guidelines (forcePrice / manualPricing). Those
+  // are internal underwriting disclosure a non-lender (a borrower OR an external
+  // broker) must never read off a staff-created registration's stored inputs.
+  // Prefix-strip `markup*` and `ovr*` so a NEW admin knob can never leak by drift
+  // (an allowlist-by-construction for that whole class — no borrower-safe engine
+  // input starts with either prefix). Kept: the scenario itself (price / values /
+  // budget / term / reserve / experience / program / loan type) and the
+  // borrower-DISCLOSED costs (origination points, lender / credit / appraisal /
+  // title fees) — those already print on the term sheet.
+  const out = {};
+  for (const [k, v] of Object.entries(inp)) {
+    if (k === 'fico' || k === 'forcePrice' || k === 'manualPricing') continue;
+    if (k.startsWith('markup') || k.startsWith('ovr')) continue;
+    out[k] = v;
+  }
+  return out;
 }
 // Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
 function borrowerSafeQuoteBundle(out) {
