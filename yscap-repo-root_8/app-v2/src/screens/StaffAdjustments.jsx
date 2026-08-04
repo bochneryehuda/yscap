@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, TEAL, S } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* A DOLLAR FIGURE THAT KEEPS ITS CENTS WHEN THEY MATTER. The shared `money`
    rounds to whole dollars, which is right for a $25,000 condition line and wrong
@@ -118,12 +120,16 @@ export default function StaffAdjustments() {
 
   return (
     <div>
+      <ResearchNav />
       <h1 style={{ margin: '0 0 4px', color: INK, fontSize: 24 }}>What our appraisers charge</h1>
       <p style={{ margin: '0 0 14px', color: MUTED, fontSize: 14, maxWidth: 720 }}>
         Every adjustment our own appraisers have written, gathered by what they adjusted for. This is
         a statement about <b style={{ color: INK }}>our reports</b> — not about the market — which is
         exactly what makes it worth quoting: every figure came to us in writing.
       </p>
+
+      <TownLookup style={{ marginBottom: 12, maxWidth: 460 }}
+        onFill={({ city: c, state: s }) => { if (c) setCity(c); if (s) setState(s); }} />
 
       <form onSubmit={search} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
         <input value={state} onChange={(e) => setState(e.target.value.toUpperCase().slice(0, 2))}

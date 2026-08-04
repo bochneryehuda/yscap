@@ -123,6 +123,42 @@ ok(boxFor(40.7, -74.0, 0) === null, 'no radius means no box — the whole wareho
 ok(S.buildQuery({ lat: 40.7, lng: -74.0 }).where.includes('eff_latitude IS NOT NULL'),
   'coordinates with no radius still restrict to placed properties, so a distance can be shown');
 
+// ---------------------------------------------------------------------------
+// A DISTANCE FILTER WITH NOTHING TO MEASURE FROM IS A REFUSAL
+// ---------------------------------------------------------------------------
+// Reported by the owner and reproduced before this guard existed: asking for
+// half a mile from a TYPED address — which carries no coordinates — returned
+// 955 properties across NINE STATES with a null distance, because the radius
+// predicate is built inside a lat/lng guard and was simply never added. The
+// arithmetic above was never the problem; the filter just did not run, and the
+// screen looked like it had answered.
+{
+  const q = S.buildQuery({ radius_miles: 0.5 });
+  ok(q.radiusUnusable === true,
+    'a radius with no position is REPORTED as unusable, not quietly forgotten');
+  ok(!/3958/.test(q.where),
+    'and, as before, no distance predicate is built — which is why it has to be reported');
+}
+{
+  const q = S.buildQuery({ lat: 40.7, lng: -74.0, radius_miles: 0.5 });
+  ok(q.radiusUnusable === false, 'a radius WITH a position is perfectly usable');
+  ok(/3958/.test(q.where), 'and does build the distance predicate');
+}
+{
+  // Half a position is no position — a lone latitude cannot anchor a circle.
+  ok(S.buildQuery({ lat: 40.7, radius_miles: 1 }).radiusUnusable === true,
+    'a latitude with no longitude is still nothing to measure from');
+  ok(S.buildQuery({ lng: -74, radius_miles: 1 }).radiusUnusable === true, 'and so is the reverse');
+}
+{
+  // NO radius asked for is NOT a refusal — searching a whole town is a normal
+  // thing to do, and turning that into an error would be its own wrong answer.
+  ok(S.buildQuery({ city: 'Trenton' }).radiusUnusable === false,
+    'a search with no radius at all is not a refusal — a town-wide search is ordinary');
+  ok(S.buildQuery({ radius_miles: 0 }).radiusUnusable === false,
+    'and neither is a radius of zero, which means "no limit" rather than "nowhere"');
+}
+
 console.log(fail
   ? `\ntest-research-geo-box-pure: ${pass} passed, ${fail} FAILED`
   : `\ntest-research-geo-box-pure: ${pass} passed`);

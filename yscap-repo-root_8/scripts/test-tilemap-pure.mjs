@@ -13,6 +13,7 @@
 import {
   project, unproject, metersPerPixel, pixelsPerMile, zoomToFit, tilesFor,
   pointInView, tileUrl, TILE_SIZE, MAX_LAT, MIN_ZOOM, MAX_ZOOM,
+  BASEMAPS, basemapFor,
 } from '../app-v2/src/lib/tilemap.js';
 
 let pass = 0, fail = 0;
@@ -216,9 +217,46 @@ const near = (a, b, eps, m) => ok(Math.abs(a - b) <= eps, `${m} (got ${a}, want 
 // THE TILE URL
 // ---------------------------------------------------------------------------
 {
-  const u = tileUrl({ z: 14, x: 4823, y: 6160 });
+  const t = { z: 14, x: 4823, y: 6160 };
+  const u = tileUrl(t);
   ok(u === 'https://tile.openstreetmap.org/14/4823/6160.png', 'the tile URL is the standard OSM z/x/y');
   ok(/^https:/.test(u), 'and https, so it is not blocked as mixed content');
+  ok(tileUrl(t, 'street') === u, 'the street map is the default, so no existing caller changes');
+
+  // THE SATELLITE LAYER. USGS National Map — US federal work, public domain, no
+  // key, no account. Note the AXIS ORDER: ArcGIS serves z/y/x, not z/x/y, and
+  // getting that backwards yields a map of somewhere else entirely rather than an
+  // error, which is the sort of wrong that survives a glance at a screenshot.
+  const sat = tileUrl(t, 'satellite');
+  ok(/basemap\.nationalmap\.gov/.test(sat), 'the satellite layer is USGS National Map imagery');
+  ok(sat.endsWith('/14/6160/4823'), `and asks for z/y/x, the order ArcGIS serves (${sat.slice(-14)})`);
+  ok(/^https:/.test(sat), 'over https');
+
+  // A LAYER WE DO NOT RECOGNISE FALLS BACK TO THE STREET MAP, never to a blank
+  // screen — the map is the thing an officer is reading positions off.
+  ok(tileUrl(t, 'nonsense') === u, 'an unknown layer falls back to the street map');
+  ok(tileUrl(t, null) === u, 'and so does no layer at all');
+
+  // GOOGLE'S TILES MAY NEVER BE DRAWN BY THIS RENDERER. Their terms require their
+  // imagery to be displayed through the Google Maps JavaScript API; pulling their
+  // raster tiles into a third-party map is a breach, not a one-line upgrade. This
+  // is asserted rather than commented because the swap looks trivial and would
+  // pass every other check in the suite.
+  for (const b of Object.values(BASEMAPS)) {
+    ok(!/google/i.test(b.url({ z: 1, x: 1, y: 1 })),
+      `the ${b.key} layer is not served by Google — their tiles may not be drawn by our own renderer`);
+    ok(typeof b.attribution === 'string' && b.attribution.length > 5,
+      `and the ${b.key} layer names whose imagery it is`);
+  }
+
+  // EACH LAYER STATES ITS OWN CEILING. USGS imagery stops at 16 over much of the
+  // country and returns NOTHING past it — a grey square with no error, which reads
+  // as a broken map rather than as the edge of the photography.
+  ok(BASEMAPS.satellite.maxZoom < BASEMAPS.street.maxZoom,
+    'the aerial layer stops closer in than the street map, and says so');
+  ok(basemapFor('satellite').maxZoom === BASEMAPS.satellite.maxZoom
+    && basemapFor('nope').maxZoom === BASEMAPS.street.maxZoom,
+    'and the lookup carries that ceiling, falling back with the layer');
 }
 
 console.log(fail

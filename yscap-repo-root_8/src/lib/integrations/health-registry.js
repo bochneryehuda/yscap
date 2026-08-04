@@ -14,6 +14,9 @@
  * can never leak a key. Every probe is time-boxed and NEVER throws.
  */
 const cfg = require('../../config');
+// The USPS credential NAMES (never values). Required here so the environment chips
+// below are built from the same lists the reader uses — see envPresence().
+const USPS_ENV = require('../usps-env');
 
 const PROBE_TIMEOUT_MS = 8000;
 
@@ -26,6 +29,26 @@ function timebox(promise, ms = PROBE_TIMEOUT_MS) {
 }
 // Is an env var present (non-empty)? Presence only — the value is never read out.
 function envSet(name) { const v = process.env[name]; return !!(v && String(v).trim()); }
+
+/**
+ * A CREDENTIAL SET UNDER A NAME WE ALSO ACCEPT IS *SET*, AND THE CHIP MUST SAY SO.
+ *
+ * Some connectors read a credential under more than one name because the vendor
+ * itself labels it two ways (USPS calls the same v3 OAuth pair "Client ID" on one
+ * screen and "Consumer Key" on another). The READER accepts both — but this list
+ * checked only the canonical name, so a working connector rendered a red
+ * "required — not set" chip and the screen's `missingRequired` count claimed a key
+ * was missing that is right there and working. That is the same "not connected"
+ * ambiguity the alternate-name reader exists to remove, moved one screen over.
+ *
+ * An entry declares `alsoAccepts: [...]`; the pill reports WHICH name carried it,
+ * so nobody has to guess. Names only, never values.
+ */
+function envPresence(e) {
+  if (envSet(e.name)) return { set: true, setAs: null };
+  for (const alt of e.alsoAccepts || []) if (envSet(alt)) return { set: true, setAs: alt };
+  return { set: false, setAs: null };
+}
 
 // A tiny direct client-credentials token check for Microsoft Graph (SharePoint / Outlook email).
 // Proves the tenant + client id + secret authenticate. Only attempted when a client SECRET is set
@@ -422,11 +445,31 @@ const INTEGRATIONS = [
     key: 'usps', name: 'USPS (address validation)', group: 'data',
     purpose: 'Official USPS address standardization + ZIP+4. Verifies every address after the autocomplete pick, and backfills existing files (developer.usps.com; see docs/USPS-ADDRESS-VERIFICATION.md).',
     direction: 'Outbound', auth: 'OAuth2 client credentials',
-    env: [{ name: 'USPS_CLIENT_ID', required: true }, { name: 'USPS_CLIENT_SECRET', required: true }],
+    // Read first under these names; `lib/usps-env` also accepts the alternates USPS
+    // itself uses on its portal (USPS_CONSUMER_KEY / _SECRET and a couple more), so
+    // a key set under one of those is not invisible. The alternates come from that
+    // module's OWN lists rather than a second copy here, so the chip can never say
+    // "not set" about a name the reader is happily using.
+    env: [
+      { name: USPS_ENV.ID_NAMES[0], required: true, alsoAccepts: USPS_ENV.ID_NAMES.slice(1) },
+      { name: USPS_ENV.SECRET_NAMES[0], required: true, alsoAccepts: USPS_ENV.SECRET_NAMES.slice(1) },
+    ],
     switches: [], liveProbe: true,
     async probe() {
       const m = require('./usps');
-      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The USPS connector is built and WIRED into the address forms — add the two keys (USPS_CLIENT_ID / USPS_CLIENT_SECRET from a USPS developer account) to turn on official USPS verification. A signed Addressing API License Agreement + a paid Enhanced Addresses tier is required for production volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
+      if (!m.configured()) {
+        /* SAY WHAT WE CAN SEE, NOT JUST THAT WE SEE NOTHING. The owner's own words
+           were "USPS credentials are already in Render" — and if they are there
+           under a name this does not read, "not connected" is indistinguishable
+           from "never configured" and the five-second fix is invisible. The
+           diagnostic names VARIABLES, never values. */
+        const env = require('../usps-env').describe();
+        return { configured: false, live: null,
+          detail: `${env.detail} The connector itself is built and WIRED into the address forms — with the `
+            + 'two keys in place, official USPS verification turns on with no further work. A signed '
+            + 'Addressing API License Agreement + a paid Enhanced Addresses tier is required for production '
+            + 'volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
+      }
       try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate — official address verification is active.' : (p.reason || 'Not reachable.') }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching USPS.' : (e.message || 'Not reachable.') }; }
     },
@@ -494,7 +537,7 @@ async function resolveOne(entry, opts) {
   return {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose, model,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
-    env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
+    env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, ...envPresence(e) })),
     switches: runtimeSwitches,
     // Read-only env pills are ONLY for flags that are NOT already a live toggle above (e.g.
     // DOCUSIGN_TEST_MODE, which has no runtime switch). A flag that HAS a runtime switch must never
@@ -519,4 +562,4 @@ async function probeOne(key) {
   return resolveOne(entry, { live: true });
 }
 
-module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet } };
+module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet, envPresence } };

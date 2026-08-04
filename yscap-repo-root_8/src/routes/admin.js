@@ -488,4 +488,40 @@ router.get('/integrations', (req, res) => {
   res.json(require('../lib/integrations').status());
 });
 
+/**
+ * IS THE GOOGLE-COORDINATE LICENSING RULE ACTUALLY INSTALLED, IN FULL.
+ *
+ * `/api/health` carries the VERDICT only, because it is public and the detail can
+ * name the database host, the role and a count of violating rows. That left the
+ * explanation reaching only the boot log — so a control built to report itself
+ * reported into the one place nobody reads. This is the authenticated half.
+ *
+ * `platform_setup`, the same gate as the integrations list it renders beside.
+ * Never throws; a failed check reads as UNCONFIRMED, never as fine.
+ */
+router.get('/research-licensing', requirePermission('platform_setup'), async (req, res) => {
+  try {
+    /* ASKS THE DATABASE, rather than serving the snapshot `health()` keeps.
+       That snapshot is deliberately non-blocking because /api/health must never
+       wait on a query — but it means the FIRST read of a fresh process answers
+       "not confirmed" while the refresh runs behind it, and an admin who opened
+       this page to ask "is the rule on?" would be told "we do not know" about a
+       database that plainly has it. One indexed catalog lookup behind an
+       authenticated page is the right trade.
+
+       THROUGH THE BOUNDED PROBE, not the bare check: `pg_get_constraintdef` blocks
+       on an `ACCESS EXCLUSIVE` lock on `properties`, so a `VACUUM FULL` or a stuck
+       migration would hang this request holding a pooled connection, with nothing
+       to time it out. Postgres enforces the limit there. It is also the only path
+       allowed to run the behavioural probe, so this page gets the definitive
+       answer rather than a reading of the constraint's text. */
+    const g = require('../lib/research/licensing-guard');
+    const r = await g.probeBounded();
+    res.json({ ...r, at: new Date().toISOString() });
+  } catch (e) {
+    res.json({ ok: false, checked: false,
+      why: `could not read the Google-coordinate rule's status: ${e.message}` });
+  }
+});
+
 module.exports = router;

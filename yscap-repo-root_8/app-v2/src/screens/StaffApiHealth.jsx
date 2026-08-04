@@ -52,11 +52,17 @@ function EnvChip({ e }) {
   const set = e.set;
   const fg = set ? '#3F7A5B' : (e.required ? '#B4483C' : '#8A939A');
   const bg = set ? 'rgba(63,122,91,.10)' : (e.required ? '#F6E7E4' : '#F1F1EC');
+  // A credential the connector reads under a name we ALSO accept is set — and the
+  // chip says which name carried it, so "it says the key is missing but it plainly
+  // works" can never happen. A NAME, never a value.
+  const setAs = set ? (e.setAs || null) : null;
   return (
-    <span title={set ? 'Set' : (e.required ? 'Required — not set' : 'Optional — not set')}
+    <span title={setAs ? `Set — under the name ${setAs}, which this connector also reads`
+      : (set ? 'Set' : (e.required ? 'Required — not set' : 'Optional — not set'))}
       style={{ fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace', color: fg, background: bg, border: '1px solid rgba(0,0,0,.06)',
         borderRadius: 6, padding: '2px 7px' }}>
       {set ? '✓' : (e.required ? '✕' : '○')} {e.name}
+      {setAs ? <span style={{ opacity: .75 }}> (as {setAs})</span> : null}
     </span>
   );
 }
@@ -319,6 +325,68 @@ function ConfirmModal({ pending, text, setText, busy, onCancel, onConfirm }) {
    reconciliation + mirror + retry-exhausted endpoints. The req() helper throws
    with the structured body on e.data, so a plain-English reason always shows and
    a raw code never reaches the owner. */
+/**
+ * THE GOOGLE-COORDINATE LICENSING RULE, ON A SCREEN.
+ *
+ * The rule that keeps a Google-sourced coordinate out of the permanent property
+ * warehouse is enforced by the database itself — but if that rule ever fails to
+ * install, the app runs on happily with it switched off. The guard exists to say
+ * so, and until now it said so only in the boot log and in the raw JSON of a
+ * public endpoint. This is the page somebody actually opens to ask "is that
+ * still on?", which is the same argument the environment chips make one section
+ * below. Loads its own data, like the mirror panel above it.
+ */
+function LicensingControlPanel() {
+  const [st, setSt] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setSt(await api.researchLicensing()); }
+    // A screen that cannot ask must not imply the answer is fine.
+    catch (e) { setSt({ ok: false, checked: false, why: (e && e.message) || 'Could not check.' }); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading || !st) return null;
+  /* A QUALIFIED YES IS NOT A YES. The server attaches a `why` to an `ok:true`
+     answer in exactly one situation: the write probe could not run, so the verdict
+     fell back to reading the constraint's TEXT — and a `lower()` shadowed from an
+     earlier schema deparses byte-identically to db/459's while refusing nothing.
+     Reading `ok` alone painted that green with the canned "the database itself
+     refuses…" line underneath, which is the confident sentence this whole control
+     exists to stop being printed when it is not true. No new field is needed: the
+     guard never attaches a `why` to an unqualified pass. */
+  const qualified = st.ok === true && !!st.why;
+  const good = st.ok === true && !qualified;
+  // Unconfirmed is its OWN state — amber, never green and never the red of a
+  // rule we have proven is missing. A qualified yes lands here too.
+  const fg = good ? '#3F7A5B' : (st.checked && !qualified ? '#B4483C' : '#8A6D1F');
+  const bg = good ? 'rgba(63,122,91,.08)' : (st.checked && !qualified ? '#F6E7E4' : '#FBF3DF');
+  return (
+    <section style={{ marginTop: 18, border: '1px solid rgba(0,0,0,.08)', borderRadius: 10,
+      background: bg, padding: '12px 14px' }}>
+      <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <strong style={{ color: '#141B22' }}>Property warehouse — Google coordinate rule</strong>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: fg }}>
+          {good ? '✓ On'
+            : qualified ? '○ Not fully confirmed'
+              : (st.checked ? '✕ NOT installed' : '○ Not confirmed')}
+        </span>
+        <button className="btn ghost small" onClick={load} style={{ marginLeft: 'auto' }}>Re-check</button>
+      </div>
+      <p className="small" style={{ margin: '6px 0 0', color: '#3A4550' }}>
+        {good
+          ? 'The database itself refuses to store a Google-sourced coordinate in the property '
+            + 'warehouse. Google may suggest an address and draw a map; it may never place a property here.'
+          : (st.why || 'The rule could not be confirmed.')}
+      </p>
+      {st.at && <p className="small muted" style={{ margin: '4px 0 0' }}>Last checked {String(st.at).replace('T', ' ').slice(0, 19)} UTC</p>}
+    </section>
+  );
+}
+
 function MirrorBackfillPanel() {
   const [recon, setRecon] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -533,6 +601,10 @@ export default function StaffApiHealth() {
           because "is every document in SharePoint?" is the question this page most
           needs to answer at a glance. Loads its own data independent of the list. */}
       <MirrorBackfillPanel />
+
+      {/* A licensing control that reports itself — but only into the boot log
+          until it appeared here. Same argument as the environment chips below. */}
+      <LicensingControlPanel />
 
       {loading && <p className="muted">Checking every integration…</p>}
 

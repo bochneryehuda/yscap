@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
+import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
 const ROLE_LABEL = {
   super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
@@ -272,6 +273,9 @@ function GlobalSearch() {
 export default function StaffLayout({ children }) {
   const { signOut, role, can } = useAuth();
   const nav = useNavigate();
+  // The research desk's pages only appear in the sidebar while you are inside it,
+  // so seven entries collapse to one without hiding where you can go from here.
+  const inResearch = isResearchPath(useLocation().pathname);
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
@@ -444,13 +448,25 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/term-sheet" title="Term Sheet Generator — price a loan and build a full term sheet without leaving PILOT. Save what you price as a named scenario and pick it up later."><NavIcon name="pricing" />Term Sheet Generator</NavLink>
         <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
         {/* The research desk (owner-directed 2026-08-02). Every staff role — it holds
-            addresses, property facts and recorded sale prices, and no borrower data. */}
+            addresses, property facts and recorded sale prices, and no borrower data.
+
+            ONE ENTRY, NOT SEVEN (owner-directed 2026-08-03: "we now have on our left
+            side a few separate sections which all of them should technically be
+            combined in one section with different pages in that section, because the
+            entire section everything is a property research and Resource Center").
+            Seven links sitting next to each other read as seven unrelated tools; this
+            is one desk. The pages appear beneath it once you are inside the section,
+            and the same strip is on every page of it (`ResearchNav`), so the sidebar
+            stays short without hiding where you can go. Every URL is unchanged — the
+            pages already lived at nested paths, so nothing anyone bookmarked moved. */}
         <NavLink className="sb-link" to="/internal/dashboards" title="Dashboards — how the business is doing, and the place to build your own. Every card shows exactly which files it counts, and clicking a number opens them."><NavIcon name="dashboards" />Dashboards</NavLink>
-        <NavLink className="sb-link" to="/internal/research" title="Property Research — every property and comparable sale our appraisers have ever shown us, searchable by town, price, size, bedrooms, condition and sale date. Pick the sales you like and build your own valuation from them."><NavIcon name="pipeline" />Property Research</NavLink>
-        <NavLink className="sb-link" to="/internal/research/comps" title="Find comparables for a property — name the house you are valuing and the search fills itself in from it. Says how hard it had to look and how much of that town we hold."><NavIcon name="pipeline" />Find comparables</NavLink>
-        <NavLink className="sb-link" to="/internal/research/market" title="Market conditions — what the appraisers themselves reported about a town month by month: months of supply, median sale price and days on market. Says how many reports each month rests on, so you know how much to trust it."><NavIcon name="pipeline" />Market conditions</NavLink>
-        <NavLink className="sb-link" to="/internal/research/adjustments" title="What our own appraisers charge — the median and the usual range for every kind of adjustment they write, with how many reports and how many appraisers stand behind each figure. A claim about our reports, not about the market."><NavIcon name="pipeline" />What we charge</NavLink>
-        <NavLink className="sb-link" to="/internal/research/quick" title="A town and a couple of basics, and what properties like that have been coming in at in the appraisals we paid for. Never a single figure, and it says nothing at all below five matches."><NavIcon name="pipeline" />Quick answer</NavLink>
+        <NavLink className="sb-link" to="/internal/research" title="Property Research & Resource Center — every property and comparable sale our appraisers have ever shown us, plus find comparables, market conditions, what we charge, the quick answer and market areas."
+          style={inResearch ? { background: 'var(--surface-soft)', color: 'var(--text)', fontWeight: 600, borderLeftColor: 'var(--gold)' } : undefined}>
+          <NavIcon name="pipeline" />Property Research</NavLink>
+        {inResearch && RESEARCH_PAGES.map((p) => (
+          <NavLink key={p.to} end={p.end} className="sb-link" to={p.to} title={p.blurb}
+            style={{ paddingLeft: 41, fontSize: 13 }}>{p.label}</NavLink>
+        ))}
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

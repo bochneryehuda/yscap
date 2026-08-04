@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ATTRIBUTION, MAX_ZOOM, MIN_ZOOM, TILE_SIZE, pixelsPerMile, pointInView,
-  tileUrl, tilesFor, unproject, zoomToFit,
+  BASEMAPS, basemapFor, MAX_ZOOM, MIN_ZOOM, TILE_SIZE, pixelsPerMile, pointInView,
+  project, tileUrl, tilesFor, unproject, zoomToFit,
 } from '../lib/tilemap.js';
 
 /* THE MAP — subject pin, numbered comparable pins, distance rings, click to select.
@@ -62,12 +62,22 @@ const TILE_WAIT_MS = 3500;
 
 export default function CompMap({
   subject, comps = [], height = 420, radiusMi = null, selectedId = null, onSelect = null,
+  drawing = false, polygon = null, onPolygon = null,
 }) {
-  const boxRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: height });
   const [view, setView] = useState(null);          // {lat, lng, zoom} once we can compute one
   const [drag, setDrag] = useState(null);
   const [tilesBroken, setTilesBroken] = useState(false);
+  /* MAP OR SATELLITE. The owner asked to "look on the map actually where around
+     you have things" — for a property, the aerial view answers questions the
+     street map cannot (what is the lot, what backs on to it, is that a highway).
+     The imagery is USGS National Map: US federal work, public domain, keyless.
+     Google's own tiles are deliberately NOT an option here — their terms require
+     their imagery to be drawn by the Google Maps JavaScript API, and this is our
+     own renderer, so pointing at them would be a breach rather than an upgrade
+     (the reasoning is written out in `lib/tilemap.js`). */
+  const [basemap, setBasemap] = useState('street');
+  const base = basemapFor(basemap);
   const [hover, setHover] = useState(null);
   const tilesLoaded = useRef(0);
 
@@ -79,25 +89,30 @@ export default function CompMap({
     .map((c, i) => ({ c, i, pos: positionOf(c) }))
     .filter((x) => !x.pos), [comps]);
 
-  // Measure the box before drawing anything — a zoom fitted to a zero-width
-  // viewport is meaningless, and every pin would stack on the left edge.
-  useEffect(() => {
-    const el = boxRef.current;
-    if (!el) return undefined;
+  /* MEASURED BY A CALLBACK REF, NOT BY AN EFFECT ON MOUNT.
+     This component returns EARLY when it has nothing to place, so on the first
+     render the box does not exist and a mount effect observes nothing. When the
+     properties then arrive the box appears — and an effect keyed on [height]
+     never runs again, so the width stays 0, `zoomToFit` is never called, `view`
+     stays null, no tiles are fetched and no click can be turned into a position.
+     Measured exactly that: `{drawing: true, view: false, w: 0}` on a map that
+     looked fine because the empty grey box is indistinguishable from a loading
+     one. A callback ref fires when the node ATTACHES, which is the moment that
+     actually matters. */
+  const roRef = useRef(null);
+  const boxRef = useRef(null);
+  const attachBox = useCallback((el) => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    boxRef.current = el;
+    if (!el) return;
     const measure = () => setSize({ w: el.clientWidth, h: height });
     measure();
-    // Read off `window` rather than as a bare global: the panel is also rendered
-    // in the print path, and a bare identifier that is missing would throw a
-    // ReferenceError at render — the class a green build never catches.
+    // Read off `window` rather than as a bare global: a missing identifier would
+    // throw a ReferenceError at render, the class a green build never catches.
     const RO = window.ResizeObserver;
-    if (!RO) {
-      window.addEventListener('resize', measure);
-      return () => window.removeEventListener('resize', measure);
-    }
-    const ro = new RO(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    if (RO) { roRef.current = new RO(measure); roRef.current.observe(el); }
   }, [height]);
+  useEffect(() => () => { if (roRef.current) roRef.current.disconnect(); }, []);
 
   /* THE OPENING VIEW HAS TO CONTAIN EVERY COMPARABLE, not just the radius that
      was searched for. The comp search RELAXES its radius when a market is thin —
@@ -135,29 +150,95 @@ export default function CompMap({
       if (tilesLoaded.current === 0) setTilesBroken(true);
     }, TILE_WAIT_MS);
     return () => clearTimeout(t);
-  }, [view]);
+    /* `basemap` IS A DEPENDENCY, and leaving it out disarmed the check entirely.
+       `switchBasemap` resets the loaded counter and then clamps the zoom — but
+       when the current zoom is already under the new layer's ceiling (the ordinary
+       case; a comp search fits around z13-15 and the aerial layer caps at 16) the
+       updater returns the IDENTICAL view object, React bails out, and this effect
+       never re-runs. So the counter sat at 0 with no timer armed: a blocked or
+       down imagery server showed a grey box forever and never said so, which is
+       the exact silent failure the timer exists to catch. */
+  }, [view, basemap]);
 
   const recentre = useCallback(() => {
     if (!centre || !size.w) return;
-    setView({ lat: centre.lat, lng: centre.lng, zoom: zoomToFit(centre.lat, spanMi, size.w, size.h) });
-  }, [centre, size.w, size.h, spanMi]);
+    // THE LAYER'S CEILING APPLIES HERE TOO. `zoomToFit` answers up to MAX_ZOOM (19),
+    // and the aerial layer stops at 16 over much of the country — so re-centring on
+    // a tight cluster of comparables asked for imagery that does not exist and
+    // returned the blank grey map the clamp was added to prevent.
+    setView({ lat: centre.lat, lng: centre.lng,
+      zoom: Math.min(base.maxZoom || MAX_ZOOM, zoomToFit(centre.lat, spanMi, size.w, size.h)) });
+  }, [centre, size.w, size.h, spanMi, base.maxZoom]);
 
-  // Drag to pan, in world pixels so it tracks the cursor exactly at any zoom.
+  /* DRAWING AND PANNING SHARE ONE SURFACE, so a click has to mean one thing at
+     a time. While drawing, a press that does not MOVE is a corner and a press
+     that moves is a pan — decided on release by how far the cursor travelled,
+     because deciding on press would make the map unpannable in drawing mode and
+     deciding on press-and-hold would make corners feel unresponsive. 4 pixels is
+     the ordinary click-versus-drag threshold; a hand on a trackpad moves 1-2. */
+  const DRAG_SLOP = 4;
+  /* THE PRESS IS HELD IN A REF, NOT IN STATE. `endDrag` is created during a
+     render and closes over the `drag` of THAT render — so the handler running on
+     mouse-up can be the one built before mouse-down set anything, and it reads
+     `drag` as null and places no corner. Measured exactly that: the mousedown,
+     mouseup and click all arrived on the map div and not one corner appeared.
+     A ref is the same value on every render, which is what a gesture spanning
+     two events needs. The state copy is kept only because the CURSOR depends on
+     it, and a cursor is allowed to lag a frame. */
+  const pressRef = useRef(null);
   const onDown = (e) => {
     if (!view) return;
-    setDrag({ x: e.clientX, y: e.clientY, lat: view.lat, lng: view.lng });
+    pressRef.current = { x: e.clientX, y: e.clientY, lat: view.lat, lng: view.lng, moved: 0 };
+    setDrag(pressRef.current);
   };
   const onMove = (e) => {
-    if (!drag || !view) return;
+    const press = pressRef.current;
+    if (!press || !view) return;
+    const travelled = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+    if (travelled > press.moved) press.moved = travelled;
+    const drag = press;
+    // In drawing mode a small wobble must not pan the map out from under the
+    // corner the user is about to place.
+    if (drawing && travelled <= DRAG_SLOP) return;
     const c = pointInView(drag.lat, drag.lng, drag.lat, drag.lng, view.zoom, 0, 0);
     const moved = unproject(
       c.left - (e.clientX - drag.x), c.top - (e.clientY - drag.y), view.zoom);
     setView((v) => ({ ...v, lat: moved.lat, lng: moved.lng }));
   };
-  const endDrag = () => setDrag(null);
+  const endDrag = (e) => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    // A press that never really moved, while drawing, is a CORNER.
+    if (drawing && press && press.moved <= DRAG_SLOP && onPolygon && view && boxRef.current) {
+      const b = boxRef.current.getBoundingClientRect();
+      const p = unprojectAt(e.clientX - b.left, e.clientY - b.top);
+      if (p) onPolygon([...(polygon || []), p]);
+    }
+    setDrag(null);
+  };
+  /** A screen point inside the map box → a real position. */
+  const unprojectAt = (px, py) => {
+    if (!view || !size.w) return null;
+    const c = project(view.lat, view.lng, view.zoom);
+    return unproject(c.x - size.w / 2 + px, c.y - size.h / 2 + py, view.zoom);
+  };
 
+  /* EACH LAYER HAS ITS OWN CEILING, AND ASKING PAST IT LOOKS LIKE A BROKEN MAP.
+     USGS imagery stops at zoom 16 over much of the country; ask for 19 and the
+     server returns nothing at all — a grey square with no error, which reads as
+     "the map is broken" rather than as "this is as close as the photography
+     goes". So the zoom is clamped to the LAYER, and switching to satellite while
+     already zoomed in pulls back to what that layer can actually draw. */
   const zoomBy = (d) => setView((v) => (v
-    ? { ...v, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v.zoom + d)) } : v));
+    ? { ...v, zoom: Math.max(MIN_ZOOM, Math.min(base.maxZoom || MAX_ZOOM, v.zoom + d)) } : v));
+
+  function switchBasemap(key) {
+    setBasemap(key);
+    setTilesBroken(false);
+    tilesLoaded.current = 0;                       // a fresh layer gets a fresh verdict
+    const cap = basemapFor(key).maxZoom || MAX_ZOOM;
+    setView((v) => (v && v.zoom > cap ? { ...v, zoom: cap } : v));
+  }
 
   if (!centre) {
     return (
@@ -191,7 +272,7 @@ export default function CompMap({
       </div>
 
       <div
-        ref={boxRef}
+        ref={attachBox}
         onMouseDown={onDown}
         onMouseMove={onMove}
         onMouseUp={endDrag}
@@ -206,8 +287,8 @@ export default function CompMap({
             the pins below are ours and do not depend on it. */}
         {tiles.map((t) => (
           <img
-            key={`${t.z}/${t.x}/${t.y}/${t.left}`}
-            src={tileUrl(t)}
+            key={`${basemap}/${t.z}/${t.x}/${t.y}/${t.left}`}
+            src={tileUrl(t, basemap)}
             alt=""
             draggable={false}
             onLoad={() => { tilesLoaded.current += 1; setTilesBroken(false); }}
@@ -229,6 +310,27 @@ export default function CompMap({
             }} />
           );
         })()}
+
+        {/* THE SHAPE BEING DRAWN. An SVG overlay rather than absolutely-positioned
+            divs, because a polygon is one path and a dozen divs would be a dozen
+            rectangles pretending to be one. `pointer-events: none` so it never
+            swallows the click that adds the next corner. */}
+        {view && drawing && Array.isArray(polygon) && polygon.length > 0 && (
+          <svg width={size.w} height={size.h} style={{ position: 'absolute', left: 0, top: 0,
+            pointerEvents: 'none', zIndex: 2 }}>
+            {polygon.length > 2 && (
+              <polygon
+                points={polygon.map((p) => { const q = at(p); return `${q.left},${q.top}`; }).join(' ')}
+                fill="rgba(174,135,70,.14)" stroke={GOLD} strokeWidth="2" />
+            )}
+            {polygon.length === 2 && (() => { const a = at(polygon[0]); const b2 = at(polygon[1]); return (
+              <line x1={a.left} y1={a.top} x2={b2.left} y2={b2.top} stroke={GOLD} strokeWidth="2" />
+            ); })()}
+            {polygon.map((p, i) => { const q = at(p); return (
+              <circle key={i} cx={q.left} cy={q.top} r="5" fill="#fff" stroke={GOLD} strokeWidth="2" />
+            ); })}
+          </svg>
+        )}
 
         {view && subjPos && (() => {
           const p = at(subjPos);
@@ -270,6 +372,22 @@ export default function CompMap({
           );
         })}
 
+        {/* MAP OR SATELLITE — two buttons, top-right, out of the way of the pins. */}
+        <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 6, display: 'flex',
+          borderRadius: 6, overflow: 'hidden', border: '1px solid #E4DECF', boxShadow: '0 1px 3px #0002' }}>
+          {Object.values(BASEMAPS).map((b) => (
+            <button key={b.key} type="button"
+              onClick={(e) => { e.stopPropagation(); switchBasemap(b.key); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              title={b.attribution}
+              style={{
+                border: 'none', cursor: 'pointer', font: '600 12px/1 system-ui', padding: '7px 10px',
+                background: basemap === b.key ? '#FBF6EC' : '#FFFFFF',
+                color: basemap === b.key ? '#141B22' : '#4B585C',
+              }}>{b.label}</button>
+          ))}
+        </div>
+
         {hover && (
           <div style={{
             position: 'absolute', left: 8, bottom: 8, right: 8, background: 'rgba(255,255,255,.96)',
@@ -287,12 +405,14 @@ export default function CompMap({
         <div style={{
           position: 'absolute', right: 4, bottom: 2, fontSize: 10, color: '#4B585C',
           background: 'rgba(255,255,255,.75)', padding: '0 4px', borderRadius: 3, pointerEvents: 'none',
-        }}>{ATTRIBUTION}</div>
+        }}>{base.attribution}</div>
       </div>
 
       {tilesBroken && (
         <div style={{ color: '#8A5A00', fontSize: 12.5, marginTop: 6 }}>
-          The street picture has not loaded, so this is showing positions on a plain background.
+          {/* NAME THE LAYER THE PERSON IS ACTUALLY ON. Saying "the street picture"
+              while they are looking at Satellite reads as a different fault. */}
+          The {base.label.toLowerCase()} picture has not loaded, so this is showing positions on a plain background.
           Everything on it is still in the right place — the pins and the distance ring are worked out
           here, not fetched.
         </div>

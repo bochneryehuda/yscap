@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, S, num, day } from '../lib/research.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* THE APPRAISER DIRECTORY — every appraiser who has ever filed a report with us,
    built automatically out of the reports themselves. Nobody types any of this in:
@@ -37,6 +38,7 @@ export default function StaffAppraisers() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10 }}>
         <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Back to Property Research</Link>
       </div>

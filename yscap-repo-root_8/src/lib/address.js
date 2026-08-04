@@ -78,8 +78,18 @@ function parseAddress(raw) {
     const u = splitUnit(parts[0]);
     out.unit = u.unit;
     const toks = u.line1.split(' ');
-    if (out.state && toks.length > 2) { out.city = toks.pop(); out.line1 = toks.join(' '); }
-    else { out.line1 = u.line1; }
+    // A STREET SUFFIX IS NOT A TOWN. "100 Broadway Ave, NJ" has no town in it at
+    // all, and popping the last token read "Ave" as the city — which then looked
+    // like a complete address to everything downstream. A geocoder handed
+    // "100 Broadway, Ave, NJ" does not object: it answers with 100 Broadway in
+    // whichever New Jersey town it finds first, at full address precision, and the
+    // result is a confident pin on a house nobody named (measured: "15 Elm Road,
+    // NY" came back placed at 15 ELM ST, ALBANY). Leaving the suffix on the street
+    // and the town empty is the honest reading, and an empty town is something a
+    // caller can refuse.
+    if (out.state && toks.length > 2 && !STREET_SUFFIXES[wordKey(toks[toks.length - 1])]) {
+      out.city = toks.pop(); out.line1 = toks.join(' ');
+    } else { out.line1 = u.line1; }
   }
   return out;
 }

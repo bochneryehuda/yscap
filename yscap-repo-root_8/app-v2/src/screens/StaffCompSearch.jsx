@@ -6,8 +6,10 @@ import {
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
+import AddressBox from '../components/AddressBox.jsx';
 import CompMap from '../components/CompMap.jsx';
 import { geoBasisInfo } from '../lib/geoBasis.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* FIND COMPARABLES — start from a PROPERTY, not from six filters typed by hand.
  *
@@ -64,16 +66,18 @@ export default function StaffCompSearch() {
     return o;
   }, [params]);
 
-  const [subjForm, setSubjForm] = useState({
-    address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '',
-    gla: q.gla || '', beds: q.beds || '', year_built: q.year_built || '', condition_uad: q.condition_uad || '',
+  // `lat`/`lng` ride along with the rest of the typed subject — they are what makes
+  // a distance search answerable from a typed address (owner-reported 2026-08-03:
+  // a half-mile search returning properties in nine states). They are only ever
+  // filled by PICKING an address from the suggestions; typing over the top clears
+  // them, because a coordinate belongs to the address it was looked up for.
+  const blankSubj = (o) => ({
+    address: o.address || '', city: o.city || '', state: o.state || '', zip: o.zip || '',
+    gla: o.gla || '', beds: o.beds || '', year_built: o.year_built || '', condition_uad: o.condition_uad || '',
+    lat: o.lat || '', lng: o.lng || '',
   });
-  useEffect(() => {
-    setSubjForm({
-      address: q.address || '', city: q.city || '', state: q.state || '', zip: q.zip || '',
-      gla: q.gla || '', beds: q.beds || '', year_built: q.year_built || '', condition_uad: q.condition_uad || '',
-    });
-  }, [q]);
+  const [subjForm, setSubjForm] = useState(() => blankSubj(q));
+  useEffect(() => { setSubjForm(blankSubj(q)); }, [q]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const anchored = !!(q.property_id || q.application_id);
   const typedEnough = !!(subjForm.city && subjForm.state) || !!subjForm.zip;
@@ -104,6 +108,27 @@ export default function StaffCompSearch() {
     return e;
   }, [q]);
 
+  /* THE NEIGHBOURHOODS SOMEBODY HAS DRAWN FOR THIS TOWN.
+     A radius is a bad model of a neighbourhood — a mile in one direction crosses a
+     river or a town line, a mile in another is the same houses on the same
+     streets — so an officer who has drawn the boundary themselves should be able
+     to cut the comparable search to it. Only shapes for the market being searched
+     are offered; a boundary drawn around a different town is not a choice worth
+     making here. */
+  const [areas, setAreas] = useState([]);
+  useEffect(() => {
+    const st = (d && d.subject && d.subject.state) || q.state || '';
+    const city = (d && d.subject && d.subject.city) || q.city || '';
+    if (!st && !city) { setAreas([]); return; }
+    let live = true;
+    api.marketAreas({ state: st, city })
+      .then((r) => { if (live) setAreas(r.rows || []); })
+      .catch(() => { if (live) setAreas([]); });
+    return () => { live = false; };
+    // Keyed on the MARKET, not on the whole search result — depending on `d` meant
+    // refetching the boundaries on every search of the same town.
+  }, [d && d.subject && d.subject.state, d && d.subject && d.subject.city, q.state, q.city]);
+
   const run = useCallback(() => {
     if (!canSearch) { setD(null); return; }
     setBusy(true); setErr('');
@@ -128,7 +153,11 @@ export default function StaffCompSearch() {
   }
 
   function searchTyped() {
-    apply({ ...subjForm, property_id: undefined, application_id: undefined });
+    // `position_source` says WHICH free service placed the address. It is worth
+    // showing under the field and is not a search filter, so it stays out of the
+    // URL — this screen's query string is a link people paste to each other.
+    const { position_source: _src, ...subject } = subjForm;
+    apply({ ...subject, property_id: undefined, application_id: undefined });
   }
 
   function toggle(row) {
@@ -171,6 +200,7 @@ export default function StaffCompSearch() {
 
   return (
     <div>
+      <ResearchNav />
       <header style={{ marginBottom: 14 }}>
         <div style={{ marginBottom: 8 }}>
           <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Property Research</Link>
@@ -210,6 +240,43 @@ export default function StaffCompSearch() {
             onChange={(e) => apply({ sold_within_months: e.target.value })}>
             {MONTHS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
           </select>
+          {/* THE DRAWN BOUNDARY. It is never relaxed by the ladder — a judgement
+              somebody made about where this neighbourhood ends is the most
+              specific thing the search has, and widening past it would answer a
+              different question than the one on screen. It says what it cut, in
+              both numbers: "12 of the 40 nearby" is a boundary doing real work,
+              "40 of the 40" means the shape is a rectangle. */}
+          {/* IT IS SHOWN WHENEVER IT IS IN FORCE, not only when there is a list to
+              choose from. `areas` is refetched per town, so searching a town with
+              no drawn boundaries emptied it — and the control and its evidence both
+              vanished while the request still carried the id and the search was
+              still cut to a polygon around a DIFFERENT town. A softer version of the
+              same fired whenever the chosen id was not in the list: the select found
+              no matching option and displayed "anywhere in the town" while a
+              boundary was in force. Either way it is a control lying about its own
+              search, which this screen's own comments forbid. */}
+          {(areas.length > 0 || q.market_area_id) && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <select style={{ ...S.input, width: 'auto' }} value={q.market_area_id || ''}
+                onChange={(e) => apply({ market_area_id: e.target.value || undefined })}>
+                <option value="">anywhere in the town</option>
+                {areas.map((a) => <option key={a.id} value={a.id}>inside “{a.name}”</option>)}
+                {/* The one in force, even when it belongs to another town — so it
+                    can be SEEN and switched off rather than silently applied. */}
+                {q.market_area_id && !areas.some((a) => a.id === q.market_area_id) && (
+                  <option value={q.market_area_id}>
+                    inside {d && d.market_area ? `“${d.market_area.name}”` : 'a boundary drawn elsewhere'}
+                  </option>
+                )}
+              </select>
+              {d && d.market_area && (
+                <span style={{ color: MUTED, fontSize: 12 }}>
+                  {d.market_area.inArea} of the {d.market_area.inBox} nearby are inside it
+                  {d.market_area.truncated ? ' (a large sample, not all of them)' : ''}
+                </span>
+              )}
+            </span>
+          )}
           {/* RENOVATED OR NOT — AND WE DO NOT HAVE TO GUESS. An after-repair
               value has to rest on sales of FINISHED houses, and every other tool
               in this industry leaves you to work that out from a photograph. The
@@ -300,6 +367,19 @@ export default function StaffCompSearch() {
    file it is shown as a fact; otherwise it is a small form, so a brand-new deal
    with no appraisal can still be searched. */
 function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
+  /* EVERY HOOK ABOVE THE EARLY RETURN. This component returns a different shape
+     for an ANCHORED subject, so a hook declared below that return runs on some
+     renders and not others — and React crashes the whole page with "Rendered more
+     hooks than during the previous render" the moment somebody switches between a
+     typed subject and one opened from a loan file. Caught by
+     `scripts/test-react-hook-order.js`, which exists for exactly this.
+
+     `placeEdits` counts HUMAN edits of the town / state / ZIP boxes — never a pick
+     filling them in — so the address box can tell the two apart and forget its
+     resolved position for the first and not the second. */
+  const [placeEdits, setPlaceEdits] = useState(0);
+  const PLACE_KEYS = ['city', 'state', 'zip'];
+
   if (anchored) {
     return (
       <section style={{ ...S.panel, marginBottom: 12 }}>
@@ -324,12 +404,42 @@ function SubjectBar({ anchored, subject, form, setForm, onSearch, onClear }) {
       </section>
     );
   }
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  /* A HAND-TYPED TOWN, STATE OR ZIP DROPS THE POSITION TOO.
+     `AddressBox` already clears it when the street line is typed over, but the
+     coordinate belongs to the WHOLE picked set: pick "26 S 10th St, Brooklyn NY",
+     then correct the town to Queens by hand, and the search would have measured
+     its half mile from Brooklyn while filtering Queens — measuring from the wrong
+     place, and reading as "this town is thin". The size/beds/year/condition boxes
+     say nothing about where the property is, so they keep it.
+     FUNCTIONAL, because `AddressBox` reports a pick up to three times as the USPS
+     answer and the position land, and a stale `form` captured by an earlier render
+     would write itself back over whatever was typed in between. */
+  const set = (k) => (e) => {
+    const isPlace = PLACE_KEYS.includes(k);
+    if (isPlace) setPlaceEdits((n) => n + 1);
+    setForm((f) => ({
+      ...f, [k]: e.target.value,
+      ...(isPlace ? { lat: '', lng: '', position_source: null } : null),
+    }));
+  };
   return (
     <section style={{ ...S.panel, marginBottom: 12 }}>
       <div style={{ marginBottom: 8, color: INK, fontWeight: 600 }}>Describe the property you are valuing</div>
+      {/* THE ADDRESS IS THE WHOLE SET. Picking a suggestion fills the town, state
+          and ZIP below it AND gives the property a position — which is the only
+          way a "within half a mile" search can be answered from a typed address
+          rather than refused. Typing an address by hand still works; it just
+          cannot be measured from, and the field says so. */}
+      <AddressBox
+        value={form}
+        onChange={(next) => setForm((f) => ({ ...f, ...next }))}
+        label="Address"
+        placeholder="26 S 10th St"
+        hint="Pick it from the list and the town, state and ZIP fill themselves in — and distance searches become possible."
+        staleKey={placeEdits}
+        style={{ marginBottom: 10, maxWidth: 520 }}
+      />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-        <Field label="Address"><input style={S.input} value={form.address} onChange={set('address')} placeholder="26 S 10th St" /></Field>
         <Field label="Town"><input style={S.input} value={form.city} onChange={set('city')} placeholder="Piscataway" /></Field>
         <Field label="State"><input style={S.input} maxLength={2} value={form.state} onChange={set('state')} placeholder="NJ" /></Field>
         <Field label="ZIP"><input style={S.input} value={form.zip} onChange={set('zip')} placeholder="08854" /></Field>
@@ -365,8 +475,15 @@ function Honesty({ d }) {
         <div>
           <strong style={{ color: INK }}>Nothing found — and here is why.</strong>
           {d.subject_located === false && (
+            /* "DISTANCE WAS NOT USED" WAS THE OLD, WRONG BEHAVIOUR — the radius
+               was silently dropped and the search handed back the whole country
+               (measured: 955 properties across nine states for a half-mile
+               search). It now refuses instead, so the wording has to say what
+               actually happened and what to do about it. */
             <div style={{ color: GOLD, fontSize: 13, marginTop: 6 }}>
-              We have not placed this property on the map yet, so distance was not used at all.
+              We have not placed this property on the map, so a distance search cannot be answered
+              from it — a half-mile from an unknown point is not a half-mile. Pick the address from
+              the suggestions so it carries a position, or search by town instead.
             </div>
           )}
           <p style={{ margin: '6px 0 0', color: MUTED, fontSize: 13 }}>
@@ -385,7 +502,7 @@ function Honesty({ d }) {
             <span style={{ color: INK, fontSize: 13 }}>
               <b>Had to look wider.</b>{' '}
               {ladder.filter((s) => s.found === 0).length > 0 && (
-                <>{ladder.filter((s) => s.found === 0).map((s) => s.label).join(', then ')} found nothing — </>
+                <>{ladder.filter((s) => s.found === 0 && !s.unmeasurable).map((s) => s.label).join(', then ')} found nothing — </>
               )}
               these came from {(ladder[ladder.length - 1] || {}).label}.
             </span>
@@ -414,10 +531,18 @@ function CompRow({ r, checked, onToggle }) {
       background: checked ? '#FCFAF4' : '#fff' }}>
       <input type="checkbox" checked={checked} onChange={onToggle} style={{ marginTop: 4 }}
         aria-label={`Pick ${r.display_address}`} />
-      {r.primary_photo_document_id
-        ? <ResearchPhoto documentId={r.primary_photo_document_id} alt={r.display_address}
-          style={{ width: 92, height: 68, objectFit: 'cover', borderRadius: 6, border: '1px solid #E4DECF' }} />
-        : <div style={{ width: 92, height: 68, borderRadius: 6, background: '#F4F1EA' }} />}
+      {/* THE APPRAISER'S PHOTO WHEN THERE IS ONE, THE STREET WHEN THERE IS NOT.
+          A grey box tells an officer nothing about a house, and a good share of
+          warehouse properties carry no photograph. The street-level fallback is
+          always LABELLED as such: an appraisal photo is evidence of the property
+          on the day of the report and is what the condition grade was written
+          from, while a street image is a car that drove past at some point — and
+          presenting the two alike invites somebody to read a tidy front garden as
+          evidence of condition. It renders nothing at all until a Google key is
+          configured, so the layout is unchanged until then. */}
+      <ResearchPhoto documentId={r.primary_photo_document_id} alt={r.display_address}
+        streetAddress={[r.display_address, r.city, r.state].filter(Boolean).join(', ')}
+        style={{ width: 92, height: 68, objectFit: 'cover', borderRadius: 6, border: '1px solid #E4DECF' }} />
       <div style={{ flex: '1 1 260px', minWidth: 0 }}>
         <Link to={`/internal/research/property/${r.id}`} style={{ color: INK, fontWeight: 600, textDecoration: 'none' }}>
           {r.display_address}
