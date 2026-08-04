@@ -58,6 +58,10 @@ const DIGEST_ACTION = Object.freeze({
   BORROWER_OUTSTANDING: 'borrower_outstanding_digest',
   STALE_FILE: 'stale_file_alert',
   DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
+  // After the borrower has been nudged CAP times and still not accepted, we STOP
+  // emailing them (owner-directed: "the borrower should not get these repeating
+  // emails again and again") and hand off to the draw coordinator to follow up.
+  DRAW_BORROWER_STUCK: 'draw_borrower_stuck',
   TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
   DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
   ORDER_OVERDUE: 'order_overdue_nudge',
@@ -759,38 +763,78 @@ async function drawFindingsAwaitingBorrowerOnce() {
   // and silently disable the nudge).
   const wh = Number(process.env.DRAW_FINDINGS_REMINDER_HOURS || 4);
   const waitHours = Number.isFinite(wh) ? Math.max(1, wh) : 4;
+  // BORROWER NUDGE CAP (owner-directed: "the borrower keeps receiving these emails …
+  // prevent it from being sent to him again and again … the borrower should not get
+  // these repeating emails again and again for every draw"). The old sweep had a
+  // rate limiter but NO stop — a borrower who never acts was emailed every few
+  // business hours forever. After CAP nudges we STOP emailing the borrower and hand
+  // the draw off to the draw coordinator to follow up (call them / mark approved).
+  const cn = Number(process.env.DRAW_FINDINGS_BORROWER_CAP || 5);
+  const CAP = Number.isFinite(cn) ? Math.max(1, Math.round(cn)) : 5;
   const rows = (await db.query(
-    `SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
-       FROM draw_findings f
-       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
-      WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
-        AND f.delivered_at < now() - ($1 || ' hours')::interval
-        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
-                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
-        -- Nudged inside the last waitHours → not due, so it must not consume a slot. delivered_at
-        -- only moves when the BORROWER acts, so without this the longest-stuck borrowers hold the
-        -- front of the queue indefinitely and a newer delivery past the cap is never nudged at all.
-        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
-      GROUP BY f.application_id
-      -- Deterministic order (same defect class as the borrower digest): an unordered LIMIT lets
-      -- Postgres return an arbitrary 300 of the waiting files, so past the cap a borrower could be
-      -- skipped on every single pass and never nudged. Oldest-waiting first, id as the tie-break.
-      ORDER BY oldest ASC, f.application_id
+    // The candidate set is delivered findings on an active PILOT-managed file that are NOT already
+    // inside EITHER throttle: the borrower waitHours throttle (under-cap nudges) OR the coordinator
+    // 2-day hand-off throttle (over-cap). Including both keeps an already-handled file from holding a
+    // LIMIT slot — delivered_at never advances, so without it the most-stuck files starve the queue
+    // (the exact defect the ORDER BY + notThrottled were added to prevent).
+    `WITH due AS (
+       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
+         FROM draw_findings f
+         JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
+          AND f.delivered_at < now() - ($1 || ' hours')::interval
+          AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                        AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_BORROWER_STUCK, "interval '2 days'")}
+        GROUP BY f.application_id
+     )
+     -- nudges = how many borrower reminders were already sent THIS delivered episode (since the
+     -- oldest currently-delivered finding). Stamps from a prior, already-accepted draw are before
+     -- that oldest delivery, so a new delivery always starts the borrower over with a fresh CAP.
+     SELECT d.application_id, d.n, d.oldest,
+            (SELECT count(*) FROM audit_log l
+               WHERE l.entity_type='application' AND l.action='${DIGEST_ACTION.DRAW_FINDINGS_REMINDER}'
+                 AND l.entity_id=d.application_id AND l.created_at >= d.oldest)::int AS nudges
+       FROM due d
+      -- Deterministic order: an unordered LIMIT lets Postgres return an arbitrary 300 of the waiting
+      -- files, so past the cap a borrower could be skipped on every pass. Oldest-waiting first.
+      ORDER BY d.oldest ASC, d.application_id
       LIMIT 300`, [String(waitHours)])).rows;
   for (const r of rows) {
     try {
-      // At most one nudge per `waitHours` per file (the atomic gate), so within the
-      // business-hours window the borrower is reminded every few hours until they act.
-      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
-      await notify.notifyAppBorrowers(r.application_id, {
-        type: 'draw_findings',
-        title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
-        badge: { text: 'Action needed', tone: 'action' },
-        body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
-        callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
-        applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
-      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours });
-      sent++;
+      if (r.nudges < CAP) {
+        // Still under the cap: nudge the BORROWER, at most once per `waitHours` (the atomic gate).
+        if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
+        await notify.notifyAppBorrowers(r.application_id, {
+          type: 'draw_findings',
+          title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
+          callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
+          applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
+        await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours, nudge: r.nudges + 1, cap: CAP });
+        sent++;
+      } else {
+        // Cap reached: STOP emailing the borrower. Hand off to the draw coordinator(s) to follow up,
+        // at most once / 2 days (the coordinator gate). This is what turns an endless borrower nudge
+        // into a single "please call them or mark it approved" for the person who owns the file's draws.
+        if (!(await _gate(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, '2 days'))) continue;
+        const drawRecipients = require('./draw-recipients');
+        const coords = await drawRecipients.coordinatorsOrDesk(r.application_id);
+        for (const c of coords) {
+          try {
+            await notify.notifyStaff(c.id, {
+              type: 'draw',
+              title: r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`,
+              badge: { text: 'Follow up', tone: 'action' },
+              body: `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`,
+              applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk', emailTo: c.email });
+          } catch (e) { console.error('[digest] draw-borrower-stuck notify', c.id, e && e.message); }
+        }
+        await _stamp(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, { awaiting: r.n, nudges: r.nudges, cap: CAP, coordinators: coords.length });
+        sent++;
+      }
     } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
   }
   return sent;
