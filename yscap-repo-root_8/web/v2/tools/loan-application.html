@@ -937,7 +937,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                 <div class="result"><div class="r-label">Rehab holdback</div><div class="r-value" id="snHoldback">$0</div><div class="r-hint" id="snHoldbackHint">100% financed, in draws</div></div>
                 <div class="result"><div class="r-label">Est. down payment</div><div class="r-value" id="snDown">$0</div></div>
                 <div class="result"><div class="r-label">Est. title / escrow</div><div class="r-value" id="snTitle">—</div><div class="r-hint">rough estimate — depends on your title vendor</div></div>
-                <div class="result"><div class="r-label">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint">down payment + fees + est. title</div></div>
+                <div class="result"><div class="r-label" id="snCashLbl">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint" id="snCashHint">down payment + fees + est. title</div></div>
                 <div class="result"><div class="r-label">Financed interest reserve</div><div class="r-value" id="snIR">—</div><div class="r-hint">rolled into the loan</div></div>
                 <div class="result"><div class="r-label">Loan-to-cost</div><div class="r-value" id="snLtc">0%</div></div>
                 <div class="result"><div class="r-label">Loan-to-ARV</div><div class="r-value" id="snArvPct">0%</div></div>
@@ -1616,7 +1616,19 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     YS.put("snHoldbackHint", (s && s.rehabOverCap) ? "capped \u2014 remainder out of pocket" : "100% financed, in draws");
     YS.put("snDown", ready ? YS.fmtUSD(s.downPayment || 0) : EM);
     YS.put("snTitle", (ready && titleCost > 0) ? YS.fmtUSD(titleCost) : EM);
-    YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
+    // On a CASH-OUT lead the borrower RECEIVES money and brings nothing, so cash-to-close
+    // is $0 — show what they GET instead (loan advanced − payoff − closing), matching how
+    // the term sheet and the server email surface a cash-out (owner-directed 2026-08-04).
+    var snCashOut = isRefi() ? Math.max(0, snInitialR - num("payoff") - closingFees) : 0;
+    if (isCashOut() && snCashOut > 0) {
+      YS.put("snCashLbl", "Est. cash to you");
+      YS.put("snCash", ready ? YS.fmtUSD(snCashOut) : EM);
+      YS.put("snCashHint", "loan advanced − payoff − closing");
+    } else {
+      YS.put("snCashLbl", "Est. cash to close");
+      YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
+      YS.put("snCashHint", isRefi() ? "payoff + closing − funds advanced" : "down payment + fees + est. title");
+    }
     YS.put("snIR", (ready && financedIR > 0) ? YS.fmtUSD(financedIR) : EM);
     YS.put("snLtc", (ready && s.ltcPct) ? YS.fmtPct(s.ltcPct, 1) : EM);
     YS.put("snArvPct", (ready && s.arvPct) ? YS.fmtPct(s.arvPct, 1) : EM);
