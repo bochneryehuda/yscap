@@ -8,15 +8,23 @@ import ActionNeeded from '../components/ActionNeeded.jsx';
    loans view; everything the borrower must DO — signatures, fixes, documents —
    lives here on one screen. <ActionNeeded> already loads /api/borrower/action-items
    in ONE call and renders nothing when there's nothing outstanding, so this screen
-   owns the empty state (a plain "all caught up" card) and the framing around it. */
+   owns the framing: the "all caught up" empty state when the load truly returned
+   nothing, and a plain retry when the load FAILED (never a false "all caught up"
+   that hides real to-dos — audit-directed). */
 export default function Tasks() {
-  const [empty, setEmpty] = useState(null);   // null = loading, true/false once known
+  // 'loading' | 'has' (items exist) | 'empty' (loaded, nothing to do) | 'error'
+  const [state, setState] = useState('loading');
 
-  useEffect(() => {
-    let live = true;
+  const load = () => {
+    setState('loading');
     api.actionItems()
-      .then((d) => { if (live) setEmpty(!(d && Array.isArray(d.items) && d.items.length)); })
-      .catch(() => { if (live) setEmpty(true); });   // a failed load shows the calm empty card, never a blank screen
+      .then((d) => setState(d && Array.isArray(d.items) && d.items.length ? 'has' : 'empty'))
+      .catch(() => setState('error'));
+  };
+  useEffect(() => { let live = true; setState('loading');
+    api.actionItems()
+      .then((d) => { if (live) setState(d && Array.isArray(d.items) && d.items.length ? 'has' : 'empty'); })
+      .catch(() => { if (live) setState('error'); });
     return () => { live = false; };
   }, []);
 
@@ -32,7 +40,7 @@ export default function Tasks() {
       {/* ActionNeeded renders the task list (and nothing when the list is empty). */}
       <ActionNeeded />
 
-      {empty === true && (
+      {state === 'empty' && (
         <div className="panel" style={{ textAlign: 'center', padding: '32px 22px' }}>
           <div style={{ fontSize: 28, marginBottom: 6 }} aria-hidden="true">✓</div>
           <h3 style={{ margin: '0 0 6px' }}>You're all caught up</h3>
@@ -43,7 +51,14 @@ export default function Tasks() {
         </div>
       )}
 
-      {empty === null && <div className="panel muted">Loading…</div>}
+      {state === 'error' && (
+        <div role="alert" className="notice err">
+          We couldn't load your tasks just now.
+          <button className="btn link small" onClick={load}>Retry</button>
+        </div>
+      )}
+
+      {state === 'loading' && <div className="panel muted">Loading…</div>}
     </>
   );
 }
