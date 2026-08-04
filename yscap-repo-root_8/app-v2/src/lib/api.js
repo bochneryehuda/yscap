@@ -420,6 +420,10 @@ export const api = {
   tpoBorrowerSsn:    (id) => req('GET', `/api/tpo/borrowers/${id}/ssn`),      // reveal (audited)
   tpoSetBorrowerSsn: (id, ssn) => req('POST', `/api/tpo/borrowers/${id}/ssn`, { ssn }),
   tpoUpdateBorrower: (id, b) => req('PATCH', `/api/tpo/borrowers/${id}`, b),
+  // Phase 4 — the file's conditions + documents.
+  tpoChecklist:      (id) => req('GET', `/api/tpo/applications/${id}/checklist`),
+  tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
+  tpoUploadDocument: (b) => req('POST', '/api/tpo/documents', normalizeUpload(b)),
 
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),

@@ -24,6 +24,9 @@ const cfg = require('../config');
 const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const fields = require('../lib/fields');
+const storage = require('../lib/storage');
+const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
+const { scrubFields } = require('../lib/borrower-safe');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
 
@@ -370,6 +373,104 @@ router.post('/applications/:id/borrower-portal', async (req, res, next) => {
     await db.query(`UPDATE applications SET borrower_portal_enabled=$2, updated_at=now() WHERE id=$1`, [req.params.id, enabled]);
     await tpoAudit(req, 'tpo_set_borrower_portal', 'application', req.params.id, { enabled });
     res.json({ ok: true, borrower_portal_enabled: enabled });
+  } catch (e) { next(e); }
+});
+
+// ============================================================================
+// PHASE 4 — the file's CONDITIONS (what we need) + DOCUMENTS (provide them).
+// A broker sees the BORROWER-SAFE condition set (audience borrower/both, the
+// borrower_label wording, capital-partner names scrubbed) — never an internal
+// condition or the internal note. They upload documents against those
+// conditions; the LENDER still reviews and signs off (a broker never signs off,
+// clears, or waives — those stay staff-only).
+// ============================================================================
+
+// The file's conditions — borrower-safe wording only. Mirrors the borrower
+// checklist (audience borrower/both), firm-scoped. NOTE: revealing the staff-only
+// order conditions (flood cert / credit / appraisal received) is a later step —
+// those templates carry NO borrower_label today, so the "no safe wording → hide"
+// rule keeps them out; adding safe wording is a deliberate migration.
+router.get('/applications/:id/checklist', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const r = await db.query(
+      `SELECT ci.id, COALESCE(NULLIF(ci.borrower_label,''),'An item your loan team needs') AS label,
+              ci.status, ci.item_kind, ci.phase, ci.borrower_hint AS hint, ci.is_required, ci.due_date,
+              ci.field_key, ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted,
+              (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
+              -- issue_reason is a borrower-SAFE reason; fall back to the latest
+              -- rejected document's reason. ci.notes (internal) is NEVER selected.
+              COALESCE(ci.issue_reason,
+                (SELECT d.rejection_reason FROM documents d WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+                  ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
+         FROM checklist_items ci
+        WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
+        ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
+    const rows = r.rows.map((it) => scrubFields(it, ['label', 'hint', 'rejection_reason']));
+    res.json({ checklist: rows });
+  } catch (e) { next(e); }
+});
+
+// Documents on the file — the borrower-VISIBLE set only (visibility='borrower'),
+// firm-scoped, capital-partner names scrubbed. Internal-only documents
+// (staff_only / internal — fraud reports, internal appraisal source docs) never
+// appear.
+router.get('/applications/:id/documents', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const r = await db.query(
+      `SELECT id, filename, content_type, size_bytes, checklist_item_id, slot_label, doc_kind, created_at,
+              review_status, rejection_reason, is_current
+         FROM documents
+        WHERE application_id=$1 AND visibility='borrower' AND COALESCE(source_type,'') <> 'chat_attachment'
+        ORDER BY is_current DESC, created_at DESC`, [req.params.id]);
+    res.json({ documents: r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label', 'filename'])) });
+  } catch (e) { next(e); }
+});
+
+// Upload a document, optionally against a condition. Firm-scoped; the condition
+// (if given) must be a BORROWER-FACING one on this file. Uploaded as the broker
+// (a staff_users row, uploaded_by_kind='staff') and visible on the file
+// (visibility='borrower'). New evidence clears any prior sign-off so the LENDER
+// re-reviews — a broker provides, we sign off.
+router.post('/documents', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+    if (!b.applicationId) return res.status(400).json({ error: 'applicationId required' });
+    if (!(await appInFirm(req.actor.id, b.applicationId))) return res.status(404).json({ error: 'file not found' });
+    const filename = safeFilename(b.filename);
+    let itemId = null;
+    if (b.checklistItemId) {
+      const it = await db.query(
+        `SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both')`,
+        [b.checklistItemId, b.applicationId]);
+      if (!it.rows[0]) return res.status(404).json({ error: 'condition not found on this file' });
+      itemId = it.rows[0].id;
+    }
+    let buf;
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [b.applicationId])).rows[0].borrower_id;
+    // Collapse a double-submit onto the already-saved document (mirrors the borrower door).
+    const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
+      filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      applicationId: b.applicationId, checklistItemId: itemId, llcId: null, trackRecordId: null, slotLabel: null, docKind: null, termSheetFinal: null });
+    if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
+    const { ref, provider } = await storage.save(buf, { filename });
+    const r = await db.query(
+      `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,visibility,review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'borrower','pending') RETURNING id`,
+      [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+    if (itemId) {
+      await db.query(
+        `UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+          WHERE id=$1 AND audience IN ('borrower','both')`, [itemId]);
+    }
+    await tpoAudit(req, 'tpo_upload_document', 'document', r.rows[0].id, { applicationId: b.applicationId, checklistItemId: itemId });
+    res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { next(e); }
 });
 

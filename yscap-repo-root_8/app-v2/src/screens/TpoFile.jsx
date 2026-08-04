@@ -1,40 +1,82 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
-/* A single TPO file — the loan's basics and the borrower-login toggle. Feature
-   surfaces (pricing, conditions, documents, orders, draws) arrive in later
-   phases. */
+/* A single TPO file — the loan's basics, the conditions we need, the documents
+   provided, and the borrower-login toggle. A broker uploads documents against a
+   condition; the lender reviews and signs off (a broker never signs off or
+   waives). Pricing / term-sheet generation arrive in a later phase. */
 
 const STATUS_LABEL = {
   file_intake: 'Intake', new: 'New', in_review: 'In review', processing: 'Processing',
   underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close',
   funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn',
 };
+const COND_STATUS = {
+  outstanding: 'Needed', requested: 'Requested', received: 'In review', issue: 'Needs a fix',
+  satisfied: 'Done', waived: 'Waived',
+};
 const money = (v) => v == null || v === '' ? '—' : '$' + Number(v).toLocaleString('en-US');
 const addr = (a) => !a ? '' : (typeof a === 'string' ? a : (a.oneLine || [a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ')));
+
+// Read a File into the {filename, contentType, dataBase64} upload contract.
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result || '');
+      const comma = s.indexOf(',');
+      resolve({ filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64: comma >= 0 ? s.slice(comma + 1) : s });
+    };
+    r.onerror = () => reject(new Error('Could not read the file'));
+    r.readAsDataURL(file);
+  });
+}
 
 export default function TpoFile() {
   const { id } = useParams();
   const [a, setA] = useState(null);
+  const [checklist, setChecklist] = useState([]);
+  const [documents, setDocuments] = useState([]);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [uploadingFor, setUploadingFor] = useState(null);   // checklist item id currently uploading
+  const fileInput = useRef(null);
+  const pendingItem = useRef(null);
 
-  const load = () => api.tpoApplication(id)
-    .then((r) => setA(r?.application || null))
-    .catch((e) => setErr(e.message || 'Could not load this file'));
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  const loadFile = () => api.tpoApplication(id).then((r) => setA(r?.application || null)).catch((e) => setErr(e.message || 'Could not load this file'));
+  const loadChecklist = () => api.tpoChecklist(id).then((r) => setChecklist(Array.isArray(r?.checklist) ? r.checklist : [])).catch(() => {});
+  const loadDocuments = () => api.tpoDocuments(id).then((r) => setDocuments(Array.isArray(r?.documents) ? r.documents : [])).catch(() => {});
+
+  useEffect(() => { loadFile(); loadChecklist(); loadDocuments(); /* eslint-disable-next-line */ }, [id]);
 
   async function togglePortal(enabled) {
     setErr(''); setMsg(''); setBusy(true);
     try {
       await api.tpoSetBorrowerPortal(id, enabled);
       setMsg(enabled ? 'The borrower can sign in to their portal for this file.' : 'The borrower can no longer sign in for this file.');
-      await load();
+      await loadFile();
     } catch (e) { setErr(e.message || 'Could not change the setting'); }
     finally { setBusy(false); }
   }
+
+  // A condition's "Upload" (or the general upload) picks the file, then this runs.
+  async function onFilePicked(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';   // allow re-picking the same file
+    if (!file) return;
+    const itemId = pendingItem.current; pendingItem.current = null;
+    setErr(''); setMsg(''); setUploadingFor(itemId || 'general');
+    try {
+      const payload = await readFile(file);
+      await api.tpoUploadDocument({ ...payload, applicationId: id, checklistItemId: itemId || undefined });
+      setMsg('Document uploaded.');
+      await Promise.all([loadChecklist(), loadDocuments()]);
+    } catch (ex) { setErr(ex.message || 'Could not upload the document'); }
+    finally { setUploadingFor(null); }
+  }
+  const pickFor = (itemId) => { pendingItem.current = itemId || null; if (fileInput.current) fileInput.current.click(); };
 
   if (err && !a) return <div className="notice err">{err}</div>;
   if (!a) return <div className="muted">Loading…</div>;
@@ -47,6 +89,7 @@ export default function TpoFile() {
 
   return (
     <div style={{ maxWidth: 760 }}>
+      <input ref={fileInput} type="file" style={{ display: 'none' }} onChange={onFilePicked} />
       <div style={{ marginBottom: 12 }}><Link to="/tpo" className="btn link small">← Back to pipeline</Link></div>
       <div className="page-head" style={{ marginBottom: 18 }}>
         <h1 style={{ margin: 0 }}>{a.ys_loan_number || 'New loan'}</h1>
@@ -73,6 +116,49 @@ export default function TpoFile() {
         {a.loan_amount != null && row('Loan amount', money(a.loan_amount))}
       </div>
 
+      {/* Conditions */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>What we need</div>
+        {checklist.length === 0 && <div className="muted small">Nothing outstanding right now.</div>}
+        {checklist.map((c) => (
+          <div key={c.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 500 }}>{c.label}</div>
+                {c.hint && <div className="muted small" style={{ marginTop: 2 }}>{c.hint}</div>}
+                {c.rejection_reason && <div className="small" style={{ marginTop: 2, color: '#B4532A' }}>Needs a fix: {c.rejection_reason}</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span className="pill">{COND_STATUS[c.status] || c.status}</span>
+                {c.item_kind === 'document' && (
+                  <button className="btn ghost small" disabled={uploadingFor === c.id} onClick={() => pickFor(c.id)}>
+                    {uploadingFor === c.id ? 'Uploading…' : 'Upload'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Documents */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 600 }}>Documents</div>
+          <button className="btn ghost small" disabled={uploadingFor === 'general'} onClick={() => pickFor(null)}>
+            {uploadingFor === 'general' ? 'Uploading…' : 'Upload a document'}
+          </button>
+        </div>
+        {documents.length === 0 && <div className="muted small">No documents yet.</div>}
+        {documents.map((d) => (
+          <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', gap: 12 }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+            <span className="muted small">{d.review_status === 'accepted' ? 'Accepted' : d.review_status === 'rejected' ? 'Rejected' : 'In review'}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Borrower login */}
       <div className="card" style={{ padding: 20 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Borrower login</div>
         <p className="muted small" style={{ marginTop: 0 }}>

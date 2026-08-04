@@ -16249,6 +16249,11 @@ const TERM_SHEET_ESIGN_PURPOSES = new Set(['term_sheet_package']);
 router.post('/applications/:id/esign/send', async (req, res) => {
   const purpose = String((req.body && req.body.purpose) || '');
   if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  // LENDER-ONLY (owner-locked TPO decision): sending a DocuSign package requires
+  // send_term_sheet. Every internal staff role holds it, so internal behavior is
+  // unchanged; an external broker (kind 'tpo') never can — `can()` is false for a
+  // non-staff actor — so a broker can never send the signable term sheet.
+  if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
   const reissue = !!(req.body && req.body.reissue);
   // Owner-directed 2026-07-26: the Encompass match gates EXACTLY ONE action — sending
   // the TERM-SHEET DocuSign package. Registering a product and issuing/printing a term
@@ -16320,6 +16325,8 @@ router.post('/applications/:id/esign/send', async (req, res) => {
 // Resend (nudge) the current pending recipient(s).
 router.post('/esign/:rowId/resend', async (req, res) => {
   try {
+    // Re-dispatching a package is a send — same lender-only gate as /esign/send.
+    if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
     const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
     if (!row) return res.status(status).json({ error });
     if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });

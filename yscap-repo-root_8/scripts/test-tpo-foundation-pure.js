@@ -32,6 +32,16 @@ ok(perms.can({ kind: 'tpo', role: 'tpo_officer', perms: new Set(['see_all_files'
 ok(perms.can({ kind: 'staff', role: 'super_admin' }, 'see_all_files') === true,
   'sanity: a super_admin staff actor still satisfies a staff gate');
 
+// --- the term-sheet-send lock is LENDER-ONLY -----------------------------
+ok(perms.CAP_KEYS.includes('send_term_sheet'), 'send_term_sheet is a real capability');
+for (const role of ['admin', 'underwriter', 'loan_coordinator', 'draw_coordinator', 'processor', 'loan_officer', 'closer', 'software_setup']) {
+  ok(perms.effectivePermissions(role, null).has('send_term_sheet'),
+    `every internal role holds send_term_sheet (${role}) — internal send behavior is unchanged`);
+}
+ok(perms.effectivePermissions('super_admin', null).has('send_term_sheet'), 'super_admin holds send_term_sheet');
+ok(perms.can({ kind: 'tpo', role: 'tpo_officer', perms: new Set(['send_term_sheet']) }, 'send_term_sheet') === false,
+  'a TPO can NEVER hold send_term_sheet, even with it forged onto perms — the term sheet is lender-only');
+
 // --- tpoFirmScopeSql: firm-bounded, references the placeholder ------------
 const fs = perms.tpoFirmScopeSql('a', '$1');
 ok(fs.includes('$1'), 'firm scope references the acting-id placeholder (never an unreferenced param)');

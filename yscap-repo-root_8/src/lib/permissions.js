@@ -60,6 +60,13 @@ const CAPABILITIES = [
   // officer does NOT get it unless an admin grants it to that individual here on
   // the Team screen. (super_admin has every capability implicitly.)
   { key: 'export_data_tapes', label: 'Export capital-provider data tapes', hint: 'Download a loan\'s data tape for its capital provider (Fidelis / Blue Lake / EMCAP …). Off for loan officers unless granted per-person.' },
+  // Sending the official term sheet (and any other package) out on DocuSign is a
+  // LENDER-ONLY action (owner-locked TPO decision): every internal staff role
+  // holds it, so internal behavior is unchanged, but an external broker (kind
+  // 'tpo') can NEVER hold it — `can()` returns false for any non-staff actor —
+  // so a TPO can never send the signable package. A broker uploads and requests;
+  // we send. Do NOT grant this to a TPO role.
+  { key: 'send_term_sheet', label: 'Send documents for signature (DocuSign)', hint: 'Send the official term sheet and other DocuSign packages. Lender-only — never granted to an external broker.' },
   { key: 'manage_team', label: 'Manage the team', hint: 'Add staff, set roles, set passwords.' },
   { key: 'platform_setup', label: 'Platform setup', hint: 'Integrations, email config, and other software setup.' },
   { key: 'view_audit_log', label: 'View the system audit log', hint: 'The company-wide trail of every action across every file and borrower.' },
@@ -70,16 +77,16 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'send_term_sheet', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen. They also export
   // capital-provider data tapes (owner-directed 2026-07-26) and pull credit.
-  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_conditions', 'export_data_tapes'],
-  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit'],
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_conditions', 'export_data_tapes', 'send_term_sheet'],
+  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'send_term_sheet'],
   // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
   // desk across all files. Admin-overridable per the coordinator rules.
-  draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
+  draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions', 'send_term_sheet'],
   // Processors sign off conditions, manage draws, export data tapes
   // (owner-directed 2026-07-26), and pull credit. They ALSO hold waive_conditions
   // (owner-directed 2026-07-26): a processor handling a finding must be able to finish
@@ -87,7 +94,7 @@ const ROLE_DEFAULTS = {
   // — instead of being forced to escalate it to a super-admin. The decision is still
   // fully attributed (who/why/when on the finding + the audit log), and an admin can
   // revoke it for a specific person from the Team screen.
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions'],
+  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'send_term_sheet'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They CAN pull_credit (owner-directed 2026-07-23): the LO pulls credit at point of
   // sale, then marks the credit condition Done (the reviewed stamp) — the processor
@@ -96,13 +103,13 @@ const ROLE_DEFAULTS = {
   // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
   // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
-  loan_officer: ['review_conditions', 'pull_credit'],
+  loan_officer: ['review_conditions', 'pull_credit', 'send_term_sheet'],
   // Closers see the whole pipeline (they need the closing queue across files) and
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow
   // per-person from the Team screen.
-  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing'],
-  software_setup: ['manage_conditions', 'platform_setup'],
+  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing', 'send_term_sheet'],
+  software_setup: ['manage_conditions', 'platform_setup', 'send_term_sheet'],
 };
 
 function defaultsFor(role) {

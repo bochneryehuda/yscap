@@ -138,12 +138,33 @@ internal workflow condition.
    enforced borrower-side in the ONE `OWN_FILE_SQL` chokepoint (a portal-disabled
    TPO file is hidden from the borrower; a NO-OP for every retail file, since
    `is_tpo=false`). `app-v2`: `TpoNewLoan`, `TpoBorrowers`, `TpoBorrowerDetail`,
-   `TpoFile`. Test `scripts/test-tpo-files-db.js` (29 assertions).
-4. **Pricing, conditions & documents** — Term Sheet Studio (price/register/
-   generate), the TPO condition set (reveal/hide), uploads, tools. **The
-   term-sheet-send lock lands here**: add a `send_term_sheet` capability, grant
-   it to every existing internal staff role (so internal behavior is unchanged),
-   gate `esign/send` on it, and never grant it to a TPO.
+   `TpoFile`. Test `scripts/test-tpo-files-db.js`.
+4. **Conditions, documents + the term-sheet-send lock** ✅ (Phase 4a):
+   - **The term-sheet-send lock is DONE.** `send_term_sheet` capability
+     (`permissions.js`), granted to EVERY internal staff role (so internal
+     behavior is byte-identical — verified by `test-esign-send`), and the
+     `esign/send` + `esign/:id/resend` routes gate on it. A TPO can NEVER hold it
+     — `can()` is false for any non-staff actor — so a broker can never send the
+     signable term sheet, on top of the send route being staff-only. Pinned by
+     `test-tpo-foundation-pure` (every role has it; a tpo actor never does).
+   - **TPO conditions (read):** `GET /applications/:id/checklist` returns the
+     BORROWER-SAFE set (audience borrower/both, `borrower_label` wording,
+     capital-partner names scrubbed, the internal note never selected) — firm
+     scoped. A staff-only condition is never shown.
+   - **TPO documents:** `GET /applications/:id/documents` (borrower-VISIBLE only —
+     `visibility='borrower'`; a staff_only/internal doc never appears) and
+     `POST /documents` (upload against a borrower-facing condition; the broker
+     PROVIDES, the lender still signs off — new evidence clears any prior
+     sign-off). `app-v2 TpoFile` shows both with an upload control.
+   - Test `scripts/test-tpo-files-db.js` (now 40 assertions).
+   - **DEFERRED to Phase 4b:** the TPO Term Sheet Studio (price / register /
+     generate the term-sheet PDF), the info-field condition writer, and the
+     staff-condition REVEAL (flood cert / credit / appraisal received / EMD).
+     The order-driven borrower-facing conditions (EMD, insurance/title contact)
+     are already `audience IN ('borrower','both')` and thus shown; the staff-only
+     order conditions carry NO `borrower_label` today, so the "no safe wording →
+     hide" rule keeps them out — revealing them needs a deliberate migration that
+     adds borrower-safe wording, done with the pricing slice.
 5. **Orders + own-Xactus** — title / insurance / flood / credit on the TPO
    surface; then per-firm encrypted Xactus credentials for **credit** (refactor
    `credit/provider.js pull()` to take a credentials arg resolved from the file's
