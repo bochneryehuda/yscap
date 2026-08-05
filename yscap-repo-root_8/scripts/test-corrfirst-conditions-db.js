@@ -190,7 +190,7 @@ const tplFor = async (code) => (await db.query(
     // ======================================================================
     const { ensureSchema } = require('../src/migrate-boot');
     const legacy = (await db.query(
-      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','CorrFirst') RETURNING id`,
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,'processing','CorrFirst','Purchase') RETURNING id`,
       [borrowerId])).rows[0].id;
     await engine.evaluateApplication(legacy, { reason: 'test', notify: false });
     const legacyEmd = (await itemsFor(legacy, EMD_CODE))[0];

@@ -206,7 +206,7 @@ const liveCodes = async (appId) => (await db.query(
       [`nbslot-lo-${sfx}@test.local`])).rows[0];
     staffIds = [staff.id, stranger.id];
     const httpApp = (await db.query(
-      `INSERT INTO applications (borrower_id,status) VALUES ($1,'processing') RETURNING id`, [borrowerId])).rows[0].id;
+      `INSERT INTO applications (borrower_id,status,loan_type) VALUES ($1,'processing','Purchase') RETURNING id`, [borrowerId])).rows[0].id;
     const tokenFor = (u, role) => crypto.signJwt(
       { sub: u.id, kind: 'staff', role, tv: u.token_version || 0, sid: `slot-${sfx}-${role}` }, 3600);
 
