@@ -452,6 +452,11 @@ export const api = {
     try { const { blob, filename } = await download(`/api/tpo/applications/${appId}/draws/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // Phase 6d — the broker ACCEPTS / DISPUTES an inspection result (owner-locked: "like a borrower").
+  // Authenticated + firm-scoped; mirrors the borrower's authenticated accept/dispute server-side —
+  // never the borrower's public reply_token. Accept MOVES MONEY (starts the wire SLA).
+  tpoDrawAccept:  (appId, findingId) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/accept`, {}),
+  tpoDrawDispute: (appId, findingId, lines) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/dispute`, { lines }),
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),

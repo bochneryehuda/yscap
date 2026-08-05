@@ -45,6 +45,7 @@ const { buildBorrowerSafeAppraisalView } = require('../lib/appraisal/borrower-sa
 const rollupMod = require('../sitewire/rollup');
 const borrowerSafeDraws = require('../sitewire/borrower-safe-draws'); // ONE borrower-safe draw scrub (shared with the borrower surface)
 const drawReport = require('../sitewire/draw-report');
+const { normalizeDisputeMedia } = require('../sitewire/dispute-media'); // ONE shared dispute-evidence sniff/strip/cap (shared with the borrower surface)
 const { setMediaHeaders } = require('../lib/media-headers');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
@@ -1270,6 +1271,99 @@ router.get('/draw-media/:mediaId', async (req, res, next) => {
     if (!buf || !buf.length) return res.status(404).end();
     setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
     return res.end(buf);
+  } catch (e) { next(e); }
+});
+
+// ── Phase 6d — a broker ACCEPTS / DISPUTES a draw inspection result ──────────────────────────────
+// Owner-locked decision 2 (2026-08-04): brokers "view / accept / dispute on funded files, like a
+// borrower". This is the ONE thing on the draw surface that MOVES MONEY — accepting flips the
+// finding to 'accepted' and starts the wire SLA, exactly as the borrower's AUTHENTICATED accept does
+// (routes/borrower-draws.js). Two hard invariants keep it safe:
+//   1. AUTHENTICATED + FIRM-SCOPED, never the reply_token. The broker acts through this /api/tpo door
+//      (a real kind='tpo' session, firm isolation via appInFirm + the finding pinned to THIS file);
+//      the borrower's per-finding reply_token — a PUBLIC capability that ALSO permits accept/dispute —
+//      never reaches a broker (Phase 6b served draw photos through the firm-scoped media route for
+//      exactly this reason).
+//   2. ATTRIBUTED. A broker IS a staff_users row, so accepted_via/disputed_via='tpo' +
+//      accepted_by_staff_id / disputed_by_staff_id name the broker (and impersonator_staff_id names
+//      the real staffer when an AE/AM is inside a "view as TPO" session).
+// On a portal-DISABLED TPO file the borrower has no way to accept, so the broker's accept is the only
+// path — which is precisely why the owner locked broker accept/dispute. Whoever acts first wins the
+// guarded `WHERE status='delivered'` transition; a lost race is a clean 409, never a double action.
+const wireTurnaroundHoursTpo = async () => {
+  try { const r = await db.query(`SELECT value FROM sitewire_settings WHERE key='wire_turnaround_hours'`); const h = Number(r.rows[0] && r.rows[0].value); return Number.isFinite(h) && h > 0 ? h : 48; } catch (_) { return 48; }
+};
+
+// Load the finding, PINNED to a firm-scoped file (IDOR: the finding must belong to THIS file, which
+// appInFirm has already proven is in the broker's firm). 1..18 digits stays in bigint range.
+async function findingOnFile(appId, findingId) {
+  if (!/^\d{1,18}$/.test(String(findingId))) return null;
+  const r = await db.query(`SELECT * FROM draw_findings WHERE id=$1 AND application_id=$2`, [findingId, appId]);
+  return r.rows[0] || null;
+}
+
+router.post('/applications/:id/findings/:findingId/accept', async (req, res, next) => {
+  try {
+    const appId = req.params.id;
+    if (!(await appInFirm(req.actor.id, appId))) return res.status(404).json({ error: 'file not found' });
+    const f = await findingOnFile(appId, req.params.findingId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    if (f.status === 'accepted') return res.json({ ok: true, already: true, wire_due_at: f.wire_due_at });
+    if (f.status !== 'delivered') return res.status(409).json({ error: 'these results are not awaiting acceptance' });
+    const hours = await wireTurnaroundHoursTpo();
+    const upd = (await db.query(
+      `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='tpo', accepted_by_staff_id=$3,
+              wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
+        WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours), req.actor.id])).rows[0];
+    if (!upd) return res.status(409).json({ error: 'already handled' });
+    // Our AE/AM (internal assignees) are notified; notifyAppStaff filters is_external, so the broker
+    // never receives their own action back (the Phase-2 internal-fan-out sweep).
+    await notify.notifyAppStaff(appId, { type: 'draw_accepted', title: 'Broker accepted a draw', badge: { text: 'Accepted', tone: 'positive' },
+      body: `The broker accepted the inspection results — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+    await tpoAudit(req, 'tpo_accept_draw', 'application', appId, { findingId: f.id, sitewireDrawId: f.sitewire_draw_id });
+    res.json({ ok: true, wire_due_at: upd.wire_due_at });
+  } catch (e) { next(e); }
+});
+
+router.post('/applications/:id/findings/:findingId/dispute', async (req, res, next) => {
+  try {
+    const appId = req.params.id;
+    if (!(await appInFirm(req.actor.id, appId))) return res.status(404).json({ error: 'file not found' });
+    const f = await findingOnFile(appId, req.params.findingId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    if (f.status === 'accepted') return res.status(409).json({ error: 'these results were already accepted' });
+    if (f.status === 'resolved') return res.status(409).json({ error: 'these results have already been reviewed and resolved' });
+    // Cap the number of lines so a giant body can't fan out into a flood of sequential queries on one
+    // pooled connection (authenticated DoS). A real draw never has anywhere near 200 lines.
+    const lines = (Array.isArray(req.body && req.body.lines) ? req.body.lines : []).slice(0, 200);
+    if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
+    // Validate + store any photo evidence FIRST (durable, GPS-stripped, byte-sniffed via the ONE
+    // shared normalizer), then flip the finding with a guarded UPDATE and only write the lines if
+    // that transition won — a concurrent accept flips to 'accepted', our UPDATE affects 0 rows → 409,
+    // and no dispute lines are orphaned on a releasing finding.
+    const updates = [];
+    for (const ln of lines) {
+      if (!/^\d+$/.test(String(ln.line_id))) continue;
+      const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
+      if (!owned) continue;
+      let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
+      if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null; // never guess an out-of-range amount
+      const evidence = await normalizeDisputeMedia(ln.media);
+      updates.push({ line_id: ln.line_id, desired, note: ln.note ? String(ln.note).slice(0, 2000) : null, evidence });
+    }
+    if (!updates.length) return res.status(400).json({ error: 'no valid dispute lines' });
+    const flipped = (await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='tpo', disputed_by_staff_id=$2, updated_at=now() WHERE id=$1 AND status='delivered' RETURNING id`, [f.id, req.actor.id])).rows[0];
+    if (!flipped) return res.status(409).json({ error: 'these results are no longer awaiting a response' });
+    for (const u of updates) {
+      await db.query(
+        `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, dispute_media=$4, updated_at=now() WHERE id=$1`,
+        [u.line_id, u.desired, u.note, u.evidence.length ? fields.jsonbText(u.evidence) : null]);
+    }
+    const count = updates.length;
+    await notify.notifyAppStaff(appId, { type: 'draw_disputed', title: 'Broker disputed a draw', badge: { text: 'Disputed', tone: 'action' },
+      body: `The broker disputed ${count} item(s) on the draw results and provided evidence. A draw coordinator needs to review.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+    await tpoAudit(req, 'tpo_dispute_draw', 'application', appId, { findingId: f.id, sitewireDrawId: f.sitewire_draw_id, lines: count });
+    res.json({ ok: true, disputed_lines: count });
   } catch (e) { next(e); }
 });
 

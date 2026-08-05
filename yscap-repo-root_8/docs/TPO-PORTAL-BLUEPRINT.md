@@ -306,9 +306,30 @@ internal workflow condition.
      `TpoLayout` (self-fetches from `/api/tpo-view/session`), `startTpoView`/
      `exitTpoView`/`isTpoView` in `auth.jsx`. Tests `scripts/test-tpo-view-pure.js`
      + `scripts/test-tpo-view-db.js`.
-   - **STILL DEFERRED in Phase 6:** draw ACCEPT/DISPUTE (a borrower money decision —
-     needs an owner confirmation of broker authority, esp. on a portal-disabled TPO
-     file), and messaging.
+   - **Phase 6d — a broker ACCEPTS / DISPUTES a draw inspection result ✅ (BUILT).**
+     Owner-locked decision 2: brokers "view / accept / dispute … like a borrower".
+     This completes the draw surface Phase 6b left read-only — it is the ONE broker
+     draw action that MOVES MONEY. `POST /api/tpo/applications/:id/findings/:findingId/
+     {accept,dispute}` (db/479) runs the SAME server-side transitions as the borrower's
+     AUTHENTICATED accept/dispute (`routes/borrower-draws.js`) but firm-scoped
+     (`appInFirm` + the finding PINNED to the named file — a finding on another file
+     404s) and NEVER via the borrower's public `reply_token` (these take a `findingId`,
+     not a token). Attributed: db/479 widens `accepted_via`/`disputed_via` to `'tpo'` +
+     adds `disputed_by_staff_id`; accept stamps `accepted_via='tpo'` +
+     `accepted_by_staff_id`, dispute stamps `disputed_via='tpo'` +
+     `disputed_by_staff_id`, and both audit `tpo_accept_draw`/`tpo_dispute_draw`
+     (`impersonator_staff_id` set inside a "view as TPO" session). The guarded
+     `WHERE status='delivered'` UPDATE makes whoever acts first win (a lost race → 409);
+     accept is idempotent. On a portal-DISABLED file the broker's accept is the ONLY
+     path (the borrower has no portal) — the owner's exact reason for the lock. The
+     dispute-evidence normalizer (byte-sniff the image type / strip GPS / cap size +
+     count / only real uploads, never a client ref) is the SINGLE shared definition
+     `src/sitewire/dispute-media.js`, used by BOTH the borrower and TPO surfaces (the
+     borrower route is byte-identical, proven by its own tests). Front end: `TpoDraws.jsx`
+     gained Accept (behind a confirm) + a per-line Dispute editor. Tests
+     `scripts/test-dispute-media-pure.js` + the Phase-6d section of
+     `scripts/test-tpo-draws-db.js`.
+   - **STILL DEFERRED in Phase 6:** messaging (broker ↔ our team).
 
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 

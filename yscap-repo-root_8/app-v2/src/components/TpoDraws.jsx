@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { moneyCents } from '../lib/money.js';
 
-/* Phase 6b — the broker's READ-ONLY draw view. A broker SEES the same borrower-safe construction-draw
+/* Phase 6b/6d — the broker's draw view. A broker SEES the same borrower-safe construction-draw
    picture the borrower sees — the budget vs. what's released, the per-line rollup, each inspection
-   result + its photos, and the branded PDF — and can take NO action (accept/dispute starts a wire, a
-   borrower money decision). No capital-partner names, no lender fee income; the payload comes from the
-   ONE shared borrower-safe scrub. Photos are firm-scoped /api/tpo/draw-media urls, blob-fetched with
-   auth (never the borrower's public reply_token). All text is dark on the white canvas. */
+   result + its photos, and the branded PDF — and (Phase 6d, owner-locked decision 2) may ACCEPT or
+   DISPUTE an inspection result "like a borrower". Accepting MOVES MONEY (it confirms the approved
+   amounts and starts the release), so it is a firm-scoped authenticated call that mirrors the
+   borrower's own accept/dispute server-side — never the borrower's public reply_token. No
+   capital-partner names, no lender fee income; the payload comes from the ONE shared borrower-safe
+   scrub. Photos are firm-scoped /api/tpo/draw-media urls, blob-fetched with auth. Dark text on white. */
 
 const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -116,7 +119,7 @@ export default function TpoDraws({ appId }) {
       {findings.length > 0 && <TpoProjectReportButton appId={appId} />}
 
       {findings.map((f) => (
-        <TpoFindingCard key={f.id} finding={f} appId={appId} money={drawMoney.get(String(f.sitewire_draw_id)) || null} />
+        <TpoFindingCard key={f.id} finding={f} appId={appId} money={drawMoney.get(String(f.sitewire_draw_id)) || null} onChanged={load} />
       ))}
     </div>
   );
@@ -173,11 +176,40 @@ function TpoProjectReportButton({ appId }) {
   );
 }
 
-/* One inspection result, READ-ONLY: status, what the inspector approved, the per-line table with
-   photos, and a Download-report button. No accept/dispute — that is the borrower's money decision. */
-function TpoFindingCard({ finding, appId, money }) {
+/* One inspection result: status, what the inspector approved, the per-line table with photos, and a
+   Download-report button — PLUS (Phase 6d) Accept / Dispute while the result is still awaiting a
+   response. Accepting confirms the amounts and starts the release (money moves), so it is behind a
+   confirm; a dispute collects the amount the broker expected + a note per line (server-scrubbed,
+   never a partner name). The action calls the firm-scoped /api/tpo endpoints (never the reply_token)
+   and reloads on success so the badge and buttons reflect the new state. */
+function TpoFindingCard({ finding, appId, money, onChanged }) {
   const [err, setErr] = useState('');
-  const badge = { delivered: { label: 'Awaiting borrower', cls: 'sw-pending' }, accepted: { label: 'Accepted', cls: 'sw-approved' }, disputed: { label: 'Disputed — under review', cls: 'sw-insp' }, resolved: { label: 'Resolved', cls: 'sw-approved' } }[finding.status] || { label: finding.status, cls: 'sw-insp' };
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState(null);          // null (nothing open) | 'dispute'
+  const [disp, setDisp] = useState({});            // { lineId: { desired, note } }
+  const canAct = finding.status === 'delivered';
+  const badge = { delivered: { label: 'Awaiting response', cls: 'sw-pending' }, accepted: { label: 'Accepted', cls: 'sw-approved' }, disputed: { label: 'Disputed — under review', cls: 'sw-insp' }, resolved: { label: 'Resolved', cls: 'sw-approved' } }[finding.status] || { label: finding.status, cls: 'sw-insp' };
+
+  async function accept() {
+    if (!window.confirm('Accept these inspection results? This confirms the approved amounts and starts the release to the borrower.')) return;
+    setBusy(true); setErr('');
+    try { await api.tpoDrawAccept(appId, finding.id); if (onChanged) onChanged(); }
+    catch (e) { setErr(e?.data?.error || 'Could not accept — please try again.'); }
+    finally { setBusy(false); }
+  }
+  async function submitDispute() {
+    // Send only the lines the broker actually filled in (an amount and/or a note), mirroring the
+    // borrower screen. moneyCents (not a bare Number) so a typed "1,200" isn't dropped as no amount.
+    const lines = Object.entries(disp)
+      .filter(([, v]) => (v && v.desired !== '' && v.desired != null) || (v && v.note && v.note.trim()))
+      .map(([lineId, v]) => ({ line_id: Number(lineId), desired_cents: moneyCents(v.desired), note: v.note || null }));
+    if (!lines.length) { setErr('Add the amount you expected — or a note — on at least one line.'); return; }
+    setBusy(true); setErr('');
+    try { await api.tpoDrawDispute(appId, finding.id, lines); if (onChanged) onChanged(); }
+    catch (e) { setErr(e?.data?.error || 'Could not send the dispute — please try again.'); }
+    finally { setBusy(false); }
+  }
+
   return (
     <div className="dd-card">
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
@@ -220,8 +252,55 @@ function TpoFindingCard({ finding, appId, money }) {
         </table>
       </div>
 
+      {/* Phase 6d — dispute editor: the amount the broker expected + an optional note, per line.
+          Only filled-in lines are sent; the server scrubs the note (never a partner name). */}
+      {canAct && mode === 'dispute' && (
+        <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+          {(finding.lines || []).map((l) => {
+            const d = disp[l.id] || {};
+            return (
+              <div key={l.id} style={{ border: '1px solid var(--line)', borderRadius: 10, padding: '10px 12px' }}>
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text)' }}>{l.name || 'Line item'}</div>
+                  <div className="small muted">approved {usd2(l.approved_cents)} / {usd2(l.requested_cents)}</div>
+                </div>
+                <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: '1 1 130px' }}>
+                    <span className="muted">Amount expected</span>
+                    <input type="number" inputMode="decimal" min="0" step="1" placeholder="$" value={d.desired ?? ''}
+                      onChange={(e) => setDisp((s) => ({ ...s, [l.id]: { ...s[l.id], desired: e.target.value } }))}
+                      style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', fontSize: 16 }} />
+                  </label>
+                  <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: '3 1 200px' }}>
+                    <span className="muted">Why (optional)</span>
+                    <input type="text" placeholder="e.g. this work is complete — see photos" value={d.note ?? ''}
+                      onChange={(e) => setDisp((s) => ({ ...s, [l.id]: { ...s[l.id], note: e.target.value } }))}
+                      style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', fontSize: 16 }} />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+          <div className="small muted">Only the lines you fill in are sent. A draw coordinator reviews every dispute.</div>
+        </div>
+      )}
+
       {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 8, fontWeight: 600 }}>{err}</div>}
       <div className="act-bar">
+        {canAct && mode !== 'dispute' && (
+          <>
+            <button className="btn btn-sm primary" disabled={busy} onClick={accept}>{busy ? 'Accepting…' : 'Accept results'}</button>
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setMode('dispute'); setErr(''); }}>Dispute a line</button>
+            <span style={{ flex: 1 }} />
+          </>
+        )}
+        {canAct && mode === 'dispute' && (
+          <>
+            <button className="btn btn-sm primary" disabled={busy} onClick={submitDispute}>{busy ? 'Sending…' : 'Send dispute'}</button>
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setMode(null); setDisp({}); setErr(''); }}>Cancel</button>
+            <span style={{ flex: 1 }} />
+          </>
+        )}
         <button className="btn btn-sm soft"
           title="A PILOT-branded PDF of this draw inspection — the schedule of values, what was approved, the inspector’s notes and photos."
           onClick={() => { setErr(''); const w = window.open('', '_blank'); api.tpoDrawReport(appId, finding.sitewire_draw_id, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open the report — please try again.')); }}>

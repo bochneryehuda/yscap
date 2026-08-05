@@ -28,53 +28,11 @@ const notify = require('../lib/notify');
 const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
-const storage = require('../lib/storage');
-const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
-const { stripLocationExif } = require('../lib/image-exif');
-
-// Determine the REAL image type from the bytes' magic number — never trust the client's declared
-// content-type (audit H1: a borrower-supplied 'image/svg+xml'/'text/html' served inline is stored
-// XSS against the staff who open the evidence). Returns a safe image mime, or null to REJECT
-// (svg/html/pdf/zip/unknown all sniff to something we don't allow → dropped, never stored).
-function sniffImageMime(buf) {
-  const k = sniffKind(buf);
-  if (k === 'png') return 'image/png';
-  if (k === 'jpg') return 'image/jpeg';
-  if (k === 'gif') return 'image/gif';
-  if (buf && buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
-  // HEIC: an ISO-BMFF `ftyp` box whose MAJOR BRAND is actually a HEIF still-image brand. sniffKind's
-  // plain `ftyp` match also catches MP4/MOV video, so verify the brand here rather than mislabel a
-  // video as a HEIC image (audit LOW). A video attached as photo evidence is simply not stored.
-  if (buf && buf.length >= 12 && buf.subarray(4, 8).toString('latin1') === 'ftyp'
-      && /^(heic|heix|heif|hevc|hevx|mif1|msf1)/.test(buf.subarray(8, 12).toString('latin1'))) return 'image/heic';
-  return null;
-}
-
-// Normalize borrower-uploaded dispute evidence into DURABLE stored copies. We only ever accept
-// freshly-uploaded bytes ({filename, dataBase64, contentType}) — never a client-supplied storage
-// ref (that would let a borrower point at someone else's file). Each image has its GPS stripped
-// (privacy) and is capped in size + count. Returns [{storage_ref, filename, content_type, kind}].
-const EVIDENCE_MAX_PER_LINE = 8;
-const EVIDENCE_MAX_BYTES = 12 * 1024 * 1024;
-async function normalizeDisputeMedia(items) {
-  if (!Array.isArray(items)) return [];
-  const out = [];
-  for (const m of items.slice(0, EVIDENCE_MAX_PER_LINE)) {
-    if (!m || typeof m !== 'object' || !m.dataBase64) continue;   // only accept real uploads
-    let buf;
-    try { buf = decodeUploadBase64(m.dataBase64, { maxBytes: EVIDENCE_MAX_BYTES }).buf; } catch (_) { continue; }  // {buf, sha256}; caps size (413)
-    if (!buf || !buf.length) continue;
-    // Derive the type from the BYTES, not the client. Anything that isn't a real photo (svg/html/pdf/
-    // unknown) is rejected here so a malicious "image" can never be stored or served inline (audit H1).
-    const ct = sniffImageMime(buf);
-    if (!ct) continue;
-    try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ }
-    let saved;
-    try { saved = await storage.save(buf, { filename: m.filename || 'evidence' }); } catch (_) { continue; }
-    out.push({ storage_ref: saved.ref, storage_provider: saved.provider, filename: String(m.filename || 'evidence').slice(0, 180), content_type: ct, kind: 'image', bytes: buf.length });
-  }
-  return out;
-}
+// The dispute-evidence normalizer (sniff the real image type from the bytes, strip GPS, cap size +
+// count, store durable copies) is the ONE shared definition (sitewire/dispute-media.js) — the
+// borrower AND the TPO/broker surfaces store dispute evidence identically and can never drift on
+// this security-critical sniff/strip/cap layer.
+const { normalizeDisputeMedia } = require('../sitewire/dispute-media');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
