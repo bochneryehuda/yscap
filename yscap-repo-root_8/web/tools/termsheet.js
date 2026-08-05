@@ -425,7 +425,14 @@
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var liquidity = cashToClose + reserves;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
-    var displayCost = basisPrice + num("construction") + financedIRr;
+    // TOTAL COST goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's own acqDenom (min(price, as-is) on a
+    // purchase, the as-is value on a refi). basisPrice stays the REAL price shown as
+    // "Purchase price"; only the total-cost/LTC basis drops to the as-is value when it
+    // is lower. Falls back to basisPrice if the deal did not size. Byte-identical when
+    // the as-is value is >= the price (acqDenom === basisPrice).
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
+    var displayCost = costAcq + num("construction") + financedIRr;
 
     return {
       R: R, inp: inp, eff: (inp.loanType === "Purchase" ? effPurchase() : num("asIs")), basisPrice: basisPrice,
@@ -484,6 +491,9 @@
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, gold: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -494,7 +504,7 @@
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,

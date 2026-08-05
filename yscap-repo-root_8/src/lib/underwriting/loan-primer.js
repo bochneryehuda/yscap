@@ -69,9 +69,12 @@ THE MONEY FIELDS — MEMORIZE THESE DISTINCTIONS (this is where misreads happen)
   financed interest reserve). This is NOT the cost basis and NOT the purchase price.
 
 THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
-- Total Cost Basis  = (purchase_price OR as_is_value, whichever the program uses) + rehab_budget
+- Total Cost Basis  = min(purchase_price, as_is_value) + rehab_budget
   [+ financed interest reserve, for programs where the reserve sits IN the cost basis].
-  On an assignment the price term is the EFFECTIVE (recognized) price, not the real total.
+  The acquisition term is the LOWER of the purchase price and the as-is value (a refinance
+  uses the as-is value); when the as-is value is below the purchase price the cost basis —
+  and the LTC — go by the as-is value, not the purchase price. On an assignment the price
+  term is the EFFECTIVE (recognized) price, not the real total.
 - loan_amount = initial advance (a.k.a. acquisition advance) + rehab holdback + financed
   interest reserve. These three ALWAYS sum to loan_amount to the dollar.
     * initial advance  = the day-one wire toward acquisition (capped by as-is / purchase LTV).
@@ -79,7 +82,7 @@ THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
     * financed interest reserve = pre-funded interest, financed into the loan (may be 0).
 - LEVERAGE, all as loan-to-X percentages (0-100):
     * ltv  = loan-to-value as registered on the file.
-    * loan_to_cost (LTC)  = loan_amount / (purchase_price + rehab_budget).
+    * loan_to_cost (LTC)  = loan_amount / (min(purchase_price, as_is_value) + rehab_budget).
     * loan_to_arv (LTARV) = loan_amount / arv.
   Each program caps the initial advance vs as-is/purchase, the LTC, and the ARV LTV. The loan is
   sized to the TIGHTEST binding cap. NEVER recompute or override an engine number.
@@ -127,7 +130,7 @@ THE CONFUSABLES — never substitute one for another
 - purchase_price vs as_is_value vs arv — three different dollars (paid / current value / future
   post-rehab value). ARV is highest on a rehab deal.
 - loan_amount vs cost basis vs purchase_price — loan_amount is what WE lend (a subset of cost).
-  Cost basis = price + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
+  Cost basis = min(price, as-is) + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
 - real purchase price vs effective (recognized) purchase price — on an assignment, "Purchase
   price" shows seller + FULL fee; the loan SIZES on the effective price (seller + financeable
   fee). Do not size on the real total; do not label the effective price as the purchase price.

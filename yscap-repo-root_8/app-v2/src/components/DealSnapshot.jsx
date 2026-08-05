@@ -32,13 +32,20 @@ export default function DealSnapshot({ app, gating }) {
   // Which figure this deal is sized on — the as-is value on a refinance, the
   // purchase price on a purchase. One shared reading with the server + engine.
   const basisOf = dealBasis(app);
-  /* The fallback LTC denominator follows the same rule: on a refinance the cost
-     basis the frozen engine uses is `as_is_value + rehab`, not `price + rehab`,
-     so the approximate ratio shown when there is no registered quote was being
-     divided by a number the engine never used (usually 0 + rehab on a refinance,
-     which made the ≈ LTC read absurdly high). A registered quote still wins — its
-     `sizing.ltcPct` is the engine's own — so this only corrects the estimate. */
-  const basis = (Number(basisOf.basis) || 0) + (Number(app.rehab_budget) || 0);
+  /* The fallback LTC denominator follows the frozen engine's cost basis: the
+     acquisition figure is the LOWER of the sizing basis and the as-is value
+     (owner-directed 2026-08-05 — "when the as-is value is below the purchase price,
+     the cost, and the LTC, go by the as-is value"), and on a refinance that basis is
+     the as-is value, not `price + rehab`. Getting this wrong divided the ratio by a
+     number the engine never used (an inflated price, or on a refinance usually
+     0 + rehab, which read absurdly high). A registered quote still wins — its
+     `sizing.ltcPct` is the engine's own — so this only corrects the estimate.
+     basisOf.basis / basisOf.asIsValue are ALREADY numeric (dealBasis runs them
+     through its own money parser), so there is no bare Number() on a money field. */
+  const sizedBasis = basisOf.basis || 0;
+  const asIsBasis = basisOf.asIsValue || 0;
+  const costAcq = (sizedBasis > 0 && asIsBasis > 0) ? Math.min(sizedBasis, asIsBasis) : (sizedBasis || asIsBasis);
+  const basis = costAcq + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
   // Fallback ratios (no registered quote) use simple display math on raw columns —
   // a different basis than the engine's; mark them approximate (owner audit 2026-07-17).

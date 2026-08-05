@@ -164,9 +164,10 @@ function buildInputs(app, experience, overrides) {
        initial he can get instead of looking on the purchase price").
 
        The FROZEN ENGINES ALREADY DID THIS — `acqDenom = purchase ? min(pp, aiv)
-       : aiv` and `costBasis0 = (purchase ? pp : aiv) + rehab` — so not one
-       formula, cap, rate or matrix value moves here. What moved is which numbers
-       this input builder hands them on a refinance:
+       : aiv` and (owner-directed 2026-08-05) `costBasis0 = acqDenom + rehab`,
+       so on a refinance both read the as-is value — not one formula, cap, rate or
+       matrix value moves here. What moved is which numbers this input builder hands
+       them on a refinance:
 
          · `asIsValue` no longer falls back to the purchase price. That fallback
            is right on a PURCHASE ("worth what I'm paying for it") and meaningless
