@@ -214,7 +214,16 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     catch (_) { _blocks = null; }
     return _blocks;
   };
-  const moneyOpts = (b) => ({ figures: (b && b.figures) || undefined, facts: (b && b.facts) || undefined });
+  // Never LEAD with a "$0" headline when the amount did not come through (missing-vs-zero: a
+  // genuinely submitted draw carries a real requested/approved/net figure, so an all-zero money
+  // block means the number is unknown, not that the draw is worth nothing). Drop the money band
+  // there — the budget facts still go if present. Presence check only, on the SAME three fields
+  // drawFigures reads to pick its headline; no arithmetic, no second money query.
+  const hasFigure = (m) => !!m && (Number(m.requested_cents) > 0 || Number(m.approved_cents) > 0 || Number(m.net_release_cents) > 0);
+  const moneyOpts = (b) => ({
+    figures: (b && hasFigure(b.money) && b.figures) || undefined,
+    facts: (b && b.facts) || undefined,
+  });
   // TrustPoint import-task hook (phase 1, 2026-07-24): a LIVE inbound submission on a
   // trustpoint-routed file opens the coordinator's manual-entry task. GO-FORWARD by
   // construction — called only from the live reaction branches below, never from silent
