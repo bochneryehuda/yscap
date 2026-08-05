@@ -739,7 +739,11 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
             // file genuinely isn't ready to finalize (the fix is re-registering).
             const tsFinalizeHere = p.purpose === 'term_sheet_package' && tsCanFinalize;
             const tsHardHeld = tsHeld && !tsCanFinalize;
-            const blocked = isNoo ? already : (!sendAllowed || needsLoan || already || encHeld || tsHardHeld);
+            const blocked = !sendAllowed || needsLoan || already || encHeld || tsHardHeld;
+            // The NOO certification is a prior-to-docs occupancy cert — not held by any
+            // origination gate (readiness / loan number / Encompass / not-final); its
+            // only block is "already started". Everything else keeps `blocked` above.
+            const sendBlocked = isNoo ? already : blocked;
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
               : isNoo ? p.hint
               : needsLoan ? 'Enter the YS loan number above first'
@@ -751,7 +755,7 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
               : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved by super-admin exception)`) : 'Complete the outstanding requirements above first — or request a super-admin exception to send now');
             const onSend = tsFinalizeHere ? () => finalizeAndSend(p.purpose) : () => send(p.purpose);
             return (
-              <button key={p.purpose} className="btn primary btn-sm" disabled={blocked || busy === `send:${p.purpose}`}
+              <button key={p.purpose} className="btn primary btn-sm" disabled={sendBlocked || busy === `send:${p.purpose}`}
                 title={title} onClick={onSend}>
                 {busy === `send:${p.purpose}`
                   ? (tsFinalizeHere ? 'Finalizing & sending…' : 'Sending…')
