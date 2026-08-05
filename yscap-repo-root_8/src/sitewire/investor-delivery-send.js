@@ -31,6 +31,7 @@ const { buildDrawPacket } = require('./draw-packet');
 const { buildXlsx } = require('../lib/xlsx');
 const recipients = require('../lib/draw-recipients');
 const fieldRegistry = require('../lib/conditions/field-registry');
+const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
 
 const N = (x) => Number(x || 0) || 0;
@@ -206,6 +207,51 @@ async function gatherAttachments(appId, drawId, mode) {
 }
 
 // ---------------------------------------------------------------------------
+// WIRE FORM GATE
+// ---------------------------------------------------------------------------
+
+/**
+ * The signed WIRE FORM's review state on the FILE (the wire instructions are the same across
+ * every draw, so this is a file-level check — once accepted, every later draw is cleared).
+ *
+ * The borrower's DocuSign wire form files onto the draw_cond_signed_request condition
+ * (doc_kind draw_request_signed); a coordinator may also upload a corrected version onto that
+ * same condition. Either way, the money can only move once ONE correct version has been
+ * ACCEPTED — the owner's "accept one version, reject the rest, before the first draw goes to
+ * the investor". Acceptance uses the ONE shared definition (document-acceptance), so this gate
+ * and the sign-off gate can never disagree about what "accepted" means.
+ *
+ * FAILS OPEN on a read error: a database blip must never make a delivery permanently
+ * impossible — the finding-agreed and note-buyer checks are the primary money gates, and the
+ * coordinator is in the loop clicking send.
+ *
+ * Returns { present, accepted, rejectedOnly }.
+ */
+async function wireFormStatus(appId) {
+  try {
+    const item = (await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2 LIMIT 1`,
+      [appId, `draw:request:${appId}`])).rows[0];
+    const wireItemId = item ? item.id : null;
+    const r = (await db.query(
+      `SELECT
+         count(*) FILTER (WHERE ${ACCEPT.ACCEPTED_SQL('d')}) AS accepted,
+         count(*) FILTER (WHERE COALESCE(d.review_status,'pending') = 'rejected') AS rejected,
+         count(*) AS total
+       FROM documents d
+      WHERE d.application_id=$1 AND d.is_current
+        AND (d.doc_kind='draw_request_signed' OR ($2::uuid IS NOT NULL AND d.checklist_item_id=$2))`,
+      [appId, wireItemId])).rows[0] || {};
+    const total = Number(r.total) || 0;
+    const rejected = Number(r.rejected) || 0;
+    const accepted = Number(r.accepted) > 0;
+    return { present: total > 0, accepted, rejectedOnly: total > 0 && !accepted && rejected === total };
+  } catch (_) {
+    return { present: false, accepted: true, rejectedOnly: false };   // fail OPEN
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PREVIEW + SEND
 // ---------------------------------------------------------------------------
 
@@ -243,6 +289,7 @@ async function deliveryPreview(appId, drawId) {
   } catch (_) { /* the preview still renders; the blockers below say what is missing */ }
 
   const contacts = await contactsForNoteBuyer(app.note_buyer);
+  const wireForm = await wireFormStatus(appId);
   const [coordinators, officerEmails] = await Promise.all([
     recipients.coordinatorsOrDesk(appId).catch(() => []),
     recipients.fileLoanOfficerEmails(appId).catch(() => []),
@@ -255,7 +302,7 @@ async function deliveryPreview(appId, drawId) {
     borrowerEmails: [app.borrower_email, app.co_borrower_email],
   });
 
-  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode });
+  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
 
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
@@ -276,6 +323,7 @@ async function deliveryPreview(appId, drawId) {
       : (ID.MODES.includes(String(link.investor_funding_mode || '')) ? 'file' : 'default'),
     money,
     contacts,
+    wire_form: wireForm,
     to: rcpt.to, cc: rcpt.cc,
     blockers,
     can_send: blockers.length === 0,
@@ -302,7 +350,7 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   // no investor contacts; an emailed one does).
   const blockers = ID.deliveryBlockers({
     finding: pre.finding_status ? { status: pre.finding_status } : null,
-    investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode,
+    investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode, wireForm: pre.wire_form,
   });
   if (blockers.length) { const e = new Error(blockers[0]); e.status = 422; e.blockers = blockers; throw e; }
 
@@ -411,6 +459,6 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
 
 module.exports = {
   investorKeyFor, contactsForNoteBuyer, allContacts,
-  gatherAttachments, deliveryPreview, sendInvestorDelivery,
+  gatherAttachments, deliveryPreview, sendInvestorDelivery, wireFormStatus,
   DESK, deskFrom, budgetBytes,
 };

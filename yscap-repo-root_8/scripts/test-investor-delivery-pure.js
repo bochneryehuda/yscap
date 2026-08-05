@@ -161,4 +161,32 @@ ok(ID.deliveryBlockers({ finding: { status: 'delivered' }, investorContacts: [],
 ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'reimbursement' }).some((b) => /No investor contacts/.test(b)),
   'F10 an EMAILED mode with no contacts is still blocked (the carve-out is manual-only)');
 
+// ---------------------------------------------------------------- G. the WIRE FORM gate (Task 4)
+// The signed wire form must be ACCEPTED before an emailed delivery — the investor wires the
+// borrower off it (investor_direct) or we did (reimbursement). Owner: "fully accept before
+// investor delivery of the first draw."
+const OKF = { finding: { status: 'accepted' }, investorContacts: CONTACTS, noteBuyer: 'Fidelis' };
+const acceptedWire = { present: true, accepted: true, rejectedOnly: false };
+const pendingWire = { present: true, accepted: false, rejectedOnly: false };
+const rejectedWire = { present: true, accepted: false, rejectedOnly: true };
+const missingWire = { present: false, accepted: false, rejectedOnly: false };
+
+eq(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: acceptedWire }).length, 0,
+  'G1 an accepted wire form clears the gate');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: pendingWire }).some((b) => /wire form has not been accepted/.test(b)),
+  'G2 a wire form present but not accepted blocks the send');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: rejectedWire }).some((b) => /wire form was rejected/.test(b)),
+  'G3 a rejected-only wire form blocks and says the borrower must re-sign');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: missingWire }).some((b) => /has not signed the wire/.test(b)),
+  'G4 no wire form at all blocks and says the borrower must sign');
+// reimbursement is ALSO gated (we wired the borrower off the same form).
+ok(ID.deliveryBlockers({ ...OKF, mode: 'reimbursement', wireForm: pendingWire }).some((b) => /wire form has not been accepted/.test(b)),
+  'G5 reimbursement mode is gated on the wire form too');
+// manual delivery is handled outside PILOT — the wire gate does NOT apply.
+eq(ID.deliveryBlockers({ ...OKF, mode: 'manual', wireForm: pendingWire }).filter((b) => /wire form/.test(b)).length, 0,
+  'G6 a MANUAL delivery is not gated on the in-PILOT wire acceptance');
+// back-compat: no wireForm supplied → the gate is silent.
+eq(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct' }).length, 0,
+  'G7 with no wireForm supplied the gate is skipped (pure/legacy callers)');
+
 console.log(`test-investor-delivery-pure: all ${n} investor-delivery rule checks passed.`);

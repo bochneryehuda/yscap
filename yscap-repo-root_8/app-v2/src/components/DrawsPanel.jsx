@@ -2126,6 +2126,21 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </div>
           )}
 
+          {/* the signed wire form's review state — the investor wires the borrower off it, so it
+              must be reviewed and accepted first (a MANUAL delivery is handled outside PILOT). */}
+          {p.funding_mode !== 'manual' && p.wire_form && (
+            <div className="act-card-sub" style={{ marginTop: 12 }}>
+              <b style={{ color: 'var(--text)' }}>Signed wire form</b>{' '}
+              {p.wire_form.accepted
+                ? <span style={{ color: 'var(--good,#2F7F53)' }}>accepted ✓</span>
+                : !p.wire_form.present
+                  ? <span style={{ color: 'var(--danger,#B4453C)' }}>not signed yet</span>
+                  : p.wire_form.rejectedOnly
+                    ? <span style={{ color: 'var(--danger,#B4453C)' }}>rejected — needs to be re-signed</span>
+                    : <span style={{ color: 'var(--warn,#AE8746)' }}>waiting to be accepted</span>}
+            </div>
+          )}
+
           {p.blockers.length > 0 && (
             <ul className="act-card-sub" style={{ marginTop: 12, color: 'var(--danger,#B4453C)', paddingLeft: 18 }}>
               {p.blockers.map((b, i) => <li key={i}>{b}</li>)}
