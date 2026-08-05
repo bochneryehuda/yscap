@@ -327,6 +327,17 @@ function reasonCodesFor(type) {
   return (cfg && cfg.reasonCodes) || REASON_CODES;
 }
 function reasonLabelFor(type, code) { const m = reasonCodesFor(type); return (code && m[code]) || null; }
+// The human display label for an exception TYPE, from the ONE registry. Every
+// read surface carries this on the row (type_label) so the UI never has to
+// keep its own copy of the type→label map — the trap that made a
+// condition_override render as a "Guaranty waiver" (its UI fell back to the
+// guaranty card when it had no entry for the type). Falls back to a humanized
+// type so an unknown/legacy type is still named, never mislabeled.
+function typeLabelFor(type) {
+  const cfg = typeConfig(type);
+  if (cfg && cfg.label) return cfg.label;
+  return type ? String(type).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : null;
+}
 function isReasonCodeFor(type, code) {
   return !!code && Object.prototype.hasOwnProperty.call(reasonCodesFor(type), code);
 }
@@ -921,7 +932,7 @@ async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, 
        ${where}
       ORDER BY e.created_at DESC
       LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
-  return r.rows.map((row) => presentExpiry({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
+  return r.rows.map((row) => presentExpiry({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code), type_label: typeLabelFor(row.exception_type) }));
 }
 
 /* ---------------- comments (staff-only thread on an exception) ---------------- */
@@ -1022,6 +1033,7 @@ async function registerForApp(appId, client = db) {
   return r.rows.map((row) => presentExpiry({
     ...row,
     reason_label: reasonLabelFor(row.exception_type, row.reason_code),
+    type_label: typeLabelFor(row.exception_type),
     deal_drift: dealDrift(row),
   }));
 }
@@ -1050,6 +1062,7 @@ async function getById(id, client = db) {
   const row = r.rows[0] || null;
   if (row) {
     row.reason_label = reasonLabelFor(row.exception_type, row.reason_code);
+    row.type_label = typeLabelFor(row.exception_type);
     row.deal_drift = dealDrift(row);
     return presentExpiry(row);
   }
@@ -1097,6 +1110,7 @@ async function listExceptions({ status = 'open', type = null, limit = 100, offse
   return r.rows.map((row) => presentExpiry({
     ...row,
     reason_label: reasonLabelFor(row.exception_type, row.reason_code),
+    type_label: typeLabelFor(row.exception_type),
     deal_drift: dealDrift(row),
   }));
 }
@@ -1207,7 +1221,7 @@ module.exports = {
   CREDIT_IMPORT_WAIVER_REASONS, CONDITION_WAIVER_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig, decideRoleFor,
-  reasonCodesFor, reasonLabelFor, isReasonCodeFor,
+  reasonCodesFor, reasonLabelFor, isReasonCodeFor, typeLabelFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
