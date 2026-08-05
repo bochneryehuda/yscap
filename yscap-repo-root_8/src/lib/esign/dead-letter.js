@@ -14,7 +14,7 @@
  */
 const cfg = require('../../config');
 
-const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska' };
+const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 
 module.exports = async function onDeadLetter(row, err) {
   try {

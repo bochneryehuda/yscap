@@ -328,6 +328,12 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// Same shape for a BORROWER ASSISTANT — a standing helper login the borrower
+// authorized. Mounted above /auth so it can refuse the borrower credential
+// routes (/auth/logout bumps the BORROWER's token_version; /auth/mfa changes the
+// borrower's second factor). Inert unless the bearer token carries the assistant
+// envelope. See src/lib/borrower-assistant.js.
+app.use(require('./lib/borrower-assistant').guard);
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
 // Public company pricing defaults — the marketing term-sheet generator + the

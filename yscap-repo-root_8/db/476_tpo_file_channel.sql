@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 473 — TPO PORTAL, foundation part 2: the TPO loan CHANNEL on the file +
 --       the account-executive / account-manager file roles
---       (owner-directed 2026-08-04). Depends on db/472 (tpo_firms).
+--       (owner-directed 2026-08-04). Depends on db/475 (tpo_firms).
 --
 -- A TPO loan is an ordinary RTL `applications` row, flagged `is_tpo` and tied to
 -- the originating brokerage `tpo_firm_id`. The people on the file map like this
@@ -26,7 +26,7 @@ ALTER TABLE applications ADD COLUMN IF NOT EXISTS borrower_portal_enabled boolea
 CREATE INDEX IF NOT EXISTS idx_applications_tpo_firm ON applications(tpo_firm_id) WHERE is_tpo = true;
 
 -- A TPO file must name its firm, and a retail file must not — the same
--- external-firm invariant as staff_users (db/472 §4), so the firm-scope gate can
+-- external-firm invariant as staff_users (db/475 §4), so the firm-scope gate can
 -- never see an is_tpo file it cannot bound to a firm.
 ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_tpo_firm_check;
 ALTER TABLE applications ADD  CONSTRAINT applications_tpo_firm_check

@@ -309,6 +309,16 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  // Borrower HELPER (assistant) login — a standing second login a borrower
+  // authorized (can do everything but see personal info / sign). Its own creds.
+  assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),
+  assistantLogin:     (email, password) => req('POST', '/auth/assistant/login', { email, password }),
+  assistantLogout:    () => req('POST', '/auth/assistant/logout'),
+  // Borrower self-service: manage the helpers on my own account.
+  assistantsList:     () => req('GET', '/api/borrower/assistants'),
+  assistantInvite:    (email, name) => req('POST', '/api/borrower/assistants', { email, name }),
+  assistantResend:    (id) => req('POST', `/api/borrower/assistants/${id}/resend`),
+  assistantDisable:   (id) => req('POST', `/api/borrower/assistants/${id}/disable`),
   // E-sign magic-link session handoff: exchange the one-time login code (from the
   // /api/esign/return redirect) for a real borrower session, so a borrower who
   // signed from PILOT's branded email lands back inside their file already logged in.

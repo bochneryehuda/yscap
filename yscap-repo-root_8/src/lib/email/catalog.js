@@ -352,7 +352,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 }
 
 /** Invitation to the TPO (external brokerage) portal — a broker or one of their
- *  processors sets up their account to start submitting loans (db/472/469). */
+ *  processors sets up their account to start submitting loans (db/477). */
 function tpoInvite({ fullName, firmName, role, acceptUrl, days = 7 } = {}) {
   const roleLabel = ({ tpo_officer: 'Loan Officer', tpo_processor: 'Processor' })[role] || 'team member';
   const meta = [{ label: 'Role', value: roleLabel }];
@@ -369,6 +369,27 @@ function tpoInvite({ fullName, firmName, role, acceptUrl, days = 7 } = {}) {
     badge: { text: 'Broker portal invite', tone: 'gold' },
     replyable: true,
     note: 'If you were not expecting this invitation, you can disregard it.',
+  });
+}
+
+/** A borrower is inviting a HELPER (assistant) to work their loan in the portal.
+ *  A helper can do everything the borrower can EXCEPT see personal details or
+ *  sign documents. */
+function assistantInvite({ name, borrowerName, acceptUrl, days = 7 } = {}) {
+  return render({
+    audience: 'borrower',
+    title: (borrowerName ? borrowerName + ' invited you to help on PILOT' : 'You’ve been invited to help on PILOT'),
+    preheader: 'Set up your helper login to work the loan in the portal.',
+    greeting: greet(name),
+    intro: (borrowerName ? borrowerName + ' has' : 'You have') + ' invited you to help with their loan on PILOT by YS Capital.',
+    lines: [
+      'As a helper you can upload documents, track what’s needed, use the tools and message the loan team — everything except seeing personal details (such as the Social Security number) and signing documents, which stay with the borrower.',
+      'Set up your login below. This invitation expires in ' + days + ' days.',
+    ],
+    cta: acceptUrl ? { label: 'Set up your helper login', url: acceptUrl } : null,
+    badge: { text: 'Helper invite', tone: 'teal' },
+    replyable: true,
+    note: 'If you were not expecting this, you can disregard it.',
   });
 }
 
@@ -477,7 +498,7 @@ function staffPasswordReset({ fullName, url, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, tpoInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest, trustpointImport,
+  staffInvite, tpoInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, assistantInvite, drawRequest, trustpointImport,
   esignReadyToSign, drawWireReadyToSign,
 };
 

@@ -3024,14 +3024,14 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
             <input className="input" value={f.middleName} onChange={e => setF({ ...f, middleName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional — needed later to invite or sign)</span></span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
         </div>
         {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim() || !f.email.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
+          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
           <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
         </div>
         </>}

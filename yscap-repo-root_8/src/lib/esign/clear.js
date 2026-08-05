@@ -35,6 +35,7 @@ const PACKAGE_LABEL = {
   term_sheet_package: 'Term Sheet',
   heter_iska: 'Heter Iska',
   draw_request: 'Draw request',
+  noo_affidavit: 'Non-owner-occupied certification',
   test: 'Test',
 };
 
