@@ -75,6 +75,13 @@ async function buildBorrowerSafeAppraisalView(db, appId) {
   // the KNOWN partner patterns, so it can't be trusted to strip an arbitrary AMC / lender / owner
   // / intended-user name on an external (broker) surface. Dropping is the only robust option.
   // `appraiser_id` (a research-warehouse FK) is internal bookkeeping, dropped like the comp ids.
+  // `as_is_read_quote` / `as_is_read_detail` are a VERBATIM slice of the appraiser's narrative around
+  // the As-Is figure — and by the As-Is reader's own design that figure is often a NOTE in the
+  // addendum / reconciliation, which is precisely where the client / ordering lender / AMC / intended
+  // user is named. So this is the same narrative class, and it is dropped for the same reason.
+  // `appraisal_purpose_other` is appraiser free text (the "Other" purpose) → dropped for completeness.
+  // NOTE: the drop list is the ONLY boundary — neither the borrower nor the TPO route re-scrubs this
+  // object — so a name-bearing free-text column MUST be dropped here, never left to a downstream scrub.
   const safeAppr = (() => {
     const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings, appraiser_id,
       lender_name, amc_name, owner_of_record, lender_address,
@@ -83,7 +90,7 @@ async function buildBorrowerSafeAppraisalView(db, appId) {
       software_vendor,
       addendum_text, reconciliation_comment, market_conditions_comment, market_reconciliation_comment,
       conditions_comment, condition_comment, contract_review_comment, sales_agreement_analysis,
-      nbhd_boundaries,
+      nbhd_boundaries, as_is_read_quote, as_is_read_detail, appraisal_purpose_other,
       ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();

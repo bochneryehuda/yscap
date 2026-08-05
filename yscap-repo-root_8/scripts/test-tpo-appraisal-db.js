@@ -71,7 +71,8 @@ function call(server, method, p, token, body, raw) {
       `INSERT INTO appraisals (application_id, superseded, imported_at,
          lender_name, amc_name, owner_of_record, lender_address, appraiser_name, appraiser_email, appraiser_phone,
          as_is_value, arv_value, gla, fields, warnings,
-         reconciliation_comment, addendum_text, market_conditions_comment, contract_review_comment)
+         reconciliation_comment, addendum_text, market_conditions_comment, contract_review_comment,
+         as_is_read_quote, as_is_read_detail, appraisal_purpose_other)
        VALUES ($1,false,now(),
          'RCN Capital LLC','Nationwide AMC','Prior Owner Holdings','1 Servicer Way',
          'Jane Appraiser','jane@appraise.test','555-0100',
@@ -79,10 +80,14 @@ function call(server, method, p, token, body, raw) {
          'Prepared for the exclusive use of BlueLake Capital.',
          'Intended user: Nationwide AMC on behalf of RCN Capital LLC.',
          'Ordered by Fidelis Investors for this transaction.',
-         'Client BlueLake reviewed the contract and assignment.') RETURNING id`,
+         'Client BlueLake reviewed the contract and assignment.',
+         'As-Is Value $420,000 (per addendum, prepared for BlueLake Capital / Nationwide AMC).',
+         $4::jsonb,
+         'Portfolio valuation for RCN Capital LLC / Fidelis Investors.') RETURNING id`,
       [appA,
         JSON.stringify({ appraiser: { lender: 'BlueLake Capital', amc: 'Nationwide AMC' } }),
-        JSON.stringify(['comp_split_review', 'nbhd_declining'])])).rows[0].id;
+        JSON.stringify(['comp_split_review', 'nbhd_declining']),
+        JSON.stringify({ reason: 'read from the addendum note for Fidelis Investors', steps: [] })])).rows[0].id;
 
     const finding = (source, code, severity, blocks, title) => db.query(
       `INSERT INTO appraisal_findings (application_id, appraisal_id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, status)
@@ -120,8 +125,9 @@ function call(server, method, p, token, body, raw) {
     // The free-text appraiser NARRATIVE columns are dropped too — an appraiser routinely names the
     // client / ordering lender / AMC / capital partner in the reconciliation / addendum / intended-use
     // narrative, which a denylist of the structured columns alone would leak.
-    const narrative = ['reconciliation_comment', 'addendum_text', 'market_conditions_comment', 'market_reconciliation_comment', 'conditions_comment', 'condition_comment', 'contract_review_comment', 'sales_agreement_analysis', 'nbhd_boundaries', 'appraiser_id'];
-    ok(narrative.every((k) => !(k in a)), 'the appraiser NARRATIVE columns are DROPPED (they name the client/lender/AMC/intended user)');
+    const narrative = ['reconciliation_comment', 'addendum_text', 'market_conditions_comment', 'market_reconciliation_comment', 'conditions_comment', 'condition_comment', 'contract_review_comment', 'sales_agreement_analysis', 'nbhd_boundaries', 'appraiser_id',
+      'as_is_read_quote', 'as_is_read_detail', 'appraisal_purpose_other'];
+    ok(narrative.every((k) => !(k in a)), 'the appraiser NARRATIVE columns are DROPPED (incl. the As-Is-reader verbatim quote — it names the client/lender/AMC/intended user)');
     ok(rep.body.score && rep.body.score.arv === null, 'score.arv is null (ARV-defensibility is staff-only)');
     const codes = (rep.body.findings || []).map((f) => f.code);
     ok(!codes.includes('arv_defensibility'), 'the underwriting-scrutiny finding is hidden');
