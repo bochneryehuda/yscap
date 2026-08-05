@@ -40,6 +40,8 @@ const { WRITE_TARGETS, BY_KEY } = require('../lib/conditions/field-registry');
 const tpoConditions = require('../lib/tpo-conditions');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
+const { serveDocument } = require('../lib/serve-document');
+const { buildBorrowerSafeAppraisalView } = require('../lib/appraisal/borrower-safe-view');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 
@@ -1140,6 +1142,44 @@ router.post('/applications/:id/credit/order', async (req, res) => {
     // BORROWER-SAFE result — never a score, report id, or fico.
     res.status(201).json({ ok: true, message: 'Credit was pulled — your loan team is reviewing it.' });
   } catch (e) { console.error('[tpo credit]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- APPRAISAL (broker READ-ONLY: the "property profile report") ----------------
+// A broker SEES the same scrubbed appraisal the BORROWER sees — the property report + neutral
+// collateral read + the comparables as property facts — and can take NO action on it. The payload
+// is built by the SINGLE shared borrower-safe view (src/lib/appraisal/borrower-safe-view.js), so it
+// can never drift from the borrower surface and can never leak the lender's internal scrutiny
+// (arv-defensibility / value-vs-comps signals), a capital-partner / note-buyer finding, or the
+// free-text lender / AMC / owner-of-record fields — all of which are dropped there. Firm-scoped.
+router.get('/applications/:id/appraisal', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    res.json(await buildBorrowerSafeAppraisalView(db, req.params.id));
+  } catch (e) { next(e); }
+});
+
+// The appraisal PHOTO bytes for the property report. Deliberately NOT a generic document-download
+// door: it authorizes via the appraisal-photo linkage + firm scope, so the ONLY bytes a broker can
+// ever fetch here are appraisal photos of THEIR OWN firm's files (the same discipline as the
+// research-photo route — never a "download any document by id" hole). Appraisal photos are born
+// visibility='borrower' (staff-only source docs are a different, unreachable class). Filename is
+// scrubbed so a staff-named file never suggests a capital-partner on the broker's disk.
+router.get('/appraisal-photo/:docId', async (req, res, next) => {
+  try {
+    const r = await db.query(
+      `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider
+         FROM appraisal_photos ap
+         JOIN appraisals apr ON apr.id = ap.appraisal_id
+         JOIN applications a ON a.id = apr.application_id
+         JOIN documents d ON d.id = ap.document_id
+        WHERE ap.document_id = $2 AND d.is_current AND a.deleted_at IS NULL
+          AND ${perms.tpoFirmScopeSql('a', '$1')}
+        LIMIT 1`,
+      [req.actor.id, req.params.docId]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    const doc = { ...r.rows[0], filename: typeof r.rows[0].filename === 'string' ? scrubText(r.rows[0].filename) : r.rows[0].filename };
+    return serveDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

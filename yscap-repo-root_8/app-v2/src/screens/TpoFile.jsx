@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
+import AppraisalPanel from '../components/AppraisalPanel.jsx';
 
 /* A single TPO file — the loan's basics, PRICE & register the deal (the Term
    Sheet Studio), the conditions we need, the documents provided, and the
@@ -251,6 +252,17 @@ export default function TpoFile() {
           {credit.configured && credit.recentlyPulled && <div className="muted small" style={{ marginTop: 8 }}>Credit was pulled for this file recently — your loan team is reviewing it. You can order again later if needed.</div>}
         </div>
       )}
+
+      {/* Appraisal — the read-only "property profile report": the same clean report the borrower
+          sees. Our internal review notes and any capital-partner names are never included. The
+          panel shows its own "will appear once received" state when there's no appraisal yet. */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Appraisal</div>
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
+          The property report once the appraisal is in. Read-only — your loan team handles the review.
+        </p>
+        <AppraisalPanel appId={id} readOnly source="tpo" />
+      </div>
 
       {/* Documents */}
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>

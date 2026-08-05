@@ -37,7 +37,6 @@ const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
-const apprScore = require('../lib/appraisal/scoring');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 /* The details door speaks camelCase and the field registry speaks snake_case,
@@ -1323,107 +1322,11 @@ router.get('/applications/:id/conditions', async (req, res) => {
 router.get('/applications/:id/appraisal', async (req, res) => {
   const own = await db.query(`SELECT id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const appId = own.rows[0].id;
-  const appr = (await db.query(
-    `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
-  if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
-  // Same correction as the staff tab: the property TYPE is the category (single family / 2–4 /
-  // condo), never the Detached / Attached attachment style (owner-reported 2026-08-02).
-  require('../lib/appraisal/property-category').applyPropertyType(appr);
-  const [comps, units, findings, photos] = await Promise.all([
-    db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
-    db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
-    db.query(`SELECT id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
-                FROM appraisal_findings WHERE application_id=$1 AND status='open'
-               ORDER BY (severity='fatal') DESC, created_at`, [appId]),
-    db.query(
-      `SELECT ap.id, ap.document_id, ap.category, ap.caption, ap.sequence, ap.width, ap.height
-         FROM appraisal_photos ap JOIN documents d ON d.id=ap.document_id
-        WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
-        ORDER BY ap.sequence`, [appr.id]),
-  ]);
-  // Underwriting-scrutiny findings are STAFF-ONLY — they reveal how hard the lender is
-  // scrutinizing the deal (inflated-ARV signal, value not carried by the comps, over-paying vs
-  // as-is). A borrower must never see the lender's internal skepticism, so these codes are
-  // dropped from the borrower set entirely (they stay open + visible on the staff desk).
-  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
-  // NOTE-BUYER findings (source='note_buyer' — the per-capital-partner appraisal checks, e.g.
-  // EMCAP's comp/photo/lender requirements) are STAFF-ONLY as a CLASS: their titles name a note
-  // buyer, which may never reach a borrower. Filter by SOURCE, not by code list, so a future
-  // buyer's checks are covered automatically.
-  const hiddenFromBorrower = (f) => SCRUTINY_CODES.has(f.code) || f.source === 'note_buyer';
-  const open = findings.rows
-    .filter((f) => !hiddenFromBorrower(f))
-    .map((f) => ({ ...f, title: scrubText(f.title) }));
-  // A hidden scrutiny/note-buyer finding can still be a REAL clear-to-close blocker
-  // (asis_below_price and the EMCAP anchor checks are fatal). We must not tell the borrower their
-  // file is clear while it's actually gated — but we also can't reveal the underwriting reason.
-  // If a filtered-out finding is a live blocker, surface ONE neutral placeholder so the borrower's
-  // summary honestly shows "under review", not "clear".
-  const hiddenBlocker = findings.rows.some((f) => hiddenFromBorrower(f) && f.severity === 'fatal' && f.blocks_ctc);
-  if (hiddenBlocker) {
-    open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
-      appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
-      title: 'Your appraisal is in final underwriting review' });
-  }
-  // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
-  // source document ids) AND the free-text lender/AMC/client fields OUTRIGHT — a capital-partner
-  // name can never reach a borrower. Scrubbing a free-text field only strips the names we know;
-  // dropping the columns removes the whole class (the borrower UI never reads lender/AMC).
-  const safeAppr = (() => {
-    if (!appr) return null;
-    // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
-    // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
-    // UI never reads it, so dropping it entirely is the safe, clean fix.
-    // owner_of_record + lender_address are STAFF-ONLY (db/158) — drop them like lender_name/amc_name
-    // so they never reach the borrower JSON, even though the UI doesn't render them.
-    // `warnings` is the parser's raw underwriting-scrutiny array (comp_split_review, nbhd_declining,
-    // sale_type_risk, mc_*, etc.) — the SAME class the SCRUTINY_CODES filter hides from the borrower
-    // `findings` list. Drop it too so the scrutiny scrub can't be defeated via the appraisal payload;
-    // the borrower gets the filtered `findings`, never the raw warnings.
-    // The appraiser's DIRECT CONTACT + supervisor personnel + tooling vendor are internal — the
-    // borrower reaches their loan team, never the appraiser directly, so the personal phone/email,
-    // firm street address, supervisor identity/license and software vendor are dropped (M9). The
-    // "Prepared by" card still shows WHO appraised the property (name/firm/license) — standard
-    // appraisal disclosure — but not how to contact them or the internal desk detail.
-    const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
-      lender_name, amc_name, owner_of_record, lender_address,
-      appraiser_email, appraiser_phone, appraiser_company_address,
-      supervisor_name, supervisor_license_id, supervisor_license_state, supervisor_license_exp,
-      software_vendor, ...rest } = appr; // eslint-disable-line no-unused-vars
-    return rest;
-  })();
-  const bSummary = {
-    fatal: open.filter((f) => f.severity === 'fatal').length,
-    warning: open.filter((f) => f.severity === 'warning').length,
-    info: open.filter((f) => f.severity === 'info').length,
-    blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
-  };
-  // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
-  // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
-  // Implied-value cross-check over the operative grid's comps only (never a mix of As-Is + ARV).
-  // Pre-split appraisals (no comp_set) keep the old all-comps behavior.
-  const gridKey = safeAppr.arv_value != null ? 'arv' : 'as_is';
-  const hasSplit = comps.rows.some((c) => c.comp_set);
-  const impliedComps = hasSplit ? comps.rows.filter((c) => c.comp_set === gridKey) : comps.rows;
-  const score = {
-    collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }),
-    arv: null,
-    impliedValue: apprScore.compImpliedValue({ comps: impliedComps, subjectGla: safeAppr.gla }),
-  };
-  // Same as the staff tab: every comparable states what kind of building it is
-  // and how many doors it has. The two facts are property facts, not lender
-  // scrutiny, so they are borrower-safe — but our internal bookkeeping is
-  // dropped: the id in our research warehouse, how many of our reports have
-  // described that address, and WHERE the answer came from (which is a statement
-  // about our own data holdings, and reads as one).
-  const borrowerComps = (await require('../lib/research/comp-identity')
-    .attachCompIdentity(comps.rows, { db, appraisal: safeAppr }))
-    .map(({ property_id, identity_observations, identity_source, ...c }) => c); // eslint-disable-line no-unused-vars
-  res.json({
-    appraisal: safeAppr, comparables: borrowerComps, units: units.rows, findings: open, photos: photos.rows,
-    summary: bSummary, score,
-  });
+  // The borrower-safe appraisal ("property profile report") is a SINGLE DEFINITION shared with the
+  // TPO (broker) view — src/lib/appraisal/borrower-safe-view.js — so the two surfaces can never
+  // drift and leak the lender's internal scrutiny / capital-partner names. The scrub itself is
+  // documented there; this route only owns the borrower access check above.
+  res.json(await require('../lib/appraisal/borrower-safe-view').buildBorrowerSafeAppraisalView(db, own.rows[0].id));
 });
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------

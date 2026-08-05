@@ -242,6 +242,21 @@ internal workflow condition.
    `src/lib/borrower-view.js` (a new `tpo-view` with its own `tpo_view_sessions`
    register, dual-identity revocation, blocklist incl. term-sheet-send); a full
    isolation + no-leak security pass.
+   - **Phase 6a — the borrower-safe APPRAISAL view ✅ (BUILT).** A broker SEES the
+     read-only "property profile report" — the SAME scrubbed appraisal the borrower
+     sees. The borrower's inline scrub was extracted to the single shared
+     `src/lib/appraisal/borrower-safe-view.js` `buildBorrowerSafeAppraisalView(db, appId)`,
+     which BOTH `routes/borrower.js` and the new `GET /api/tpo/applications/:id/appraisal`
+     (firm-scoped via `appInFirm`) return, so they can never drift. It drops the
+     lender/AMC/owner/contact/`fields`/`warnings` columns, hides the underwriting-scrutiny
+     + note-buyer findings, scrubs visible titles, sets `score.arv=null`, and surfaces a
+     neutral `appraisal_under_review` placeholder when a hidden finding is a fatal blocker.
+     `GET /api/tpo/appraisal-photo/:docId` streams appraisal-photo bytes authorized via the
+     `appraisal_photos → appraisals → applications` firm-scope join (never a
+     download-any-document hole). Front end: `AppraisalPanel` gained a `source='tpo'`
+     channel; `TpoFile` mounts an Appraisal card. Test `scripts/test-tpo-appraisal-db.js`.
+   - **STILL DEFERRED in Phase 6:** draws (view/accept/dispute), messaging, and the
+     AE/AM "view as TPO" impersonation feature above.
 
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 

@@ -430,6 +430,9 @@ export const api = {
   // Phase 5a — order a credit pull (borrower-safe: readiness in, "pulled" out; no scores).
   tpoCreditStatus: (appId) => req('GET', `/api/tpo/applications/${appId}/credit`),
   tpoOrderCredit: (appId, body) => req('POST', `/api/tpo/applications/${appId}/credit/order`, body),   // { consent:true, borrowerIds? }
+  // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
+  tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
+  tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),
