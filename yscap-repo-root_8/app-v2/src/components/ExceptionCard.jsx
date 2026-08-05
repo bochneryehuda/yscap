@@ -82,6 +82,18 @@ const TYPE_META = {
     defaultPolicy: () => 'A confirmed-fatal finding raises a hard warning before a status move / issuance, pausing it for a super-admin.',
     requestedChange: () => <>A <b>super-admin proceeded past a fatal hard-warning</b> (status change or document issuance). This is the record of that override — it was decided in the moment, so there was nothing to approve here.</>,
   },
+  condition_override: {
+    chip: 'Condition override',
+    jumpHash: '#sec-conditions', jumpLabel: 'Jump to the conditions',
+    defaultPolicy: () => 'A condition clears only when what it asks for is provided — its document uploaded and accepted, or its requirement met.',
+    requestedChange: () => <>A <b>super-admin cleared a condition without meeting it</b> (no document attached / the requirement unmet). This is the record of that override — it was decided in the moment, so there was nothing to approve here. The note below names the exact condition and what was missing.</>,
+  },
+  tape_encompass_override: {
+    chip: 'Tape before Encompass',
+    jumpHash: '#sec-encompass', jumpLabel: 'Jump to Encompass sync',
+    defaultPolicy: () => 'A capital-provider data tape may be exported only once the loan is in Encompass and every field matches.',
+    requestedChange: () => <>Export the <b>capital-provider data tape before Encompass matches</b> — the loan isn’t in Encompass yet, or some fields still differ. Only a <b>super admin</b> can grant this; approving lets the tape be exported while the exception stands.</>,
+  },
   appraisal_xml_waiver: {
     chip: 'Appraisal — no XML',
     jumpHash: '#sec-appraisal', jumpLabel: 'Jump to the appraisal',
@@ -114,7 +126,17 @@ const TYPE_META = {
 
 export default function ExceptionCard({ r, reasonCodes = {}, compFactors = {}, highlight = false, forwardRef, gateSelect, children }) {
   const type = r.type || r.exception_type || 'guaranty_waiver';
-  const meta = TYPE_META[type] || TYPE_META.guaranty_waiver;
+  // NEVER fall back to a specific type's card. A type with no TYPE_META entry
+  // (a newly-added or legacy type) must render GENERICALLY from the server's
+  // authoritative label (r.type_label) — never masquerade as a guaranty waiver.
+  // That fallback is exactly what showed a super-admin condition_override as a
+  // "Guaranty waiver" with the guaranty default-policy + requested-change text.
+  const meta = TYPE_META[type] || {
+    chip: r.type_label || (type ? String(type).replace(/_/g, ' ') : 'Exception'),
+    jumpHash: '#sec-conditions', jumpLabel: 'Open the file section',
+    defaultPolicy: () => 'This is a deviation from the standard loan policy for this file.',
+    requestedChange: () => <>See the <b>reason</b> and the note below for exactly what this exception changes.</>,
+  };
   const subject = [r.subject_first, r.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
   const borrower = fullNameOf(r);
   // Prefer the server-computed per-type reason label; fall back to the passed map.
