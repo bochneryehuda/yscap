@@ -7351,14 +7351,22 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
         { field: applied.field, from: applied.oldValue, to: applied.newValue });
     } catch (_) {}
     // Tell the borrower their requested change was accepted (borrower-safe copy),
-    // spelling out the exact before → after that is now on file.
-    try {
-      const change = changeRequests.describeChange(cr);
-      await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
-        body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
-        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
-    } catch (_) {}
+    // spelling out the exact before → after that is now on file. ONLY when the
+    // BORROWER made the request: a TPO broker's change request rides the same
+    // change_requests flow (requested_by_kind='staff', via:'tpo'), and the borrower
+    // did not ask for it — "Your requested change was approved" would misattribute
+    // it, and on a portal-disabled TPO file the borrower must not be emailed at all.
+    // The broker sees the result reflected on their file (a dedicated broker
+    // notification channel is future TPO work).
+    if (cr.requested_by_kind === 'borrower') {
+      try {
+        const change = changeRequests.describeChange(cr);
+        await notify.notifyAppBorrowers(cr.application_id, {
+          type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
+          body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
+          applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+      } catch (_) {}
+    }
     res.json({ ok: true, applied });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
@@ -7370,7 +7378,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
 router.post('/change-requests/:cid/reject', async (req, res) => {
   const note = String((req.body || {}).note || '').trim() || null;
   try {
-    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status, requested_by_kind FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
     if (!cr) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
     if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
@@ -7383,13 +7391,18 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
         WHERE id=$1 AND status='pending' RETURNING id`, [req.params.cid, req.actor.id, note]);
     if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
     await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
-    try {
-      const change = changeRequests.describeChange(cr);
-      await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
-        body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
-        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
-    } catch (_) {}
+    // Borrower-facing outcome only for a BORROWER-originated request (see the
+    // approve handler) — a broker's request must not tell the borrower "your
+    // requested change" and must not reach a portal-disabled TPO borrower.
+    if (cr.requested_by_kind === 'borrower') {
+      try {
+        const change = changeRequests.describeChange(cr);
+        await notify.notifyAppBorrowers(cr.application_id, {
+          type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
+          body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
+          applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+      } catch (_) {}
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

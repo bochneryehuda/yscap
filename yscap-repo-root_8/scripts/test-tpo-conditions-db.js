@@ -202,13 +202,28 @@ function call(server, method, p, token, body) {
     const conf = await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${arvCondId}/info`, tokA, { value: 425000 });
     ok(conf.status === 200 && conf.body.changeRequested === false, 'confirming the current value is accepted with no change request');
 
+    // Staff approve the broker's request → the economics apply, and the BORROWER is
+    // NOT notified "your requested change" (the broker made it, not the borrower —
+    // audit fix: the shared change_requests notify is gated on requested_by_kind).
+    const staffAdmin = (await db.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active,is_external,password_hash,token_version)
+       VALUES ($1,'Admin','super_admin',true,false,$2,0) RETURNING id`, [mail('admin'), hash])).rows[0].id;
+    const staffTok = C.signJwt({ sub: staffAdmin, kind: 'staff', role: 'super_admin', tv: 0 });
+    const crId = (await db.query(`SELECT id FROM change_requests WHERE application_id=$1 AND field='arv' AND status='pending'`, [appA])).rows[0].id;
+    const approveResp = await call(server, 'POST', `/api/staff/change-requests/${crId}/approve`, staffTok, {});
+    ok(approveResp.status === 200, 'staff approve the broker change request (200)');
+    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '700000.00', 'the approved economics are applied to the file');
+    ok((await db.query(
+      `SELECT count(*)::int n FROM notifications WHERE application_id=$1 AND recipient_kind='borrower' AND type='change_request'`, [appA])).rows[0].n === 0,
+      'the borrower is NOT notified about a BROKER-originated change request (no misattribution)');
+
     // ---------------------------------------------------------------
     // 4) FIRM ISOLATION on the reveal + the info writer
     // ---------------------------------------------------------------
     ok((await call(server, 'GET', `/api/tpo/applications/${appA}/checklist`, tokB)).status === 404, 'broker B cannot read firm A conditions (404)');
     ok((await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${arvCondId}/info`, tokB, { value: 999999 })).status === 404,
       'broker B cannot answer a firm A info condition (404)');
-    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '425000.00', 'the cross-firm attempt wrote nothing');
+    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '700000.00', 'the cross-firm attempt wrote nothing');
 
     // ---------------------------------------------------------------
     // 5) FREEZE PARITY — a frozen file refuses the answer (same as staff/borrower)
@@ -216,7 +231,7 @@ function call(server, method, p, token, body) {
     await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appA]);
     const frozen = await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${arvCondId}/info`, tokA, { value: 500000 });
     ok(frozen.status === 409, 'answering a frozen (funded) file is refused (409) — freeze parity');
-    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '425000.00', 'the frozen answer wrote nothing');
+    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '700000.00', 'the frozen answer wrote nothing');
   } catch (e) {
     fail++; console.log('  FAIL (threw):', e.message, e.stack ? e.stack.split('\n')[1] : '');
   } finally {
