@@ -14,12 +14,14 @@ const ok = (cond, what) => { assert.ok(cond, what); n++; };
 const eq = (a, b, what) => { assert.strictEqual(a, b, `${what} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`); n++; };
 
 // ---------------------------------------------------------------- A. the funding mode
-eq(ID.DEFAULT_MODE, 'reimbursement', 'A1 the default is reimbursement (we release, the investor reimburses us)');
-eq(ID.resolveFundingMode({}), 'reimbursement', 'A2 nothing set anywhere → the default');
-eq(ID.resolveFundingMode({ fileMode: 'investor_direct' }), 'investor_direct', 'A3 the file default is used when the draw has none');
+// The DEFAULT is INVESTOR_DIRECT (owner-directed 2026-08-05: "the default should
+// always be that the investor is releasing the money to the borrower").
+eq(ID.DEFAULT_MODE, 'investor_direct', 'A1 the default is investor_direct (the investor releases directly to the borrower)');
+eq(ID.resolveFundingMode({}), 'investor_direct', 'A2 nothing set anywhere → the default');
+eq(ID.resolveFundingMode({ fileMode: 'reimbursement' }), 'reimbursement', 'A3 the file default is used when the draw has none');
 eq(ID.resolveFundingMode({ drawMode: 'reimbursement', fileMode: 'investor_direct' }), 'reimbursement', 'A4 the per-draw choice beats the file default');
-eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'investor_direct' }), 'investor_direct', 'A5 an unrecognised stored value falls through — never takes effect');
-eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'rubbish' }), 'reimbursement', 'A6 two bad values still land on the default');
+eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'reimbursement' }), 'reimbursement', 'A5 an unrecognised stored value falls through — never takes effect');
+eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'rubbish' }), 'investor_direct', 'A6 two bad values still land on the default');
 
 // ---------------------------------------------------------------- B. the money split
 // The owner's own worked example: $25,000 approved, our $299 fee, $24,701 to the borrower.

@@ -111,7 +111,7 @@ async function readDoc(row) {
  * (a virtual inspection — its per-draw PDF is archived into `draw_media`) OR by a physical
  * inspector whose paperwork arrives as TrustPoint documents. A file can carry both; both are sent.
  */
-async function gatherAttachments(appId, drawId) {
+async function gatherAttachments(appId, drawId, mode) {
   const items = [];
   const skipped = [];
 
@@ -170,15 +170,25 @@ async function gatherAttachments(appId, drawId) {
   } catch (_) { skipped.push({ what: 'Draw packet', reason: 'the packet could not be built' }); }
 
   // --- 4. the borrower's signed wire instructions --------------------------------------
-  try {
-    const w = (await db.query(
-      `SELECT id, filename, storage_ref, storage_provider FROM documents
-        WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
-        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
-    const buf = w ? await readDoc(w) : null;
-    if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
-    else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
-  } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+  // The signed wire form tells the investor WHERE to send the borrower's money, so it
+  // belongs ONLY on an INVESTOR_DIRECT delivery — the investor is releasing straight to
+  // the borrower and needs it. On a REIMBURSEMENT delivery WE have already wired the
+  // borrower and the investor is only paying US back, so the borrower's wire form must
+  // NOT be sent to the investor (owner-directed 2026-08-05: "if we are requesting
+  // reimbursement for us, you should not attach the borrower's wire draw form … If we
+  // are asking for the investor to release it directly to the borrower, then that
+  // form's signed, executed version should be sent to the investor").
+  if (mode === 'investor_direct') {
+    try {
+      const w = (await db.query(
+        `SELECT id, filename, storage_ref, storage_provider FROM documents
+          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
+          ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
+      const buf = w ? await readDoc(w) : null;
+      if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
+      else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
+    } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+  }
 
   // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.
   const budget = budgetBytes();
@@ -321,7 +331,7 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
     };
   }
 
-  const { items, skipped } = await gatherAttachments(appId, drawId);
+  const { items, skipped } = await gatherAttachments(appId, drawId, useMode);
 
   let inspectionBy = null;
   try {

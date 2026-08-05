@@ -115,7 +115,8 @@ const ID = require('../src/sitewire/investor-delivery');
   ok('D5 the file resolved a real draw fee before any release was recorded', p.money.fee_cents > 0);
 
   // ================================================================ E. the funding mode, three sources
-  eq('E1 with nothing set the mode is reimbursement', p.funding_mode, 'reimbursement');
+  // The DEFAULT is investor_direct (owner-directed 2026-08-05).
+  eq('E1 with nothing set the mode is investor_direct', p.funding_mode, 'investor_direct');
   eq('E2 and it says that came from the default', p.funding_mode_source, 'default');
 
   await db.query(`UPDATE sitewire_property_links SET investor_funding_mode='investor_direct' WHERE application_id=$1`, [app]);
@@ -150,7 +151,11 @@ const ID = require('../src/sitewire/investor-delivery');
   await db.query(`DELETE FROM investor_delivery_contacts WHERE label_norm='fidelis' AND lower(email)=lower($1)`, [email]);
 
   // ================================================================ G. attachments — nothing silently dropped
-  const g = await send.gatherAttachments(app, DRAW);
+  // Gathered in INVESTOR_DIRECT mode, where the borrower's signed wire form applies
+  // (the investor releases straight to the borrower and needs it) — so a missing one
+  // is reported rather than swallowed. The reimbursement mode (no wire form) is
+  // covered by I14.
+  const g = await send.gatherAttachments(app, DRAW, 'investor_direct');
   const skippedWhat = g.skipped.map((s) => s.what);
   ok('G1 the missing inspector report is reported, not swallowed', skippedWhat.some((w) => /Inspection report/.test(w)));
   ok('G2 the missing signed wire form is reported', skippedWhat.some((w) => /wire instructions/i.test(w)));
@@ -231,6 +236,12 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('I11 the stored note buyer is the file\'s own label', stored.note_buyer_label, 'Fidelis Investors LLC');
   eq('I12 stored under the folded Fidelis key', stored.note_buyer_key, 'fidelis');
   ok('I13 the attachment manifest is stored', Array.isArray(stored.attachments) && stored.attachments.length >= 1);
+  // REIMBURSEMENT never attaches (or even attempts) the borrower's signed wire form —
+  // we already wired the borrower, the investor is only paying us back (owner-directed
+  // 2026-08-05). So the wire form is neither an attachment nor a "couldn't attach" note.
+  ok('I14 reimbursement neither attaches nor attempts the borrower wire form',
+    !sent.skipped.some((s) => /wire/i.test(JSON.stringify(s)))
+    && !(msg.attachments || []).some((a) => /wire/i.test(String(a.filename || ''))));
 
   // A second send is a second row — the investor genuinely received two emails.
   const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz' });

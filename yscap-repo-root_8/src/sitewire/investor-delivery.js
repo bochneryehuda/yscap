@@ -29,7 +29,11 @@
 const N = (x) => Number(x || 0) || 0;
 
 const MODES = ['reimbursement', 'investor_direct', 'manual'];
-const DEFAULT_MODE = 'reimbursement';
+// The DEFAULT is that the INVESTOR releases the money directly to the borrower
+// (owner-directed 2026-08-05: "the default should always be that the investor is
+// releasing the money to the borrower"). A per-draw or per-file choice still wins;
+// this is only the fallback when neither is set. (Was 'reimbursement'.)
+const DEFAULT_MODE = 'investor_direct';
 // The modes that actually send an email to the investor (manual does not).
 const EMAILED_MODES = ['reimbursement', 'investor_direct'];
 
