@@ -283,7 +283,8 @@ moment the license is added — no redeploy.
 to the app**, not by the token's scope string — so a 403 is almost always the missing
 license above, and a scope will **not** fix it. The optional `USPS_OAUTH_SCOPE` env var
 (default unset) only exists for the rarer case where USPS support says the token must name
-the scope explicitly (e.g. `addresses`). Leave it unset unless told otherwise.
+the scope explicitly (e.g. `addresses`). Leave it unset unless told otherwise — a wrong
+value can make the **sign-in itself** fail (`invalid_scope`) and take verification down.
 
 **How to tell the two apart going forward.** The health chip and the verify dialog now
 name the reason: *"USPS rejected our sign-in"* = the KEYS are wrong/expired (fix the

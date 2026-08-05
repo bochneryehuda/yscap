@@ -200,6 +200,11 @@ async function testStandardize() {
   const rate = V.explainError('USPS 429: too many requests');
   ok(/hourly lookup limit/i.test(rate.reason) && rate.retryable === true, 'a 429 reads as the hourly limit — got ' + rate.reason);
 
+  // A RESOURCE error whose BODY happens to contain the word "token" must NOT be
+  // misread as a sign-in failure — only the "USPS token …" prefix means sign-in.
+  const bodyToken = V.explainError('USPS 429: {"message":"rate limit token bucket exhausted"}');
+  ok(/hourly lookup limit/i.test(bodyToken.reason), 'a 429 whose body says "token" still reads as the rate limit, not a sign-in problem — got ' + bodyToken.reason);
+
   const down = V.explainError('USPS 503: service unavailable');
   ok(/temporary problem on their end/i.test(down.reason) && down.retryable === true, 'a 5xx reads as a temporary USPS problem — got ' + down.reason);
 

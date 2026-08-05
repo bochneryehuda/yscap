@@ -229,7 +229,10 @@ async function standardize(addressInput, opts = {}) {
     result = await usps.verifyAddress({ street: input.line1, secondary: input.unit, city: input.city, state: input.state, zip: input.zip });
   } catch (e) {
     // A hard USPS failure is NOT cached (so it re-tries next time) and never breaks the caller.
-    return { ...base, status: 'error', detail: String(e && e.message || e).slice(0, 200) };
+    // Keep the whole USPS message (400, matching integrations/usps.js) so the reason at the
+    // END of a longer body survives to explainError + the screen — a 200 slice here was the
+    // last place still cutting it off.
+    return { ...base, status: 'error', detail: String(e && e.message || e).slice(0, 400) };
   }
   const c = classify(input, result);
   const out = { ...base, status: c.status, address: c.address, dpv: c.dpv, changed: c.changed };
@@ -268,7 +271,11 @@ function explainError(detail) {
   let retryable = true;
   const m = /usps(?:\s+token)?\s+(\d{3})/i.exec(raw);   // "USPS 400: …" / "USPS token 401: …"
   const code = m ? Number(m[1]) : null;
-  const isToken = /token/i.test(raw);   // the failure is at the SIGN-IN step, not the address lookup
+  // The failure is at the SIGN-IN step, not the address lookup. Match the "USPS token …"
+  // PREFIX that getToken() mints — never a bare "token" that might appear inside a resource
+  // error's body (e.g. a rate-limit message), which would misclassify a lookup error as a
+  // sign-in error.
+  const isToken = /^\s*usps token\b/i.test(raw);
   if (!raw) {
     reason = 'USPS could not verify this address right now, and did not say why. Try again in a moment.';
   } else if (/abort|timed out|timeout|etimedout|operation was aborted/.test(low)) {

@@ -629,7 +629,9 @@ module.exports = {
     // portal, so a 403 on /addresses/v3/address is almost always a missing Addresses
     // API license — NOT a scope problem — and this will not fix that. It exists only
     // for the rarer case where USPS support says the token must name the scope (e.g.
-    // "addresses"). Inert unless set. See docs/USPS-ADDRESS-VERIFICATION.md (Troubleshooting).
+    // "addresses"). Inert unless set. CAUTION: a wrong value can make the SIGN-IN itself
+    // fail (invalid_scope) and take verification down — leave it unset unless USPS support
+    // says otherwise. See docs/USPS-ADDRESS-VERIFICATION.md (Troubleshooting).
     oauthScope:   (process.env.USPS_OAUTH_SCOPE || '').trim(),
     // Burst brake for the FREE tier (60 lookups/hour, shared across USPS APIs): once
     // this many lookups happen in a rolling hour, further LIVE verifies are skipped
