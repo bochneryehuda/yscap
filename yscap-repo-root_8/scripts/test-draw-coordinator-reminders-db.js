@@ -107,6 +107,7 @@ const PARTNERS = ['BlueLake', 'Blue Lake', 'Fidelis', 'Churchill', 'RCN', 'Templ
   assert.ok(cPend >= 1 && m, 'investor-pending: with a note buyer, the coordinator is reminded to deliver');
   assert.ok(/investor/i.test(m.subject), 'investor-pending: subject speaks of the investor, not the note buyer');
   noPartner(m);   // a STAFF reminder speaks of "the investor" — it must not print the capital-partner name
+  assert.ok(!to(bemail), 'investor-pending: the borrower is never a recipient (coordinator-only)');
   reset(); await D.investorPendingDeliveryOnce();
   assert.ok(!to(cemail), 'investor-pending: gated on the 2nd run (once / 2 days)');
   // A FINAL-approved draw is done — even accepted + no delivery, it must not nudge.
@@ -139,6 +140,7 @@ const PARTNERS = ['BlueLake', 'Blue Lake', 'Fidelis', 'Churchill', 'RCN', 'Templ
   assert.ok(cWith >= 1 && m, 'with-investor: a delivery older than 48h chases the investor');
   assert.ok(/investor/i.test(m.subject), 'with-investor: subject speaks of the investor');
   noPartner(m);
+  assert.ok(!to(bemail), 'with-investor: the borrower is never a recipient (coordinator-only)');
   reset(); await D.withInvestorOnce();
   assert.ok(!to(cemail), 'with-investor: gated on the 2nd run (every 2 days)');
   // MULTI-DRAW (regression, audit 2026-08-05): a fresh delivery must NOT mask an OLDER overdue draw on

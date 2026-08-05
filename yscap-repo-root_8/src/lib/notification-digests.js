@@ -1103,7 +1103,18 @@ async function investorPendingDeliveryOnce() {
 /* 10) with_investor (blueprint 7b) — the draw WAS delivered to the investor and we are waiting on their
    funding. Remind the coordinator starting +48h after the delivery, then every 2 days, until the draw
    reaches final approval (sitewire_draws.status='approved', approval.FINAL_STATUSES). A re-send is a new
-   delivery row, so the +48h clock is measured from the LATEST send. */
+   delivery row, so the +48h clock is measured from the LATEST send.
+
+   OVERLAP WITH drawReleaseOverdueOnce — considered and accepted (audit 2026-08-05), deliberately NOT
+   coupled. A draw can be past its wire SLA (release-overdue fires "record the release") AND delivered to
+   the investor >48h with no funding back (this fires "chase the investor"). In the DEFAULT reimbursement
+   mode those are two DIFFERENT actions — WE release the net to the borrower, the investor reimburses US —
+   so both nudges are legitimately distinct and must not be merged (suppressing either would drop a real
+   follow-up). In investor_direct mode they are adjacent (the investor makes the release), but both still
+   point the coordinator at the same next step, so nobody is ever misled. This is unlike Increment B's
+   borrower bombardment (the SAME email repeated forever); here it is at most two distinct actionable
+   items on the internal desk. Left decoupled to avoid mode-dependent suppression logic in the existing,
+   already-tested release sweep. */
 async function withInvestorOnce() {
   let sent = 0;
   let rows = [];
