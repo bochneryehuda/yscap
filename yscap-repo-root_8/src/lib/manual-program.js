@@ -102,6 +102,147 @@ function resolveProgram(requestedProgram, overrides) {
 }
 
 // ---------------------------------------------------------------------------
+// EXCEPTION STICKINESS (owner-directed 2026-08-05).
+//
+// An approved exception belongs to the ITEM it was granted for, at the VALUE it
+// was granted at — not to the loan as a whole. So a RE-REGISTER that carries the
+// SAME approved item(s) at the SAME value(s) must NOT open a fresh approval:
+//   · a manual program approved at 90% LTC stays approved at 90% LTC, even if the
+//     loan amount changes (as long as it does not go UP — see below);
+//   · 1% origination approved stays approved at 1%, even though the dollar amount
+//     moves when the loan amount changes;
+//   · a 0.2 markup approved stays approved at 0.2, whatever else moves;
+//   · re-registering the identical terms needs no new approval at all — even if
+//     the ARV or as-is value changed (the frozen engine still enforces every cap;
+//     an as-is that came in lower simply sizes a smaller loan, which is guideline
+//     enforcement, not an exception).
+// A NEW approval IS needed when an approved item's value CHANGES (1% → 0.9%
+// origination, 0.2 → 0.1 markup, a different LTC cap), when a NEW exception item
+// appears, when a MANUAL-review scenario gains a NEW guideline reason, or — the
+// one owner-directed special case — when a MANUAL PROGRAM's loan amount goes UP
+// (capital / BP-structure reasons), even at the same LTC.
+//
+// The comparison is by MEANING, not by key: the studio sends a percent form
+// (`ovrLTCPct: 90`) while a re-register replays the fraction the engine takes
+// (`ovrLTC: 0.9`), so each item is canonicalised to (its human label, a fraction/
+// dollar/count value) before it is compared.
+// ---------------------------------------------------------------------------
+const { DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS } = require('./pricing-overrides');
+const OVERRIDE_META = Object.assign({}, DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS);
+
+function sameNum(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  return Math.abs(Number(a) - Number(b)) < 0.0001;
+}
+
+/** Canonical numeric value for an override, in ONE unit per item so the two key
+ *  forms (percent from the studio, fraction from a replay) compare equal. A flag
+ *  is 1 when engaged. Returns null when unreadable. */
+function canonValue(unit, value) {
+  if (unit === 'flag') return value ? 1 : null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return unit === 'pct' ? n / 100 : n;   // frac / money / num stay as-is
+}
+
+/** Map(label → canonical value) from a pricingOverridesEngaged() change list
+ *  (the CURRENT register). */
+function itemsFromChanges(changes) {
+  const m = new Map();
+  for (const c of (Array.isArray(changes) ? changes : [])) {
+    if (!c || !c.label) continue;
+    const cv = canonValue(c.unit, c.value);
+    if (cv == null) continue;
+    if (!m.has(c.label)) m.set(c.label, cv);
+  }
+  return m;
+}
+
+/** Map(label → canonical value) from an escalation's stored slim `overrides` map
+ *  (the APPROVED grant: { key: rawValue }). */
+function itemsFromSlim(slim) {
+  const m = new Map();
+  const o = (slim && typeof slim === 'object') ? slim : {};
+  for (const key of Object.keys(o)) {
+    const meta = OVERRIDE_META[key];
+    if (!meta) continue;
+    const cv = canonValue(meta.unit, o[key]);
+    if (cv == null) continue;
+    if (!m.has(meta.label)) m.set(meta.label, cv);
+  }
+  return m;
+}
+
+/**
+ * Is the CURRENT register already covered by an APPROVED exception grant?
+ * PURE — unit-tested without a DB.
+ *
+ * @param current { program, status, overrideChanges, loanAmount, manualReasons }
+ * @param grant   { program, overrides, loanAmount, manualReasons } | null
+ * @returns { covered:boolean, reason:string, uncovered:string[] }
+ */
+function exceptionCoveredByGrant(current, grant) {
+  const cur = current || {};
+  if (!grant) return { covered: false, reason: 'no_approved_grant', uncovered: [] };
+  const curItems = itemsFromChanges(cur.overrideChanges);
+  const grantItems = itemsFromSlim(grant.overrides);
+  // Every CURRENT exception item must appear in the grant at the SAME value. Fewer
+  // items than the grant is fine (asking for LESS than was approved is never a new
+  // exception); a changed value or a brand-new item is not.
+  const uncovered = [];
+  for (const [label, cval] of curItems) {
+    if (!sameNum(grantItems.get(label), cval)) uncovered.push(label);
+  }
+  if (uncovered.length) return { covered: false, reason: 'item_changed_or_added', uncovered };
+
+  // Owner-directed special case: a MANUAL PROGRAM whose loan amount GOES UP needs a
+  // fresh approval even at the same caps (we must confirm the capital for it).
+  if (cur.program === 'manual') {
+    if (grant.program !== 'manual') return { covered: false, reason: 'grant_not_a_manual_program', uncovered: [] };
+    const gLoan = Number(grant.loanAmount);
+    const cLoan = Number(cur.loanAmount);
+    // A dollar of headroom absorbs floor-rounding; a real increase re-escalates.
+    if (Number.isFinite(gLoan) && Number.isFinite(cLoan) && cLoan > gLoan + 1) {
+      return { covered: false, reason: 'manual_loan_amount_increased', uncovered: [] };
+    }
+  }
+
+  // A MANUAL-review scenario is only covered while NO NEW guideline reason has
+  // appeared — a fresh manual reason (a cap newly hit as the as-is/ARV moved) is a
+  // new exception, and the frozen engine's own INELIGIBLE block still applies above.
+  if (cur.status === 'MANUAL') {
+    const granted = new Set((grant.manualReasons || []).map((r) => String(r)));
+    if ((cur.manualReasons || []).some((r) => !granted.has(String(r)))) {
+      return { covered: false, reason: 'new_manual_reason', uncovered: [] };
+    }
+  }
+  return { covered: true, reason: 'covered_by_approved_grant', uncovered: [] };
+}
+
+/**
+ * The most recent APPROVED escalation for a file, normalised for
+ * exceptionCoveredByGrant. Null when the file has never had one approved. An
+ * approved grant survives a re-register (openEscalation only supersedes OPEN rows),
+ * so it is here to cover a matching re-register.
+ */
+async function latestApprovedGrant(appId, client = db) {
+  const r = await client.query(
+    `SELECT overrides, summary FROM manual_program_escalations
+      WHERE application_id=$1 AND status='approved'
+      ORDER BY decided_at DESC NULLS LAST, created_at DESC LIMIT 1`, [appId]);
+  const row = r.rows[0];
+  if (!row) return null;
+  const overrides = row.overrides || {};
+  const summary = row.summary || {};
+  return {
+    overrides,
+    program: summary.program || (isManualProduct(overrides) ? 'manual' : null),
+    loanAmount: summary.totalLoan != null ? Number(summary.totalLoan) : null,
+    manualReasons: Array.isArray(summary.manualReasons) ? summary.manualReasons : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Company-level Manual Program settings (manual_program_settings, db/207).
 // Singleton current row: default liquidity months (REQUIRED) + advisory leverage
 // ceilings. Append-only history mirroring company_pricing_settings.
@@ -334,6 +475,9 @@ async function counterEscalation(id, staffId, { counterTerms, counterNote }, cli
 
 module.exports = {
   STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, needsSuperAdminApproval, resolveProgram,
+  exceptionCoveredByGrant, latestApprovedGrant,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
   openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation, counterEscalation,
+  // exported for tests
+  _internals: { itemsFromChanges, itemsFromSlim, canonValue },
 };

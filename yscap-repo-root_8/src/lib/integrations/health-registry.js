@@ -470,7 +470,38 @@ const INTEGRATIONS = [
             + 'Addressing API License Agreement + a paid Enhanced Addresses tier is required for production '
             + 'volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
       }
-      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate — official address verification is active.' : (p.reason || 'Not reachable.') }; }
+      try {
+        // 1) SIGN-IN. A green token used to be the WHOLE check — which is exactly why
+        //    this chip read healthy while every real verify failed: the OAuth sign-in
+        //    can authenticate while the account is not licensed for the Addresses API.
+        const p = await timebox(m.ping());
+        if (!p.ok) {
+          return { configured: true, live: false,
+            detail: 'USPS sign-in failed' + (p.reason ? `: ${p.reason}` : '.') + ' The keys may be wrong, expired, or turned off.' };
+        }
+        // 2) THE ADDRESS SERVICE ITSELF. Standardize a fixed, well-known address so the
+        //    chip reflects real capability, not just the login. Routed through the cache,
+        //    so a HEALTHY result costs one USPS call about every 90 days (then free);
+        //    a FORBIDDEN result is never cached, so a broken account keeps showing red
+        //    with the real reason. `force` keeps the burst cap from starving the check.
+        const V = require('../usps-verify');
+        const CANARY = { line1: '1600 Pennsylvania Ave NW', city: 'Washington', state: 'DC', zip: '20500' };
+        const out = await timebox(V.standardize(CANARY, { force: true }));
+        if (out.status === 'error') {
+          const ex = V.explainError(out.detail);
+          return { configured: true, live: false,
+            detail: `USPS sign-in works, but a test address lookup was refused. ${ex.reason}`
+              + (ex.technical ? ` (USPS said: ${ex.technical})` : '') };
+        }
+        if (out.status === 'rate_limited') {
+          return { configured: true, live: null,
+            detail: 'USPS sign-in works; the hourly USPS lookup limit is currently reached, so the address service could not be tested this moment.' };
+        }
+        // Any real answer (verified / corrected / unverified) means the service is
+        // licensed and responding — which is what "live" is asking.
+        return { configured: true, live: true,
+          detail: 'USPS sign-in works AND a test address lookup succeeded — official address verification is active.' };
+      }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching USPS.' : (e.message || 'Not reachable.') }; }
     },
   },

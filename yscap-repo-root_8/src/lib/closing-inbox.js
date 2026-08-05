@@ -42,8 +42,13 @@ const { classifyReturnAttachment } = require('./order-return-filter');
 
 const DOC_KIND = 'closing_correspondence';
 // A closing chain genuinely carries big multi-document sends (a full draft package),
-// so this is higher than the Orders desk's 20 — but still bounded.
-const MAX_DOCS_PER_EMAIL = 30;
+// so this is bounded but generous. IT MUST NOT BE BELOW the inbound RETRIEVAL cap
+// (file-inbox.MAX_ATTACH_COUNT): retrieval reports whatever it drops (droppedByCap →
+// "N could not be filed"), but a slice HERE below that number would truncate SILENTLY —
+// re-introducing the very "documents lost with no sign" failure this module exists to
+// prevent. Kept equal to the retrieval cap so retrieval is the single, reported bound
+// (guarded by scripts/test-inbound-attachment-cap.js).
+const MAX_DOCS_PER_EMAIL = 60;
 
 /**
  * IS THIS EXACT DOCUMENT ALREADY ON THIS FILE'S CLOSING CORRESPONDENCE?
