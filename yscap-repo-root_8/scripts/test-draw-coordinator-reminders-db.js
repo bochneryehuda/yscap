@@ -175,7 +175,19 @@ const PARTNERS = ['BlueLake', 'Blue Lake', 'Fidelis', 'Churchill', 'RCN', 'Templ
   reset(); const cWithDone = await D.withInvestorOnce();
   assert.ok(cWithDone === 0 && !to(cemail), 'with-investor: a final-approved draw stops the chase');
   await db.query(`UPDATE sitewire_draws SET status='inspecting' WHERE sitewire_draw_id=$1`, [DRAW]);
-  ok('with_investor: chases only after +48h, every 2 days, until final approval');
+  // MANUAL funding mode (#11): the delivery is still present and aged past +48h, so absent the manual
+  // exclusion it WOULD chase — this exercises the REAL query (with notThrottled/activeManagedLink), so it
+  // also guards the 7b alias-collision class (a thrown query is swallowed to 0, which the flip-back catches).
+  await clearStamp('draw_with_investor_reminder');
+  await db.query(`UPDATE draw_investor_deliveries SET funding_mode='manual' WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW]);
+  reset(); const cManual = await D.withInvestorOnce();
+  assert.ok(cManual === 0 && !to(cemail), 'with-investor: a MANUAL delivery is handled off-platform — never chased');
+  // Flip back to an emailed mode → it chases again, proving the exclusion did the work (not a thrown query).
+  await clearStamp('draw_with_investor_reminder');
+  await db.query(`UPDATE draw_investor_deliveries SET funding_mode='reimbursement' WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW]);
+  reset(); const cBack = await D.withInvestorOnce();
+  assert.ok(cBack >= 1 && to(cemail), 'with-investor: switching the mode back off manual resumes the chase');
+  ok('with_investor: chases only after +48h, every 2 days, until final approval; a manual delivery is never chased');
 
   /* ── 11) lifecycle guard (CLAUDE.md Sitewire rule 10): a finished/paid-off project is excluded ──
      Re-arm every sweep's trigger, flip the link to paid_off, and assert all four stay silent. */

@@ -2613,10 +2613,13 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
     const out = await investorSend.sendInvestorDelivery(appId, drawId, {
       staffId: req.actor.id, staffName: who.full_name || null,
       mode: (req.body && req.body.mode) || null,
+      note: (req.body && req.body.note) || null,
     });
     try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_delivery', oldValue: null, newValue: { to: out.to, mode: out.funding_mode, total: out.money.investor_total_cents, actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
-    await notify.notifyAppStaff(appId, { type: 'draw', title: 'Draw delivered to the investor', inAppOnly: true,
-      body: `Draw request sent to ${app.lender || 'the investor'} (${out.to.join(', ')}).`,
+    await notify.notifyAppStaff(appId, { type: 'draw', title: out.manual ? 'Draw delivery recorded (handled manually)' : 'Draw delivered to the investor', inAppOnly: true,
+      body: out.manual
+        ? `A coordinator recorded that this draw was delivered to ${app.lender || 'the investor'} outside PILOT${out.note ? ` — ${String(out.note).slice(0, 160)}` : ''}.`
+        : `Draw request sent to ${app.lender || 'the investor'} (${out.to.join(', ')}).`,
       applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) {

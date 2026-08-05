@@ -1999,6 +1999,7 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [note, setNote] = useState('');   // optional note for a MANUAL delivery
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -2015,18 +2016,30 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
 
   async function send() {
     if (!p) return;
-    const who = p.to.join(', ');
-    const modeLine = p.funding_mode === 'reimbursement'
-      ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
-      : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
-    if (!window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`)) return;
+    const manual = p.funding_mode === 'manual';
+    let ok;
+    if (manual) {
+      ok = window.confirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+    } else {
+      const who = p.to.join(', ');
+      const modeLine = p.funding_mode === 'reimbursement'
+        ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+        : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
+      ok = window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
+    }
+    if (!ok) return;
     setBusy(true); setErr(''); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
-        confirm_note_buyer: p.note_buyer, mode: p.funding_mode,
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
       });
-      const missing = (r.skipped || []).length;
-      setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      if (r.manual) {
+        setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
+      } else {
+        const missing = (r.skipped || []).length;
+        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      }
+      setNote('');
       load(); reload();
     } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
     finally { setBusy(false); }
@@ -2090,15 +2103,28 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </div>
           </div>
 
-          {/* who it goes to */}
-          <div style={{ marginTop: 14 }}>
-            <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
-            <div className="act-card-sub" style={{ marginTop: 0 }}>
-              <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
-              <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
-              The borrower is never included.
+          {/* who it goes to — or, for a manual delivery, a note field (PILOT sends no email) */}
+          {p.funding_mode === 'manual' ? (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Manual delivery</div>
+              <div className="act-card-sub" style={{ marginTop: 0, marginBottom: 6 }}>
+                PILOT sends no email in this mode — you deliver this draw to the investor yourself and record it here so the reminders stop.
+              </div>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} disabled={busy}
+                placeholder="How it was delivered (optional) — e.g. sent through the investor's portal, or by phone" maxLength={2000} rows={2}
+                aria-label="Manual delivery note"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
             </div>
-          </div>
+          ) : (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
+              <div className="act-card-sub" style={{ marginTop: 0 }}>
+                <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
+                <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
+                The borrower is never included.
+              </div>
+            </div>
+          )}
 
           {p.blockers.length > 0 && (
             <ul className="act-card-sub" style={{ marginTop: 12, color: 'var(--danger,#B4453C)', paddingLeft: 18 }}>
@@ -2108,8 +2134,9 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
 
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
-              title={p.can_send ? `Deliver this draw to ${p.note_buyer}` : 'Clear the items above first'}>
-              {busy ? 'Sending…' : `Deliver to ${p.note_buyer || 'the investor'}`}
+              title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
+              {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
+                : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}
             </button>
             {p.history.length > 0 && (
               <span className="act-card-sub" style={{ marginTop: 0 }}>

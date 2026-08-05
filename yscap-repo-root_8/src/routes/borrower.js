@@ -3526,13 +3526,15 @@ router.get('/messages', async (req, res) => {
   }
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
-  // NOT inside a borrower view (owner-directed 2026-07-26): a staffer opening
-  // the thread to see what the borrower sees must not mark the borrower's
-  // messages as READ — that would tell the rest of the team the borrower has
-  // seen a reply they have never opened, and clear the borrower's own unread
-  // badge from under them. Everything is still DISPLAYED identically; only the
+  // NOT inside a borrower view (owner-directed 2026-07-26) OR a borrower's
+  // assistant (#15): a staffer or a helper opening the thread to see what the
+  // borrower sees must not mark the borrower's messages as READ — that would
+  // tell the rest of the team the borrower has seen a reply they have never
+  // opened, and clear the borrower's own unread badge from under them. The
+  // assistant mirrors borrower-view's "never corrupt borrower state" rule, so
+  // it is skipped here too. Everything is still DISPLAYED identically; only the
   // receipt write is skipped.
-  if (req.query.applicationId && !req.impersonation) {
+  if (req.query.applicationId && !req.impersonation && !req.assistant) {
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
       [req.query.applicationId, me(req)]);
     try {

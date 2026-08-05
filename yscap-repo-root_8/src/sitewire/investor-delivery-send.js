@@ -245,7 +245,7 @@ async function deliveryPreview(appId, drawId) {
     borrowerEmails: [app.borrower_email, app.co_borrower_email],
   });
 
-  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer });
+  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode });
 
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
@@ -280,14 +280,46 @@ async function deliveryPreview(appId, drawId) {
  * The blockers are re-checked HERE, not trusted from the preview the screen fetched earlier: the
  * borrower could have been un-accepted, or the contacts edited, between the two calls.
  */
-async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName = null, mode = null } = {}) {
+async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName = null, mode = null, note = null } = {}) {
   const pre = await deliveryPreview(appId, drawId);
-  if (pre.blockers.length) { const e = new Error(pre.blockers[0]); e.status = 422; e.blockers = pre.blockers; throw e; }
 
   // An explicit mode on the request wins for THIS send (the desk offers the switch right beside
   // the button); otherwise the resolved per-draw/per-file/default mode stands.
   const useMode = ID.MODES.includes(String(mode || '')) ? String(mode) : pre.funding_mode;
+
+  // Re-check the blockers AGAINST THE MODE THIS SEND WILL USE — never trust the preview's list,
+  // which was computed for the resolved mode and may need different things (a manual delivery needs
+  // no investor contacts; an emailed one does).
+  const blockers = ID.deliveryBlockers({
+    finding: pre.finding_status ? { status: pre.finding_status } : null,
+    investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode,
+  });
+  if (blockers.length) { const e = new Error(blockers[0]); e.status = 422; e.blockers = blockers; throw e; }
+
   const money = ID.investorMoney(pre.money, useMode);
+  const noteText = String(note == null ? '' : note).trim().slice(0, 2000) || null;
+
+  // MANUAL — the coordinator delivered to the investor outside PILOT. Record it (so the "deliver to
+  // the investor" reminders stop and the history shows it) and stop here: no email is composed or
+  // sent, and no documents are gathered. The money figures are still stored for the record.
+  if (useMode === 'manual') {
+    const rec = (await db.query(
+      `INSERT INTO draw_investor_deliveries
+         (application_id, sitewire_draw_id, funding_mode, note_buyer_label, note_buyer_key,
+          requested_cents, approved_cents, fee_cents, retainage_held_cents,
+          to_borrower_cents, to_us_cents, investor_total_cents,
+          to_emails, cc_emails, attachments, skipped, status, note, sent_by)
+       VALUES ($1,$2,'manual',$3,$4,$5,$6,$7,$8,$9,$10,$11,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'sent',$12,$13)
+       RETURNING id, sent_at`,
+      [appId, drawId, pre.note_buyer, pre.note_buyer_key,
+        money.requested_cents, money.approved_cents, money.fee_cents, money.retainage_held_cents,
+        money.to_borrower_cents, money.to_us_cents, money.investor_total_cents,
+        noteText, staffId])).rows[0];
+    return {
+      id: rec.id, sent_at: rec.sent_at, funding_mode: 'manual', money,
+      to: [], cc: [], attachments: [], skipped: [], manual: true, note: noteText,
+    };
+  }
 
   const { items, skipped } = await gatherAttachments(appId, drawId);
 
@@ -348,14 +380,14 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
        (application_id, sitewire_draw_id, funding_mode, note_buyer_label, note_buyer_key,
         requested_cents, approved_cents, fee_cents, retainage_held_cents,
         to_borrower_cents, to_us_cents, investor_total_cents,
-        to_emails, cc_emails, attachments, skipped, status, error, sent_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id, sent_at`,
+        to_emails, cc_emails, attachments, skipped, status, error, note, sent_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id, sent_at`,
     [appId, drawId, useMode, pre.note_buyer, pre.note_buyer_key,
       money.requested_cents, money.approved_cents, money.fee_cents, money.retainage_held_cents,
       money.to_borrower_cents, money.to_us_cents, money.investor_total_cents,
       F.jsonbText(pre.to), F.jsonbText(pre.cc),
       F.jsonbText(items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length }))),
-      F.jsonbText(skipped), status, errText, staffId])).rows[0];
+      F.jsonbText(skipped), status, errText, noteText, staffId])).rows[0];
 
   if (status === 'error') { const e = new Error(errText || 'the delivery email could not be sent'); e.status = 502; throw e; }
 

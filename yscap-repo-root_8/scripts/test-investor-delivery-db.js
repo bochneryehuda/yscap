@@ -246,6 +246,52 @@ const ID = require('../src/sitewire/investor-delivery');
   ok('I16 a draw the borrower has not agreed to is refused at send time', refused);
   ok('I17 and the refusal says why', /not agreed/.test(refusedMsg));
   eq('I18 a refused delivery sends nothing at all', outbox.length, 2);   // the two successful sends only
+
+  // ================================================================ J. the MANUAL mode (#11)
+  // A manual delivery is handled outside PILOT: it RECORDS the delivery (so the reminders stop) and
+  // sends NO email. db/474 widened the funding_mode CHECK on all three tables to allow 'manual'.
+  await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', funding_mode='manual' WHERE id=$1`, [fid]);
+  const outboxBefore = outbox.length;   // 2 (the two successful emailed sends)
+  const man = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'manual', note: 'Delivered through the Fidelis portal' });
+  ok('J1 the manual delivery is recorded', !!man.id);
+  eq('J2 it is recorded as the manual mode', man.funding_mode, 'manual');
+  ok('J3 the response marks it manual', man.manual === true);
+  eq('J4 NO email was sent (the outbox is unchanged)', outbox.length, outboxBefore);
+  eq('J5 no recipients on a manual delivery', [man.to.length, man.cc.length], [0, 0]);
+  eq('J6 no attachments on a manual delivery', man.attachments.length, 0);
+  const mrow = (await db.query(`SELECT * FROM draw_investor_deliveries WHERE id=$1`, [man.id])).rows[0];
+  eq('J7 the widened CHECK accepted the manual funding_mode', mrow.funding_mode, 'manual');
+  eq('J8 the manual delivery is stored as sent (recorded)', mrow.status, 'sent');
+  eq('J9 the stored recipients are empty', [mrow.to_emails.length, mrow.cc_emails.length], [0, 0]);
+  eq('J10 the manual note is stored', mrow.note, 'Delivered through the Fidelis portal');
+  eq('J11 the money figures are still recorded',
+    Number(mrow.to_borrower_cents) + Number(mrow.to_us_cents), Number(mrow.investor_total_cents));
+  eq('J12 the per-draw funding-mode choice accepts manual',
+    (await db.query(`SELECT funding_mode FROM draw_findings WHERE id=$1`, [fid])).rows[0].funding_mode, 'manual');
+  await db.query(`UPDATE sitewire_property_links SET investor_funding_mode='manual' WHERE application_id=$1 AND matched_by='created'`, [app]);
+  eq('J13 the file default accepts manual',
+    (await db.query(`SELECT investor_funding_mode FROM sitewire_property_links WHERE application_id=$1 AND matched_by='created'`, [app])).rows[0].investor_funding_mode, 'manual');
+
+  // Reminder gating: withInvestorOnce (7b, "chase the investor") EXCLUDES a draw whose latest
+  // delivery is MANUAL; an emailed one past +48h is still due. Two raw rows (no FK on
+  // sitewire_draw_id), both older than 48h, exercise the exact latest-per-draw + manual-exclusion
+  // predicate the digest query uses.
+  await db.query(
+    `INSERT INTO draw_investor_deliveries (application_id, sitewire_draw_id, funding_mode, status, sent_at) VALUES
+       ($1, 90001, 'manual',        'sent', now() - interval '3 days'),
+       ($1, 90002, 'reimbursement', 'sent', now() - interval '3 days')`, [app]);
+  const remind = (await db.query(
+    `WITH latest AS (
+       SELECT DISTINCT ON (dd.sitewire_draw_id) dd.sitewire_draw_id, dd.sent_at AS last_send, dd.funding_mode
+         FROM draw_investor_deliveries dd
+        WHERE dd.status='sent' AND dd.application_id=$1 AND dd.sitewire_draw_id IN (90001, 90002)
+        ORDER BY dd.sitewire_draw_id, dd.sent_at DESC)
+     SELECT count(*) FILTER (WHERE funding_mode <> 'manual' AND last_send < now() - interval '48 hours')::int AS due,
+            count(*) FILTER (WHERE funding_mode = 'manual')::int AS manual_count
+       FROM latest`, [app])).rows[0];
+  eq('J14 the emailed delivery past +48h IS due for the reminder', remind.due, 1);
+  eq('J15 the manual delivery is present but NOT nagged', [remind.manual_count, remind.due], [1, 1]);
+
   mailer.sendMail = realSend;
 
   // ================================================================ cleanup
