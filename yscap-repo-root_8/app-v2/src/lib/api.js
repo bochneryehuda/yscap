@@ -540,12 +540,12 @@ export const api = {
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
-  staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
+  staffRaiseTrackRecordIssue: (id, applicationId, reason, postCondition) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
   // Request a DOCUMENT for one track-record line item — becomes a condition
   // tagged with the line item; uploads land on the line + its REO folder.
   staffRequestTrackRecordDoc: (id, applicationId, label) => req('POST', `/api/staff/track-records/${id}/request-doc`, { applicationId, label }),
   staffTrackRecordDocs: (id) => req('GET', `/api/staff/track-records/${id}/documents`),
-  staffRaiseLlcIssue:         (id, applicationId, reason) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason }),
+  staffRaiseLlcIssue:         (id, applicationId, reason, postCondition) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),

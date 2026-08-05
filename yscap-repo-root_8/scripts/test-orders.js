@@ -86,6 +86,36 @@ assert.ok(i.html.includes('01/02/1980'), 'insurance carries borrower DOB');
 assert.ok(i.html.includes('ISAOA/ATIMA'), 'insurance carries the mortgage clause too');
 ok('insurance order email: Builders Risk + DOB + mortgage clause');
 
+/* ---- #18: RCN note buyer swaps the mortgagee clause (order email only) ---- */
+// No note buyer (or any non-RCN buyer) → the standard YS Capital clause.
+assert.deepStrictEqual(orders.mortgageeClauseFor(null), orders.MORTGAGEE_CLAUSE, 'no note buyer → standard clause');
+assert.deepStrictEqual(orders.mortgageeClauseFor('Blue Lake'), orders.MORTGAGEE_CLAUSE, 'a non-RCN note buyer → standard clause');
+// RCN, in every spelling ClickUp sends, → the Elite Commercial Servicing clause.
+for (const spelling of ['RCN', 'rcn', 'RCN Capital', 'RCN Capital, LLC', ' rcn  capital ']) {
+  assert.ok(orders.isRcnNoteBuyer(spelling), `RCN detected: "${spelling}"`);
+  assert.deepStrictEqual(orders.mortgageeClauseFor(spelling), orders.MORTGAGEE_CLAUSE_RCN, `RCN → servicer clause: "${spelling}"`);
+}
+// No false positive (a wrong servicer on an order is expensive).
+assert.ok(!orders.isRcnNoteBuyer('Churchill'), 'a non-RCN buyer is not treated as RCN');
+assert.ok(!orders.isRcnNoteBuyer(''), 'a blank note buyer is not RCN');
+// The exact owner-provided servicer address.
+assert.deepStrictEqual(orders.MORTGAGEE_CLAUSE_RCN, [
+  'YS Capital Group, ISAOA ATIMA',
+  'c/o Elite Commercial Servicing, LLC',
+  'PO Box 15126',
+  'Richmond, VA 23227-0526',
+], 'the RCN clause is the owner-provided servicer address');
+// End to end: the ORDER EMAIL carries the RCN clause when the file's note buyer is RCN — both order types.
+const rcnIns = orders.buildOrderEmail('insurance', { ...insData, lender: 'RCN Capital' }, {});
+assert.ok(rcnIns.html.includes('Elite Commercial Servicing') && rcnIns.html.includes('Richmond, VA 23227-0526'), 'RCN insurance order carries the servicer clause');
+assert.ok(!rcnIns.html.includes('5 New Montrose'), 'the RCN order does NOT carry the standard Brooklyn address');
+assert.ok(rcnIns.html.includes('Loan Number: YSCAP1042'), 'the RCN clause still carries the loan number');
+const rcnTitle = orders.buildOrderEmail('title', { ...base, lender: 'RCN' }, {});
+assert.ok(rcnTitle.html.includes('Elite Commercial Servicing'), 'RCN title order carries the servicer clause too');
+// Regression: a non-RCN file still gets the standard clause.
+assert.ok(i.html.includes('5 New Montrose') && !i.html.includes('Elite Commercial Servicing'), 'a non-RCN insurance order keeps the standard clause');
+ok('#18: RCN note buyer swaps the mortgagee clause to the Elite Commercial Servicing address (order email only)');
+
 /* ---- follow-up email (separate, on-demand) ---- */
 const fu = orders.buildOrderEmail('title', base, { followup: true });
 assert.ok(/Follow-up/.test(fu.subject), 'follow-up subject is distinct');

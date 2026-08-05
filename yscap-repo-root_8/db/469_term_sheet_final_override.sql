@@ -1,4 +1,4 @@
--- db/467 — a super-admin OVERRIDE of the "term sheet still prints NOT FINAL"
+-- db/469 — a super-admin OVERRIDE of the "term sheet still prints NOT FINAL"
 -- send refusal (owner-directed 2026-08-04).
 --
 -- THE BACKGROUND. The DocuSign term-sheet package refuses to mail a term sheet
@@ -22,6 +22,6 @@ ALTER TABLE esign_envelopes ADD COLUMN IF NOT EXISTS ts_final_override_reason te
 ALTER TABLE esign_envelopes ADD COLUMN IF NOT EXISTS ts_final_override_at timestamptz;
 
 COMMENT ON COLUMN esign_envelopes.ts_final_override_by IS
-  'super_admin who forced this term-sheet package past the "not final" refusal (db/467). NULL = no override; the send refuses a non-final sheet as usual.';
+  'super_admin who forced this term-sheet package past the "not final" refusal (db/469). NULL = no override; the send refuses a non-final sheet as usual.';
 COMMENT ON COLUMN esign_envelopes.ts_final_override_reason IS
   'the reason the super-admin gave for sending a sheet not recorded as FINAL. Shown on the file; travels with the envelope across send retries.';

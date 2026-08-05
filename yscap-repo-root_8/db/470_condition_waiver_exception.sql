@@ -1,4 +1,4 @@
--- db/468 — a REQUESTABLE "waive this condition" exception (owner-directed
+-- db/470 — a REQUESTABLE "waive this condition" exception (owner-directed
 -- 2026-08-04).
 --
 -- The owner: "any user should be able to request from the admin or super admin an
@@ -32,7 +32,7 @@ ALTER TABLE loan_exceptions
     REFERENCES checklist_items(id) ON DELETE SET NULL;
 
 COMMENT ON COLUMN loan_exceptions.target_checklist_item_id IS
-  'condition_waiver only: the checklist_items condition this exception waives on approval (db/468). NULL for every other type.';
+  'condition_waiver only: the checklist_items condition this exception waives on approval (db/470). NULL for every other type.';
 
 -- ── the exception_type CHECK: the FULL list + the new value ──────────────────
 -- IDEMPOTENCY (per db/344 / db/370 / db/388 / db/397 / db/402 / db/455): numbered

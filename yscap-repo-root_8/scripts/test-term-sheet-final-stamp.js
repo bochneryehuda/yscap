@@ -131,7 +131,7 @@ ok(/INITIAL TERM SHEET/.test(REGENERATE_MESSAGE) && /re-register/i.test(REGENERA
     'and refuses anything not recorded as FINAL — NULL (a legacy sheet, generated under the rule that printed the initial wording) is refused too');
   ok(/SELECT id, filename, content_type, storage_ref, storage_provider, created_at, term_sheet_final/.test(src),
     'the column is actually selected — without it doc.term_sheet_final is undefined and EVERY send would refuse');
-  // The super-admin OVERRIDE (owner-directed 2026-08-04, db/467): the refusal is
+  // The super-admin OVERRIDE (owner-directed 2026-08-04, db/469): the refusal is
   // SKIPPED only when the override is stamped on the ENVELOPE row (so it survives
   // send retries, which re-read the row), never passed through the closure.
   ok(/if \(!row\.ts_final_override_by\)/.test(src),

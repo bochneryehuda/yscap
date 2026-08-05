@@ -304,7 +304,7 @@ const EXCEPTION_TYPES = Object.freeze({
   // decision. Not expirable — a waived condition is a one-time human decision, not
   // a clock-driven allowance (like the guaranty waiver). Unlike every other type
   // it names a target condition (target_checklist_item_id), so a file may carry
-  // several open at once (one per condition — see db/468's per-condition index).
+  // several open at once (one per condition — see db/470's per-condition index).
   condition_waiver: Object.freeze({
     label: 'Condition waiver',
     reasonCodes: CONDITION_WAIVER_REASONS,
@@ -458,7 +458,7 @@ async function requestException(client, opts) {
   // Supersede the prior OPEN request this one replaces. For a condition_waiver the
   // scope is the SAME condition (a file may hold several — one per condition), so a
   // second condition's request must NOT withdraw the first; for every other type
-  // the scope is the whole (file, type) — the one-open-per-file rule (db/468).
+  // the scope is the whole (file, type) — the one-open-per-file rule (db/470).
   if (type === 'condition_waiver' && opts.targetChecklistItemId) {
     await client.query(
       `UPDATE loan_exceptions

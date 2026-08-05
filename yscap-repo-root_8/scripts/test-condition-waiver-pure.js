@@ -46,11 +46,11 @@ ok(typeof LE.requestConditionWaiver === 'function', 'requestConditionWaiver is e
 
 // ---- SOURCE: the migration widens the CHECK + adds the target column -------
 {
-  const sql = fs.readFileSync(R + '/db/468_condition_waiver_exception.sql', 'utf8');
+  const sql = fs.readFileSync(R + '/db/470_condition_waiver_exception.sql', 'utf8');
   ok(/target_checklist_item_id uuid/.test(sql) && /REFERENCES checklist_items\(id\) ON DELETE SET NULL/.test(sql),
-    'db/468 adds target_checklist_item_id → checklist_items, ON DELETE SET NULL (a deleted condition never drops the audit row)');
+    'db/470 adds target_checklist_item_id → checklist_items, ON DELETE SET NULL (a deleted condition never drops the audit row)');
   ok(/'condition_waiver'/.test(sql) && /loan_exceptions_exception_type_check/.test(sql),
-    'db/468 widens the exception_type CHECK to include condition_waiver');
+    'db/470 widens the exception_type CHECK to include condition_waiver');
   ok(/uq_loan_exc_open_condition_waiver/.test(sql) && /exception_type <> 'condition_waiver'/.test(sql),
     'a file may carry SEVERAL open condition waivers (one per condition) — excluded from the one-per-type rule, with its own one-per-condition rule');
 }
@@ -94,15 +94,15 @@ ok(typeof LE.requestConditionWaiver === 'function', 'requestConditionWaiver is e
 
 // ---- SOURCE: the SOW budget guard steps aside for a deliberate waive/override
 {
-  const sql = fs.readFileSync(R + '/db/469_sow_guard_waive_override_aware.sql', 'utf8');
+  const sql = fs.readFileSync(R + '/db/471_sow_guard_waive_override_aware.sql', 'utf8');
   ok(/NEW\.waived_by IS NOT NULL OR NEW\.override_by IS NOT NULL/.test(sql),
-    'db/469: a waive/override stamp lets the write past the SOW budget guard (so "waive any condition" works on the budget condition too)');
+    'db/471: a waive/override stamp lets the write past the SOW budget guard (so "waive any condition" works on the budget condition too)');
   ok(/an ordinary sign-off has NEITHER/i.test(sql),
-    'db/469: an ordinary SIGN-OFF still has NEITHER stamp, so the balance check still fully applies to it');
+    'db/471: an ordinary SIGN-OFF still has NEITHER stamp, so the balance check still fully applies to it');
   // The bypass must sit AFTER the is_budget gate and BEFORE the balance RAISEs.
   const bypassIdx = sql.indexOf('NEW.waived_by IS NOT NULL OR NEW.override_by IS NOT NULL');
   const raiseIdx = sql.indexOf('must match to the cent');
-  ok(bypassIdx > 0 && raiseIdx > bypassIdx, 'db/469: the bypass precedes the to-the-cent balance checks');
+  ok(bypassIdx > 0 && raiseIdx > bypassIdx, 'db/471: the bypass precedes the to-the-cent balance checks');
 }
 
 console.log(`condition-waiver: ${pass} checks passed`);

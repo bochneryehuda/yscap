@@ -74,7 +74,7 @@ function call(server, method, path, token, body) {
     const bId = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('CW','Test',$1) RETURNING id`, [`cw-bo-${sfx}@test.local`])).rows[0].id;
     // Assign the LO to the file so their file-scoped request passes the /applications/:id guard.
     // A rehab_budget is set so the SOW budget guard (db/069/db/282) is ARMED for the
-    // budget-condition case below — proving db/469 lets a waive past it.
+    // budget-condition case below — proving db/471 lets a waive past it.
     const appId = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id, status, rehab_budget) VALUES ($1,$2,'processing',50000) RETURNING id`, [bId, loId])).rows[0].id;
 
     // Two independent conditions on the file (checklist_items has no
@@ -135,17 +135,17 @@ function call(server, method, path, token, body) {
     ok((await reqWaiver(item1, loTok, { reasonNote: 'again' })).status === 409,
       'a waiver of an already-cleared condition is refused (409)');
 
-    // ---- (9) the SOW BUDGET condition can be waived (db/469) ----------------
+    // ---- (9) the SOW BUDGET condition can be waived (db/471) ----------------
     // The rehab-budget condition's DB guard (trg_sow_budget_guard) refuses a
     // satisfied-write unless the SOW balances to the cent. A WAIVE is a deliberate
-    // decision to clear it WITHOUT that — db/469 lets a waive/override past the
-    // guard. Without db/469 this approval 500s and leaves the condition un-waived.
+    // decision to clear it WITHOUT that — db/471 lets a waive/override past the
+    // guard. Without db/471 this approval 500s and leaves the condition un-waived.
     const budgetItem = await mkItem(appId, 'rtl_p1_budget');  // tool_key rehab_budget; no balanced SOW payload
     const rb = await reqWaiver(budgetItem, loTok, { reasonNote: 'SOW handled outside PILOT' });
     ok(rb.status === 200 && rb.json.ok, 'a waiver of the SOW budget condition can be requested');
     const rbDecide = await decide(rb.json.exception.id, adTok, { decision: 'approved', note: 'Waive the budget match.' });
     ok(rbDecide.status === 200 && rbDecide.json.ok,
-      'approving a SOW-budget waiver SUCCEEDS (db/469 lets the waive past the budget guard — it 500s without it)');
+      'approving a SOW-budget waiver SUCCEEDS (db/471 lets the waive past the budget guard — it 500s without it)');
     const bi = await itemRow(budgetItem);
     ok(bi.status === 'satisfied' && bi.waived_at != null,
       'the SOW budget condition is marked waived');

@@ -838,7 +838,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     // DOCUMENT going out once it may.
     if (d.kind === 'term_sheet' && doc.term_sheet_final !== true) {
       // A super-admin may FORCE the send past this refusal (owner-directed
-      // 2026-08-04, db/467). The authorization is stamped on the envelope row —
+      // 2026-08-04, db/469). The authorization is stamped on the envelope row —
       // NOT passed through the closure — so it survives every send retry (the
       // send engine re-reads the row via the atomic claim's RETURNING *). It
       // changes NOTHING the PDF prints: the sheet may still read "NOT FINAL", and
@@ -1030,7 +1030,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   }
 
   // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
-  // (owner-directed 2026-08-04, db/467). The ROUTE authorizes it (super_admin +
+  // (owner-directed 2026-08-04, db/469). The ROUTE authorizes it (super_admin +
   // a reason) and passes it here; sendPackage only APPLIES it — it stamps the
   // envelope so buildDefinition, and every send retry, honor it. It never widens
   // the appraisal/P&P send-gate (checked above); it only lets an authorized send

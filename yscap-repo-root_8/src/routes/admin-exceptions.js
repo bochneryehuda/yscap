@@ -418,7 +418,7 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
   } catch (e) {
     // A DB guard (e.g. the SOW budget trigger) refusing the write is a legible
     // 422, not an opaque 500 — the decider needs to know WHY it couldn't clear.
-    // (db/469 lets a waive/override past the SOW guard, so this is a backstop for
+    // (db/471 lets a waive/override past the SOW guard, so this is a backstop for
     // any other guard that might refuse a condition_waiver's satisfied-write.)
     if (e && e.code === '23514') {
       const m = String(e.message || '').replace(/^.*?:\s*/, '');

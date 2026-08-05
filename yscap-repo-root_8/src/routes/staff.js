@@ -1534,9 +1534,9 @@ router.post('/invite-to-portal', async (req, res) => {
       else {
         const name = [first, last].filter(Boolean).join(' ') || email;
         const lr = await db.query(
-          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at)
-           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now()) RETURNING id`,
-          [name, first || null, last || null, email, phone, officerId, req.actor.id]);
+          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at,assigned_via)
+           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now(),$8) RETURNING id`,
+          [name, first || null, last || null, email, phone, officerId, req.actor.id, officerId ? 'manual' : null]);
         leadId = lr.rows[0].id;
         await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Invited to portal',$3)`,
           [leadId, req.actor.id, 'Invited ' + email + ' to the borrower portal']);
@@ -8893,7 +8893,12 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    // A borrower with NO active file has nothing to be invited TO. Rather than a
+    // dead end, the profile offers to START an application for them and invite them
+    // to fill it in — a `code` the client keys on to reach the invite-only new-file
+    // path (owner-directed 2026-08-04, #23). Passing borrowerId there links the new
+    // file to THIS exact profile, so their records carry over.
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to', code: 'no_active_file' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
     res.json({ ok: true, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -10450,8 +10455,10 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
-    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    // Default = raise an issue INTERNALLY (no borrower email). Only an explicit
+    // postCondition:true posts a borrower-facing condition (owner-directed 2026-08-04).
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_track_record_condition' : 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
@@ -10494,8 +10501,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
     if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_llc_condition' : 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -13746,7 +13753,9 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   const col = (name, val) => { sets.push(`${name}=$${i++}`); vals.push(val); };
   if (b.status !== undefined) { col('status', b.status); if (b.status === 'lost') col('lost_at', new Date().toISOString()); }
-  if (b.officerId !== undefined) col('officer_id', b.officerId || null);
+  // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
+  // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
+  if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
   if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);

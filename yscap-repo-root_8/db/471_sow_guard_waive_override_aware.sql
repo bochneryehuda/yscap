@@ -1,5 +1,5 @@
 -- ============================================================================
--- 469 — SOW budget guard: honor a deliberate WAIVE / super-admin OVERRIDE
+-- 471 — SOW budget guard: honor a deliberate WAIVE / super-admin OVERRIDE
 -- (owner-directed 2026-08-04).
 --
 -- WHY. The db/069/db/192/db/282 guard refuses to flip the rehab-budget /
