@@ -2161,7 +2161,11 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
     out.observations++;
     // The adjustment lines as rows (db/440) — the market benchmark's raw material.
     // Its own savepoint: a derived index must never fail the ingest that feeds it.
-    await bestEffort(db, 'adj_rows', async () => {
+    // A KEPT-FOR-REVIEW comp (unverifiable address) must never price the market:
+    // adjustmentRate/adjustmentBenchmark read property_adjustments directly (no join
+    // to properties), so its lines are simply not written. A town-borrowed comp is a
+    // normal property and does feed the benchmark, like any other.
+    if (filed.kind !== 'needs_review') await bestEffort(db, 'adj_rows', async () => {
       // ONE definition of where and when, shared with the back-fill — see
       // `adjustmentPlaceAndDate`. Deriving them here independently is what made
       // the two writers disagree on 15,909 of 17,431 rows.

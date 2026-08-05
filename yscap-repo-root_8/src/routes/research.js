@@ -2210,7 +2210,8 @@ async function resolveMarketArea(id) {
   const near = (await db.query(
     `SELECT p.id, p.eff_latitude, p.eff_longitude
        FROM properties p
-      WHERE p.eff_latitude BETWEEN $1 AND $2
+      WHERE COALESCE(p.needs_review, false) = false
+        AND p.eff_latitude BETWEEN $1 AND $2
         AND p.eff_longitude BETWEEN $3 AND $4
       -- ORDERED, so the cap is DETERMINISTIC. An unordered LIMIT means which rows
       -- come back is up to the planner, and two identical comparable searches
@@ -2239,7 +2240,8 @@ router.get('/market-areas/:id/properties', async (req, res, next) => {
     const near = (await db.query(
       `SELECT ${S.LIST_COLUMNS}
          FROM properties p
-        WHERE p.eff_latitude BETWEEN $1 AND $2
+        WHERE COALESCE(p.needs_review, false) = false
+          AND p.eff_latitude BETWEEN $1 AND $2
           AND p.eff_longitude BETWEEN $3 AND $4
         LIMIT 5000`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
     const ring = Array.isArray(a.ring) ? a.ring : [];

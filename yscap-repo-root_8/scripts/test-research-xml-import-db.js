@@ -461,6 +461,20 @@ const propByAddress = async (street) => (await db.query(
     ok(rateCorpus === 1,
       'the rate corpus includes the town-borrowed comp\'s sale but NOT the kept-for-review one');
 
+    // AND ITS ADJUSTMENT LINES NEVER FEED THE PER-FOOT BENCHMARK. The benchmark
+    // reads property_adjustments directly (no join to properties), so a review
+    // comp's lines are simply not written; a town-borrowed comp's are.
+    const reviewObsId = (await db.query(
+      `SELECT id FROM property_observations WHERE property_id = $1 LIMIT 1`, [reviewProp.id])).rows[0].id;
+    const reviewAdj = (await db.query(
+      `SELECT count(*)::int n FROM property_adjustments WHERE observation_id = $1`, [reviewObsId])).rows[0].n;
+    ok(reviewAdj === 0, 'a kept-for-review comp writes NO adjustment-benchmark rows');
+    const borrowedObsId = (await db.query(
+      `SELECT id FROM property_observations WHERE property_id = $1 LIMIT 1`, [borrowed.id])).rows[0].id;
+    const borrowedAdj = (await db.query(
+      `SELECT count(*)::int n FROM property_adjustments WHERE observation_id = $1`, [borrowedObsId])).rows[0].n;
+    ok(borrowedAdj > 0, 'but a town-borrowed comp DOES feed the benchmark, like any normal property');
+
     // Re-importing the SAME report updates the kept-for-review row in place — the
     // per-report key means it never piles up a second copy.
     const salv2 = await XI.importXml(D, { xml: base({ street: '61 Salvage Rd', effectiveDate: '2026-06-20', signedDate: '2026-06-21',
