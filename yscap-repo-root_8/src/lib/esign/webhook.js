@@ -341,7 +341,7 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   return status;
 }
 
-const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska' };
+const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 
 /** Alert the file's team on the FIRST terminal transition of a real envelope. */
 async function notifyTerminal(db, envelopeRow, status, voidReason) {
