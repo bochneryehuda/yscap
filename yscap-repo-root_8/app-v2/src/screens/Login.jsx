@@ -156,6 +156,8 @@ export default function Login() {
           <div className="auth-foot">
             <button className="btn link small muted" onClick={() => nav('/verify')}>Verify email</button>
             <span className="auth-foot-sep" aria-hidden="true">·</span>
+            <button className="btn link small muted" onClick={() => nav('/assistant/login')}>Helper sign in</button>
+            <span className="auth-foot-sep" aria-hidden="true">·</span>
             <button className="btn link small muted" onClick={() => nav('/internal/login')}>Staff sign in</button>
           </div>
         )}

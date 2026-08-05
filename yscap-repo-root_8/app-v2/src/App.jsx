@@ -11,6 +11,9 @@ import Verify from './screens/Verify.jsx';
 import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
+import AssistantAccept from './screens/AssistantAccept.jsx';
+import AssistantLogin from './screens/AssistantLogin.jsx';
+import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
 import EsignDone from './screens/EsignDone.jsx';
@@ -142,6 +145,8 @@ export default function App() {
           <Route path="/forgot" element={<Forgot scope="borrower" />} />
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
+          <Route path="/assistant/accept" element={<AssistantAccept />} />
+          <Route path="/assistant/login" element={<AssistantLogin />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
@@ -160,6 +165,7 @@ export default function App() {
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
           <Route path="/app/:id" element={<Private><Application /></Private>} />
           <Route path="/profile" element={<Private><Profile /></Private>} />
+          <Route path="/helpers" element={<Private><Helpers /></Private>} />
           <Route path="/entities" element={<Private><EntitiesScreen /></Private>} />
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
           <Route path="/pricing" element={<Private><PricingStudio /></Private>} />

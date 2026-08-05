@@ -3457,6 +3457,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   flex-wrap:wrap;padding:9px 16px;background:#AE8746;color:#fff;
   font-size:14px;line-height:1.35;box-shadow:0 1px 0 rgba(20,27,34,.14)}
 .bview-bar strong{color:#fff;font-weight:700}
+/* Helper (borrower assistant) bar — teal, to read distinctly from the gold
+   staff "borrower view" bar. */
+.bview-bar--helper{background:#2F7F86}
 .bview-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#fff;
   box-shadow:0 0 0 3px rgba(255,255,255,.35);animation:bview-pulse 2.4s ease-in-out infinite}
 @keyframes bview-pulse{0%,100%{opacity:1}50%{opacity:.45}}
