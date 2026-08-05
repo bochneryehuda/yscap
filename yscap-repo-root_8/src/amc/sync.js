@@ -208,6 +208,10 @@ async function syncOne(dbh, order) {
   catch (e) { console.error('[amc] comment sync failed for order', order.id, (e && e.message) || e); }
   try { await require('./revisions').syncRevisions(dbh, order); }
   catch (e) { console.error('[amc] revision sync failed for order', order.id, (e && e.message) || e); }
+  // Auto-upload the corrected SOW / the contract when they change or arrive (deduped on
+  // documents.id, gated by AMC_OUTBOUND_ENABLED). Best-effort — never breaks the poll.
+  try { await require('./documents').autoUploadForOrder(dbh, order); }
+  catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }

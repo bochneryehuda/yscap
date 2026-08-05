@@ -27,6 +27,7 @@ const orderService = require('../amc/order-service');
 const comments = require('../amc/comments');
 const revisions = require('../amc/revisions');
 const rov = require('../amc/rov');
+const amcDocuments = require('../amc/documents');
 const appraisalCard = require('../lib/appraisal-card');
 
 router.use(requireAuth, requireStaff);
@@ -208,6 +209,27 @@ router.post('/orders/:orderId/rov', async (req, res) => {
   const detail = rov.buildRovDetail({ appraisedValue: b.appraisedValue, opinionValue: b.opinionValue, comps, note: b.note });
   const narrative = rov.buildRovNarrative(detail);
   const out = await revisions.postRevision(db, order, { staffId: req.actor.id, kind: 'rov', body: narrative, rovDetail: detail });
+  if (!out.ok) return res.status(400).json(out);
+  res.json(out);
+});
+
+// ---- document upload (Document Center → order) -----------------------------
+// The file's documents staff can pick from, each with a category and whether it is
+// already on the given order (?orderId=). Read-only.
+router.get('/files/:id/documents', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const orderId = Number.isInteger(parseInt(req.query.orderId, 10)) ? parseInt(req.query.orderId, 10) : null;
+  res.json({ documents: await amcDocuments.listUploadable(db, appId, orderId) });
+});
+
+// Upload the picked documents to an order. body: { documentIds:[uuid], action? }.
+router.post('/orders/:orderId/documents', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
+  if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
+  const out = await amcDocuments.uploadToOrder(db, order, { staffId: req.actor.id, documentIds: ids, action: req.body.action }, {});
   if (!out.ok) return res.status(400).json(out);
   res.json(out);
 });
