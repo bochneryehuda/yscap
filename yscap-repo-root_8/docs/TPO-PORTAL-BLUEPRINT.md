@@ -329,7 +329,43 @@ internal workflow condition.
      gained Accept (behind a confirm) + a per-line Dispute editor. Tests
      `scripts/test-dispute-media-pure.js` + the Phase-6d section of
      `scripts/test-tpo-draws-db.js`.
-   - **STILL DEFERRED in Phase 6:** messaging (broker ↔ our team).
+   - **Phase 6e — broker ↔ our-team MESSAGING ✅ (BUILT).** Owner-approved scope:
+     "messaging with our team" — the LAST deferred TPO item. A broker gets a
+     dedicated "Broker ↔ Team" conversation per file, REUSING the chat v3 infra
+     (`conversations`/`messages`/`conversation_members` + the shared React
+     `ChatThread`) — no second chat system. A broker IS a `staff_users` row but must
+     be DISTINCT from our team in the roster + attribution, so they post/join as a
+     NEW kind **`tpo`** (`messages.sender_kind`, `conversation_members.member_kind`,
+     `conversations.kind`), never as `staff`. db/480 widens the three CHECKs to admit
+     `'tpo'` IN-PLACE under each constraint's OWN name (the db/479 replay-idempotency
+     lesson) + a SECURITY DELETE cleanup (below). **THE ONE SECURITY-CRITICAL
+     INVARIANT: a staff reply's RAW body must NEVER be emailed to the external
+     broker.** The broker gets it LIVE (SSE + unread badge) and always through the
+     borrower-safe OUTPUT scrub (a capital-partner name → "Gold Standard program"),
+     but the EMAIL path is raw, so it is closed at TWO chokepoints in
+     `src/lib/chat.js`: `queueMessageNotifications` `continue`s on a `member_kind='tpo'`
+     recipient and `sendChatEmailToMember` returns early for one — the broker is never
+     emailed a chat message in v1 (a borrower-safe broker EMAIL is deferred to v1.1);
+     our AE/AM (seated `member_kind='staff'`) ARE emailed. `ensureTpoConversation(appId)`
+     creates the kind='tpo' 🤝 conversation (NOT `borrower_visible`) for an `is_tpo`
+     file, seats the broker (`loan_officer_id` when `is_external`) as `member_kind='tpo'`
+     and our AE/AM (`application_assignees` account_executive/account_manager, active,
+     `is_external=false`) as `member_kind='staff'`; `tpoCanAccess` = `conv.kind='tpo'`
+     AND app in firm via `tpoFirmScopeSql`. **A SECURITY FIX rode with it:**
+     `ensureConversationsForApp` no longer seats an external staffer (the broker, who
+     IS the `loan_officer_id` on a TPO file) as a `staff` member of the internal/
+     borrower/lo_processor chats — that would have emailed our internal messages to
+     the broker; db/480's DELETE removes any already-seated. `src/routes/tpo-chat.js`
+     is the firm-scoped borrower-safe router (mirrors `borrower-chat.js`, `scrubText`
+     on all outbound, actor `{kind:'tpo', roleLabel:'Broker'}`, firm-scoped
+     `/chat/attachment/:docId`); `routes/events.js` treats `kind ∈ staff|tpo` as
+     `staffLike` for SSE + re-validates a tpo-view impersonation at connect. Front end:
+     `ChatThread.jsx` `surface='tpo'` (a clean thread — react/pin/edit/delete/rename/
+     mute/search/mentionables all null; download via `tpoDownloadChatAttachment`);
+     `TpoMessages.jsx` panel mounted as a "Messages" card in `TpoFile.jsx`. A firm-wide
+     nav unread badge is deferred (messaging is a per-file card, not a nav
+     destination). Test `scripts/test-tpo-chat-db.js`.
+   - **STILL DEFERRED in Phase 6:** none — the TPO roadmap surfaces are complete.
 
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 

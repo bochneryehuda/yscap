@@ -90,10 +90,63 @@ async function ensureConversationsForApp(appId) {
                     FROM application_assignees aa
                    WHERE aa.application_id=a.id AND aa.removed_at IS NULL AND aa.is_primary=false
       ) p
-     WHERE c.application_id=$1 AND c.kind <> 'custom'
+     WHERE c.application_id=$1 AND c.kind NOT IN ('custom','tpo')   -- the 'tpo' chat's roster is owned by ensureTpoConversation
        AND p.id IS NOT NULL
        AND (p.borrower_side = false OR c.kind='borrower')   -- borrowers only join the borrower chat
        AND (p.kind='staff' OR c.borrower_visible)           -- belt & suspenders
+       -- Phase 6e (security): NEVER seat an EXTERNAL staffer as a member of the internal / borrower /
+       -- lo_processor chats. On a TPO file the loan_officer IS the external broker, so without this
+       -- the broker would be seated as a 'staff' member of the internal "Loan Team" chat and be
+       -- emailed our team's raw internal messages. The broker's ONLY chat is the firm-scoped 'tpo'
+       -- conversation. (This also fixes previously-seated files; see db/480's cleanup.)
+       AND (p.kind <> 'staff' OR NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.id=p.id AND su.is_external=true))
+    ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`, [appId]);
+}
+
+/**
+ * Phase 6e — make sure a TPO file has its ONE broker↔team conversation, with the broker seated as
+ * a distinct 'tpo' member and our account executive / account manager (internal assignees) seated
+ * as staff. Idempotent, cheap, lazily called from the tpo-chat + staff-chat routes. NOT
+ * borrower_visible — this channel is between the broker and OUR team, never the borrower. A
+ * non-TPO file is a no-op (the SELECT filters on is_tpo). A member joining later starts at the
+ * conversation's max seq (Slack semantics), same as ensureConversationsForApp.
+ */
+async function ensureTpoConversation(appId) {
+  await db.query(`
+    INSERT INTO conversations (application_id, kind, name, emoji, borrower_visible)
+    SELECT a.id, 'tpo', 'Broker ↔ Team', '🤝', false
+      FROM applications a WHERE a.id=$1 AND a.is_tpo=true
+    ON CONFLICT (application_id, kind) WHERE kind <> 'custom' DO NOTHING`, [appId]);
+
+  // The broker = the file's EXTERNAL loan officer, seated as member_kind='tpo' (distinct from our
+  // internal team in the roster + attribution). Guarded on is_external so a mis-set retail file can
+  // never seat an internal staffer as a broker.
+  await db.query(`
+    INSERT INTO conversation_members (conversation_id, member_kind, member_id, role_label, last_read_seq, last_delivered_seq)
+    SELECT c.id, 'tpo', a.loan_officer_id, 'Broker',
+           COALESCE((SELECT max(seq) FROM messages m WHERE m.conversation_id=c.id),0),
+           COALESCE((SELECT max(seq) FROM messages m WHERE m.conversation_id=c.id),0)
+      FROM conversations c
+      JOIN applications a ON a.id=c.application_id
+      JOIN staff_users su ON su.id=a.loan_officer_id AND su.is_external=true
+     WHERE c.application_id=$1 AND c.kind='tpo' AND a.loan_officer_id IS NOT NULL
+    ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`, [appId]);
+
+  // Our AE / AM (internal assignees) join as staff so they see the broker↔team chat in their
+  // normal staff inbox with correct unread from the start. see_all admins reach it via
+  // staffCanAccess without a membership row (never seated, or they'd flood every file's chat).
+  await db.query(`
+    INSERT INTO conversation_members (conversation_id, member_kind, member_id, role_label, last_read_seq, last_delivered_seq)
+    SELECT c.id, 'staff', aa.staff_id,
+           CASE WHEN aa.role='account_executive' THEN 'Account Executive'
+                WHEN aa.role='account_manager' THEN 'Account Manager' ELSE 'Team' END,
+           COALESCE((SELECT max(seq) FROM messages m WHERE m.conversation_id=c.id),0),
+           COALESCE((SELECT max(seq) FROM messages m WHERE m.conversation_id=c.id),0)
+      FROM conversations c
+      JOIN application_assignees aa ON aa.application_id=c.application_id AND aa.removed_at IS NULL
+           AND aa.role IN ('account_executive','account_manager')
+      JOIN staff_users su ON su.id=aa.staff_id AND su.is_active=true AND su.is_external=false
+     WHERE c.application_id=$1 AND c.kind='tpo'
     ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`, [appId]);
 }
 
@@ -140,6 +193,19 @@ function borrowerCanAccess(actorId, conv) {
     (conv.app_borrower_id === actorId || conv.app_co_borrower_id === actorId);
 }
 
+/** Phase 6e — may this TPO (broker) actor open this conversation? ONLY a 'tpo'-kind conversation on
+    a file inside the broker's OWN firm — routed through the ONE firm-isolation definition
+    (permissions.tpoFirmScopeSql), so a retail file, another firm's file, or a borrower-visible chat
+    all resolve to zero rows. A broker never reaches an internal / lo_processor / borrower conv. */
+async function tpoCanAccess(actorId, conv) {
+  if (!conv || conv.app_deleted_at || conv.kind !== 'tpo') return false;
+  const perms = require('./permissions');
+  const r = await db.query(
+    `SELECT 1 FROM applications a WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
+    [actorId, conv.application_id]);
+  return r.rows.length > 0;
+}
+
 async function isMember(cid, kind, id) {
   const r = await db.query(
     `SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3 AND removed_at IS NULL`,
@@ -159,7 +225,7 @@ async function membersOf(cid) {
             COALESCE(s.last_seen_at, b.last_seen_at) AS last_seen_at,
             s.status_emoji, s.status_text, s.status_expires_at
        FROM conversation_members cm
-       LEFT JOIN staff_users s ON s.id=cm.member_id AND cm.member_kind='staff'
+       LEFT JOIN staff_users s ON s.id=cm.member_id AND cm.member_kind IN ('staff','tpo')
        LEFT JOIN borrowers   b ON b.id=cm.member_id AND cm.member_kind='borrower'
       WHERE cm.conversation_id=$1 AND cm.removed_at IS NULL
       ORDER BY cm.member_kind DESC, cm.added_at`, [cid]);
@@ -357,13 +423,13 @@ const MESSAGE_SELECT = `
                      LEFT JOIN staff_users su ON su.id=r.actor_id AND r.actor_kind='staff'
                      LEFT JOIN borrowers br ON br.id=r.actor_id AND r.actor_kind='borrower'
                     WHERE r.message_id=m.id), '[]'::json) AS reactions,
-         CASE WHEN m.sender_kind='staff' THEN s.full_name
+         CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name
               WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
               WHEN m.sender_kind='external' THEN COALESCE(NULLIF(btrim(ep.name), ''), ep.email, 'Guest')
               ELSE 'System' END AS sender_name,
          ci.label AS task_label, ci.status AS task_status
     FROM messages m
-    LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+    LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
     LEFT JOIN borrowers  b ON b.id=m.sender_id AND m.sender_kind='borrower'
     LEFT JOIN conversation_external_participants ep ON ep.id=m.sender_id AND m.sender_kind='external'
     LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
@@ -485,7 +551,12 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
     attDoc = await require('./chat-attach').saveChatAttachment({
       applicationId: conv.application_id, borrowerId: conv.app_borrower_id,
       filename: attachment.filename, contentType: attachment.contentType, dataBase64: attachment.dataBase64,
-      byKind: actor.kind, byId: actor.id,
+      // A broker (kind='tpo') IS a staff_users row, and documents.uploaded_by_kind only allows
+      // borrower/staff — so a broker's chat attachment stores as a 'staff' upload attributed to their
+      // staff_users id. The tpo conversation is never borrower_visible → channel 'internal' →
+      // visibility staff_only, so it is never exposed to the borrower; the broker fetches it back
+      // through the firm-scoped /api/tpo/chat/attachment route.
+      byKind: actor.kind === 'tpo' ? 'staff' : actor.kind, byId: actor.id,
       channel: conv.borrower_visible ? 'borrower' : 'internal' });
   }
 
@@ -630,6 +701,13 @@ async function chatAttachmentBytes(message) {
     and the reply-above-this-line delimiter. Borrower-facing copy is scrubbed of any
     capital-partner name (frozen rule). Best-effort: the caller swallows errors. */
 async function sendChatEmailToMember({ conv, member, message, ctx, senderName, att, link, isBorrower }) {
+  // A TPO (broker) member is an EXTERNAL party, and this email path is NOT borrower-safe for a
+  // non-borrower recipient — it would send the RAW message body (a staffer's capital-partner name
+  // and all) to the broker, violating the frozen never-expose-a-partner-name rule. So a broker is
+  // never emailed through here; for Phase 6e v1 they are notified LIVE (SSE + unread badge in their
+  // portal), and their own borrower-SAFE email nudge is a separate follow-up path. Chokepoint guard
+  // (belt-and-suspenders): whatever calls this — the immediate send, the deferred sweeper, a digest.
+  if (member && member.member_kind === 'tpo') return;
   let to = [];
   if (isBorrower) {
     const pref = await db.query(
@@ -723,6 +801,13 @@ async function queueMessageNotifications({ conv, actor, message, members }) {
   for (const m of members) {
     if (m.member_kind === actor.kind && m.member_id === actor.id) continue;
     if (m.muted_until && new Date(m.muted_until) > now) continue;
+    // A TPO (broker) member gets NO chat email or bell/deferred job here — the email path is not
+    // borrower-safe for a non-borrower recipient (partner-name leak) and the broker's TPO portal
+    // doesn't read the staff/borrower `notifications` feed. They were already given the message LIVE
+    // (SSE message:new) + an unread-badge push in postMessage; their borrower-safe email is a
+    // follow-up. This is the ONE place a staff reply could have leaked to the broker — see the
+    // matching chokepoint guard in sendChatEmailToMember.
+    if (m.member_kind === 'tpo') continue;
     const isBorrower = m.member_kind === 'borrower';
     // Deep-link straight into the conversation (borrower: their file with the chat
     // auto-opened; staff: the chat hub focused on this thread).
@@ -1127,8 +1212,8 @@ function startSweeper() {
 }
 
 module.exports = {
-  ensureConversationsForApp, getConversation, getMessage,
-  staffCanAccess, borrowerCanAccess, isMember, membersOf,
+  ensureConversationsForApp, ensureTpoConversation, getConversation, getMessage,
+  staffCanAccess, borrowerCanAccess, tpoCanAccess, isMember, membersOf,
   externalParticipantsOf, addExternalParticipant, removeExternalParticipant,
   emailExternalParticipants, postExternalReply, postMemberReply, postInboundReply,
   memberReplyToFor, replyToFor,

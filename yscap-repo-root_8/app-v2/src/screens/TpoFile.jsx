@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import TpoDraws from '../components/TpoDraws.jsx';
+import TpoMessages from '../components/TpoMessages.jsx';
 
 /* A single TPO file — the loan's basics, PRICE & register the deal (the Term
    Sheet Studio), the conditions we need, the documents provided, and the
@@ -265,13 +266,13 @@ export default function TpoFile() {
         <AppraisalPanel appId={id} readOnly source="tpo" />
       </div>
 
-      {/* Draws — the read-only construction-draw view: the budget vs. what's released, each
-          inspection result + photos, and the branded PDF. Read-only; the borrower accepts or
-          disputes an inspection result in their own portal (or your loan team handles it). */}
+      {/* Draws — the construction-draw view: the budget vs. what's released, each inspection
+          result + photos, and the branded PDF. You (or the borrower) can accept or dispute an
+          inspection result on a funded file; accepting starts the release. */}
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>Construction draws</div>
         <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
-          The draw progress once construction is under way. Read-only — the borrower accepts or disputes each result.
+          The draw progress once construction is under way. You or the borrower can accept or dispute each result.
         </p>
         <TpoDraws appId={id} />
       </div>
@@ -291,6 +292,16 @@ export default function TpoFile() {
             <span className="muted small">{d.review_status === 'accepted' ? 'Accepted' : d.review_status === 'rejected' ? 'Rejected' : 'In review'}</span>
           </div>
         ))}
+      </div>
+
+      {/* Messages — the broker's "Broker ↔ Team" conversation on this file. Firm-scoped and
+          borrower-safe (a capital-partner name a staffer types is scrubbed before you see it). */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Messages</div>
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
+          Message your loan team about this file. They’re notified right away and reply here.
+        </p>
+        <TpoMessages appId={id} />
       </div>
 
       {/* Borrower login */}

@@ -1371,4 +1371,9 @@ router.post('/applications/:id/findings/:findingId/dispute', async (req, res, ne
   } catch (e) { next(e); }
 });
 
+// Phase 6e — broker ↔ team messaging (the /api/tpo/chat/* surface). Mounted here so it inherits the
+// requireTpo wall + the firm session; its routes reuse the shared chat v3 infra, firm-scoped +
+// borrower-safe (src/routes/tpo-chat.js).
+router.use(require('./tpo-chat'));
+
 module.exports = router;

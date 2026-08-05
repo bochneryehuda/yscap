@@ -457,6 +457,19 @@ export const api = {
   // never the borrower's public reply_token. Accept MOVES MONEY (starts the wire SLA).
   tpoDrawAccept:  (appId, findingId) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/accept`, {}),
   tpoDrawDispute: (appId, findingId, lines) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/dispute`, { lines }),
+  // Phase 6e — broker ↔ team messaging (reuses ChatThread with surface='tpo'; firm-scoped, borrower-safe).
+  tpoConversations:  (appId) => req('GET', `/api/tpo/chat/conversations${appId ? `?applicationId=${appId}` : ''}`),
+  tpoConversation:   (cid) => req('GET', `/api/tpo/chat/conversations/${cid}`),
+  tpoConvMessages:   (cid, before) => req('GET', `/api/tpo/chat/conversations/${cid}/messages${before ? `?before=${before}` : ''}`),
+  tpoConvSend:       (cid, b) => req('POST', `/api/tpo/chat/conversations/${cid}/messages`, b),
+  tpoConvRead:       (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/read`, { seq }),
+  tpoConvMarkUnread: (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/unread`, { seq }),
+  tpoConvDelivered:  (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/delivered`, { seq }),
+  tpoConvTyping:     (cid, connId) => req('POST', `/api/tpo/chat/conversations/${cid}/typing`, { connId }),
+  tpoConvOpen:       (cid, connId) => req('POST', `/api/tpo/chat/conversations/${cid}/open`, { connId }),
+  tpoConvDraft:      (cid, body) => req('PUT', `/api/tpo/chat/conversations/${cid}/draft`, { body }),
+  tpoConvShared:     (cid) => req('GET', `/api/tpo/chat/conversations/${cid}/shared`),
+  tpoDownloadChatAttachment: (id) => download(`/api/tpo/chat/attachment/${id}`),
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),
