@@ -97,6 +97,16 @@ const getDeps = { transport: { read: async () => ({ message: { products: [{ revi
     ok(sug2.comps.some((x) => x.salePrice === 460000 && x.address === '102 Comp St, Brooklyn, NY'), 'the seeded comparable sale is returned with its price');
     ok(!sug2.comps.some((x) => String(x.propertyId) === String(subj.rows[0].id)), 'the subject itself is never returned as its own comp');
 
+    // ---- the FREE ROV comp search (the picker behind the value dispute) ----
+    const srch = await rov.searchComps(c, appId, {});
+    ok(srch.subject && srch.subject.address === '100 Subject St, Brooklyn, NY', 'searchComps seeds the subject town and finds the file subject');
+    ok(srch.comps.some((x) => x.address === '102 Comp St, Brooklyn, NY' && x.salePrice === 460000), 'searchComps returns the seeded comparable sale with its detail');
+    ok(!srch.comps.some((x) => String(x.propertyId) === String(subj.rows[0].id)), 'searchComps never returns the subject as its own comp');
+    const byText = await rov.searchComps(c, appId, { q: 'Comp St' });
+    ok(byText.comps.some((x) => x.address === '102 Comp St, Brooklyn, NY'), 'searchComps finds a comp by typed address text');
+    const none = await rov.searchComps(c, appId, { state: 'CA', city: 'Nowhereville' });
+    ok(Array.isArray(none.comps) && none.comps.length === 0, 'searchComps returns an empty page for a place with no matches (never throws)');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

@@ -508,6 +508,10 @@ export const api = {
   amcRevisions:     (orderId) => req('GET', `/api/amc/orders/${orderId}/revisions`),
   amcPostRevision:  (orderId, b) => req('POST', `/api/amc/orders/${orderId}/revisions`, b),
   amcRovComps:      (appId) => req('GET', `/api/amc/files/${appId}/rov-comps`),
+  amcRovCompSearch: (appId, query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/amc/files/${appId}/rov-comp-search${qs ? '?' + qs : ''}`);
+  },
   amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
   amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
   amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),

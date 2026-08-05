@@ -192,6 +192,16 @@ router.get('/files/:id/rov-comps', async (req, res) => {
   res.json(await rov.suggestComps(db, appId, { limit, soldWithinMonths: months }));
 });
 
+// FREE search of the Property Research Center for ROV comps — staff pick which
+// comparable sales to attach to the dispute. Scoped to closed sales and excludes
+// the file's own subject (rov.searchComps). Manual comps are added client-side and
+// flow through the same buildRovDetail as the picked ones.
+router.get('/files/:id/rov-comp-search', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  res.json(await rov.searchComps(db, appId, req.query || {}));
+});
+
 // Place an ROV (reconsideration of value) dispute. The narrative + the structured
 // detail are BUILT from the disputed values + the supporting comps, so what the AMC
 // reads and what we store agree.

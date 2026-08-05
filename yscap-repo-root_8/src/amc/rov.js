@@ -89,6 +89,53 @@ function shapeSubject(p) {
   };
 }
 
+/**
+ * FREE SEARCH over the Property Research Center for ROV comps. Reuses the SAME
+ * search engine the research desk uses (src/lib/research/search.js) — so the ROV
+ * builder and the research desk can never disagree about what a comparable sale is
+ * — scoped to CLOSED sales (a value dispute is argued on sales, not listings) and
+ * always excluding the file's own subject. Returns compRow-shaped rows plus paging,
+ * so staff can pick exactly which comparables to attach to a dispute.
+ *
+ * When the caller names no place at all, the subject's own town seeds the first
+ * search so it opens on the neighbourhood rather than the whole warehouse. Every
+ * other filter is passed straight through. NEVER throws — a search failure returns
+ * an empty page with a reason.
+ */
+async function searchComps(dbh, appId, query = {}) {
+  const subject = await subjectForApplication(dbh, appId);
+  const q = query || {};
+  const filters = {
+    q: q.q, state: q.state, city: q.city, zip: q.zip,
+    beds_min: q.beds_min, beds_max: q.beds_max,
+    baths_min: q.baths_min, baths_max: q.baths_max,
+    sqft_min: q.sqft_min, sqft_max: q.sqft_max,
+    price_min: q.price_min, price_max: q.price_max,
+    year_min: q.year_min, year_max: q.year_max,
+    units_min: q.units_min, units_max: q.units_max,
+    sold_within_months: q.sold_within_months,
+    // Default to closed sales, but let a caller widen to listings/pending on purpose.
+    sale_status: q.sale_status || 'closed',
+    has_sale: q.has_sale != null ? q.has_sale : '1',
+    sort: q.sort || 'recent_sale',
+    page: q.page,
+    limit: Math.min(25, Math.max(1, parseInt(q.limit, 10) || 12)),
+  };
+  const hasPlace = ['q', 'state', 'city', 'zip'].some((k) => q[k] != null && String(q[k]).trim() !== '');
+  if (!hasPlace && subject) { filters.state = subject.state; filters.city = subject.city; }
+  if (subject) filters.exclude_property_id = subject.id;
+  let out;
+  try { out = await S.searchProperties(dbh, filters); }
+  catch (_) {
+    return { subject: subject ? shapeSubject(subject) : null, comps: [], total: 0, page: 1, pages: 1, reason: 'search_failed' };
+  }
+  return {
+    subject: subject ? shapeSubject(subject) : null,
+    comps: (out.rows || []).map(compRow),
+    total: out.total || 0, page: out.page || 1, pages: out.pages || 1,
+  };
+}
+
 // The structured ROV detail stored in amc_order_revisions.rov_detail (auditable +
 // reproducible). PURE.
 function buildRovDetail({ appraisedValue, opinionValue, comps, note } = {}) {
@@ -146,4 +193,4 @@ function buildRovNarrative(detail = {}) {
   return lines.join('\n');
 }
 
-module.exports = { subjectForApplication, unitBand, suggestComps, compRow, buildRovDetail, buildRovNarrative, money };
+module.exports = { subjectForApplication, unitBand, suggestComps, searchComps, compRow, buildRovDetail, buildRovNarrative, money };

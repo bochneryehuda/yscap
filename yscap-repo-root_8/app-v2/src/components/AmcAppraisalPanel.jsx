@@ -228,7 +228,7 @@ function Revisions({ appId, orderId }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [rov, setRov] = useState(null);   // { appraisedValue, opinionValue, comps }
+  const [rovOpen, setRovOpen] = useState(false);
   const load = useCallback(async () => {
     try { const r = await api.amcRevisions(orderId); setRows((r && r.revisions) || []); } catch (_) { /* ignore */ }
   }, [orderId]);
@@ -239,24 +239,6 @@ function Revisions({ appId, orderId }) {
     setBusy(true); setErr('');
     try { const o = await api.amcPostRevision(orderId, { kind, body: text.trim() }); if (!o.ok) setErr(o.message || 'Could not send.'); else { setText(''); await load(); } }
     catch (e) { setErr(e.message || 'Could not send.'); }
-    setBusy(false);
-  };
-  const openRov = async () => {
-    setBusy(true); setErr('');
-    try { const c = await api.amcRovComps(appId); setRov({ appraisedValue: '', opinionValue: '', comps: (c && c.comps) || [] }); }
-    catch (e) { setErr(e.message || 'Could not load comps.'); }
-    setBusy(false);
-  };
-  const sendRov = async () => {
-    setBusy(true); setErr('');
-    try {
-      const o = await api.amcPostRov(orderId, {
-        appraisedValue: rov.appraisedValue ? Number(rov.appraisedValue) : null,
-        opinionValue: rov.opinionValue ? Number(rov.opinionValue) : null,
-        comps: rov.comps, note: rov.note || null,
-      });
-      if (!o.ok) setErr(o.message || 'Could not send the dispute.'); else { setRov(null); await load(); }
-    } catch (e) { setErr(e.message || 'Could not send the dispute.'); }
     setBusy(false);
   };
 
@@ -292,33 +274,190 @@ function Revisions({ appId, orderId }) {
       <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
         <div style={{ fontWeight: 600, color: INK, marginBottom: 2 }}>Dispute the value (ROV)</div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
-          If you think the appraised value is too low, ask for a reconsideration of value. PILOT pulls comparable sales from the Property Research Center to back it up.
+          If you think the appraised value is too low, ask for a reconsideration of value. Search the Property Research Center for the comparable sales you want to use, add them, and PILOT fills in all their details automatically. You can also type in a property that isn’t in the research yet.
         </div>
-        {rov ? (
-          <div style={{ border: `1px solid ${GOLD}`, borderRadius: 10, padding: 10 }}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              <label style={{ fontSize: 12, color: MUTED }}>Appraised value<br />
-                <input value={rov.appraisedValue} onChange={(e) => setRov({ ...rov, appraisedValue: e.target.value })} inputMode="numeric"
-                  style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
-              <label style={{ fontSize: 12, color: MUTED }}>Value you’re asking for<br />
-                <input value={rov.opinionValue} onChange={(e) => setRov({ ...rov, opinionValue: e.target.value })} inputMode="numeric"
-                  style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
-            </div>
-            <div style={{ fontSize: 12, color: MUTED, marginBottom: 4 }}>Supporting sales from the Property Research Center ({rov.comps.length}):</div>
-            <div style={{ maxHeight: 150, overflowY: 'auto', marginBottom: 8 }}>
-              {rov.comps.length ? rov.comps.map((c, i) => (
-                <div key={i} style={{ fontSize: 12, color: INK, padding: '2px 0' }}>{i + 1}. {c.address || 'Comparable'} — {money(c.salePrice)} {c.saleDate ? ('on ' + c.saleDate) : ''}</div>
-              )) : <div style={{ fontSize: 12, color: MUTED }}>No comparable sales found in the research warehouse for this property yet.</div>}
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn primary" disabled={busy} onClick={sendRov}>{busy ? '…' : 'Send dispute'}</button>
-              <button className="btn ghost" disabled={busy} onClick={() => setRov(null)}>Cancel</button>
-            </div>
-          </div>
+        {rovOpen ? (
+          <RovBuilder appId={appId} orderId={orderId}
+            onCancel={() => setRovOpen(false)}
+            onSent={async () => { setRovOpen(false); await load(); }} />
         ) : (
-          <button className="btn ghost" disabled={busy} onClick={openRov}>Start a value dispute…</button>
+          <button className="btn ghost" disabled={busy} onClick={() => setRovOpen(true)}>Start a value dispute…</button>
         )}
       </div>
+    </div>
+  );
+}
+
+// A comparable sale line — its full detail, one row. Used in the picker and the
+// "using these" list; `action` is the Add/Remove control on the right.
+function CompLine({ c, action }) {
+  const specs = [];
+  if (c.gla != null) specs.push(`${Math.round(c.gla).toLocaleString('en-US')} sq ft`);
+  if (c.beds != null) specs.push(`${c.beds} bd`);
+  if (c.bathsFull != null) specs.push(`${c.bathsFull}${c.bathsHalf ? '.' + c.bathsHalf : ''} ba`);
+  if (c.yearBuilt != null) specs.push(`built ${c.yearBuilt}`);
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 0', borderTop: `1px solid ${LINE}` }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ color: INK, fontSize: 13, fontWeight: 500 }}>
+          {c.address || 'Comparable sale'}{c.manual ? <span style={{ color: TEAL, fontSize: 11, marginLeft: 6 }}>typed in</span> : null}
+        </div>
+        <div style={{ color: MUTED, fontSize: 12 }}>
+          {c.salePrice != null ? `Sold ${money(c.salePrice)}` : 'Sale price not on file'}
+          {c.saleDate ? ` on ${fmtDate(c.saleDate)}` : ''}
+          {specs.length ? ` · ${specs.join(', ')}` : ''}
+          {c.distanceMiles != null ? ` · ${c.distanceMiles} mi away` : ''}
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+// The value-dispute (ROV) builder: pick comps from the Property Research Center,
+// add them to the dispute, or type in one that isn't in the research. All the
+// comp's details fill in automatically when it's selected.
+function RovBuilder({ appId, orderId, onCancel, onSent }) {
+  const [appraisedValue, setAppraisedValue] = useState('');
+  const [opinionValue, setOpinionValue] = useState('');
+  const [note, setNote] = useState('');
+  const [selected, setSelected] = useState([]);   // comps chosen for the dispute
+  const [suggested, setSuggested] = useState([]);  // starting set near the property
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);    // null = no search run yet
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manual, setManual] = useState({ address: '', salePrice: '', saleDate: '', gla: '', beds: '', bathsFull: '' });
+
+  useEffect(() => { (async () => {
+    try { const c = await api.amcRovComps(appId); setSuggested((c && c.comps) || []); } catch (_) { /* ignore */ }
+  })(); }, [appId]);
+
+  const keyOf = (c) => (c.propertyId ? 'p:' + c.propertyId : 'm:' + (c.address || '') + ':' + (c.salePrice || ''));
+  const isPicked = (c) => selected.some((s) => keyOf(s) === keyOf(c));
+  const addComp = (c) => setSelected((cur) => (cur.some((s) => keyOf(s) === keyOf(c)) ? cur : [...cur, c]));
+  const removeComp = (c) => setSelected((cur) => cur.filter((s) => keyOf(s) !== keyOf(c)));
+
+  const runSearch = async () => {
+    setSearching(true); setErr('');
+    try { const r = await api.amcRovCompSearch(appId, { q: q.trim() }); setResults((r && r.comps) || []); }
+    catch (e) { setErr(e.message || 'Search failed.'); setResults([]); }
+    setSearching(false);
+  };
+
+  const addManual = () => {
+    const m = manual;
+    if (!m.address.trim() && !m.salePrice) return;
+    addComp({
+      propertyId: null, manual: true,
+      address: m.address.trim() || null,
+      salePrice: m.salePrice ? Number(m.salePrice) : null,
+      saleDate: m.saleDate || null,
+      gla: m.gla ? Number(m.gla) : null,
+      beds: m.beds ? Number(m.beds) : null,
+      bathsFull: m.bathsFull ? Number(m.bathsFull) : null,
+    });
+    setManual({ address: '', salePrice: '', saleDate: '', gla: '', beds: '', bathsFull: '' });
+    setManualOpen(false);
+  };
+
+  const send = async () => {
+    setBusy(true); setErr('');
+    try {
+      const o = await api.amcPostRov(orderId, {
+        appraisedValue: appraisedValue ? Number(appraisedValue) : null,
+        opinionValue: opinionValue ? Number(opinionValue) : null,
+        comps: selected, note: note.trim() || null,
+      });
+      if (!o.ok) setErr(o.message || 'Could not send the dispute.'); else onSent();
+    } catch (e) { setErr(e.message || 'Could not send the dispute.'); }
+    setBusy(false);
+  };
+
+  const inp = { border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, boxSizing: 'border-box' };
+  const list = results == null ? suggested : results;
+  const listLabel = results == null ? 'Suggested comparable sales near the property' : `Search results (${results.length})`;
+
+  return (
+    <div style={{ border: `1px solid ${GOLD}`, borderRadius: 10, padding: 10 }}>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+
+      {/* the two values being disputed */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <label style={{ fontSize: 12, color: MUTED }}>Appraised value<br />
+          <input value={appraisedValue} onChange={(e) => setAppraisedValue(e.target.value)} inputMode="numeric"
+            style={{ ...inp, width: 140 }} /></label>
+        <label style={{ fontSize: 12, color: MUTED }}>Value you’re asking for<br />
+          <input value={opinionValue} onChange={(e) => setOpinionValue(e.target.value)} inputMode="numeric"
+            style={{ ...inp, width: 140 }} /></label>
+      </div>
+
+      {/* comps chosen for THIS dispute (the payload) */}
+      <div style={{ fontWeight: 600, color: INK, fontSize: 13, marginBottom: 2 }}>
+        Comparable sales you’re using ({selected.length})
+      </div>
+      {selected.length ? (
+        <div style={{ marginBottom: 10 }}>
+          {selected.map((c) => (
+            <CompLine key={keyOf(c)} c={c}
+              action={<button className="btn ghost" style={{ minHeight: 0, padding: '2px 8px', fontSize: 12 }} onClick={() => removeComp(c)}>Remove</button>} />
+          ))}
+        </div>
+      ) : (
+        <div style={{ color: MUTED, fontSize: 12, marginBottom: 10 }}>None yet — search below and add the sales you want to use, or type one in.</div>
+      )}
+
+      {/* search the research center */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by address or town…"
+          onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+          style={{ ...inp, flex: 1 }} />
+        <button className="btn soft" disabled={searching} onClick={runSearch}>{searching ? '…' : 'Search'}</button>
+      </div>
+
+      <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>{listLabel}</div>
+      <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 10, borderBottom: `1px solid ${LINE}` }}>
+        {list.length ? list.map((c) => (
+          <CompLine key={keyOf(c)} c={c}
+            action={isPicked(c)
+              ? <span style={{ color: TEAL, fontSize: 12, whiteSpace: 'nowrap' }}>✓ Added</span>
+              : <button className="btn soft" style={{ minHeight: 0, padding: '2px 8px', fontSize: 12 }} onClick={() => addComp(c)}>Add</button>} />
+        )) : <div style={{ fontSize: 12, color: MUTED, padding: '6px 0' }}>
+          {results == null ? 'No comparable sales found near the property yet — search a town or add one manually.' : 'Nothing found. Try a different address or town, or add the property manually.'}
+        </div>}
+      </div>
+
+      {/* type in a property that isn't in the research */}
+      {manualOpen ? (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>Add a property that isn’t in the research yet:</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+            <input value={manual.address} onChange={(e) => setManual({ ...manual, address: e.target.value })} placeholder="Address" style={{ ...inp, gridColumn: '1 / -1' }} />
+            <input value={manual.salePrice} onChange={(e) => setManual({ ...manual, salePrice: e.target.value })} placeholder="Sale price" inputMode="numeric" style={inp} />
+            <input value={manual.saleDate} onChange={(e) => setManual({ ...manual, saleDate: e.target.value })} placeholder="Sale date (YYYY-MM-DD)" style={inp} />
+            <input value={manual.gla} onChange={(e) => setManual({ ...manual, gla: e.target.value })} placeholder="Sq ft" inputMode="numeric" style={inp} />
+            <input value={manual.beds} onChange={(e) => setManual({ ...manual, beds: e.target.value })} placeholder="Beds" inputMode="numeric" style={inp} />
+            <input value={manual.bathsFull} onChange={(e) => setManual({ ...manual, bathsFull: e.target.value })} placeholder="Baths" inputMode="numeric" style={inp} />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn soft" onClick={addManual}>Add this property</button>
+            <button className="btn ghost" onClick={() => setManualOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button className="btn ghost" style={{ marginBottom: 10 }} onClick={() => setManualOpen(true)}>＋ Add a property manually</button>
+      )}
+
+      {/* optional note + send */}
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Anything to add for the appraiser (optional)…"
+        style={{ width: '100%', ...inp, resize: 'vertical', marginBottom: 8 }} />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" disabled={busy || !selected.length} onClick={send}>{busy ? '…' : 'Send dispute'}</button>
+        <button className="btn ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+      {!selected.length ? <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>Add at least one comparable sale to send the dispute.</div> : null}
     </div>
   );
 }
