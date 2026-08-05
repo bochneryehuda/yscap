@@ -254,7 +254,7 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
     'the tracking pixel is invisible');
   const notify = require('../src/lib/notify');
   const nOpen = await notify.notifyStaff(officer, { type: 'message', title: 'Trackable', body: 'Open me', applicationId: appId });
-  await new Promise((r) => setTimeout(r, 500));   // let the fire-and-forget capture finish
+  await notify.drainEmails();   // the send + its Email Center capture are fire-and-forget; drain deterministically instead of racing a fixed sleep
   const storedBody = (await db.query(`SELECT body_html FROM email_messages WHERE notification_id=$1`, [nOpen])).rows[0];
   assert(storedBody && storedBody.body_html && !/\/e\/o\//.test(storedBody.body_html), 'the STORED Email Center body has NO tracking pixel (clean copy)');
   // simulate the borrower's email client loading the pixel
@@ -285,7 +285,7 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   noop.sendMail = async (m) => { provSends.push(m); return realNoopSend(m); };
   try {
     const nBo = await notify.notifyBorrower(borrower, { type: 'status_change', title: 'Your file moved', body: 'Onward', applicationId: appId, major: true });
-    await new Promise((r) => setTimeout(r, 500));   // let the fire-and-forget officer copy + capture finish
+    await notify.drainEmails();   // the borrower send AND the tracked fire-and-forget officer copy settle before drainEmails returns
     const boSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-bo@`)));
     const loSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-lo@`)));
     assert(boSend && new RegExp(`/e/o/${nBo}\\.gif`).test(String(boSend.html || '')), 'the borrower copy carries the open pixel');
