@@ -67,6 +67,9 @@ function finish() {
       [`ba-b-${sfx}@test.local`, s.encrypted, s.last4])).rows[0].id;
     await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified) VALUES ($1,'x',0,true)`, [bId]);
     const borrowerTok = C.signJwt({ sub: bId, kind: 'borrower', role: 'borrower', tv: 0 });
+    // An application on the file — for the timestamp-survival + complete-fields checks.
+    const appId = (await db.query(
+      `INSERT INTO applications (borrower_id, status, loan_type) VALUES ($1,'file_intake','Purchase') RETURNING id`, [bId])).rows[0].id;
 
     // ---- INVITE (borrower self-service) -----------------------------------
     const inv = await call('POST', '/api/borrower/assistants', borrowerTok, { email: `ba-helper-${sfx}@test.local`, name: 'Helper H' });
@@ -108,6 +111,27 @@ function finish() {
     ok(profB.status === 200 && profB.body.ssn_last4 === s.last4 && profB.body.fico === 720,
       'the real borrower still sees their own personal info (the strip is helper-only)');
 
+    // TIMESTAMPS SURVIVE THE SCRUB (a timestamptz Date must not become {}).
+    const apps = await call('GET', '/api/borrower/applications', helperTok);
+    ok(apps.status === 200 && Array.isArray(apps.body) && apps.body.length >= 1, 'the helper sees the borrower’s applications');
+    ok(apps.body[0] && typeof apps.body[0].created_at === 'string' && !Number.isNaN(Date.parse(apps.body[0].created_at)),
+      'a timestamp comes back as a real date string for a helper (not {})');
+
+    // The stored payment card is HIDDEN from a helper (bare last4/brand keys).
+    const cardBlk = await call('GET', `/api/borrower/applications/${appId}/appraisal-card`, helperTok);
+    ok(cardBlk.status === 403 && cardBlk.body.assistantBlocked === 'card_view', 'the helper cannot read the payment card');
+    const savedCardBlk = await call('GET', '/api/borrower/saved-appraisal-card', helperTok);
+    ok(savedCardBlk.status === 403 && savedCardBlk.body.assistantBlocked === 'card_view', 'the helper cannot read the saved payment card');
+    // Document downloads are blocked (bytes bypass the scrub; a photo ID shows DOB).
+    const dlBlk = await call('GET', `/api/borrower/documents/${bId}/download`, helperTok);
+    ok(dlBlk.status === 403 && dlBlk.body.assistantBlocked === 'document', 'the helper cannot download documents');
+
+    // complete-fields: a helper may complete DEAL fields but NEVER the borrower's
+    // personal details — the identity fields are stripped, the DOB is unchanged.
+    await call('POST', `/api/borrower/applications/${appId}/complete-fields`, helperTok, { date_of_birth: '2000-12-31', fico: 500 });
+    const dobRow = (await db.query(`SELECT to_char(date_of_birth,'YYYY-MM-DD') AS dob, fico FROM borrowers WHERE id=$1`, [bId])).rows[0];
+    ok(dobRow.dob === '1990-01-01' && Number(dobRow.fico) === 720, 'a helper’s complete-fields did NOT change the borrower’s date of birth or credit score');
+
     // ---- the helper CANNOT sign / edit identity / add a card / touch creds -
     const signBlocked = await call('POST', `/api/borrower/applications/00000000-0000-0000-0000-000000000000/esign/sign-view`, helperTok, {});
     ok(signBlocked.status === 403 && signBlocked.body.assistantBlocked === 'esign', 'the helper cannot open the signing ceremony');
@@ -133,6 +157,10 @@ function finish() {
     ok(disable.status === 200, 'the borrower disables the helper');
     const afterDisable = await call('GET', '/auth/me', helperTok);
     ok(afterDisable.status === 401, 'the disabled helper’s live session is refused on the very next request');
+    // The live event STREAM is revoked too (it re-implements auth and must honor
+    // the disable — the token is passed as a query param, not a bearer header).
+    const evt = await call('GET', `/api/events?token=${encodeURIComponent(helperTok)}`, null);
+    ok(evt.status === 401, 'the disabled helper’s live event stream is refused');
     const loginAfter = await call('POST', '/auth/assistant/login', null, { email: `ba-helper-${sfx}@test.local`, password: 'Helper-Assistant-Pass-2026' });
     ok(loginAfter.status === 401, 'a disabled helper can no longer sign in');
     const gone = await call('GET', '/api/borrower/assistants', borrowerTok);

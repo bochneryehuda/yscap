@@ -273,7 +273,12 @@ router.post('/assistants', async (req, res, next) => {
     }
     const emailed = await emailAssistantInvite(me(req), email, name, token);
     res.status(201).json({ ok: true, id, emailed });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // A concurrent double-invite can pass the clash pre-check and then race into
+    // the partial unique index — answer the same friendly 409, not a raw 500.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'That email is already set up as a helper.' });
+    next(e);
+  }
 });
 
 router.post('/assistants/:id/resend', async (req, res, next) => {
@@ -2276,6 +2281,11 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const bid = own.rows[0].borrower_id;
   const b = req.body || {};
+  // A HELPER (assistant) may complete DEAL fields but never the borrower's own
+  // PERSONAL details (date of birth, credit score, citizenship, phone) — those
+  // are the borrower's to change, exactly as on the profile editor. Strip them
+  // from the body so the deal fields still save; the personal ones are ignored.
+  if (req.assistant) for (const k of Object.keys(B_COMPLETE_BORROWER)) delete b[k];
   try {
     // S5-03: once a product is registered, the borrower can no longer write the
     // deal economics straight onto the live record — each proposed change becomes

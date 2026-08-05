@@ -22,13 +22,16 @@
  *       asstId: <borrower_assistants.id>,
  *       astv:   <assistant token_version> }   ← disabling/re-inviting the assistant kills it
  *
- * `authenticate()` (src/auth/index.js) re-validates BOTH identities on every
- * request — the borrower's `token_version` (checked as usual) AND the assistant
- * row (still active, token_version unchanged) — so the login dies the moment the
- * assistant is disabled OR the borrower is signed out everywhere. This mirrors
- * Borrower View's dual-identity model, minus the 4-hour cap: an assistant is a
- * standing login, not a bounded staff view, so its token slides like an ordinary
- * borrower token.
+ * `authenticate()` (src/auth/index.js) validates the assistant against its OWN
+ * row on every request (still active, token_version unchanged, belongs to this
+ * borrower) — so the login dies the moment the assistant is disabled or
+ * re-invited. The assistant is an INDEPENDENT credential: it is NOT tied to the
+ * borrower's `borrower_auth` token_version, which is deliberate — it lets an
+ * assistant help a borrower who has no portal login of their own, and means the
+ * borrower changing their OWN password does not kick their helper out (the
+ * borrower revokes a helper by disabling it). This mirrors Borrower View's
+ * dual-identity model, minus the 4-hour cap: a standing login whose token slides
+ * like an ordinary borrower token.
  *
  * ────────────────────────────────────────────────────────────────────────────
  * THE TWO THINGS AN ASSISTANT MAY NOT DO
@@ -84,9 +87,22 @@ const PII_KEYS = new Set([
  * COPY — the original response object is never mutated. Pure; never throws.
  * A cyclic structure is guarded with a seen-set (a JSON response never has one,
  * but a defensive walk must not spin).
+ *
+ * ONLY plain objects and arrays are descended into. A Date, a Buffer, or any
+ * class instance is passed through UNTOUCHED — this is load-bearing: `pg` returns
+ * a `timestamptz` column as a JS Date (db.js only string-izes `date`/OID 1082),
+ * and rebuilding a Date via `Object.keys()` yields `{}` (a Date has no own
+ * enumerable keys) so its ISO string is lost and `res.json` never gets to call
+ * its `toJSON`. Every borrower list/detail response is full of `created_at` /
+ * `submitted_at` timestamps, so without this guard the whole helper portal shows
+ * empty/"Invalid Date".
  */
 function scrubPii(value, seen) {
   if (value == null || typeof value !== 'object') return value;
+  if (value instanceof Date || Buffer.isBuffer(value)) return value;
+  const proto = Object.getPrototypeOf(value);
+  // A class instance (anything not a plain object / array) — leave it whole.
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) return value;
   seen = seen || new Set();
   if (seen.has(value)) return value;
   seen.add(value);
@@ -122,6 +138,25 @@ const BLOCKED = [
     // The appraisal payment-card capture, scan, and reuse-a-saved-card.
     path: /^\/api\/borrower\/applications\/[^/]+\/(appraisal-card|scan-card)(\/from-saved)?\/?$/i,
     message: 'An assistant can’t add or use a payment card on the borrower’s behalf.',
+  },
+  {
+    // Reading the stored payment card. These GETs return bare `last4/brand/exp_*`
+    // keys that the response scrub (which strips by KEY NAME) would not catch, so
+    // they are refused outright — an assistant never sees the borrower's card.
+    code: 'card_view',
+    method: /^GET$/i,
+    path: /^\/api\/borrower\/(applications\/[^/]+\/appraisal-card|saved-appraisal-card)\/?$/i,
+    message: 'The borrower’s payment card is hidden from a helper.',
+  },
+  {
+    // Document BYTES stream past `res.json`, so the PII scrub cannot reach them —
+    // and a borrower's own documents (photo ID → date of birth; bank statements →
+    // Social Security number) are exactly the personal information a helper may
+    // not see. A helper can still see the checklist and UPLOAD documents.
+    code: 'document',
+    method: /^GET$/i,
+    path: /^\/api\/borrower\/documents\/[^/]+\/download\/?$/i,
+    message: 'Documents can carry personal details, so a helper can’t open them. You can still see what’s needed and upload documents.',
   },
   {
     code: 'logout',
@@ -190,21 +225,7 @@ function guard(req, res, next) {
   return res.status(403).json({ error: blocked.message, assistantBlocked: blocked.code });
 }
 
-/**
- * A response-scrubbing middleware for the borrower router: while an assistant is
- * signed in, every JSON body is deep-stripped of PII on its way out. Belt-and-
- * suspenders alongside `guard` (which blocks the writes) — this covers the reads,
- * at ONE chokepoint, so no per-endpoint change is ever needed. Inert for a real
- * borrower (no `req.assistant`).
- */
-function scrubResponses(req, res, next) {
-  if (!req.assistant) return next();
-  const _json = res.json.bind(res);
-  res.json = (body) => _json(scrubPii(body));
-  next();
-}
-
 module.exports = {
   TOKEN_TTL_SEC, INVITE_TTL_SEC, PII_KEYS,
-  scrubPii, BLOCKED, blockedReason, readAssistant, mintToken, guard, scrubResponses,
+  scrubPii, BLOCKED, blockedReason, readAssistant, mintToken, guard,
 };

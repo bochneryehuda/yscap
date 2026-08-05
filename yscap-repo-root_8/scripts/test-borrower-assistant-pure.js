@@ -100,6 +100,20 @@ const cyc = { first_name: 'X', ssn_last4: '1' }; cyc.self = cyc;
 const cs = A.scrubPii(cyc);
 ok(!('ssn_last4' in cs) && cs.first_name === 'X', 'cyclic structure scrubbed without spinning');
 
+// A Date (a timestamptz column comes back as a JS Date) must pass through WHOLE —
+// rebuilding it via Object.keys() would yield {} and corrupt every timestamp.
+const d = new Date('2026-08-05T12:00:00.000Z');
+ok(A.scrubPii(d) instanceof Date && A.scrubPii(d).toISOString() === '2026-08-05T12:00:00.000Z', 'a bare Date passes through unchanged');
+const withDates = { id: 'x', created_at: new Date('2026-01-02T03:04:05.000Z'), ssn_last4: '9', rows: [{ submitted_at: new Date('2026-02-03T00:00:00.000Z'), fico: 700 }] };
+const sd = A.scrubPii(withDates);
+ok(sd.created_at instanceof Date && sd.created_at.toISOString() === '2026-01-02T03:04:05.000Z', 'a Date VALUE inside an object survives (not {})');
+ok(sd.rows[0].submitted_at instanceof Date && !('fico' in sd.rows[0]), 'a Date inside an array survives while PII is still stripped');
+// A Buffer passes through whole too (never rebuilt into a giant {0:..,1:..}).
+const buf = Buffer.from('hello');
+ok(Buffer.isBuffer(A.scrubPii(buf)) && A.scrubPii(buf).toString() === 'hello', 'a Buffer passes through unchanged');
+// JSON round-trip proves res.json will serialize the dates correctly.
+ok(JSON.parse(JSON.stringify(sd)).created_at === '2026-01-02T03:04:05.000Z', 'the scrubbed body serializes the Date to its ISO string');
+
 // The PII key set names the sensitive fields (a smoke check the list is real).
 ok(A.PII_KEYS.has('ssn') && A.PII_KEYS.has('date_of_birth') && A.PII_KEYS.has('fico') && A.PII_KEYS.has('card_last4'),
   'PII_KEYS covers the sensitive set');
@@ -114,6 +128,12 @@ const BLOCK = [
   ['POST', '/api/borrower/applications/abc/appraisal-card', 'card'],
   ['POST', '/api/borrower/applications/abc/scan-card', 'card'],
   ['POST', '/api/borrower/applications/abc/appraisal-card/from-saved', 'card'],
+  // Reading the stored payment card (bare last4/brand keys the scrub can't see).
+  ['GET', '/api/borrower/applications/abc/appraisal-card', 'card_view'],
+  ['GET', '/api/borrower/saved-appraisal-card', 'card_view'],
+  // Document BYTES bypass the res.json scrub — a photo ID shows DOB, a bank
+  // statement can show the SSN.
+  ['GET', '/api/borrower/documents/abc-123/download', 'document'],
   ['POST', '/auth/logout', 'logout'],
   ['POST', '/auth/mfa/enable', 'mfa'],
   ['DELETE', '/auth/mfa/disable', 'mfa'],
@@ -130,10 +150,12 @@ const ALLOW = [
   // The whole point of a helper — these must NOT be blocked:
   ['POST', '/api/borrower/documents'],                 // upload a document
   ['POST', '/api/borrower/applications/abc/documents'],
+  ['GET', '/api/borrower/documents'],                  // the LIST (metadata, no bytes) is fine
   ['GET', '/api/borrower/profile'],                    // READ (PII is scrubbed, not blocked)
   ['GET', '/api/borrower/applications'],
   ['POST', '/api/borrower/messages'],                  // message the team
   ['POST', '/api/borrower/applications/abc/tool'],     // use a tool
+  ['POST', '/api/borrower/applications/abc/complete-fields'], // deal fields OK (identity stripped in the handler, not the guard)
   ['GET', '/api/borrower/applications/abc/esign'],     // SEE that a signature is needed
   ['POST', '/auth/assistant/logout'],                  // the helper's own sign-out
   ['GET', '/auth/me'],
