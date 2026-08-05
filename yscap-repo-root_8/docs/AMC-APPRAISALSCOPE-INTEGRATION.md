@@ -188,8 +188,20 @@ CreateAppraisal leaf field names (best-contact, some site-analysis fields) are m
 "verify against UAT" in `cdg.js` — the **required** fields all come from the vendor's
 own sample payloads and are pinned by the pure test.
 
-**Decisions still to confirm with the owner** (they shape later phases, not the
-foundation): whether PILOT should **charge the appraisal fee through the AMC** (the API
-has Payment* actions and we already store the card) or keep the manual card process;
-which **AMC** we order from by default; and the exact **form-selection rules** per RTL
-product (bridge / ground-up / fix & flip → which appraisal form).
+## 8. Owner decisions (2026-08-05)
+
+- **Credentials:** not issued yet — we must request a UAT account from CoreLogic
+  (`AMC_CLIENT_ID`/`SECRET`, `AMC_LOGIN_ACCOUNT`/`PASSWORD`, `AMC_SUBDOMAIN`,
+  `AMC_LENDER_IDENTIFIER`, `AMC_SOURCE_CLIENT_ID`). Keep building for wire-up-later.
+- **Payment stays MANUAL**, but the appraisal-fee card must be **linked** to the
+  existing payment-card condition (`application_payment_cards` / the `appraisal_card`
+  condition, `src/lib/appraisal-card.js`): entering the card **at the order fills the
+  condition**, and entering it **at the condition fills the order** — one card, entered
+  once, both places. No auto-charge through the AMC for now (the Payment* actions stay
+  unused).
+- **Ordering lives in the Orders desk.** Add "Order an appraisal" as a **new order type
+  in the existing Orders section** (`file_orders` — alongside Title, Insurance, Attorney
+  closing prep; `src/lib/closing-prep.js` / the Orders desk routes). That's where a
+  staffer places and tracks the appraisal order.
+- **Form auto-picks, staff can override** — the `amc_form_map` rules choose the form,
+  shown on the order preview where staff can change it before sending.

@@ -488,6 +488,23 @@ const INTEGRATIONS = [
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Encompass.' : (e.message || 'Not reachable.') }; }
     },
   },
+  {
+    key: 'amc', name: 'AppraisalScope / CoreLogic (appraisal ordering)', group: 'framework',
+    purpose: 'Order appraisals directly from the AMC, track the order, message the AMC back and forth, request revisions / ROV reconsiderations, and pull the finished report back into the file. The connector foundation is built; it needs the CoreLogic credentials, then later build phases add the ordering screens.',
+    direction: 'Two-way (planned)', auth: 'OAuth2 (CoreLogic Digital Gateway) + AppraisalScope login',
+    env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
+      { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
+      { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
+      { name: 'AMC_SOURCE_CLIENT_ID', required: true }],
+    switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: false,
+    async probe() {
+      const c = require('../../amc/client').configured();
+      if (!c.ready) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the CoreLogic / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) to turn it on. Ordering screens are added by later build phases.' };
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet.' };
+      return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled. Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
+    },
+  },
 ];
 
 // Turn a probe result + descriptor into the resolved shape the page renders. `state` is the single
