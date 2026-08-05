@@ -246,4 +246,50 @@ const applyFieldExceptions = recon._internals.applyFieldExceptions;
 }
 ok('field exceptions: a granted exception passes the gate; auto-voids on a data change; a pending request still blocks');
 
+// ── Property address is compared by PLACE, not by letters ────────────────────
+// Owner-reported: our "407 Graves Street Syracuse NY 13203" vs Encompass's
+// "407 GRAVES ST SYRACUSE NY 13203" read "Doesn't match" and escalated to super
+// admin. The address identity row is BLOCK-gated, so a false mismatch held the
+// term sheet on a file where nothing was actually wrong. The compare now runs
+// through address.sameAddress (Street≡St, case, ordinals, ZIP+4, units).
+const compareIdentity = recon._internals.compareIdentity;
+const addrRow = (ours, theirs) => {
+  const row = { property_address: ours, b_first_name: 'A', b_last_name: 'B' };
+  const loan = { property: theirs, applications: [{ borrower: { firstName: 'A', lastName: 'B' } }] };
+  return compareIdentity(row, loan).find((f) => f.key === 'id_property_address');
+};
+{
+  // The exact reported pair — suffix abbreviation + case only.
+  const f = addrRow('407 Graves Street Syracuse NY 13203', '407 GRAVES ST SYRACUSE NY 13203');
+  assert.strictEqual(f.status, 'match', '"Graves Street" ≡ "GRAVES ST" — same place');
+  assert.strictEqual(f.gate, map.GATE.BLOCK, 'still a block-gated identity row');
+  assert.strictEqual(f.open, false, 'a match never holds the term sheet');
+}
+{
+  // A comma-formatted variant + Avenue/Ave still matches.
+  const f = addrRow('12 Main Avenue, Brooklyn, NY 11201', '12 MAIN AVE, BROOKLYN, NY 11201');
+  assert.strictEqual(f.status, 'match', '"Main Avenue" ≡ "MAIN AVE"');
+}
+{
+  // A structured-object Encompass side (line1/city/state/zip) still matches ours.
+  const f = addrRow('407 Graves Street Syracuse NY 13203',
+    { street: '407 Graves St', city: 'Syracuse', state: 'NY', zip: '13203' });
+  assert.strictEqual(f.status, 'match', 'a structured Encompass address ≡ our one-line');
+}
+{
+  // Negative controls — a REAL difference must still mismatch (never a false match).
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '409 Graves St Syracuse NY 13203').status,
+    'mismatch', 'a different house number still mismatches');
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '407 Oak St Syracuse NY 13203').status,
+    'mismatch', 'a different street still mismatches');
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '407 Graves St Syracuse NY 13210').status,
+    'mismatch', 'a different ZIP still mismatches');
+}
+{
+  // A blank side stays "no data to compare" — never a spurious match/mismatch.
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '').status, 'incomparable',
+    'a blank Encompass address is incomparable, not a mismatch');
+}
+ok('property address compares by place (Street≡St, case, ZIP+4) — the reported false mismatch is fixed');
+
 console.log(`\nWO-B Encompass reconcile pure — ${passed} checks passed`);
