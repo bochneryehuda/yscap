@@ -13,9 +13,28 @@ const db = require('../db');
 const C = require('../lib/crypto');
 const perms = require('../lib/permissions');
 const mail = require('../lib/email/catalog');
+const firmCredentials = require('../lib/credit/firm-credentials');   // TPO own-Xactus (Phase 5b)
+const creditProvider = require('../lib/credit/provider');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
 
 router.use(requireAuth, requireStaff, requirePermission('manage_team'));
+
+// A firm's OWN credit-vendor login is platform-config-level sensitive, so setting
+// it needs the stronger platform_setup permission (viewing presence-only status
+// stays on the router's manage_team gate). Audited best-effort.
+async function auditTpo(req, action, firmId, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('staff', $1, $2, 'tpo_firm', $3, $4)`,
+      [req.actor.id, action, firmId, detail ? JSON.stringify(detail) : null]);
+  } catch (_) { /* never block the action on an audit-write failure */ }
+}
+async function firmOr404(req, res) {
+  const f = await db.query(`SELECT id, name FROM tpo_firms WHERE id=$1`, [req.params.id]);
+  if (!f.rows[0]) { res.status(404).json({ error: 'firm not found' }); return null; }
+  return f.rows[0];
+}
 
 // List every firm + its live user / file counts.
 router.get('/firms', async (req, res, next) => {
@@ -123,6 +142,71 @@ router.patch('/firms/:id', async (req, res, next) => {
     res.json({ firm: r.rows[0] });
   } catch (e) { try { await client.query('ROLLBACK'); } catch (_) { /* already broken */ } next(e); }
   finally { client.release(); }
+});
+
+// ── TPO own-Xactus: a firm's OWN credit account (Phase 5b) ──────────────────
+// When a firm has an ACTIVE credentials row, credit pulls on that firm's files
+// run on the firm's Xactus login; otherwise every pull uses our shared company
+// account, unchanged. Flood is always on our account. The password is stored
+// encrypted and is NEVER returned — status reports presence only.
+
+// View a firm's credit-account status (no secrets). manage_team (router default).
+router.get('/firms/:id/credit-credentials', async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    res.json({ credit: await firmCredentials.statusForFirm(req.params.id) });
+  } catch (e) { next(e); }
+});
+
+// Set (create/replace) a firm's Xactus credit login. platform_setup (sensitive).
+router.put('/firms/:id/credit-credentials', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const b = req.body || {};
+    await firmCredentials.setForFirm(req.params.id, {
+      endpoint: b.endpoint, username: b.username, password: b.password,
+      account: b.account, clientId: b.clientId, version: b.version,
+      requestingParty: b.requestingParty, authMode: b.authMode,
+    }, req.actor.id);
+    await auditTpo(req, 'tpo_firm_credit_credentials_set', req.params.id, { authMode: b.authMode || 'basic' });
+    res.json({ ok: true, credit: await firmCredentials.statusForFirm(req.params.id) });
+  } catch (e) {
+    if (e && e.status === 400) return res.status(400).json({ error: e.userMessage || e.message });
+    next(e);
+  }
+});
+
+// Turn a firm's own-account on/off without re-entering the password. platform_setup.
+router.post('/firms/:id/credit-credentials/active', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const active = (req.body || {}).active !== false;
+    const ok = await firmCredentials.setActiveForFirm(req.params.id, active);
+    if (!ok) return res.status(404).json({ error: 'no credit account is configured for this firm' });
+    await auditTpo(req, 'tpo_firm_credit_credentials_active', req.params.id, { active });
+    res.json({ ok: true, credit: await firmCredentials.statusForFirm(req.params.id) });
+  } catch (e) { next(e); }
+});
+
+// Remove a firm's own-account entirely (they revert to our shared account). platform_setup.
+router.delete('/firms/:id/credit-credentials', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const ok = await firmCredentials.clearForFirm(req.params.id);
+    await auditTpo(req, 'tpo_firm_credit_credentials_cleared', req.params.id, {});
+    res.json({ ok, credit: await firmCredentials.statusForFirm(req.params.id) });
+  } catch (e) { next(e); }
+});
+
+// A SAFE reachability check against the firm's own login (no credit request, not a
+// billable pull) — the same "Test now" the API Health page runs for our account.
+router.post('/firms/:id/credit-credentials/test', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const creds = await firmCredentials.resolveForFirm(req.params.id);
+    if (!creds) return res.json({ configured: false, live: false, detail: 'No active credit account is configured for this firm yet.' });
+    res.json(await creditProvider.testConnection(creds));
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

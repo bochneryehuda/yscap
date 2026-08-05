@@ -220,14 +220,48 @@ internal workflow condition.
      → 400); a missing SSN is refused; `app-v2 TpoFile` gained a "Credit" card
      (readiness + an Order-credit button with a consent confirm). Test
      `scripts/test-tpo-credit-db.js` (stubs `provider.pull` — no live Xactus).
-   - **STILL DEFERRED in Phase 5:**
-     · **own-Xactus** (per-firm encrypted Xactus credentials for credit) — the
-       single seam is `credit/provider.js:25` (`const cfg = require('../../config')
-       .xactusProd`); refactor `pull()`/`buildRequestBody()` to take a credentials
-       arg resolved from the file's firm (our account always an option; flood
-       always ours). Fix the duplicate `xactus` key in `config.js` (config.js:605
-       vs :772 — the second wins; credit uses the separate `xactusProd`, so it is a
-       latent bug) as part of that work.
+   - **Phase 5b — own-Xactus (per-firm encrypted CREDIT credentials) ✅ (BUILT).**
+     A brokerage firm may pull credit on THEIR OWN Xactus account. INERT BY DEFAULT
+     — with nothing configured, every firm's files use our shared company account
+     byte-identically, which is the property that makes it low-risk. Pieces:
+     · **The provider seam** (`credit/provider.js`) now takes an optional
+       `credentials` arg via `resolveCfg(credentials)`: complete firm creds win
+       (endpoint + username + password), with our-account fallbacks for account /
+       version / requestingParty / authMode; a partial / missing / broken firm row
+       ALWAYS falls back to our account (a broken firm login can never change how
+       our pulls run). `pull()` / `configured()` / `scrubCredentials()` /
+       `version()` / `testConnection()` all route through it. FLOOD is untouched —
+       always our `config.xactusFlood`.
+     · **`src/lib/credit/firm-credentials.js`** is the ONE place that RESOLVES the
+       login for a pull (`resolveForApplication(appId)` → a TPO file whose firm has
+       an ACTIVE row → decrypted creds, else `null` → our account; never throws) and
+       MANAGES it (set / status / activate / clear; the password is AES-256-GCM
+       encrypted at rest via `crypto.encryptSecret` and NEVER returned — `status()`
+       reports presence only, `hasPassword` boolean). `credit/index.js` threads the
+       resolved credentials into `provider.pull` on every import path.
+     · **db/482** `tpo_firm_credit_credentials` (PK `tpo_firm_id`, `password_encrypted
+       bytea`, `auth_mode` basic|query, `is_active`, audit columns + touch trigger).
+     · **The internal admin surface** — `admin-tpo.js` routes `GET/PUT/POST active/
+       DELETE/POST test /firms/:id/credit-credentials` (view = manage_team; SET /
+       activate / clear / test = `platform_setup`; every change audited to
+       `audit_log`, `entity_type='tpo_firm'`) + the `app-v2` screen
+       `StaffTpoFirms.jsx` at `/internal/tpo-firms` (nav "Broker firms", manage_team):
+       firm onboarding (create / invite lead broker / suspend-activate-close) PLUS a
+       per-firm credit-account card (status, set/replace with a write-only password,
+       on/off toggle, remove, and a safe "test connection" that is NOT a billable
+       pull). This screen is ALSO the first front-end for the Phase 2 admin
+       onboarding backend, which had none.
+     · **config.js** — the two duplicate `xactus` blocks were merged into ONE (the
+       second had silently won; consumers `integrations/xactus.js` +
+       `direct-source-connectors/xactus.js` read `cfg.xactus.*`, so the merge is a
+       union of all fields). `xactusProd` (credit) + `xactusFlood` are unchanged.
+     · Tests `scripts/test-tpo-own-xactus-pure.js` (22 — resolveCfg firm-wins/
+       fallback, scrub strips the firm password, crypto round-trip, credsFromRow) +
+       `scripts/test-tpo-own-xactus-db.js` (24 — resolution TPO/retail/inactive,
+       encrypted-at-rest, status no-leak, `provider.pull` firm-vs-ours endpoint via a
+       stubbed fetch, importCredit threading, the admin routes + 403 gating + 400
+       bad-URL + 404), both in `npm test`.
+   - **STILL DEFERRED in Phase 5 (need owner input):**
      · **title / insurance ordering** — has a NOTE-BUYER LEAK tension: the order
        email carries the note-buyer-derived mortgagee clause (RCN → the servicer's
        address), and it is "signed by the loan officer" = the broker on a TPO file.

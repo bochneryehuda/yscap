@@ -28,18 +28,47 @@ const X = require('../mismo/xml');   // dependency-free MISMO XML writer/reader
 // Always tri-merge — all three national bureaus.
 const ALL_BUREAUS = Object.freeze(['Equifax', 'Experian', 'TransUnion']);
 
-function version() { return (cfg.version || '3.4'); }
-function configured() { return !!(cfg.endpoint && cfg.username && cfg.password); }
+// TPO own-Xactus (owner roadmap Phase 5b): a credit pull may run on a broker
+// FIRM's own Xactus login instead of our shared company account. `pull` (and the
+// helpers below) take an optional `credentials` object; when it is a COMPLETE
+// login (endpoint + username + password) it is used, otherwise everything falls
+// back to our shared account (config.xactusProd) exactly as before — so a partial
+// or missing `credentials` (or a broken firm row) can never change how OUR pulls
+// run. Flood never uses this path (it always orders on our account).
+function resolveCfg(credentials) {
+  const c = credentials;
+  if (c && c.endpoint && c.username && c.password) {
+    return {
+      endpoint: String(c.endpoint).trim().replace(/\/+$/, ''),
+      username: c.username,
+      password: c.password,
+      account: c.account || cfg.account,
+      clientId: c.clientId || cfg.clientId,
+      version: c.version || cfg.version,
+      requestingParty: c.requestingParty || cfg.requestingParty,
+      authMode: c.authMode === 'query' ? 'query' : (c.authMode === 'basic' ? 'basic' : (cfg.authMode || 'basic')),
+      _source: 'firm',
+    };
+  }
+  return cfg;
+}
+
+function version(credentials) { return (resolveCfg(credentials).version || '3.4'); }
+function configured(credentials) {
+  const c = resolveCfg(credentials);
+  return !!(c.endpoint && c.username && c.password);
+}
 
 // Remove the shared Xactus login from any string before it can reach an error
 // message or a log. In query-auth mode the login rides in the request URL, so a
 // network error that echoes the URL would otherwise expose the shared password —
 // the login must never appear in an error or a log line.
-function scrubCredentials(s) {
+function scrubCredentials(s, credentials) {
+  const c = resolveCfg(credentials);   // scrub the ACTIVE login (a firm's own, or ours)
   let out = String(s == null ? '' : s);
   out = out.replace(/(LoginAccountIdentifier|LoginAccountPassword)=[^&\s"']*/gi, '$1=***');   // login in URL query
   out = out.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, '//***:***@');                                  // scheme://user:pass@host
-  for (const secret of [cfg && cfg.password, cfg && cfg.username]) {                            // belt-and-suspenders: the literal values
+  for (const secret of [c && c.password, c && c.username]) {                                    // belt-and-suspenders: the literal values
     if (secret && String(secret).length >= 3) out = out.split(String(secret)).join('***');
   }
   return out;
@@ -236,8 +265,9 @@ function xmlReportId(xml) {
  * Order (or reissue) a tri-merge credit report through the shared login.
  * @returns {Promise<{xml:string|null, pdfBase64:string|null, vendorReportId:string|null}>}
  */
-async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'reissue', bureaus = ALL_BUREAUS, version: v, reissueReportId, loanNumber, company } = {}) {
-  if (!configured()) throw notConfiguredError();
+async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'reissue', bureaus = ALL_BUREAUS, version: v, reissueReportId, loanNumber, company, credentials } = {}) {
+  const c = resolveCfg(credentials);   // a broker firm's own Xactus login, or our shared account
+  if (!configured(credentials)) throw notConfiguredError();
   // `borrowers` (2+) orders a JOINT report: ONE request, ONE reference number,
   // both people on it. `borrower` is the single-borrower form.
   const people = (Array.isArray(borrowers) && borrowers.length ? borrowers : (borrower ? [borrower] : [])).filter(Boolean);
@@ -250,18 +280,18 @@ async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'rei
       : 'A reissue needs the reference number of the credit report already on file. Enter it, or switch to “Order brand-new”.';
     throw e;
   }
-  v = v || version();
-  const req = buildRequestBody({ borrowers: people, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company });
+  v = v || version(credentials);
+  const req = buildRequestBody({ borrowers: people, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company: company || c.requestingParty });
 
-  let url = cfg.endpoint.replace(/\/+$/, '') + req.path;
+  let url = c.endpoint.replace(/\/+$/, '') + req.path;
   const headers = { 'Content-Type': req.contentType, Accept: 'application/xml, text/xml' };
-  if ((cfg.authMode || 'basic') === 'query') {
+  if ((c.authMode || 'basic') === 'query') {
     const u = new URL(url);
-    u.searchParams.set('LoginAccountIdentifier', cfg.username);
-    u.searchParams.set('LoginAccountPassword', cfg.password);
+    u.searchParams.set('LoginAccountIdentifier', c.username);
+    u.searchParams.set('LoginAccountPassword', c.password);
     url = u.toString();
   } else {
-    headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+    headers.Authorization = 'Basic ' + Buffer.from(`${c.username}:${c.password}`).toString('base64');
   }
 
   // Reach Xactus with a hard timeout, and turn a network-level failure (bad web
@@ -276,7 +306,7 @@ async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'rei
     respText = await r.text();
   } catch (err) {
     const aborted = err && (err.name === 'AbortError' || String(err.message || '').includes('aborted'));
-    const e = new Error(`Xactus request failed: ${scrubCredentials((err && err.message) || err)}`);
+    const e = new Error(`Xactus request failed: ${scrubCredentials((err && err.message) || err, credentials)}`);
     e.status = aborted ? 504 : 502;
     e.userMessage = aborted
       ? 'Xactus didn’t respond in time. Please try again in a moment — if it keeps timing out, the shared login may not be activated yet.'
@@ -289,7 +319,7 @@ async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'rei
     // Never echo the borrower's identifiers OR the shared login into logs: the
     // outbound request carried the full SSN, and in query-auth mode the login
     // rides in the request URL — a vendor 4xx body can reflect either back.
-    const safe = scrubCredentials(String(respText))
+    const safe = scrubCredentials(String(respText), credentials)
       .replace(/\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/g, '***-**-****')   // dashed, bare, or space-separated SSN
       .replace(/\b\d{9,}\b/g, '*********');
     const e = new Error(`Xactus ${r.status}: ${safe.slice(0, 300)}`);
@@ -325,25 +355,26 @@ function _classifyConnection(status) {
   return { live: null, detail: `Reached Xactus, but it answered with an unexpected status (${status}). Try a real import, or check with Xactus.` };
 }
 
-async function testConnection() {
-  if (!configured()) {
-    return { configured: false, live: false, detail: 'Not connected yet — add the full Xactus Credit ReportX web address, username and password (in the system settings) first.' };
+async function testConnection(credentials) {
+  const c = resolveCfg(credentials);   // test a firm's own login, or our shared account
+  if (!configured(credentials)) {
+    return { configured: false, live: false, detail: 'Not connected yet — add the full Xactus Credit ReportX web address, username and password first.' };
   }
   let u;
-  try { u = new URL(cfg.endpoint); }
-  catch (_) { return { configured: true, live: false, detail: 'The Xactus web address isn’t a valid link. It must be the full address Xactus gave you, starting with https:// — fix XACTUS_API_URL in the settings.' }; }
+  try { u = new URL(c.endpoint); }
+  catch (_) { return { configured: true, live: false, detail: 'The Xactus web address isn’t a valid link. It must be the full address Xactus gave you, starting with https://.' }; }
   if (u.protocol !== 'https:') {
-    return { configured: true, live: false, detail: `The Xactus web address must start with https:// (it starts with “${u.protocol.replace(':', '')}”). Fix XACTUS_API_URL in the settings.` };
+    return { configured: true, live: false, detail: `The Xactus web address must start with https:// (it starts with “${u.protocol.replace(':', '')}”).` };
   }
-  let url = cfg.endpoint;
+  let url = c.endpoint;
   const headers = { Accept: 'application/xml, text/xml' };
-  if ((cfg.authMode || 'basic') === 'query') {
+  if ((c.authMode || 'basic') === 'query') {
     const q = new URL(url);
-    q.searchParams.set('LoginAccountIdentifier', cfg.username);
-    q.searchParams.set('LoginAccountPassword', cfg.password);
+    q.searchParams.set('LoginAccountIdentifier', c.username);
+    q.searchParams.set('LoginAccountPassword', c.password);
     url = q.toString();
   } else {
-    headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+    headers.Authorization = 'Basic ' + Buffer.from(`${c.username}:${c.password}`).toString('base64');
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -365,5 +396,5 @@ module.exports = {
   ALL_BUREAUS,
   configured, status, version, pull, testConnection,
   // exposed for unit tests + the packet wiring
-  _seam: { buildRequestBody, extractReport, embeddedPdfBase64, classifyConnection: _classifyConnection, scrubCredentials },
+  _seam: { buildRequestBody, extractReport, embeddedPdfBase64, classifyConnection: _classifyConnection, scrubCredentials, resolveCfg },
 };

@@ -492,6 +492,7 @@ export default function StaffLayout({ children }) {
 
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
+        {canManageTeam && <NavLink className="sb-link" to="/internal/tpo-firms" title="Broker firms — onboard a brokerage firm, invite its lead broker, and set up a firm's own credit account"><NavIcon name="team" />Broker firms</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {/* Manual / Escalations + Exceptions moved into the Approvals hub in the
             Main group (owner-directed 2026-07-31) — their counts still poll here

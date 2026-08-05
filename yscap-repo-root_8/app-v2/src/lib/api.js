@@ -1152,6 +1152,18 @@ export const api = {
   adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
   roster:            () => req('GET', '/api/roster'),
 
+  // ---- TPO firms: internal admin onboarding + per-firm own-Xactus credit account ----
+  adminTpoFirms:        () => req('GET', '/api/admin/tpo/firms'),
+  adminTpoFirm:         (id) => req('GET', `/api/admin/tpo/firms/${id}`),
+  adminCreateTpoFirm:   (b) => req('POST', '/api/admin/tpo/firms', b),
+  adminTpoFirmStatus:   (id, status) => req('PATCH', `/api/admin/tpo/firms/${id}`, { status }),
+  adminInviteTpoUser:   (id, b) => req('POST', `/api/admin/tpo/firms/${id}/invite`, b),
+  adminTpoFirmCredit:       (id) => req('GET', `/api/admin/tpo/firms/${id}/credit-credentials`),
+  adminTpoFirmCreditSet:    (id, b) => req('PUT', `/api/admin/tpo/firms/${id}/credit-credentials`, b),
+  adminTpoFirmCreditActive: (id, active) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/active`, { active }),
+  adminTpoFirmCreditClear:  (id) => req('DELETE', `/api/admin/tpo/firms/${id}/credit-credentials`),
+  adminTpoFirmCreditTest:   (id) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/test`, {}),
+
   // ---- Condition Center: admin studio (global condition library + rules) ----
   adminConditionFields:    () => req('GET', '/api/admin/conditions/fields'),
   adminConditionDefs:      () => req('GET', '/api/admin/conditions/definitions'),
