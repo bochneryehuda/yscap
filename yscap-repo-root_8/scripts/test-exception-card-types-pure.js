@@ -84,5 +84,22 @@ ok(typeLabelHits >= 4, `type_label is attached on every read surface (found ${ty
 const exScreen = fs.readFileSync(R + '/app-v2/src/screens/StaffExceptions.jsx', 'utf8');
 ok(/function decisionMessage\(/.test(exScreen), 'StaffExceptions routes the decision toast through decisionMessage (per-type)');
 
+// ---- the decision EMAIL must not mislabel a non-esign type as esign ----
+// The team notification's catch-all `else` used to emit esign "send-before-CTC"
+// wording for oop_rehab / appraisal_xml_waiver / credit_import_waiver (they fell
+// through to it). The esign branch must be explicitly gated, with a generic
+// registry-label branch after it.
+const adminEx = fs.readFileSync(R + '/src/routes/admin-exceptions.js', 'utf8');
+ok(/}\s*else if \(isEsign\)\s*{/.test(adminEx),
+   'admin-exceptions gates the esign decision notice explicitly (no catch-all esign else)');
+ok(/type:\s*'loan_exception_decided'/.test(adminEx),
+   'admin-exceptions has a generic decision notice for any other decidable type');
+ok(/typeLabelFor\(exc\.exception_type\)/.test(adminEx),
+   'the generic decision notice names the type from the registry label');
+// The generic notify type is registered (category + kicker), so it emails and buckets right.
+const notifySrc = fs.readFileSync(R + '/src/lib/notify.js', 'utf8');
+ok((notifySrc.match(/loan_exception_decided:/g) || []).length >= 2,
+   'loan_exception_decided is registered in both notify maps (KICKER_OF + CATEGORY_OF)');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
