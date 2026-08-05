@@ -69,8 +69,10 @@ const liveCodes = async (appId) => (await db.query(
     // A brand-new file with NO note buyer. The engine gives it the internal
     // "Note buyer missing" condition; switching to CorrFirst should be previewed as
     // ADDING the EMD condition and DROPPING the missing-note-buyer one.
+    // A PURCHASE file (loan_type set): the EMD condition is purchase-only (db/475),
+    // and this suite previews/attaches EMD when the note buyer switches to CorrFirst.
     const app = (await db.query(
-      `INSERT INTO applications (borrower_id,status) VALUES ($1,'processing') RETURNING id`, [borrowerId])).rows[0].id;
+      `INSERT INTO applications (borrower_id,status,loan_type) VALUES ($1,'processing','Purchase') RETURNING id`, [borrowerId])).rows[0].id;
     await engine.evaluateApplication(app, { reason: 'test', notify: false });
     assert((await liveCodes(app)).includes('cond_note_buyer_missing'),
       'setup: a file with no note buyer carries the "note buyer missing" condition');
