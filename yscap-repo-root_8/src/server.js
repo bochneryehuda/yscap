@@ -1016,6 +1016,12 @@ if (require.main === module) {
     // only). Runs independently of ENCOMPASS_ENABLED; self-gates on the
     // ENCOMPASS_FLOOD_ENABLED switch, so an idle tick is a cheap no-op.
     try { require('./sync/encompass-sync').startFloodPoller(); } catch (e) { console.warn('encompass flood poller not started:', e.message); }
+    // AMC appraisal-order poll worker (AppraisalScope / CoreLogic Digital Gateway is a
+    // PULL API — CDG never pushes, so status + finished documents are polled). Self-gates
+    // on AMC_ENABLED per tick, so an idle tick is a cheap no-op and flipping the switch on
+    // starts polling with no redeploy. On product-available it files the report back into
+    // the Document Center and runs the appraisal import automatically.
+    try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it
