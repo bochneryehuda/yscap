@@ -241,7 +241,7 @@ const FIELDS = [
   { key: 'loan_to_arv', label: 'Loan / ARV % (computed)', group: 'Loan & program', type: 'percent',
     description: 'Loan amount divided by after-repair value (0–100). Computed live.' },
   { key: 'loan_to_cost', label: 'Loan / total cost % (computed)', group: 'Loan & program', type: 'percent',
-    description: 'Loan amount ÷ (purchase price + rehab budget) (0–100). Computed live.' },
+    description: 'Loan amount ÷ (min(purchase price, as-is value) + rehab budget) (0–100). Computed live.' },
   { key: 'rate_pct', label: 'Note rate %', group: 'Loan & program', type: 'percent' },
   { key: 'requested_ir_months', label: 'Interest reserve months', group: 'Loan & program', type: 'number', writable: true,
     borrowerLabel: 'Requested interest reserve (months)', borrowerHint: 'How many months of interest reserve are you requesting? (0–24)' },

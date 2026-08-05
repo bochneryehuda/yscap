@@ -130,7 +130,7 @@ THE CONFUSABLES — never substitute one for another
 - purchase_price vs as_is_value vs arv — three different dollars (paid / current value / future
   post-rehab value). ARV is highest on a rehab deal.
 - loan_amount vs cost basis vs purchase_price — loan_amount is what WE lend (a subset of cost).
-  Cost basis = price + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
+  Cost basis = min(price, as-is) + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
 - real purchase price vs effective (recognized) purchase price — on an assignment, "Purchase
   price" shows seller + FULL fee; the loan SIZES on the effective price (seller + financeable
   fee). Do not size on the real total; do not label the effective price as the purchase price.
