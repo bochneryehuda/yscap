@@ -26,6 +26,9 @@ const map = require('../lib/integrations/encompass-field-map');
 // The ONE name splitter/joiner/comparer. Pure (no pg), so it is safe to require
 // eagerly next to the field map.
 const PN = require('../lib/person-name');
+// The ONE "is this the same place?" address comparer (Street≡St, Avenue≡Ave,
+// ordinals, ZIP+4, units, case). Pure (no pg), safe to require eagerly.
+const ADDR = require('../lib/address');
 
 // Our-side deal type is NOT a column — applications stores it as `program`
 // ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
@@ -607,6 +610,20 @@ function compareIdentity(row, loan) {
     let status = 'incomparable';
     if (oursNorm != null && oursNorm !== '' && theirsNorm != null && theirsNorm !== '') {
       status = oursNorm === theirsNorm ? 'match' : 'mismatch';
+      // AN ADDRESS IS COMPARED BY PLACE, NOT BY LETTERS (owner-reported: our
+      // "407 Graves Street Syracuse NY 13203" vs Encompass's "407 GRAVES ST
+      // SYRACUSE NY 13203" read "Doesn't match" and escalated to super admin —
+      // a BLOCK-gated identity row, so it held the term sheet on a file where
+      // nothing was actually wrong). normName above is punctuation/case tolerant
+      // but NOT USPS-abbreviation aware, so "Street" ≠ "ST". A.sameAddress is the
+      // ONE blessed comparer that knows Street≡St / Avenue≡Ave / ordinals / ZIP+4
+      // / units — the same one every other address comparison in the app uses. It
+      // is applied ONLY to UPGRADE a letters-mismatch to a match (a letters-equal
+      // pair is already a match, and it stays conservative — it never turns a real
+      // disagreement into a false match), so it can only ever ADD matches here.
+      if (status === 'mismatch' && compare === 'address' && ADDR.sameAddress(ours, theirs)) {
+        status = 'match';
+      }
     }
     out.push({
       key, encompassFieldId: null, label, category: 'identity', compare,
