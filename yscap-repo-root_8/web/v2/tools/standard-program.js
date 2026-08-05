@@ -261,7 +261,20 @@
     // value bases
     var acqDenom = purchase ? Math.min(pp || aiv, aiv || pp) : aiv;     // lower of [PP, AIV] for purchase; AIV for refi
     if (!(acqDenom > 0)) acqDenom = purchase ? pp : aiv;
-    var costBasis0 = (purchase ? pp : aiv) + rehab;                    // [PP or AIV] + rehab, WITHOUT reserve
+    // THE TOTAL COST (and the LTC) GO BY THE LOWER OF THE PURCHASE PRICE AND THE
+    // AS-IS VALUE (owner-directed 2026-08-05): "we should always use the purchase
+    // price. If the as-is value is more than the purchase price we should not use
+    // the as-is value, we should use the purchase price. If the as-is value is less
+    // than the purchase price then we can't use the default purchase price, we need
+    // to use that as-is value. This is for all the programs." That figure is exactly
+    // `acqDenom` (min(PP, AIV) for a purchase; the AIV for a refi) — the SAME number
+    // the acquisition (initial) advance is already capped on — so the cost basis and
+    // the initial-advance cap now read one value, and the total cost can never claim
+    // the property is worth more than the appraisal says. The interest reserve is
+    // untouched (added below exactly as before). Byte-identical whenever AIV >= PP
+    // (acqDenom === PP), on a refi, and on any product with no LTC cap (the acq-LTV
+    // cap A = maxAcqLTV x acqDenom binds before the LTC term either way).
+    var costBasis0 = acqDenom + rehab;                                 // min(PP, AIV) + rehab, WITHOUT reserve
 
     var rehabLoan = rehab;                       // 100% financed, no OOP
     var A = c.maxAcqLTV * acqDenom;              // cap on the acquisition (initial) advance
