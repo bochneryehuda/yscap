@@ -75,8 +75,16 @@ router.get('/chat/conversations', async (req, res) => {
         UNION ALL SELECT 'borrower', a.co_borrower_id, 'Co-borrower', true
         UNION ALL SELECT 'staff', a.loan_officer_id, 'Loan Officer', false
         UNION ALL SELECT 'staff', a.processor_id, 'Processor', false) p
-     WHERE a.deleted_at IS NULL AND c.kind <> 'custom' AND p.id IS NOT NULL
+     WHERE a.deleted_at IS NULL AND c.kind NOT IN ('custom','tpo') AND p.id IS NOT NULL
        AND (p.borrower_side = false OR c.kind='borrower')
+       -- Phase 6e (security): this is a SECOND copy of the member-seeding that
+       -- chat.ensureConversationsForApp owns — keep both guards in lock-step. The 'tpo'
+       -- chat's roster is owned by ensureTpoConversation, and an EXTERNAL staffer (on a TPO
+       -- file the loan_officer IS the external broker) must NEVER be seated as a 'staff'
+       -- member of the internal / borrower / lo_processor chats — otherwise every staff
+       -- inbox load would re-seat the broker (undoing db/480's cleanup) and email them our
+       -- team's raw internal messages.
+       AND (p.kind <> 'staff' OR NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.id=p.id AND su.is_external=true))
        ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR ${assigneeExistsSql('a', '$1')})` : ''}
     ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`,
     scoped ? [req.actor.id] : []);
@@ -100,11 +108,11 @@ router.get('/chat/conversations', async (req, res) => {
        LEFT JOIN chat_drafts d ON d.conversation_id=c.id AND d.member_kind='staff' AND d.member_id=$1
        LEFT JOIN LATERAL (
          SELECT m.body, m.kind, m.sender_kind, m.attachment_kind, m.created_at, m.seq,
-                CASE WHEN m.sender_kind='staff' THEN s.full_name
+                CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name
                      WHEN m.sender_kind='borrower' THEN b2.first_name
                      ELSE 'System' END AS sender_name
            FROM messages m
-           LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+           LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
            LEFT JOIN borrowers b2 ON b2.id=m.sender_id AND m.sender_kind='borrower'
           WHERE m.conversation_id=c.id AND m.deleted_at IS NULL
           ORDER BY m.seq DESC LIMIT 1) lm ON true
@@ -172,9 +180,9 @@ router.get('/conversations/:cid', async (req, res) => {
     chat.membersOf(conv.id),
     chat.externalParticipantsOf(conv.id),
     db.query(`SELECT m.id, m.seq, m.body, m.created_at, m.attachment_kind,
-                     CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
+                     CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
                 FROM messages m
-                LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+                LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
                 LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
                WHERE m.conversation_id=$1 AND m.pinned AND m.deleted_at IS NULL
                ORDER BY m.pinned_at DESC LIMIT 10`, [conv.id]),
@@ -364,7 +372,7 @@ router.post('/conversations/:cid/delivered', async (req, res) => {
 });
 router.post('/conversations/:cid/typing', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   const name = await actorName(req);
   events.publishToConversation(conv.id, 'typing', {
     conversationId: conv.id, memberKind: 'staff', memberId: req.actor.id, name,
@@ -375,7 +383,7 @@ router.post('/conversations/:cid/typing', async (req, res) => {
 // seesAll staff reading chats they aren't members of).
 router.post('/conversations/:cid/open', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   res.json({ ok: true });
 });
 router.post('/conversations/:cid/mute', async (req, res) => {
@@ -412,18 +420,18 @@ router.get('/conversations/:cid/shared', async (req, res) => {
     db.query(
       `SELECT m.id AS message_id, m.seq, m.created_at, m.attachment_kind,
               d.id AS document_id, d.filename, d.content_type, d.size_bytes,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
+              CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
          FROM messages m
          JOIN documents d ON d.id=m.attachment_document_id
-         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
          LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
         WHERE m.conversation_id=$1 AND m.deleted_at IS NULL
         ORDER BY m.seq DESC LIMIT 200`, [conv.id]),
     db.query(
       `SELECT m.id AS message_id, m.seq, m.created_at, m.body,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
+              CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
          FROM messages m
-         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
          LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
         WHERE m.conversation_id=$1 AND m.deleted_at IS NULL AND m.body ~* 'https?://'
         ORDER BY m.seq DESC LIMIT 100`, [conv.id]),
@@ -452,14 +460,14 @@ router.get('/chat/search', async (req, res) => {
     `SELECT m.id, m.seq, m.conversation_id, m.body, m.created_at, m.attachment_kind,
             c.name AS conversation_name, c.emoji, c.application_id,
             a.ys_loan_number, b.first_name AS borrower_first, b.last_name AS borrower_last,
-            CASE WHEN m.sender_kind='staff' THEN s.full_name
+            CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name
                  WHEN m.sender_kind='borrower' THEN NULLIF(b2.full_name,'')
                  ELSE 'System' END AS sender_name
        FROM messages m
        JOIN conversations c ON c.id=m.conversation_id
        JOIN applications a ON a.id=c.application_id
        JOIN borrowers b ON b.id=a.borrower_id
-       LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+       LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
        LEFT JOIN borrowers b2 ON b2.id=m.sender_id AND m.sender_kind='borrower'
        LEFT JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.member_kind='staff'
             AND cm.member_id=$2 AND cm.removed_at IS NULL
@@ -498,13 +506,13 @@ router.get('/applications/:id/chat-export', async (req, res) => {
       db.query(
         `SELECT m.seq, m.created_at, m.sender_kind, m.kind, m.priority, m.body, m.edited_at, m.deleted_at,
                 m.attachment_kind, d.filename AS attachment_name,
-                CASE WHEN m.sender_kind='staff' THEN s.full_name
+                CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name
                      WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
                      ELSE 'System' END AS sender_name,
                 (SELECT json_agg(json_build_object('body', rv.body, 'at', rv.created_at))
                    FROM message_revisions rv WHERE rv.message_id=m.id) AS revisions
            FROM messages m
-           LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+           LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
            LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
            LEFT JOIN documents d ON d.id=m.attachment_document_id
           WHERE m.conversation_id=$1 ORDER BY m.seq`, [c.id]),

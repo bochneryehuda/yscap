@@ -289,14 +289,18 @@ function replyToFor(replyKey) {
 
 /** Email every active external participant a single message as it's posted, with
     their unique reply-to. Skips the participant who SENT it (inbound echo) and
-    is best-effort (a failed send never breaks posting). Borrower-visible chats
-    are scrubbed of any capital-partner name per the frozen rule. */
+    is best-effort (a failed send never breaks posting). A chat that an EXTERNAL
+    (non-lender) party reads is scrubbed of any capital-partner name per the
+    frozen rule: a borrower-visible chat, AND the Phase 6e 'tpo' broker↔team chat
+    (its external participants are external to the lender by definition). An
+    ordinary internal chat's external participants (an attorney, a partner's
+    secretary a staffer deliberately looped in) still get the real content. */
 async function emailExternalParticipants(conv, message, senderName) {
   if (!message || message.kind !== 'text') return;
   const externals = await externalParticipantsOf(conv.id).catch(() => []);
   if (!externals.length) return;
   const ctx = await notify.fileContext(conv.application_id).catch(() => null);
-  const scrub = conv.borrower_visible ? scrubText : (t) => String(t || '');
+  const scrub = (conv.borrower_visible || conv.kind === 'tpo') ? scrubText : (t) => String(t || '');
   const bodyLine = message.body ? `“${scrub(message.body)}”`
     : (message.attachment_kind ? 'shared an attachment (open the portal to view it)' : 'sent a message');
   const canReply = !!cfg.chatReplyDomain;
@@ -565,11 +569,11 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
   if (replyToMessageId) {
     const orig = await db.query(
       `SELECT m.id, m.body, m.sender_kind, m.attachment_kind,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name
+              CASE WHEN m.sender_kind IN ('staff','tpo') THEN s.full_name
                    WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
                    ELSE 'System' END AS sender_name
          FROM messages m
-         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind IN ('staff','tpo')
          LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
         WHERE m.id=$1 AND m.conversation_id=$2`, [replyToMessageId, conv.id]);
     if (!orig.rows[0]) replyToMessageId = null;
@@ -1035,8 +1039,8 @@ async function fireChatEmail(j) {
             d.filename AS att_filename, d.content_type AS att_ct,
             d.storage_ref AS att_ref, d.size_bytes AS att_size
        FROM messages m
-       LEFT JOIN borrowers bo   ON m.sender_kind='borrower' AND bo.id=m.sender_id
-       LEFT JOIN staff_users su ON m.sender_kind='staff'    AND su.id=m.sender_id
+       LEFT JOIN borrowers bo   ON m.sender_kind='borrower'        AND bo.id=m.sender_id
+       LEFT JOIN staff_users su ON m.sender_kind IN ('staff','tpo') AND su.id=m.sender_id
        LEFT JOIN documents d    ON d.id=m.attachment_document_id
       WHERE m.conversation_id=$1 AND m.seq > $2 AND m.kind='text' AND m.deleted_at IS NULL
         AND NOT (m.sender_kind=$3 AND m.sender_id=$4)

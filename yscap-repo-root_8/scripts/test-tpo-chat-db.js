@@ -58,6 +58,7 @@ function png() {
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
   const mail = (t) => `${t}-${sfx}@brk.test`;
   const tpoTok = (id) => C.signJwt({ sub: id, kind: 'tpo', role: 'tpo_officer', tv: 0 });
+  const staffTok = (id, role) => C.signJwt({ sub: id, kind: 'staff', role: role || 'super_admin', tv: 0 });
 
   try {
     const hash = await C.hashPassword('BrokerPass123!');
@@ -73,6 +74,10 @@ function png() {
     const ae = (await db.query(
       `INSERT INTO staff_users (email,full_name,role,is_active,is_external,password_hash,token_version)
        VALUES ($1,'Ava Executive','loan_officer',true,false,$2,0) RETURNING id`, [mail('ae'), hash])).rows[0].id;
+    // a see-all internal admin whose staff chat inbox seeds member rosters unscoped across every file
+    const admin = (await db.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active,is_external,password_hash,token_version)
+       VALUES ($1,'Sam Admin','super_admin',true,false,$2,0) RETURNING id`, [mail('admin'), hash])).rows[0].id;
     const tokA = tpoTok(brokerA), tokB = tpoTok(brokerB);
 
     const borId = (await db.query(
@@ -151,6 +156,21 @@ function png() {
     ok(brokerStaffMemberships === 0, 'the broker is NEVER a staff member of any conversation (no internal-chat → broker email leak)');
     const brokerTpoMembership = (await db.query(`SELECT count(*)::int c FROM conversation_members WHERE member_id=$1 AND member_kind='tpo' AND conversation_id=$2`, [brokerA, cid])).rows[0].c;
     ok(brokerTpoMembership === 1, 'the broker IS a tpo member of the broker↔team conversation');
+
+    // ── SECURITY (FUNC audit): the STAFF chat inbox has its OWN copy of the member-seeding SQL (it is
+    // NOT routed through ensureConversationsForApp). A see-all admin loading it seeds rosters UNSCOPED
+    // across every file, so without the same external-staffer guard it would re-seat the external
+    // broker (loan_officer_id on a TPO file) as a 'staff' member on EVERY inbox load — undoing db/480's
+    // cleanup and re-opening the internal-chat → broker email leak. Drive that exact route and re-assert.
+    const inbox = await call(server, 'GET', `/api/staff/chat/conversations`, staffTok(admin, 'super_admin'));
+    ok(inbox.status === 200, `staff (admin) chat inbox loads (got ${inbox.status})`);
+    const brokerStaffAfterInbox = (await db.query(`SELECT count(*)::int c FROM conversation_members WHERE member_id=$1 AND member_kind='staff'`, [brokerA])).rows[0].c;
+    ok(brokerStaffAfterInbox === 0, 'the staff inbox seeding does NOT re-seat the broker as a staff member (staff-chat.js guard mirrors ensureConversationsForApp)');
+    // and the broker never becomes a member of any NON-tpo conversation via this path either
+    const brokerNonTpoMemberships = (await db.query(
+      `SELECT count(*)::int c FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id
+        WHERE cm.member_id=$1 AND c.kind <> 'tpo'`, [brokerA])).rows[0].c;
+    ok(brokerNonTpoMemberships === 0, "the broker is a member of the 'tpo' conversation ONLY — never an internal/borrower/lo_processor chat");
     // a message in the INTERNAL conversation must not reach the broker by email
     const internalConvObj = await chat.getConversation(internalConv);
     await chat.postMessage({ conv: internalConvObj, actor: { kind: 'staff', id: ae, roleLabel: 'AE' }, body: 'internal note: BlueLake wants extra reserves' });
@@ -176,6 +196,19 @@ function png() {
       'the broker is NEVER sent a chat email — a staff reply / internal note never reaches the external broker by email');
     ok(emailedTo.some(t => t.startsWith(`ae-${sfx}`)),
       'our AE IS emailed about the broker messages (team notified through the normal path)');
+
+    // ── SECURITY (audit SEC-1): the LIVE SSE fan-out must scrub the partner name for a tpo (broker)
+    // connection, not only the REST fetch — SSE is the broker's PRIMARY delivery channel in v1, so a
+    // gap there leaks the raw capital-partner name live even though the HTTP fetch scrubs it. ──
+    const events = require(R + '/src/lib/events');
+    const sseFrames = [];
+    const fakeRes = { writeHead() {}, write(s) { sseFrames.push(String(s)); }, on() {}, end() {} };
+    events.addClient(fakeRes, { kind: 'tpo', id: brokerA });   // brokerA is a tpo member of cid (seated above)
+    await events.publishToConversation(cid, 'message:new',
+      { message: { body: 'Confirmed with BlueLake Capital — funding Friday.', sender_kind: 'staff' } });
+    const sse = sseFrames.join('\n');
+    ok(!/BlueLake|Blue Lake/i.test(sse), 'the LIVE SSE frame to the broker is SCRUBBED of the capital-partner name (not just the REST fetch)');
+    ok(/Gold Standard program/i.test(sse), 'the SSE frame carries the borrower-safe "Gold Standard program"');
 
     console.log(`\ntest-tpo-chat-db: ${pass} passed, ${fail} failed`);
   } catch (e) {

@@ -189,7 +189,7 @@ router.post('/chat/conversations/:cid/delivered', async (req, res) => {
 });
 router.post('/chat/conversations/:cid/typing', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   const s = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [me(req)]);
   const name = (s.rows[0] && s.rows[0].full_name) || 'Broker';
   events.publishToConversation(conv.id, 'typing', {
@@ -199,7 +199,7 @@ router.post('/chat/conversations/:cid/typing', async (req, res) => {
 });
 router.post('/chat/conversations/:cid/open', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   res.json({ ok: true });
 });
 router.put('/chat/conversations/:cid/draft', async (req, res) => {
