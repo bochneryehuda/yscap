@@ -77,10 +77,16 @@ const RESEND_BASE = 'https://api.resend.com';
 
 // --- RETRIEVAL / FILING budget (memory-bound, provider-agnostic) ---
 const MAX_ATTACH_BYTES = 8 * 1024 * 1024;      // per attachment (a real closing document)
-// Comfortably above the closing chain's 30 documents plus the signature/logo images a
-// long reply-all chain carries, which are retrieved and only then discarded.
+// The single count bound on an inbound package. It is what the filing sinks are kept at
+// (closing-inbox.MAX_DOCS_PER_EMAIL, order-inbox.MAX_RETURN_DOCS), so everything
+// retrieved is FILED (signature/logo images are filtered separately, via the `skipped`
+// path in saveChainDocs — never by this cap), and anything BEYOND it is dropped and
+// REPORTED (droppedByCap), never silently truncated by a lower sink.
 const MAX_ATTACH_COUNT = 60;
-const MAX_ATTACH_TOTAL_RETRIEVE = 45 * 1024 * 1024; // held in memory for one delivery
+// A ceiling on the DECODED bytes we pull into memory for one delivery. Held as base64
+// (~1.33× the decoded size) across the filing + forward consumers, so a maxed single
+// delivery is on the order of ~60 MB of string; bounded and fine for this app.
+const MAX_ATTACH_TOTAL_RETRIEVE = 45 * 1024 * 1024;
 
 // --- FORWARD budget (what we attach to the outbound courtesy-forward) ---
 const MAX_ATTACH_TOTAL = 15 * 1024 * 1024;     // Resend outbound sendMail

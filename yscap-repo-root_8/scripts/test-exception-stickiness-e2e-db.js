@@ -65,6 +65,8 @@ const SCENARIO = {
     const borrowerId = (await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Exs','Test',$1) RETURNING id`,
       [`exs-bo-${sfx}@test.local`])).rows[0].id;
+    await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified) VALUES ($1,'x',0,true)`, [borrowerId]);
+    const boTok = C.signJwt({ sub: borrowerId, kind: 'borrower', tv: 0 });
     const mkApp = async () => (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, status, loan_type, program, property_type,
                                  purchase_price, as_is_value, arv, rehab_budget, rehab_type, term,
@@ -132,10 +134,36 @@ const SCENARIO = {
     assert(m3.body.pendingApproval === true, 'the manual program with the loan amount UP needs a fresh approval (capital / BP structure)');
     assert((await escCount(appB, 'pending')) === 1, 'and a new PENDING escalation opens for the increased loan');
 
+    // ============ 5. THE BORROWER PATH stores needs_approval=false on a covered re-register ============
+    // A below-minimum deal quotes MANUAL; the borrower submits it as an exception, an admin
+    // approves, and the borrower re-registering the identical terms reuses the grant AND
+    // stores needs_approval=FALSE (the fallback would have re-derived TRUE from status===MANUAL).
+    const appBo = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, status, loan_type, program, property_type,
+                                 purchase_price, as_is_value, arv, rehab_budget, rehab_type, term,
+                                 requested_exp_flips, property_address)
+       VALUES ($1,$2,'underwriting','Purchase','standard','SFR (1 unit)',90000,90000,120000,8000,'Cosmetic','12 Months',5,
+               '{"line1":"2 Exc St","city":"Newark","state":"NJ","zip":"07102"}'::jsonb)
+       RETURNING id`, [borrowerId, loId])).rows[0].id;
+    const bo1 = await call(server, 'POST', `/api/borrower/applications/${appBo}/pricing/register`, boTok,
+      { program: 'standard', overrides: {}, submitException: true });
+    assert(bo1.status === 201 && bo1.body.pendingApproval === true, `borrower's below-minimum deal is a pending MANUAL exception (got ${bo1.status} ${JSON.stringify(bo1.body && (bo1.body.error || bo1.body.code) || '')})`);
+    const escBo = await latestEsc(appBo);
+    if (escBo) {
+      await call(server, 'POST', `/api/admin/manual-programs/escalations/${escBo.id}/decide`, adminTok, { decision: 'approved', note: 'ok' });
+      const escBoAfter = await escCount(appBo);
+      const bo2 = await call(server, 'POST', `/api/borrower/applications/${appBo}/pricing/register`, boTok,
+        { program: 'standard', overrides: {}, submitException: true });
+      assert(bo2.status === 201 && bo2.body.pendingApproval === false, 'borrower RE-register of the approved MANUAL exception reuses the grant');
+      assert((await regRow(appBo)).needs_approval === false, 'and the stored registration is needs_approval=FALSE (not the misleading fallback TRUE)');
+      assert((await escCount(appBo)) === escBoAfter, 'no new escalation on the borrower re-register');
+    }
+
     // Cleanup.
-    await db.query(`DELETE FROM manual_program_escalations WHERE application_id = ANY($1::uuid[])`, [[appA, appB]]);
-    await db.query(`DELETE FROM product_registrations WHERE application_id = ANY($1::uuid[])`, [[appA, appB]]);
-    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appA, appB]]);
+    await db.query(`DELETE FROM manual_program_escalations WHERE application_id = ANY($1::uuid[])`, [[appA, appB, appBo]]);
+    await db.query(`DELETE FROM product_registrations WHERE application_id = ANY($1::uuid[])`, [[appA, appB, appBo]]);
+    await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appA, appB, appBo]]);
+    await db.query(`DELETE FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]);
     await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[loId, adminId]]);
   } catch (e) {

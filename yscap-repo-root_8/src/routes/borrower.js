@@ -1240,6 +1240,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: null,
         termOptions: resolvedTermOptions,
+        // Pass the resolved escalation decision explicitly so a covered re-register of an
+        // already-approved MANUAL exception stores needs_approval=FALSE. Without it the
+        // fallback re-derives it from quote.status==='MANUAL' and writes a misleading
+        // TRUE (the issuance gate keys on the pending escalation, so it never leaked
+        // terms — but the stored flag drove the /pricing history display).
+        needsApproval: needsEscalation,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
