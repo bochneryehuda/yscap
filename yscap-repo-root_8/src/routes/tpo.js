@@ -1,6 +1,6 @@
 /**
- * TPO PORTAL API — the third front door (owner-directed 2026-08-04; db/467 +
- * db/468; design docs/TPO-PORTAL-BLUEPRINT.md).
+ * TPO PORTAL API — the third front door (owner-directed 2026-08-04; db/472 +
+ * db/473; design docs/TPO-PORTAL-BLUEPRINT.md).
  *
  * Every endpoint requires a `kind='tpo'` session (an EXTERNAL brokerage user, a
  * staff_users row flagged is_external) and is FIRM-SCOPED: a TPO user only ever

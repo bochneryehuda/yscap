@@ -23,6 +23,11 @@ const email = require('./email');
 const notify = require('./notify');
 const tpl = require('./email/template');
 const { orderReplyTo } = require('./file-address');
+// RCN detection is the ONE shared note-buyer helper (mirrors isFidelis/isEmcap/
+// isBlueLake), so the order clause and the underwriting mortgagee-address check
+// agree on which files are RCN. normNoteBuyer normalizes exactly as the old local
+// copy did (lowercase, non-alphanumerics stripped) — behavior unchanged.
+const { isRcnNoteBuyer } = require('./conditions/field-registry');
 
 const ORDER_TYPES = ['title', 'insurance'];
 // The service-contact type that fulfils each order (a title order needs the
@@ -37,6 +42,25 @@ const MORTGAGEE_CLAUSE = [
   '5 New Montrose Avenue, #Bsmt',
   'Brooklyn, NY 11211',
 ];
+
+/** When the note buyer is RCN, its notes are serviced by Elite Commercial
+    Servicing, so a vendor order must list us as mortgagee/loss payee AT THE
+    SERVICER'S NOTICE ADDRESS — otherwise insurance cancellation notices and title
+    matters never reach the party actually servicing the note (owner-directed
+    2026-08-04, order email only). */
+const MORTGAGEE_CLAUSE_RCN = [
+  'YS Capital Group, ISAOA ATIMA',
+  'c/o Elite Commercial Servicing, LLC',
+  'PO Box 15126',
+  'Richmond, VA 23227-0526',
+];
+
+/** The mortgagee clause LINES for a file, by note buyer (RCN → the servicer clause,
+    everyone else → the standard YS Capital clause). The loan number is appended by
+    the caller. */
+function mortgageeClauseFor(lender) {
+  return isRcnNoteBuyer(lender) ? MORTGAGEE_CLAUSE_RCN : MORTGAGEE_CLAUSE;
+}
 
 function money(n) { return n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
 
@@ -64,7 +88,7 @@ function propertyLine(pa) {
  */
 async function getOrderData(appId) {
   const r = await db.query(
-    `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount,
+    `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount, a.lender,
             a.usps_match, a.usps_imported_at,
             a.loan_officer_id, a.processor_id,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
@@ -107,6 +131,11 @@ async function getOrderData(appId) {
     coBorrowerEmail: a.co_email || null,
     dob: a.date_of_birth ? new Date(a.date_of_birth).toLocaleDateString('en-US') : '',
     entityName: a.entity_name || '',
+    // The note buyer (capital partner), STAFF-ONLY, drives the mortgagee clause on
+    // the vendor order — RCN's notes are serviced by Elite Commercial Servicing, so
+    // its clause names the servicer's notice address (owner-directed 2026-08-04).
+    // Never leaves the order email; borrower-facing surfaces are untouched.
+    lender: a.lender || null,
     loanAmount: a.loan_amount != null ? money(a.loan_amount) : '',
     officer: a.lo_name
       ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
@@ -157,7 +186,7 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
 
-  const clause = MORTGAGEE_CLAUSE.concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
+  const clause = mortgageeClauseFor(data.lender).concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
   // The loan officer signs the order (a real person the vendor can reach) — as
   // the branded contact card the template already renders.
   const officerCard = data.officer
@@ -408,6 +437,7 @@ module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
   transactionType, propertyLine, money,
+  mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
   sendOrderMail, sendVerdict, isAmbiguousSendFailure,
   newOrderMessageId, replyOrderSubject,
 };

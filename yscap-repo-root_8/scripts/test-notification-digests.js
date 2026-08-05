@@ -187,6 +187,36 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [app.id]);
   ok('on_hold (paused) file excluded from draw reminders');
 
+  /* 6f) BORROWER NUDGE CAP + coordinator hand-off (owner-directed: "the borrower keeps receiving these
+     emails … prevent it from being sent to him again and again"). After CAP nudges on the same delivered
+     episode we STOP emailing the borrower and hand the draw to its coordinator once / 2 days. */
+  await db.query(`DELETE FROM audit_log WHERE action IN ('draw_findings_reminder','draw_borrower_stuck') AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [app.id]);
+  await db.query(`UPDATE draw_findings SET status='delivered', delivered_at=now()-interval '5 days', accepted_at=NULL, wire_due_at=NULL WHERE application_id=$1`, [app.id]);
+  // Assign a draw coordinator by recording who "started the draw" (drawCoordinatorsForFile precedence #1).
+  await db.query(`UPDATE sitewire_property_links SET lifecycle_state='active', draw_setup_started_by=$2 WHERE application_id=$1`, [app.id, st.id]);
+  // Under the cap → the borrower is still nudged, the coordinator is not yet pulled in.
+  reset(); const cUnder = await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(cUnder >= 1 && to(bemail), 'under the cap: the borrower is still nudged');
+  assert.ok(!to(semail), 'under the cap: the coordinator is not yet handed off (LO only rides the borrower BCC)');
+  // Simulate CAP borrower nudges already sent THIS episode — old enough (1 day) that the waitHours
+  // throttle has cleared so the file re-enters, but after the oldest delivery so they all count.
+  await db.query(`DELETE FROM audit_log WHERE action='draw_findings_reminder' AND entity_id=$1`, [app.id]).catch(() => {});
+  for (let i = 0; i < 5; i++) {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, created_at)
+       VALUES ('system','draw_findings_reminder','application',$1, now()-interval '1 day')`, [app.id]);
+  }
+  reset(); const cCap = await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(!to(bemail), 'AT THE CAP: the borrower is NO LONGER emailed (the bombardment stops)');
+  const hm = to(semail);
+  assert.ok(cCap >= 1 && hm, 'AT THE CAP: the draw coordinator is handed the follow-up');
+  assert.ok(/follow up/i.test(hm.subject) && /still waiting|reach out|mark the draw approved/i.test(hm.html), 'the hand-off explains the borrower has not accepted');
+  reset(); await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(!to(semail), 'the coordinator hand-off is gated on the 2nd run (once / 2 days)');
+  await db.query(`DELETE FROM audit_log WHERE action IN ('draw_findings_reminder','draw_borrower_stuck') AND entity_id=$1`, [app.id]).catch(() => {});
+  ok('borrower nudge cap: after N reminders the borrower stops being emailed and the coordinator is handed off');
+
   await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app.id]).catch(() => {});
 

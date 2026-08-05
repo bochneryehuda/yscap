@@ -1,6 +1,6 @@
 -- ============================================================================
--- 469 — TPO PORTAL, phase 2a: firm onboarding + the broker/processor INVITE.
---       Depends on db/467 (tpo_firms, staff_users external flags).
+-- 474 — TPO PORTAL, phase 2a: firm onboarding + the broker/processor INVITE.
+--       Depends on db/472 (tpo_firms, staff_users external flags).
 --
 -- An internal admin creates a firm and invites the lead broker; the lead broker
 -- (a firm admin) invites their own processors. Both invites reuse the existing
@@ -25,7 +25,7 @@ ALTER TABLE invite_tokens ADD  CONSTRAINT invite_tokens_kind_check
   CHECK (kind IN ('staff','borrower','tpo'));
 
 -- ----------------------------------------------------------------------------
--- (2) A firm-admin is always an external user (audit follow-up, db/467 §4
+-- (2) A firm-admin is always an external user (audit follow-up, db/472 §4
 --     didn't cover this): `is_firm_admin=true` implies `is_external=true`. All
 --     existing rows are is_firm_admin=false, so none can fail.
 -- ----------------------------------------------------------------------------

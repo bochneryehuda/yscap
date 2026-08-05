@@ -1510,7 +1510,7 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -1752,7 +1752,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           row and the borrower-facing one can never drift again. */}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-          docs={itemDocs} size="" />
+          docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
         {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
           onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
@@ -2173,15 +2173,27 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     )}
                     {appId && (
                       <button className="btn ghost small" disabled={busy === l.id}
-                        title="Post a request/issue about this entity — it becomes a named condition on this file that the borrower can respond to"
+                        title="Flag an internal issue about this entity for the team to review — the borrower is NOT notified"
                         onClick={async () => {
-                          const reason = window.prompt(`Raise an issue on "${l.llc_name}" — what do you need? (the borrower will see this)`);
+                          const reason = window.prompt(`Raise an internal issue about "${l.llc_name}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                           if (reason == null || !reason.trim()) return;
                           setBusy(l.id); setErr(''); setMsg('');
-                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — added as a condition on this file.`); onChanged && onChanged(); }
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — recorded internally for review (the borrower was not notified).`); onChanged && onChanged(); }
                           catch (e) { setErr(e.message || 'Could not raise the issue'); }
                           finally { setBusy(''); }
                         }}>Raise an issue</button>
+                    )}
+                    {appId && (
+                      <button className="btn ghost small" disabled={busy === l.id}
+                        title="Post a borrower-facing condition on THIS loan about this entity — the borrower is notified"
+                        onClick={async () => {
+                          const reason = window.prompt(`Post a condition on this loan about the entity "${l.llc_name}" — what does the borrower need to provide?\n\nThe borrower WILL be notified.`);
+                          if (reason == null || !reason.trim()) return;
+                          setBusy(l.id); setErr(''); setMsg('');
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim(), true); setMsg(`Condition posted about ${l.llc_name} — the borrower was notified.`); onChanged && onChanged(); }
+                          catch (e) { setErr(e.message || 'Could not post the condition'); }
+                          finally { setBusy(''); }
+                        }}>Post a condition</button>
                     )}
                   </div>
                 </div>
@@ -2658,15 +2670,25 @@ function StaffTrackRecordPanel({ app, role }) {
                       finally { setTrBusy(''); }
                     }}>Request a document</button>
                   <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Post a request/issue about this past project — it becomes a condition on this file"
+                    title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
                     onClick={async () => {
-                      const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
+                      const reason = window.prompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); reloadAll(); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
+                    onClick={async () => {
+                      const reason = window.prompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
+                      if (reason == null || !reason.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
+                      catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
+                      finally { setTrBusy(''); }
+                    }}>Post a condition</button>
                 </div>
                 {openReqs.map(rq => (
                   <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
@@ -3235,7 +3257,7 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -3573,7 +3595,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
+                onRequestWaiver={onRequestWaiver} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -3798,7 +3821,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   canSendBack is forced on: these rows are the borrower's list,
                   so sending one back is always a real option here. */}
               <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-                docs={itemDocs} canSendBack />
+                docs={itemDocs} canSendBack onRequestWaiver={onRequestWaiver} />
             </div>
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
@@ -4514,6 +4537,25 @@ export default function StaffApplication() {
       }
     }
   }
+  // Any staffer may ASK an admin/super-admin to waive a condition (owner-directed
+  // 2026-08-04). Prompts for the reason, files the request; approval (in the
+  // Exceptions box) marks the condition waived.
+  async function requestWaiver(it) {
+    const reason = window.prompt(
+      `Ask an admin to waive this condition:\n\n“${(it && it.label) || 'condition'}”\n\n`
+      + 'Why should it be waived? (an admin/super-admin will review; if approved, it is marked waived)');
+    if (reason == null || !reason.trim()) return;
+    try {
+      const r = await api.requestConditionWaiver(id, it.id, { reasonNote: reason.trim() });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');
+      flash('Waiver requested — an admin will review it ✓');
+      await load();
+    } catch (e) {
+      const emsg = (e && e.data && e.data.error) || (e && e.message) || 'Could not send the request.';
+      setErr(emsg);
+      try { window.alert(emsg); } catch (_) { /* no window */ }
+    }
+  }
   async function downloadDoc(doc) {
     setDlBusy(doc.id);
     try { const { blob, filename } = await api.staffDownloadDoc(doc.id); saveBlob(blob, filename || doc.filename); }
@@ -4831,6 +4873,27 @@ export default function StaffApplication() {
       setTimeout(poll, 120);
     }
   }, [setCommTab]);
+  // The E-sign Send button calls this to FINALIZE the term sheet (owner-directed
+  // 2026-08-04). The studio (ProductStudioPanel) mounts only while sec-pricing is
+  // open and its imperative ref lands a beat later — so open the section, poll for
+  // the ref, then drive its finalizeTermSheet(). Degrades to a clear message if the
+  // studio never mounts. Returns a { ok, reason } promise the caller shows/acts on.
+  const finalizeTermSheetBridge = useCallback(() => new Promise((resolve) => {
+    requestOpenSection('sec-pricing');
+    let tries = 0;
+    const poll = () => {
+      const ref = studioRef.current;
+      if (ref && typeof ref.finalizeTermSheet === 'function') {
+        Promise.resolve(ref.finalizeTermSheet())
+          .then((r) => resolve(r || { ok: false, reason: 'Could not finalize the term sheet.' }))
+          .catch((e) => resolve({ ok: false, reason: (e && e.message) || 'Could not finalize the term sheet.' }));
+        return;
+      }
+      if (++tries < 120) { setTimeout(poll, 50); return; }
+      resolve({ ok: false, reason: 'Open Products & Pricing and re-register to attach the final term sheet.' });
+    };
+    setTimeout(poll, 120);
+  }), []);
   // Flush a queued jump once the newly-active room's sections have mounted.
   useEffect(() => {
     const t = pendingRevealRef.current;
@@ -5719,7 +5782,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -5845,7 +5908,7 @@ export default function StaffApplication() {
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
-      <EsignFileSection appId={id} role={role} onChanged={load} />
+      <EsignFileSection appId={id} role={role} onChanged={load} onFinalizeTermSheet={finalizeTermSheetBridge} />
       </Section>
       {showClosing && (
         <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}

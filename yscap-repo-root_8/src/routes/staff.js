@@ -1534,9 +1534,9 @@ router.post('/invite-to-portal', async (req, res) => {
       else {
         const name = [first, last].filter(Boolean).join(' ') || email;
         const lr = await db.query(
-          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at)
-           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now()) RETURNING id`,
-          [name, first || null, last || null, email, phone, officerId, req.actor.id]);
+          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at,assigned_via)
+           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now(),$8) RETURNING id`,
+          [name, first || null, last || null, email, phone, officerId, req.actor.id, officerId ? 'manual' : null]);
         leadId = lr.rows[0].id;
         await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Invited to portal',$3)`,
           [leadId, req.actor.id, 'Invited ' + email + ' to the borrower portal']);
@@ -3281,6 +3281,65 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     // INSERT is a unique violation, i.e. "already pending", not a server error
     // (same mapping as the esign + pricing request routes).
     if (e && e.code === '23505') return res.status(409).json({ error: 'A guaranty-waiver request is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Request a WAIVER of a specific condition (owner-directed 2026-08-04): "any user
+// should be able to request from the admin or super admin an exception to waive any
+// condition. And after the exception is being approved, that condition should be
+// marked as waived." Any staffer on the file may file it (file-scoped by the
+// /applications/:id middleware); an admin/super-admin decides it in the Exceptions
+// box, and APPROVAL marks that one condition waived (admin-exceptions.js).
+router.post('/applications/:id/conditions/:itemId/request-waiver', async (req, res) => {
+  const appId = req.params.id;
+  const itemId = req.params.itemId;
+  try {
+    // The condition must belong to THIS file, and not already be cleared.
+    const ci = (await db.query(
+      `SELECT id, status, label FROM checklist_items WHERE id=$1 AND application_id=$2`, [itemId, appId])).rows[0];
+    if (!ci) return res.status(404).json({ error: 'That condition is not on this file.' });
+    if (ci.status === 'satisfied') return res.status(409).json({ error: 'That condition is already cleared — there is nothing to waive.' });
+
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why this condition should be waived.' });
+
+    // A fresh ask after a denial for the SAME condition links back (re-request chain).
+    const priorList = await loanExceptions.registerForApp(appId);
+    const prior = loanExceptions.presentExpiry((priorList || []).find((r) =>
+      (r.type || r.exception_type) === 'condition_waiver' && String(r.target_checklist_item_id) === String(itemId)) || null);
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestConditionWaiver(client, {
+        appId, checklistItemId: itemId, reasonCode, reasonNote, requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'condition_waiver_request',
+        title: 'Condition waiver needs review',
+        body: `${req.actor.name || 'A team member'} requested waiving “${ci.label || 'a condition'}” on ${ctx ? ctx.label : 'a file'}: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'condition_waiver_requested', 'application', appId,
+      { exceptionId: row.id, checklistItemId: itemId, reasonCode: row.reason_code, note: reasonNote });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the per-condition partial unique index.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A waiver for this condition is already awaiting review.' });
     console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
   }
 });
@@ -8847,7 +8906,12 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    // A borrower with NO active file has nothing to be invited TO. Rather than a
+    // dead end, the profile offers to START an application for them and invite them
+    // to fill it in — a `code` the client keys on to reach the invite-only new-file
+    // path (owner-directed 2026-08-04, #23). Passing borrowerId there links the new
+    // file to THIS exact profile, so their records carry over.
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to', code: 'no_active_file' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
     res.json({ ok: true, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -10404,8 +10468,10 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
-    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    // Default = raise an issue INTERNALLY (no borrower email). Only an explicit
+    // postCondition:true posts a borrower-facing condition (owner-directed 2026-08-04).
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_track_record_condition' : 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
@@ -10448,8 +10514,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
     if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_llc_condition' : 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -13700,7 +13766,9 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   const col = (name, val) => { sets.push(`${name}=$${i++}`); vals.push(val); };
   if (b.status !== undefined) { col('status', b.status); if (b.status === 'lost') col('lost_at', new Date().toISOString()); }
-  if (b.officerId !== undefined) col('officer_id', b.officerId || null);
+  // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
+  // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
+  if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
   if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
@@ -16447,9 +16515,37 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       }
     } catch (_) { /* fail OPEN — an Encompass problem must never strand a send */ }
   }
+  // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
+  // (owner-directed 2026-08-04): "the super admin should always be able to override
+  // anything and send if he wants, with a warning." Only a super-admin may force a
+  // sheet not recorded FINAL out for signature, and only with a reason (collected in
+  // the UI). Mirrors the Encompass admin override above. Ignored for a non-term-sheet
+  // package or a blank reason; a NON-super-admin who supplies one is refused — never
+  // silently sent — so this stays the top-authority escape hatch it is meant to be.
+  let termSheetFinalOverride = null;
+  const tsOvrReason = String((req.body && req.body.termSheetFinalOverrideReason) || '').trim();
+  if (TERM_SHEET_ESIGN_PURPOSES.has(purpose) && tsOvrReason) {
+    if (!(req.actor && req.actor.role === 'super_admin')) {
+      return res.status(403).json({ error: 'Only a super admin can override the term-sheet check and send a sheet that is not marked final.', code: 'term_sheet_final_override_denied' });
+    }
+    termSheetFinalOverride = { by: req.actor.id, reason: tsOvrReason };
+  }
   try {
-    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue, termSheetFinalOverride });
     await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
+    // A term-sheet-final override that actually sent is RECORDED (best-effort): an
+    // audit row + a first-class entry in the exception register, so the file answers
+    // "who forced a not-final sheet out, and why?" long after.
+    if (termSheetFinalOverride && out && out.ok) {
+      try { await audit(req, 'esign_term_sheet_final_override', 'application', req.params.id, { purpose, reason: tsOvrReason.slice(0, 500), envelopeRowId: out.envelopeRowId }); } catch (_) { /* audit best-effort */ }
+      try {
+        await require('../lib/loan-exceptions').recordIssuanceOverride({
+          appId: req.params.id, staffId: req.actor && req.actor.id,
+          note: `term_sheet_final override (docusign ${purpose}): ${tsOvrReason.slice(0, 380)}`,
+          snapshot: { kind: 'term_sheet_final_override', purpose },
+        });
+      } catch (_) { /* register write is best-effort */ }
+    }
     // Return the REAL outcome — never a false "Sent for signature." toast. ok mirrors
     // sendPackage's ok (a genuine send / already-sent). Every non-success disposition
     // gets its OWN plain-language reason so staff always know the true state:

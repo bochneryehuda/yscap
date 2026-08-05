@@ -74,7 +74,7 @@ async function sessionQuery(claims) {
     ? `, EXISTS(SELECT 1 FROM revoked_sessions WHERE sid=$2) AS sid_revoked`
     : `, false AS sid_revoked`;
   const params = withSid ? [claims.sub, sid] : [claims.sub];
-  // A tpo session is an external staff_users row (db/467), so it reads the same
+  // A tpo session is an external staff_users row (db/472), so it reads the same
   // columns as a staff session.
   const sql = (claims.kind === 'staff' || claims.kind === 'tpo')
     ? `SELECT token_version, role, permissions, is_active${revoked} FROM staff_users WHERE id=$1`
@@ -111,7 +111,7 @@ async function authenticate(req, res, next) {
   // /mfa/verify step. Reject it here or the second factor is bypassable.
   if (claims.mfa) return sessionDenied(req, res, 'mfa_incomplete', 'mfa not completed');
   // Access tokens are ONLY 'staff', 'borrower' or 'tpo' (the external brokerage
-  // portal, db/467). Any other kind — the e-sign magic-link tokens
+  // portal, db/472). Any other kind — the e-sign magic-link tokens
   // ('esign_magic'/'esign_return'), or any future special-purpose signed token —
   // must NEVER be usable as a Bearer session, even if its `sub` happened to
   // collide with a real id. Belt-and-suspenders alongside those tokens
@@ -321,7 +321,7 @@ const borrowerToken = (id, tv, sid) => C.signJwt({ sub: id, kind: 'borrower', ro
 const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff', role, tv, sid: sid || newSid() });
 // A TPO (external brokerage) session. Same shape as a staff token — the row is
 // in staff_users — but `kind:'tpo'` routes it to the third front door and keeps
-// it out of every /api/staff and /api/borrower gate (db/467).
+// it out of every /api/staff and /api/borrower gate (db/472).
 const tpoToken      = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'tpo', role, tv, sid: sid || newSid() });
 
 /**
@@ -458,7 +458,7 @@ router.post('/borrower/register', async (req, res) => {
 // lockout exactly like the direct endpoint would — otherwise the cross-surface
 // fallback is an unthrottled brute-force channel (found in pre-merge audit).
 async function tryStaffCredentials(email, password) {
-  // is_external=false: an external TPO broker (db/467) authenticates ONLY at the
+  // is_external=false: an external TPO broker (db/472) authenticates ONLY at the
   // TPO door (/auth/tpo/login), never the staff console — not directly and not
   // through this cross-surface fallback.
   const r = await db.query(
@@ -576,7 +576,7 @@ async function completeMfa(req, res) {
   try {
     const v = await verifyMfaStep(claims.kind, claims.sub, code);
     if (!v.ok) return res.status(v.status).json({ error: v.error });
-    // staff AND tpo both live in staff_users (db/467); only the minted token
+    // staff AND tpo both live in staff_users (db/472); only the minted token
     // kind differs, which is what routes the external user to the TPO door.
     if (claims.kind === 'staff' || claims.kind === 'tpo') {
       const r = await db.query(
@@ -783,7 +783,7 @@ router.post('/borrower/reset', async (req, res) => {
 // ---------------- MFA setup (borrower or staff) ----------------
 router.post('/mfa/setup', requireAuth, async (req, res) => {
   const secret = C.newTotpSecret();
-  // A tpo user is a staff_users row (db/467), so their 2FA enrolls in
+  // A tpo user is a staff_users row (db/472), so their 2FA enrolls in
   // staff_users — only a borrower uses borrower_auth. (mfaTbl/mfaIdCol are
   // defined below this route, so the branch is inlined to match them.)
   const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
@@ -820,7 +820,7 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
 });
 
 // Helpers to address either login table from the actor kind.
-// A tpo user is a staff_users row (db/467), so their 2FA lives in staff_users.
+// A tpo user is a staff_users row (db/472), so their 2FA lives in staff_users.
 const mfaTbl = (kind) => (kind === 'borrower' ? 'borrower_auth' : 'staff_users');
 const mfaIdCol = (kind) => (kind === 'borrower' ? 'borrower_id' : 'id');
 
@@ -942,7 +942,7 @@ router.post('/staff/login', async (req, res, next) => {
 router.post('/staff/mfa/verify', completeMfa);
 
 // ---------------- TPO (external brokerage) login ----------------
-// The third front door (db/467). A TPO user is a staff_users row flagged
+// The third front door (db/472). A TPO user is a staff_users row flagged
 // `is_external=true`; this door authenticates ONLY those rows and mints a
 // `kind='tpo'` token. There is deliberately NO cross-surface fallback — a
 // broker is only ever a broker, so an internal staffer or a borrower typing
@@ -1098,7 +1098,7 @@ router.post('/accept', async (req, res, next) => {
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
     }
     if (row.kind === 'tpo') {
-      // A TPO (external brokerage) invite (db/467/469). Creates an is_external
+      // A TPO (external brokerage) invite (db/472/469). Creates an is_external
       // staff_users row tied to the firm named on the invite, and mints a
       // kind='tpo' session. NEVER flip an INTERNAL account into an external one:
       // the ON CONFLICT UPDATE is guarded on `is_external = true`, so a conflict
@@ -1175,7 +1175,7 @@ router.post('/accept', async (req, res, next) => {
  */
 router.post('/logout', requireAuth, async (req, res) => {
   // staff AND tpo both revoke against staff_users (a tpo user is a staff_users
-  // row, db/467); only a borrower uses borrower_auth.
+  // row, db/472); only a borrower uses borrower_auth.
   const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
   const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   const everywhere = (req.body && req.body.everywhere === true) || !req.actor.sid;

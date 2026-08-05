@@ -106,8 +106,8 @@ internal workflow condition.
 ## 5. Phased build
 
 1. **Foundation** ✅ (this PR) — firm + TPO identity + firm scoping + the curated
-   API seam. `db/467` (tpo_firms + staff_users external flags + role CHECK +
-   external-firm invariant), `db/468` (applications `is_tpo`/`tpo_firm_id`/
+   API seam. `db/472` (tpo_firms + staff_users external flags + role CHECK +
+   external-firm invariant), `db/473` (applications `is_tpo`/`tpo_firm_id`/
    `borrower_portal_enabled` + assignee roles `account_executive`/
    `account_manager` + TPO-firm invariant). `permissions.tpoFirmScopeSql`/
    `tpoBorrowerScopeSql`/`isTpoActor`. Auth `kind='tpo'` (login `/auth/tpo/login`,
@@ -119,7 +119,7 @@ internal workflow condition.
    `/api/admin/tpo`): create a firm, invite the lead broker, list/detail firms,
    suspend/close (atomically revokes broker sessions). The firm admin invites
    their own processors (`/api/tpo/team` + `/team/invite`). Invite machinery reuses
-   `invite_tokens` + `/auth/accept` (`db/469` carries the firm + firm-admin flag +
+   `invite_tokens` + `/auth/accept` (`db/474` carries the firm + firm-admin flag +
    the `tpo` invite kind); `tpoInvite` email. The `app-v2` third door: `TpoLogin`,
    `TpoAccept`, `TpoLayout`, firm-scoped `TpoPipeline`, `TpoTeam`; `isTpo` in the
    auth context + route guards (`TpoPrivate`; borrower/staff areas bounce a tpo

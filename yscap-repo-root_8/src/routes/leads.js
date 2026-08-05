@@ -193,6 +193,15 @@ router.post('/', async (req, res) => {
           ORDER BY created_at ASC, id ASC LIMIT 1`, [code]);
       if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; }
     }
+    // #29 round-robin: with no branded officer, assign the lead to the next loan officer in fair
+    // rotation so it gets an OWNER instead of sitting unowned on the sales desk. A newsletter
+    // subscription is not a loan lead and is never assigned; an empty pool falls through to the
+    // sales-desk / admin routing below, so a lead is never lost.
+    let assignedVia = officerId ? 'lo_link' : null;
+    if (!officerId && tool !== 'subscribe') {
+      const rr = await require('../lib/lead-assignment').pickRoundRobinOfficer();
+      if (rr) { officerRow = rr; officerId = rr.id; assignedVia = 'round_robin'; }
+    }
 
     const label = TOOL_LABEL[tool] || tool;
     // Record WHICH page sent the submission (the browser's Referer header) in
@@ -203,13 +212,13 @@ router.post('/', async (req, res) => {
     if (fromUrl && payloadObj && typeof payloadObj === 'object' && !Array.isArray(payloadObj) && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
     const payloadJson = (b.payload || fromUrl) ? F.jsonbText(payloadObj) : null;
     const ins = await db.query(
-      `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
       [tool, name, email, phone, code || null, officerId,
        b.subject ? String(b.subject).slice(0, 240) : `${label} — ${name || email || 'new lead'}`,
        b.message ? String(b.message).slice(0, 4000) : null,
        payloadJson,
-       req.ip, (req.get('user-agent') || '').slice(0, 400)]);
+       req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia]);
     const leadId = ins.rows[0].id;
 
     // Build a compact summary for the internal notification.

@@ -1,6 +1,6 @@
 /**
  * TPO firm onboarding — INTERNAL admin surface (owner-directed 2026-08-04;
- * db/467/469; design docs/TPO-PORTAL-BLUEPRINT.md). An internal admin creates a
+ * db/472/469; design docs/TPO-PORTAL-BLUEPRINT.md). An internal admin creates a
  * brokerage firm and invites its lead broker; the lead broker then invites their
  * own processors from inside the TPO portal (src/routes/tpo.js).
  *

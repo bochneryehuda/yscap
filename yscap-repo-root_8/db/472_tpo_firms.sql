@@ -1,5 +1,5 @@
 -- ============================================================================
--- 467 — TPO PORTAL, foundation part 1: the brokerage FIRM + the external TPO
+-- 472 — TPO PORTAL, foundation part 1: the brokerage FIRM + the external TPO
 --       user identity (owner-directed 2026-08-04: "We're rolling out a TPO
 --       portal … connect brokerage firms and users within that firm to handle
 --       files. They should be the loan officer on the file; we're the lender's
@@ -7,7 +7,7 @@
 --
 -- This is an RTL build — a wholesale ORIGINATION CHANNEL for the main RTL
 -- product. It is NOT a third product: a TPO loan is a normal RTL `applications`
--- row, flagged TPO (db/468). Design + the owner's locked decisions:
+-- row, flagged TPO (db/473). Design + the owner's locked decisions:
 -- docs/TPO-PORTAL-BLUEPRINT.md.
 --
 -- IDENTITY MODEL (see the auth spine in src/auth/index.js + src/lib/permissions.js):
