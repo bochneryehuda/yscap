@@ -627,7 +627,7 @@ router.get('/applications', async (req, res) => {
 // nag here — their items wait inside the file. Borrower-SAFE: only borrower_* wording,
 // scrubbed of any capital-partner name.
 const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
-const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska' };
+const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 function propLabelOf(j) {
   if (!j) return '';
   if (typeof j === 'string') return j.trim();
