@@ -299,6 +299,10 @@
         errEl.textContent = "Please enter a phone number (or an email) so we can reach you.";
         errEl.style.display = "block"; return;
       }
+      if (!window.fetch) {
+        errEl.textContent = "Please call or email " + ((o.name || "").split(/\s+/)[0] || "us") + " directly.";
+        errEl.style.display = "block"; return;
+      }
       goBtn.disabled = true; goBtn.textContent = "Sending…";
       var body = {
         tool: "contact", name: name, phone: phone, email: email,
@@ -318,7 +322,7 @@
       }).catch(function () {
         goBtn.disabled = false; goBtn.textContent = "Request a call";
         errEl.textContent = "Sorry — that didn't go through. Please call or email " +
-          (o.name ? esc((o.name || "").split(/\s+/)[0]) : "us") + " directly.";
+          (o.name ? (o.name || "").split(/\s+/)[0] : "us") + " directly.";
         errEl.style.display = "block";
       });
     });
