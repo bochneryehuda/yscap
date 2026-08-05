@@ -46,6 +46,18 @@ export function fmtDate(v, placeholder = '—') {
   return d ? d.toLocaleDateString('en-US', MDY) : placeholder;
 }
 
+/** Localized DATE + TIME for a real timestamp (signed_off_at, reviewed_at, …) —
+ *  used by the condition/document audit trail, which must show the exact date AND
+ *  time. Returns the placeholder for an empty/unparseable value. A timestamptz
+ *  carries a real instant, so it is passed straight to new Date() (no shift-free
+ *  handling needed, unlike a date-only column). */
+export function fmtDateTime(v, placeholder = '') {
+  if (v == null || v === '') return placeholder;
+  const d = new Date(String(v));
+  if (isNaN(d)) return placeholder;
+  return d.toLocaleString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 /** 'YYYY-MM-DD' string for binding an <input type="date"> value. */
 export function dayInputValue(v) {
   if (v == null || v === '') return '';

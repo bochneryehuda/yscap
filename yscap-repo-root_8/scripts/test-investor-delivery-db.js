@@ -54,6 +54,17 @@ const ID = require('../src/sitewire/investor-delivery');
     `INSERT INTO draw_findings(application_id,sitewire_draw_id,status,total_requested_cents,total_approved_cents,delivered_at)
      VALUES($1,$2,'delivered',2500000,2500000,now()) RETURNING id`, [app, DRAW])).rows[0].id;
 
+  // The signed WIRE FORM condition + an ACCEPTED signed form on it (Task 4). The delivery gate
+  // requires an accepted wire form before an emailed delivery, so the fixture starts with one
+  // (section K flips it through the pending / rejected / missing states). Bogus storage_ref: the
+  // GATE only reads its review state; the ATTACHMENT read (section G) still reports it correctly.
+  const drawWire = require('../src/lib/esign/draw-wire');
+  const wireItem = await drawWire.ensureDrawRequestCondition(db, app, null);
+  const wireDoc = (await db.query(
+    `INSERT INTO documents(application_id,checklist_item_id,filename,doc_kind,storage_ref,review_status,is_current,source_type,visibility)
+     VALUES($1,$2,'wire-instructions-signed.pdf','draw_request_signed','nope/nostorage','accepted',true,'system','borrower') RETURNING id`,
+    [app, wireItem])).rows[0].id;
+
   // ================================================================ A. the contact lookup
   // The owner's real ClickUp label is "Fidelis Investors LLC", which the EXACT shared normalizer
   // turns into `fidelisinvestorsllc` — NOT `fidelis`. If the key were taken from that normalizer
@@ -115,7 +126,8 @@ const ID = require('../src/sitewire/investor-delivery');
   ok('D5 the file resolved a real draw fee before any release was recorded', p.money.fee_cents > 0);
 
   // ================================================================ E. the funding mode, three sources
-  eq('E1 with nothing set the mode is reimbursement', p.funding_mode, 'reimbursement');
+  // The DEFAULT is investor_direct (owner-directed 2026-08-05).
+  eq('E1 with nothing set the mode is investor_direct', p.funding_mode, 'investor_direct');
   eq('E2 and it says that came from the default', p.funding_mode_source, 'default');
 
   await db.query(`UPDATE sitewire_property_links SET investor_funding_mode='investor_direct' WHERE application_id=$1`, [app]);
@@ -150,7 +162,11 @@ const ID = require('../src/sitewire/investor-delivery');
   await db.query(`DELETE FROM investor_delivery_contacts WHERE label_norm='fidelis' AND lower(email)=lower($1)`, [email]);
 
   // ================================================================ G. attachments — nothing silently dropped
-  const g = await send.gatherAttachments(app, DRAW);
+  // Gathered in INVESTOR_DIRECT mode, where the borrower's signed wire form applies
+  // (the investor releases straight to the borrower and needs it) — so a missing one
+  // is reported rather than swallowed. The reimbursement mode (no wire form) is
+  // covered by I14.
+  const g = await send.gatherAttachments(app, DRAW, 'investor_direct');
   const skippedWhat = g.skipped.map((s) => s.what);
   ok('G1 the missing inspector report is reported, not swallowed', skippedWhat.some((w) => /Inspection report/.test(w)));
   ok('G2 the missing signed wire form is reported', skippedWhat.some((w) => /wire instructions/i.test(w)));
@@ -231,6 +247,12 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('I11 the stored note buyer is the file\'s own label', stored.note_buyer_label, 'Fidelis Investors LLC');
   eq('I12 stored under the folded Fidelis key', stored.note_buyer_key, 'fidelis');
   ok('I13 the attachment manifest is stored', Array.isArray(stored.attachments) && stored.attachments.length >= 1);
+  // REIMBURSEMENT never attaches (or even attempts) the borrower's signed wire form —
+  // we already wired the borrower, the investor is only paying us back (owner-directed
+  // 2026-08-05). So the wire form is neither an attachment nor a "couldn't attach" note.
+  ok('I14 reimbursement neither attaches nor attempts the borrower wire form',
+    !sent.skipped.some((s) => /wire/i.test(JSON.stringify(s)))
+    && !(msg.attachments || []).some((a) => /wire/i.test(String(a.filename || ''))));
 
   // A second send is a second row — the investor genuinely received two emails.
   const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz' });
@@ -293,6 +315,81 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('J15 the manual delivery is present but NOT nagged', [remind.manual_count, remind.due], [1, 1]);
 
   mailer.sendMail = realSend;
+
+  // ================================================================ K. the WIRE FORM gate (Task 4)
+  // The signed wire form must be ACCEPTED before an emailed delivery can go out — the investor
+  // wires the borrower off it (investor_direct), or we did (reimbursement). We reset to an agreed,
+  // investor_direct draw and walk the wire form through every review state.
+  await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', funding_mode='investor_direct' WHERE id=$1`, [fid]);
+  await db.query(`UPDATE sitewire_property_links SET investor_funding_mode='investor_direct' WHERE application_id=$1 AND matched_by='created'`, [app]);
+
+  // accepted (the fixture state) → the gate is clear
+  let pk = await send.deliveryPreview(app, DRAW);
+  eq('K1 wireFormStatus reads the accepted form', pk.wire_form, { present: true, accepted: true, rejectedOnly: false });
+  ok('K2 an accepted wire form does not block the delivery', !pk.blockers.some((b) => /wire form/.test(b)));
+
+  // pending → blocked, and the wording says to accept the correct version
+  await db.query(`UPDATE documents SET review_status='pending' WHERE id=$1`, [wireDoc]);
+  pk = await send.deliveryPreview(app, DRAW);
+  ok('K3 a pending wire form blocks the send', pk.can_send === false);
+  ok('K4 and says to review and accept the correct version', pk.blockers.some((b) => /wire form has not been accepted/.test(b)));
+
+  // rejected only → blocked, says the borrower must re-sign
+  await db.query(`UPDATE documents SET review_status='rejected' WHERE id=$1`, [wireDoc]);
+  pk = await send.deliveryPreview(app, DRAW);
+  ok('K5 a rejected-only wire form blocks the send', pk.blockers.some((b) => /wire form was rejected/.test(b)));
+  eq('K6 the wire form status reports rejected-only', pk.wire_form, { present: true, accepted: false, rejectedOnly: true });
+
+  // no wire form at all → blocked, says the borrower must sign
+  await db.query(`UPDATE documents SET is_current=false WHERE id=$1`, [wireDoc]);
+  pk = await send.deliveryPreview(app, DRAW);
+  ok('K7 no wire form present blocks the send', pk.blockers.some((b) => /has not signed the wire/.test(b)));
+  eq('K8 the wire form status reports absent', pk.wire_form, { present: false, accepted: false, rejectedOnly: false });
+
+  // the SAME missing wire form does NOT block a MANUAL delivery (handled outside PILOT)
+  await db.query(`UPDATE draw_findings SET funding_mode='manual' WHERE id=$1`, [fid]);
+  pk = await send.deliveryPreview(app, DRAW);
+  ok('K9 a MANUAL delivery is not gated on the wire form', !pk.blockers.some((b) => /wire/.test(b)));
+  await db.query(`UPDATE draw_findings SET funding_mode='investor_direct' WHERE id=$1`, [fid]);
+
+  // accept it again → clear, and a real send goes through (proving the gate is the only thing that was holding it)
+  await db.query(`UPDATE documents SET is_current=true, review_status='accepted' WHERE id=$1`, [wireDoc]);
+  pk = await send.deliveryPreview(app, DRAW);
+  ok('K10 re-accepting the wire form clears the gate', pk.wire_form.accepted === true && !pk.blockers.some((b) => /wire/.test(b)));
+
+  // send-time RE-CHECK: flip to pending after the preview and confirm the send itself refuses.
+  const outbox2 = [];
+  mailer.sendMail = async (m) => { outbox2.push(m); return { ok: true, id: 'test' }; };
+  await db.query(`UPDATE documents SET review_status='pending' WHERE id=$1`, [wireDoc]);
+  let wireRefused = false, wireMsg = '';
+  try { await send.sendInvestorDelivery(app, DRAW, { mode: 'investor_direct' }); } catch (e) { wireRefused = true; wireMsg = e.message; }
+  ok('K11 the send itself refuses an unaccepted wire form (re-checked at send time)', wireRefused);
+  ok('K12 and says why', /wire form/.test(wireMsg));
+  eq('K13 a wire-blocked delivery sends nothing', outbox2.length, 0);
+  mailer.sendMail = realSend;
+
+  // ================================================================ L. the wire-recipient OA rides investor_direct only (Task 5)
+  // When the wire goes to a NEW entity, its accepted operating agreement is attached to an
+  // investor_direct delivery (the investor confirms the entity before wiring it) and NOT to a
+  // reimbursement one (we already wired — the investor is only paying us back).
+  const storage2 = require('../src/lib/storage');
+  await drawWire.raiseOperatingAgreementCondition(db, app, 'New Entity Holdings LLC');
+  await db.query(
+    `INSERT INTO draw_wire_instructions(application_id,account_name,name_kind,name_matches,captured_at)
+     VALUES($1,'New Entity Holdings LLC','new_entity',false,now())
+     ON CONFLICT (application_id) DO UPDATE SET account_name=EXCLUDED.account_name`, [app]);
+  const oaItem = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2`, [app, `draw:wire_oa:${app}`])).rows[0].id;
+  const savedOa = await storage2.save(Buffer.from('OPERATING-AGREEMENT-BYTES-FOR-INVESTOR'), { filename: 'oa.pdf' });
+  await db.query(
+    `INSERT INTO documents(application_id,checklist_item_id,filename,storage_provider,storage_ref,review_status,is_current,source_type,visibility)
+     VALUES($1,$2,'operating-agreement.pdf',$3,$4,'accepted',true,'system','borrower')`, [app, oaItem, savedOa.provider, savedOa.ref]);
+
+  const gInv = await send.gatherAttachments(app, DRAW, 'investor_direct');
+  ok('L1 the wire-recipient OA rides an investor_direct delivery', gInv.items.some((i) => /Operating agreement/i.test(i.what)));
+  const gReim = await send.gatherAttachments(app, DRAW, 'reimbursement');
+  ok('L2 the OA is NOT attached on a reimbursement delivery',
+    !gReim.items.some((i) => /Operating agreement/i.test(i.what)) && !gReim.skipped.some((s) => /Operating agreement/i.test(s.what)));
+  try { await storage2.remove(savedOa.ref); } catch (_) {}
 
   // ================================================================ cleanup
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);

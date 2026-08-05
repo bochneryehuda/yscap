@@ -29,7 +29,11 @@
 const N = (x) => Number(x || 0) || 0;
 
 const MODES = ['reimbursement', 'investor_direct', 'manual'];
-const DEFAULT_MODE = 'reimbursement';
+// The DEFAULT is that the INVESTOR releases the money directly to the borrower
+// (owner-directed 2026-08-05: "the default should always be that the investor is
+// releasing the money to the borrower"). A per-draw or per-file choice still wins;
+// this is only the fallback when neither is set. (Was 'reimbursement'.)
+const DEFAULT_MODE = 'investor_direct';
 // The modes that actually send an email to the investor (manual does not).
 const EMAILED_MODES = ['reimbursement', 'investor_direct'];
 
@@ -202,7 +206,7 @@ function composeRecipients({ investorEmails = [], coordinatorEmails = [], office
  */
 const AGREED_STATUSES = ['accepted', 'resolved'];
 
-function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null, mode = null } = {}) {
+function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null, mode = null, wireForm = null } = {}) {
   const out = [];
   if (!finding) {
     out.push('The inspection findings have not been delivered to the borrower yet.');
@@ -212,6 +216,23 @@ function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = n
     out.push(String(finding.status) === 'disputed'
       ? 'The borrower pushed back on this draw — decide the disputed lines first, then it can go to the investor.'
       : 'The borrower has not agreed to the inspection findings yet. Once they accept — or you record that they agreed by phone or email — this can go to the investor.');
+  }
+  // THE SIGNED WIRE FORM MUST BE ACCEPTED before the borrower's money moves (owner-directed
+  // 2026-08-05: "fully accept before investor delivery of the first draw"). The borrower's
+  // DocuSign wire form files onto the draw wire condition; the coordinator reviews it, accepts
+  // ONE correct version and rejects the rest — because on an investor_direct delivery the
+  // investor wires the borrower off THIS exact form, and on a reimbursement delivery WE wired
+  // them off it. A MANUAL delivery is handled entirely outside PILOT (the coordinator verifies
+  // the wire themselves), so it is not gated on the in-PILOT acceptance. `wireForm` is only
+  // supplied by the DB callers; when it is null the check is skipped (back-compat / pure tests).
+  if (String(mode || '') !== 'manual' && wireForm && !wireForm.accepted) {
+    if (!wireForm.present) {
+      out.push('The borrower has not signed the wire instructions form yet, so PILOT cannot confirm where the money goes. Send the draw request for signature and accept the signed form first.');
+    } else if (wireForm.rejectedOnly) {
+      out.push('The signed wire form was rejected. The borrower needs to re-sign it and the correct version must be accepted before this draw can go to the investor.');
+    } else {
+      out.push('The signed wire form has not been accepted yet — review it and accept the correct version before delivering this draw to the investor (in case something was filled in wrong).');
+    }
   }
   // Every mode records WHICH investor the draw went to, so the note buyer must be set.
   if (!String(noteBuyer || '').trim()) {

@@ -49,8 +49,10 @@ const countOf = async (appId, code) => (await db.query(
   let borrowerId;
   const apps = [];
   const mkApp = async (lender = 'CorrFirst', status = 'processing') => {
+    // A PURCHASE file — the EMD condition is purchase-only (db/475), and this suite
+    // exercises the EMD/SSN duplicate guard, so it must actually carry EMD.
     const id = (await db.query(
-      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,$2,$3) RETURNING id`,
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,$2,$3,'Purchase') RETURNING id`,
       [borrowerId, status, lender])).rows[0].id;
     apps.push(id); return id;
   };

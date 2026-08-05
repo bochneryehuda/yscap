@@ -963,11 +963,20 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
       routing_number: w.routing_number, bank_address: w.bank_address, account_address: w.account_address,
       name_kind: w.name_kind, name_matches: w.name_matches, captured_at: w.captured_at,
     } : null;
-    // The fatal operating-agreement condition, when a new entity.
+    // The fatal operating-agreement condition, when a new entity — with its document progress so the
+    // card can say whether an agreement has been pulled/uploaded and whether it has been accepted.
     let oaCondition = null;
     if (w && w.operating_agreement_item_id) {
       const oa = (await db.query(`SELECT id, status, label FROM checklist_items WHERE id=$1`, [w.operating_agreement_item_id])).rows[0];
-      if (oa) oaCondition = { id: oa.id, status: oa.status, label: oa.label, satisfied: oa.status === 'satisfied' };
+      if (oa) {
+        const docs = (await db.query(
+          `SELECT count(*) FILTER (WHERE review_status='accepted') AS accepted, count(*) AS total
+             FROM documents WHERE checklist_item_id=$1 AND is_current`, [oa.id])).rows[0] || {};
+        oaCondition = {
+          id: oa.id, status: oa.status, label: oa.label, satisfied: oa.status === 'satisfied',
+          doc_total: Number(docs.total || 0), doc_accepted: Number(docs.accepted || 0),
+        };
+      }
     }
     // The signed PDF, once filed back to the condition.
     const signed = (await db.query(

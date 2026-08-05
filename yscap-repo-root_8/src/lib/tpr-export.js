@@ -562,7 +562,7 @@ async function buildTprExport(appId) {
   const records = (await db.query(
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
-            is_verified, verified_at, notes
+            is_verified, verified_at, verification_status, entered_by_kind, notes
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
@@ -667,7 +667,8 @@ async function buildTprExport(appId) {
     { header: 'Sale date', key: 'saleDate', w: 1.1, align: 'center' },
     { header: 'Hold (mo)', key: 'holdMo', w: 0.8, align: 'center' },
     { header: 'Gross profit', key: 'profit', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
+    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
     { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
   ];
   const holdCols = [
@@ -681,18 +682,28 @@ async function buildTprExport(appId) {
     { header: 'Refi amount', key: 'refi', w: 1.2, money: true, align: 'right', sum: true },
     { header: 'Refi date', key: 'refiDate', w: 1.0, align: 'center' },
     { header: 'Current value', key: 'currentValue', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
+    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
     { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
   ];
+  const trExport = require('./track-record-export');
   const flipRows = [], holdRows = [];
   for (const r of records) {
     const { exit, counts } = exitInfo(r);
+    // The REVIEW STATUS + whether documentation is attached (owner-directed
+    // 2026-08-05): the export must say clearly which deals are verified, which
+    // have documentation, which are pending review, and which have documentation
+    // but are not yet verified — never "everything is verified".
+    const hasDocs = (docsByTr[r.id] || []).length > 0;
+    const statusKey = trExport.trackRecordReviewStatus({ is_verified: r.is_verified, entered_by_kind: r.entered_by_kind, hasDocs });
     const base = {
       property: addrText(r.property_address) || '', dealType: dealLabel(r.deal_type),
       purchase: num(r.purchase_price), rehab: num(r.rehab_amount),
       purchaseDate: dateStr(r.purchase_date),
-      verified: r.is_verified ? 'Verified' : 'Unverified', counts: counts ? 'Yes' : (exit ? 'No' : ''),
-      __verified: !!r.is_verified,
+      status: trExport.REVIEW_STATUS[statusKey].label,
+      docs: hasDocs ? 'Attached' : '—',
+      counts: counts ? 'Yes' : (exit ? 'No' : ''),
+      __verified: !!r.is_verified, __status: statusKey, __hasDocs: hasDocs,
     };
     if (isHoldType(r)) {
       holdRows.push({ ...base, rent: num(r.rent_amount), rentDate: dateStr(r.rent_date),
@@ -709,7 +720,6 @@ async function buildTprExport(appId) {
     { title: 'FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)', columns: holdCols, rows: holdRows },
   ];
   const trMeta = { borrowerName, generatedDate: dateStr(generatedAt) };
-  const trExport = require('./track-record-export');
   // Nicer, sectioned Excel (reuses the proven style-free writer — no corruption risk).
   files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(trExport.trackRecordAoa(trSections, trMeta), 'Track Record') });
   // Branded PDF report ("the PDF export from our track record section"). Best-effort:
