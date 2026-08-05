@@ -39,9 +39,11 @@ export default function DealSnapshot({ app, gating }) {
      the as-is value, not `price + rehab`. Getting this wrong divided the ratio by a
      number the engine never used (an inflated price, or on a refinance usually
      0 + rehab, which read absurdly high). A registered quote still wins — its
-     `sizing.ltcPct` is the engine's own — so this only corrects the estimate. */
-  const sizedBasis = Number(basisOf.basis) || 0;
-  const asIsBasis = Number(basisOf.asIsValue) || 0;
+     `sizing.ltcPct` is the engine's own — so this only corrects the estimate.
+     basisOf.basis / basisOf.asIsValue are ALREADY numeric (dealBasis runs them
+     through its own money parser), so there is no bare Number() on a money field. */
+  const sizedBasis = basisOf.basis || 0;
+  const asIsBasis = basisOf.asIsValue || 0;
   const costAcq = (sizedBasis > 0 && asIsBasis > 0) ? Math.min(sizedBasis, asIsBasis) : (sizedBasis || asIsBasis);
   const basis = costAcq + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
