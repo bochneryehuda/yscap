@@ -8,9 +8,13 @@
  * concrete value.
  *
  * Keys today:
- *   ccBorrowerOnTitleOrder (bool, default false) — whether the officer's files
- *     CC the borrower on the TITLE order email by default (owner-directed
- *     2026-07-31: default is OFF; each order can still flip it per file).
+ *   ccBorrowerOnTitleOrder     (bool, default false) — whether the officer's
+ *     files CC the borrower on the TITLE order email by default.
+ *   ccBorrowerOnInsuranceOrder (bool, default false) — same, for the INSURANCE
+ *     order email (owner-directed 2026-08-05: the COMPANY default is now OFF for
+ *     every order kind, so this is how an officer sets a default different from
+ *     the company's — turning CC back ON for their own files).
+ *   Both default OFF; each order can still flip it per file at place time.
  *
  * Adding a setting = one entry in SETTINGS_KEYS + the UI row in
  * StaffSettings.jsx. Never bypass validate() on a write.
@@ -24,6 +28,12 @@ const SETTINGS_KEYS = Object.freeze({
     default: false,
     label: 'CC my borrowers on title order emails by default',
     help: 'Off (the default): the borrower is not looped into the title insurance order email. You can still turn it on for any single order when you place it.',
+  },
+  ccBorrowerOnInsuranceOrder: {
+    type: 'bool',
+    default: false,
+    label: 'CC my borrowers on insurance order emails by default',
+    help: 'Off (the default): the borrower is not looped into the insurance order email. You can still turn it on for any single order when you place it.',
   },
 });
 

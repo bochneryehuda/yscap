@@ -400,7 +400,7 @@ app.use('/api/appraisal', require('./routes/appraisal'));
 // AMC appraisal-ordering desk (AppraisalScope / CoreLogic Digital Gateway): the new
 // "Order an appraisal" section beside the Title / Insurance / Attorney orders. Same
 // auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
-// (src/amc/**, db/475); RTL only.
+// (src/amc/**, db/477); RTL only.
 app.use('/api/amc', require('./routes/amc'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and

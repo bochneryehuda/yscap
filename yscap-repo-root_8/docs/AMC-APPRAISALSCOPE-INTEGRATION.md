@@ -96,7 +96,7 @@ AMC just sees revision text + attached PDFs + comments.
 NACK/errors: `0`=ACK; negatives (`-100 NOT_AUTHENTICATED`, `-996 Missing required field`,
 `-1007 OrderRejected`, `-1008 Service Provider Processing Error`, …).
 
-## 3. Our data model (`db/475_amc_orders.sql`)
+## 3. Our data model (`db/477_amc_orders.sql`)
 
 - **`amc_orders`** — one row per order (CreateAppraisal + AddForm children). Holds our
   and the AMC's identifiers, the form ordered, the lifecycle `status`, fees, and the

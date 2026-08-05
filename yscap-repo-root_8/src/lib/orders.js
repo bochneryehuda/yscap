@@ -269,23 +269,33 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
 }
 
 /**
- * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31: "By
- * default, the borrower should not be included and looped in the title
- * insurance order email … the officer can turn that on on each and every file
- * … and the loan officers should have their settings section [to] default to
- * CC their borrowers").
+ * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31, tightened
+ * 2026-08-05: "the default across the board should be that it's not CC'ing the
+ * borrower. It should only CC the borrower if the setting over there was changed
+ * to CC the borrower. By default, they should not be CC'd. We need to set the
+ * company default so that they should not be CC.").
  * Precedence, per kind:
  *   1. an explicit per-order choice (the checkbox at place time, or the choice
  *      persisted on file_orders.meta.ccBorrower from the first send — follow-ups
  *      stay on the same footing as the order they follow);
- *   2. TITLE: the file's loan officer's own default (lo-settings
- *      ccBorrowerOnTitleOrder) — false when unset;
- *   3. INSURANCE: true (unchanged behavior — the borrower usually picked the
- *      agent; the checkbox can still turn it off per order).
+ *   2. the file's loan officer's OWN default for THIS order kind — TITLE reads
+ *      lo-settings ccBorrowerOnTitleOrder, INSURANCE reads
+ *      ccBorrowerOnInsuranceOrder; both false (off) when unset. So an officer who
+ *      wants to CC their borrowers can set a default different from the company's;
+ *   3. the COMPANY default, which is now OFF for EVERY order kind (was ON for
+ *      insurance) — the borrower is never CC'd unless the officer opted in.
  */
+
+// Which per-officer setting key defaults the CC-borrower choice for an order kind.
+// Both default false (off) — see lo-settings.js. A kind with no key can never
+// default the borrower in (the company default stands: off).
+const CC_SETTING_KEY = { title: 'ccBorrowerOnTitleOrder', insurance: 'ccBorrowerOnInsuranceOrder' };
+function ccBorrowerSettingKey(kind) { return CC_SETTING_KEY[kind] || null; }
+
 function ccBorrowerDefault(kind, loSetting) {
-  if (kind === 'title') return loSetting === true;
-  return true;
+  // Company default is OFF for every order kind: only the officer's own setting
+  // (loSetting === true) — or the per-order checkbox — loops the borrower in.
+  return loSetting === true;
 }
 
 /** Recipients for an order: TO the vendor; CC the loan officer + processor, and
@@ -435,7 +445,7 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
 
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
-  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
+  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault, ccBorrowerSettingKey,
   transactionType, propertyLine, money,
   mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
   sendOrderMail, sendVerdict, isAmbiguousSendFailure,
