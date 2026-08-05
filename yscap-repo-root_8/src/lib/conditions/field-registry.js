@@ -259,15 +259,17 @@ const FIELDS = [
   // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
   // condition (rtl_cond_flood, db/281) — which a FIDELIS file is excluded from
   // (db/335, via note_buyer_is_fidelis below).
-  // The value `v` is the NORMALIZED label so a picked option writes back the real
-  // ClickUp spelling (engine.writeFieldValue canonicalizes an enum answer to the
-  // option LABEL). RCN's real ClickUp dropdown label is "RCN Capital" (owner-directed
-  // 2026-08-05) → 'rcncapital'; adding it here makes it pickable in the completeness
-  // datalist and a first-class known note buyer (listNoteBuyers reads these labels),
-  // instead of a value staff had to type by hand. RCN needs no rule/boolean companion —
-  // its only special handling is the vendor-order mortgagee clause + the insurance
-  // address check, both keyed on isRcnNoteBuyer (prefix), which already matches
-  // "RCN Capital" and every other 'rcn…' spelling.
+  // note_buyer is STAFF-set from the completeness datalist (staff.js complete-fields
+  // writes the picked LABEL straight to applications.lender) — it is deliberately not
+  // writable from a Condition Center info-field. RCN's real ClickUp dropdown label is
+  // "RCN Capital" (owner-directed 2026-08-05); listing { v:'rcncapital', label:'RCN
+  // Capital' } makes it a first-class, pickable note buyer (listNoteBuyers reads these
+  // labels) even on a cold ClickUp option cache, instead of a value staff had to type
+  // by hand. `v` is the normalized label so it lines up with normNoteBuyer('RCN
+  // Capital')='rcncapital'. RCN needs no rule/boolean companion — its only special
+  // handling is the vendor-order mortgagee clause + the insurance address check, both
+  // keyed on isRcnNoteBuyer (prefix), which already matches "RCN Capital" and every
+  // other 'rcn…' spelling.
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },

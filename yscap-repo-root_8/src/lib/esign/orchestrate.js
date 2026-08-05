@@ -515,7 +515,7 @@ async function loadDocGenData(db, applicationId) {
     propZip: zip,
     bFirst: a.b_first || '', bLast: a.b_last || '',
     hasCoBorrower: !!a.co_borrower_id,
-    cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
+    cbFirst: a.cb_first || '', cbLast: a.cb_last || '', cbEmail: a.cb_email || '',
     // The nested view the auto-generated loan application renders from.
     application,
   };
@@ -541,6 +541,11 @@ function validateGenerated(spec, data) {
   // Only a package that BOTH signs the co-borrower AND prints its name needs it. The
   // draw request is soloBorrower (co-borrower never signs it), so a co on file is fine.
   if (!spec.soloBorrower && data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
+  // A co-borrower who SIGNS a package needs an email (DocuSign requires a recipient
+  // email). A co-borrower may now be added without an email (#22), so catch it HERE
+  // with a friendly, field-named refusal instead of letting buildEnvelopeDefinition
+  // fail deep with a raw "invalid signer email" DocuSign-arg string.
+  if (!spec.soloBorrower && data.hasCoBorrower && !(data.cbEmail || '').trim()) missing.push('co-borrower email');
   // The disclosure, the loan application, AND the draw request print the loan number +
   // subject property, so a blank one must BLOCK the send, not render blank.
   if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export') || genKinds.includes('draw_request')) {
