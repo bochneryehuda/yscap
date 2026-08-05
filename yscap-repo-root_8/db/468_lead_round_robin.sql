@@ -6,7 +6,7 @@
 -- desk. `assigned_via` records HOW a lead got its officer:
 --   'lo_link'     — the ?lo= branded link on the marketing page (the officer the visitor came in on)
 --   'round_robin' — auto-assigned by the rotation below
---   'manual'      — a human set the owner from the leads desk (reserved; no writer yet)
+--   'manual'      — a human set the owner by hand (a portal invite or a leads-desk officer pick)
 -- The rotation counts ONLY its own ('round_robin') assignments, so an officer's ?lo= self-attributed
 -- leads never rob them of their fair turn, and the desk can report the split.
 
@@ -19,9 +19,18 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Back-fill: before this feature the ONLY path that set officer_id was the ?lo= branded link, so an
--- existing lead that carries an officer got it that way. A lead with no officer stays NULL.
-UPDATE leads SET assigned_via = 'lo_link' WHERE officer_id IS NOT NULL AND assigned_via IS NULL;
+-- Back-fill (previous AND future). Two automatic writers set officer_id BEFORE this feature, and they
+-- are told apart by officer_code — the ?lo= branded link is the ONLY path that stores an officer_code
+-- (leads.js), while the two manual writers (a portal invite / a leads-desk edit in staff.js) set an
+-- officer_id with NO officer_code. So:
+--   officer_code present  → the visitor came in on that officer's branded link → 'lo_link'
+--   officer_code absent    → a human picked the officer by hand                 → 'manual'
+-- A lead with no officer stays NULL. The rotation's own leads already carry assigned_via='round_robin',
+-- so the `assigned_via IS NULL` guard skips them and they are never mislabeled.
+UPDATE leads SET assigned_via = 'lo_link'
+ WHERE officer_id IS NOT NULL AND officer_code IS NOT NULL AND assigned_via IS NULL;
+UPDATE leads SET assigned_via = 'manual'
+ WHERE officer_id IS NOT NULL AND officer_code IS NULL AND assigned_via IS NULL;
 
 -- The rotation reads each eligible officer's most-recent round-robin lead; this makes that lookup a
 -- cheap index scan even as the leads table grows.

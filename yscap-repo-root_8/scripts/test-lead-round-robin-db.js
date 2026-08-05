@@ -88,20 +88,18 @@ function post(server, path, body) {
     }
     assert(mine.every((m) => counts[m.id] === 2), 'over 6 picks each of the 3 officers is chosen exactly twice (fair rotation)', counts);
 
-    // restore the others now — the route tests below want a real, non-empty pool
-    if (restoreOthers.length) await db.query(`UPDATE staff_users SET site_selectable=true WHERE id = ANY($1::uuid[])`, [restoreOthers]);
-    restoreOthers = [];
+    // Keep the pool isolated to my 3 test officers through the route tests below (still a non-empty
+    // pool), so the route can only assign to a TEST officer. Otherwise the rotation's "never-assigned
+    // first" pick would land on a real seeded officer and the route would write a notifications row on
+    // them that this test could not clean up. The originally-eligible others are restored in finally.
 
     /* ── 2) the REAL route assigns an un-attributed lead + stamps 'round_robin' ── */
     const rEmail = `rr-route-${sfx}@example.test`;
     const res1 = await post(server, '/api/leads', { tool: 'contact', email: rEmail, message: 'hi' });
     assert(res1.status === 201 && res1.body && res1.body.leadId, 'un-attributed lead accepted (201)', res1.status);
     const lead1 = (await db.query(`SELECT officer_id, assigned_via FROM leads WHERE id=$1`, [res1.body.leadId])).rows[0];
-    assert(lead1 && lead1.officer_id && lead1.assigned_via === 'round_robin',
-      'the route assigned an owner and stamped assigned_via=round_robin', lead1);
-    const eligibleNow = (await db.query(
-      `SELECT id FROM staff_users WHERE is_active AND role='loan_officer' AND site_selectable=true`)).rows.map((r) => r.id);
-    assert(lead1 && eligibleNow.includes(lead1.officer_id), 'the assigned owner is a currently-eligible loan officer');
+    assert(lead1 && lead1.assigned_via === 'round_robin' && mine.some((m) => m.id === lead1.officer_id),
+      'the route assigned one of my eligible officers and stamped assigned_via=round_robin', lead1);
 
     /* ── 3) a ?lo= branded lead keeps ITS officer and is stamped 'lo_link' ── */
     const res2 = await post(server, '/api/leads', { tool: 'contact', email: `rr-lo-${sfx}@example.test`, officerCode: mine[0].code, message: 'branded' });
@@ -110,17 +108,17 @@ function post(server, path, body) {
     assert(lead2 && lead2.officer_id === mine[0].id && lead2.assigned_via === 'lo_link',
       'a ?lo= lead keeps its branded officer and is stamped lo_link', lead2);
 
-    /* ── 4) empty pool → clean fallback (no owner, no stamp) — a lead is never lost ── */
+    /* ── 4) empty pool → clean fallback — the rotation returns null so the caller keeps its existing
+       sales-desk / admin routing and a lead is never lost. UNIT-ONLY on purpose: we do NOT POST an
+       owner-less lead here, because with no eligible officer the route fans the lead out to the seeded
+       sales desk / admins, whose notification rows this test can't clean up (they aren't in `ids`).
+       Section 2 already proves the full route path + the round_robin stamp against a live pool. ── */
     const allElig = (await db.query(
       `SELECT id FROM staff_users WHERE is_active AND role='loan_officer' AND site_selectable=true`)).rows.map((r) => r.id);
     await db.query(`UPDATE staff_users SET site_selectable=false WHERE id = ANY($1::uuid[])`, [allElig]);
     try {
-      assert((await leadAssign.pickRoundRobinOfficer()) === null, 'empty pool → pickRoundRobinOfficer returns null');
-      const res3 = await post(server, '/api/leads', { tool: 'contact', email: `rr-empty-${sfx}@example.test`, message: 'no pool' });
-      assert(res3.status === 201, 'lead still accepted with an empty pool', res3.status);
-      const lead3 = (await db.query(`SELECT officer_id, assigned_via FROM leads WHERE id=$1`, [res3.body.leadId])).rows[0];
-      assert(lead3 && lead3.officer_id === null && lead3.assigned_via === null,
-        'empty pool → lead stored with no owner and no round_robin stamp (falls back)', lead3);
+      assert((await leadAssign.pickRoundRobinOfficer()) === null,
+        'empty pool → pickRoundRobinOfficer returns null (caller keeps its sales-desk fallback, lead never lost)');
     } finally {
       await db.query(`UPDATE staff_users SET site_selectable=true WHERE id = ANY($1::uuid[])`, [allElig]).catch(() => {});
     }

@@ -1534,9 +1534,9 @@ router.post('/invite-to-portal', async (req, res) => {
       else {
         const name = [first, last].filter(Boolean).join(' ') || email;
         const lr = await db.query(
-          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at)
-           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now()) RETURNING id`,
-          [name, first || null, last || null, email, phone, officerId, req.actor.id]);
+          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at,assigned_via)
+           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now(),$8) RETURNING id`,
+          [name, first || null, last || null, email, phone, officerId, req.actor.id, officerId ? 'manual' : null]);
         leadId = lr.rows[0].id;
         await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Invited to portal',$3)`,
           [leadId, req.actor.id, 'Invited ' + email + ' to the borrower portal']);
@@ -13694,7 +13694,9 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   const col = (name, val) => { sets.push(`${name}=$${i++}`); vals.push(val); };
   if (b.status !== undefined) { col('status', b.status); if (b.status === 'lost') col('lost_at', new Date().toISOString()); }
-  if (b.officerId !== undefined) col('officer_id', b.officerId || null);
+  // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
+  // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
+  if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
   if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
