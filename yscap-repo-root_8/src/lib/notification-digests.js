@@ -64,6 +64,13 @@ const DIGEST_ACTION = Object.freeze({
   DRAW_BORROWER_STUCK: 'draw_borrower_stuck',
   TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
   DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  // Increment C — the four missing per-status draw COORDINATOR reminders (owner-directed 2026-08-04,
+  // blueprint docs/DRAW-WORKFLOW-STATUS-RESEARCH.md): every stage that waits on US / the coordinator
+  // gets its own self-gated nudge, so a draw never sits silently between borrower approval and funding.
+  ORDER_TRUSTPOINT: 'order_trustpoint_reminder',          // 2b: enter the submitted draw into TrustPoint
+  ORDER_TRINITY: 'order_trinity_reminder',                // 2p: order the physical inspection on Trinity
+  INVESTOR_PENDING_DELIVERY: 'investor_pending_delivery', // 7a: borrower approved, not yet sent to the investor
+  WITH_INVESTOR: 'draw_with_investor_reminder',           // 7b: sent to the investor, still awaiting funding
   ORDER_OVERDUE: 'order_overdue_nudge',
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
@@ -934,6 +941,204 @@ async function drawReleaseOverdueOnce() {
       await _stamp(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, { overdue: r.n, days: d });
       sent++;
     } catch (e) { console.error('[digest] draw-release-overdue', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* ══ Increment C — the four missing per-status COORDINATOR reminders (owner-directed 2026-08-04;
+ *    blueprint docs/DRAW-WORKFLOW-STATUS-RESEARCH.md) ══
+ *
+ * The draw workflow now knows, for every status, WHO it is waiting for and WHO to remind. Increment B
+ * capped the borrower nudge; these four cover the stages that wait on US / the draw coordinator, so a
+ * draw never sits silently between the borrower approving and the money moving. Each is a self-gated
+ * sweep in the exact shape of drawFindingsAwaitingBorrowerOnce: scope to an ACTIVE PILOT-managed
+ * (matched_by='created') link, put the throttle in the WHERE (not only the gate — a per-file digest
+ * whose sort key does not advance starves its tail otherwise), deterministic oldest-first ORDER, and
+ * the atomic _gate claim. Every query is wrapped so a phantom column never silently disables the
+ * sweep from inside a swallowing catch (the #248 class); the DB test exercises the real columns. */
+
+// Send a coordinator-facing draw reminder to the file's OWN draw coordinator(s) when one is assigned,
+// else the whole active draw desk, and — never silent — the file's own staff team when even the desk
+// is empty (the same hand-off shape Increment B's over-cap branch uses). ONE definition, so all four
+// sweeps route "who owns this file's draws" through draw-recipients.coordinatorsOrDesk. Best-effort
+// per recipient.
+async function notifyCoordinators(appId, opts, tag) {
+  const coords = await require('./draw-recipients').coordinatorsOrDesk(appId).catch(() => []);
+  if (coords.length) {
+    for (const c of coords) {
+      try { await notify.notifyStaff(c.id, { ...opts, emailTo: c.email }); }
+      catch (e) { console.error(`[digest] ${tag} notify`, c.id, e && e.message); }
+    }
+    return coords.length;
+  }
+  console.warn(`[digest] ${tag}: no draw coordinator/desk for`, appId, '— falling back to the file team');
+  try { await notify.notifyAppStaff(appId, opts); }
+  catch (e) { console.error(`[digest] ${tag} fallback`, appId, e && e.message); }
+  return 0;
+}
+
+// The go-forward-only + not-finished/paid-off guard every draw sweep shares (CLAUDE.md Sitewire rules
+// 2 + 10): the file has a PILOT-created Sitewire link whose project is still active. Inlined per query
+// so each keeps its own $-numbering; `appIdExpr` is the outer table's application-id column.
+function activeManagedLink(appIdExpr) {
+  return `EXISTS (SELECT 1 FROM sitewire_property_links pl
+                   WHERE pl.application_id = ${appIdExpr}
+                     AND pl.matched_by = 'created' AND COALESCE(pl.lifecycle_state,'active') = 'active')`;
+}
+
+/* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
+   (Blue Lake physical) file that the coordinator has NOT yet hand-entered into TrustPoint. The
+   portal_draw_requests row IS the state: platform 'trustpoint' + status 'submitted' + no tp_draw_id
+   means "waiting to be entered". The status leaves 'submitted' the moment the coordinator enters it,
+   so the reminder stops on its own. Remind daily. */
+async function orderTrustpointOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest
+         FROM portal_draw_requests p
+         JOIN applications a ON a.id=p.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE p.platform='trustpoint' AND p.status='submitted' AND p.tp_draw_id IS NULL
+          AND ${activeManagedLink('p.application_id')}
+          AND ${notThrottled('p.application_id', DIGEST_ACTION.ORDER_TRUSTPOINT, "interval '20 hours'")}
+        GROUP BY p.application_id
+        ORDER BY oldest ASC, p.application_id
+        LIMIT 200`)).rows;
+  } catch (e) { console.error('[digest] order-trustpoint query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.ORDER_TRUSTPOINT, r.application_id, '20 hours'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is waiting to be entered into TrustPoint' : `${r.n} draws are waiting to be entered into TrustPoint`,
+        badge: { text: 'Enter in TrustPoint', tone: 'action' },
+        body: `The borrower submitted ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it has' : 'they have'} not been entered into TrustPoint yet. Please enter ${r.n === 1 ? 'it' : 'them'} so the inspection can be ordered and the borrower's draw can move forward.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trustpoint');
+      await _stamp(DIGEST_ACTION.ORDER_TRUSTPOINT, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] order-trustpoint', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 8) order_trinity (blueprint 2p) — a physical inspection ordered from Trinity that is still at
+   'requested' (the coordinator has not placed the order yet). The trinity_inspection_orders row IS the
+   state; it leaves 'requested' the moment the order is placed, so the reminder stops on its own.
+   Remind daily. */
+async function orderTrinityOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest
+         FROM trinity_inspection_orders t
+         JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE t.status='requested'
+          AND ${activeManagedLink('t.application_id')}
+          AND ${notThrottled('t.application_id', DIGEST_ACTION.ORDER_TRINITY, "interval '20 hours'")}
+        GROUP BY t.application_id
+        ORDER BY oldest ASC, t.application_id
+        LIMIT 200`)).rows;
+  } catch (e) { console.error('[digest] order-trinity query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.ORDER_TRINITY, r.application_id, '20 hours'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A physical inspection is waiting to be ordered on Trinity' : `${r.n} physical inspections are waiting to be ordered on Trinity`,
+        badge: { text: 'Order on Trinity', tone: 'action' },
+        body: `${r.n === 1 ? 'A physical inspection has' : `${r.n} physical inspections have`} been requested on this file but not yet ordered from Trinity. Please place the order so the borrower's draw can move forward.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trinity');
+      await _stamp(DIGEST_ACTION.ORDER_TRINITY, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] order-trinity', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 9) investor_pending_delivery (blueprint 7a) — the borrower AGREED to a draw (accepted or resolved)
+   and it has NOT been delivered to the investor yet. Once the borrower agrees, the draw goes to the
+   note buyer (investor-delivery.js); until a delivery is actually SENT (an errored delivery does not
+   count), remind the coordinator every 2 days. Scoped to files that HAVE a note buyer — with no
+   investor there is nobody to deliver to, and nagging "deliver to the investor" on such a file is noise
+   (the missing-note-buyer condition surfaces that gap separately). A draw already at final approval is
+   done. */
+async function investorPendingDeliveryOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest
+         FROM draw_findings f
+         JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE f.status IN ('accepted','resolved')
+          AND NULLIF(btrim(a.lender), '') IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM draw_investor_deliveries dd
+                            WHERE dd.sitewire_draw_id=f.sitewire_draw_id AND dd.status='sent')
+          AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
+                            WHERE sd.sitewire_draw_id=f.sitewire_draw_id AND sd.status='approved')
+          AND ${activeManagedLink('f.application_id')}
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, "interval '2 days'")}
+        GROUP BY f.application_id
+        ORDER BY oldest ASC, f.application_id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] investor-pending query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, r.application_id, '2 days'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is approved and ready to send to the investor' : `${r.n} draws are approved and ready to send to the investor`,
+        badge: { text: 'Deliver to investor', tone: 'action' },
+        body: `The borrower has agreed to ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it is' : 'they are'} waiting to be delivered to the investor. Please send the delivery so the borrower's funds are not held up.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'investor-pending');
+      await _stamp(DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] investor-pending', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 10) with_investor (blueprint 7b) — the draw WAS delivered to the investor and we are waiting on their
+   funding. Remind the coordinator starting +48h after the delivery, then every 2 days, until the draw
+   reaches final approval (sitewire_draws.status='approved', approval.FINAL_STATUSES). A re-send is a new
+   delivery row, so the +48h clock is measured from the LATEST send. */
+async function withInvestorOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT dd.application_id, count(DISTINCT dd.sitewire_draw_id)::int AS n, max(dd.sent_at) AS delivered
+         FROM draw_investor_deliveries dd
+         JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE dd.status='sent'
+          -- still waiting on the investor: the borrower's agreement is still standing AND the draw has
+          -- not reached final approval. A finding that left accepted/resolved is no longer with them.
+          AND EXISTS (SELECT 1 FROM draw_findings f
+                        WHERE f.sitewire_draw_id=dd.sitewire_draw_id AND f.status IN ('accepted','resolved'))
+          AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
+                            WHERE sd.sitewire_draw_id=dd.sitewire_draw_id AND sd.status='approved')
+          AND ${activeManagedLink('dd.application_id')}
+          AND ${notThrottled('dd.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
+        GROUP BY dd.application_id
+        HAVING max(dd.sent_at) < now() - interval '48 hours'
+        ORDER BY delivered ASC, dd.application_id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] with-investor query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.WITH_INVESTOR, r.application_id, '2 days'))) continue;
+      const d = daysAt(r.delivered);
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is with the investor awaiting funding' : `${r.n} draws are with the investor awaiting funding`,
+        badge: { text: 'Awaiting investor', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} delivered to the investor ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}and no funding has come back yet. Please follow up with the investor so the borrower is not left waiting.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'with-investor');
+      await _stamp(DIGEST_ACTION.WITH_INVESTOR, r.application_id, { pending: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] with-investor', r.application_id, e && e.message); }
   }
   return sent;
 }
@@ -1869,6 +2074,13 @@ async function runDue() {
     await exceptionAgingOnce().catch((e) => console.error('[digests] exception-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     await trustpointUnreleasedOnce().catch((e) => console.error('[digests] trustpoint-unreleased', e && e.message));
+    // Increment C — the four per-status draw COORDINATOR reminders. TrustPoint/Trinity nudge daily;
+    // investor delivery / awaiting-investor every 2 days. Each self-gates, so a steady morning tick
+    // gives the intended cadence without a manager having to chase.
+    await orderTrustpointOnce().catch((e) => console.error('[digests] order-trustpoint', e && e.message));
+    await orderTrinityOnce().catch((e) => console.error('[digests] order-trinity', e && e.message));
+    await investorPendingDeliveryOnce().catch((e) => console.error('[digests] investor-pending', e && e.message));
+    await withInvestorOnce().catch((e) => console.error('[digests] with-investor', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -2073,6 +2285,7 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
