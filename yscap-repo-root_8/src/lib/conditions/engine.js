@@ -78,7 +78,14 @@ async function loadRuleContext(appId) {
   const quote = a.pr_quote || null;
   const loanAmount = num(a.loan_amount);
   const arv = num(a.arv);
-  const cost = (num(a.purchase_price) || 0) + (num(a.rehab_budget) || 0);
+  // The LTC cost basis goes by the LOWER of the purchase price and the as-is value
+  // (owner-directed 2026-08-05) — the frozen engine's acqDenom — so this ctx field
+  // matches how the loan is actually sized (and never claims the property is worth
+  // more than the appraisal says). A refinance clears the purchase price, so the
+  // min() falls back to the as-is value; a blank as-is on a purchase falls back to
+  // the price. Mirrors src/lib/underwriting/metrics.js.
+  const acqBasis = Math.min(num(a.purchase_price) || num(a.as_is_value) || 0, num(a.as_is_value) || num(a.purchase_price) || 0);
+  const cost = acqBasis + (num(a.rehab_budget) || 0);
 
   // Known flood zone (SFHA) from the current appraisal — the FEMA SFHA flag, the
   // FEMA-mapped zone, or the appraiser's stated zone (an A*/V* zone is an SFHA).

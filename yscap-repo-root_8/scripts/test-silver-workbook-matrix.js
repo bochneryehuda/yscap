@@ -766,8 +766,14 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     }
     if (ev.sizeBand === 'S' && total > SMALL_MAX + 1) bad('small band sized over $2.5M');
     if (stated > 0 && stated <= SMALL_MAX && total > SMALL_MAX + 1) bad('stated <=$2.5M sized over the band ceiling');
-    // independent LTC recomputation (reserve is in the Silver cost basis)
-    const myLtc = (basis + (s.financedIR || 0)) > 0 ? total / (basis + (s.financedIR || 0)) : 0;
+    // independent LTC recomputation (reserve is in the Silver cost basis). The
+    // acquisition figure in the LTC cost basis is the LOWER of the purchase price
+    // and the as-is value (owner-directed 2026-08-05) — the SAME acqDenom the
+    // acquisition wall above uses — while the value-add/exit `basis` deliberately
+    // stays on the purchase price, exactly as the frozen engine treats each.
+    const ltcAcq = refi ? input.asIsValue : Math.min(input.purchasePrice || input.asIsValue, input.asIsValue || input.purchasePrice);
+    const ltcBasis = ltcAcq + (isBR ? 0 : input.rehabBudget);
+    const myLtc = (ltcBasis + (s.financedIR || 0)) > 0 ? total / (ltcBasis + (s.financedIR || 0)) : 0;
     if (s.ltcPct > 0 && Math.abs(myLtc - s.ltcPct) > TOL) bad(`LTC recompute ${myLtc} != engine ${s.ltcPct}`);
     // reserve bound: the engine's own monthly interest x term x 1.10 (excl. rehab-over-cap fits)
     if ((s.financedIR || 0) > 0 && (s.monthlyInterest || 0) > 0 && !s.rehabOverCap) {

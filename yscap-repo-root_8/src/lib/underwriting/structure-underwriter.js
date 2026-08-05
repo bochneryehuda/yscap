@@ -47,16 +47,26 @@ function nnum(v) { return (v == null || v === '' || !Number.isFinite(Number(v)))
  * Returns the standard leverage ratios (null when an input is missing).
  *   acquisitionLtv = initialAdvance / recognizedPurchasePrice
  *   asIsLtv        = initialAdvance / asIsValue
- *   ltc            = totalLoan / costBasis   (costBasis = purchase + rehab)
+ *   ltc            = totalLoan / costBasis   (costBasis = min(purchase, as-is) + rehab)
  *   arvLtv         = totalLoan / arv
  */
 function computeRatios(s) {
   s = s || {};
   // Fix 2026-07-23: a NULL costBasis (typical DB row) coerced to 0 and BLOCKED
   // the purchase+rehab fallback; a NULL rehabBudget added +0 to the basis.
+  // The registered quote's own costBasis wins (the frozen engine already sized on
+  // it). The fallback mirrors the engine's acqDenom (owner-directed 2026-08-05): the
+  // acquisition figure is the LOWER of the recognized purchase price and the as-is
+  // value; a blank as-is value falls back to the price, and a NULL recognized price
+  // (a refinance) still yields a null basis (the LTC row is skipped), as before.
+  const recPrice = nnum(s.recognizedPurchasePrice);
+  const asIs = nnum(s.asIsValue);
+  const acqBasis = recPrice != null
+    ? (asIs != null && asIs > 0 && asIs < recPrice ? asIs : recPrice)
+    : null;
   const costBasis = nnum(s.costBasis) != null ? nnum(s.costBasis)
-    : (nnum(s.recognizedPurchasePrice) != null && nnum(s.rehabBudget) != null
-      ? nnum(s.recognizedPurchasePrice) + nnum(s.rehabBudget) : null);
+    : (acqBasis != null && nnum(s.rehabBudget) != null
+      ? acqBasis + nnum(s.rehabBudget) : null);
   return {
     acquisitionLtv: ratio(s.initialAdvance, s.recognizedPurchasePrice),
     asIsLtv: ratio(s.initialAdvance, s.asIsValue),

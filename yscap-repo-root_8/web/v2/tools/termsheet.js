@@ -584,7 +584,14 @@
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var liquidity = cashToClose + reserves + _sl.oopRehab + closingBuffer;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
-    var displayCost = basisPrice + num("construction") + financedIRr;
+    // TOTAL COST goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's own acqDenom (min(price, as-is) on a
+    // purchase, the as-is value on a refi). basisPrice stays the REAL price shown as
+    // "Purchase price"; only the total-cost/LTC basis drops to the as-is value when it
+    // is lower. Falls back to basisPrice if the deal did not size. Byte-identical when
+    // the as-is value is >= the price (acqDenom === basisPrice).
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
+    var displayCost = costAcq + num("construction") + financedIRr;
 
     return {
       R: R, inp: inp, eff: (inp.loanType === "Purchase" ? effPurchase() : num("asIs")), basisPrice: basisPrice,
@@ -645,6 +652,9 @@
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, gold: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -655,7 +665,7 @@
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: (_g.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
@@ -704,6 +714,9 @@
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, silver: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -715,7 +728,7 @@
       initialPayment: (_sv.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)),
       fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       monthlyInterest: s.monthlyInterest || (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
