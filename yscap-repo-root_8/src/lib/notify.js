@@ -211,6 +211,9 @@ function injectOpenPixel(html, notifId) {
 // UPDATE can lose the race with the test's pool.end() ("Cannot use a pool after
 // calling end") or a cleanup DELETE (a sent_emails → notifications foreign-key error).
 // Production never calls drainEmails(); the Set self-empties as each send settles.
+// EVERY fire-and-forget email.sendMail() must go through _track() — the main _emailRow
+// fan-out below, the split-off officer copy, and the notifyAdmins copy — or drainEmails()
+// is incomplete and a test that awaits it can still race that untracked send.
 const _inflight = new Set();
 function _track(p) {
   _inflight.add(p);
@@ -297,7 +300,10 @@ async function _emailRow(id, to, opts, audience) {
     // notification's history; a second capture on the same notification_id would clobber
     // the recorded recipient). Best-effort — never affects the borrower send's result.
     if (splitOfficer) {
-      email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {});
+      // Track this fire-and-forget send in _inflight so drainEmails() (test-only) can
+      // await the officer's pixel-free copy. In production nothing drains _inflight, so
+      // it stays fire-and-forget and self-clears on settle — behaviour is identical.
+      _track(email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {}));
     }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
@@ -1111,8 +1117,8 @@ async function notifyAdmins(opts) {
   // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
   if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
     const msg = buildEmail(opts, 'staff');
-    email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {});
+    _track(email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
+      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
   }
   return ids;
 }
