@@ -124,7 +124,17 @@ export default function DealSnapshot({ app, gating }) {
                   : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
               </span>
             ))}
-          {row('FICO', app.fico || '—')}
+          {/* FICO that prices the deal: the borrower's imported credit-report middle
+              score, and the HIGHER of the two on a co-borrower file (owner-directed
+              2026-08-05). A credit import writes each borrower's middle score to their
+              fico, so this reads the real score, not the estimate. */}
+          {row('FICO', (() => {
+            const p = Number(app.fico) || 0;
+            const c = Number(app.co_fico) || 0;
+            const hi = Math.max(p, c);
+            if (!hi) return '—';
+            return (app.co_borrower_id && p && c && p !== c) ? `${hi} (higher of ${p} / ${c})` : String(hi);
+          })())}
           {/* The note buyer at a glance (owner-directed 2026-07-27) — it used to be
               readable only inside the ClickUp panel, so an officer couldn't tell who is
               buying the loan without hunting for it. STAFF-ONLY: this component renders

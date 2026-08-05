@@ -1071,7 +1071,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey, itemId })
       if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
       const tone = (out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
       if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-      if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       showFlash('Reused the borrower’s existing credit report ✓ — no new pull' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
       setJustImported(true);
       loadCredit().then(() => setShowOverlay(true));
@@ -1102,7 +1102,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey, itemId })
         if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
         if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
         if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-        if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+        if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       }
       // A merged report is one document read for several people — say who it covered,
       // and name anyone it did NOT (never let that pass silently).
