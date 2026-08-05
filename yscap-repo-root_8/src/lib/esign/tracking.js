@@ -239,8 +239,18 @@ async function fileEsign(db, applicationId) {
   // dashboard() already attached e.documents (signed PDFs) + e.certificate via
   // attachSignedArtifacts — the per-file view reuses them directly.
   const { envelopes } = await dashboard(db, { where: 'AND a.id = $1', params: [applicationId] });
-  const byPurpose = { term_sheet_package: [], heter_iska: [] };
+  const byPurpose = { term_sheet_package: [], heter_iska: [], noo_affidavit: [] };
   for (const e of envelopes) { (byPurpose[e.purpose] = byPurpose[e.purpose] || []).push(e); }
+  // The non-owner-occupied certification package is offered ONLY on a file that vests
+  // in an individual's name — i.e. one carrying the cond_noo_affidavit_individual
+  // condition (db/417, rule-driven off individual vesting). An already-started NOO
+  // envelope also keeps the package visible so its card can be managed after the file
+  // is (say) re-linked to an entity and the condition retracts.
+  const nooApplicable = !!(await db.query(
+    `SELECT 1 FROM checklist_items ci
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id = $1 AND t.code = 'cond_noo_affidavit_individual' LIMIT 1`,
+    [applicationId])).rows.length || byPurpose.noo_affidavit.length > 0;
   // Surface the file's YS loan number so the per-file view can offer an inline
   // backfill when it's missing — the term-sheet package prints the loan number on
   // the disclosure, so a file with no loan number can't send until one is entered.
@@ -253,7 +263,7 @@ async function fileEsign(db, applicationId) {
   // readiness and to offer the admin override instead of a dead end.
   const encompass = await encompassSendBlock(applicationId);
   const termSheet = await termSheetStampBlock(db, applicationId);
-  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass, termSheet };
+  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass, termSheet, nooApplicable };
 }
 
 module.exports = { esignPhase, waitingOn, dashboard, fileEsign, encompassSendBlock, termSheetStampBlock };

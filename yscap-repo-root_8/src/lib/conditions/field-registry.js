@@ -259,10 +259,22 @@ const FIELDS = [
   // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
   // condition (rtl_cond_flood, db/281) — which a FIDELIS file is excluded from
   // (db/335, via note_buyer_is_fidelis below).
+  // note_buyer is STAFF-set from the completeness datalist (staff.js complete-fields
+  // writes the picked LABEL straight to applications.lender) — it is deliberately not
+  // writable from a Condition Center info-field. RCN's real ClickUp dropdown label is
+  // "RCN Capital" (owner-directed 2026-08-05); listing { v:'rcncapital', label:'RCN
+  // Capital' } makes it a first-class, pickable note buyer (listNoteBuyers reads these
+  // labels) even on a cold ClickUp option cache, instead of a value staff had to type
+  // by hand. `v` is the normalized label so it lines up with normNoteBuyer('RCN
+  // Capital')='rcncapital'. RCN needs no rule/boolean companion — its only special
+  // handling is the vendor-order mortgagee clause + the insurance address check, both
+  // keyed on isRcnNoteBuyer (prefix), which already matches "RCN Capital" and every
+  // other 'rcn…' spelling.
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
-      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' }],
+      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' },
+      { v: 'rcncapital', label: 'RCN Capital' }],
     description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
   // Is the note buyer FIDELIS (any spelling — "Fidelis", "Fidelis Investors",
   // "Fidelis Investors LLC")? A BOOLEAN companion to note_buyer, deliberately not

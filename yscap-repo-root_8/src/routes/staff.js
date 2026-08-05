@@ -1838,8 +1838,15 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
     const middle = String(b.middleName || '').trim();
     const suffix = String(b.nameSuffix || '').trim();
     const email = String(b.email || '').trim().toLowerCase();
+    // A co-borrower needs a NAME, not necessarily an email (#22, owner-directed
+    // 2026-08-05: "allow it at intake"). When you're setting up a fresh file you
+    // often have the second borrower's name but not their email yet — the email is
+    // only needed later, to invite them to the portal or to sign, and is filled in
+    // then (the invite button already self-disables until it's on). Storing NULL
+    // (not '') keeps every email-less co-borrower a DISTINCT identity record — an
+    // empty string would collide two different people on the email unique index.
     if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
-    if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
+    const emailVal = email || null;
     // #91/#92: normalize + validate through the single SSN chokepoint — never
     // encrypt a dash-formatted string or store a partial/garbage last4.
     const ssnStore = b.ssn ? C.ssnForStorage(b.ssn) : null;
@@ -1858,7 +1865,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
       // shares this email (family emails are common) — that would grant them
       // access to this file's PII. If the email is on record under a conflicting
       // name, stop and make staff resolve it (same guard the primary paths use).
-      const conflict = await emailAdoptionConflict(email, first, last);
+      const conflict = email ? await emailAdoptionConflict(email, first, last) : null;
       if (conflict) {
         const e = new Error(`That email is already on file for a different borrower (${(conflict.first_name || '').trim()} ${(conflict.last_name || '').trim()}). Use a different email or resolve the match first.`);
         e.status = 409; throw e;
@@ -1882,7 +1889,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
            ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
            updated_at=now()
          RETURNING id`,
-        [first, last, email, b.phone || null,
+        [first, last, emailVal, b.phone || null,
          require('../lib/fields').sanitizeDob(b.dob),   // typed '26' resolves to the real year; garbage never persists
          ssnEnc, ssnLast4, ssnHash, middle, suffix]);
       coId = ins.rows[0].id;

@@ -51,6 +51,8 @@ const PAYOFF_BODY_KEY = Object.freeze({
 });
 const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
+const borrowerAssistant = require('../lib/borrower-assistant');
+const personName = require('../lib/person-name');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -198,6 +200,117 @@ router.get('/profile', async (req, res) => {
     out.locked = !!lk.rows[0];
   } catch (_) { out.locked = false; }
   res.json(out);
+});
+
+// ---------------- HELPER (assistant) logins ----------------
+// A borrower may authorize a HELPER with their own login — they can work the loan
+// in the portal but CANNOT see personal details or sign documents (owner-directed;
+// src/lib/borrower-assistant.js). Self-service: only the borrower manages their
+// own helpers. An assistant session (req.assistant) can never create or manage a
+// helper — that would be a privilege escalation.
+function assistantMgmtBlocked(req, res) {
+  if (req.assistant) { res.status(403).json({ error: 'A helper can’t manage other helpers — ask the borrower.' }); return true; }
+  return false;
+}
+async function emailAssistantInvite(borrowerId, email, name, token) {
+  try {
+    const b = (await db.query(`SELECT first_name, last_name, full_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+    const r = await mail.send('assistantInvite', email, {
+      name, borrowerName: b ? personName.displayName(b) : null,
+      acceptUrl: mail.link('/assistant/accept?token=' + token), days: 7 });
+    return !!(r && r.ok);
+  } catch (_) { return false; }
+}
+
+router.get('/assistants', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    const r = await db.query(
+      `SELECT id, name, email, (password_hash IS NOT NULL) AS has_pw, last_login_at, created_at
+         FROM borrower_assistants WHERE borrower_id=$1 AND disabled_at IS NULL
+        ORDER BY created_at DESC`, [me(req)]);
+    res.json({ assistants: r.rows.map((a) => ({
+      id: a.id, name: a.name, email: a.email,
+      status: a.has_pw ? 'active' : 'invited',
+      lastLoginAt: a.last_login_at, createdAt: a.created_at })) });
+  } catch (e) { next(e); }
+});
+
+router.post('/assistants', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 120) || null;
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+    return res.status(400).json({ error: 'Enter a valid email address for your helper.' });
+  try {
+    const token = C.randomToken(24);
+    const inviteHash = C.sha256(token);
+    // Refresh an existing invite to the SAME helper of THIS borrower; otherwise
+    // refuse an email already live as someone's helper (the partial unique index
+    // would refuse it too — answer nicely).
+    const mine = await db.query(
+      `SELECT id FROM borrower_assistants WHERE borrower_id=$1 AND lower(email)=$2 AND disabled_at IS NULL LIMIT 1`,
+      [me(req), email]);
+    let id;
+    if (mine.rows[0]) {
+      id = mine.rows[0].id;
+      await db.query(
+        `UPDATE borrower_assistants
+            SET name=COALESCE($2,name), invite_token_hash=$3,
+                invite_expires_at = now() + ($4 || ' seconds')::interval
+          WHERE id=$1`,
+        [id, name, inviteHash, String(borrowerAssistant.INVITE_TTL_SEC)]);
+    } else {
+      const clash = await db.query(
+        `SELECT 1 FROM borrower_assistants WHERE lower(email)=$1 AND disabled_at IS NULL LIMIT 1`, [email]);
+      if (clash.rows[0]) return res.status(409).json({ error: 'That email is already set up as a helper.' });
+      const ins = await db.query(
+        `INSERT INTO borrower_assistants
+           (borrower_id, email, name, invited_by_self, invite_token_hash, invite_expires_at)
+         VALUES ($1,$2,$3,true,$4, now() + ($5 || ' seconds')::interval) RETURNING id`,
+        [me(req), email, name, inviteHash, String(borrowerAssistant.INVITE_TTL_SEC)]);
+      id = ins.rows[0].id;
+    }
+    const emailed = await emailAssistantInvite(me(req), email, name, token);
+    res.status(201).json({ ok: true, id, emailed });
+  } catch (e) {
+    // A concurrent double-invite can pass the clash pre-check and then race into
+    // the partial unique index — answer the same friendly 409, not a raw 500.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'That email is already set up as a helper.' });
+    next(e);
+  }
+});
+
+router.post('/assistants/:id/resend', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    const token = C.randomToken(24);
+    const r = await db.query(
+      `UPDATE borrower_assistants
+          SET invite_token_hash=$3, invite_expires_at = now() + ($4 || ' seconds')::interval
+        WHERE id=$1 AND borrower_id=$2 AND disabled_at IS NULL
+        RETURNING email, name`,
+      [req.params.id, me(req), C.sha256(token), String(borrowerAssistant.INVITE_TTL_SEC)]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    const emailed = await emailAssistantInvite(me(req), r.rows[0].email, r.rows[0].name, token);
+    res.json({ ok: true, emailed });
+  } catch (e) { next(e); }
+});
+
+router.post('/assistants/:id/disable', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    // Bumping token_version kills any live helper session immediately (authenticate
+    // re-checks it every request); clearing the invite kills any pending link.
+    const r = await db.query(
+      `UPDATE borrower_assistants
+          SET disabled_at=now(), token_version=token_version+1,
+              invite_token_hash=NULL, invite_expires_at=NULL
+        WHERE id=$1 AND borrower_id=$2 AND disabled_at IS NULL
+        RETURNING id`, [req.params.id, me(req)]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -514,7 +627,7 @@ router.get('/applications', async (req, res) => {
 // nag here — their items wait inside the file. Borrower-SAFE: only borrower_* wording,
 // scrubbed of any capital-partner name.
 const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
-const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska' };
+const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 function propLabelOf(j) {
   if (!j) return '';
   if (typeof j === 'string') return j.trim();
@@ -1560,6 +1673,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'information item not found' });
   const item = it.rows[0];
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
+  // A HELPER (assistant) may answer deal/property conditions but not one that
+  // writes the borrower's own personal detail (e.g. the credit-score condition
+  // writes `borrowers.fico`) — those are the borrower's to provide.
+  if (req.assistant && borrowerAssistant.isProtectedWriteKey(item.field_key))
+    return res.status(403).json({ error: 'A helper can’t provide the borrower’s personal details (like the credit score). Ask the borrower to answer this one.' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
   /* THREE GOVERNANCES MEET AT THIS DOOR, AND THE ORDER IS THE WHOLE THING
@@ -2168,6 +2286,12 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const bid = own.rows[0].borrower_id;
   const b = req.body || {};
+  // A HELPER (assistant) may complete DEAL fields but never the borrower's own
+  // PERSONAL details (date of birth, credit score, citizenship, phone) — those
+  // are the borrower's to change, exactly as on the profile editor. One shared
+  // definition strips them so the deal fields still save; the personal ones are
+  // ignored.
+  if (req.assistant) borrowerAssistant.stripProtectedWrites(b);
   try {
     // S5-03: once a product is registered, the borrower can no longer write the
     // deal economics straight onto the live record — each proposed change becomes
@@ -3852,6 +3976,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
   if (d.rows[0].submitted_application_id)
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
+  // A HELPER (assistant) may submit a draft to help create the file, but the
+  // borrower's own personal identity must not ride in on it — the submit syncs
+  // those onto the profile (fill-only). Strip them from the merged body (the
+  // top-level SSN and the nested `personal` block); the deal/property fields
+  // still submit. The borrower fills their own personal details.
+  if (req.assistant) { borrowerAssistant.stripProtectedWrites(b); if (b.personal) borrowerAssistant.stripProtectedWrites(b.personal); }
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   /* A number too big for its column is a bad request, not a 500 (see
      fields.applicationNumberProblem). This is the door the audit reproduced it

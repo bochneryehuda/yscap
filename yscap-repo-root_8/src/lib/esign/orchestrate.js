@@ -185,6 +185,26 @@ const PACKAGES = {
       { kind: 'draw_request', prefix: 'dr', signedKind: 'draw_request_signed', condition: 'draw_cond_signed_request', name: 'Draw Request & Wire Instructions', generate: true, genExt: 'pdf', wireForm: true },
     ],
   },
+  // The NON-OWNER-OCCUPIED CERTIFICATION (owner-directed 2026-08: "Certification
+  // (e-sign, no notary)"). A file that vests in an INDIVIDUAL's name carries the
+  // cond_noo_affidavit_individual condition (db/417); this is the DocuSign package
+  // that satisfies it. Built on our server as a branded PDF (noo-affidavit-pdf.js)
+  // and uploaded AS PDF (genExt) — DocuSign accepts PDF natively, no docx conversion.
+  // NOT an origination document — it is a prior-to-docs occupancy certification meant
+  // to be signable EARLY, so the appraisal/P&P term-sheet send gate does not apply
+  // (skipAppraisalGate); its only prerequisites (property + borrower name) are enforced
+  // by validateGenerated. NOT soloBorrower — an individual-vesting file may still carry
+  // a co-borrower, and both individuals certify non-occupancy. No countersign, no notary.
+  noo_affidavit: {
+    label: 'Non-owner-occupied certification',
+    countersignRequired: false,
+    skipAppraisalGate: true,
+    subject: (loan, addr) => composeSubject('Non-owner-occupied certification ready to sign', loan, addr),
+    blurb: 'Please review and sign the non-owner-occupied certification confirming you will not occupy the property.',
+    docs: [
+      { kind: 'noo_affidavit', prefix: 'noo', signedKind: 'noo_affidavit_signed', condition: 'cond_noo_affidavit_individual', name: 'Non-Owner-Occupied Certification', generate: true, genExt: 'pdf' },
+    ],
+  },
 };
 
 function packageSpec(purpose) {
@@ -515,7 +535,7 @@ async function loadDocGenData(db, applicationId) {
     propZip: zip,
     bFirst: a.b_first || '', bLast: a.b_last || '',
     hasCoBorrower: !!a.co_borrower_id,
-    cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
+    cbFirst: a.cb_first || '', cbLast: a.cb_last || '', cbEmail: a.cb_email || '',
     // The nested view the auto-generated loan application renders from.
     application,
   };
@@ -541,10 +561,21 @@ function validateGenerated(spec, data) {
   // Only a package that BOTH signs the co-borrower AND prints its name needs it. The
   // draw request is soloBorrower (co-borrower never signs it), so a co on file is fine.
   if (!spec.soloBorrower && data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
+  // A co-borrower who SIGNS a package needs an email (DocuSign requires a recipient
+  // email). A co-borrower may now be added without an email (#22), so catch it HERE
+  // with a friendly, field-named refusal instead of letting buildEnvelopeDefinition
+  // fail deep with a raw "invalid signer email" DocuSign-arg string.
+  if (!spec.soloBorrower && data.hasCoBorrower && !(data.cbEmail || '').trim()) missing.push('co-borrower email');
   // The disclosure, the loan application, AND the draw request print the loan number +
   // subject property, so a blank one must BLOCK the send, not render blank.
   if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export') || genKinds.includes('draw_request')) {
     if (!data.loanNumber) missing.push('loan number');
+    if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
+  }
+  // The NOO certification prints the property (and the loan number when present) but is
+  // designed to be signable EARLY — before a loan number is assigned — so a blank
+  // property BLOCKS the send while a missing loan number does not.
+  if (genKinds.includes('noo_affidavit')) {
     if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
   }
   if (missing.length) {
@@ -1047,6 +1078,18 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   // the generic staff e-sign send route (audit LOW). Idempotent per file.
   if (purpose === 'draw_request') {
     await require('./draw-wire').ensureDrawRequestCondition(db, applicationId, actor && actor.id);
+  }
+  // The NOO certification exists to CLEAR the cond_noo_affidavit_individual condition,
+  // which is rule-driven off individual vesting (db/417). Unlike the draw request, we do
+  // NOT create the condition on demand — that would put an occupancy affidavit on an
+  // entity-vested file. Refuse the send when the file isn't individual-vesting, so the
+  // signed certification can never file against nothing (a silent no-op clear).
+  if (purpose === 'noo_affidavit') {
+    const item = await resolveConditionItem(db, applicationId, 'cond_noo_affidavit_individual');
+    if (!item) {
+      const e = new Error('This file does not vest in an individual’s name, so the non-owner-occupied certification does not apply. Mark the file as individual vesting first.');
+      e.code = 'NOO_NOT_APPLICABLE'; e.retryable = false; throw e;
+    }
   }
   // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
   // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.

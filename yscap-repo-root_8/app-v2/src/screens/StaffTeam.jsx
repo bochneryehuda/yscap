@@ -278,8 +278,10 @@ export default function StaffTeam() {
         <div className="panel-h"><h3>Add a team member</h3></div>
         <div className="panel-b">
         <p className="muted small" style={{ marginBottom: 14 }}>
-          They immediately become assignable to files. Sales members marked “Show on site” also
-          appear on the public “select your loan officer” list. Choose how they get login access.
+          They immediately become assignable to files. <b>Anyone</b> marked “Show on site” appears on
+          the public Team page — grouped under Sales &amp; Loan Coordinators or Operations &amp; Back Office
+          by their department — so back-office members can be shown too. Only <b>Sales</b> members also
+          appear in the borrower’s “select your loan officer” list. Choose how they get login access.
         </p>
         <form onSubmit={create} className="grid cols-2" style={{ gap: 12 }}>
           <div className="field"><label>Full name *</label>
