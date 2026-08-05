@@ -14937,6 +14937,23 @@ router.post('/documents/:id/review', async (req, res) => {
       }
     }
 
+    // The DRAW WIRE operating-agreement condition (Task 5, owner-directed 2026-08-05): accepting
+    // the agreement OPENS/LINKS the wire-recipient entity on the borrower's profile and saves the
+    // agreement into that entity's own operating-agreement slot — so it is on his record for the
+    // future, exactly as entity-adopt does for the bank-statement case. Best-effort: the document
+    // is accepted either way, the profile link is a follow-on.
+    if (action === 'accept' && !requestMore && doc.checklist_item_id) {
+      try {
+        const drawOa = require('../lib/esign/draw-oa');
+        const oaRes = await drawOa.onAccepted(db, { itemId: doc.checklist_item_id, documentId: doc.id, actorId: req.actor.id });
+        if (oaRes && oaRes.adopted) {
+          await audit(req, 'draw_wire_entity_adopted', 'llc', oaRes.llcId,
+            { applicationId: doc.application_id, entityName: oaRes.entityName, created: oaRes.created, savedToSlot: oaRes.savedToSlot });
+          drawOa.afterAcceptCommit(oaRes.llcId).catch(() => {});
+        }
+      } catch (_) { /* best-effort — the accept stands regardless */ }
+    }
+
     // On rejection, tell the borrower what to fix. LLC documents live on the
     // borrower profile, not on a file — send the borrower there instead.
     if (action === 'reject' && doc.borrower_id && await claimItemVerdictEmail(doc.checklist_item_id, 'doc_rejected_emailed')) {

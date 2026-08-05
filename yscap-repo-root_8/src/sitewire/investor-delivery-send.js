@@ -189,6 +189,23 @@ async function gatherAttachments(appId, drawId, mode) {
       if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
       else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
     } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+
+    // --- 5. the wire-recipient entity's operating agreement, when the wire goes to a NEW entity
+    // (Task 5, owner-directed 2026-08-05: "attach the OA to the investor email when the investor
+    // receives it"). Only present when the wire named an entity that is neither the borrower nor
+    // the subject LLC — the investor uses it to confirm the entity before releasing directly to it.
+    // Only an ACCEPTED agreement is sent; an unaccepted one has not been vetted.
+    try {
+      const drawOa = require('../lib/esign/draw-oa');
+      const oa = await drawOa.acceptedOaForInvestor(db, appId);
+      if (oa) {
+        const buf = await readDoc(oa);
+        if (buf) items.push({ what: 'Operating agreement (wire recipient)', filename: oa.filename || 'operating-agreement.pdf', contentType: 'application/pdf', buf });
+        else skipped.push({ what: 'Operating agreement (wire recipient)', reason: 'the stored copy could not be read' });
+      }
+      // No OA condition / no accepted agreement → the wire is to the borrower or the subject LLC;
+      // nothing to attach, and nothing to report as missing.
+    } catch (_) { /* the OA is an extra only on a new-entity wire — never block the delivery */ }
   }
 
   // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.

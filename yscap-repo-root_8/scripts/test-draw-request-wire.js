@@ -64,6 +64,14 @@ function mockDocusign(wireValues) {
     ok(drawWire.classifyAccountName('Riverside Trust', { borrowerName: 'Jane Borrower', llcName: 'Riverside Inc' }).kind === 'new_entity',
       'two different non-empty legal forms are still a new entity (Trust vs Inc)');
 
+    // ---- (1b) displayEntityName — a CLEAN name for creating the LLC on the profile (Task 5) ----
+    ok(drawWire.displayEntityName('MW Trading LLC, A New York Limited Liability Company') === 'MW Trading LLC',
+      'displayEntityName strips the full legal description');
+    ok(drawWire.displayEntityName('Maple Ridge LLC') === 'Maple Ridge LLC', 'a clean LLC name is unchanged');
+    ok(drawWire.displayEntityName('Riverside Holdings') === 'Riverside Holdings', 'a name with no legal form is returned as-is');
+    ok(drawWire.displayEntityName('  Beta Holdings LLC  ') === 'Beta Holdings LLC', 'surrounding whitespace is trimmed');
+    ok(drawWire.displayEntityName('') === '', 'a blank name stays blank');
+
     // ---- (2) textTab emit + read-back ----
     const def = ds.buildEnvelopeDefinition({
       documents: [{ base64: 'AAAA', name: 'DR', documentId: 1 }],

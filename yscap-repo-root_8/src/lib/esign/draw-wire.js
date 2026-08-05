@@ -81,6 +81,22 @@ function splitEntity(s) {
 function normEntity(s) { return splitEntity(s).base; }
 
 /**
+ * A clean DISPLAY name for an entity — the descriptive name up to AND INCLUDING its first
+ * legal-form word, with the original casing kept and any trailing legal description dropped.
+ * "MW Trading LLC, A New York Limited Liability Company" → "MW Trading LLC"; a name with no
+ * legal form is returned trimmed and unchanged. Used when creating a new LLC on the profile
+ * from a wire-form account name so the profile carries "MW Trading LLC", not the full legal
+ * description (which would not match the borrower's clean entity on the next lookup). */
+function displayEntityName(s) {
+  const raw = String(s == null ? '' : s).trim();
+  if (!raw) return '';
+  LEGAL_SUFFIX.lastIndex = 0;                 // /g regex — reset before exec
+  const m = LEGAL_SUFFIX.exec(raw.toLowerCase());   // lowercase for the index only — same length
+  if (!m) return raw;
+  return raw.slice(0, m.index + m[0].length).replace(/[\s,]+$/, '').trim();
+}
+
+/**
  * Do two ENTITY names refer to the same legal entity? The descriptive base must match
  * AND the legal form must be COMPATIBLE: the SAME form ("Maple Ridge LLC" == "Maple
  * Ridge, L.L.C."), OR EITHER side omitted it. The omission goes BOTH ways
@@ -312,6 +328,13 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
      acctLast4, wire.routing_number || null, wire.bank_address || null, wire.account_address || null,
      cls.kind, cls.matches, oaItemId, JSON.stringify(rawSafe)]);
 
+  // If the new entity is one the borrower ALREADY has on their profile with an operating agreement
+  // on file, pull that agreement onto the condition so the coordinator has a head start (Task 5,
+  // owner-directed 2026-08-05). Best-effort — never blocks the capture. Lazy-require avoids a cycle.
+  if (cls.kind === 'new_entity') {
+    try { await require('./draw-oa').autofillFromProfile(db, appId, null); } catch (_) { /* best-effort */ }
+  }
+
   // Tell the team a new-entity wire needs an operating agreement (action-needed → email).
   if (cls.kind === 'new_entity') {
     try {
@@ -335,7 +358,7 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
 
 module.exports = {
   // pure classifiers (tests)
-  normEntity, splitEntity, entityMatch, nameTokens, hasEntityDesignator, personalMatch, classifyAccountName, last4,
+  normEntity, splitEntity, displayEntityName, entityMatch, nameTokens, hasEntityDesignator, personalMatch, classifyAccountName, last4,
   // conditions
   ensureDrawRequestCondition, raiseOperatingAgreementCondition, retractOperatingAgreementCondition,
   // capture

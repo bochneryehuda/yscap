@@ -368,6 +368,29 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('K13 a wire-blocked delivery sends nothing', outbox2.length, 0);
   mailer.sendMail = realSend;
 
+  // ================================================================ L. the wire-recipient OA rides investor_direct only (Task 5)
+  // When the wire goes to a NEW entity, its accepted operating agreement is attached to an
+  // investor_direct delivery (the investor confirms the entity before wiring it) and NOT to a
+  // reimbursement one (we already wired — the investor is only paying us back).
+  const storage2 = require('../src/lib/storage');
+  await drawWire.raiseOperatingAgreementCondition(db, app, 'New Entity Holdings LLC');
+  await db.query(
+    `INSERT INTO draw_wire_instructions(application_id,account_name,name_kind,name_matches,captured_at)
+     VALUES($1,'New Entity Holdings LLC','new_entity',false,now())
+     ON CONFLICT (application_id) DO UPDATE SET account_name=EXCLUDED.account_name`, [app]);
+  const oaItem = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2`, [app, `draw:wire_oa:${app}`])).rows[0].id;
+  const savedOa = await storage2.save(Buffer.from('OPERATING-AGREEMENT-BYTES-FOR-INVESTOR'), { filename: 'oa.pdf' });
+  await db.query(
+    `INSERT INTO documents(application_id,checklist_item_id,filename,storage_provider,storage_ref,review_status,is_current,source_type,visibility)
+     VALUES($1,$2,'operating-agreement.pdf',$3,$4,'accepted',true,'system','borrower')`, [app, oaItem, savedOa.provider, savedOa.ref]);
+
+  const gInv = await send.gatherAttachments(app, DRAW, 'investor_direct');
+  ok('L1 the wire-recipient OA rides an investor_direct delivery', gInv.items.some((i) => /Operating agreement/i.test(i.what)));
+  const gReim = await send.gatherAttachments(app, DRAW, 'reimbursement');
+  ok('L2 the OA is NOT attached on a reimbursement delivery',
+    !gReim.items.some((i) => /Operating agreement/i.test(i.what)) && !gReim.skipped.some((s) => /Operating agreement/i.test(s.what)));
+  try { await storage2.remove(savedOa.ref); } catch (_) {}
+
   // ================================================================ cleanup
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
