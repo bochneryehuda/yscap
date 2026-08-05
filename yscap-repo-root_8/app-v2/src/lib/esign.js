@@ -16,6 +16,7 @@ export const PURPOSE = {
   term_sheet_package: 'Term-Sheet Package',
   heter_iska: 'Heter Iska',
   draw_request: 'Draw request',
+  noo_affidavit: 'Non-owner-occupied certification',
   test: 'Test',
 };
 

@@ -237,6 +237,16 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
   const reasonOpts = data.exceptionReasonCodes || {};
   const envelopes = data.envelopes || [];
   const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
+  // The non-owner-occupied certification is offered ONLY on an individual-vesting
+  // file (the server reports nooApplicable = the cond_noo_affidavit_individual
+  // condition is on the file). It is a prior-to-docs certification — NOT an
+  // origination document — so it is NOT held by the term-sheet send gate, the
+  // Encompass match, the loan-number requirement, or the "term sheet not final"
+  // stamp; its only prerequisites (property + borrower name) are enforced server-side.
+  const nooApplicable = !!data.nooApplicable;
+  const visiblePackages = nooApplicable
+    ? PACKAGES.concat([{ purpose: 'noo_affidavit', label: 'Non-owner-occupied certification', hint: 'Borrower (+ co-borrower) certify they will not occupy the property. Sign only — no counter-signature, no notary. Clears the non-owner-occupied condition.' }])
+    : PACKAGES;
 
   // The SECOND gate on a term-sheet send (owner-reported 2026-07-27). The gate
   // above covers the appraisal / P&P / closing-date prerequisites ONLY; the
@@ -701,7 +711,11 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
           </div>
         )}
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-          {PACKAGES.map((p) => {
+          {visiblePackages.map((p) => {
+            // The NOO certification is a prior-to-docs occupancy certification — it is
+            // NOT held by the term-sheet gate, Encompass, the loan number, or the
+            // "not final" stamp. Its only block is "already started" (manage it below).
+            const isNoo = p.purpose === 'noo_affidavit';
             // The term-sheet package additionally needs a loan number; Heter Iska does not.
             const needsLoan = p.purpose === 'term_sheet_package' && !hasLoanNumber;
             // Once a package has ANY envelope on the file, the top Send is retired for it —
@@ -725,8 +739,9 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
             // file genuinely isn't ready to finalize (the fix is re-registering).
             const tsFinalizeHere = p.purpose === 'term_sheet_package' && tsCanFinalize;
             const tsHardHeld = tsHeld && !tsCanFinalize;
-            const blocked = !sendAllowed || needsLoan || already || encHeld || tsHardHeld;
+            const blocked = isNoo ? already : (!sendAllowed || needsLoan || already || encHeld || tsHardHeld);
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
+              : isNoo ? p.hint
               : needsLoan ? 'Enter the YS loan number above first'
               : tsHardHeld ? 'The term sheet on file still prints “NOT FINAL” and the file isn’t ready to finalize yet — see the note above'
               : tsFinalizeHere ? 'Generates the FINAL term sheet, then sends it for signature'
