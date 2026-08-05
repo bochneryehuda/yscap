@@ -375,22 +375,90 @@ const propByAddress = async (street) => (await db.query(
     const emptyR = await XI.importXml(D, { xml: '   ', filename: 'empty.xml', uploadedBy: staff });
     ok(!emptyR.ok && /empty/i.test(emptyR.reason || ''), 'an empty file says so');
 
-    // A comparable with no house number is not an address — it must be skipped and counted.
+    // A comparable is KEPT even with a thin address (owner-directed) — dropped only
+    // when there is no street at all to record.
     const skipXml = base({
       street: '99 Cedar Ct',
       comps: [
+        // no house number → kept for review, NOT dropped
         { seq: '1', address: 'Elm Street', city: TOWN, state: 'NJ', price: 400000,
           saleDate: '2026-04-10', gla: 1400, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+        // a real address → filed normally
         { seq: '2', address: '44 Spruce Way', city: TOWN, state: 'NJ', price: 405000,
           saleDate: '2026-04-11', gla: 1450, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+        // no street at all → nothing to file, the only true skip
+        { seq: '3', address: '', city: TOWN, state: 'NJ', price: 406000,
+          saleDate: '2026-04-12', gla: 1460, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
       ],
     });
     const r4 = await XI.importXml(D, { xml: skipXml, filename: 'skip.xml', uploadedBy: staff });
-    ok(r4.ok && r4.skipped.length === 1,
-      'a comparable whose address has no house number is SKIPPED, never stored under an invented key');
-    ok(r4.skipped[0] && /house number/i.test(r4.skipped[0].why || ''),
-      'and the reason says what was missing');
-    ok(r4.observations === 2, 'the rest of the report still lands — one bad line does not lose a report');
+    ok(r4.ok, `the report lands (${r4.reason || 'ok'})`);
+    ok((r4.salvaged || []).some((x) => x.kind === 'needs_review' && /house number/i.test(x.why || '')),
+      'a comparable with no house number is KEPT FOR REVIEW, not dropped (owner-directed)');
+    ok(r4.skipped.length === 1,
+      'only a comparable with no street at all is a true skip');
+    ok(r4.observations === 3,
+      'the subject and every comparable that had any street are recorded — one bad line does not lose a report');
+
+    // =====================================================================
+    // 6b. A THIN ADDRESS IS SALVAGED, NOT DROPPED (owner-directed 2026-08-05)
+    // =====================================================================
+    // The owner reported the warehouse was skipping "way too many" comparables and
+    // asked to keep them: a comp missing only its town should borrow the subject's,
+    // and one we still cannot identify should be kept for review, never lost.
+    const salv = await XI.importXml(D, {
+      xml: base({
+        street: '61 Salvage Rd', effectiveDate: '2026-06-20', signedDate: '2026-06-21',
+        comps: [
+          // town AND ZIP both missing → borrow the subject's town, file as a normal property
+          { seq: '1', address: '63 Salvage Rd', price: 401000, saleDate: '2026-04-10',
+            gla: 1400, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+          // no house number → kept for review, out of the ordinary search
+          { seq: '2', address: 'Nameless Way', city: TOWN, state: 'NJ', price: 402000,
+            saleDate: '2026-04-11', gla: 1450, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+        ],
+      }),
+      filename: 'salvage.xml', uploadedBy: staff,
+    });
+    ok(salv.ok, `the salvage report lands (${salv.reason || 'ok'})`);
+    ok((salv.salvaged || []).length === 2 && salv.skipped.length === 0,
+      `both thin comps are KEPT, none dropped (${JSON.stringify(salv.salvaged)})`);
+
+    const borrowed = await propByAddress('63 Salvage Rd');
+    ok(borrowed && borrowed.needs_review === false && String(borrowed.city).toLowerCase() === TOWN.toLowerCase(),
+      'a comp missing only its town borrows the subject\'s town and files as a NORMAL property');
+    ok(borrowed && Number(borrowed.last_sale_price) === 401000,
+      'with the sale it taught us');
+    ok((salv.salvaged || []).some((x) => x.kind === 'inherited_town' && /63 Salvage/.test(x.address)),
+      'and the result says the town was borrowed, so a fixed comp does not read as a lost one');
+
+    const reviewProp = (await db.query(
+      `SELECT * FROM properties WHERE address_key = $1`, [`review:${salv.importId}:2`])).rows[0];
+    ok(reviewProp && reviewProp.needs_review === true && /house number/i.test(reviewProp.review_reason || ''),
+      'a comp with no house number is filed with needs_review=true and the reason why');
+    ok(reviewProp && Number(reviewProp.last_sale_price) === 402000,
+      'and ITS sale is recorded too — a kept-for-review comp still teaches us a price');
+
+    const plain = await S.searchProperties(db, { city: TOWN, limit: 300 });
+    ok(plain.rows.some((r) => r.id === (borrowed && borrowed.id)),
+      'the town-borrowed comp shows up in the ordinary comparable search like any other property');
+    ok(!plain.rows.some((r) => r.id === (reviewProp && reviewProp.id)),
+      'the kept-for-review comp is held OUT of the ordinary search — an unverifiable address never pads a result');
+    const withReview = await S.searchProperties(db, { city: TOWN, include_review: '1', limit: 300 });
+    ok(withReview.rows.some((r) => r.id === (reviewProp && reviewProp.id)),
+      'but include_review surfaces it for someone working through the review list');
+
+    // Re-importing the SAME report updates the kept-for-review row in place — the
+    // per-report key means it never piles up a second copy.
+    const salv2 = await XI.importXml(D, { xml: base({ street: '61 Salvage Rd', effectiveDate: '2026-06-20', signedDate: '2026-06-21',
+      comps: [
+        { seq: '1', address: '63 Salvage Rd', price: 401000, saleDate: '2026-04-10', gla: 1400, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+        { seq: '2', address: 'Nameless Way', city: TOWN, state: 'NJ', price: 402000, saleDate: '2026-04-11', gla: 1450, beds: 3, baths: '2.0', condition: 'C3', quality: 'Q4' },
+      ] }), filename: 'salvage.xml', uploadedBy: staff });
+    ok(salv2.importId === salv.importId, 'the same salvage file re-imports as one report');
+    const reviewCount = (await db.query(
+      `SELECT count(*)::int n FROM properties WHERE address_key LIKE $1`, [`review:${salv.importId}:%`])).rows[0].n;
+    ok(reviewCount === 1, 'and the kept-for-review comp is still ONE row, not two');
 
     // =====================================================================
     // 7. THE ROUTES

@@ -1988,7 +1988,7 @@ router.get('/imports', async (req, res, next) => {
               i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
               i.subject_property_id, i.appraiser_id, i.appraisal_id,
               i.comparables_seen, i.properties_written, i.observations_written, i.sales_written,
-              i.rows_skipped, i.created_at, i.ran_at,
+              i.rows_skipped, i.skip_reasons, i.created_at, i.ran_at,
               ap.name AS appraiser_name,
               s.full_name AS uploaded_by_name,
               count(*) OVER ()::int AS total
