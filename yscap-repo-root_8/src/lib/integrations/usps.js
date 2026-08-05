@@ -24,13 +24,23 @@ async function getToken() {
   ensure();
   const g = withTimeout(10000);
   try {
+    const form = { grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret };
+    // OPTIONAL scope lever. USPS gates each API by an "API product" attached to the
+    // app on the developer portal, NOT primarily by the token's scope string — so a
+    // 403 on /addresses is almost always a missing Addresses API license, and adding
+    // a scope here will NOT fix that. It is exposed only for the rarer case where the
+    // app IS licensed but the token must name the scope explicitly. Inert unless set,
+    // so the default request is byte-identical to before.
+    if (cfg.oauthScope) form.scope = cfg.oauthScope;
     const r = await fetch(`${cfg.baseUrl}/oauth2/v3/token`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: cfg.clientSecret }),
+      body: new URLSearchParams(form),
       signal: g.signal,
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(`USPS token ${r.status}: ${text.slice(0, 160)}`);
+    // Keep the WHOLE USPS message — a 160-char slice cut the reason off mid-sentence
+    // ("…message": "The …"), which is exactly what left the owner unable to see why.
+    if (!r.ok) throw new Error(`USPS token ${r.status}: ${text.slice(0, 400)}`);
     const j = JSON.parse(text);
     tokenCache = { token: j.access_token, exp: Date.now() + Math.max(0, (j.expires_in || 3600) - 60) * 1000 };
     return j.access_token;
@@ -56,7 +66,8 @@ async function verifyAddress(address = {}) {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, signal: g.signal,
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(`USPS ${r.status}: ${text.slice(0, 160)}`);
+    // Keep the WHOLE USPS message (see getToken) — the reason lives at the end of it.
+    if (!r.ok) throw new Error(`USPS ${r.status}: ${text.slice(0, 400)}`);
     const j = JSON.parse(text);
     const a = j.address || {};
     return {
