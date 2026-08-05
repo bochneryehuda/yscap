@@ -117,6 +117,11 @@ eq(tv.blockedReason('POST', '/auth/mfa/enable').code, 'mfa', 'mfa enable is bloc
 eq(tv.blockedReason('POST', '/auth/mfa/disable').code, 'mfa', 'mfa disable is blocked');
 // (d) BLOCKED — a tpo view cannot open another view.
 eq(tv.blockedReason('POST', '/api/tpo-view/start').code, 'nested', 'nesting is blocked');
+// (d2) BLOCKED — accepting/disputing a draw RELEASES MONEY in the broker's name (Phase 6d) — the
+// same segregation-of-duties line as the credit-order block; a staffer does it from the draw desk.
+eq(tv.blockedReason('POST', `/api/tpo/applications/${APP}/findings/12/accept`).code, 'draw_action', 'accepting a draw is blocked in a broker view');
+eq(tv.blockedReason('POST', `/api/tpo/applications/${APP}/findings/12/dispute`).code, 'draw_action', 'disputing a draw is blocked in a broker view');
+eq(tv.blockedReason('POST', `/api/tpo/applications/${APP}/findings/12/accept/`).code, 'draw_action', 'a trailing slash does not bypass the draw block');
 
 // Every block carries plain-language copy the UI can show verbatim.
 for (const b of tv.BLOCKED) {
@@ -139,6 +144,9 @@ const ALLOWED = [
   ['POST', '/api/tpo/applications'],                               // entering a loan
   ['POST', `/api/tpo/applications/${APP}/borrower-portal`],        // the borrower-login toggle (reversible)
   ['GET',  '/api/tpo/appraisal-photo/x'],                          // viewing an appraisal photo
+  ['GET',  `/api/tpo/applications/${APP}/draws`],                  // VIEWING draws stays available
+  ['GET',  `/api/tpo/applications/${APP}/draws/report`],           // the draw report PDF
+  ['GET',  '/api/tpo/draw-media/12'],                              // draw inspection photo bytes
   ['GET',  '/api/tpo-view/session'],                               // the banner's own call
   ['POST', '/api/tpo-view/exit'],                                  // the way BACK is never blocked
   ['GET',  '/auth/me'],

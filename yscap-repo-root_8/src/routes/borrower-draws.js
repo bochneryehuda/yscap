@@ -234,7 +234,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   // stored before a lost race are just unused blobs — harmless.)
   const updates = [];
   for (const ln of lines) {
-    if (!/^\d+$/.test(String(ln.line_id))) continue;
+    if (!/^\d{1,18}$/.test(String(ln.line_id))) continue;   // 1..18 digits stays in bigint range (a 19+-digit id would 22003 the lookup as a 500)
     const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));

@@ -107,6 +107,17 @@ const BLOCKED = [
     message: 'Ordering a credit pull runs a real credit check in the broker’s name — that is the broker’s own action. You can order credit from your console instead.',
   },
   {
+    // Accepting a draw inspection result RELEASES MONEY (starts the wire SLA) and a dispute is a
+    // formal decision — both in the broker's name. Like the credit-order block above (and the
+    // borrower-view e-sign block), these irreversible/money decisions must be made by the broker
+    // under their own identity, not by a staffer wearing it. A staffer accepts/disputes on our side
+    // from the staff draw desk (attributed to them, accepted_via='staff').
+    code: 'draw_action',
+    method: /^POST$/i,
+    path: /^\/api\/tpo\/applications\/[^/]+\/findings\/[^/]+\/(accept|dispute)\/?$/i,
+    message: 'Accepting or disputing a draw releases money in the broker’s name — that is the broker’s own decision. Handle it from the draw desk on your own console instead.',
+  },
+  {
     code: 'logout',
     method: /^POST$/i,
     path: /^\/auth\/logout\/?$/i,

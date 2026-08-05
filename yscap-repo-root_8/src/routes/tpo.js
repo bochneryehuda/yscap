@@ -106,16 +106,20 @@ async function tpoAudit(req, action, entityType, entityId, detail) {
 
 // THE firm-scope guards — is this borrower / file inside the acting broker's
 // firm? Both route through the single isolation definition in permissions.js, so
-// a stray id (a retail borrower, another firm's file) resolves to zero rows.
+// a stray id (a retail borrower, another firm's file) resolves to zero rows. A
+// MALFORMED id short-circuits to false rather than reaching Postgres as an id
+// cast (a bad uuid → 22P02 → the route's catch → a 500 that reads like a server
+// fault; the borrower routes guard this the same way).
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 async function borrowerInFirm(actorId, borrowerId) {
-  if (!borrowerId) return false;
+  if (!isUuid(borrowerId)) return false;
   const r = await db.query(
     `SELECT 1 FROM borrowers b WHERE b.id=$2 AND ${perms.tpoBorrowerScopeSql('b', '$1')}`,
     [actorId, borrowerId]);
   return r.rows.length > 0;
 }
 async function appInFirm(actorId, appId) {
-  if (!appId) return false;
+  if (!isUuid(appId)) return false;
   const r = await db.query(
     `SELECT 1 FROM applications a WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
     [actorId, appId]);
@@ -1343,7 +1347,7 @@ router.post('/applications/:id/findings/:findingId/dispute', async (req, res, ne
     // and no dispute lines are orphaned on a releasing finding.
     const updates = [];
     for (const ln of lines) {
-      if (!/^\d+$/.test(String(ln.line_id))) continue;
+      if (!/^\d{1,18}$/.test(String(ln.line_id))) continue;   // 1..18 digits stays in bigint range (a 19+-digit id would 22003 the lookup as a 500)
       const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
       if (!owned) continue;
       let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
