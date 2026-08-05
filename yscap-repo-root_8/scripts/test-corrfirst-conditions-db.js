@@ -120,8 +120,10 @@ const tplFor = async (code) => (await db.query(
     // Deliberately NOT relying on the migration's backfill: this file is created
     // after it ran, which is the go-forward path that has to work.
     // ======================================================================
+    // A PURCHASE CorrFirst file — the EMD condition is purchase-only (db/475), so
+    // the file must be a purchase for it to attach.
     const cf = (await db.query(
-      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','CorrFirst') RETURNING id`,
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,'processing','CorrFirst','Purchase') RETURNING id`,
       [borrowerId])).rows[0].id;
     await engine.evaluateApplication(cf, { reason: 'test', notify: false });
 
@@ -133,7 +135,17 @@ const tplFor = async (code) => (await db.query(
     assert(ssn.origin_kind === 'auto', 'the condition is engine-owned, so it retracts if the note buyer changes');
     assert(!PARTNER_RE.test(ssn.borrower_label || '') && !PARTNER_RE.test(ssn.borrower_hint || ''),
       'the instance\'s borrower wording names no note buyer either');
-    assert((await itemsFor(cf, EMD_CODE)).length === 1, 'the same CorrFirst file still gets the EMD condition');
+    assert((await itemsFor(cf, EMD_CODE)).length === 1, 'the same CorrFirst PURCHASE file still gets the EMD condition');
+
+    // EMD IS A PURCHASE CONCEPT — a CorrFirst REFINANCE never gets it (owner-directed
+    // 2026-08-05, db/475: "there is no deposit for a refinance"). The SSN condition
+    // is NOT purchase-gated, so it still attaches.
+    const cfRefi = (await db.query(
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,'processing','CorrFirst','Refinance — Cash-Out') RETURNING id`,
+      [borrowerId])).rows[0].id;
+    await engine.evaluateApplication(cfRefi, { reason: 'test', notify: false });
+    assert((await itemsFor(cfRefi, EMD_CODE)).length === 0, 'a CorrFirst REFINANCE does NOT get the EMD condition (no deposit on a refi)');
+    assert((await itemsFor(cfRefi, SSN_CODE)).length === 1, 'a CorrFirst refinance still gets the (non-purchase-gated) SSN condition');
 
     // Spacing / casing tolerance — the same normalizer the rest of the stack uses.
     const cf2 = (await db.query(
@@ -178,7 +190,7 @@ const tplFor = async (code) => (await db.query(
     // ======================================================================
     const { ensureSchema } = require('../src/migrate-boot');
     const legacy = (await db.query(
-      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','CorrFirst') RETURNING id`,
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,'processing','CorrFirst','Purchase') RETURNING id`,
       [borrowerId])).rows[0].id;
     await engine.evaluateApplication(legacy, { reason: 'test', notify: false });
     const legacyEmd = (await itemsFor(legacy, EMD_CODE))[0];

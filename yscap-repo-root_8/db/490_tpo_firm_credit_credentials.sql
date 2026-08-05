@@ -1,4 +1,4 @@
--- 482_tpo_firm_credit_credentials.sql — TPO "own-Xactus" (owner roadmap Phase 5b):
+-- 490_tpo_firm_credit_credentials.sql — TPO "own-Xactus" (owner roadmap Phase 5b):
 -- a brokerage firm may pull CREDIT on THEIR OWN Xactus account instead of ours.
 --
 -- One optional credentials row per firm. When a firm has an ACTIVE row, a credit

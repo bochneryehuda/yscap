@@ -130,6 +130,11 @@ function buildOurValues(app, quote, llcName) {
     // Note buyer ↔ Encompass capital provider (STAFF-ONLY — never borrower-facing).
     capital_provider: nz(a.lender),
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
+    // Field 4008 (owner-directed 2026-08-05): Officer when vested on an LLC,
+    // Individual when vested in the borrower's own name. Derived from the SAME
+    // signal as loan_to_be_vested so the two vesting rows can never disagree; when
+    // Individual there is no LLC name, so vesting_llc (1859) goes not-applicable.
+    vesting_title_role: a.llc_id ? 'Officer' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
 
     // loan amount / initial advance / rehab (money)
@@ -279,8 +284,12 @@ function summarize(fields) {
     // side can't be derived at all (exit plan on a bridge / ground-up deal) has
     // nothing for staff to enter anywhere, so it is skipped rather than counted as
     // "no data to compare" — otherwise it would hold the term sheet forever with no
-    // way to clear it. A field we CAN derive still has to match.
-    if (f.naWhenOursMissing && f.status === 'incomparable' && (f.oursNorm === null || f.oursNorm === undefined)) continue;
+    // way to clear it. A field we CAN derive still has to match. An empty STRING
+    // counts as missing too: an entity/name/text compare (vesting_llc, field 1859)
+    // normalizes a blank OUR side to '' rather than null, so an individual-vested
+    // file — which legitimately has no subject LLC name — must read not-applicable,
+    // not hold the term sheet (owner-directed 2026-08-05).
+    if (f.naWhenOursMissing && f.status === 'incomparable' && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) continue;
     compared += 1;
     if (f.status === 'match') { matched += 1; continue; }
     // A super-admin-GRANTED field exception (owner-directed 2026-08-02) makes a

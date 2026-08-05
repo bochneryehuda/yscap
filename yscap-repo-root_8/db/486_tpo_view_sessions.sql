@@ -1,6 +1,6 @@
 -- ============================================================================
--- 478 — TPO VIEW ("view as TPO") session register (owner-directed 2026-08-04;
--- TPO blueprint decision 6). db/478.
+-- 486 — TPO VIEW ("view as TPO") session register (owner-directed 2026-08-04;
+-- TPO blueprint decision 6). db/486.
 --
 -- An internal account executive / account manager / admin steps INTO one of
 -- their brokerage firm's users' logins and sees exactly what that broker sees —

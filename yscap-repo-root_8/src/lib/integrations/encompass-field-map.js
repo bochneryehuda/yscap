@@ -88,13 +88,23 @@ const REGISTRY = Object.freeze([
   // borrower. ADVISORY: our side is free text, so a difference surfaces for a human.
   pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', nameFallback: true, verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other. nameFallback: an unmapped buyer still compares by name (corporate-form + spelling tolerant) when both sides carry one' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
+  // Field 4008 — the TITLE VESTING ROLE (owner-directed 2026-08-05): Encompass
+  // must carry field 4008 = "Officer" when the subject is vested on an LLC/entity
+  // (the borrower signs as an authorized officer/member of the entity) and
+  // "Individual" when it is vested in the borrower's own name. We derive our side
+  // from the SAME signal as loan_to_be_vested (llc_id present → Officer/entity;
+  // otherwise → Individual) so the two vesting rows on the panel can never
+  // disagree. ADVISORY + naWhenOursMissing (an undecided file reads "Doesn't
+  // apply" rather than a false disagreement). Read by number via the fieldReader
+  // — adding it to the registry auto-includes it in the read.
+  pull({ key: 'vesting_title_role', encompassFieldId: '4008', type: 'enum', category: 'identity', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vestingTitleRole', naWhenOursMissing: true, our: 'derive(applications.llc_id present → Officer; else Individual)', note: 'Title vesting role — field 4008. Officer when vested on an LLC; Individual when vested in the borrower\'s own name. When Individual there is no subject LLC name, so field 1859 becomes not-applicable (see vesting_llc naWhenOursMissing).' }),
   // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
   // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
   // field — and it had NO loanPath, so flattenLoan (which reads customFields[] or a
   // loanPath, nothing else) could NEVER see it no matter what Encompass held. The
   // candidate paths below are tried in order; the first one present wins, and an
   // absent path still degrades to "no data" rather than a wrong value.
-  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName', 'uldd.fannieTrustName', 'closingDocument.borrowerUnparsedName1'], type: 'text', category: 'identity', compare: 'entity', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. AUTHORITATIVE source is the fieldReader (read by number). The loanPath list is a best-effort FALLBACK for when the fieldReader is unavailable, and the SAME field lives at a DIFFERENT path from loan to loan: finalVestingDescription reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" on one loan; VERIFIED LIVE 2026-07-26 on loan YSCAP258134629 (117 Brook) the vesting name lives at closingDocument.borrowerUnparsedName1 / uldd.fannieTrustName ("MW TRADING LLC") — finalVestingDescription is absent there. compare:entity strips any trailing legal description so all forms equal our "MW Trading LLC". On an INDIVIDUAL-vested loan borrowerUnparsedName1 is a person name; that only matters when the fieldReader is down AND our side carries an llc — a rare degraded case that (correctly) surfaces a disagreement rather than a false match' }),
+  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName', 'uldd.fannieTrustName', 'closingDocument.borrowerUnparsedName1'], type: 'text', category: 'identity', compare: 'entity', naWhenOursMissing: true, our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. naWhenOursMissing (owner-directed 2026-08-05): when the file has NO subject LLC (vested on an individual), our side is blank, so 1859 reads "Doesn\'t apply" instead of holding the term sheet — the vesting Officer/Individual disagreement, if any, surfaces on field 4008 (vesting_title_role) instead. AUTHORITATIVE source is the fieldReader (read by number). The loanPath list is a best-effort FALLBACK for when the fieldReader is unavailable, and the SAME field lives at a DIFFERENT path from loan to loan: finalVestingDescription reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" on one loan; VERIFIED LIVE 2026-07-26 on loan YSCAP258134629 (117 Brook) the vesting name lives at closingDocument.borrowerUnparsedName1 / uldd.fannieTrustName ("MW TRADING LLC") — finalVestingDescription is absent there. compare:entity strips any trailing legal description so all forms equal our "MW Trading LLC". On an INDIVIDUAL-vested loan borrowerUnparsedName1 is a person name; that only matters when the fieldReader is down AND our side carries an llc — a rare degraded case that (correctly) surfaces a disagreement rather than a false match' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
   pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
@@ -310,6 +320,15 @@ const VALUE_MAPS = Object.freeze({
   vesting: {
     'entity': 'entity', 'llc': 'entity', 'corporation': 'entity', 'corp': 'entity', 'trust': 'entity',
     'individual': 'individual', 'person': 'individual', 'natural person': 'individual',
+  },
+  // field 4008 ↔ derive(applications.llc_id → Officer; else Individual). An
+  // entity-vested loan closes with the borrower signing as an authorized
+  // officer/member of the entity, so Encompass may phrase it as officer / member /
+  // manager / authorized signer — all normalize to 'officer'.
+  vestingTitleRole: {
+    'officer': 'officer', 'authorized officer': 'officer', 'auth officer': 'officer', 'authorized signer': 'officer',
+    'managing member': 'officer', 'member': 'officer', 'manager': 'officer', 'entity': 'officer', 'llc': 'officer',
+    'individual': 'individual', 'individuals': 'individual', 'person': 'individual', 'natural person': 'individual', 'borrower': 'individual',
   },
   // std 1041 / CX.PROPERTYTYPE ↔ applications.property_type (range category:
   // SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use). Advisory-only —

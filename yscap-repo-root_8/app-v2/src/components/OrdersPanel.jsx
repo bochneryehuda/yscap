@@ -606,13 +606,14 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         </div>
       )}
 
-      {/* Loop the borrower in? (owner-directed 2026-07-31: title default OFF; the
-          officer flips it per order; their My-settings default can turn it on.) */}
+      {/* Loop the borrower in? (owner-directed 2026-08-05: OFF by default for every
+          order kind; the officer flips it per order; their My-settings default can
+          turn it on for their own files.) */}
       {!placed && (
         <label className="row small" style={{ gap: 6, marginBottom: 6, alignItems: 'center', color: '#4B585C' }}>
           <input type="checkbox" checked={!!ccBorrower} disabled={!!busy}
             onChange={(e) => setCcBorrower(e.target.checked)} />
-          <span>CC the borrower on this {kind} order email{kind === 'title' ? ' (off by default — change your default in My settings)' : ''}</span>
+          <span>CC the borrower on this {kind} order email (off by default — change your default in My settings)</span>
         </label>
       )}
 

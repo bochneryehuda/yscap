@@ -98,7 +98,7 @@ async function ensureConversationsForApp(appId) {
        -- lo_processor chats. On a TPO file the loan_officer IS the external broker, so without this
        -- the broker would be seated as a 'staff' member of the internal "Loan Team" chat and be
        -- emailed our team's raw internal messages. The broker's ONLY chat is the firm-scoped 'tpo'
-       -- conversation. (This also fixes previously-seated files; see db/480's cleanup.)
+       -- conversation. (This also fixes previously-seated files; see db/488's cleanup.)
        AND (p.kind <> 'staff' OR NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.id=p.id AND su.is_external=true))
     ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`, [appId]);
 }

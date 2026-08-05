@@ -76,7 +76,9 @@ const loan = {
 
 // theirs from the real extract pipeline + the vesting name (1859 loanPath is
 // wired in WO-C; here we supply it so the name compare is exercised).
-const theirs = Object.assign(map.extractFields(loan), { vesting_llc: 'ABC Holdings, LLC' });
+// vesting_llc (1859) and vesting_title_role (4008) are fieldReader/loanPath reads;
+// on a FULL loan Encompass carries both, so supply them the way the reader would.
+const theirs = Object.assign(map.extractFields(loan), { vesting_llc: 'ABC Holdings, LLC', vesting_title_role: 'Officer' });
 
 // ── buildOurValues ──────────────────────────────────────────────────────────
 const ours = recon.buildOurValues(app, quote, llcName);
@@ -89,6 +91,7 @@ assert.strictEqual(ours.origination_pct, 1.25, 'origPct fraction → percent');
 assert.strictEqual(ours.term_months, 12, 'text term → int');
 assert.strictEqual(ours.total_experience_deals, 10);
 assert.strictEqual(ours.loan_to_be_vested, 'Entity', 'llc_id present → entity');
+assert.strictEqual(ours.vesting_title_role, 'Officer', 'llc_id present → field 4008 = Officer');
 assert.strictEqual(ours.vesting_llc, 'ABC Holdings LLC');
 // Engine FRACTIONS are converted to Encompass's PERCENT vocabulary (the 0.67425
 // vs 67.425 root cause). The frozen engine math is untouched — only the value we

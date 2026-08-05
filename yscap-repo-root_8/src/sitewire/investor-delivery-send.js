@@ -31,6 +31,7 @@ const { buildDrawPacket } = require('./draw-packet');
 const { buildXlsx } = require('../lib/xlsx');
 const recipients = require('../lib/draw-recipients');
 const fieldRegistry = require('../lib/conditions/field-registry');
+const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
 
 const N = (x) => Number(x || 0) || 0;
@@ -111,7 +112,7 @@ async function readDoc(row) {
  * (a virtual inspection — its per-draw PDF is archived into `draw_media`) OR by a physical
  * inspector whose paperwork arrives as TrustPoint documents. A file can carry both; both are sent.
  */
-async function gatherAttachments(appId, drawId) {
+async function gatherAttachments(appId, drawId, mode) {
   const items = [];
   const skipped = [];
 
@@ -170,15 +171,42 @@ async function gatherAttachments(appId, drawId) {
   } catch (_) { skipped.push({ what: 'Draw packet', reason: 'the packet could not be built' }); }
 
   // --- 4. the borrower's signed wire instructions --------------------------------------
-  try {
-    const w = (await db.query(
-      `SELECT id, filename, storage_ref, storage_provider FROM documents
-        WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
-        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
-    const buf = w ? await readDoc(w) : null;
-    if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
-    else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
-  } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+  // The signed wire form tells the investor WHERE to send the borrower's money, so it
+  // belongs ONLY on an INVESTOR_DIRECT delivery — the investor is releasing straight to
+  // the borrower and needs it. On a REIMBURSEMENT delivery WE have already wired the
+  // borrower and the investor is only paying US back, so the borrower's wire form must
+  // NOT be sent to the investor (owner-directed 2026-08-05: "if we are requesting
+  // reimbursement for us, you should not attach the borrower's wire draw form … If we
+  // are asking for the investor to release it directly to the borrower, then that
+  // form's signed, executed version should be sent to the investor").
+  if (mode === 'investor_direct') {
+    try {
+      const w = (await db.query(
+        `SELECT id, filename, storage_ref, storage_provider FROM documents
+          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
+          ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
+      const buf = w ? await readDoc(w) : null;
+      if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
+      else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
+    } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+
+    // --- 5. the wire-recipient entity's operating agreement, when the wire goes to a NEW entity
+    // (Task 5, owner-directed 2026-08-05: "attach the OA to the investor email when the investor
+    // receives it"). Only present when the wire named an entity that is neither the borrower nor
+    // the subject LLC — the investor uses it to confirm the entity before releasing directly to it.
+    // Only an ACCEPTED agreement is sent; an unaccepted one has not been vetted.
+    try {
+      const drawOa = require('../lib/esign/draw-oa');
+      const oa = await drawOa.acceptedOaForInvestor(db, appId);
+      if (oa) {
+        const buf = await readDoc(oa);
+        if (buf) items.push({ what: 'Operating agreement (wire recipient)', filename: oa.filename || 'operating-agreement.pdf', contentType: 'application/pdf', buf });
+        else skipped.push({ what: 'Operating agreement (wire recipient)', reason: 'the stored copy could not be read' });
+      }
+      // No OA condition / no accepted agreement → the wire is to the borrower or the subject LLC;
+      // nothing to attach, and nothing to report as missing.
+    } catch (_) { /* the OA is an extra only on a new-entity wire — never block the delivery */ }
+  }
 
   // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.
   const budget = budgetBytes();
@@ -193,6 +221,51 @@ async function gatherAttachments(appId, drawId) {
     fit.push(it);
   }
   return { items: fit, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// WIRE FORM GATE
+// ---------------------------------------------------------------------------
+
+/**
+ * The signed WIRE FORM's review state on the FILE (the wire instructions are the same across
+ * every draw, so this is a file-level check — once accepted, every later draw is cleared).
+ *
+ * The borrower's DocuSign wire form files onto the draw_cond_signed_request condition
+ * (doc_kind draw_request_signed); a coordinator may also upload a corrected version onto that
+ * same condition. Either way, the money can only move once ONE correct version has been
+ * ACCEPTED — the owner's "accept one version, reject the rest, before the first draw goes to
+ * the investor". Acceptance uses the ONE shared definition (document-acceptance), so this gate
+ * and the sign-off gate can never disagree about what "accepted" means.
+ *
+ * FAILS OPEN on a read error: a database blip must never make a delivery permanently
+ * impossible — the finding-agreed and note-buyer checks are the primary money gates, and the
+ * coordinator is in the loop clicking send.
+ *
+ * Returns { present, accepted, rejectedOnly }.
+ */
+async function wireFormStatus(appId) {
+  try {
+    const item = (await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2 LIMIT 1`,
+      [appId, `draw:request:${appId}`])).rows[0];
+    const wireItemId = item ? item.id : null;
+    const r = (await db.query(
+      `SELECT
+         count(*) FILTER (WHERE ${ACCEPT.ACCEPTED_SQL('d')}) AS accepted,
+         count(*) FILTER (WHERE COALESCE(d.review_status,'pending') = 'rejected') AS rejected,
+         count(*) AS total
+       FROM documents d
+      WHERE d.application_id=$1 AND d.is_current
+        AND (d.doc_kind='draw_request_signed' OR ($2::uuid IS NOT NULL AND d.checklist_item_id=$2))`,
+      [appId, wireItemId])).rows[0] || {};
+    const total = Number(r.total) || 0;
+    const rejected = Number(r.rejected) || 0;
+    const accepted = Number(r.accepted) > 0;
+    return { present: total > 0, accepted, rejectedOnly: total > 0 && !accepted && rejected === total };
+  } catch (_) {
+    return { present: false, accepted: true, rejectedOnly: false };   // fail OPEN
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +306,7 @@ async function deliveryPreview(appId, drawId) {
   } catch (_) { /* the preview still renders; the blockers below say what is missing */ }
 
   const contacts = await contactsForNoteBuyer(app.note_buyer);
+  const wireForm = await wireFormStatus(appId);
   const [coordinators, officerEmails] = await Promise.all([
     recipients.coordinatorsOrDesk(appId).catch(() => []),
     recipients.fileLoanOfficerEmails(appId).catch(() => []),
@@ -245,7 +319,7 @@ async function deliveryPreview(appId, drawId) {
     borrowerEmails: [app.borrower_email, app.co_borrower_email],
   });
 
-  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode });
+  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
 
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
@@ -266,6 +340,7 @@ async function deliveryPreview(appId, drawId) {
       : (ID.MODES.includes(String(link.investor_funding_mode || '')) ? 'file' : 'default'),
     money,
     contacts,
+    wire_form: wireForm,
     to: rcpt.to, cc: rcpt.cc,
     blockers,
     can_send: blockers.length === 0,
@@ -292,7 +367,7 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   // no investor contacts; an emailed one does).
   const blockers = ID.deliveryBlockers({
     finding: pre.finding_status ? { status: pre.finding_status } : null,
-    investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode,
+    investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode, wireForm: pre.wire_form,
   });
   if (blockers.length) { const e = new Error(blockers[0]); e.status = 422; e.blockers = blockers; throw e; }
 
@@ -321,7 +396,7 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
     };
   }
 
-  const { items, skipped } = await gatherAttachments(appId, drawId);
+  const { items, skipped } = await gatherAttachments(appId, drawId, useMode);
 
   let inspectionBy = null;
   try {
@@ -401,6 +476,6 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
 
 module.exports = {
   investorKeyFor, contactsForNoteBuyer, allContacts,
-  gatherAttachments, deliveryPreview, sendInvestorDelivery,
+  gatherAttachments, deliveryPreview, sendInvestorDelivery, wireFormStatus,
   DESK, deskFrom, budgetBytes,
 };

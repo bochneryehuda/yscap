@@ -82,7 +82,7 @@ router.get('/chat/conversations', async (req, res) => {
        -- chat's roster is owned by ensureTpoConversation, and an EXTERNAL staffer (on a TPO
        -- file the loan_officer IS the external broker) must NEVER be seated as a 'staff'
        -- member of the internal / borrower / lo_processor chats — otherwise every staff
-       -- inbox load would re-seat the broker (undoing db/480's cleanup) and email them our
+       -- inbox load would re-seat the broker (undoing db/488's cleanup) and email them our
        -- team's raw internal messages.
        AND (p.kind <> 'staff' OR NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.id=p.id AND su.is_external=true))
        ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR ${assigneeExistsSql('a', '$1')})` : ''}

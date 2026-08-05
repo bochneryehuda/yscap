@@ -7,12 +7,12 @@
 -- This migration only WIDENS three CHECKs to admit 'tpo' — purely additive, so every existing
 -- borrower/staff/system/external row and code path is unchanged.
 --
--- IDEMPOTENCY (the db/479 lesson): each widen is under the constraint's OWN name.
+-- IDEMPOTENCY (the db/487 lesson): each widen is under the constraint's OWN name.
 --   · messages_sender_kind_check is RE-ADDED unconditionally by db/113 every boot. Once a 'tpo'
 --     message row exists, db/113's replay re-adds the NARROW list and fails against it — but
 --     because THIS file re-defines the SAME constraint name at a higher migration number,
 --     migrate-boot's superseded-constraint detection recognizes that failure and skips it quietly
---     (exactly the mechanism db/479 documents; using a NEW name would defeat it).
+--     (exactly the mechanism db/487 documents; using a NEW name would defeat it).
 --   · conversations_kind_check and conversation_members_member_kind_check are inline (schema.sql /
 --     db/035) and are never re-added by a later file, so there is no replay failure to absorb.
 -- Each block acts only when the constraint lacks 'tpo' (no per-boot churn / re-validation).
