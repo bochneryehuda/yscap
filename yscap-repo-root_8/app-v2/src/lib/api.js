@@ -494,6 +494,23 @@ export const api = {
   // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
   // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
   setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
+
+  // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
+  amcConfig:        () => req('GET', '/api/amc/config'),
+  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
+  amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
+  amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
+  amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
+  amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
+  amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
+  amcRevisions:     (orderId) => req('GET', `/api/amc/orders/${orderId}/revisions`),
+  amcPostRevision:  (orderId, b) => req('POST', `/api/amc/orders/${orderId}/revisions`, b),
+  amcRovComps:      (appId) => req('GET', `/api/amc/files/${appId}/rov-comps`),
+  amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
+  amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
+  amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
