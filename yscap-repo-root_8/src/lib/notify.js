@@ -69,6 +69,7 @@ const KICKER_OF = {
   // 2026-08-03): the request for an admin to review.
   credit_import_exception: 'Credit exception',
   exception_comment: 'Exception comment', exception_request_reply: 'Your exception',
+  loan_exception_decided: 'Exception decided',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
@@ -589,6 +590,10 @@ const CATEGORY_OF = {
   // back to the team; action-bearing (a condition is waiting on it), so they email.
   condition_waiver_request: 'conditions', condition_waiver_decided: 'conditions',
   exception_comment: 'conditions', exception_request_reply: 'conditions',
+  // Generic exception decision back to the team — for a decidable type with no
+  // bespoke decision notice of its own (oop_rehab / appraisal_xml_waiver /
+  // credit_import_waiver / any future type). Action-bearing, so it emails.
+  loan_exception_decided: 'conditions',
   exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).

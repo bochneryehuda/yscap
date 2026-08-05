@@ -51,6 +51,58 @@ export default function StaffExceptions() {
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
 
+  // The confirmation toast, per exception TYPE — never the guaranty-waiver wording
+  // for a credit / rehab / condition / tape exception (the bug that told a
+  // super-admin approving a credit-import waiver "the co-borrower now shows as a
+  // member"). Falls back to the server's own type label for any type without
+  // bespoke copy, so a new type can never resurrect the wrong message.
+  function decisionMessage(type, decision, waived) {
+    const approved = decision === 'approved';
+    if (type === 'esign_before_ctc') {
+      return approved
+        ? `Approved with ${(waived || []).length} requirement${(waived || []).length === 1 ? '' : 's'} waived. Everything not waived still applies before the package can send.`
+        : 'Denied. The package can be sent once the outstanding items are done.';
+    }
+    if (type === 'pricing_exception') {
+      return approved
+        ? 'Pricing exception approved (recorded). To put it into effect, apply the approved terms in the Term Sheet Studio and re-register the file.'
+        : 'Pricing exception denied. The registered product stands as the program prices it.';
+    }
+    if (type === 'guaranty_waiver') {
+      return approved
+        ? 'Waiver approved. The co-borrower now shows as a member (non-guarantor); re-issue the term sheet to reflect it.'
+        : 'Waiver denied. Both borrowers remain personal guarantors.';
+    }
+    if (type === 'condition_waiver') {
+      return approved
+        ? 'Condition waiver approved. That one condition is now marked waived.'
+        : 'Condition waiver denied. The condition still needs to be met.';
+    }
+    if (type === 'credit_import_waiver') {
+      return approved
+        ? 'Approved. The credit condition can be signed off on the report obtained elsewhere once the uploaded PDF is accepted — no credit is imported.'
+        : 'Denied. A credit report still has to be imported on the file.';
+    }
+    if (type === 'oop_rehab') {
+      return approved
+        ? 'Out-of-pocket rehab exception approved (recorded). To put it into effect, enter the approved amount in the Term Sheet Studio and re-register.'
+        : 'Out-of-pocket rehab exception denied. The rehab stays 100% financed as the program sizes it.';
+    }
+    if (type === 'appraisal_xml_waiver') {
+      return approved
+        ? 'Approved. The appraisal condition can be signed off without the XML data file (the PDF is still required).'
+        : 'Denied. The appraisal condition still needs the XML data file.';
+    }
+    if (type === 'tape_encompass_override') {
+      return approved
+        ? 'Approved. The data tape can be exported while this exception stands, before Encompass matches.'
+        : 'Denied. Get the loan into Encompass and reconcile every field before exporting the tape.';
+    }
+    // Any other type: name it from the server registry, never guess.
+    const label = (typeLabels[type] || 'exception').toLowerCase();
+    return approved ? `Approved. The ${label} is recorded.` : `Denied. The ${label} was not granted.`;
+  }
+
   const load = () => api.loanExceptions(statusFilter, typeFilter || undefined)
     .then((d) => {
       setRows(d.exceptions || []);
@@ -104,17 +156,7 @@ export default function StaffExceptions() {
     setBusy(row.id);
     try {
       await api.decideLoanException(row.id, decision, note, waived, expiresAt);
-      flash(true, isEsign
-        ? (decision === 'approved'
-            ? `Approved with ${waived.length} requirement${waived.length === 1 ? '' : 's'} waived. Everything not waived still applies before the package can send.`
-            : 'Denied. The package can be sent once the outstanding items are done.')
-        : type === 'pricing_exception'
-          ? (decision === 'approved'
-              ? 'Pricing exception approved (recorded). To put it into effect, apply the approved terms in the Term Sheet Studio and re-register the file.'
-              : 'Pricing exception denied. The registered product stands as the program prices it.')
-          : (decision === 'approved'
-              ? 'Waiver approved. The co-borrower now shows as a member (non-guarantor); re-issue the term sheet to reflect it.'
-              : 'Waiver denied. Both borrowers remain personal guarantors.'));
+      flash(true, decisionMessage(type, decision, waived));
       await load();
     } catch (e) { flash(false, (e && e.message) || 'could not record the decision'); }
     finally { setBusy(''); }
