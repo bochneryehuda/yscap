@@ -25,6 +25,8 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../amc/client');
 const orderService = require('../amc/order-service');
 const comments = require('../amc/comments');
+const revisions = require('../amc/revisions');
+const rov = require('../amc/rov');
 const appraisalCard = require('../lib/appraisal-card');
 
 router.use(requireAuth, requireStaff);
@@ -155,6 +157,59 @@ router.post('/orders/:orderId/comments/:commentId/read', async (req, res) => {
   if (!Number.isInteger(cid)) return res.status(404).json({ error: 'not found' });
   const flipped = await comments.markRead(db, order.id, cid);
   res.json({ ok: true, updated: flipped });
+});
+
+// ---- revisions / ROV disputes / SOW-change requests ------------------------
+// The revisions on an order.
+router.get('/orders/:orderId/revisions', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  res.json({ revisions: await revisions.listRevisions(db, order.id) });
+});
+
+// A general revision request or a scope-of-work-change request.
+// body: { kind: 'revision'|'sow_change'|'other', body }
+router.post('/orders/:orderId/revisions', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const body = (req.body && req.body.body) || '';
+  if (!String(body).trim()) return res.status(400).json({ error: 'empty request' });
+  const kind = revisions.normKind(req.body && req.body.kind);
+  if (kind === 'rov') return res.status(400).json({ error: 'use the ROV endpoint for a reconsideration of value' });
+  const out = await revisions.postRevision(db, order, { staffId: req.actor.id, kind, body });
+  if (!out.ok) return res.status(400).json(out);
+  res.json(out);
+});
+
+// Supporting comps for an ROV on a file's subject, pulled from the Property Research
+// Center. Read-only — powers the ROV builder before the dispute is placed.
+router.get('/files/:id/rov-comps', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const limit = Math.min(25, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  const months = Math.min(60, Math.max(1, parseInt(req.query.sold_within_months, 10) || 12));
+  res.json(await rov.suggestComps(db, appId, { limit, soldWithinMonths: months }));
+});
+
+// Place an ROV (reconsideration of value) dispute. The narrative + the structured
+// detail are BUILT from the disputed values + the supporting comps, so what the AMC
+// reads and what we store agree.
+// body: { appraisedValue, opinionValue, note, comps:[{...}] }  (comps optional — the
+// caller may pass the ones it picked from /rov-comps, or omit to auto-pull)
+router.post('/orders/:orderId/rov', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const b = req.body || {};
+  let comps = Array.isArray(b.comps) ? b.comps : null;
+  if (!comps) {
+    const sug = await rov.suggestComps(db, order.application_id, { limit: 6 });
+    comps = sug.comps || [];
+  }
+  const detail = rov.buildRovDetail({ appraisedValue: b.appraisedValue, opinionValue: b.opinionValue, comps, note: b.note });
+  const narrative = rov.buildRovNarrative(detail);
+  const out = await revisions.postRevision(db, order, { staffId: req.actor.id, kind: 'rov', body: narrative, rovDetail: detail });
+  if (!out.ok) return res.status(400).json(out);
+  res.json(out);
 });
 
 // Parse the overridable order fields from a query/body object. Staff can change the
