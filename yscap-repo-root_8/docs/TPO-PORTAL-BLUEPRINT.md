@@ -170,14 +170,40 @@ internal workflow condition.
      term-sheet-only branch of `POST /api/tpo/documents` (born accepted, on the
      pricing condition, supersedes prior). `app-v2 ProductStudioPanel` gained a
      `mode='tpo'`; mounted as a card in `TpoFile`. Test `scripts/test-tpo-pricing-db.js`.
-   - **STILL DEFERRED (a follow-up increment):** the info-field condition writer,
-     and the staff-condition REVEAL (flood cert / credit / appraisal received /
-     EMD). The order-driven borrower-facing conditions (EMD, insurance/title
-     contact) are already `audience IN ('borrower','both')` and thus shown; the
-     staff-only order conditions carry NO `borrower_label` today, so the "no safe
-     wording → hide" rule keeps them out — revealing them needs a deliberate
-     migration that adds borrower-safe wording (and must respect the
-     flood-cert-staff-only HARD RULE — that one is never borrower/broker-facing).
+   - **Phase 4c — the lender-progress reveal + the broker info-field writer ✅
+     (BUILT).** A broker now (a) SEES a small, curated, READ-ONLY view of the
+     staff order conditions the LENDER drives — **credit** (`rtl_cond_credit`) and
+     **appraisal received** (`rtl_cond_appraisaldocs`) — with hand-authored
+     broker-safe wording, so they can track progress; and (b) ANSWERS an
+     information condition for a DEAL field (there is no TPO details-edit door, so
+     this is the only way a broker fills a missing deal field). The reveal is a
+     TPO-SURFACE-only allowlist (`src/lib/tpo-conditions.js`, single definition) —
+     it never changes a condition's `audience`, so the borrower portal + every
+     staff surface are byte-identical, and a broker can never act on a revealed
+     row. HARD RULE honored: the flood certificate / flood insurance, fraud, the
+     PILOT review gates, and investor review/CTC/structure are NEVER on the
+     allowlist (title/insurance CONTACT + EMD were already `audience='both'` and
+     shown by the ordinary path — deliberately not revealed twice). The info
+     writer (`POST /applications/:id/checklist/:itemId/info`) routes through the
+     ONE `conditionEngine.writeFieldValue` (freeze + refinance governance, same
+     refusal as a borrower/staffer); a PERSON field (fico → borrowers) is
+     redirected to the profile door; no ClickUp push; notifies OUR staff, never
+     the broker. `app-v2 TpoFile` renders an inline answer + a read-only "Lender
+     progress" card. Test `scripts/test-tpo-conditions-db.js` (26 assertions).
+   - **KNOWN GAP to decide (flagged for the owner):** a TPO file is created at
+     status `file_intake`, which is OUTSIDE the conditions engine's
+     `OPEN_STATUSES`, so the engine's `always`/`rules` conditions (flood cert,
+     note-buyer conditions like EMD/CorrFirst, condo, cash-out, flood insurance,
+     feasibility) do NOT auto-attach while the file is in broker intake — they
+     land once OUR team activates the file (moves it to `new`/`in_review`). The
+     base checklist (credit, appraisal, ID, contacts, …) DOES attach at creation.
+     Whether a broker-submitted intake file should carry flood + rule conditions
+     immediately (vs. on our acceptance) is a product decision — not changed here
+     (it touches the shared engine / all statuses). The reveal + info writer
+     behave correctly either way.
+   - **STILL DEFERRED:** none of the condition surface remains — the remaining TPO
+     work is the ORDER-INITIATION side (a broker orders title / insurance / flood
+     / credit) and own-Xactus, which is Phase 5.
 5. **Orders + own-Xactus** — title / insurance / flood / credit on the TPO
    surface; then per-firm encrypted Xactus credentials for **credit** (refactor
    `credit/provider.js pull()` to take a credentials arg resolved from the file's

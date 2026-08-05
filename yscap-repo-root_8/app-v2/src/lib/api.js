@@ -424,6 +424,9 @@ export const api = {
   tpoChecklist:      (id) => req('GET', `/api/tpo/applications/${id}/checklist`),
   tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
   tpoUploadDocument: (b) => req('POST', '/api/tpo/documents', normalizeUpload(b)),
+  // Answer an information condition (a deal field). A person field (fico) is
+  // redirected to the borrower's profile by the server.
+  tpoAnswerInfoCondition: (appId, itemId, value) => req('POST', `/api/tpo/applications/${appId}/checklist/${itemId}/info`, { value }),
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),

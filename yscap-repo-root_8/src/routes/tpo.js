@@ -35,6 +35,8 @@ const notify = require('../lib/notify');
 const termOpts = require('../lib/term-options');
 const manualProgram = require('../lib/manual-program');
 const conditionEngine = require('../lib/conditions/engine');
+const { WRITE_TARGETS } = require('../lib/conditions/field-registry');
+const tpoConditions = require('../lib/tpo-conditions');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
 
@@ -766,8 +768,91 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
          FROM checklist_items ci
         WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
         ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
-    const rows = r.rows.map((it) => scrubFields(it, ['label', 'hint', 'rejection_reason']));
-    res.json({ checklist: rows });
+    const rows = r.rows.map((it) => {
+      const s = scrubFields(it, ['label', 'hint', 'rejection_reason']);
+      // A broker may ANSWER an information condition — but only for a DEAL
+      // (applications) field or an admin custom field (app-scoped). A person
+      // field (fico → the borrowers table) is edited on the borrower's profile,
+      // which carries its own governance, so it is not answerable inline. The
+      // writer route enforces this too; the flag just hides the input.
+      const t = it.tool_key === 'info_field' && it.field_key ? WRITE_TARGETS[it.field_key] : null;
+      s.answerable = it.tool_key === 'info_field' && !!it.field_key && (!t || t.table !== 'borrowers');
+      s.readOnly = false;
+      return s;
+    });
+    // A small, hand-picked READ-ONLY view of the staff-driven ORDER conditions so
+    // the broker can track lender progress (credit pulled? appraisal in?). Never
+    // the internal label / hint / note / reason — only the fixed broker-safe
+    // wording from the ONE allowlist (tpo-conditions.js), plus the raw status.
+    // The flood certificate / insurance, fraud, and the review gates are NEVER on
+    // this allowlist (HARD RULE), so a broker can never see one.
+    const rev = await db.query(
+      `SELECT ci.id, ci.status, t.code AS code
+         FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND ci.audience='staff' AND t.code = ANY($2::text[])
+        ORDER BY t.sort_order, ci.created_at`, [req.params.id, tpoConditions.REVEAL_CODES]);
+    const progress = rev.rows.map((row) => tpoConditions.revealRow(row.id, row.code, row.status)).filter(Boolean);
+    res.json({ checklist: rows, progress });
+  } catch (e) { next(e); }
+});
+
+// A broker ANSWERS an information condition — the value is written into the real
+// deal (applications) field, the condition moves to 'received', and the rule
+// engine re-checks the file. Firm-scoped. This is the ONLY door a broker has to
+// fill a deal field (there is no TPO details-edit door), so it is genuinely
+// useful — but it must be no more permissive than a borrower/staffer editing the
+// same field. That guarantee is single-definition: `conditionEngine.writeFieldValue`
+// validates + fits the column AND, for an applications field, applies the file
+// freeze (payoffContactLockReason, called ACTOR-LESS so a broker never inherits a
+// super-admin unlock) and the refinance purchase-price guard — so a broker gets
+// the SAME refusal, with the same wording, on the same frozen field. A PERSON
+// field (fico → borrowers) is redirected to the profile door (its own governance)
+// and never written from here. No ClickUp push (a TPO file does not sync).
+router.post('/applications/:id/checklist/:itemId/info', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const it = await db.query(
+      `SELECT id, field_key, borrower_label, label FROM checklist_items
+        WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key='info_field'`,
+      [req.params.itemId, req.params.id]);
+    const item = it.rows[0];
+    if (!item) return res.status(404).json({ error: 'information item not found' });
+    if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
+    const value = (req.body || {}).value;
+    if (value === undefined || value === null || value === '') return res.status(400).json({ error: 'a value is required' });
+    // A person field (fico) belongs on the borrower's profile, which has its own
+    // governance (a registered file routes it to a change request). Never written
+    // from a broker's condition answer.
+    const target = WRITE_TARGETS[item.field_key];
+    if (target && target.table === 'borrowers') {
+      return res.status(400).json({ error: 'Update this on the borrower’s profile.' });
+    }
+    // The primary borrower id is writeFieldValue's borrowers-write target — inert
+    // here because a borrowers field is refused above; passed for completeness.
+    const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    let saved;
+    try {
+      saved = await conditionEngine.writeFieldValue(req.params.id, app.borrower_id, item.field_key, value, { kind: 'staff', id: req.actor.id });
+    } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    await db.query(
+      `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
+      [req.params.itemId, JSON.stringify({ infoField: item.field_key, value: saved.value, submittedAt: new Date().toISOString(), via: 'tpo' })]);
+    // Field data changed → the engine may add/retract rule-driven conditions.
+    try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'info_condition_answered' }); } catch (_) {}
+    await tpoAudit(req, 'tpo_answer_info_condition', 'checklist_item', req.params.itemId, { fieldKey: item.field_key });
+    // Tell OUR team a broker answered — reaches the internally-assigned AE / AM
+    // (notifyAppStaff filters out external users, so the broker is never a
+    // recipient). tool_submitted is an in-app-only staff type (no email storm).
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAppStaff(req.params.id, {
+        type: 'tool_submitted',
+        title: `A broker answered "${item.borrower_label || item.label}"`,
+        body: `${ctx ? ctx.label : 'A file'} — the condition is ready for review.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: req.params.id,
+        link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the file' });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, status: 'received', value: saved.value });
   } catch (e) { next(e); }
 });
 

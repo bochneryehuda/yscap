@@ -40,16 +40,22 @@ export default function TpoFile() {
   const { id } = useParams();
   const [a, setA] = useState(null);
   const [checklist, setChecklist] = useState([]);
+  const [progress, setProgress] = useState([]);   // read-only lender-progress rows
   const [documents, setDocuments] = useState([]);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [uploadingFor, setUploadingFor] = useState(null);   // checklist item id currently uploading
+  const [infoVals, setInfoVals] = useState({});             // per-item info-answer input
+  const [answeringFor, setAnsweringFor] = useState(null);   // checklist item id currently answering
   const fileInput = useRef(null);
   const pendingItem = useRef(null);
 
   const loadFile = () => api.tpoApplication(id).then((r) => setA(r?.application || null)).catch((e) => setErr(e.message || 'Could not load this file'));
-  const loadChecklist = () => api.tpoChecklist(id).then((r) => setChecklist(Array.isArray(r?.checklist) ? r.checklist : [])).catch(() => {});
+  const loadChecklist = () => api.tpoChecklist(id).then((r) => {
+    setChecklist(Array.isArray(r?.checklist) ? r.checklist : []);
+    setProgress(Array.isArray(r?.progress) ? r.progress : []);
+  }).catch(() => {});
   const loadDocuments = () => api.tpoDocuments(id).then((r) => setDocuments(Array.isArray(r?.documents) ? r.documents : [])).catch(() => {});
 
   useEffect(() => { loadFile(); loadChecklist(); loadDocuments(); /* eslint-disable-next-line */ }, [id]);
@@ -80,6 +86,21 @@ export default function TpoFile() {
     finally { setUploadingFor(null); }
   }
   const pickFor = (itemId) => { pendingItem.current = itemId || null; if (fileInput.current) fileInput.current.click(); };
+
+  // Answer an information condition (a deal field). The server validates + fits
+  // the value, applies the file freeze, and moves the condition to review.
+  async function answerInfo(itemId) {
+    const value = (infoVals[itemId] || '').trim();
+    if (!value) return;
+    setErr(''); setMsg(''); setAnsweringFor(itemId);
+    try {
+      await api.tpoAnswerInfoCondition(id, itemId, value);
+      setMsg('Answer saved — your loan team will review it.');
+      setInfoVals((v) => ({ ...v, [itemId]: '' }));
+      await Promise.all([loadFile(), loadChecklist()]);
+    } catch (ex) { setErr(ex.message || 'Could not save that answer'); }
+    finally { setAnsweringFor(null); }
+  }
 
   if (err && !a) return <div className="notice err">{err}</div>;
   if (!a) return <div className="muted">Loading…</div>;
@@ -144,16 +165,52 @@ export default function TpoFile() {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="pill">{COND_STATUS[c.status] || c.status}</span>
-                {c.item_kind === 'document' && (
+                {c.item_kind === 'document' && !c.readOnly && (
                   <button className="btn ghost small" disabled={uploadingFor === c.id} onClick={() => pickFor(c.id)}>
                     {uploadingFor === c.id ? 'Uploading…' : 'Upload'}
                   </button>
                 )}
               </div>
             </div>
+            {/* An information condition the broker can answer inline (a deal field). */}
+            {c.answerable && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <input
+                  className="input small" style={{ flex: 1, minWidth: 160 }}
+                  placeholder="Enter your answer"
+                  value={infoVals[c.id] || ''}
+                  onChange={(e) => setInfoVals((v) => ({ ...v, [c.id]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') answerInfo(c.id); }}
+                  disabled={answeringFor === c.id}
+                />
+                <button className="btn ghost small" disabled={answeringFor === c.id || !(infoVals[c.id] || '').trim()} onClick={() => answerInfo(c.id)}>
+                  {answeringFor === c.id ? 'Saving…' : 'Submit'}
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {/* Lender progress — a READ-ONLY view of a few steps YOUR loan team drives
+          (credit, appraisal), so you can see where the file stands. Nothing to do
+          here; your team handles these. */}
+      {progress.length > 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>Lender progress</div>
+          {progress.map((c) => (
+            <div key={c.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 500 }}>{c.label}</div>
+                  {c.hint && <div className="muted small" style={{ marginTop: 2 }}>{c.hint}</div>}
+                </div>
+                <span className="pill">{COND_STATUS[c.status] || c.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Documents */}
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>
