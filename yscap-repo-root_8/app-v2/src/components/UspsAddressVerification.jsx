@@ -205,7 +205,19 @@ export default function UspsAddressVerification({ appId, onChanged }) {
   const hasResult = !!(data && data.usps_address);
   const deliverable = status === 'verified' || status === 'corrected';
   const formChanged = verifiedInput ? !sameComps(form, verifiedInput) : true;
-  const importable = deliverable && hasResult && !imported && !formChanged;
+  // A freshly-verified, deliverable USPS result can ALWAYS be (re-)imported — even on a
+  // file that was imported before. `usps_imported_at` is only a "was imported once"
+  // stamp, and a re-spelling of the same address (ClickUp, the details form, the MISMO
+  // import) or a no-edit super-admin override can leave it standing while the file no
+  // longer shows the USPS form (db/415 keeps the stamp on a same-place re-spell to stop
+  // the verification bouncing). Gating import on `!imported` then trapped the file —
+  // "already imported", no way to re-adopt the verified address. The import route is
+  // idempotent and safe to re-run, so re-import is offered after a fresh verify
+  // (owner-directed 2026-08-05).
+  const importable = deliverable && hasResult && !formChanged;
+  // The file's address is genuinely no longer the last USPS-verified place — the signal
+  // that explains a stale "imported" state (null/true = nothing to flag).
+  const driftedFromVerified = imported && data && data.addressMatchesVerified === false;
   const dpv = data && data.usps_dpv;
   const read = dpvRead(dpv);
 
@@ -367,12 +379,28 @@ export default function UspsAddressVerification({ appId, onChanged }) {
               {hasResult && deliverable && formChanged && !imported && (
                 <div className="small" style={{ color: 'var(--warning)' }}>You edited the address since the last check — verify it again before importing.</div>
               )}
+              {/* Explain a stale "imported" state and how to get unstuck — a re-import is
+                  always available, so the owner is never trapped on a wrong file address. */}
+              {driftedFromVerified ? (
+                <div className="small" style={{ color: 'var(--warning)' }}>
+                  This file shows as imported, but its address is not the last address USPS verified (it may have been accepted by exception, or checked against a different address). Verify the current address again above, then <strong>Re-import</strong> to put the USPS address on the file.
+                </div>
+              ) : imported ? (
+                <div className="small" style={{ color: 'var(--text-soft)' }}>
+                  Already imported. If USPS returns a corrected result, or the file address was changed since, verify it again above and click <strong>Re-import</strong> to re-adopt the USPS address.
+                </div>
+              ) : null}
 
               <div className="row" style={{ justifyContent: 'flex-end', gap: 10, borderTop: '1px solid var(--line)', paddingTop: 14 }}>
                 <button className="btn ghost" disabled={!!busy} onClick={() => setOpen(false)}>Close</button>
                 <button className="btn primary" disabled={!!busy || !importable} onClick={importAddress}
-                  title={importable ? 'Adopt the USPS address as the file address and clear the condition' : imported ? 'Already imported' : 'A verified/corrected USPS result for the address above is required first'}>
-                  {busy === 'import' ? 'Importing…' : imported ? 'Verified address imported ✓' : 'Import verified address'}
+                  title={importable
+                    ? (imported ? 'Re-adopt this USPS address as the file address' : 'Adopt the USPS address as the file address and clear the condition')
+                    : imported ? 'Already imported — verify the address again above to re-import it' : 'A verified/corrected USPS result for the address above is required first'}>
+                  {busy === 'import' ? 'Importing…'
+                    : (imported && importable) ? 'Re-import verified address'
+                    : imported ? 'Verified address imported ✓'
+                    : 'Import verified address'}
                 </button>
               </div>
               <div className="small" style={{ color: 'var(--text-soft)' }}>
