@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
+import { moneyNum } from '../lib/money';
 
 /**
  * AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) — the staff desk
@@ -353,7 +354,7 @@ function RovBuilder({ appId, orderId, onCancel, onSent }) {
     addComp({
       propertyId: null, manual: true,
       address: m.address.trim() || null,
-      salePrice: m.salePrice ? Number(m.salePrice) : null,
+      salePrice: m.salePrice ? moneyNum(m.salePrice) : null,
       saleDate: m.saleDate || null,
       gla: m.gla ? Number(m.gla) : null,
       beds: m.beds ? Number(m.beds) : null,
