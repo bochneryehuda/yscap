@@ -1707,8 +1707,23 @@ router.get('/applications/:id/usps-verification', async (req, res) => {
          LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
         WHERE a.id=$1`, [req.params.id])).rows[0];
     if (!row) return res.status(404).json({ error: 'not found' });
+    // Does the file's CURRENT address still equal the last USPS result (by meaning)?
+    // `usps_imported_at` is only a "was imported at some point" stamp — a re-spelling
+    // of the same place (the ClickUp pull, the details form, the MISMO import) or a
+    // no-edit super-admin override can leave that stamp standing while property_address
+    // is no longer the USPS form (db/415 deliberately KEEPS the stamp on a same-place
+    // re-spell so the verification does not bounce). So "imported" no longer proves the
+    // USPS address is on the file right now; THIS does — and the screen uses it to
+    // offer a plain re-import instead of a dead "already imported". null = nothing to
+    // compare (no USPS result yet).
+    let addressMatchesVerified = null;
+    try {
+      const ADDR = require('../lib/address');
+      addressMatchesVerified = (row.usps_address && row.property_address)
+        ? !!ADDR.sameAddress(row.property_address, row.usps_address) : null;
+    } catch (_) { addressMatchesVerified = null; }
     res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired,
-      canOverride: adminOverride.mayOverride(req.actor), ...row });
+      canOverride: adminOverride.mayOverride(req.actor), addressMatchesVerified, ...row });
   } catch (e) {
     console.error('[usps] verification status failed:', db.describeError(e));
     res.status(500).json({ error: 'could not load USPS verification' });
