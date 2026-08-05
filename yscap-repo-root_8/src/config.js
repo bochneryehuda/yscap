@@ -624,6 +624,13 @@ module.exports = {
     clientId:     uspsEnv.clientId,
     clientSecret: uspsEnv.clientSecret,
     baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
+    // OPTIONAL OAuth scope for the token request (`USPS_OAUTH_SCOPE`, default unset).
+    // USPS gates each API by an "API product" attached to the app on the developer
+    // portal, so a 403 on /addresses/v3/address is almost always a missing Addresses
+    // API license — NOT a scope problem — and this will not fix that. It exists only
+    // for the rarer case where USPS support says the token must name the scope (e.g.
+    // "addresses"). Inert unless set. See docs/USPS-ADDRESS-VERIFICATION.md (Troubleshooting).
+    oauthScope:   (process.env.USPS_OAUTH_SCOPE || '').trim(),
     // Burst brake for the FREE tier (60 lookups/hour, shared across USPS APIs): once
     // this many lookups happen in a rolling hour, further LIVE verifies are skipped
     // (the form still works) and the backfill pauses until the window clears, so the

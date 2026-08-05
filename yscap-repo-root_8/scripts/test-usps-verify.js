@@ -187,6 +187,16 @@ async function testStandardize() {
   const auth = V.explainError('USPS token 401: unauthorized');
   ok(/sign-in|credentials|keys/i.test(auth.reason) && auth.retryable === false, 'a token/401 reads as a sign-in problem, not the address — got ' + auth.reason);
 
+  // THE OWNER'S ACTUAL ERROR: a RESOURCE 403 (sign-in worked, the address lookup is
+  // forbidden) must read as an authorization/license problem on USPS's side, NOT as
+  // "keys expired" — that is the whole point of splitting it from the token case.
+  const forbidden = V.explainError('USPS 403: { "apiVersion": "/addresses/v3/", "error": { "code": "403", "message": "The requested resource is forbidden" } }');
+  ok(/not authorized|licen|Business Portal|403/i.test(forbidden.reason) && forbidden.retryable === false,
+    'a resource 403 reads as a USPS authorization/license problem — got ' + forbidden.reason);
+  ok(!/expired/i.test(forbidden.reason), 'a resource 403 does NOT claim the keys expired (that is the sign-in case)');
+  ok(/sign in|signed us in|let us sign in|log/i.test(forbidden.reason), 'a resource 403 says the sign-in worked but the lookup was forbidden');
+  ok(forbidden.technical.includes('/addresses/v3/'), 'the full USPS 403 body is kept as the technical detail');
+
   const rate = V.explainError('USPS 429: too many requests');
   ok(/hourly lookup limit/i.test(rate.reason) && rate.retryable === true, 'a 429 reads as the hourly limit — got ' + rate.reason);
 
@@ -200,7 +210,7 @@ async function testStandardize() {
   ok(/did not say why|try again/i.test(blank.reason) && blank.technical === '', 'an empty detail still gives a plain sentence');
 
   const long = V.explainError('x'.repeat(600));
-  ok(long.technical.length === 300, 'the technical detail is capped at 300 chars — got ' + long.technical.length);
+  ok(long.technical.length === 400, 'the technical detail is capped at 400 chars — got ' + long.technical.length);
 }
 
 // ── 4. backfill componentsOf reads every stored shape ──────────────────────

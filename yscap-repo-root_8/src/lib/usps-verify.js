@@ -268,12 +268,27 @@ function explainError(detail) {
   let retryable = true;
   const m = /usps(?:\s+token)?\s+(\d{3})/i.exec(raw);   // "USPS 400: …" / "USPS token 401: …"
   const code = m ? Number(m[1]) : null;
+  const isToken = /token/i.test(raw);   // the failure is at the SIGN-IN step, not the address lookup
   if (!raw) {
     reason = 'USPS could not verify this address right now, and did not say why. Try again in a moment.';
   } else if (/abort|timed out|timeout|etimedout|operation was aborted/.test(low)) {
     reason = 'USPS did not answer in time (we wait about 10 seconds, then give up). This is usually a slow moment on USPS’s side — try again in a moment.';
-  } else if (/token/i.test(raw) || code === 401 || code === 403) {
-    reason = 'USPS rejected our sign-in to their system — the USPS keys may have expired or lost access. This is not about the address; an admin needs to check the USPS credentials.';
+  } else if (isToken || code === 401) {
+    // The SIGN-IN itself failed — bad/expired/revoked keys. (An expired key fails
+    // here, never on the address lookup, so a resource 403 below is a different thing.)
+    reason = 'USPS rejected our sign-in to their system — the USPS keys may be wrong, expired, or turned off. This is not about the address; an admin needs to check the USPS credentials.';
+    retryable = false;
+  } else if (code === 403) {
+    // AUTHORIZED SIGN-IN, FORBIDDEN LOOKUP. The keys logged in fine (which is why the
+    // API-health page can look green), but this USPS account is not licensed to use
+    // the Address-verification service — USPS made the Addresses API license mandatory
+    // in 2026 and enforces it with a 403. This is a USPS ACCOUNT SETTING, not the
+    // address and not our code: the fix is on USPS's side (add the Addresses API
+    // license + accept its terms). See docs/USPS-ADDRESS-VERIFICATION.md (Troubleshooting).
+    reason = 'USPS let us sign in but will not allow the address lookup (a “403 — not authorized”). '
+      + 'This USPS account isn’t licensed for the address-verification service. It’s a one-time setting on '
+      + 'USPS’s side — add the Addresses API license to the account and accept its terms in the USPS '
+      + 'Business Portal. It is not about the address, and re-trying won’t change it.';
     retryable = false;
   } else if (code === 400 || code === 422) {
     reason = 'USPS could not read this address. Check the street, city, state and ZIP for a typo or a missing piece, then verify again.';
@@ -290,7 +305,7 @@ function explainError(detail) {
   } else {
     reason = 'USPS could not verify this address right now. Try again in a moment.';
   }
-  return { reason, technical: raw.slice(0, 300), retryable };
+  return { reason, technical: raw.slice(0, 400), retryable };
 }
 
 /**

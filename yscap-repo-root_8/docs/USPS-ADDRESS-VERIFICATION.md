@@ -244,6 +244,53 @@ Nothing here touches the frozen pricing/guideline engines.
 
 ---
 
+## Troubleshooting — "USPS could not verify this address" / a **403** error
+
+**Symptom (reported Aug 2026):** staff click *Verify with USPS* and get *"USPS could not
+verify this address."* The API-Health page looked green. Surfacing the real reason showed:
+
+> `USPS 403: { "apiVersion": "/addresses/v3/", "error": { "code": "403", "message": "The requested resource is forbidden" } }`
+
+**What it means.** There are TWO steps to a USPS lookup: (1) **sign in** (get an OAuth
+token), then (2) **look up the address**. The keys sign in fine — which is why the health
+chip was green (it only tested the sign-in). But step 2 comes back **403 = "not
+authorized"**: this USPS account is **not licensed for the Addresses API**. It is a USPS
+**account setting, not the address and not PILOT's code**. This is the common outcome of
+reusing keys from another USPS purpose (labels/tracking): those keys authenticate, but the
+app behind them was never granted the Addresses API — and since USPS made the **Addresses
+API License mandatory (~Aug 1, 2026)** it now enforces it with a 403.
+
+**The fix (on USPS's side, one time).**
+1. Sign in to the USPS **Business Customer Gateway** (https://cop.usps.com) with the
+   account that owns the keys.
+2. **My Account → API Licenses → Add an Addresses API License** (sign the license, pick a
+   plan — the free tier is 60 checks/hour; a small paid tier removes that cap).
+3. **My Apps → Developer Apps → Manage** — accept the updated **Terms & Conditions**, and
+   confirm the app has the **Addresses** API enabled (the app must be *subscribed to that
+   API product*, not only to tracking/labels).
+4. Give it a few minutes, then click *Verify with USPS* again. To confirm the account is
+   linked you can also test the credentials against USPS's test host
+   (`https://apis-tem.usps.com/addresses/v3/address`) — a 403 there means the setup is
+   still incomplete.
+
+**What PILOT does in the meantime.** Nothing breaks: the address box still works via
+Google/OpenStreetMap, and a **super admin** can use the *Override the USPS hold* button in
+*USPS Address Verification* to accept an address and clear the hold on title / insurance /
+attorney ordering (recorded on the file). USPS verification simply turns itself on the
+moment the license is added — no redeploy.
+
+**`USPS_OAUTH_SCOPE` (rarely needed).** USPS gates each API by the **API product attached
+to the app**, not by the token's scope string — so a 403 is almost always the missing
+license above, and a scope will **not** fix it. The optional `USPS_OAUTH_SCOPE` env var
+(default unset) only exists for the rarer case where USPS support says the token must name
+the scope explicitly (e.g. `addresses`). Leave it unset unless told otherwise.
+
+**How to tell the two apart going forward.** The health chip and the verify dialog now
+name the reason: *"USPS rejected our sign-in"* = the KEYS are wrong/expired (fix the
+credentials); *"signed in but the lookup was forbidden (403)"* = the LICENSE above.
+
+---
+
 ## Sources (verified July 2026)
 
 - USPS Developer Portal — API catalog & Addresses API: https://developers.usps.com/apis
@@ -251,4 +298,6 @@ Nothing here touches the frozen pricing/guideline engines.
 - USPS industry alert, retirement of API v1/v2: https://developers.usps.com/industry-alert-api-retirement
 - USPS Addressing API License Agreement (PostalPro): https://postalpro.usps.com/Addressing_API_License
 - Enhanced Addresses API license + tier fees, effective July 12 → Aug 1, 2026: https://postalup.com/apis/usps-address-api-pricing
+- USPS developer FAQ — "Add an Addresses API License" + accept updated Terms & Conditions (403 access loss after the 2026 onboarding change): https://developers.usps.com/faq
+- USPS APIs are bundled into "API products" that limit access by scope/quota (a valid token can still 403 on an API the app isn't subscribed to): https://developers.usps.com/faq (verified Aug 2026)
 - USPS API rate limits (60/hour default): https://www.smarty.com/blog/usps-api-rate-limit
