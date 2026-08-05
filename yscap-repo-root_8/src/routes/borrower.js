@@ -1188,7 +1188,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const submitException = !!b.submitException;
     const manualReasons = (quote.reasons || [])
       .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
-    if (quote.status === 'MANUAL' && !submitException) {
+    // EXCEPTION STICKINESS (owner-directed 2026-08-05): if this exact exception was
+    // already approved for the file, a borrower re-register of the identical terms
+    // reuses the standing grant instead of demanding a fresh approval. A borrower can
+    // never set an override, so the only exception a borrower re-registers is a
+    // MANUAL-review one — covered only while no NEW guideline reason has appeared.
+    const wouldEscalate = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    let exceptionCoverage = { covered: false, reason: 'not_evaluated' };
+    if (wouldEscalate) {
+      const approvedGrant = await manualProgram.latestApprovedGrant(appId).catch(() => null);
+      exceptionCoverage = manualProgram.exceptionCoveredByGrant({
+        program, status: quote.status, overrideChanges: [], loanAmount: total, manualReasons,
+      }, approvedGrant);
+    }
+    if (quote.status === 'MANUAL' && !submitException && !exceptionCoverage.covered) {
       return refuse(422, {
         error: 'exception_required',
         code: 'exception_required',
@@ -1197,7 +1210,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         exceptionRequired: true, manualReasons,
       }, 'exception_required', { program, manualReasons });
     }
-    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    const needsEscalation = wouldEscalate && !exceptionCoverage.covered;
 
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.

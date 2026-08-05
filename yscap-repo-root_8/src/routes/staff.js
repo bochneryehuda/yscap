@@ -2728,7 +2728,29 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const submitException = !!b.submitException;
     const manualReasons = (quote.reasons || [])
       .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
-    if (quote.status === 'MANUAL' && !isManual && !submitException) {
+
+    // EXCEPTION STICKINESS (owner-directed 2026-08-05). Before deciding whether this
+    // registration needs a fresh super-admin approval, check whether an exception was
+    // ALREADY approved for these exact items at these exact values. A re-register that
+    // carries the same approved item(s) — same LTC cap, same 1% origination, same 0.2
+    // markup — must not overwhelm the escalation box with a duplicate approval; only a
+    // CHANGED item, a NEW item, a NEW guideline reason, or (for a manual program) the
+    // loan amount going UP does. The frozen engine's INELIGIBLE/cap checks above are
+    // untouched — this only decides whether a NEW exception is required.
+    const wouldEscalate = manualProgram.needsSuperAdminApproval({
+      program, status: quote.status, pricingOverrides: overrideChanges,
+    });
+    let exceptionCoverage = { covered: false, reason: 'not_evaluated' };
+    if (wouldEscalate) {
+      const approvedGrant = await manualProgram.latestApprovedGrant(appId).catch(() => null);
+      exceptionCoverage = manualProgram.exceptionCoveredByGrant({
+        program, status: quote.status, overrideChanges, loanAmount: total, manualReasons,
+      }, approvedGrant);
+    }
+    // A MANUAL-review scenario that is ALREADY covered by an approved grant (same
+    // reasons, no new item, no manual-program loan increase) does not need to be
+    // re-submitted as an exception — it was already approved for exactly this.
+    if (quote.status === 'MANUAL' && !isManual && !submitException && !exceptionCoverage.covered) {
       return refuse(422, {
         error: 'exception_required',
         code: 'exception_required',
@@ -2744,9 +2766,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // (owner-directed 2026-07-27). A clean ELIGIBLE Standard/Gold registration
     // priced on the company defaults is unaffected (confirms immediately, as
     // before). Shared definition in manual-program.js.
-    const needsEscalation = manualProgram.needsSuperAdminApproval({
-      program, status: quote.status, pricingOverrides: overrideChanges,
-    });
+    //
+    // ...UNLESS the exact same exception was ALREADY approved for this file
+    // (owner-directed 2026-08-05): a re-register of already-approved terms reuses the
+    // standing grant instead of opening a duplicate approval. `exceptionCoverage` was
+    // computed above from the latest approved escalation.
+    const needsEscalation = wouldEscalate && !exceptionCoverage.covered;
+    if (wouldEscalate && exceptionCoverage.covered) {
+      console.log(`[pricing-register] app ${appId}: re-register reuses an approved exception (${exceptionCoverage.reason}) — no new escalation.`);
+    }
     // A pricing-override-only exception (no manual leverage, engine says ELIGIBLE)
     // — the plain-language list the approver, the notification and the audit
     // trail all read. Empty on a clean registration.
