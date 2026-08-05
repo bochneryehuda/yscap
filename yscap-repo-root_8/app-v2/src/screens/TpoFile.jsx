@@ -248,6 +248,7 @@ export default function TpoFile() {
             </div>
           ))}
           {!credit.configured && <div className="muted small" style={{ marginTop: 8 }}>Credit ordering isn’t set up here — your loan team can pull it.</div>}
+          {credit.configured && credit.recentlyPulled && <div className="muted small" style={{ marginTop: 8 }}>Credit was pulled for this file recently — your loan team is reviewing it. You can order again later if needed.</div>}
         </div>
       )}
 

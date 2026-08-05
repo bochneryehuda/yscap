@@ -43,6 +43,23 @@ const perms = require('../lib/permissions');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 
+// A broker's credit order is always SOFT (no FICO impact) and rate-limited: after
+// a SUCCESSFUL pull, no new broker pull on the same file within this cooldown.
+// An untrusted external actor must not be able to fire repeat live pulls (Xactus
+// cost + a FICO→Products-&-Pricing reopen each time) or accidental duplicates;
+// staff can always re-pull. A failed pull writes no credit_reports row, so a retry
+// after a genuine failure is never blocked. Fails OPEN on a read error.
+const TPO_CREDIT_COOLDOWN_HOURS = Math.max(0, Number(process.env.TPO_CREDIT_REPULL_COOLDOWN_HOURS) || 20);
+async function creditPulledRecently(appId) {
+  if (!TPO_CREDIT_COOLDOWN_HOURS) return false;
+  try {
+    const r = await db.query(
+      `SELECT 1 FROM credit_reports WHERE application_id=$1 AND created_at > now() - ($2 || ' hours')::interval LIMIT 1`,
+      [appId, String(TPO_CREDIT_COOLDOWN_HOURS)]);
+    return r.rows.length > 0;
+  } catch (_) { return false; }
+}
+
 // Belt-and-suspenders for the untrusted external broker: scrub any capital-partner
 // name out of the STRING VALUES of a stored pricing object (inputs / quote /
 // term_options) before it reaches a broker. Recurses strings only — never the
@@ -1051,7 +1068,9 @@ router.get('/applications/:id/credit', async (req, res, next) => {
     }));
     let configured = false;
     try { configured = require('../lib/credit/provider').configured(); } catch (_) { configured = false; }
-    res.json({ borrowers, configured, canOrder: configured && borrowers.some((b) => b.canPull) });
+    const recentlyPulled = await creditPulledRecently(req.params.id);
+    res.json({ borrowers, configured, recentlyPulled,
+      canOrder: configured && !recentlyPulled && borrowers.some((b) => b.canPull) });
   } catch (e) { next(e); }
 });
 
@@ -1071,13 +1090,20 @@ router.post('/applications/:id/credit/order', async (req, res) => {
     if (!creditProvider || !creditProvider.configured()) {
       return res.status(503).json({ error: 'Credit ordering isn’t available right now — your loan team can pull it.' });
     }
+    // Rate-limit: no repeat broker pull on the same file within the cooldown after
+    // a successful one (abuse / cost / P&P churn — a broker is an untrusted actor).
+    if (await creditPulledRecently(req.params.id)) {
+      return res.status(429).json({ error: 'Credit was already pulled for this file recently — your loan team has the report. It can be re-pulled later if needed.' });
+    }
     let out;
     try {
       out = await require('../lib/credit').importCredit(req.params.id, {
         // A broker order is ALWAYS a fresh LIVE pull on our account — never an
         // upload/split/merged (those are staff-only paths), and requestType 'new'
-        // (a broker has no prior Xactus reference to reissue).
-        pullType: b.pullType === 'hard' ? 'hard' : 'soft',
+        // (a broker has no prior Xactus reference to reissue). It is ALWAYS a SOFT
+        // pull — a broker can never trigger a hard inquiry that dings the borrower's
+        // FICO; a hard pull, if ever needed, is a staff action.
+        pullType: 'soft',
         requestType: 'new',
         joint: b.joint === true,
         borrowerIds: Array.isArray(b.borrowerIds) ? b.borrowerIds.filter((x) => typeof x === 'string') : undefined,
@@ -1086,6 +1112,16 @@ router.post('/applications/:id/credit/order', async (req, res) => {
       });
     } catch (e) {
       return res.status(e.status || 422).json({ error: e.userMessage || 'Could not order the credit report.' });
+    }
+    // A SINGLE-target pull THROWS on failure (caught above), but a MULTI-borrower
+    // pull records each failure into `out.results` WITHOUT throwing and returns
+    // `{ok:false, pulled:0}` — so a Xactus outage on a two-borrower file would
+    // otherwise report a false "Credit was pulled". Surface the real reason and do
+    // NOT tell the team it's ready.
+    if (!out.pulled) {
+      await tpoAudit(req, 'tpo_order_credit', 'application', req.params.id, { pulled: 0, failed: true });
+      const why = (out.results || []).find((r) => r && r.error);
+      return res.status(422).json({ error: (why && why.error) || 'Could not order the credit report — please try again, or your loan team can pull it.' });
     }
     await tpoAudit(req, 'tpo_order_credit', 'application', req.params.id,
       { pullType: out.pullType, source: out.source, pulled: out.pulled,

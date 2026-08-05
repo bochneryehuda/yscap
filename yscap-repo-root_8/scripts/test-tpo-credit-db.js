@@ -62,7 +62,8 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
   const realPull = provider.pull;
   const realConfigured = provider.configured;
   let pullCalls = 0;
-  provider.pull = async () => { pullCalls++; return { xml: XML, pdfBase64: PDF_B64, vendorReportId: 'XAC-TPO-STUB' }; };
+  let lastPullArgs = null;
+  provider.pull = async (args) => { pullCalls++; lastPullArgs = args; return { xml: XML, pdfBase64: PDF_B64, vendorReportId: 'XAC-TPO-STUB' }; };
   provider.configured = () => true;
 
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
@@ -124,9 +125,10 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
     // ---------------------------------------------------------------
     // 3) ORDER (consent) → pulled, condition received, borrower-safe result
     // ---------------------------------------------------------------
-    const ord = await call(server, 'POST', `/api/tpo/applications/${appA}/credit/order`, tokA, { consent: true });
+    const ord = await call(server, 'POST', `/api/tpo/applications/${appA}/credit/order`, tokA, { consent: true, pullType: 'hard' });
     ok(ord.status === 201 && ord.body.ok === true && !!ord.body.message, 'broker orders credit (201, borrower-safe message)');
     ok(pullCalls === 1, 'the credit pull actually ran (provider.pull called once)');
+    ok(lastPullArgs && lastPullArgs.pullType === 'soft', 'a broker pull is FORCED to soft even when hard is requested (no FICO ding)');
     // The result carries NO score / fico / report id.
     ok(!/middleScore|"fico"|"score"|reportId|creditReportId|712|698|705/.test(JSON.stringify(ord.body)), 'the order result leaks NO score / fico / report id');
     // The staff-of-record artifacts DID land: credit_reports row + condition received + staff-only docs.
@@ -135,8 +137,14 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
     ok((await db.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND visibility='staff_only' AND doc_kind IN ('credit_pdf','credit_xml')`, [appA])).rows[0].n >= 1,
       'the credit report documents are stored STAFF-ONLY (never borrower/broker-visible)');
     ok((await db.query(`SELECT 1 FROM audit_log WHERE action='tpo_order_credit' AND entity_id=$1 AND actor_id=$2`, [appA, brokerA])).rows.length === 1, 'the order is audited to the broker');
-    // readiness now shows a report on file.
-    ok(((await call(server, 'GET', `/api/tpo/applications/${appA}/credit`, tokA)).body.borrowers[0] || {}).hasReport === true, 'readiness now shows the report is on file');
+    // readiness now shows a report on file + the cooldown is in effect.
+    const st2 = await call(server, 'GET', `/api/tpo/applications/${appA}/credit`, tokA);
+    ok((st2.body.borrowers[0] || {}).hasReport === true, 'readiness now shows the report is on file');
+    ok(st2.body.recentlyPulled === true && st2.body.canOrder === false, 'after a pull, readiness shows recentlyPulled + canOrder=false (cooldown)');
+    // a repeat pull within the cooldown is rate-limited (abuse / cost / churn guard).
+    const dup = await call(server, 'POST', `/api/tpo/applications/${appA}/credit/order`, tokA, { consent: true });
+    ok(dup.status === 429, 'a repeat pull within the cooldown is rate-limited (429)');
+    ok(pullCalls === 1, 'the cooldown blocked the second pull before it ran');
 
     // ---------------------------------------------------------------
     // 4) MISSING SSN → not ready, and the order is refused
@@ -159,6 +167,27 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
     ok((await call(server, 'GET', `/api/tpo/applications/${appA}/credit`, tokB)).status === 404, 'broker B cannot read firm A credit readiness (404)');
     ok((await call(server, 'POST', `/api/tpo/applications/${appA}/credit/order`, tokB, { consent: true })).status === 404, 'broker B cannot order credit on a firm A file (404)');
     ok(pullCalls === 1, 'the cross-firm attempt never pulled');
+
+    // ---------------------------------------------------------------
+    // 6) A MULTI-borrower order whose pull FAILS must NOT report a false success
+    // (importCredit swallows per-borrower failures on a multi-borrower file and
+    // returns {ok:false, pulled:0} without throwing — the route must catch that).
+    // ---------------------------------------------------------------
+    const coSsn = C.ssnForStorage('987654321');
+    const coId = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,ssn_encrypted,ssn_last4,current_address,origin)
+       VALUES ('Coco','Credit',$1,'1986-05-03',$2,$3,$4,'tpo') RETURNING id`,
+      [mail('coco'), coSsn.encrypted, coSsn.last4, addr])).rows[0].id;
+    const appMulti = (await db.query(
+      `INSERT INTO applications (borrower_id, co_borrower_id, is_tpo, tpo_firm_id, loan_officer_id, ys_loan_number, status, loan_type, source)
+       VALUES ($1,$2,true,$3,$4,'YSTPOCR3','file_intake','Purchase','tpo') RETURNING id`, [borId, coId, firmA, brokerA])).rows[0].id;
+    const multiItem = await attachCredit(appMulti);
+    provider.pull = async () => { throw new Error('Xactus is unavailable (simulated outage)'); };
+    const ordFail = await call(server, 'POST', `/api/tpo/applications/${appMulti}/credit/order`, tokA, { consent: true });
+    ok(ordFail.status >= 400 && ordFail.status < 500 && !(ordFail.body && ordFail.body.ok),
+      'a failed multi-borrower pull returns an error, never a false "pulled" success');
+    ok((await db.query(`SELECT count(*)::int n FROM credit_reports WHERE application_id=$1`, [appMulti])).rows[0].n === 0, 'nothing was written when the pull failed');
+    ok((await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [multiItem])).rows[0].status !== 'received', 'the credit condition is NOT marked received on a failed pull');
   } catch (e) {
     fail++; console.log('  FAIL (threw):', e.message, e.stack ? e.stack.split('\n')[1] : '');
   } finally {
