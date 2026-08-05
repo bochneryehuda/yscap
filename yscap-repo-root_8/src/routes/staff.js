@@ -1707,8 +1707,23 @@ router.get('/applications/:id/usps-verification', async (req, res) => {
          LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
         WHERE a.id=$1`, [req.params.id])).rows[0];
     if (!row) return res.status(404).json({ error: 'not found' });
+    // Does the file's CURRENT address still equal the last USPS result (by meaning)?
+    // `usps_imported_at` is only a "was imported at some point" stamp — a re-spelling
+    // of the same place (the ClickUp pull, the details form, the MISMO import) or a
+    // no-edit super-admin override can leave that stamp standing while property_address
+    // is no longer the USPS form (db/415 deliberately KEEPS the stamp on a same-place
+    // re-spell so the verification does not bounce). So "imported" no longer proves the
+    // USPS address is on the file right now; THIS does — and the screen uses it to
+    // offer a plain re-import instead of a dead "already imported". null = nothing to
+    // compare (no USPS result yet).
+    let addressMatchesVerified = null;
+    try {
+      const ADDR = require('../lib/address');
+      addressMatchesVerified = (row.usps_address && row.property_address)
+        ? !!ADDR.sameAddress(row.property_address, row.usps_address) : null;
+    } catch (_) { addressMatchesVerified = null; }
     res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired,
-      canOverride: adminOverride.mayOverride(req.actor), ...row });
+      canOverride: adminOverride.mayOverride(req.actor), addressMatchesVerified, ...row });
   } catch (e) {
     console.error('[usps] verification status failed:', db.describeError(e));
     res.status(500).json({ error: 'could not load USPS verification' });
@@ -1805,11 +1820,17 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
       `UPDATE applications
           SET property_address=usps_address, usps_imported_at=now(), updated_at=now()
         WHERE id=$1`, [req.params.id]);
+    // A real import SUPERSEDES any prior super-admin override — so clear the
+    // override_* stamps too (mirroring the db/379/415 reopen trigger). Otherwise a
+    // file that was overridden while USPS was down, then properly re-imported once
+    // USPS recovered, would keep displaying "cleared by super-admin override" with a
+    // stale reason (now reachable because re-import is no longer blocked once stamped).
     const cleared = await client.query(
       `UPDATE checklist_items ci
           SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
               waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
-              updated_at=now()
+              override_by=NULL, override_at=NULL, override_reason=NULL,
+              override_blocked_reason=NULL, updated_at=now()
          FROM checklist_templates t
         WHERE ci.application_id=$1 AND ci.template_id=t.id
           AND t.code='usps_address_verification'
