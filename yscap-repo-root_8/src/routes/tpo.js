@@ -35,7 +35,8 @@ const notify = require('../lib/notify');
 const termOpts = require('../lib/term-options');
 const manualProgram = require('../lib/manual-program');
 const conditionEngine = require('../lib/conditions/engine');
-const { WRITE_TARGETS } = require('../lib/conditions/field-registry');
+const changeRequests = require('../lib/change-requests');
+const { WRITE_TARGETS, BY_KEY } = require('../lib/conditions/field-registry');
 const tpoConditions = require('../lib/tpo-conditions');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
@@ -771,12 +772,16 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
     const rows = r.rows.map((it) => {
       const s = scrubFields(it, ['label', 'hint', 'rejection_reason']);
       // A broker may ANSWER an information condition — but only for a DEAL
-      // (applications) field or an admin custom field (app-scoped). A person
-      // field (fico → the borrowers table) is edited on the borrower's profile,
-      // which carries its own governance, so it is not answerable inline. The
-      // writer route enforces this too; the flag just hides the input.
-      const t = it.tool_key === 'info_field' && it.field_key ? WRITE_TARGETS[it.field_key] : null;
-      s.answerable = it.tool_key === 'info_field' && !!it.field_key && (!t || t.table !== 'borrowers');
+      // (applications) field or an admin CUSTOM field (app-scoped, not a known
+      // built-in). A PERSON field (fico → the borrowers table) is edited on the
+      // borrower's profile (its own governance), and a NON-WRITABLE built-in
+      // (note_buyer / ltv / ys_loan_number …) can't be written from a condition
+      // at all — neither is answerable, so the input never becomes a dead end.
+      // The writer route + writeFieldValue enforce this too; the flag just hides
+      // the input. `!BY_KEY[field]` = a custom field (not in the static registry).
+      const isInfo = it.tool_key === 'info_field' && !!it.field_key;
+      const wt = isInfo ? WRITE_TARGETS[it.field_key] : null;
+      s.answerable = isInfo && ((wt && wt.table === 'applications') || !BY_KEY[it.field_key]);
       s.readOnly = false;
       return s;
     });
@@ -791,7 +796,18 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
          FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
         WHERE ci.application_id=$1 AND ci.audience='staff' AND t.code = ANY($2::text[])
         ORDER BY t.sort_order, ci.created_at`, [req.params.id, tpoConditions.REVEAL_CODES]);
-    const progress = rev.rows.map((row) => tpoConditions.revealRow(row.id, row.code, row.status)).filter(Boolean);
+    // ONE row per code. A co-borrower's separate credit pull creates a SECOND
+    // rtl_cond_credit staff item (credit/co-condition.js, field_key='cob_credit'),
+    // so the broker should see ONE "Credit report" — the LEAST-advanced status,
+    // since the step isn't done until both borrowers' credit is in. The Map keeps
+    // first-seen (sort_order) order; replacing a key keeps its position.
+    const done = (s) => s === 'satisfied' || s === 'waived';
+    const byCode = new Map();
+    for (const row of rev.rows) {
+      const cur = byCode.get(row.code);
+      if (!cur || (done(cur.status) && !done(row.status))) byCode.set(row.code, row);
+    }
+    const progress = [...byCode.values()].map((row) => tpoConditions.revealRow(row.id, row.code, row.status)).filter(Boolean);
     res.json({ checklist: rows, progress });
   } catch (e) { next(e); }
 });
@@ -826,6 +842,51 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res, next) =
     const target = WRITE_TARGETS[item.field_key];
     if (target && target.table === 'borrowers') {
       return res.status(400).json({ error: 'Update this on the borrower’s profile.' });
+    }
+    // PARITY WITH THE BORROWER (audit 2026-08-05): once a product is REGISTERED the
+    // deal economics are authoritative, so a change-requestable economics field
+    // (purchase_price / as_is_value / arv / rehab_budget / units …) may NOT be
+    // written LIVE — it becomes a `change_requests` row the loan team approves,
+    // exactly as the borrower's info door does (routes/borrower.js). A broker must
+    // be no more permissive than a borrower; the broker IS a staff_users row, so
+    // the request is attributed to them (requesterKind 'staff', marked via:'tpo')
+    // and the existing generic approve/reject flow applies it (re-firing the
+    // db/071/072 economics-reopen triggers). Confirming the value already on file
+    // (unchanged) simply marks the condition received — no request, no write. The
+    // file freeze still takes precedence below (writeFieldValue) for the live path.
+    if (changeRequests.isChangeRequestable(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+      // THE FREEZE IS CHECKED FIRST — a frozen file's economics change must 409,
+      // NEVER silently become a change request (the borrower door documents this
+      // exact ordering: the sandbox must run AFTER the freeze). None of the
+      // change-requestable fields is a payoff-contact field, so the raw field key
+      // needs no carve-out translation; actor-less so no super-admin unlock leaks.
+      const frozen = await require('../lib/file-lock').payoffContactLockReason(req.params.id, { [item.field_key]: value }, db);
+      if (frozen) return res.status(409).json({ error: frozen });
+      let cr;
+      try {
+        cr = await changeRequests.openRequest(req.params.id, item.field_key, value,
+          { reason: String((req.body || {}).reason || 'Requested by the broker').slice(0, 500), requesterKind: 'staff', requesterId: req.actor.id });
+      } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      if (cr.unchanged) {
+        await db.query(
+          `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
+          [req.params.itemId, JSON.stringify({ infoField: item.field_key, value, submittedAt: new Date().toISOString(), via: 'tpo', confirmedExisting: true })]);
+      }
+      await tpoAudit(req, 'tpo_answer_info_condition', 'checklist_item', req.params.itemId, { fieldKey: item.field_key, changeRequested: !cr.unchanged });
+      try {
+        const ctx = await notify.fileContext(req.params.id);
+        await notify.notifyAppStaff(req.params.id, {
+          type: cr.unchanged ? 'tool_submitted' : 'change_request',
+          title: cr.unchanged
+            ? `A broker confirmed "${item.borrower_label || item.label}"`
+            : `A broker requested a change to ${changeRequests.FIELD_LABELS[item.field_key] || item.field_key}`,
+          body: cr.unchanged
+            ? `${ctx ? ctx.label : 'A file'} — the value already on file was confirmed; nothing changed.`
+            : `${ctx ? ctx.label : 'A file'} — ${changeRequests.describeChange(cr)}. Review and approve or reject it.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: req.params.id,
+          link: `/internal/app/${req.params.id}`, ctaLabel: cr.unchanged ? 'Review the file' : 'Review the change' });
+      } catch (_) { /* best-effort */ }
+      return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
     }
     // The primary borrower id is writeFieldValue's borrowers-write target — inert
     // here because a borrowers field is refused above; passed for completeness.

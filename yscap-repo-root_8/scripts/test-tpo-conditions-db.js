@@ -124,6 +124,19 @@ function call(server, method, p, token, body) {
     ok(!chkIds.has(codeIds.rtl_cond_credit) && !chkIds.has(codeIds.rtl_cond_appraisaldocs),
       'the revealed staff conditions never appear in the actionable checklist');
 
+    // A co-borrower's separate credit pull adds a SECOND staff rtl_cond_credit
+    // item (credit/co-condition.js) — the broker must still see exactly ONE
+    // "Credit report" row, with the LEAST-advanced status.
+    await db.query(
+      `INSERT INTO checklist_items (application_id, template_id, label, audience, status, item_kind, field_key, scope)
+       SELECT $1, id, 'Credit report', 'staff', 'satisfied', 'document', 'cob_credit', 'application'
+         FROM checklist_templates WHERE code='rtl_cond_credit'`, [appA]);
+    const chkDup = await call(server, 'GET', `/api/tpo/applications/${appA}/checklist`, tokA);
+    const creditRows = (chkDup.body.progress || []).filter((c) => c.label === 'Credit report');
+    ok(creditRows.length === 1, 'a co-borrower credit item does NOT duplicate the "Credit report" progress row');
+    ok(creditRows[0] && creditRows[0].status === 'outstanding', 'the deduped credit row keeps the LEAST-advanced status');
+    ok((chkDup.body.progress || []).length === 2, 'still exactly two progress rows after the co-borrower credit item');
+
     // ---------------------------------------------------------------
     // 2) THE INFO-FIELD WRITER — a DEAL (applications) field
     // ---------------------------------------------------------------
@@ -158,6 +171,37 @@ function call(server, method, p, token, body) {
     ok(ficoAns.status === 400 && /profile/i.test(ficoAns.body.error || ''), 'answering a fico condition is redirected to the profile (400)');
     ok((await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [cara])).rows[0].fico === null, 'the fico was NOT written from the condition answer');
 
+    // A NON-WRITABLE built-in field (note_buyer → the staff-only capital partner
+    // applications.lender) is NOT answerable inline, and the writer refuses it —
+    // a broker can never write it from a condition (double defense).
+    const nbCondId = await addInfoCond(appA, 'note_buyer', 'Confirm the note buyer');
+    const nbRow = ((await call(server, 'GET', `/api/tpo/applications/${appA}/checklist`, tokA)).body.checklist || []).find((c) => c.id === nbCondId);
+    ok(nbRow && nbRow.answerable === false, 'a non-writable built-in field (note_buyer) is NOT answerable');
+    ok((await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${nbCondId}/info`, tokA, { value: 'BlueLake' })).status === 400,
+      'the writer refuses a non-writable field (400) — the note buyer is never broker-writable');
+    ok((await db.query(`SELECT lender FROM applications WHERE id=$1`, [appA])).rows[0].lender === null, 'the note buyer (lender) was NOT written');
+
+    // ---------------------------------------------------------------
+    // 3b) REGISTRATION SANDBOX PARITY — on a REGISTERED file a change-requestable
+    // economics answer becomes a reviewable change request (staff approve), NEVER
+    // a live write — exactly like the borrower's info door. Confirming the current
+    // value is received; a different value is held for approval.
+    // ---------------------------------------------------------------
+    await db.query(`INSERT INTO product_registrations (application_id, program, inputs, quote, is_current) VALUES ($1,'standard','{}','{}',true)`, [appA]);
+    // a DIFFERENT arv → a change request; the live value stays 425000.
+    const chg = await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${arvCondId}/info`, tokA, { value: 700000 });
+    ok(chg.status === 200 && chg.body.changeRequested === true && chg.body.locked === true,
+      'a change to a REGISTERED file opens a change request (not a live write)');
+    ok((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appA])).rows[0].arv === '425000.00',
+      'the economics were NOT written live on a registered file (parity with the borrower)');
+    ok((await db.query(
+      `SELECT 1 FROM change_requests WHERE application_id=$1 AND field='arv' AND status='pending'
+         AND requested_by_kind='staff' AND requested_by_id=$2`, [appA, brokerA])).rows.length === 1,
+      'a pending change request is filed, attributed to the broker');
+    // confirming the value already on file (425000) → received, no request.
+    const conf = await call(server, 'POST', `/api/tpo/applications/${appA}/checklist/${arvCondId}/info`, tokA, { value: 425000 });
+    ok(conf.status === 200 && conf.body.changeRequested === false, 'confirming the current value is accepted with no change request');
+
     // ---------------------------------------------------------------
     // 4) FIRM ISOLATION on the reveal + the info writer
     // ---------------------------------------------------------------
@@ -183,6 +227,8 @@ function call(server, method, p, token, body) {
             OR borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [like])).rows.map((r) => r.id);
       if (appIds.length) {
         await db.query(`DELETE FROM notifications WHERE application_id = ANY($1::uuid[])`, [appIds]).catch(() => {});
+        await db.query(`DELETE FROM change_requests WHERE application_id = ANY($1::uuid[])`, [appIds]).catch(() => {});
+        await db.query(`DELETE FROM product_registrations WHERE application_id = ANY($1::uuid[])`, [appIds]).catch(() => {});
         await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1::uuid[])`, [appIds]).catch(() => {});
       }
       await db.query(`DELETE FROM applications WHERE tpo_firm_id IN (SELECT id FROM tpo_firms WHERE name LIKE $1)`, [like]);
