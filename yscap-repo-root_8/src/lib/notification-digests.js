@@ -1109,21 +1109,33 @@ async function withInvestorOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT dd.application_id, count(DISTINCT dd.sitewire_draw_id)::int AS n, max(dd.sent_at) AS delivered
-         FROM draw_investor_deliveries dd
-         JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
-        WHERE dd.status='sent'
-          -- still waiting on the investor: the borrower's agreement is still standing AND the draw has
-          -- not reached final approval. A finding that left accepted/resolved is no longer with them.
-          AND EXISTS (SELECT 1 FROM draw_findings f
-                        WHERE f.sitewire_draw_id=dd.sitewire_draw_id AND f.status IN ('accepted','resolved'))
-          AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
-                            WHERE sd.sitewire_draw_id=dd.sitewire_draw_id AND sd.status='approved')
-          AND ${activeManagedLink('dd.application_id')}
-          AND ${notThrottled('dd.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
-        GROUP BY dd.application_id
-        HAVING max(dd.sent_at) < now() - interval '48 hours'
-        ORDER BY delivered ASC, dd.application_id
+      // The +48h test is PER DRAW, not per file. A file can carry several draws with the investor at
+      // different ages, so `max(sent_at)` across the whole file would let a FRESH delivery hide an OLDER
+      // overdue one — a 6-day-overdue draw #1 masked by a 3-hour-old draw #2, and the coordinator is
+      // never reminded to chase #1 (audit 2026-08-05). The CTE takes each DRAW's latest send (so a
+      // re-send still measures from the newest row); the outer query keeps only the draws whose latest
+      // send is already past +48h, counts those overdue draws, and reports the OLDEST of them (so the
+      // message's "delivered N days ago" and the oldest-first ordering both name the worst one).
+      `WITH with_inv AS (
+         SELECT dd.application_id, dd.sitewire_draw_id, max(dd.sent_at) AS last_send
+           FROM draw_investor_deliveries dd
+           JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+          WHERE dd.status='sent'
+            -- still waiting on the investor: the borrower's agreement is still standing AND the draw has
+            -- not reached final approval. A finding that left accepted/resolved is no longer with them.
+            AND EXISTS (SELECT 1 FROM draw_findings f
+                          WHERE f.sitewire_draw_id=dd.sitewire_draw_id AND f.status IN ('accepted','resolved'))
+            AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
+                              WHERE sd.sitewire_draw_id=dd.sitewire_draw_id AND sd.status='approved')
+            AND ${activeManagedLink('dd.application_id')}
+            AND ${notThrottled('dd.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
+          GROUP BY dd.application_id, dd.sitewire_draw_id
+       )
+       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered
+         FROM with_inv
+        WHERE last_send < now() - interval '48 hours'
+        GROUP BY application_id
+        ORDER BY delivered ASC, application_id
         LIMIT 300`)).rows;
   } catch (e) { console.error('[digest] with-investor query', e && e.message); return 0; }
   for (const r of rows) {

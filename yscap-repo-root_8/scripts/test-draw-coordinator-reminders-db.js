@@ -141,6 +141,32 @@ const PARTNERS = ['BlueLake', 'Blue Lake', 'Fidelis', 'Churchill', 'RCN', 'Templ
   noPartner(m);
   reset(); await D.withInvestorOnce();
   assert.ok(!to(cemail), 'with-investor: gated on the 2nd run (every 2 days)');
+  // MULTI-DRAW (regression, audit 2026-08-05): a fresh delivery must NOT mask an OLDER overdue draw on
+  // the same file. DRAW's delivery is aged 3 days; add DRAW2 with a delivery sent 2h ago. with_investor
+  // must STILL fire for DRAW, and count ONLY the overdue draw (the +48h test is per-draw, not per-file).
+  const DRAW2 = DRAW + 1;
+  await clearStamp('draw_with_investor_reminder');
+  await db.query(`INSERT INTO sitewire_draws (application_id, sitewire_draw_id, status) VALUES ($1,$2,'inspecting')`, [app.id, DRAW2]);
+  await db.query(
+    `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, accepted_at, delivered_at)
+     VALUES ($1,$2,'accepted', now()-interval '1 day', now()-interval '2 days')`, [app.id, DRAW2]);
+  await db.query(
+    `INSERT INTO draw_investor_deliveries (application_id, sitewire_draw_id, funding_mode, status, sent_at)
+     VALUES ($1,$2,'reimbursement','sent', now()-interval '2 hours')`, [app.id, DRAW2]);
+  reset(); const cMulti = await D.withInvestorOnce();
+  m = to(cemail);
+  assert.ok(cMulti >= 1 && m, 'with-investor: a fresh draw does NOT mask an overdue draw on a multi-draw file');
+  assert.ok(/A draw is with the investor/i.test(m.subject), 'with-investor: only the OVERDUE draw is counted (singular) — the fresh one is not chased yet');
+  await db.query(`DELETE FROM draw_investor_deliveries WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW2]);
+  await db.query(`DELETE FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW2]);
+  await db.query(`DELETE FROM sitewire_draws WHERE sitewire_draw_id=$1`, [DRAW2]);
+  // Lifecycle exclusion for 7b SPECIFICALLY: the aged delivery is still present, so absent the paid-off
+  // guard it WOULD fire — this proves the guard rather than a trivially-empty state.
+  await clearStamp('draw_with_investor_reminder');
+  await db.query(`UPDATE sitewire_property_links SET lifecycle_state='paid_off' WHERE application_id=$1`, [app.id]);
+  reset(); const cWithClosed = await D.withInvestorOnce();
+  assert.ok(cWithClosed === 0 && !to(cemail), 'with-investor: a paid-off project is excluded even with a live aged delivery');
+  await db.query(`UPDATE sitewire_property_links SET lifecycle_state='active' WHERE application_id=$1`, [app.id]);
   // Final approval lands → the draw is done, the chase stops.
   await clearStamp('draw_with_investor_reminder');
   await db.query(`UPDATE sitewire_draws SET status='approved' WHERE sitewire_draw_id=$1`, [DRAW]);
