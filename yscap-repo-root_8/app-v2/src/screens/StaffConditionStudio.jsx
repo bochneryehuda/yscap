@@ -401,9 +401,13 @@ export default function StaffConditionStudio() {
           )}
           <div className="grid cols-2">
             <div className="field">
-              <label>Internal note / hint</label>
+              <label>Staff instructions — shows on EVERY file with this condition</label>
               <input className="input" value={form.hint} onChange={(e) => setForm((f) => ({ ...f, hint: e.target.value }))}
-                placeholder="Context for the team (borrowers never see this)" />
+                placeholder="Team instructions for every file of this type (borrowers never see this)" />
+              <div className="small" style={{ color: 'var(--muted)', marginTop: 3 }}>
+                This is shared across every file that has this condition — <b>not</b> a private note for one loan.
+                To leave a note on one loan only, use “+ Add an internal note” on that file’s condition.
+              </div>
             </div>
             <div className="field">
               <label>Category (when it must clear)</label>

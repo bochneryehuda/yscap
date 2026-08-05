@@ -79,5 +79,25 @@ const MIN_FILES = minIdx >= 0 ? Math.max(2, parseInt(process.argv[minIdx + 1], 1
   console.log('');
   if (APPLY) console.log(`Done — cleared ${cleared} leaked note copy(ies)${CLEAR_ALL ? '' : ', kept 1 per group'}.`);
   else console.log('Dry run only. Re-run with --apply to clear the leaked copies (add --clear-all to clear every copy).');
+
+  // ── SHARED INSTRUCTIONS that carry a LINK (report only) ──────────────────────
+  // The per-file NOTE is per-file. The one field that DOES show on every file with
+  // a condition is the condition's INSTRUCTIONS (the template `hint`, edited in the
+  // Condition Studio and labeled "Staff instructions — shows on every file"). A
+  // "credit card link" typed there appears on every file of that type — which is
+  // exactly the owner's report. A link in an instruction can be legitimate, so this
+  // is REPORT ONLY: it lists them so a human can remove the wrong one in the Studio.
+  const LINK = `(https?://|www\\.|\\.com|\\.net|\\.org|/pay|card)`;
+  const tHints = (await db.query(
+    `SELECT code, label, hint FROM checklist_templates
+      WHERE hint IS NOT NULL AND hint ~* $1 ORDER BY label`, [LINK])).rows;
+  if (tHints.length) {
+    console.log(`\nCondition INSTRUCTIONS that contain a link (shown on every file of that type — check these in the Condition Studio):`);
+    for (const t of tHints) console.log(`  • [${t.code || '—'}] "${t.label}" → ${JSON.stringify(String(t.hint).slice(0, 140))}`);
+    console.log('  Remove the wrong one in Admin → Condition Studio (the "Staff instructions" box).');
+  } else {
+    console.log('\nNo condition INSTRUCTIONS contain a link — nothing leaked into the shared instructions.');
+  }
+
   process.exit(0);
 })().catch((e) => { console.error('ERROR', e && e.message); process.exit(1); });
