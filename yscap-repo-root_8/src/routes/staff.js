@@ -1707,7 +1707,8 @@ router.get('/applications/:id/usps-verification', async (req, res) => {
          LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
         WHERE a.id=$1`, [req.params.id])).rows[0];
     if (!row) return res.status(404).json({ error: 'not found' });
-    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired, ...row });
+    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired,
+      canOverride: adminOverride.mayOverride(req.actor), ...row });
   } catch (e) {
     console.error('[usps] verification status failed:', db.describeError(e));
     res.status(500).json({ error: 'could not load USPS verification' });
@@ -1739,9 +1740,24 @@ router.post('/applications/:id/usps-verification/check', async (req, res) => {
     }
 
     const out = await uspsVerify.standardize(input, { db, noCache: !!(req.body && req.body.refresh) });
-    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured on this service.' });
-    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again in a little while.' });
-    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now — try again in a moment.' });
+    // A super admin is never stuck on a USPS problem: every failure branch tells
+    // the screen whether the override door (below) is open, so the owner can adopt
+    // the address and move on. And a failure NAMES its reason — the generic "try
+    // again" told a non-developer nothing, so they could not tell a slow USPS
+    // moment from a wrong ZIP from expired keys (owner-reported).
+    const canOverride = adminOverride.mayOverride(req.actor);
+    if (out.status === 'not_configured') {
+      let detail = 'USPS_CLIENT_ID / USPS_CLIENT_SECRET are not set.';
+      try { detail = require('../lib/usps-env').describe().detail || detail; } catch (_) {}
+      return res.status(503).json({ error: 'USPS is not connected on this service, so the address can’t be checked automatically.', detail, code: 'usps_not_configured', canOverride });
+    }
+    if (out.status === 'rate_limited') {
+      return res.status(429).json({ error: 'USPS’s hourly lookup limit is currently reached. Wait a little while and try again.', code: 'usps_rate_limited', retryable: true, canOverride });
+    }
+    if (out.status === 'error') {
+      const ex = uspsVerify.explainError(out.detail);
+      return res.status(502).json({ error: ex.reason, detail: ex.technical, code: 'usps_error', retryable: ex.retryable, canOverride });
+    }
 
     // Preserve an existing import ONLY when the freshly standardized address is the
     // one already imported as the working address (a harmless re-check). Any other
@@ -1818,6 +1834,128 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[usps] import failed:', db.describeError(e));
     res.status(500).json({ error: 'could not import the USPS address' });
+  } finally { client.release(); }
+});
+
+// SUPER-ADMIN EXCEPTION FOR THE USPS HOLD-BACK (owner-directed 2026-08-05:
+// "the hold-back and the gate for all the orders that need USPS — we should be
+// able to ask a super admin for an exception for it … I shouldn't be stuck").
+//
+// The normal flow is Verify → Import, and Import is the only thing that sets
+// `usps_imported_at` — which is what EVERY gate keyed to USPS reads (the
+// condition sign-off, and the title / insurance / attorney ordering hold-backs).
+// So when USPS keeps erroring, nobody can get past any of those gates, and even
+// the generic super-admin condition override (db/344) only clears the checklist
+// row — it does NOT stamp `usps_imported_at`, so ordering stays blocked. This is
+// the one action that actually lifts the whole hold-back: it adopts the address
+// (the file's current one, or an edited candidate the super admin typed) as the
+// working address, stamps the import, and clears the condition — recording who,
+// why, and what USPS said, exactly like the condition override it is a cousin of.
+//
+// SUPER ADMIN ONLY, reason REQUIRED — the same rule as admin-override, so "who
+// may override" and "a reason is mandatory" have ONE definition, not two.
+router.post('/applications/:id/usps-verification/override', async (req, res) => {
+  if (!adminOverride.mayOverride(req.actor)) {
+    return res.status(403).json({ error: adminOverride.DENIED_MESSAGE });
+  }
+  const reason = adminOverride.normalizeReason(req.body && req.body.overrideReason);
+  if (!reason) return res.status(400).json({ error: adminOverride.REASON_REQUIRED_MESSAGE });
+
+  const ADDR = require('../lib/address');
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const app = (await client.query(
+      `SELECT property_address, usps_address, usps_match FROM applications
+        WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+
+    // Which address becomes the working address? If the super admin typed a
+    // corrected candidate in the dialog (line1 + state present), adopt THAT —
+    // they are saying "this is the right address, use it." Otherwise keep the
+    // file's current address exactly as it is and simply stamp it accepted.
+    const edit = req.body && req.body.address;
+    const hasEdit = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street) && (edit.state);
+    let adopted = app.property_address;
+    if (hasEdit) {
+      adopted = ADDR.normalizeAddress({
+        line1: edit.line1 || edit.street, unit: edit.unit || edit.secondary || '',
+        city: edit.city || '', state: edit.state || '', zip: edit.zip || edit.zipcode || '', country: 'US',
+      });
+    }
+    if (!adopted || (typeof adopted === 'object' && !(adopted.line1 || adopted.street || adopted.oneLine))) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'This file has no property address to accept. Type the correct address in the box, then override.' });
+    }
+
+    // What was skipped — recorded on the condition (override_blocked_reason) so
+    // the file can answer "why did this clear without USPS?" long afterwards. The
+    // last USPS result is the honest reason; the caller may pass the exact error
+    // text it just showed the owner, otherwise we describe from the stored status.
+    const lastError = adminOverride.normalizeReason(req.body && req.body.lastError);
+    const stampStatus = String(app.usps_match || '').toLowerCase();
+    const blockedReason = 'USPS did not confirm a deliverable address'
+      + (stampStatus && stampStatus !== 'null' ? ` (last USPS result: ${stampStatus})` : '')
+      + (lastError ? ` — ${lastError.slice(0, 200)}` : '') + '.';
+
+    // Adopt the address + STAMP THE IMPORT. Stamping `usps_imported_at` is the
+    // whole point — it is the flag the ordering hold-backs read, so this is what
+    // unblocks title / insurance / attorney too. usps_match / usps_address keep
+    // whatever the last real attempt returned (so preferredFinancingAddress still
+    // falls back to property_address rather than shipping a phantom USPS form).
+    await client.query(
+      `UPDATE applications
+          SET property_address=$2, usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
+        WHERE id=$1`, [req.params.id, JSON.stringify(adopted)]);
+
+    // Clear the condition WITH the override stamps (db/344) — same shape the
+    // checklist sign-off door uses, so the file reads this as the recorded
+    // super-admin decision it is, not an ordinary sign-off.
+    const cleared = await client.query(
+      `UPDATE checklist_items ci
+          SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+              waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
+              override_by=$2, override_at=now(), override_reason=$3, override_blocked_reason=$4,
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.application_id=$1 AND ci.template_id=t.id
+          AND t.code='usps_address_verification'
+        RETURNING ci.id`, [req.params.id, req.actor.id, reason, blockedReason]);
+    await client.query('COMMIT');
+
+    // Keep the ClickUp card in step with the address we just adopted (scoped, so
+    // it is treated as the deliberate edit it is; no-op-suppressed when the card
+    // already names the same place; best-effort, never blocks the override).
+    try { await enqueueClickupPush(req.params.id, ['property_address']); } catch (_) {}
+
+    // A super-admin override is a POLICY DECISION: audit it, and land it in the
+    // loan_exceptions register (born approved, record-only) exactly as a condition
+    // override does — which is what puts it on the Exceptions screen, in the EX-n
+    // export, and in the decision certificate. Best-effort, after the write.
+    const note = adminOverride.describe({ label: 'USPS Address Verification', reason, blocked: blockedReason });
+    await audit(req, 'usps_hold_override', 'application', req.params.id, {
+      reason, blockedReason, adoptedEdited: !!hasEdit,
+      address: (adopted && adopted.oneLine) || null,
+      conditionIds: cleared.rows.map((r) => r.id) });
+    try {
+      await loanExceptions.recordConditionOverride({
+        appId: req.params.id, staffId: req.actor.id, note,
+        snapshot: {
+          action: 'usps_hold_override',
+          condition: 'USPS Address Verification',
+          template_code: 'usps_address_verification',
+          adopted_edited_address: !!hasEdit,
+          blocked_reason: blockedReason,
+          at: new Date().toISOString(),
+        },
+      });
+    } catch (e) { try { console.warn('[usps] override register skipped:', db.describeError(e)); } catch (_) {} }
+
+    res.json({ ok: true, override: true, address: adopted, conditionCleared: cleared.rowCount > 0 });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[usps] override failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not override the USPS hold-back' });
   } finally { client.release(); }
 });
 

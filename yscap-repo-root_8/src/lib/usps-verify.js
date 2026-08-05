@@ -241,6 +241,59 @@ async function standardize(addressInput, opts = {}) {
 function _resetRateWindow() { hits.length = 0; }
 
 /**
+ * TURN A RAW USPS FAILURE INTO PLAIN LANGUAGE — and keep the technical detail.
+ *
+ * When a live lookup fails, `standardize()` returns `{ status:'error', detail }`
+ * where `detail` is the raw error (a "USPS 400: …" body, a token failure, a
+ * timeout). The generic "try again in a moment" that used to reach the screen
+ * told a non-developer nothing, so they could not tell a slow moment on USPS's
+ * side (retry) from a wrong ZIP (fix the address) from expired keys (call an
+ * admin). This classifies the raw detail into one plain sentence the owner can
+ * act on, and returns the technical detail alongside it so "we can see exactly
+ * why" is answerable.
+ *
+ * WHY THE HEALTH PAGE CAN STILL BE GREEN: the API Health check only proves the
+ * USPS SIGN-IN works (an OAuth token). The address lookup is a different call
+ * that can fail on its own — a USPS 400/404 for this specific address, a USPS
+ * 5xx, or a timeout — so "USPS looks healthy" and "this lookup failed" are not a
+ * contradiction. The auth-error branch below is the one case where the sign-in
+ * itself is the problem.
+ *
+ * PURE + unit-testable. Returns { reason, technical, retryable }.
+ */
+function explainError(detail) {
+  const raw = String(detail == null ? '' : detail).trim();
+  const low = raw.toLowerCase();
+  let reason;
+  let retryable = true;
+  const m = /usps(?:\s+token)?\s+(\d{3})/i.exec(raw);   // "USPS 400: …" / "USPS token 401: …"
+  const code = m ? Number(m[1]) : null;
+  if (!raw) {
+    reason = 'USPS could not verify this address right now, and did not say why. Try again in a moment.';
+  } else if (/abort|timed out|timeout|etimedout|operation was aborted/.test(low)) {
+    reason = 'USPS did not answer in time (we wait about 10 seconds, then give up). This is usually a slow moment on USPS’s side — try again in a moment.';
+  } else if (/token/i.test(raw) || code === 401 || code === 403) {
+    reason = 'USPS rejected our sign-in to their system — the USPS keys may have expired or lost access. This is not about the address; an admin needs to check the USPS credentials.';
+    retryable = false;
+  } else if (code === 400 || code === 422) {
+    reason = 'USPS could not read this address. Check the street, city, state and ZIP for a typo or a missing piece, then verify again.';
+    retryable = false;
+  } else if (code === 404) {
+    reason = 'USPS has no record of this exact address. Double-check the house number, street and ZIP, then verify again.';
+    retryable = false;
+  } else if (code === 429) {
+    reason = 'USPS’s hourly lookup limit was reached. Wait a few minutes, then try again.';
+  } else if (code && code >= 500) {
+    reason = 'USPS is having a temporary problem on their end. Try again in a little while.';
+  } else if (/enotfound|econnrefused|econnreset|network|fetch failed|getaddrinfo|socket/.test(low)) {
+    reason = 'We could not reach USPS just now (a network hiccup). Try again in a moment.';
+  } else {
+    reason = 'USPS could not verify this address right now. Try again in a moment.';
+  }
+  return { reason, technical: raw.slice(0, 300), retryable };
+}
+
+/**
  * Return the address that is safe to send to a financing counterparty.
  *
  * The USPS stamp is stored beside `property_address` so a backfill never mutates
@@ -262,5 +315,5 @@ function preferredFinancingAddress(app = {}) {
 
 module.exports = {
   configured, standardize, classify, toCanonical, pickDpv, deliverability, normInput, hashInput,
-  preferredFinancingAddress, _resetRateWindow,
+  preferredFinancingAddress, explainError, _resetRateWindow,
 };
