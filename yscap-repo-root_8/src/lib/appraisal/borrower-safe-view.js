@@ -67,12 +67,24 @@ async function buildBorrowerSafeAppraisalView(db, appId) {
   // warnings, so they are dropped too. The appraiser's DIRECT CONTACT + supervisor + tooling are
   // internal (the reader reaches their loan team, never the appraiser); the "Prepared by" card still
   // shows WHO appraised the property (name/firm/license) — standard disclosure.
+  // The free-text APPRAISER NARRATIVE columns are dropped alongside the structured lender/AMC
+  // fields, and for the same reason: an appraiser's reconciliation / addendum / intended-use /
+  // contract narrative routinely NAMES the client / ordering lender / AMC / capital partner
+  // ("prepared for the exclusive use of …"). A denylist that dropped only the structured columns
+  // would leak the very same class of name through the narrative — and `scrubText` only catches
+  // the KNOWN partner patterns, so it can't be trusted to strip an arbitrary AMC / lender / owner
+  // / intended-user name on an external (broker) surface. Dropping is the only robust option.
+  // `appraiser_id` (a research-warehouse FK) is internal bookkeeping, dropped like the comp ids.
   const safeAppr = (() => {
-    const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
+    const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings, appraiser_id,
       lender_name, amc_name, owner_of_record, lender_address,
       appraiser_email, appraiser_phone, appraiser_company_address,
       supervisor_name, supervisor_license_id, supervisor_license_state, supervisor_license_exp,
-      software_vendor, ...rest } = appr; // eslint-disable-line no-unused-vars
+      software_vendor,
+      addendum_text, reconciliation_comment, market_conditions_comment, market_reconciliation_comment,
+      conditions_comment, condition_comment, contract_review_comment, sales_agreement_analysis,
+      nbhd_boundaries,
+      ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
   const bSummary = {

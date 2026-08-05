@@ -70,11 +70,16 @@ function call(server, method, p, token, body, raw) {
     const apprId = (await db.query(
       `INSERT INTO appraisals (application_id, superseded, imported_at,
          lender_name, amc_name, owner_of_record, lender_address, appraiser_name, appraiser_email, appraiser_phone,
-         as_is_value, arv_value, gla, fields, warnings)
+         as_is_value, arv_value, gla, fields, warnings,
+         reconciliation_comment, addendum_text, market_conditions_comment, contract_review_comment)
        VALUES ($1,false,now(),
          'RCN Capital LLC','Nationwide AMC','Prior Owner Holdings','1 Servicer Way',
          'Jane Appraiser','jane@appraise.test','555-0100',
-         420000, 560000, 1800, $2::jsonb, $3::jsonb) RETURNING id`,
+         420000, 560000, 1800, $2::jsonb, $3::jsonb,
+         'Prepared for the exclusive use of BlueLake Capital.',
+         'Intended user: Nationwide AMC on behalf of RCN Capital LLC.',
+         'Ordered by Fidelis Investors for this transaction.',
+         'Client BlueLake reviewed the contract and assignment.') RETURNING id`,
       [appA,
         JSON.stringify({ appraiser: { lender: 'BlueLake Capital', amc: 'Nationwide AMC' } }),
         JSON.stringify(['comp_split_review', 'nbhd_declining'])])).rows[0].id;
@@ -112,6 +117,11 @@ function call(server, method, p, token, body, raw) {
     ok(a.appraiser_name === 'Jane Appraiser', 'the "prepared by" appraiser name is kept (standard disclosure)');
     const dropped = ['lender_name', 'amc_name', 'owner_of_record', 'lender_address', 'fields', 'warnings', 'appraiser_email', 'appraiser_phone'];
     ok(dropped.every((k) => !(k in a)), 'the staff-only appraisal columns are DROPPED (lender/AMC/owner/contact/fields/warnings)');
+    // The free-text appraiser NARRATIVE columns are dropped too — an appraiser routinely names the
+    // client / ordering lender / AMC / capital partner in the reconciliation / addendum / intended-use
+    // narrative, which a denylist of the structured columns alone would leak.
+    const narrative = ['reconciliation_comment', 'addendum_text', 'market_conditions_comment', 'market_reconciliation_comment', 'conditions_comment', 'condition_comment', 'contract_review_comment', 'sales_agreement_analysis', 'nbhd_boundaries', 'appraiser_id'];
+    ok(narrative.every((k) => !(k in a)), 'the appraiser NARRATIVE columns are DROPPED (they name the client/lender/AMC/intended user)');
     ok(rep.body.score && rep.body.score.arv === null, 'score.arv is null (ARV-defensibility is staff-only)');
     const codes = (rep.body.findings || []).map((f) => f.code);
     ok(!codes.includes('arv_defensibility'), 'the underwriting-scrutiny finding is hidden');
@@ -119,8 +129,8 @@ function call(server, method, p, token, body, raw) {
     ok(codes.includes('value_note'), 'the ordinary finding is shown');
     ok(codes.includes('appraisal_under_review'), 'a hidden FATAL blocker still surfaces the neutral "under review" placeholder');
     const bodyStr = JSON.stringify(rep.body);
-    ok(!/BlueLake|Blue Lake|RCN Capital|EMCAP|Nationwide AMC|Prior Owner/i.test(bodyStr),
-      'NO capital-partner / note-buyer / lender / AMC / owner name leaks anywhere in the payload');
+    ok(!/BlueLake|Blue Lake|RCN Capital|EMCAP|Nationwide AMC|Prior Owner|Fidelis/i.test(bodyStr),
+      'NO capital-partner / note-buyer / lender / AMC / owner name leaks anywhere in the payload (incl. the appraiser narrative)');
 
     // ---------------------------------------------------------------
     // 2) SINGLE DEFINITION — byte-identical to the shared borrower-safe view

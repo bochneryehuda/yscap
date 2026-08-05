@@ -1172,7 +1172,7 @@ router.get('/appraisal-photo/:docId', async (req, res, next) => {
          JOIN appraisals apr ON apr.id = ap.appraisal_id
          JOIN applications a ON a.id = apr.application_id
          JOIN documents d ON d.id = ap.document_id
-        WHERE ap.document_id = $2 AND d.is_current AND a.deleted_at IS NULL
+        WHERE ap.document_id = $2 AND d.is_current AND d.visibility = 'borrower' AND a.deleted_at IS NULL
           AND ${perms.tpoFirmScopeSql('a', '$1')}
         LIMIT 1`,
       [req.actor.id, req.params.docId]);
