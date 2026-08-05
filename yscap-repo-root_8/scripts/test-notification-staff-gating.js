@@ -57,7 +57,7 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
   // FALSE "borrower opened". Not a visible To on the borrower's copy either.
   const beforeBo = sent.length;
   await notify.notifyAppBorrowers(app.id, { type: 'status_change', title: 'Your loan status is now: Funded', body: 'x', applicationId: app.id, major: true });
-  await new Promise((r) => setTimeout(r, 300));   // the officer's split copy is fired after an awaited DB write — let it flush
+  await notify.drainEmails();   // the officer's split copy is fire-and-forget (fired after a DB write); drain it deterministically before reading sent[]
   const boBatch = sent.slice(beforeBo);
   const bmail = boBatch.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(`gate-b-${suffix}@example.com`));
   assert.ok(bmail, 'borrower email sent');
