@@ -32,6 +32,18 @@ const countBorrowerStatus = async (appId) => Number((await db.query(
   `SELECT count(*) c FROM notifications WHERE application_id=$1 AND recipient_kind='borrower' AND type='status_change'`, [appId])).rows[0].c);
 const watermark = async (appId) => (await db.query(`SELECT status_notified_external w FROM applications WHERE id=$1`, [appId])).rows[0].w;
 
+// Fire the inbound-status notify, then DRAIN the fire-and-forget email fan-out so the
+// assertions below can inspect `sent[]` deterministically. The borrower's email is
+// pushed synchronously, but the loan officer's SEPARATE pixel-free copy is only sent
+// after _emailRow (in notify.js) resumes past a DB round-trip — i.e. AFTER this call
+// returns. Without the drain that officer copy races the assertion: it almost always
+// wins locally, but loses under CI's slower shared DB (the run-#2581 red). drainEmails
+// awaits _emailRow's tracked promise, which never settles until past the officer send.
+const inbound = async (appId, status) => {
+  await statusNotify.notifyInboundStatusChange(appId, status);
+  await notify.drainEmails();
+};
+
 (async () => {
   const sfx = `${process.pid}-${Math.floor(Date.now() / 1000)}`;
   const bEmail = `inb-bo-${sfx}@example.com`;
@@ -46,7 +58,7 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
     // 1) SILENT BASELINE — a file the sync has never seen (watermark NULL) is
     //    baselined, NOT announced. This is what makes the rollout go-forward-only.
     sent = [];
-    await statusNotify.notifyInboundStatusChange(appA, 'processing');
+    await inbound(appA, 'processing');
     assert.strictEqual(await countBorrowerStatus(appA), 0, 'first inbound sight sends NO borrower notification (silent baseline)');
     assert.strictEqual(await watermark(appA), 'processing', 'the watermark is baselined to the current status');
     assert.strictEqual(mailedTo(bEmail), 0, 'no email on the baseline');
@@ -54,7 +66,7 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
 
     // 2) GO-FORWARD change → notify, and a DECISION status emails.
     sent = [];
-    await statusNotify.notifyInboundStatusChange(appA, 'funded');
+    await inbound(appA, 'funded');
     assert.strictEqual(await countBorrowerStatus(appA), 1, 'a genuine subsequent ClickUp change notifies the borrower');
     assert.strictEqual(await watermark(appA), 'funded', 'the watermark advances to the new status');
     assert.ok(mailedTo(bEmail) >= 1, 'a DECISION status (funded) emails the borrower');
@@ -69,14 +81,14 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
 
     // 3) ECHO — the same status pulled again does nothing (no duplicate).
     sent = [];
-    await statusNotify.notifyInboundStatusChange(appA, 'funded');
+    await inbound(appA, 'funded');
     assert.strictEqual(await countBorrowerStatus(appA), 1, 're-pulling the SAME status sends nothing (no duplicate)');
     assert.strictEqual(mailedTo(bEmail), 0, 'no duplicate email on an unchanged re-pull');
     ok('an echo / unchanged re-pull is a no-op (no duplicate notification)');
 
     // 4) A non-DECISION change still posts in-app but does NOT email.
     sent = [];
-    await statusNotify.notifyInboundStatusChange(appA, 'in_review');
+    await inbound(appA, 'in_review');
     assert.strictEqual(await countBorrowerStatus(appA), 2, 'a working-status change still posts an in-app notification');
     assert.strictEqual(mailedTo(bEmail), 0, 'a non-decision status does NOT email (in-app only) — no inbox bombardment');
     ok('a routine working-status ClickUp move is in-app only (no email)');
@@ -84,7 +96,7 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
     // 5) SOFT-DELETED file is skipped entirely.
     sent = [];
     await db.query(`UPDATE applications SET deleted_at=now() WHERE id=$1`, [appA]);
-    await statusNotify.notifyInboundStatusChange(appA, 'declined');
+    await inbound(appA, 'declined');
     assert.strictEqual(await countBorrowerStatus(appA), 2, 'a soft-deleted file gets no status notification');
     assert.strictEqual(await watermark(appA), 'in_review', 'a soft-deleted file\'s watermark is not touched');
     ok('a soft-deleted file is skipped (no wrong-time send)');
@@ -94,7 +106,7 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
     appB = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, status, status_notified_external) VALUES ($1,$2,'funded','funded') RETURNING id`, [borrowerId, loId])).rows[0].id;
     sent = [];
-    await statusNotify.notifyInboundStatusChange(appB, 'funded');
+    await inbound(appB, 'funded');
     assert.strictEqual(await countBorrowerStatus(appB), 0, 'a ClickUp echo of a portal change does NOT re-notify the borrower');
     ok('a portal change echoed back from ClickUp never double-notifies (watermark set in lock-step)');
 

@@ -1024,8 +1024,11 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
 function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, files = [], senderName = '' } = {}) {
   const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
   return tpl.render({
-    // The SAME title as the order, so every part threads into the one conversation.
+    // The SAME title as the order, so every part threads into the one conversation — but
+    // the HEADLINE says this is a documents part, not a second "File ready for closing
+    // prep" (only part 1 headlines that).
     title: CLOSING_PREP_TITLE,
+    heading: `Closing prep documents — part ${part} of ${of}`,
     subjectTag: `${subjectTagFor(data)} · documents ${part} of ${of}`,
     kicker: `Documents ${part} of ${of}`,
     preheader: `Closing prep documents (${part} of ${of}) for ${data.propertyLine || 'the subject property'}`,
@@ -1051,7 +1054,10 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
 function buildFollowupEmail(data, { note = '', address = null, senderName = '' } = {}) {
   const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
   return tpl.render({
+    // Threads on the chain subject; the headline says it is a follow-up, not a repeat of
+    // the original "File ready for closing prep".
     title: CLOSING_PREP_TITLE,
+    heading: 'Following up on this closing',
     subjectTag: subjectTagFor(data),
     kicker: 'Closing prep',
     preheader: `Following up on closing prep for ${data.propertyLine}`,
@@ -1095,6 +1101,10 @@ function isSizeSkip(reason) { return SIZE_SKIP_REASONS.has(String(reason || ''))
 const AUTO_EVENTS = {
   executed_term_sheet: {
     kicker: 'Executed term sheet',
+    // The big headline says what THIS email is about — not "File ready for closing prep"
+    // (that is the first email's headline only). The subject stays the chain's, so the
+    // message threads; only the H1 changes (owner-directed 2026-08-05).
+    heading: 'Final term sheet is ready',
     // NEVER claim an attachment that is not there, and never claim a REASON that is
     // not the real one. The executed copy can legitimately be withheld — a 4 MB signed
     // package against the Microsoft Graph budget is skipped, not attached — and saying
@@ -1114,11 +1124,13 @@ const AUTO_EVENTS = {
   },
   closing_date: {
     kicker: 'Closing date',
+    heading: 'Estimated closing date on this file changed',
     intro: (d, x) => `The expected closing date for this file is now ${dayText(x.date) || 'updated'}. `
       + `Please let us know right away if that does not work on your end or if anything is outstanding for it.`,
   },
   clear_to_close: {
     kicker: 'Clear to close',
+    heading: 'This file is clear to close',
     intro: (d, x) => `This file is CLEAR TO CLOSE. `
       + `Everything on our side is signed off${x && x.closingDate ? `, and the expected closing date is ${dayText(x.closingDate)}` : ''}. `
       + `Please proceed with the closing package and send us the settlement statement and the closing documents for review when they are ready.`,
@@ -1146,8 +1158,12 @@ function buildAutoEmail(eventKind, data, extra = {}) {
   }
   return tpl.render({
     // The SAME title as the order, so the whole chain shares one subject — the
-    // fallback every mail client threads on when a Message-ID is rewritten.
+    // fallback every mail client threads on when a Message-ID is rewritten. The visible
+    // HEADLINE (H1), though, is per-event: only the FIRST email headlines "File ready for
+    // closing prep"; a later update on the chain says what IT is about (owner-directed
+    // 2026-08-05). The subject is untouched, so threading is untouched.
     title: CLOSING_PREP_TITLE,
+    heading: spec.heading || CLOSING_PREP_TITLE,
     subjectTag: subjectTagFor(data),
     kicker: spec.kicker,
     preheader: `${spec.kicker} — ${data.propertyLine || 'closing update'}`,

@@ -394,7 +394,7 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
         });
-      } else {
+      } else if (isEsign) {
         const ctx = await notify.fileContext(row.application_id, [
           { label: 'Send before clear-to-close', value: decision === 'approved' ? 'Approved' : 'Denied' },
         ]);
@@ -410,6 +410,24 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
             : `An administrator DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} early${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-esign`, ctaLabel: 'Open the loan file',
+        });
+      } else {
+        // Any OTHER decidable type (oop_rehab, appraisal_xml_waiver,
+        // credit_import_waiver, and any future type): a type-aware notice built
+        // from the ONE registry label — never the esign "send-before-CTC"
+        // wording this branch used to hardcode for every un-cased type.
+        const typeLabel = loanExceptions.typeLabelFor(exc.exception_type) || 'Exception';
+        const ctx = await notify.fileContext(row.application_id, [
+          { label: typeLabel, value: decision === 'approved' ? 'Approved' : 'Denied' },
+        ]);
+        await notify.notifyAppStaff(row.application_id, {
+          type: 'loan_exception_decided',
+          title: decision === 'approved' ? `${typeLabel} approved` : `${typeLabel} denied`,
+          body: decision === 'approved'
+            ? `The ${typeLabel.toLowerCase()} on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was APPROVED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}.${validityLine}`
+            : `The ${typeLabel.toLowerCase()} on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was DENIED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
         });
       }
     } catch (_) { /* best-effort */ }

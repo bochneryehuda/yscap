@@ -48,7 +48,12 @@ const { classifyReturnAttachment } = require('./order-return-filter');
 const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
 
 const DOC_KIND = RETURN_DOC_KIND;
-const MAX_RETURN_DOCS = 20;
+// Bounded but generous. MUST NOT be below the inbound RETRIEVAL cap
+// (file-inbox.MAX_ATTACH_COUNT): retrieval REPORTS whatever it drops, but a slice below
+// that number here would truncate a returned-document set SILENTLY. Kept at the
+// retrieval cap so retrieval stays the single, reported bound (guarded by
+// scripts/test-inbound-attachment-cap.js).
+const MAX_RETURN_DOCS = 60;
 
 /**
  * The document condition an order files into (rtl_cond_title / rtl_cond_insurance),
@@ -335,4 +340,4 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
   return { saved, deduped, failed, failedPermanent, failedTransient, suspect, skipped };
 }
 
-module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE };
+module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE, MAX_RETURN_DOCS };
