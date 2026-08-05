@@ -96,6 +96,11 @@ for (const [label, link] of [
   ['CGNAT 100.64.x', 'https://100.64.0.1/x'],
   ['IPv6 loopback', 'https://[::1]/x'],
   ['IPv4-mapped IPv6 private', 'https://[::ffff:192.168.0.1]/x'],
+  ['IPv6 link-local fe80', 'https://[fe80::1]/x'],
+  ['IPv6 link-local fea0 (fe80::/10)', 'https://[fea0::1]/x'],
+  ['IPv6 link-local febf (fe80::/10)', 'https://[febf::1]/x'],
+  ['IPv6 ULA fd00', 'https://[fd12:3456::1]/x'],
+  ['NAT64 well-known → metadata', 'https://[64:ff9b::a9fe:a9fe]/x'],
   ['credentials in URL', 'https://user:secret@phoenix.xactus.example/uaweb'],
   // alternate IPv4 encodings the WHATWG URL parser normalizes to dotted before we see them
   ['decimal-integer loopback', 'https://2130706433/x'],       // → 127.0.0.1
@@ -108,6 +113,8 @@ for (const [label, link] of [
 // A real PUBLIC vendor host (and a public IP) must PASS the guard.
 ok(bad(new URL('https://phoenix.xactus.example/uaweb/mismo3/')) === null, 'unsafeEndpointReason allows a public vendor host');
 ok(bad(new URL('https://8.8.8.8/uaweb')) === null, 'unsafeEndpointReason allows a public IP');
+ok(bad(new URL('https://[2001:db8::a9fe:a9fe]/uaweb')) === null, 'unsafeEndpointReason allows a public IPv6 whose low bits look like metadata (no reserved-prefix false-positive)');
+ok(bad(new URL('https://[2606:4700::1111]/uaweb')) === null, 'unsafeEndpointReason allows a genuine public IPv6');
 ok(firmCreds._internals.isPrivateIpLiteral('vendor.xactus.example') === false, 'isPrivateIpLiteral(hostname) is false (not an IP literal)');
 
 console.log(`\ntest-tpo-own-xactus-pure: ${pass} passed, ${fail} failed`);

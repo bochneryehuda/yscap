@@ -43,15 +43,25 @@ function isPrivateIpLiteral(host) {
   }
   if (fam === 6) {
     const l = host.toLowerCase();
-    if (l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || l.startsWith('fe80')) return true;
-    // IPv4-mapped IPv6 — dotted (::ffff:192.168.0.1) OR hex (::ffff:c0a8:1, the form
-    // the URL parser normalizes to). Re-run the IPv4 rules on the embedded address.
-    const md = l.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (md) return isPrivateIpLiteral(md[1]);
-    const mh = l.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (mh) {
-      const hi = parseInt(mh[1], 16), lo = parseInt(mh[2], 16);
-      return isPrivateIpLiteral(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
+    // loopback / unspecified / ULA (fc00::/7 → fc,fd) / link-local (fe80::/10 → fe80–febf)
+    if (l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || /^fe[89ab]/.test(l)) return true;
+    // Reserved prefixes that EMBED an IPv4 in the low 32 bits — IPv4-mapped
+    // (::ffff:, RFC 4291) and the NAT64 well-known prefix (64:ff9b::/96, RFC 6052,
+    // which a NAT64 network routes to the embedded address, incl. cloud metadata).
+    // Both prefixes are RESERVED, so re-running the IPv4 rules on the embedded
+    // address can never false-positive on a genuine public IPv6. The embedded part
+    // is dotted (::ffff:192.168.0.1) or the two-hextet hex the URL parser normalizes
+    // to (::ffff:c0a8:1, 64:ff9b::a9fe:a9fe).
+    for (const pfx of ['::ffff:', '64:ff9b::']) {
+      if (!l.startsWith(pfx)) continue;
+      const rest = l.slice(pfx.length);
+      const md = rest.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+      if (md) return isPrivateIpLiteral(md[1]);
+      const mh = rest.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+      if (mh) {
+        const hi = parseInt(mh[1], 16), lo = parseInt(mh[2], 16);
+        return isPrivateIpLiteral(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
+      }
     }
     return false;
   }
