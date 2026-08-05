@@ -396,6 +396,35 @@ function htmlToText(html) {
     .trim();
 }
 
+/**
+ * #13 — should the generic "New reply on a loan file" forward be SKIPPED for this
+ * file because its notification already came from the order-return path?
+ *
+ * An insurance+/title+ vendor reply that filed documents already emailed the team
+ * "documents came back" (order_docs_in), and its body + attachments are in the
+ * Email Center — so the extra generic forward was the redundant second of the three
+ * emails the owner got for one insurance return. Pure so the truth table (idempotent
+ * across webhook redeliveries; still forwards a text-only order reply and a genuine
+ * file+ thread reply) is unit-tested without a DB.
+ *
+ * @param {object} a
+ * @param {string} [a.persisted]        appResults[app] carried over from a prior delivery
+ * @param {boolean} a.orderFiledDocs    an order return filed >=1 doc THIS delivery (order_docs_in fired)
+ * @param {boolean} a.isFileThreadReply the file is ALSO addressed by a genuine file+<id>@ thread reply
+ * @returns {boolean} true → skip the forward (mark 'order_handled')
+ */
+function orderReturnHandledForward({ persisted, orderFiledDocs, isFileThreadReply } = {}) {
+  // A prior delivery already handled it this way — stay quiet on the redelivery,
+  // when the order block is skipped by its own 'saved' marker so orderFiledDocs is
+  // false but the persisted decision still stands.
+  if (persisted === 'order_handled') return true;
+  // First delivery: suppress only a pure order return whose documents actually
+  // filed. A text-only order reply (order_docs_in never fired) and a message that
+  // is ALSO a real file-thread reply still forward — those carry a signal the
+  // order path does not.
+  return !!orderFiledDocs && !isFileThreadReply;
+}
+
 /** Forward the reply (branded, from our verified sender) to the staff recipients.
     If the send fails WITH attachments (provider size limits — Graph especially),
     it retries once WITHOUT them so the text always gets through. Throws only
@@ -523,6 +552,14 @@ async function processReceivedEvent(event) {
     const id = applicationIdFromRecipient(r);
     if (id && !applicationIds.includes(id)) applicationIds.push(id);
   }
+  // The files addressed by a GENUINE file+<id>@ thread address — captured BEFORE
+  // the order/closing loops below extend `applicationIds`. An order/closing address
+  // adds its file to `applicationIds` too (so the message forwards + captures like
+  // any reply), but that file's real notification comes from the order-return /
+  // closing path. This set is what lets the forward loop tell "someone replied on
+  // the file thread" (forward it) apart from "a vendor answered an order" (already
+  // announced) — see the order-return de-duplication in the forward loop (#13).
+  const fileAddrIds = new Set(applicationIds);
   // Order reply addresses (title+<id>@ / insurance+<id>@, #orders). Their file is
   // treated like a file+ address for the forward + Email Center capture, AND the
   // vendor's attachments are saved back onto the order as returned documents.
@@ -736,6 +773,11 @@ async function processReceivedEvent(event) {
   const appResults = { ...priorAppResults };
   let forwardedTotal = 0;
   let retryableFailure = null;   // { status } of the first transient failure
+  // Files whose order return FILED at least one document this delivery — so the
+  // order-return path already emailed the team "documents came back" (order_docs_in).
+  // The forward loop uses this to suppress the redundant generic "New reply on a
+  // loan file" forward for the same vendor reply (#13, the insurance triple-email).
+  const orderNotifiedApps = new Set();
 
   // Retrieve the attachment BYTES at most once per delivery. Up to three consumers
   // want them (an order's returned documents, the closing chain's documents, and the
@@ -792,6 +834,12 @@ async function processReceivedEvent(event) {
                 applicationId: ref.applicationId, orderType: ref.orderType,
                 attachments: orderAtts, fromEmail,
               });
+              // A NEW document filed means order-inbox emailed the team "documents
+              // came back" (order_docs_in fires only on res.saved > 0). Record it so
+              // the forward loop does NOT also send the generic "New reply on a loan
+              // file" for this same vendor reply — that was the second of the three
+              // emails the owner got for one insurance return (#13).
+              if (res && res.saved > 0) orderNotifiedApps.add(ref.applicationId);
               // THE MARKER IS WRITTEN ONLY WHEN A RETRY HAS NOTHING LEFT TO RECOVER.
               //
               // The marker's job is to stop a webhook redelivery double-filing; it is
@@ -1014,6 +1062,27 @@ async function processReceivedEvent(event) {
   for (const applicationId of applicationIds) {
     if (appResults[applicationId] === 'forwarded') { anyForwarded = true; continue; }
 
+    // ORDER-RETURN DE-DUPLICATION (#13, owner-reported: an insurance return sent
+    // THREE emails — "documents came back" + "New reply on a loan file" + the
+    // vendor's own email). An insurance+/title+ reply that filed documents already
+    // announced itself via order_docs_in ("… documents came back", linking straight
+    // to the Orders section), and its message body + attachments are captured in the
+    // Email Center. Forwarding it again as a generic file reply is the redundant
+    // second email, so skip it — UNLESS the same message is ALSO a genuine file+
+    // thread reply (someone on the team wrote in), and only when documents actually
+    // filed (a text-only order reply never fires order_docs_in, so it still forwards
+    // — that reply is the only signal). Persisted as 'order_handled' so a webhook
+    // redelivery (order block skipped by its own 'saved' marker) stays quiet too.
+    if (orderReturnHandledForward({
+      persisted: appResults[applicationId],
+      orderFiledDocs: orderNotifiedApps.has(applicationId),
+      isFileThreadReply: fileAddrIds.has(applicationId),
+    })) {
+      appResults[applicationId] = 'order_handled';
+      lastTerminal = lastTerminal || 'order_handled';
+      continue;
+    }
+
     // Archived (soft-deleted) files keep their assignee rows — honor deleted_at
     // so a reply to a dead file's address never emails a team that closed it out.
     let appRow;
@@ -1172,7 +1241,7 @@ module.exports = {
   fileReplyTo, applicationIdFromRecipient,
   recipientsFromEvent, chatKeyFromRecipients, retrieveInboundEmail, retrieveAttachmentsSafe,
   assigneesForFile, adminFallbackRecipients, forwardToAssignees, processReceivedEvent, inboundKey,
-  isAutoGenerated, extractAddress, htmlToText, topReply,
+  isAutoGenerated, extractAddress, htmlToText, topReply, orderReturnHandledForward,
   // exported for tests
   _internals: { senderAuth, headerVal },
 };

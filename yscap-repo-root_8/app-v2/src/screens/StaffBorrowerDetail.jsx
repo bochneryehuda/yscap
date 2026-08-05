@@ -98,7 +98,22 @@ function Header({ b, name, onChanged }) {
   async function act(kind) {
     setBusy(kind); setErr('');
     try {
-      if (kind === 'invite') { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged(); }
+      if (kind === 'invite') {
+        try {
+          await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged();
+        } catch (e) {
+          // A borrower with NO active file has nothing to be invited TO — so START a
+          // new application for them and invite them to fill it in (owner-directed
+          // 2026-08-04, #23). Passing borrowerId links the new file to THIS exact
+          // profile, so their records (entities, track record, SSN) carry over, and
+          // it reuses the same tested invite-only path as "Invite for a new application".
+          if (e.data && e.data.code === 'no_active_file') {
+            await api.staffCreateFile({ inviteOnly: true, borrowerId: b.id,
+              borrower: { email: b.email, firstName: b.first_name, lastName: b.last_name } });
+            flash(`Started a new application for ${b.email} and sent them an invite.`); onChanged();
+          } else throw e;
+        }
+      }
       else if (kind === 'reset') { await api.staffBorrowerResetPassword(b.id); flash(`Reset link emailed to ${b.email}.`); }
       else if (kind === 'ssn') { const r = await api.staffBorrowerSsn(b.id); setSsn(r.ssn); }
       else if (kind === 'photo') { const { blob, filename } = await api.staffDownloadDoc(b.photo_id_document_id); saveBlob(blob, filename || 'government-id'); }

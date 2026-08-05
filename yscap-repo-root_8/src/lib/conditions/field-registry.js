@@ -196,6 +196,23 @@ function isBlueLakeNoteBuyer(raw) {
   return !!key && key.startsWith(BLUELAKE_KEY_PREFIX);
 }
 
+// RCN — RCN Capital, whose notes are serviced by Elite Commercial Servicing. Same
+// PREFIX shape as the helpers above and for the same reason: the real ClickUp label
+// is routinely "RCN Capital" / "RCN Capital, LLC" (→ 'rcncapital'…), which an exact
+// key never matches. No other note buyer's key starts with 'rcn'. This does NOT
+// loosen normNoteBuyer (which stays EXACT). Blast radius: the vendor-order mortgagee
+// clause (lib/orders.js) and the insurance mortgagee-address check (underwriting/
+// lender.js) — the direction where recognizing a genuine RCN spelling is strictly
+// safer than missing it (a missed match sends the wrong servicer address / raises a
+// spurious "unrecognized address" nudge, never a wrong data-tape export).
+const RCN_KEY_PREFIX = 'rcn';
+
+/** True when this note-buyer label (applications.lender) is RCN, however it is spelled. */
+function isRcnNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(RCN_KEY_PREFIX);
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -507,4 +524,5 @@ module.exports = {
   FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
   EMCAP_KEY_PREFIX, isEmcapNoteBuyer,
   BLUELAKE_KEY_PREFIX, isBlueLakeNoteBuyer,
+  RCN_KEY_PREFIX, isRcnNoteBuyer,
 };
