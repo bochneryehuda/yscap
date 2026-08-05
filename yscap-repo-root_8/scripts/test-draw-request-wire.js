@@ -48,6 +48,21 @@ function mockDocusign(wireValues) {
     // still tolerant: the SAME form, and a dropped form, both clear as the subject LLC.
     ok(drawWire.classifyAccountName('Maple Ridge', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc', 'dropped legal form ("Maple Ridge" vs "Maple Ridge LLC") still clears as subject_llc');
     ok(drawWire.classifyAccountName('Maple Ridge L.L.C.', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc', 'same form, punctuation variant → subject_llc');
+    // OWNER-REPORTED false new-entity (2026-08-05) — the account matches the subject LLC
+    // but was flagged because the STORED name carried its full legal DESCRIPTION, or
+    // omitted the legal form, or led with "The".
+    ok(drawWire.classifyAccountName('MW Trading LLC', { borrowerName: 'Jane Borrower', llcName: 'MW Trading LLC, A New York Limited Liability Company' }).kind === 'subject_llc',
+      'stored name with full legal description still matches the account → subject_llc');
+    ok(drawWire.classifyAccountName('Maple Ridge LLC', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge' }).kind === 'subject_llc',
+      'account HAS the form, stored LLC name omitted it → subject_llc (the omission goes both ways)');
+    ok(drawWire.classifyAccountName('The Maple Ridge LLC', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc',
+      'a leading "The" does not make it a new entity → subject_llc');
+    ok(drawWire.classifyAccountName('  Maple Ridge LLC  ', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc',
+      'leading/trailing spaces do not make it a new entity → subject_llc');
+    // The safety case is UNCHANGED: a stored name with no form vs a DIFFERENT-form account
+    // is still tolerant (base match), but two DIFFERENT non-empty forms never clear.
+    ok(drawWire.classifyAccountName('Riverside Trust', { borrowerName: 'Jane Borrower', llcName: 'Riverside Inc' }).kind === 'new_entity',
+      'two different non-empty legal forms are still a new entity (Trust vs Inc)');
 
     // ---- (2) textTab emit + read-back ----
     const def = ds.buildEnvelopeDefinition({

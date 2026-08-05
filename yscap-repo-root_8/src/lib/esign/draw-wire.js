@@ -53,14 +53,27 @@ function canonSuffix(w) {
   return x;
 }
 
-/** Split an ENTITY name into its descriptive BASE (lowercased, &→and, legal form +
- *  all punctuation/space removed) and its legal-form FAMILY (from the LAST legal-form
- *  word, or '' if none). */
+/** Split an ENTITY name into its descriptive BASE and its legal-form FAMILY.
+ *
+ *  The descriptive name ends at the FIRST legal-form word: everything after it is a
+ *  legal DESCRIPTION, not part of the name. This is the fix for the owner-reported
+ *  false "new entity" (2026-08-05) — a vesting LLC is very often stored with its full
+ *  legal description ("MW Trading LLC, A New York Limited Liability Company"), and the
+ *  old code, which merely removed the legal-form WORDS and kept the rest, left
+ *  "anewyorkliability" in the base so it never matched the borrower's clean "MW
+ *  Trading". Taking the head before the first form word makes both reduce to
+ *  "mwtrading". A leading article ("The") is also dropped so "The Maple Ridge LLC"
+ *  equals "Maple Ridge LLC".
+ *
+ *  The FAMILY comes from that first legal-form word ('llc'/'inc'/'corp'/'company'/
+ *  'ltd'/'lp'/'plc'/'trust'/'partnership'), or '' when the name carries none. */
 function splitEntity(s) {
   const t = String(s == null ? '' : s).toLowerCase().replace(/&/g, ' and ').replace(/[.,]/g, ' ');
-  const forms = t.match(LEGAL_SUFFIX);
-  const suffix = forms && forms.length ? canonSuffix(forms[forms.length - 1]) : '';
-  const base = t.replace(LEGAL_SUFFIX, ' ').replace(/[^a-z0-9]/g, '');
+  LEGAL_SUFFIX.lastIndex = 0;                 // /g regex — reset before exec (stateful)
+  const first = LEGAL_SUFFIX.exec(t);
+  const suffix = first ? canonSuffix(first[0]) : '';
+  const head = first ? t.slice(0, first.index) : t;
+  const base = head.replace(/^\s*the\s+/, ' ').replace(/[^a-z0-9]/g, '');
   return { base, suffix };
 }
 
@@ -69,15 +82,20 @@ function normEntity(s) { return splitEntity(s).base; }
 
 /**
  * Do two ENTITY names refer to the same legal entity? The descriptive base must match
- * AND the legal form must be compatible: SAME form ("Maple Ridge LLC" == "Maple Ridge,
- * L.L.C."), OR the account side simply OMITTED the form ("Maple Ridge" == "Maple Ridge
- * LLC" — a borrower dropping "LLC"). A DIFFERENT form ("Maple Ridge Trust"/"…Inc" vs
- * "…LLC") is NOT a match → it falls through to new_entity (fatal). Biased to safety.
+ * AND the legal form must be COMPATIBLE: the SAME form ("Maple Ridge LLC" == "Maple
+ * Ridge, L.L.C."), OR EITHER side omitted it. The omission goes BOTH ways
+ * (owner-reported 2026-08-05): a stored vesting-LLC name is often just "Maple Ridge"
+ * while the borrower typed the full "Maple Ridge LLC" on the wire form — and the
+ * reverse (stored "Maple Ridge LLC" vs a borrower who dropped the form) already
+ * cleared. The old rule only allowed the ACCOUNT to omit the form, so the common
+ * "stored name has no LLC suffix" case wrongly flagged a false new entity. Only two
+ * DIFFERENT non-empty forms ("Maple Ridge Trust"/"…Inc" vs "…LLC") stay a real
+ * different entity → new_entity (fatal). Still biased to safety on that one case.
  */
 function entityMatch(accountName, llcName) {
   const a = splitEntity(accountName), b = splitEntity(llcName);
   if (!a.base || a.base !== b.base) return false;
-  return a.suffix === b.suffix || a.suffix === '';
+  return a.suffix === b.suffix || a.suffix === '' || b.suffix === '';
 }
 
 /** Alphabetic tokens of a name (lowercased), preserving single-letter initials. */
