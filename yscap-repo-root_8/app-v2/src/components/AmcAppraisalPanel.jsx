@@ -264,48 +264,60 @@ function Revisions({ appId, orderId }) {
     <div>
       {err ? <Banner tone="bad">{err}</Banner> : null}
       {rows.length ? (
-        <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {rows.map((r) => (
             <div key={r.id} style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 8 }}>
-              <div style={{ fontSize: 11, color: MUTED }}>{({ rov: 'Value dispute (ROV)', revision: 'Revision', sow_change: 'Scope-of-work change', other: 'From the AMC' }[r.kind] || r.kind)} · {r.status} · {fmtDate(r.created_at)}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{({ rov: 'Value dispute (ROV)', revision: 'Revision request', sow_change: 'Scope-of-work change', other: 'From the AMC' }[r.kind] || r.kind)} · {r.status} · {fmtDate(r.created_at)}</div>
               <div style={{ color: INK, whiteSpace: 'pre-wrap', fontSize: 13 }}>{r.body}</div>
             </div>
           ))}
         </div>
-      ) : <div style={{ color: MUTED, fontSize: 13, marginBottom: 10 }}>No revisions yet.</div>}
+      ) : <div style={{ color: MUTED, fontSize: 13, marginBottom: 12 }}>Nothing asked for yet.</div>}
 
-      {rov ? (
-        <div style={{ border: `1px solid ${GOLD}`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6, color: INK }}>Reconsideration of value</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-            <label style={{ fontSize: 12, color: MUTED }}>Appraised value<br />
-              <input value={rov.appraisedValue} onChange={(e) => setRov({ ...rov, appraisedValue: e.target.value })} inputMode="numeric"
-                style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
-            <label style={{ fontSize: 12, color: MUTED }}>Value you’re asking for<br />
-              <input value={rov.opinionValue} onChange={(e) => setRov({ ...rov, opinionValue: e.target.value })} inputMode="numeric"
-                style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
-          </div>
-          <div style={{ fontSize: 12, color: MUTED, marginBottom: 4 }}>Supporting sales from the Property Research Center ({rov.comps.length}):</div>
-          <div style={{ maxHeight: 150, overflowY: 'auto', marginBottom: 8 }}>
-            {rov.comps.length ? rov.comps.map((c, i) => (
-              <div key={i} style={{ fontSize: 12, color: INK, padding: '2px 0' }}>{i + 1}. {c.address || 'Comparable'} — {money(c.salePrice)} {c.saleDate ? ('on ' + c.saleDate) : ''}</div>
-            )) : <div style={{ fontSize: 12, color: MUTED }}>No comparable sales found in the research warehouse for this property yet.</div>}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn primary" disabled={busy} onClick={sendRov}>{busy ? '…' : 'Send dispute'}</button>
-            <button className="btn ghost" disabled={busy} onClick={() => setRov(null)}>Cancel</button>
-          </div>
+      {/* ── Feature 1: an ordinary revision / fix (a mistake, a correction, a scope change) ── */}
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+        <div style={{ fontWeight: 600, color: INK, marginBottom: 2 }}>Ask for a revision or a fix</div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
+          For a mistake the appraiser made, a correction, or a change to the scope of work. The appraiser fixes the report and sends it back — this does not change the value.
         </div>
-      ) : null}
-
-      <div style={{ marginTop: 6 }}>
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="Describe the revision or scope-of-work change…"
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="Describe what needs to be fixed or changed…"
           style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, color: INK, resize: 'vertical', boxSizing: 'border-box' }} />
         <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-          <button className="btn soft" disabled={busy || !text.trim()} onClick={() => sendRevision('revision')}>Request revision</button>
+          <button className="btn soft" disabled={busy || !text.trim()} onClick={() => sendRevision('revision')}>Request a revision</button>
           <button className="btn soft" disabled={busy || !text.trim()} onClick={() => sendRevision('sow_change')}>Scope-of-work change</button>
-          <button className="btn ghost" disabled={busy} onClick={openRov}>Dispute the value (ROV)…</button>
         </div>
+      </div>
+
+      {/* ── Feature 2: a reconsideration of value (ROV), backed by comps ── */}
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
+        <div style={{ fontWeight: 600, color: INK, marginBottom: 2 }}>Dispute the value (ROV)</div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
+          If you think the appraised value is too low, ask for a reconsideration of value. PILOT pulls comparable sales from the Property Research Center to back it up.
+        </div>
+        {rov ? (
+          <div style={{ border: `1px solid ${GOLD}`, borderRadius: 10, padding: 10 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <label style={{ fontSize: 12, color: MUTED }}>Appraised value<br />
+                <input value={rov.appraisedValue} onChange={(e) => setRov({ ...rov, appraisedValue: e.target.value })} inputMode="numeric"
+                  style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
+              <label style={{ fontSize: 12, color: MUTED }}>Value you’re asking for<br />
+                <input value={rov.opinionValue} onChange={(e) => setRov({ ...rov, opinionValue: e.target.value })} inputMode="numeric"
+                  style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: 6, color: INK, width: 130 }} /></label>
+            </div>
+            <div style={{ fontSize: 12, color: MUTED, marginBottom: 4 }}>Supporting sales from the Property Research Center ({rov.comps.length}):</div>
+            <div style={{ maxHeight: 150, overflowY: 'auto', marginBottom: 8 }}>
+              {rov.comps.length ? rov.comps.map((c, i) => (
+                <div key={i} style={{ fontSize: 12, color: INK, padding: '2px 0' }}>{i + 1}. {c.address || 'Comparable'} — {money(c.salePrice)} {c.saleDate ? ('on ' + c.saleDate) : ''}</div>
+              )) : <div style={{ fontSize: 12, color: MUTED }}>No comparable sales found in the research warehouse for this property yet.</div>}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn primary" disabled={busy} onClick={sendRov}>{busy ? '…' : 'Send dispute'}</button>
+              <button className="btn ghost" disabled={busy} onClick={() => setRov(null)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button className="btn ghost" disabled={busy} onClick={openRov}>Start a value dispute…</button>
+        )}
       </div>
     </div>
   );
