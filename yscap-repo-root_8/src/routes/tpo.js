@@ -85,15 +85,21 @@ router.use(requireAuth, requireTpo);
 
 // A TPO user IS a staff_users row, so an audited action logs as actor_kind
 // 'staff' (the only allowed value that carries their id); the `via:'tpo'` detail
-// marks it a broker action. Best-effort — logging must never fail an action.
+// marks it a broker action. When an INTERNAL staffer is inside a "view as TPO"
+// session (src/lib/tpo-view.js), the row also carries `impersonator_staff_id`
+// (db/320) so a broker action taken by a staffer is attributable to the real
+// human in the semantic trail too — the same "never silent" attribution the
+// borrower-view routes give (routes/borrower.js audit()). NULL for a real broker.
+// Best-effort — logging must never fail an action.
 async function tpoAudit(req, action, entityType, entityId, detail) {
   let d = detail; if (d != null && typeof d !== 'object') d = { note: String(d) };
   if (d && typeof d === 'object') d = { ...d, via: 'tpo' }; else d = { via: 'tpo' };
   try {
     await db.query(
-      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-      [req.actor.id, action, entityType, entityId || null, req.ip, req.get('user-agent') || null, d]);
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail,impersonator_staff_id)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7,$8)`,
+      [req.actor.id, action, entityType, entityId || null, req.ip, req.get('user-agent') || null, d,
+       (req.impersonation && req.impersonation.staffId) || null]);
   } catch (e) { console.warn('[tpo-audit] failed', action, db.describeError ? db.describeError(e) : (e && e.message)); }
 }
 

@@ -1209,6 +1209,13 @@ export const api = {
   borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
   borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
   borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
+  // TPO VIEW — the mirror of borrower view for the external brokerage portal: an
+  // AE/AM/admin steps into a broker's login. See src/lib/tpo-view.js.
+  tpoViewEligible: (q) => req('GET', '/api/tpo-view/eligible' + qs({ q })),
+  tpoViewStart:    (tpoUserId, applicationId) => req('POST', '/api/tpo-view/start', { tpoUserId, applicationId: applicationId || null }),
+  tpoViewSession:  () => req('GET', '/api/tpo-view/session'),
+  tpoViewExit:     () => req('POST', '/api/tpo-view/exit'),
+  tpoViewHistory:  (limit) => req('GET', '/api/tpo-view/history' + qs({ limit })),
 
   // ---- Research desk: the property / comparable / appraiser database ----------
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —

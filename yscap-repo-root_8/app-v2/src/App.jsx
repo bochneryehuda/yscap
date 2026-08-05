@@ -52,6 +52,7 @@ import StaffOrders from './screens/StaffOrders.jsx';
 import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
+import StaffTpoView from './screens/StaffTpoView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 // The research desk: the property / comparable / appraiser database (db/409) and
 // the build-your-own valuation grid (db/410).
@@ -249,6 +250,8 @@ export default function App() {
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
           <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
+          {/* Broker (TPO) view — pick one of your firms' brokers and see PILOT as they see it. */}
+          <Route path="/internal/tpo-view" element={<StaffPrivate><StaffTpoView /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           {/* Research desk — every staff role, no per-file scoping (owner-directed:
               "make it available for all the staff users to see all the things"). */}

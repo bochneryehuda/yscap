@@ -24,6 +24,7 @@ const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
 const borrowerView = require('../lib/borrower-view');
+const tpoView = require('../lib/tpo-view');
 const borrowerAssistant = require('../lib/borrower-assistant');
 const { randomInt } = require('crypto');
 
@@ -240,6 +241,7 @@ async function authenticate(req, res, next) {
         { borrowerViewEnded: 'revoked' });
     }
     req.impersonation = {
+      surface: 'borrower',
       staffId: impersonation.staffId,
       role: su.role || impersonation.role || null,
       name: su.full_name || null,
@@ -251,6 +253,51 @@ async function authenticate(req, res, next) {
     };
     // Best-effort heartbeat on the session register (never blocks the request).
     borrowerView.touchSession(impersonation.sessionId);
+  }
+  // TPO VIEW (src/lib/tpo-view.js): the exact mirror of borrower view for the
+  // external brokerage portal. The token is a real tpo access token (kind:'tpo',
+  // validated above) carrying the same impersonation envelope; the INTERNAL
+  // staffer behind it is re-validated HERE, on every request, so the view dies
+  // the moment the human behind it does — the same three ways as borrower view.
+  // The two envelopes are mutually exclusive (readImpersonation keys on the token
+  // kind), so at most one of these blocks ever fires for a given request.
+  const tpoImp = tpoView.readImpersonation(claims);
+  if (tpoImp) {
+    if (tpoView.sessionExpired(tpoImp)) {
+      tpoView.endSession(tpoImp.sessionId, 'expired');
+      return sessionDenied(req, res, 'tpo_view_ended', 'This broker view has ended. Sign in again to carry on.',
+        { tpoViewEnded: 'expired' });
+    }
+    let s;
+    try {
+      // The impersonator MUST be an INTERNAL staffer (is_external=false) — a
+      // broker can never step into another broker's login.
+      s = await db.query(
+        `SELECT token_version, role, permissions, is_active, full_name, email
+           FROM staff_users WHERE id=$1 AND is_external=false`,
+        [tpoImp.staffId]);
+    } catch (e) {
+      console.error('[auth] tpo-view staff check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    const su = s.rows[0];
+    if (!su || su.is_active === false || (su.token_version || 0) !== (tpoImp.staffTv || 0)) {
+      tpoView.endSession(tpoImp.sessionId, 'revoked');
+      return sessionDenied(req, res, 'tpo_view_ended', 'This broker view has ended. Sign in again to carry on.',
+        { tpoViewEnded: 'revoked' });
+    }
+    req.impersonation = {
+      surface: 'tpo',
+      staffId: tpoImp.staffId,
+      role: su.role || tpoImp.role || null,
+      name: su.full_name || null,
+      email: su.email || null,
+      sessionId: tpoImp.sessionId,
+      startedAt: tpoImp.startedAt,
+      staffTv: su.token_version || 0,
+      perms: perms.effectivePermissions(su.role, su.permissions),
+    };
+    tpoView.touchSession(tpoImp.sessionId);
   }
   // SECURITY: a deactivated staffer must lose access immediately. Deactivation
   // (admin toggle) doesn't bump token_version, so without this check an existing
@@ -309,12 +356,25 @@ async function authenticate(req, res, next) {
       // re-mints WITH the same envelope (same `impAt`), so the absolute cap above
       // still governs and the refresh simply keeps a live session alive.
       const fresh = req.impersonation
-        ? borrowerView.mintToken({
-            borrowerId: claims.sub, borrowerTv: tv,
-            staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
-            staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
-            startedAt: req.impersonation.startedAt,
-          })
+        // A tpo view must re-mint into a tpo-view token (never a borrower one),
+        // and a borrower view into a borrower-view token — always WITH the same
+        // envelope (same `impAt`), so the absolute cap keeps governing and the
+        // refresh only keeps a live session alive. Getting the surface wrong here
+        // would silently strip the envelope and turn a bounded, audited view into
+        // a permanent unattributed session on the wrong portal.
+        ? (req.impersonation.surface === 'tpo'
+            ? tpoView.mintToken({
+                tpoUserId: claims.sub, tpoTv: tv, tpoRole: r.rows[0].role || claims.role,
+                staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
+                staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
+                startedAt: req.impersonation.startedAt,
+              })
+            : borrowerView.mintToken({
+                borrowerId: claims.sub, borrowerTv: tv,
+                staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
+                staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
+                startedAt: req.impersonation.startedAt,
+              }))
         : claims.kind === 'staff'
           ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
           : claims.kind === 'tpo'
@@ -399,8 +459,13 @@ const tpoToken      = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'tpo', r
  * token and gets their own console session, without re-typing a password.
  */
 async function mintStaffSession(staffId) {
+  // is_external=false — an INTERNAL account only. mintStaffSession mints a
+  // kind:'staff' token, and an external TPO user must ONLY ever hold a kind:'tpo'
+  // token (the /exit callers already pass a validated internal impersonator id;
+  // this is defense-in-depth so the chokepoint can never mint a staff token for
+  // an external id, even if a future caller slips one in).
   const r = await db.query(
-    `SELECT role, token_version FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
+    `SELECT role, token_version FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`, [staffId]);
   if (!r.rows[0]) return null;
   return staffToken(staffId, r.rows[0].role, r.rows[0].token_version || 0);
 }

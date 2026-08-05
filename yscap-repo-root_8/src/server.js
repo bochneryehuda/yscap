@@ -328,6 +328,10 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// Same shape for a TPO VIEW — an internal AE/AM/admin stepped into a broker's
+// login. Inert unless the bearer token carries a tpo-view envelope. See
+// src/lib/tpo-view.js.
+app.use(require('./lib/tpo-view').guard);
 // Same shape for a BORROWER ASSISTANT — a standing helper login the borrower
 // authorized. Mounted above /auth so it can refuse the borrower credential
 // routes (/auth/logout bumps the BORROWER's token_version; /auth/mfa changes the
@@ -384,6 +388,9 @@ app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
+// Start / leave / audit a TPO (broker) view. Mounted outside /api/staff because
+// the leave + status calls are made while holding a TPO-kind token.
+app.use('/api/tpo-view', require('./routes/tpo-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));

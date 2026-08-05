@@ -107,7 +107,10 @@ export function AuthProvider({ children }) {
       }).catch(() => { if (live) setAssistantOf({ borrowerName: 'this borrower', helperName: null }); });
     } else {
       setPerms([]); setAssistantOf(null);
-      if (impersonation) {
+      // A tpo view (kind:'tpo' + impersonation) is NOT a borrower view — its
+      // banner self-fetches from /api/tpo-view/session, so we do not run the
+      // borrower /auth/me effect for it.
+      if (impersonation && actor?.kind === 'borrower') {
         // Name the borrower + the real staffer for the banner. `me` carries the
         // impersonation block for exactly this.
         api.me().then((r) => {
@@ -157,6 +160,32 @@ export function AuthProvider({ children }) {
     return false;
   }, []);
 
+  /* TPO VIEW — the exact mirror of borrower view for the broker portal. Step
+     INTO a broker's login: park the staff token, swap in the tpo-view token. */
+  const startTpoView = useCallback(async (tpoUserId, applicationId) => {
+    const r = await api.tpoViewStart(tpoUserId, applicationId);
+    stashStaffToken(getToken());          // park my own console session
+    setToken(r.token); setTok(r.token);
+    return r;
+  }, []);
+
+  /* Step back OUT of a broker view. Same handoff as borrower view: the server
+     mints a fresh staff token (authoritative), with the parked copy as the
+     offline fallback so a network blip never strands the staffer inside a
+     broker's portal. */
+  const exitTpoView = useCallback(async () => {
+    let staffToken = '';
+    try {
+      const r = await api.tpoViewExit();
+      staffToken = r?.token || '';
+    } catch { /* fall through to the parked token */ }
+    if (!staffToken) staffToken = readStaffToken();
+    stashStaffToken('');
+    if (staffToken) { setToken(staffToken); setTok(staffToken); return true; }
+    clearToken(); setTok('');
+    return false;
+  }, []);
+
   return (
     <Ctx.Provider value={{
       token,
@@ -171,11 +200,16 @@ export function AuthProvider({ children }) {
       can,
       signIn, signOut,
       // Borrower view: truthy whenever this session is a staffer standing
-      // inside a borrower's portal.
+      // inside a BORROWER's portal (kind:'borrower' + an impersonation envelope).
+      // A tpo view carries the same envelope on a kind:'tpo' token, so key on the
+      // kind too — the two surfaces are distinct.
       impersonation,
-      isBorrowerView: !!impersonation,
+      isBorrowerView: actor?.kind === 'borrower' && !!impersonation,
       viewingAs,
       startBorrowerView, exitBorrowerView,
+      // TPO view: a staffer standing inside a BROKER's portal.
+      isTpoView: isTpo && !!impersonation,
+      startTpoView, exitTpoView,
       // Borrower helper (assistant): truthy when this is a helper login, plus who
       // they are helping (for the banner). Drives the PII banner + sign disabling.
       isAssistant,

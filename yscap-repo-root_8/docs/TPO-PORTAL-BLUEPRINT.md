@@ -274,9 +274,41 @@ internal workflow condition.
      `…/draws/report` forces `mode='borrower'`. Front end: `TpoDraws.jsx` (slim
      read-only; photos blob-fetched with auth); `TpoFile` mounts a Draws card. Test
      `scripts/test-tpo-draws-db.js`.
+   - **Phase 6c — AE/AM "view as TPO" (the impersonation feature) ✅ (BUILT).** An
+     internal account executive / account manager / admin steps INTO a broker's
+     login and sees exactly what the broker sees — the EXACT mirror of staff
+     "borrower view" (src/lib/borrower-view.js), one identity swapped. The token is
+     a real `kind:'tpo'` access token + the same impersonation envelope; the
+     INTERNAL staffer behind it is re-validated on every request (still active,
+     is_external=false, token_version unchanged, session inside its 4h absolute
+     cap), so the view dies the moment the staffer logs out / is deactivated, the
+     firm is suspended (bumps the broker's tv), or the cap elapses. Firm isolation
+     is the #1 risk and is enforced by `ELIGIBLE_TPO_SQL` reusing the SAME
+     `permissions.visibleOfficersSql` file scope: a staffer reaches a broker only
+     when that broker's FIRM has a file they can already open (the AE/AM match comes
+     through the assignee/workflow terms; on a TPO file loan_officer_id is the
+     broker, so a staffer never matches through it), OR `see_all_files`. The broker
+     must be an active external user at an ACTIVE firm; the impersonator MUST be
+     internal (an external broker can never start a view). Blocklist (the tiny
+     borrower-view-style set, minus a moot term-sheet-send since a broker can't
+     send): **order credit** (a live Xactus pull = an irreversible hard inquiry in
+     the broker's name — the TPO analogue of the e-sign block), `/auth/logout`,
+     `/auth/mfa/*`, and nesting. Everything else is full parity, audited with the
+     real staffer's id (`impersonator_staff_id`; the tpo user audits as
+     `actor_kind='staff'`). `src/lib/tpo-view.js` + `src/routes/tpo-view.js`
+     (`/api/tpo-view/{eligible,start,session,exit,history}`, mounted outside
+     /api/staff so session/exit work with a tpo token) + `tpoView.guard` +
+     `db/478_tpo_view_sessions.sql`. Auth: the tpo-view impersonation block in
+     `authenticate()`, `req.impersonation.surface` distinguishing the two view
+     surfaces so the sliding refresh re-mints a tpo-view token into another tpo-view
+     token (never a borrower one). Front end: `StaffTpoView.jsx` picker at
+     `/internal/tpo-view` (nav "Broker view"), `TpoViewBanner.jsx` mounted in
+     `TpoLayout` (self-fetches from `/api/tpo-view/session`), `startTpoView`/
+     `exitTpoView`/`isTpoView` in `auth.jsx`. Tests `scripts/test-tpo-view-pure.js`
+     + `scripts/test-tpo-view-db.js`.
    - **STILL DEFERRED in Phase 6:** draw ACCEPT/DISPUTE (a borrower money decision —
      needs an owner confirmation of broker authority, esp. on a portal-disabled TPO
-     file), messaging, and the AE/AM "view as TPO" impersonation feature above.
+     file), and messaging.
 
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 

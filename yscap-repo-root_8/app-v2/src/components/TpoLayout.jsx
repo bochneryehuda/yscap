@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { Brand } from './Layout.jsx';
+import TpoViewBanner from './TpoViewBanner.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 
 /* Shell for the broker (TPO) portal — the lightweight external surface. Modeled
@@ -12,7 +13,7 @@ import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
    a firm admin (who can invite their own processors). No borrower notifications
    or chat bubble here — those are borrower endpoints a tpo token cannot reach. */
 export default function TpoLayout({ children }) {
-  const { signOut } = useAuth();
+  const { signOut, isTpoView, exitTpoView } = useAuth();
   const nav = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [me, setMe] = useState(null);   // { firm:{name,status}, is_firm_admin, full_name }
@@ -27,9 +28,16 @@ export default function TpoLayout({ children }) {
   const firmName = me?.firm?.name || 'Broker portal';
   const isFirmAdmin = !!me?.is_firm_admin;
 
+  // While an internal staffer is inside a broker view, the whole shell gets the
+  // gold hairline (so even a screenshot reads as "this is a view") and the way
+  // out is "Back to my console", not "Sign out" (which would try to log the real
+  // broker out — the guard blocks it, but locally it would strand the staffer).
+  const leaveView = async () => { const ok = await exitTpoView(); nav(ok ? '/internal/tpo-view' : '/internal/login', { replace: true }); };
+
   return (
-    <div className="shell">
+    <div className={`shell${isTpoView ? ' shell-bview' : ''}`}>
       <StaleBuildBanner stale={staleBuild} />
+      <TpoViewBanner />
       <header className="header">
         <div className="wrap">
           <Brand to="/tpo" console={firmName} ariaLabel="PILOT by YS Capital — Broker portal" />
@@ -41,7 +49,9 @@ export default function TpoLayout({ children }) {
             <NavLink to="/tpo/borrowers">Borrowers</NavLink>
             <NavLink to="/tpo/new">Enter a loan</NavLink>
             {isFirmAdmin && <NavLink to="/tpo/team" title="Your firm's users — invite your processors">Team</NavLink>}
-            <button className="btn ghost small" onClick={() => { signOut(); nav('/tpo/login'); }}>Sign out</button>
+            {isTpoView
+              ? <button className="btn ghost small" onClick={leaveView}>← Back to my console</button>
+              : <button className="btn ghost small" onClick={() => { signOut(); nav('/tpo/login'); }}>Sign out</button>}
           </nav>
         </div>
       </header>
