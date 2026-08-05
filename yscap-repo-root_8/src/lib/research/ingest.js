@@ -85,7 +85,15 @@ const ID = require('./identity');
 //     `design_style`. Without this bump every stored observation keeps
 //     `identity_basis` NULL, which scores 0 in `identityRank` and collapses the
 //     new best-sourced roll-up back into plain recency on the whole back book.
-const INGEST_VERSION = 5;
+// 6 — a comparable with a thin address is no longer DROPPED (see
+//     `fileComparableProperty`): a comp missing only its town borrows the subject's,
+//     and one with no house number is kept for review. Without this bump the whole
+//     back book keeps the comparable sales it already over-dropped — which is the
+//     owner's actual complaint ("way too many skipped") — so the boot back-fill
+//     must re-ingest every report to salvage them (re-ingest retires + re-files, so
+//     it is idempotent and self-draining). Manual uploads do not store their bytes,
+//     so those are healed by re-dropping the same files (idempotent on the sha).
+const INGEST_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -2701,7 +2709,9 @@ async function ingestStatus(db) {
     `SELECT (SELECT count(*)::int FROM appraisals) AS appraisals,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='ok' AND ingest_version >= $1) AS ingested,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='error') AS failed,
-            (SELECT count(*)::int FROM properties) AS properties,
+            -- Searchable properties only, so "warehouse size" matches what a search
+            -- over the same corpus returns (kept-for-review rows are excluded there).
+            (SELECT count(*)::int FROM properties WHERE needs_review = false) AS properties,
             (SELECT count(*)::int FROM property_observations) AS observations,
             (SELECT count(*)::int FROM property_sales) AS sales,
             (SELECT count(*)::int FROM appraisers) AS appraisers`, [INGEST_VERSION]);

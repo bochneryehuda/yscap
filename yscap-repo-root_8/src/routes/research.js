@@ -179,12 +179,15 @@ router.get('/stats', async (req, res, next) => {
   try {
     const status = await ingest.ingestStatus(db);
     const spread = (await db.query(
+      // A kept-for-review property (a comp with an unusable address) is out of the
+      // ordinary search, so it must be out of the warehouse-size counts too — else
+      // the headline total is larger than any search over the same corpus.
       `SELECT count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale,
               count(*) FILTER (WHERE photo_count > 0)::int AS with_photo,
               count(DISTINCT state)::int AS states,
               count(DISTINCT (state || '|' || lower(coalesce(city,''))))::int AS cities,
               min(last_sale_date) AS earliest_sale, max(last_sale_date) AS latest_sale
-         FROM properties`)).rows[0];
+         FROM properties WHERE needs_review = false`)).rows[0];
     const skipped = (await db.query(
       `SELECT COALESCE(sum(rows_skipped),0)::int AS n FROM property_ingest_log`)).rows[0].n;
     res.json({ ...status, ...spread, rows_skipped: skipped });
@@ -409,7 +412,11 @@ router.get('/appraisers/:id', async (req, res, next) => {
 async function ratesFor(query) {
   const params = [];
   const where = ["o.role = 'comparable'", "COALESCE(o.sale_status,'closed') = 'closed'",
-    'o.sale_price IS NOT NULL'];
+    'o.sale_price IS NOT NULL',
+    // A kept-for-review property has an unverified address; its sale must not feed
+    // the per-foot rate math (and could otherwise double-count a sale that also
+    // exists under a real key). Same exclusion the property search applies.
+    'COALESCE(p.needs_review, false) = false'];
   const P = (v) => { params.push(v); return '$' + params.length; };
   // A MARKET HAS TO BE NAMED. Every geographic predicate below is appended only
   // when supplied, so with none of them the WHERE degrades to the three base
@@ -825,10 +832,14 @@ router.get('/comps', async (req, res, next) => {
       const town = subject.city || null, st = subject.state || null, zp = subject.zip || null;
       if (town || st || zp) {
         const c = (await db.query(
+          // Count only searchable properties, so this "how much do we hold here"
+          // figure matches what the comp search over the same area would return —
+          // kept-for-review rows are excluded there and must be excluded here.
           `SELECT count(*)::int AS properties,
                   count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale
              FROM properties
-            WHERE ($1::text IS NULL OR state = $1)
+            WHERE needs_review = false
+              AND ($1::text IS NULL OR state = $1)
               AND ($2::text IS NULL OR lower(city) = lower($2))
               AND ($3::text IS NULL OR zip = $3)`, [st, town, zp])).rows[0];
         coverage = { town, state: st, zip: zp,

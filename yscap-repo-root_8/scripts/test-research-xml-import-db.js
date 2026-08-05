@@ -448,6 +448,19 @@ const propByAddress = async (street) => (await db.query(
     ok(withReview.rows.some((r) => r.id === (reviewProp && reviewProp.id)),
       'but include_review surfaces it for someone working through the review list');
 
+    // AND ITS SALE NEVER FEEDS THE PER-FOOT RATE MATH. deriveMarketRates joins
+    // observations to properties; without the needs_review exclusion an unverifiable
+    // address would price the market (and double-count a sale also under a real key).
+    // This mirrors that query's WHERE exactly, over the two salvage comps.
+    const rateCorpus = (await db.query(
+      `SELECT count(*)::int n
+         FROM property_observations o JOIN properties p ON p.id = o.property_id
+        WHERE o.role = 'comparable' AND COALESCE(o.sale_status,'closed') = 'closed'
+          AND o.sale_price IS NOT NULL AND COALESCE(p.needs_review, false) = false
+          AND lower(p.city) = lower($1) AND o.sale_price IN (401000, 402000)`, [TOWN])).rows[0].n;
+    ok(rateCorpus === 1,
+      'the rate corpus includes the town-borrowed comp\'s sale but NOT the kept-for-review one');
+
     // Re-importing the SAME report updates the kept-for-review row in place — the
     // per-report key means it never piles up a second copy.
     const salv2 = await XI.importXml(D, { xml: base({ street: '61 Salvage Rd', effectiveDate: '2026-06-20', signedDate: '2026-06-21',
