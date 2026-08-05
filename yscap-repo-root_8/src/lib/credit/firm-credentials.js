@@ -18,8 +18,59 @@
  * at the moment of a pull; it is never logged (provider.scrubCredentials strips the
  * ACTIVE login from every error/log line).
  */
+const net = require('net');
 const db = require('../../db');
 const C = require('../crypto');
+
+// A firm's Xactus endpoint is always a PUBLIC vendor host, and both the firm's
+// password AND the borrower's SSN/PII get POSTed to it on a pull. So the set-time
+// validation refuses an endpoint that points at a private / loopback / link-local /
+// cloud-metadata host, or that smuggles credentials in the link itself — an SSRF /
+// egress guard on top of the https-only check. This door is platform_setup-gated
+// (internal super-admin), but a credential+PII egress endpoint earns the guard.
+// It is the ONLY writer of the endpoint column, so guarding it here means a private
+// endpoint can never reach the DB (and therefore never reach a pull/test).
+function isPrivateIpLiteral(host) {
+  const fam = net.isIP(host);
+  if (fam === 4) {
+    const p = host.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 169 && p[1] === 254) return true;                // link-local + metadata 169.254.169.254
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;   // CGNAT
+    return false;
+  }
+  if (fam === 6) {
+    const l = host.toLowerCase();
+    if (l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || l.startsWith('fe80')) return true;
+    // IPv4-mapped IPv6 — dotted (::ffff:192.168.0.1) OR hex (::ffff:c0a8:1, the form
+    // the URL parser normalizes to). Re-run the IPv4 rules on the embedded address.
+    const md = l.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (md) return isPrivateIpLiteral(md[1]);
+    const mh = l.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mh) {
+      const hi = parseInt(mh[1], 16), lo = parseInt(mh[2], 16);
+      return isPrivateIpLiteral(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
+    }
+    return false;
+  }
+  return false;  // not an IP literal — a hostname; the host checks below handle localhost
+}
+// `u` is always a WHATWG `URL`, whose host parser NORMALIZES every alternate IPv4
+// encoding the OS resolver accepts — a bare 32-bit integer (2130706433), hex
+// (0x7f000001), octal octets (0177.0.0.1) — to canonical dotted form on `.hostname`
+// BEFORE we see it. So a plain literal check on `.hostname` already covers those
+// bypasses (verified: `new URL('https://2130706433/').hostname === '127.0.0.1'`);
+// no inet_aton parsing is needed here.
+function unsafeEndpointReason(u) {
+  if (u.username || u.password) return 'The Xactus web address must not carry a username or password in the link itself.';
+  const host = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host) return 'The Xactus web address is missing a host.';
+  if (host === 'localhost' || host === 'localhost.' || host.endsWith('.localhost')) return 'The Xactus web address can’t point at localhost.';
+  if (isPrivateIpLiteral(host)) return 'The Xactus web address can’t point at a private or internal address.';
+  return null;
+}
 
 // ── RESOLVE (read; returns the decrypted login for a pull, or null → use ours) ──
 
@@ -91,6 +142,8 @@ async function setForFirm(firmId, creds = {}, actorId = null, dbc = db) {
   let u;
   try { u = new URL(endpoint); } catch (_) { throw badRequest('The Xactus web address must be a full link starting with https://.'); }
   if (u.protocol !== 'https:') throw badRequest('The Xactus web address must start with https://.');
+  const unsafe = unsafeEndpointReason(u);
+  if (unsafe) throw badRequest(unsafe);
   const authMode = /^query$/i.test(String(creds.authMode || '').trim()) ? 'query' : 'basic';
   const enc = C.encryptSecret(password);
   if (!enc) throw badRequest('Could not secure the password — check the encryption key is configured.');
@@ -146,5 +199,5 @@ async function statusForFirm(firmId, dbc = db) {
 module.exports = {
   resolveForApplication, resolveForFirm,
   setForFirm, setActiveForFirm, clearForFirm, statusForFirm,
-  _internals: { credsFromRow },
+  _internals: { credsFromRow, unsafeEndpointReason, isPrivateIpLiteral },
 };

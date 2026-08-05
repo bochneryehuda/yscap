@@ -83,5 +83,32 @@ ok(firmCreds._internals.credsFromRow({ ...row, endpoint: '' }) === null,
   'credsFromRow returns null on an incomplete row');
 ok(firmCreds._internals.credsFromRow(null) === null, 'credsFromRow(null) → null');
 
+// ── SSRF / egress guard on the firm endpoint (the firm password + borrower PII are
+//    POSTed to it, so a private/loopback/metadata host or an embedded credential is
+//    refused at set-time — the ONLY writer of the endpoint column) ──
+const bad = firmCreds._internals.unsafeEndpointReason;
+for (const [label, link] of [
+  ['loopback 127.0.0.1', 'https://127.0.0.1/uaweb/mismo3'],
+  ['localhost', 'https://localhost/uaweb'],
+  ['cloud metadata 169.254.169.254', 'https://169.254.169.254/latest/meta-data'],
+  ['private 10.x', 'https://10.0.0.5/x'],
+  ['private 192.168.x', 'https://192.168.1.1/x'],
+  ['CGNAT 100.64.x', 'https://100.64.0.1/x'],
+  ['IPv6 loopback', 'https://[::1]/x'],
+  ['IPv4-mapped IPv6 private', 'https://[::ffff:192.168.0.1]/x'],
+  ['credentials in URL', 'https://user:secret@phoenix.xactus.example/uaweb'],
+  // alternate IPv4 encodings the WHATWG URL parser normalizes to dotted before we see them
+  ['decimal-integer loopback', 'https://2130706433/x'],       // → 127.0.0.1
+  ['hex-integer loopback', 'https://0x7f000001/x'],           // → 127.0.0.1
+  ['octal-octet loopback', 'https://0177.0.0.1/x'],           // → 127.0.0.1
+  ['decimal-integer metadata', 'https://2852039166/x'],       // → 169.254.169.254
+]) {
+  ok(typeof bad(new URL(link)) === 'string', `unsafeEndpointReason refuses ${label}`);
+}
+// A real PUBLIC vendor host (and a public IP) must PASS the guard.
+ok(bad(new URL('https://phoenix.xactus.example/uaweb/mismo3/')) === null, 'unsafeEndpointReason allows a public vendor host');
+ok(bad(new URL('https://8.8.8.8/uaweb')) === null, 'unsafeEndpointReason allows a public IP');
+ok(firmCreds._internals.isPrivateIpLiteral('vendor.xactus.example') === false, 'isPrivateIpLiteral(hostname) is false (not an IP literal)');
+
 console.log(`\ntest-tpo-own-xactus-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -154,6 +154,10 @@ function call(server, method, p, token, body) {
     // a bad payload is a clean 400 (not a 500)
     const bad = await call(server, 'PUT', `/api/admin/tpo/firms/${firmA}/credit-credentials`, adminTok, { endpoint: 'not-a-url', username: 'x', password: 'y' });
     ok(bad.status === 400, 'an invalid endpoint is refused with a clean 400');
+    // SSRF/egress guard: an endpoint at a private/internal host is refused (400) — the
+    // firm password + borrower PII would otherwise be POSTed to it.
+    const ssrf = await call(server, 'PUT', `/api/admin/tpo/firms/${firmA}/credit-credentials`, adminTok, { endpoint: 'https://169.254.169.254/latest', username: 'x', password: 'y' });
+    ok(ssrf.status === 400, 'a private/internal endpoint host is refused with a 400 (SSRF guard)');
     // a non-existent firm → 404
     const nf = await call(server, 'GET', `/api/admin/tpo/firms/00000000-0000-0000-0000-000000000000/credit-credentials`, adminTok);
     ok(nf.status === 404, 'an unknown firm id → 404');
