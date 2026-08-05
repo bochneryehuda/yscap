@@ -88,6 +88,21 @@ ok(typeof LE.requestConditionWaiver === 'function', 'requestConditionWaiver is e
     'the waive is scoped to THIS exception’s file — a mis-pointed row can never reach another file’s condition');
   ok(/condition_waiver_decided/.test(src),
     'the decision notifies the file team (never falling through to the esign-worded branch)');
+  ok(/e\.code === '23514'/.test(src),
+    'a DB guard refusing the waive is a legible 422, not an opaque 500');
+}
+
+// ---- SOURCE: the SOW budget guard steps aside for a deliberate waive/override
+{
+  const sql = fs.readFileSync(R + '/db/469_sow_guard_waive_override_aware.sql', 'utf8');
+  ok(/NEW\.waived_by IS NOT NULL OR NEW\.override_by IS NOT NULL/.test(sql),
+    'db/469: a waive/override stamp lets the write past the SOW budget guard (so "waive any condition" works on the budget condition too)');
+  ok(/an ordinary sign-off has NEITHER/i.test(sql),
+    'db/469: an ordinary SIGN-OFF still has NEITHER stamp, so the balance check still fully applies to it');
+  // The bypass must sit AFTER the is_budget gate and BEFORE the balance RAISEs.
+  const bypassIdx = sql.indexOf('NEW.waived_by IS NOT NULL OR NEW.override_by IS NOT NULL');
+  const raiseIdx = sql.indexOf('must match to the cent');
+  ok(bypassIdx > 0 && raiseIdx > bypassIdx, 'db/469: the bypass precedes the to-the-cent balance checks');
 }
 
 console.log(`condition-waiver: ${pass} checks passed`);

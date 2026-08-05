@@ -415,7 +415,17 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
     } catch (_) { /* best-effort */ }
 
     res.json({ ok: true, exception: row });
-  } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
+  } catch (e) {
+    // A DB guard (e.g. the SOW budget trigger) refusing the write is a legible
+    // 422, not an opaque 500 — the decider needs to know WHY it couldn't clear.
+    // (db/469 lets a waive/override past the SOW guard, so this is a backstop for
+    // any other guard that might refuse a condition_waiver's satisfied-write.)
+    if (e && e.code === '23514') {
+      const m = String(e.message || '').replace(/^.*?:\s*/, '');
+      return res.status(422).json({ error: m || 'A file rule blocked this — the condition can’t be cleared as-is.' });
+    }
+    res.status(500).json({ error: 'could not record the decision' });
+  }
 });
 
 // Clear (archive / close out) a HANDLED exception. A super-admin can clear any;
