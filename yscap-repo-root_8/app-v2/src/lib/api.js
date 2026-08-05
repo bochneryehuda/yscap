@@ -433,6 +433,15 @@ export const api = {
   // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
   tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
   tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
+  // Phase 6b — the read-only DRAW view (construction-draw progress); same borrower-safe scrub.
+  tpoDraws: (appId) => req('GET', `/api/tpo/applications/${appId}/draws`),
+  // A photo url from the draws payload is a firm-scoped /api/tpo/draw-media path — blob-fetched WITH
+  // auth (an <img src> can't send the token), exactly like the appraisal photos.
+  tpoDrawMediaBlob: async (url) => (await download(url)).blob,
+  tpoDrawReport: async (appId, drawId, win) => {
+    try { const { blob, filename } = await download(`/api/tpo/applications/${appId}/draws/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),

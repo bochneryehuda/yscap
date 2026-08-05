@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import TpoDraws from '../components/TpoDraws.jsx';
 
 /* A single TPO file — the loan's basics, PRICE & register the deal (the Term
    Sheet Studio), the conditions we need, the documents provided, and the
@@ -262,6 +263,17 @@ export default function TpoFile() {
           The property report once the appraisal is in. Read-only — your loan team handles the review.
         </p>
         <AppraisalPanel appId={id} readOnly source="tpo" />
+      </div>
+
+      {/* Draws — the read-only construction-draw view: the budget vs. what's released, each
+          inspection result + photos, and the branded PDF. Read-only; the borrower accepts or
+          disputes an inspection result in their own portal (or your loan team handles it). */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Construction draws</div>
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
+          The draw progress once construction is under way. Read-only — the borrower accepts or disputes each result.
+        </p>
+        <TpoDraws appId={id} />
       </div>
 
       {/* Documents */}

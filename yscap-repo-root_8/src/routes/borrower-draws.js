@@ -21,7 +21,7 @@ const db = require('../db');
 const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
-const APPROVAL = require('../sitewire/approval');   // the ONE wording for what is netted out
+const borrowerSafeDraws = require('../sitewire/borrower-safe-draws'); // ONE borrower-safe draw scrub (shared with the TPO surface)
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
@@ -116,32 +116,13 @@ router.get('/draws/:appId/rollup', async (req, res) => {
   try {
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
-    const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
-    for (const l of rollup.lines) l.label = scrub(l.label);
-    // THE BORROWER SEES WHAT THEY WILL ACTUALLY BE PAID (owner-directed 2026-08-03: "yes add the
-    // released amount to the borrower screen too"). Their own PDF report has shown the draw fee and
-    // the net since the earlier fee ruling; the SCREEN still said only "the inspector approved
-    // $25,000" and never the $24,701 that lands in their account — so the two surfaces disagreed
-    // about the one number they care about most. The per-draw money now rides through.
-    //
-    // TWO THINGS ARE STILL STRIPPED, and they are a different kind of secret:
-    //   · `fee_kind`        — describes OUR fee schedule (which inspection tier priced this draw),
-    //                         not their money. Nothing on their screen needs it.
-    //   · `net_explanation` — the rollup builds the STAFF sentence ("… = $24,701 net release",
-    //                         plus a note about the fee becoming final when the release is
-    //                         recorded). It is replaced below with the BORROWER wording from the
-    //                         same one definition, so their screen and their PDF can never phrase
-    //                         the same deduction differently.
-    // `rollup.fees` — our fee income ACROSS the project — stays deleted below and always will be.
-    if (Array.isArray(rollup.draws)) {
-      rollup.draws = rollup.draws.map((d) => {
-        const { fee_kind, net_explanation, ...safe } = d;
-        safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
-        return safe;
-      });
-    }
-    // Our fee income on this project is never borrower-facing.
-    delete rollup.fees;
+    // Borrower-safe strip (the ONE definition, shared with the TPO surface): scrub SOW-line labels,
+    // drop the per-draw `fee_kind` (our fee schedule) + the STAFF `net_explanation` — re-adding the
+    // BORROWER wording so the screen and the PDF phrase the deduction the same way — and delete
+    // `rollup.fees` (our fee income across the project is never borrower/broker-facing). The
+    // per-draw money the borrower WILL be paid (net release / released) stays (owner-directed
+    // 2026-08-03: "add the released amount to the borrower screen too").
+    const rollup = borrowerSafeDraws.borrowerSafeRollup(await rollupMod.loadRollup(db, req.params.appId, { sowState }));
     res.json({ rollup });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
@@ -248,38 +229,15 @@ router.post('/draws/:appId/request', async (req, res) => {
 router.get('/draws/:appId/findings', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-  const findings = (await db.query(
-    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at, reply_token,
-            EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=draw_findings.sitewire_draw_id AND dd.kind='draw' AND dd.funded_status='released') AS released
-       FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [req.params.appId])).rows;
-  const out = [];
-  for (const f of findings) {
-    // Durable inspector media (PILOT's own stored copies) grouped by the draw line — served via the
-    // borrower's OWN reply_token so an <img>/<video> tag works without an auth header, and the
-    // thumbnail never breaks when Sitewire's pre-signed link expires. GPS is already stripped at archive.
-    const durable = (await db.query(
-      `SELECT id, sitewire_request_id, kind FROM draw_media WHERE sitewire_draw_id=$1 AND kind IN ('image','video') ORDER BY id`, [f.sitewire_draw_id])).rows;
-    const durByReq = new Map();
-    for (const m of durable) { const k = String(m.sitewire_request_id); if (!durByReq.has(k)) durByReq.set(k, []); durByReq.get(k).push({ url: f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null, kind: m.kind }); }
-    const lines = (await db.query(
-      `SELECT id, sitewire_request_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
-         FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows
-      // scrub every free-text field a capital-partner name could hide in — including each inspection
-      // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection
-      // evidence) but drop the media GPS lat/lng. lender_comments is a staff-leaning field the borrower
-      // never needs — not selected at all above. `photos` = durable copies (preferred by the UI).
-      .map((l) => ({
-        ...l,
-        name: scrub(l.name),
-        inspector_comments: scrub(l.inspector_comments),
-        photos: (durByReq.get(String(l.sitewire_request_id)) || []).filter((p) => p.url),
-        media: Array.isArray(l.media) ? l.media.map((m) => { if (!m || typeof m !== 'object') return m; const { lat, lng, ...mm } = m; return { ...mm, note: scrub(mm.note) }; }) : l.media,
-      }));
-    // don't leak the raw token as a top-level field; the per-line photo URLs already embed it.
-    const { reply_token, ...fSafe } = f;
-    out.push({ ...fSafe, lines });
-  }
-  res.json({ findings: out });
+    // The ONE borrower-safe findings load (shared with the TPO surface). Photos are served through
+    // the borrower's OWN per-finding reply_token so an <img>/<video> tag works without an auth header
+    // and never breaks when Sitewire's pre-signed link expires; the module never returns the token
+    // itself. (The TPO surface passes a firm-scoped media URL instead — the reply_token, which ALSO
+    // permits accept/dispute, must never reach a read-only broker.)
+    const out = await borrowerSafeDraws.loadDrawFindings(db, req.params.appId, {
+      photoUrl: (f, m) => (f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null),
+    });
+    res.json({ findings: out });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 

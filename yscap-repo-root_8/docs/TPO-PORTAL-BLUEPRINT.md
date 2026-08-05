@@ -255,8 +255,28 @@ internal workflow condition.
      `appraisal_photos → appraisals → applications` firm-scope join (never a
      download-any-document hole). Front end: `AppraisalPanel` gained a `source='tpo'`
      channel; `TpoFile` mounts an Appraisal card. Test `scripts/test-tpo-appraisal-db.js`.
-   - **STILL DEFERRED in Phase 6:** draws (view/accept/dispute), messaging, and the
-     AE/AM "view as TPO" impersonation feature above.
+   - **Phase 6b — the borrower-safe DRAW view ✅ (BUILT), READ-ONLY.** A broker SEES
+     the SAME borrower-safe construction-draw picture the borrower sees — the budget
+     vs. what's released, the per-line rollup, each inspection result + its photos, and
+     the branded PDF — and takes NO action (accept/dispute starts a wire, a borrower
+     money decision, deferred). The borrower's inline draw scrub was extracted to the
+     single shared `src/sitewire/borrower-safe-draws.js` (`borrowerSafeRollup` — drops
+     `rollup.fees` [our fee income] + per-draw `fee_kind` [our fee schedule] + the staff
+     `net_explanation`; `loadDrawFindings` — scrubs line name / inspector comment / media
+     note of a partner name, drops media GPS; `loadDrawList`), which BOTH
+     `routes/borrower-draws.js` (byte-identical, proven by the borrower draw tests) and
+     the new `GET /api/tpo/applications/:id/draws` (firm-scoped via `appInFirm`) use.
+     **THE PHOTOS ARE FIRM-SCOPED, NOT THE reply_token** — the borrower's per-finding
+     `reply_token` is a public capability that ALSO permits accept/dispute (a wire), so
+     it NEVER reaches the broker; `loadDrawFindings` takes a `photoUrl` callback and the
+     TPO surface passes `/api/tpo/draw-media/:id` (authorized via `draw_media →
+     applications` firm scope, image/video only, `setMediaHeaders`), never the token.
+     `…/draws/report` forces `mode='borrower'`. Front end: `TpoDraws.jsx` (slim
+     read-only; photos blob-fetched with auth); `TpoFile` mounts a Draws card. Test
+     `scripts/test-tpo-draws-db.js`.
+   - **STILL DEFERRED in Phase 6:** draw ACCEPT/DISPUTE (a borrower money decision —
+     needs an owner confirmation of broker authority, esp. on a portal-disabled TPO
+     file), messaging, and the AE/AM "view as TPO" impersonation feature above.
 
 ## 6. Cross-cutting Phase-2+ TODOs (do NOT forget)
 

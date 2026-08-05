@@ -42,6 +42,10 @@ const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
 const { serveDocument } = require('../lib/serve-document');
 const { buildBorrowerSafeAppraisalView } = require('../lib/appraisal/borrower-safe-view');
+const rollupMod = require('../sitewire/rollup');
+const borrowerSafeDraws = require('../sitewire/borrower-safe-draws'); // ONE borrower-safe draw scrub (shared with the borrower surface)
+const drawReport = require('../sitewire/draw-report');
+const { setMediaHeaders } = require('../lib/media-headers');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 
@@ -1179,6 +1183,87 @@ router.get('/appraisal-photo/:docId', async (req, res, next) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     const doc = { ...r.rows[0], filename: typeof r.rows[0].filename === 'string' ? scrubText(r.rows[0].filename) : r.rows[0].filename };
     return serveDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) { next(e); }
+});
+
+// ── Phase 6b — a broker VIEWS the draws (the construction-draw progress), READ-ONLY ──
+// A broker SEES the same borrower-safe draw picture the BORROWER sees — the construction budget vs
+// what's released, the per-line rollup, each inspection result + its photos, and the branded PDF —
+// and can take NO action on it (accept/dispute starts a wire, a borrower money decision, deferred to
+// a later increment with the owner). The borrower-safe payload is the SINGLE shared definition in
+// sitewire/borrower-safe-draws.js, so it can never drift from the borrower surface and can never leak
+// OUR fee income / fee schedule or a capital-partner name to an external broker. Firm-scoped.
+//
+// PHOTOS are served through the firm-scoped /api/tpo/draw-media route below — NOT the borrower's
+// per-finding reply_token, which is a PUBLIC capability that also permits accept + dispute. A
+// read-only broker must never receive that token.
+router.get('/applications/:id/draws', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const appId = req.params.id;
+    let sowState = null;
+    try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
+    const rollup = borrowerSafeDraws.borrowerSafeRollup(await rollupMod.loadRollup(db, appId, { sowState }));
+    const findings = await borrowerSafeDraws.loadDrawFindings(db, appId, { photoUrl: (f, m) => `/api/tpo/draw-media/${m.id}?inline=1` });
+    const draws = await borrowerSafeDraws.loadDrawList(db, appId);
+    const has = !!(rollup && rollup.project && rollup.project.budget > 0);
+    res.json({ has, rollup, findings, draws });
+  } catch (e) { next(e); }
+});
+
+// The broker's copy of the branded inspection report (PDF). mode is HARD-FORCED to 'borrower' (a
+// broker can never obtain the staff copy — the borrower-safe report scrubs every capital-partner
+// name + photo GPS). ?drawId=N → that draw; omitted → the whole-project report. Idempotent + cached
+// by the same version-hashed filename as the borrower/staff routes; the stored copy is
+// visibility='borrower'. Firm-scoped + per-draw IDOR (the draw must belong to this file).
+router.get('/applications/:id/draws/report', async (req, res, next) => {
+  try {
+    const appId = req.params.id;
+    if (!(await appInFirm(req.actor.id, appId))) return res.status(404).json({ error: 'file not found' });
+    const drawId = /^\d{1,18}$/.test(String(req.query.drawId || '')) ? req.query.drawId : null; // 1..18 digits stays in bigint range
+    if (drawId) {
+      const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+      if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on this file.' });
+    }
+    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
+    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'The inspection report isn’t ready yet — it appears once the draw results are in.' });
+    const scope = drawId ? 'draw' : 'project';
+    const drawNumber = drawId && meta.sections[0] ? meta.sections[0].number : null;
+    const filename = drawReport.reportFilename({ scope, mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    let doc = (await db.query(
+      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
+    if (!doc) {
+      await drawReport.attachPhotoBytes(meta.sections);
+      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode: 'borrower' });
+      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
+      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+    }
+    return serveDocument(res, doc, { inline: true });
+  } catch (e) { next(e); }
+});
+
+// The inspection PHOTO/video bytes for the draw view. Deliberately NOT a generic document-download
+// door and NOT the public reply_token media route: it authorizes via the draw_media → applications
+// firm scope, so the ONLY bytes a broker can fetch here are inspection media of THEIR OWN firm's
+// files (the same discipline as the appraisal-photo route). Photo GPS is already stripped at archive.
+// Served with the shared safe-media headers (type allowlist + sandbox CSP), never a reply_token.
+router.get('/draw-media/:mediaId', async (req, res, next) => {
+  try {
+    if (!/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
+    const r = await db.query(
+      `SELECT dm.storage_ref, dm.content_type, dm.kind
+         FROM draw_media dm JOIN applications a ON a.id = dm.application_id
+        WHERE dm.id=$2 AND dm.kind IN ('image','video') AND a.deleted_at IS NULL
+          AND ${perms.tpoFirmScopeSql('a', '$1')}
+        LIMIT 1`,
+      [req.actor.id, req.params.mediaId]);
+    const m = r.rows[0];
+    if (!m || !m.storage_ref) return res.status(404).end();
+    let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
+    if (!buf || !buf.length) return res.status(404).end();
+    setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
+    return res.end(buf);
   } catch (e) { next(e); }
 });
 
