@@ -132,6 +132,16 @@ function finish() {
     const dobRow = (await db.query(`SELECT to_char(date_of_birth,'YYYY-MM-DD') AS dob, fico FROM borrowers WHERE id=$1`, [bId])).rows[0];
     ok(dobRow.dob === '1990-01-01' && Number(dobRow.fico) === 720, 'a helper’s complete-fields did NOT change the borrower’s date of birth or credit score');
 
+    // A helper cannot ANSWER a condition that writes the borrower's own detail
+    // (the credit-score info-condition writes borrowers.fico) — but the borrower can.
+    const itemId = (await db.query(
+      `INSERT INTO checklist_items (application_id, scope, label, field_key, tool_key, audience, status)
+       VALUES ($1,'application','Credit score','fico','info_field','both','outstanding') RETURNING id`, [appId])).rows[0].id;
+    const infoBlk = await call('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, helperTok, { value: 650 });
+    ok(infoBlk.status === 403, 'a helper cannot answer the credit-score condition (writes borrowers.fico)');
+    const infoOk = await call('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, borrowerTok, { value: 640 });
+    ok(infoOk.status !== 403, 'the real borrower CAN answer the same condition (the block is helper-only)');
+
     // ---- the helper CANNOT sign / edit identity / add a card / touch creds -
     const signBlocked = await call('POST', `/api/borrower/applications/00000000-0000-0000-0000-000000000000/esign/sign-view`, helperTok, {});
     ok(signBlocked.status === 403 && signBlocked.body.assistantBlocked === 'esign', 'the helper cannot open the signing ceremony');

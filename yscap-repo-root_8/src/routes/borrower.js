@@ -1673,6 +1673,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'information item not found' });
   const item = it.rows[0];
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
+  // A HELPER (assistant) may answer deal/property conditions but not one that
+  // writes the borrower's own personal detail (e.g. the credit-score condition
+  // writes `borrowers.fico`) — those are the borrower's to provide.
+  if (req.assistant && borrowerAssistant.isProtectedWriteKey(item.field_key))
+    return res.status(403).json({ error: 'A helper can’t provide the borrower’s personal details (like the credit score). Ask the borrower to answer this one.' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
   /* THREE GOVERNANCES MEET AT THIS DOOR, AND THE ORDER IS THE WHOLE THING
@@ -2283,9 +2288,10 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   const b = req.body || {};
   // A HELPER (assistant) may complete DEAL fields but never the borrower's own
   // PERSONAL details (date of birth, credit score, citizenship, phone) — those
-  // are the borrower's to change, exactly as on the profile editor. Strip them
-  // from the body so the deal fields still save; the personal ones are ignored.
-  if (req.assistant) for (const k of Object.keys(B_COMPLETE_BORROWER)) delete b[k];
+  // are the borrower's to change, exactly as on the profile editor. One shared
+  // definition strips them so the deal fields still save; the personal ones are
+  // ignored.
+  if (req.assistant) borrowerAssistant.stripProtectedWrites(b);
   try {
     // S5-03: once a product is registered, the borrower can no longer write the
     // deal economics straight onto the live record — each proposed change becomes
@@ -3970,6 +3976,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
   if (d.rows[0].submitted_application_id)
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
+  // A HELPER (assistant) may submit a draft to help create the file, but the
+  // borrower's own personal identity must not ride in on it — the submit syncs
+  // those onto the profile (fill-only). Strip them from the merged body (the
+  // top-level SSN and the nested `personal` block); the deal/property fields
+  // still submit. The borrower fills their own personal details.
+  if (req.assistant) { borrowerAssistant.stripProtectedWrites(b); if (b.personal) borrowerAssistant.stripProtectedWrites(b.personal); }
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   /* A number too big for its column is a bad request, not a 500 (see
      fields.applicationNumberProblem). This is the door the audit reproduced it

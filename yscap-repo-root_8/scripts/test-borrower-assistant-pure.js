@@ -119,6 +119,26 @@ ok(A.PII_KEYS.has('ssn') && A.PII_KEYS.has('date_of_birth') && A.PII_KEYS.has('f
   'PII_KEYS covers the sensitive set');
 
 // ---------------------------------------------------------------------------
+// 2b. The WRITE-protection: a helper may never write the borrower's identity,
+//     through ANY door. One shared key set (snake + camel + field_key forms).
+// ---------------------------------------------------------------------------
+for (const k of ['fico', 'date_of_birth', 'dateOfBirth', 'ssn', 'citizenship', 'marital_status', 'maritalStatus', 'cell_phone', 'cellPhone', 'borrower_state'])
+  ok(A.isProtectedWriteKey(k), `identity field is write-protected: ${k}`);
+for (const k of ['loan_amount', 'property_type', 'rehab_budget', 'purchase_price', 'current_address', 'housing_status'])
+  ok(!A.isProtectedWriteKey(k), `deal/operational field is writable: ${k}`);
+// stripProtectedWrites removes identity IN PLACE, keeps deal/contact-address.
+const wbody = { loan_amount: 500000, property_type: 'sfr', date_of_birth: '1990-01-01', fico: 700, ssn: 'x', citizenship: 'US', cell_phone: '5', current_address: { city: 'Lakewood' } };
+const wret = A.stripProtectedWrites(wbody);
+ok(wret === wbody, 'stripProtectedWrites returns the same object (in place)');
+ok(wbody.loan_amount === 500000 && wbody.property_type === 'sfr' && wbody.current_address.city === 'Lakewood', 'strip keeps deal + contact-address fields');
+ok(!('date_of_birth' in wbody) && !('fico' in wbody) && !('ssn' in wbody) && !('citizenship' in wbody) && !('cell_phone' in wbody), 'strip removes every identity field');
+const camel = { dateOfBirth: '1990', maritalStatus: 'single', fico: 700, cellPhone: '5', keep: 'ok' };
+A.stripProtectedWrites(camel);
+ok(!('dateOfBirth' in camel) && !('maritalStatus' in camel) && !('fico' in camel) && !('cellPhone' in camel) && camel.keep === 'ok', 'strip handles camelCase identity keys');
+eq(A.stripProtectedWrites(null), null, 'strip is a no-op on null');
+eq(A.stripProtectedWrites('x'), 'x', 'strip is a no-op on a string');
+
+// ---------------------------------------------------------------------------
 // 3. The blocked-action list — the "cannot sign / touch the credential" half.
 //    It must match EXACTLY the routes it means to (and nothing more).
 // ---------------------------------------------------------------------------

@@ -116,6 +116,43 @@ function scrubPii(value, seen) {
 }
 
 // ---------------------------------------------------------------------------
+// The borrower's OWN personal-identity fields — an assistant may never WRITE
+// these through ANY door (they are the same personal facts hidden from a helper's
+// reads). This is the ONE definition: every borrower write path that can touch a
+// `borrowers` identity column consults it, so "a helper can't change the
+// borrower's identity" can't be true at one door and false at the next. Both
+// casings + the field-registry `field_key` forms are listed because different
+// doors speak different shapes (PUT /profile is guard-blocked wholesale; the
+// completeness panel + draft-submit speak the request body; an info-condition
+// speaks a single `field_key`).
+// ---------------------------------------------------------------------------
+const PROTECTED_WRITE_KEYS = new Set([
+  'date_of_birth', 'dateOfBirth', 'dob',
+  'ssn', 'social_security_number',
+  'fico', 'credit_score', 'creditScore',
+  'citizenship',
+  'marital_status', 'maritalStatus',
+  'cell_phone', 'cellPhone',
+  'borrower_state',
+]);
+
+/** Is this a borrower identity field a helper may not write? */
+function isProtectedWriteKey(key) { return PROTECTED_WRITE_KEYS.has(String(key || '')); }
+
+/**
+ * Remove every protected identity key from a request-body object IN PLACE (a
+ * shallow strip — call it on each nested block that carries them). Returns the
+ * same object. A no-op for a non-object. So an assistant's write keeps its deal /
+ * property / contact-address fields and silently drops the borrower's personal
+ * identity fields.
+ */
+function stripProtectedWrites(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  for (const k of Object.keys(obj)) if (PROTECTED_WRITE_KEYS.has(k)) delete obj[k];
+  return obj;
+}
+
+// ---------------------------------------------------------------------------
 // Blocked-while-assisting routes. PURE data + a pure matcher, so the whole list
 // can be proven without a server or a database (mirrors borrower-view.guard).
 // ---------------------------------------------------------------------------
@@ -226,6 +263,7 @@ function guard(req, res, next) {
 }
 
 module.exports = {
-  TOKEN_TTL_SEC, INVITE_TTL_SEC, PII_KEYS,
-  scrubPii, BLOCKED, blockedReason, readAssistant, mintToken, guard,
+  TOKEN_TTL_SEC, INVITE_TTL_SEC, PII_KEYS, PROTECTED_WRITE_KEYS,
+  scrubPii, isProtectedWriteKey, stripProtectedWrites,
+  BLOCKED, blockedReason, readAssistant, mintToken, guard,
 };
