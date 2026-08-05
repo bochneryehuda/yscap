@@ -201,6 +201,10 @@ async function syncOne(dbh, order) {
   }), { label: 'GetAppraisalStatus' });
   const out = await applyStatusResponse(dbh, order, resp);
   if (out.error) return out;
+  // Pull the AMC's side of the two-way thread on every live order (lazy-required to
+  // avoid a load-order cycle). Best-effort — a comment poll never breaks the status sync.
+  try { await require('./comments').syncComments(dbh, order); }
+  catch (e) { console.error('[amc] comment sync failed for order', order.id, (e && e.message) || e); }
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }

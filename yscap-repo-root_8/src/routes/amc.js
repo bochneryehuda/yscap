@@ -24,6 +24,7 @@ const { requireAuth, requireStaff } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../amc/client');
 const orderService = require('../amc/order-service');
+const comments = require('../amc/comments');
 const appraisalCard = require('../lib/appraisal-card');
 
 router.use(requireAuth, requireStaff);
@@ -108,6 +109,52 @@ router.post('/files/:id/card', async (req, res) => {
     number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip,
   });
   res.json({ ok: true, card: saved });
+});
+
+// ---- the two-way comment thread on an order --------------------------------
+// Load an order and confirm the caller may see its file. Returns the order, or null
+// (after sending the response).
+async function orderScoped(req, res) {
+  const id = parseInt(req.params.orderId, 10);
+  if (!Number.isInteger(id)) { res.status(404).json({ error: 'not found' }); return null; }
+  const order = await orderService.getOrder(db, id);
+  if (!order) { res.status(404).json({ error: 'not found' }); return null; }
+  if (!(await canSeeFile(req, order.application_id))) { res.status(403).json({ error: 'forbidden' }); return null; }
+  return order;
+}
+
+// The message thread on an order (both directions), plus the unread count.
+router.get('/orders/:orderId/comments', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  res.json({ comments: await comments.listComments(db, order.id), unread: await comments.unreadCount(db, order.id) });
+});
+
+// Send a message to the AMC on an order (AddComment). Needs the feature switched on
+// (the gated transport enforces it); a refusal comes back as a plain reason.
+router.post('/orders/:orderId/comments', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const body = (req.body && req.body.body) || '';
+  if (!String(body).trim()) return res.status(400).json({ error: 'empty message' });
+  let staffName = null;
+  try {
+    const s = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    staffName = s.rows[0] ? s.rows[0].full_name : null;
+  } catch (_) { staffName = null; }
+  const out = await comments.postComment(db, order, { staffId: req.actor.id, staffName, body });
+  if (!out.ok) return res.status(400).json(out);
+  res.json(out);
+});
+
+// Mark an inbound AMC message as read.
+router.post('/orders/:orderId/comments/:commentId/read', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const cid = parseInt(req.params.commentId, 10);
+  if (!Number.isInteger(cid)) return res.status(404).json({ error: 'not found' });
+  const flipped = await comments.markRead(db, order.id, cid);
+  res.json({ ok: true, updated: flipped });
 });
 
 // Parse the overridable order fields from a query/body object. Staff can change the
