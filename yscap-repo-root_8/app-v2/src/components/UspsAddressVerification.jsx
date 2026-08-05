@@ -383,7 +383,7 @@ export default function UspsAddressVerification({ appId, onChanged }) {
                   always available, so the owner is never trapped on a wrong file address. */}
               {driftedFromVerified ? (
                 <div className="small" style={{ color: 'var(--warning)' }}>
-                  This file shows as imported, but its address is no longer the USPS-verified one (another system may have re-spelled it, or it was accepted by exception). Verify the address again above, then <strong>Re-import</strong> to put the USPS address back on the file.
+                  This file shows as imported, but its address is not the last address USPS verified (it may have been accepted by exception, or checked against a different address). Verify the current address again above, then <strong>Re-import</strong> to put the USPS address on the file.
                 </div>
               ) : imported ? (
                 <div className="small" style={{ color: 'var(--text-soft)' }}>

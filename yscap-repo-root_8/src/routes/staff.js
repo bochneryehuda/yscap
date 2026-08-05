@@ -1820,11 +1820,17 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
       `UPDATE applications
           SET property_address=usps_address, usps_imported_at=now(), updated_at=now()
         WHERE id=$1`, [req.params.id]);
+    // A real import SUPERSEDES any prior super-admin override — so clear the
+    // override_* stamps too (mirroring the db/379/415 reopen trigger). Otherwise a
+    // file that was overridden while USPS was down, then properly re-imported once
+    // USPS recovered, would keep displaying "cleared by super-admin override" with a
+    // stale reason (now reachable because re-import is no longer blocked once stamped).
     const cleared = await client.query(
       `UPDATE checklist_items ci
           SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
               waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
-              updated_at=now()
+              override_by=NULL, override_at=NULL, override_reason=NULL,
+              override_blocked_reason=NULL, updated_at=now()
          FROM checklist_templates t
         WHERE ci.application_id=$1 AND ci.template_id=t.id
           AND t.code='usps_address_verification'

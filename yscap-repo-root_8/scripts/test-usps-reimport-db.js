@@ -53,7 +53,8 @@ function call(server, method, path, token, body) {
 const appRow = async (id) => (await db.query(
   `SELECT usps_imported_at, usps_match, property_address, usps_address FROM applications WHERE id=$1`, [id])).rows[0];
 const condRow = async (appId, tplId) => (await db.query(
-  `SELECT status, signed_off_at FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, tplId])).rows[0];
+  `SELECT status, signed_off_at, override_by, override_reason, override_blocked_reason
+     FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, tplId])).rows[0];
 
 // A ("12 Main St") and B ("400 Cedar Ave") are two genuinely different places.
 const A = { line1: '12 Main St', city: 'Lakewood', state: 'NJ', zip: '08701', oneLine: '12 Main St, Lakewood, NJ 08701' };
@@ -129,6 +130,8 @@ const B = { line1: '400 Cedar Ave', city: 'Lakewood', state: 'NJ', zip: '08701',
       const stuck = await appRow(id);
       assert(!!stuck.usps_imported_at, 'the file reads as imported');
       assert(stuck.property_address && /main st/i.test(stuck.property_address.oneLine || ''), 'but the file address is still A (the override kept it)');
+      const cOvr = await condRow(id, tplId);
+      assert(String(cOvr.override_by) === String(superId) && !!cOvr.override_reason, 'the condition carries the super-admin override stamp');
 
       const g = await call(server, 'GET', `/api/staff/applications/${id}/usps-verification`, token);
       assert(g.json && g.json.usps_imported_at, 'the status route confirms imported');
@@ -142,6 +145,12 @@ const B = { line1: '400 Cedar Ave', city: 'Lakewood', state: 'NJ', zip: '08701',
       assert(after.property_address && /cedar ave/i.test(after.property_address.oneLine || ''), 'the verified USPS address (B) is finally on the file');
       const g2 = await call(server, 'GET', `/api/staff/applications/${id}/usps-verification`, token);
       assert(g2.json && g2.json.addressMatchesVerified === true, 'and the status route now reports the file matches the verified address');
+      // A real import SUPERSEDES the prior override — the "cleared by override" stamp
+      // must not linger (else the condition keeps displaying a stale override reason).
+      const cAfter = await condRow(id, tplId);
+      assert(cAfter.status === 'satisfied' && cAfter.override_by === null
+        && cAfter.override_reason === null && cAfter.override_blocked_reason === null,
+        're-import clears the stale super-admin override stamp off the condition');
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : `\nAll USPS re-import checks passed.`);
