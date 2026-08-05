@@ -72,6 +72,10 @@ export default function ConditionActions({
   // Rendered inside the More menu, under a divider — for the one-off actions a
   // particular condition carries (waive an appraisal card, open a tool).
   extra,
+  // Any staffer may ASK an admin/super-admin to waive this condition (owner-directed
+  // 2026-08-04). Provided by the file screen; when present a "Request a waiver…"
+  // action appears in More for a not-yet-cleared condition.
+  onRequestWaiver,
 }) {
   useMenuAutoClose();
   const completer = canComplete(role);
@@ -156,6 +160,20 @@ export default function ConditionActions({
             )}
 
             {extra ? <><div className="cond-more-sep" />{extra}</> : null}
+
+            {/* Any staffer may ASK for a waiver (owner-directed 2026-08-04) — an
+                admin/super-admin decides, and approval marks the condition waived.
+                Distinct from the super-admin's own immediate override below. */}
+            {onRequestWaiver && !cleared && (
+              <>
+                <div className="cond-more-sep" />
+                <button className="btn ghost small"
+                  title="Ask an admin / super-admin to waive this condition. If they approve, it is marked waived."
+                  onClick={() => onRequestWaiver(it)}>
+                  Request a waiver…
+                </button>
+              </>
+            )}
 
             {/* Super admin only: clear this condition without what it asks for.
                 Kept offered UP-FRONT (not only after a refusal) exactly as

@@ -3285,6 +3285,65 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
   }
 });
 
+// Request a WAIVER of a specific condition (owner-directed 2026-08-04): "any user
+// should be able to request from the admin or super admin an exception to waive any
+// condition. And after the exception is being approved, that condition should be
+// marked as waived." Any staffer on the file may file it (file-scoped by the
+// /applications/:id middleware); an admin/super-admin decides it in the Exceptions
+// box, and APPROVAL marks that one condition waived (admin-exceptions.js).
+router.post('/applications/:id/conditions/:itemId/request-waiver', async (req, res) => {
+  const appId = req.params.id;
+  const itemId = req.params.itemId;
+  try {
+    // The condition must belong to THIS file, and not already be cleared.
+    const ci = (await db.query(
+      `SELECT id, status, label FROM checklist_items WHERE id=$1 AND application_id=$2`, [itemId, appId])).rows[0];
+    if (!ci) return res.status(404).json({ error: 'That condition is not on this file.' });
+    if (ci.status === 'satisfied') return res.status(409).json({ error: 'That condition is already cleared — there is nothing to waive.' });
+
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why this condition should be waived.' });
+
+    // A fresh ask after a denial for the SAME condition links back (re-request chain).
+    const priorList = await loanExceptions.registerForApp(appId);
+    const prior = loanExceptions.presentExpiry((priorList || []).find((r) =>
+      (r.type || r.exception_type) === 'condition_waiver' && String(r.target_checklist_item_id) === String(itemId)) || null);
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestConditionWaiver(client, {
+        appId, checklistItemId: itemId, reasonCode, reasonNote, requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'condition_waiver_request',
+        title: 'Condition waiver needs review',
+        body: `${req.actor.name || 'A team member'} requested waiving “${ci.label || 'a condition'}” on ${ctx ? ctx.label : 'a file'}: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'condition_waiver_requested', 'application', appId,
+      { exceptionId: row.id, checklistItemId: itemId, reasonCode: row.reason_code, note: reasonNote });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the per-condition partial unique index.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A waiver for this condition is already awaiting review.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Withdraw an OPEN exception request — the REQUESTER or an admin/super-admin
 // only (file-scoped). Previously any staffer with file access could withdraw
 // anyone's request; this enforces the stated intent. Works for every type.
@@ -16438,9 +16497,37 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       }
     } catch (_) { /* fail OPEN — an Encompass problem must never strand a send */ }
   }
+  // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
+  // (owner-directed 2026-08-04): "the super admin should always be able to override
+  // anything and send if he wants, with a warning." Only a super-admin may force a
+  // sheet not recorded FINAL out for signature, and only with a reason (collected in
+  // the UI). Mirrors the Encompass admin override above. Ignored for a non-term-sheet
+  // package or a blank reason; a NON-super-admin who supplies one is refused — never
+  // silently sent — so this stays the top-authority escape hatch it is meant to be.
+  let termSheetFinalOverride = null;
+  const tsOvrReason = String((req.body && req.body.termSheetFinalOverrideReason) || '').trim();
+  if (TERM_SHEET_ESIGN_PURPOSES.has(purpose) && tsOvrReason) {
+    if (!(req.actor && req.actor.role === 'super_admin')) {
+      return res.status(403).json({ error: 'Only a super admin can override the term-sheet check and send a sheet that is not marked final.', code: 'term_sheet_final_override_denied' });
+    }
+    termSheetFinalOverride = { by: req.actor.id, reason: tsOvrReason };
+  }
   try {
-    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue, termSheetFinalOverride });
     await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
+    // A term-sheet-final override that actually sent is RECORDED (best-effort): an
+    // audit row + a first-class entry in the exception register, so the file answers
+    // "who forced a not-final sheet out, and why?" long after.
+    if (termSheetFinalOverride && out && out.ok) {
+      try { await audit(req, 'esign_term_sheet_final_override', 'application', req.params.id, { purpose, reason: tsOvrReason.slice(0, 500), envelopeRowId: out.envelopeRowId }); } catch (_) { /* audit best-effort */ }
+      try {
+        await require('../lib/loan-exceptions').recordIssuanceOverride({
+          appId: req.params.id, staffId: req.actor && req.actor.id,
+          note: `term_sheet_final override (docusign ${purpose}): ${tsOvrReason.slice(0, 380)}`,
+          snapshot: { kind: 'term_sheet_final_override', purpose },
+        });
+      } catch (_) { /* register write is best-effort */ }
+    }
     // Return the REAL outcome — never a false "Sent for signature." toast. ok mirrors
     // sendPackage's ok (a genuine send / already-sent). Every non-success disposition
     // gets its OWN plain-language reason so staff always know the true state:

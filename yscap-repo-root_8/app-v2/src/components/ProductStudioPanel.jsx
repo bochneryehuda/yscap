@@ -440,12 +440,22 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const sheetBodyRef = useRef(null);
   const studioSaveT = useRef(null);
   const lastStudioSaved = useRef('');
+  // Always points at the LATEST finalizeTermSheet closure, so the stable ([]-deps)
+  // imperative handle below never calls a stale one (the E-sign Send button reaches
+  // it through this handle).
+  const finalizeRef = useRef(null);
   const stateUrl = toolItemId
     ? `${isStaff ? '/api/staff' : '/api/borrower'}/applications/${appId}/checklist/${toolItemId}/tool-state`
     : null;
 
   useImperativeHandle(ref, () => ({
     openStudio() { setOpenStudio(true); },
+    // Generate + attach the FINAL term sheet on the spot (owner-directed
+    // 2026-08-04) — the E-sign Send button calls this when the sheet on file still
+    // prints "NOT FINAL" but the file is ready to issue. Returns { ok, reason }.
+    finalizeTermSheet: (...a) => (finalizeRef.current
+      ? finalizeRef.current(...a)
+      : Promise.resolve({ ok: false, reason: 'Products & Pricing is still loading — try again in a moment.' })),
   }), []);
 
   // Autosave the studio scenario onto the pricing condition (debounced).
@@ -964,6 +974,72 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }
     } finally { setBusy(false); gate.leave(); }
   }
+
+  // Poll the studio until it has loaded the (prefilled, registered) scenario and
+  // computed a ready, eligible pricing snapshot — the SAME readiness register()
+  // requires before it will capture. Resolves false on timeout (fail-safe).
+  function waitForStudioReady(timeoutMs) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        let s = null;
+        try { s = studioRef.current && studioRef.current.snapshot(); } catch (_) { s = null; }
+        if (s && s.ready && s.program && s.d && s.d.status !== 'INELIGIBLE' && s.d.totalLoan > 0) return resolve(true);
+        if (Date.now() - start > timeoutMs) return resolve(false);
+        setTimeout(tick, 200);
+      };
+      setTimeout(tick, 250);
+    });
+  }
+
+  // FINALIZE the term sheet in place (owner-directed 2026-08-04): "that button to
+  // send out the term sheet and package should be the button that is generating the
+  // final term sheet after all the conditions are met." The INITIAL/FINAL wording is
+  // drawn into the PDF client-side, so the ONLY way to a FINAL sheet is to
+  // regenerate it here. This re-captures the SAME registered scenario the studio
+  // prefills — no re-pricing, no re-register side effects — stamped FINAL, but ONLY
+  // when the server confirms the file is ready to issue one (termSheetFinal), so a
+  // sheet can never call itself final on an unfinished file. Fail-safe: any problem
+  // returns { ok:false, reason } and nothing is attached — the caller falls back to
+  // re-registering, or (super-admin) the send override. Returns { ok, reason }.
+  async function finalizeTermSheet() {
+    if (busy) return { ok: false, reason: 'A registration is already in progress — try again in a moment.' };
+    // Server authority FIRST — never stamp a sheet final on a file that isn't ready.
+    let d;
+    try { d = await loadPricing(); } catch (_) { return { ok: false, reason: 'Could not read Products & Pricing right now — try again in a moment.' }; }
+    if (!d || !d.current) return { ok: false, reason: 'No product is registered on this file yet. Register the product in Products & Pricing first.' };
+    if (d.termSheetHold) return { ok: false, reason: (isStaff && typeof d.termSheetHold === 'string') ? d.termSheetHold : 'Term sheets are on hold on this file (the appraisal is under review).' };
+    if (!d.termSheetFinal) {
+      const bl = (d.termSheetFinalBlockers || []).map((b) => b && b.label).filter(Boolean);
+      return { ok: false, reason: bl.length
+        ? `The term sheet can’t be finalized yet — still outstanding: ${bl.join(', ')}. Finish those, then send.`
+        : 'This file isn’t ready to issue a final term sheet yet.' };
+    }
+    setBusy(true); setErr('');
+    try {
+      setData(d);
+      setOpenStudio(true);
+      const ready = await waitForStudioReady(12000);
+      if (!ready) return { ok: false, reason: 'The Term Sheet Studio couldn’t load the registered scenario. Open Products & Pricing and re-register to attach the final term sheet.' };
+      let stamped = false, pdf = null;
+      try { stamped = studioRef.current.setProvenance('file_final') === true; } catch (_) { stamped = false; }
+      try { pdf = await studioRef.current.capturePdf(); } catch (_) { pdf = null; }
+      if (!pdf || !pdf.blob || !stamped) return { ok: false, reason: 'Could not generate the final term sheet PDF (an internet connection is required).' };
+      try {
+        const dataBase64 = await blobToBase64(pdf.blob);
+        const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet', termSheetFinal: true };
+        if (isStaff) await api.staffUploadAppDoc(appId, body);
+        else await api.uploadDoc({ ...body, applicationId: appId });
+      } catch (_) { return { ok: false, reason: 'The final term sheet was generated but could not be attached — try again.' }; }
+      try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+      if (onRegistered) onRegistered();
+      return { ok: true };
+    } finally {
+      closeStudio();
+      setBusy(false);
+    }
+  }
+  finalizeRef.current = finalizeTermSheet;
 
   // Request an EXCEPTION to a guideline the deal otherwise follows — e.g. to
   // finance MORE of an assignment fee than the 15% cap (a bigger loan). Raises an
