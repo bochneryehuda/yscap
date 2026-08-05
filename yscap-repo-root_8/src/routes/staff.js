@@ -4150,10 +4150,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // client has no business with a raw rule tree.
   try {
     const { noteBuyerMark } = require('../lib/note-buyer-effects');
+    // Conditions cleared automatically when their DocuSign package is signed
+    // (owner-directed 2026-08-05) — the row gets a stamp so nobody works them by
+    // hand. Derived from the e-sign package definitions so it can never drift.
+    const { isAutoClearedByEsign } = require('../lib/esign/auto-clear');
     for (const row of r.rows) {
       let mark = null;
       try { mark = noteBuyerMark(row.rule_logic); } catch (_) { mark = null; }
       row.note_buyer_mark = mark ? mark.label : null;
+      row.esign_auto = isAutoClearedByEsign(row.template_code);
       delete row.rule_logic;
     }
   } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }

@@ -2,6 +2,29 @@ import React, { useEffect } from 'react';
 import { nextStep, docNextStep, canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { canOverride, askOverride } from '../lib/condition-override.js';
 import { CONDITION_STATUSES, conditionStatusLabel } from '../lib/conditions-vocab.js';
+import { fmtDateTime } from '../lib/dates.js';
+
+/* THE AUDIT TRAIL on a condition — who cleared it, and exactly when (owner-directed
+ * 2026-08-05: "right on the bottom of the Signed Off button you should see a
+ * timestamp for exactly the date and time the condition was signed off and by whom").
+ * The data is already on the row (checklist_items.signed_off_by/at, waived_by/at,
+ * reviewed_by/at, override_by/at + reason), resolved to a name by the checklist
+ * route. Only one completion is in effect at a time, so this shows the one that is. */
+export function ConditionAudit({ it }) {
+  if (!it) return null;
+  if (it.override_at) {
+    return (
+      <div className="cond-audit override">
+        Overridden by <b>{it.override_by_name || 'a super admin'}</b> · {fmtDateTime(it.override_at)}
+        {it.override_reason ? ` — ${it.override_reason}` : ''}
+      </div>
+    );
+  }
+  if (it.waived_at) return <div className="cond-audit">Marked not required by <b>{it.waived_by_name || 'staff'}</b> · {fmtDateTime(it.waived_at)}</div>;
+  if (it.signed_off_at) return <div className="cond-audit">Signed off by <b>{it.signed_off_name || 'staff'}</b> · {fmtDateTime(it.signed_off_at)}</div>;
+  if (it.reviewed_at) return <div className="cond-audit">Marked done by <b>{it.reviewed_by_name || 'staff'}</b> · {fmtDateTime(it.reviewed_at)}</div>;
+  return null;
+}
 
 /* THE CONDITION ACTION BAR — one prominent next step, everything else behind
  * "More". Owner-directed 2026-07-27: "we don't need to remove features but we
@@ -196,6 +219,10 @@ export default function ConditionActions({
           what to do first. This is the direct answer to "the accept button and
           the sign off button and the done button — it's too complicated." */}
       <div className="cond-act-hint">{step.hint}</div>
+
+      {/* The audit trail — who signed it off / waived it / overrode it, and when.
+          Sits right under the action, as the owner asked. */}
+      <ConditionAudit it={it} />
     </div>
   );
 }
@@ -213,6 +240,7 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
   // click, so it comes out of the "More" menu and the menu keeps only the rest
   // (download, replace, reject, delete…).
   return (
+    <div className="cond-doc-actions">
     <div className="cond-act-row">
       {/* `step.action` is what the ladder decided this viewer's move is — Accept
           for a completer, Reject for everyone else (a loan officer used to see no
@@ -248,6 +276,16 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
             onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
         </div>
       </details>
+    </div>
+      {/* WHO accepted this document and WHEN — right under the accept control, as
+          the owner asked (2026-08-05). documents.reviewed_by/reviewed_at, resolved
+          to a name by the documents route. */}
+      {rs === 'accepted' && (doc.reviewed_at || doc.reviewed_by_name) && (
+        <div className="cond-audit">Accepted by <b>{doc.reviewed_by_name || 'staff'}</b>{doc.reviewed_at ? ` · ${fmtDateTime(doc.reviewed_at)}` : ''}</div>
+      )}
+      {rs === 'rejected' && (doc.reviewed_at || doc.reviewed_by_name) && (
+        <div className="cond-audit">Rejected by <b>{doc.reviewed_by_name || 'staff'}</b>{doc.reviewed_at ? ` · ${fmtDateTime(doc.reviewed_at)}` : ''}{doc.rejection_reason ? ` — ${doc.rejection_reason}` : ''}</div>
+      )}
     </div>
   );
 }
