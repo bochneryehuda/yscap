@@ -1127,20 +1127,34 @@ async function withInvestorOnce() {
       // re-send still measures from the newest row); the outer query keeps only the draws whose latest
       // send is already past +48h, counts those overdue draws, and reports the OLDEST of them (so the
       // message's "delivered N days ago" and the oldest-first ordering both name the worst one).
-      `WITH with_inv AS (
-         SELECT dd.application_id, dd.sitewire_draw_id, max(dd.sent_at) AS last_send
+      // `latest` picks each draw's MOST-RECENT sent delivery and its funding_mode; a re-send still
+      // measures from the newest row. A draw whose latest delivery is MANUAL is handled by the
+      // coordinator outside PILOT (owner-directed) — it is excluded so PILOT never nags about a
+      // step somebody is already doing off-platform.
+      `WITH latest AS (
+         SELECT DISTINCT ON (dd.application_id, dd.sitewire_draw_id)
+                dd.application_id, dd.sitewire_draw_id, dd.sent_at AS last_send, dd.funding_mode
            FROM draw_investor_deliveries dd
-           JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
           WHERE dd.status='sent'
+          ORDER BY dd.application_id, dd.sitewire_draw_id, dd.sent_at DESC
+       ),
+       with_inv AS (
+         -- NB: the outer CTE is aliased dl, NOT l -- the shared notThrottled() helper builds its
+         -- subquery as "FROM audit_log l", so an outer l here would be shadowed inside that subquery
+         -- and l.application_id would bind to audit_log (which has no such column), throwing 42703 and
+         -- silently killing this reminder for every draw (caught in the #11 pre-merge audit, 2026-08-05).
+         SELECT dl.application_id, dl.sitewire_draw_id, dl.last_send
+           FROM latest dl
+           JOIN applications a ON a.id=dl.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+          WHERE dl.funding_mode <> 'manual'
             -- still waiting on the investor: the borrower's agreement is still standing AND the draw has
             -- not reached final approval. A finding that left accepted/resolved is no longer with them.
             AND EXISTS (SELECT 1 FROM draw_findings f
-                          WHERE f.sitewire_draw_id=dd.sitewire_draw_id AND f.status IN ('accepted','resolved'))
+                          WHERE f.sitewire_draw_id=dl.sitewire_draw_id AND f.status IN ('accepted','resolved'))
             AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
-                              WHERE sd.sitewire_draw_id=dd.sitewire_draw_id AND sd.status='approved')
-            AND ${activeManagedLink('dd.application_id')}
-            AND ${notThrottled('dd.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
-          GROUP BY dd.application_id, dd.sitewire_draw_id
+                              WHERE sd.sitewire_draw_id=dl.sitewire_draw_id AND sd.status='approved')
+            AND ${activeManagedLink('dl.application_id')}
+            AND ${notThrottled('dl.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
        )
        SELECT application_id, count(*)::int AS n, min(last_send) AS delivered
          FROM with_inv

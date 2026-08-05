@@ -140,4 +140,23 @@ ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], 
 ok(ID.AGREED_STATUSES.includes('accepted') && ID.AGREED_STATUSES.includes('resolved') && ID.AGREED_STATUSES.length === 2,
   'E8 only accepted and resolved count as the borrower agreeing');
 
+// ---------------------------------------------------------------- F. the MANUAL mode (#11)
+ok(ID.MODES.includes('manual'), 'F1 manual is a funding/delivery mode');
+eq(ID.MODES.length, 3, 'F2 there are exactly three modes now');
+ok(!ID.EMAILED_MODES.includes('manual') && ID.EMAILED_MODES.length === 2, 'F3 manual is NOT one of the emailed modes');
+ok(typeof ID.MODE_LABEL.manual === 'string' && ID.MODE_LABEL.manual.length > 0, 'F4 manual has a label for the desk');
+ok(/no email/i.test(ID.MODE_HELP.manual), 'F5 the manual help says no email is sent');
+eq(ID.resolveFundingMode({ drawMode: 'manual' }), 'manual', 'F6 a stored manual choice resolves to manual');
+// A MANUAL delivery is handled outside PILOT — it needs the note buyer set (so we record WHICH
+// investor) but NO saved contacts (no email is sent). The borrower must still have agreed.
+eq(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'manual' }).length, 0,
+  'F7 manual with a note buyer and NO contacts is ready — no email, so no contacts needed');
+ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: '', mode: 'manual' }).some((b) => /no note buyer/.test(b)),
+  'F8 manual still needs the note buyer set — the record must name which investor');
+ok(ID.deliveryBlockers({ finding: { status: 'delivered' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'manual' })[0].includes('not agreed'),
+  'F9 manual still requires the borrower to have agreed');
+// An EMAILED mode with no contacts is still blocked (the manual carve-out must not leak to it).
+ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'reimbursement' }).some((b) => /No investor contacts/.test(b)),
+  'F10 an EMAILED mode with no contacts is still blocked (the carve-out is manual-only)');
+
 console.log(`test-investor-delivery-pure: all ${n} investor-delivery rule checks passed.`);

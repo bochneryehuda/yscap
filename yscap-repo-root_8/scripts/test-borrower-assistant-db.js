@@ -156,6 +156,20 @@ function finish() {
     const mgmtBlocked = await call('POST', '/api/borrower/assistants', helperTok, { email: `x-${sfx}@test.local` });
     ok(mgmtBlocked.status === 403, 'a helper cannot create another helper');
 
+    // ---- a helper NEVER consumes the borrower's read receipts (#15 post-merge
+    // audit): opening the message thread must not clear the borrower's unread
+    // badge or tell the team the borrower has seen a reply. Same "never corrupt
+    // borrower state" rule as borrower view. The BORROWER opening it DOES mark
+    // it read, so the guard skips only the helper — proven both directions here.
+    const msgId = (await db.query(
+      `INSERT INTO messages (application_id, borrower_id, sender_kind, body)
+       VALUES ($1,$2,'staff','A reply from the loan team') RETURNING id`, [appId, bId])).rows[0].id;
+    const readAt = async () => (await db.query(`SELECT read_at FROM messages WHERE id=$1`, [msgId])).rows[0].read_at;
+    await call('GET', `/api/borrower/messages?applicationId=${appId}`, helperTok);
+    ok((await readAt()) === null, 'a helper opening the thread does NOT consume the borrower’s read receipt');
+    await call('GET', `/api/borrower/messages?applicationId=${appId}`, borrowerTok);
+    ok((await readAt()) !== null, 'the real borrower opening the thread DOES mark it read (the guard skips only the helper)');
+
     // ---- LOGIN by email + password ----------------------------------------
     const login = await call('POST', '/auth/assistant/login', null, { email: `ba-helper-${sfx}@test.local`, password: 'Helper-Assistant-Pass-2026' });
     ok(login.status === 200 && login.body && login.body.token, 'the helper can sign in by email + password');
