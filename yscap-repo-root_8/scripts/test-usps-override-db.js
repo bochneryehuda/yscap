@@ -126,7 +126,24 @@ const insBlocked = (imported) => orders.blockers('insurance', { hasLoanNumber: t
     // ── 3. THE OVERRIDE, no edited address — keeps the file's address, lifts all
     {
       const appId = await newFile();
-      const r = await call(server, 'POST', overridePath(appId), sToken, { overrideReason: REASON, lastError: 'USPS 400: Invalid address' });
+      const before = (await appRow(appId)).property_address;
+      // An AUTO-CLEARED, unsigned contract condition: db/292 reopens one to 'received'
+      // on ANY property_address change. A no-op override must not rewrite the address,
+      // so this must stay satisfied — the exact wrinkle the pre-merge audit flagged.
+      const contractTpl = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_p1_contract'`)).rows[0];
+      let contractItem = null;
+      if (contractTpl) {
+        contractItem = (await db.query(
+          `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status, created_by_kind, signed_off_at)
+           VALUES ($1,'application',$2,'Purchase contract','staff','document',true,'satisfied','system',now()) RETURNING id`,
+          [contractTpl.id, appId])).rows[0].id;   // signed_off_by left NULL = auto-cleared
+      }
+
+      // Reproduce the real UI: the dialog PREFILLS the box with the current address,
+      // so an unedited override arrives carrying that same place (a different object
+      // shape). The server must recognize it as the same place and NOT rewrite.
+      const prefilled = { line1: '12 Main St', city: 'Lakewood', state: 'NJ', zip: '08701' };
+      const r = await call(server, 'POST', overridePath(appId), sToken, { overrideReason: REASON, address: prefilled, lastError: 'USPS 400: Invalid address' });
       assert(r.status === 200 && r.json && r.json.override === true, 'a super admin with a reason clears the hold (200)');
 
       const a = await appRow(appId);
@@ -134,6 +151,15 @@ const insBlocked = (imported) => orders.blockers('insurance', { hasLoanNumber: t
       assert(!titleBlocked(!!a.usps_imported_at) && !insBlocked(!!a.usps_imported_at),
         'so title AND insurance ordering are no longer held back (attorney reads the same flag)');
       assert(a.property_address && a.property_address.oneLine === CURRENT.oneLine, 'with no edit, the file keeps its current address');
+      // The address jsonb is untouched (not even re-serialized), so nothing keyed on
+      // a property_address change is disturbed.
+      const same = (await db.query(`SELECT property_address IS NOT DISTINCT FROM $2::jsonb AS same FROM applications WHERE id=$1`,
+        [appId, JSON.stringify(before)])).rows[0].same;
+      assert(same === true, 'a no-edit override does not rewrite property_address at all');
+      if (contractItem) {
+        const cc = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [contractItem])).rows[0];
+        assert(cc.status === 'satisfied', 'a no-edit override does NOT reopen the auto-cleared contract condition (db/292)');
+      }
 
       const c = await condRow(appId, tplId);
       assert(c.status === 'satisfied' && !!c.signed_off_at, 'the USPS condition is cleared');

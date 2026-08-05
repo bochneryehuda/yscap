@@ -1874,14 +1874,25 @@ router.post('/applications/:id/usps-verification/override', async (req, res) => 
     // corrected candidate in the dialog (line1 + state present), adopt THAT —
     // they are saying "this is the right address, use it." Otherwise keep the
     // file's current address exactly as it is and simply stamp it accepted.
+    //
+    // The dialog PREFILLS the box with the file's current address, so an unedited
+    // override arrives carrying that same address. Adopting it would rewrite
+    // property_address to a rebuilt canonical form (dropping any stored lat/lng,
+    // reading as a change to jsonb) — which reopens an auto-cleared contract
+    // condition (db/292) and fires a no-op ClickUp push. So we adopt ONLY when the
+    // candidate is a genuinely DIFFERENT place than the file already holds, judged
+    // by meaning (ADDR.sameAddress — the same "same place" test db/415 and the
+    // ClickUp inbound guard use), not by spelling.
     const edit = req.body && req.body.address;
-    const hasEdit = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street) && (edit.state);
+    const hasEditPayload = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street) && (edit.state);
     let adopted = app.property_address;
-    if (hasEdit) {
-      adopted = ADDR.normalizeAddress({
+    let hasEdit = false;   // did we actually adopt a new address?
+    if (hasEditPayload) {
+      const candidate = ADDR.normalizeAddress({
         line1: edit.line1 || edit.street, unit: edit.unit || edit.secondary || '',
         city: edit.city || '', state: edit.state || '', zip: edit.zip || edit.zipcode || '', country: 'US',
       });
+      if (!ADDR.sameAddress(app.property_address, candidate)) { adopted = candidate; hasEdit = true; }
     }
     if (!adopted || (typeof adopted === 'object' && !(adopted.line1 || adopted.street || adopted.oneLine))) {
       await client.query('ROLLBACK');
@@ -1898,15 +1909,30 @@ router.post('/applications/:id/usps-verification/override', async (req, res) => 
       + (stampStatus && stampStatus !== 'null' ? ` (last USPS result: ${stampStatus})` : '')
       + (lastError ? ` — ${lastError.slice(0, 200)}` : '') + '.';
 
-    // Adopt the address + STAMP THE IMPORT. Stamping `usps_imported_at` is the
-    // whole point — it is the flag the ordering hold-backs read, so this is what
-    // unblocks title / insurance / attorney too. usps_match / usps_address keep
-    // whatever the last real attempt returned (so preferredFinancingAddress still
-    // falls back to property_address rather than shipping a phantom USPS form).
-    await client.query(
-      `UPDATE applications
-          SET property_address=$2, usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
-        WHERE id=$1`, [req.params.id, JSON.stringify(adopted)]);
+    // STAMP THE IMPORT — and only touch property_address when an edit was actually
+    // typed. Stamping `usps_imported_at` is the whole point: it is the flag the
+    // ordering hold-backs read, so this is what unblocks title / insurance /
+    // attorney too. usps_match / usps_address keep whatever the last real attempt
+    // returned (so preferredFinancingAddress still falls back to property_address
+    // rather than shipping a phantom USPS form).
+    //
+    // WHY THE ADDRESS WRITE IS CONDITIONAL: on the common "USPS is down, my address
+    // is fine" override there is NO edit, and re-writing property_address to a
+    // rebuilt canonical form (which drops any stored lat/lng and reads as a change
+    // to jsonb) would needlessly reopen an auto-cleared contract condition (db/292)
+    // and fire a no-op ClickUp push. A no-edit override leaves the address exactly
+    // as it is — matching the intent above.
+    if (hasEdit) {
+      await client.query(
+        `UPDATE applications
+            SET property_address=$2, usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
+          WHERE id=$1`, [req.params.id, JSON.stringify(adopted)]);
+    } else {
+      await client.query(
+        `UPDATE applications
+            SET usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
+          WHERE id=$1`, [req.params.id]);
+    }
 
     // Clear the condition WITH the override stamps (db/344) — same shape the
     // checklist sign-off door uses, so the file reads this as the recorded
@@ -1923,10 +1949,10 @@ router.post('/applications/:id/usps-verification/override', async (req, res) => 
         RETURNING ci.id`, [req.params.id, req.actor.id, reason, blockedReason]);
     await client.query('COMMIT');
 
-    // Keep the ClickUp card in step with the address we just adopted (scoped, so
-    // it is treated as the deliberate edit it is; no-op-suppressed when the card
-    // already names the same place; best-effort, never blocks the override).
-    try { await enqueueClickupPush(req.params.id, ['property_address']); } catch (_) {}
+    // Keep the ClickUp card in step ONLY when we actually adopted a new address
+    // (scoped, so it is treated as the deliberate edit it is; no-op-suppressed when
+    // the card already names the same place; best-effort, never blocks the override).
+    if (hasEdit) { try { await enqueueClickupPush(req.params.id, ['property_address']); } catch (_) {} }
 
     // A super-admin override is a POLICY DECISION: audit it, and land it in the
     // loan_exceptions register (born approved, record-only) exactly as a condition

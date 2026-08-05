@@ -108,6 +108,7 @@ export default function UspsAddressVerification({ appId, onChanged }) {
   const dialogRef = useRef(null);
   const restoreRef = useRef(null);
   const busyRef = useRef('');
+  const loadedFormRef = useRef(null);   // the address the form was prefilled with (to tell an edit from a no-op)
   busyRef.current = busy;
 
   async function load(prefill) {
@@ -115,7 +116,7 @@ export default function UspsAddressVerification({ appId, onChanged }) {
     try {
       const d = await api.get(`/api/staff/applications/${appId}/usps-verification`);
       setData(d);
-      if (prefill) { setForm(compsFrom(d.property_address)); setVerifiedInput(null); }
+      if (prefill) { const pf = compsFrom(d.property_address); setForm(pf); loadedFormRef.current = pf; setVerifiedInput(null); }
       return d;
     } catch (e) { setErr(e.message || 'Could not load USPS verification.'); return null; }
   }
@@ -170,9 +171,13 @@ export default function UspsAddressVerification({ appId, onChanged }) {
     if (!ovrReason.trim()) { setErr('Add a reason for the exception — it’s saved on the file for everyone to see.'); return; }
     setBusy('override'); setErr(''); setFlash('');
     try {
+      // Send an address ONLY when the super admin actually edited it — otherwise the
+      // server keeps the file's current address untouched (a no-op override must not
+      // rewrite the address, reopen a contract condition, or push to ClickUp).
+      const edited = loadedFormRef.current ? !sameComps(form, loadedFormRef.current) : true;
       await api.post(`/api/staff/applications/${appId}/usps-verification/override`, {
         overrideReason: ovrReason.trim(),
-        address: (form.line1 && form.state) ? form : undefined,
+        address: (edited && form.line1 && form.state) ? form : undefined,
         lastError: errDetail || err || undefined,
       });
       setOvrOpen(false); setOvrReason('');
