@@ -427,6 +427,9 @@ export const api = {
   // Answer an information condition (a deal field). A person field (fico) is
   // redirected to the borrower's profile by the server.
   tpoAnswerInfoCondition: (appId, itemId, value) => req('POST', `/api/tpo/applications/${appId}/checklist/${itemId}/info`, { value }),
+  // Phase 5a — order a credit pull (borrower-safe: readiness in, "pulled" out; no scores).
+  tpoCreditStatus: (appId) => req('GET', `/api/tpo/applications/${appId}/credit`),
+  tpoOrderCredit: (appId, body) => req('POST', `/api/tpo/applications/${appId}/credit/order`, body),   // { consent:true, borrowerIds? }
   // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
   // sheet (borrower-safe; sending the DocuSign package stays lender-only).
   tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),

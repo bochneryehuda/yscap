@@ -1023,4 +1023,87 @@ router.post('/documents', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ============================================================================
+// PHASE 5a — a broker ORDERS a credit pull on the firm's file, on OUR Xactus
+// account (own-Xactus per-firm credentials is a later slice). It reuses the ONE
+// staff credit machinery (`credit.importCredit`) with the SAME server-side FCRA
+// consent gate and prerequisite checks — but the RESULT is BORROWER-SAFE: the
+// broker learns only that credit was pulled + who is ready to pull, NEVER a
+// score, tradeline, adverse item, or the staff-only credit PDF/XML (all of which
+// importCredit produces and hides at visibility='staff_only'). Firm-scoped.
+// ============================================================================
+
+// Borrower-safe credit READINESS — per borrower, only whether a pull is possible
+// and what PII is still missing (so the broker can fill it). NEVER a score, a
+// prior report id/date, or a cross-file reference: `credit.preview` returns those
+// (profileReport.middleScore, reissueReportId, fromLoanNumber) and they are
+// deliberately DROPPED here — only the four safe fields pass through.
+router.get('/applications/:id/credit', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    let pv = null;
+    try { pv = await require('../lib/credit').preview(req.params.id); } catch (_) { pv = null; }
+    const borrowers = (pv && Array.isArray(pv.borrowers) ? pv.borrowers : []).map((b) => ({
+      borrowerId: b.borrowerId, role: b.role, name: b.name,
+      hasSsn: !!b.hasSsn, canPull: !!b.canPull,
+      missing: Array.isArray(b.missing) ? b.missing : [],
+      hasReport: !!b.reissueReportId,   // a report is already on THIS file — boolean only, never the id
+    }));
+    let configured = false;
+    try { configured = require('../lib/credit/provider').configured(); } catch (_) { configured = false; }
+    res.json({ borrowers, configured, canOrder: configured && borrowers.some((b) => b.canPull) });
+  } catch (e) { next(e); }
+});
+
+// ORDER a credit pull — a fresh, live pull on OUR account. Firm-scoped, FCRA
+// consent-gated (importCredit enforces it server-side too; the pre-check gives a
+// plain 400). The RESULT is borrower-safe — never a score/report id/fico; the
+// broker sees the credit condition move to "received" via the Lender-progress
+// reveal (Phase 4c). The staff-only credit docs + scores + the FICO→pricing
+// write-back all fire exactly as a staff pull, and stay staff-only.
+router.post('/applications/:id/credit/order', async (req, res) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const b = req.body || {};
+    if (b.consent !== true) return res.status(400).json({ error: 'Confirm the borrower authorized a credit pull before ordering.' });
+    let creditProvider;
+    try { creditProvider = require('../lib/credit/provider'); } catch (_) { creditProvider = null; }
+    if (!creditProvider || !creditProvider.configured()) {
+      return res.status(503).json({ error: 'Credit ordering isn’t available right now — your loan team can pull it.' });
+    }
+    let out;
+    try {
+      out = await require('../lib/credit').importCredit(req.params.id, {
+        // A broker order is ALWAYS a fresh LIVE pull on our account — never an
+        // upload/split/merged (those are staff-only paths), and requestType 'new'
+        // (a broker has no prior Xactus reference to reissue).
+        pullType: b.pullType === 'hard' ? 'hard' : 'soft',
+        requestType: 'new',
+        joint: b.joint === true,
+        borrowerIds: Array.isArray(b.borrowerIds) ? b.borrowerIds.filter((x) => typeof x === 'string') : undefined,
+        consent: true,
+        actorId: req.actor.id,
+      });
+    } catch (e) {
+      return res.status(e.status || 422).json({ error: e.userMessage || 'Could not order the credit report.' });
+    }
+    await tpoAudit(req, 'tpo_order_credit', 'application', req.params.id,
+      { pullType: out.pullType, source: out.source, pulled: out.pulled,
+        ficoWritten: out.ficoWritten, ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified });
+    // Tell OUR team a broker ordered credit (in-app only; notifyAppStaff filters
+    // out external users, so the broker is never a recipient).
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAppStaff(req.params.id, {
+        type: 'tool_submitted',
+        title: 'A broker ordered a credit pull',
+        body: `${ctx ? ctx.label : 'A file'} — credit was pulled and is ready for review.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: req.params.id,
+        link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the file' });
+    } catch (_) { /* best-effort */ }
+    // BORROWER-SAFE result — never a score, report id, or fico.
+    res.status(201).json({ ok: true, message: 'Credit was pulled — your loan team is reviewing it.' });
+  } catch (e) { console.error('[tpo credit]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 module.exports = router;

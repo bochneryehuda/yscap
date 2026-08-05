@@ -42,6 +42,8 @@ export default function TpoFile() {
   const [checklist, setChecklist] = useState([]);
   const [progress, setProgress] = useState([]);   // read-only lender-progress rows
   const [documents, setDocuments] = useState([]);
+  const [credit, setCredit] = useState(null);               // borrower-safe credit readiness
+  const [orderingCredit, setOrderingCredit] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -57,8 +59,20 @@ export default function TpoFile() {
     setProgress(Array.isArray(r?.progress) ? r.progress : []);
   }).catch(() => {});
   const loadDocuments = () => api.tpoDocuments(id).then((r) => setDocuments(Array.isArray(r?.documents) ? r.documents : [])).catch(() => {});
+  const loadCredit = () => api.tpoCreditStatus(id).then(setCredit).catch(() => {});
 
-  useEffect(() => { loadFile(); loadChecklist(); loadDocuments(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => { loadFile(); loadChecklist(); loadDocuments(); loadCredit(); /* eslint-disable-next-line */ }, [id]);
+
+  async function orderCredit() {
+    if (!window.confirm('Confirm the borrower authorized a credit pull. This orders their credit report.')) return;
+    setErr(''); setMsg(''); setOrderingCredit(true);
+    try {
+      const r = await api.tpoOrderCredit(id, { consent: true });
+      setMsg(r?.message || 'Credit was pulled — your loan team is reviewing it.');
+      await Promise.all([loadCredit(), loadChecklist()]);
+    } catch (ex) { setErr(ex.message || 'Could not order credit'); }
+    finally { setOrderingCredit(false); }
+  }
 
   async function togglePortal(enabled) {
     setErr(''); setMsg(''); setBusy(true);
@@ -209,6 +223,31 @@ export default function TpoFile() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Credit — order a pull on the firm's file. Borrower-safe: readiness in,
+          "pulled" out; the score + report stay with the loan team. */}
+      {credit && Array.isArray(credit.borrowers) && credit.borrowers.length > 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontWeight: 600 }}>Credit</div>
+            <button className="btn ghost small" disabled={orderingCredit || !credit.canOrder} onClick={orderCredit}>
+              {orderingCredit ? 'Ordering…' : 'Order credit'}
+            </button>
+          </div>
+          <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
+            Order the borrower’s credit. Your loan team reviews the report — scores and the report itself stay with them.
+          </p>
+          {credit.borrowers.map((b) => (
+            <div key={b.borrowerId} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', gap: 12, flexWrap: 'wrap' }}>
+              <span style={{ flex: 1, minWidth: 120 }}>{b.name || 'Borrower'}</span>
+              <span className="muted small">
+                {b.hasReport ? 'On file' : b.canPull ? 'Ready to order' : `Needs: ${(b.missing || []).join(', ') || 'more info'}`}
+              </span>
+            </div>
+          ))}
+          {!credit.configured && <div className="muted small" style={{ marginTop: 8 }}>Credit ordering isn’t set up here — your loan team can pull it.</div>}
         </div>
       )}
 

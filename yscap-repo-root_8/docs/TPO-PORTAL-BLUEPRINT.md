@@ -205,10 +205,38 @@ internal workflow condition.
      work is the ORDER-INITIATION side (a broker orders title / insurance / flood
      / credit) and own-Xactus, which is Phase 5.
 5. **Orders + own-Xactus** — title / insurance / flood / credit on the TPO
-   surface; then per-firm encrypted Xactus credentials for **credit** (refactor
-   `credit/provider.js pull()` to take a credentials arg resolved from the file's
-   firm; flood stays on our account). Fix the duplicate `xactus` key in
-   `config.js` while here.
+   surface; then per-firm encrypted Xactus credentials for **credit**.
+   - **Phase 5a — a broker orders CREDIT ✅ (BUILT).** `POST /api/tpo/
+     applications/:id/credit/order` orders a fresh LIVE pull on OUR Xactus account,
+     reusing the ONE staff machinery `credit.importCredit` with the SAME
+     server-side FCRA consent gate + prerequisite checks (SSN / address). Every
+     internal artifact still fires and stays staff-only — the parsed
+     `credit_reports` row, the `credit_pdf`/`credit_xml` documents at
+     `visibility='staff_only'`, and the FICO→`borrowers.fico`→Products-&-Pricing
+     reopen — but the RESULT is BORROWER-SAFE: the broker learns only that credit
+     was pulled + (via `GET …/credit`) per-borrower readiness (name / hasSsn /
+     canPull / what PII is missing / hasReport), NEVER a score, tradeline, adverse
+     item, prior report id, or the PDF/XML. Firm-scoped; consent-gated (no consent
+     → 400); a missing SSN is refused; `app-v2 TpoFile` gained a "Credit" card
+     (readiness + an Order-credit button with a consent confirm). Test
+     `scripts/test-tpo-credit-db.js` (stubs `provider.pull` — no live Xactus).
+   - **STILL DEFERRED in Phase 5:**
+     · **own-Xactus** (per-firm encrypted Xactus credentials for credit) — the
+       single seam is `credit/provider.js:25` (`const cfg = require('../../config')
+       .xactusProd`); refactor `pull()`/`buildRequestBody()` to take a credentials
+       arg resolved from the file's firm (our account always an option; flood
+       always ours). Fix the duplicate `xactus` key in `config.js` (config.js:605
+       vs :772 — the second wins; credit uses the separate `xactusProd`, so it is a
+       latent bug) as part of that work.
+     · **title / insurance ordering** — has a NOTE-BUYER LEAK tension: the order
+       email carries the note-buyer-derived mortgagee clause (RCN → the servicer's
+       address), and it is "signed by the loan officer" = the broker on a TPO file.
+       A broker-facing version must not show/CC the broker the clause, and should
+       sign as the AE. Needs owner input on whether a broker triggers a
+       YS-Capital-branded vendor email at all.
+     · **flood ordering** — conflicts with the flood-cert-staff-only HARD RULE
+       (the flood certificate is never broker-facing). A broker "ordering" flood
+       whose result they cannot see is contradictory; needs owner clarification.
 6. **Appraisal view, draws, messaging + AE/AM "view as TPO"** — the remaining
    borrower-style surfaces; the impersonation feature mirroring
    `src/lib/borrower-view.js` (a new `tpo-view` with its own `tpo_view_sessions`
