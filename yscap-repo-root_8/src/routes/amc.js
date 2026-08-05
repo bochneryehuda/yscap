@@ -1,0 +1,131 @@
+'use strict';
+/**
+ * AMC appraisal-ordering routes (staff).
+ *
+ * The new "Order an appraisal" desk that sits beside the Title / Insurance / Attorney
+ * orders. Everything is file-scoped exactly like the draw desk: any staffer assigned
+ * to the file (or an admin who sees all files) can build the auto-filled order,
+ * preview it, place it, and read its status. The heavy lifting is in src/amc/*;
+ * this router is a thin file-scoped shell.
+ *
+ * The appraisal-fee card is BIDIRECTIONALLY linked to the appraisal_card condition
+ * (owner-directed 2026-08-05): entering the card here fills the condition (via the
+ * ONE shared appraisal-card.saveApplicationCard chokepoint), and a card the borrower
+ * entered on the condition shows up here on the preview — one card, two doors.
+ *
+ * Inert until the AMC switches are on: buildPreview/list read only (the desk renders
+ * read-only with a "not configured" banner in an env that hasn't turned the AMC on),
+ * and placing an order needs AMC_ENABLED + AMC_OUTBOUND_ENABLED (the client enforces
+ * both fail-closed).
+ */
+const router = require('../lib/safe-router')();
+const db = require('../db');
+const { requireAuth, requireStaff } = require('../auth');
+const { can, assigneeExistsSql } = require('../lib/permissions');
+const client = require('../amc/client');
+const orderService = require('../amc/order-service');
+const appraisalCard = require('../lib/appraisal-card');
+
+router.use(requireAuth, requireStaff);
+
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
+
+// Same file-scope rule as the draw desk: see_all_files -> any file; else only assigned.
+async function canSeeFile(req, appId) {
+  if (!isUuid(appId)) return false;
+  if (can(req.actor, 'see_all_files')) {
+    const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    return r.rowCount > 0;
+  }
+  const r = await db.query(
+    `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    [appId, req.actor.id]);
+  return r.rowCount > 0;
+}
+
+// Whether the appraisal-ordering feature is configured / switched on (drives the desk
+// banner). Never leaks credentials — just the boolean flags.
+router.get('/config', async (_req, res) => {
+  res.json({ amc: client.configured() });
+});
+
+// The auto-filled order preview: chosen form, filled spec, what's still missing, the
+// cached form catalog for a staff override, and the card status. Read-only.
+router.get('/files/:id/preview', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const overrides = readOverrides(req.query);
+  const preview = await orderService.buildPreview(db, appId, { overrides });
+  if (!preview) return res.status(404).json({ error: 'file not found' });
+  res.json(preview);
+});
+
+// Create a draft (place:false) or place the order with the AMC (place:true).
+router.post('/files/:id/order', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const body = req.body || {};
+  const out = await orderService.createOrder(db, appId, {
+    staffId: req.actor && req.actor.id,
+    place: !!body.place,
+    overrides: readOverrides(body),
+    checklistItemId: isUuid(body.checklistItemId) ? body.checklistItemId : null,
+    parentOrderId: Number.isInteger(body.parentOrderId) ? body.parentOrderId : null,
+  });
+  if (!out.ok) return res.status(out.error === 'file_not_found' ? 404 : 400).json(out);
+  res.json(out);
+});
+
+// The orders on a file (the desk list).
+router.get('/files/:id/orders', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  res.json({ orders: await orderService.listOrders(db, appId) });
+});
+
+// One order (file-scoped via its own application_id).
+router.get('/orders/:orderId', async (req, res) => {
+  const id = parseInt(req.params.orderId, 10);
+  if (!Number.isInteger(id)) return res.status(404).json({ error: 'not found' });
+  const order = await orderService.getOrder(db, id);
+  if (!order) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeFile(req, order.application_id))) return res.status(403).json({ error: 'forbidden' });
+  res.json({ order });
+});
+
+// Enter the appraisal-fee card from the order desk — the SAME chokepoint the borrower
+// condition uses, so it fills the appraisal_card condition automatically (the
+// bidirectional link the owner asked for). Payment stays MANUAL; nothing is charged.
+router.post('/files/:id/card', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+  if (!app.rows[0]) return res.status(404).json({ error: 'file not found' });
+  const v = appraisalCard.validateCardInput(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const saved = await appraisalCard.saveApplicationCard({
+    appId, borrowerId: app.rows[0].borrower_id,
+    number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip,
+  });
+  res.json({ ok: true, card: saved });
+});
+
+// Parse the overridable order fields from a query/body object. Staff can change the
+// auto-picked form and the request options on the preview / place.
+function readOverrides(src) {
+  const s = src || {};
+  const o = {};
+  if (s.productCode != null && s.productCode !== '') o.productCode = String(s.productCode);
+  if (s.amcIdentifier != null && s.amcIdentifier !== '') o.amcIdentifier = String(s.amcIdentifier);
+  if (Array.isArray(s.subproductCodes)) o.subproductCodes = s.subproductCodes.map(String);
+  if (s.mortgageType) o.mortgageType = String(s.mortgageType);
+  if (s.bestContact) o.bestContact = String(s.bestContact);
+  if (s.titleCategory) o.titleCategory = String(s.titleCategory);
+  if (s.requestComment) o.requestComment = String(s.requestComment);
+  if (s.needByDate) o.needByDate = String(s.needByDate);
+  if (s.rush != null) o.rush = s.rush === true || s.rush === 'true' || s.rush === '1';
+  if (s.requestAction) o.requestAction = String(s.requestAction);
+  return o;
+}
+
+module.exports = router;
