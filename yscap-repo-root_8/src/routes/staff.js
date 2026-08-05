@@ -5771,11 +5771,12 @@ async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null }
   if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccBorrower != null) return !!storedMeta.ccBorrower;
   let loCcSetting = false;
   try {
+    const key = orders.ccBorrowerSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
     const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    if (lo.rows[0] && lo.rows[0].loan_officer_id) {
-      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
+      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
     }
-  } catch (_) { /* the type default stands */ }
+  } catch (_) { /* the company default stands (off) */ }
   return orders.ccBorrowerDefault(kind, loCcSetting);
 }
 
@@ -5810,14 +5811,15 @@ router.get('/applications/:id/orders', async (req, res) => {
          LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
         WHERE o.application_id=$1`, [req.params.id])).rows;
     const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
-    // Whether the borrower is CC'd on each order (owner-directed 2026-07-31:
-    // title defaults OFF; the file's LO's own setting can default it on; a
-    // per-order choice — persisted in file_orders.meta — always wins).
-    let loCcSetting = false;
+    // Whether the borrower is CC'd on each order (owner-directed 2026-08-05: the
+    // COMPANY default is OFF for every order kind; the file's LO's own per-kind
+    // setting can default it on; a per-order choice — persisted in
+    // file_orders.meta — always wins).
+    let loSettings = {};
     try {
       const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [req.params.id]);
       if (lo.rows[0] && lo.rows[0].loan_officer_id) {
-        loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+        loSettings = await require('../lib/lo-settings').getSettings(lo.rows[0].loan_officer_id);
       }
     } catch (_) { /* defaults stand (off) */ }
     const storedCc = (k) => {
@@ -5828,7 +5830,8 @@ router.get('/applications/:id/orders', async (req, res) => {
     const ccEffective = (k) => {
       const stored = storedCc(k);
       if (stored != null) return stored;
-      return orders.ccBorrowerDefault(k, loCcSetting);
+      const key = orders.ccBorrowerSettingKey(k);
+      return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
     };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
