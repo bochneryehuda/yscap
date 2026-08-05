@@ -288,10 +288,12 @@ export default function DrawsPanel({ appId }) {
    PDF files back to the "Signed draw request form" draw condition AND the typed wire details
    are captured here (masked account number). If the wire account name is a NEW entity (not the
    borrower and not the subject LLC), a FATAL operating-agreement condition is opened. */
+// A SHORT verdict for the chip (a pill can't wrap, so it must fit a phone) — the full explanation
+// for a new entity lives in the operating-agreement block right below the card.
 const WIRE_KIND = {
-  borrower_personal: { label: 'Borrower’s personal account', tone: 'on' },
+  borrower_personal: { label: 'Borrower’s account', tone: 'on' },
   subject_llc: { label: 'Subject LLC account', tone: 'on' },
-  new_entity: { label: 'New entity — operating agreement required', tone: 'off' },
+  new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
 function DrawRequestCard({ appId }) {
@@ -369,33 +371,59 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* captured wire instructions (account number masked) */}
+      {/* WIRE INSTRUCTIONS — redesigned (owner-directed 2026-08-05). The account name (where the
+          money goes) leads, with its verdict chip; the bank details sit in a clean grid below. */}
       {wire && (
-        <div className="dd-card" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)' }}>
-          <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <b>Captured wire instructions</b>
-            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}><span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}</span>
+        <div className="act-card" style={{ marginTop: 12 }}>
+          <div className="act-card-head">
+            <div style={{ minWidth: 200, flex: 1 }}>
+              <div className="act-card-title">Where this draw’s money goes</div>
+              <div className="act-card-sub">The borrower’s wire instructions, captured from the signed form.</div>
+            </div>
+            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}>
+              <span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}
+            </span>
           </div>
-          <div style={{ marginTop: 6, display: 'grid', gap: 4, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-            <WireRow k="Account name" v={wire.account_name} />
-            <WireRow k="Bank" v={wire.bank_name} />
-            <WireRow k="Account number" v={wire.account_number_masked} />
-            <WireRow k="Routing / ABA" v={wire.routing_number} />
-            <WireRow k="Bank address" v={wire.bank_address} />
-            <WireRow k="Account holder address" v={wire.account_address} />
+
+          <div style={{ marginTop: 12 }}>
+            <div className="act-label" style={{ display: 'block' }}>Account name</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
           </div>
-          {wire.captured_at && <div className="muted small" style={{ marginTop: 6 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
+
+          <div style={{ marginTop: 12, display: 'grid', gap: '11px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+            <WireField k="Bank" v={wire.bank_name} />
+            <WireField k="Account number" v={wire.account_number_masked} mono />
+            <WireField k="Routing / ABA" v={wire.routing_number} mono />
+            <WireField k="Bank address" v={wire.bank_address} />
+            <WireField k="Account holder address" v={wire.account_address} />
+          </div>
+
+          {wire.captured_at && <div className="act-card-sub" style={{ marginTop: 12 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
         </div>
       )}
 
-      {/* FATAL: new-entity operating-agreement condition */}
-      {oa && !oa.satisfied && (
-        <div className="dd-card" style={{ marginTop: 10, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
-          <b>Operating agreement required before releasing this wire.</b>
-          <div className="dd-sub" style={{ marginTop: 3 }}>The wire account name is a company that isn’t the borrower or the subject LLC. A fatal condition is open to collect that entity’s operating agreement (and confirm its authority to receive funds) before any wire is released.</div>
+      {/* Operating agreement — the new-entity slot + its progress (Task 5) */}
+      {oa && (
+        <div className="act-card" style={{ marginTop: 10, borderLeft: '3px solid ' + (oa.satisfied ? 'var(--success,#2E7A5E)' : 'var(--danger,#A32A2A)') }}>
+          <div className="act-card-title">
+            {oa.satisfied ? 'Operating agreement — collected' : 'Operating agreement required before releasing this wire'}
+          </div>
+          <div className="act-card-sub" style={{ marginTop: 3 }}>
+            {oa.satisfied
+              ? 'The wire entity’s operating agreement has been collected, and the entity is saved to the borrower’s profile for the future.'
+              : 'The wire account name is a company that isn’t the borrower or the subject LLC. Collect that entity’s operating agreement — and confirm its authority to receive funds — before any wire is released.'}
+          </div>
+          {!oa.satisfied && (
+            <div className="act-card-sub" style={{ marginTop: 6 }}>
+              {oa.doc_accepted > 0
+                ? <span style={{ color: 'var(--success,#2E7A5E)' }}>An operating agreement has been accepted — sign off the condition to clear it. It has been saved to the entity on the borrower’s profile.</span>
+                : oa.doc_total > 0
+                  ? <span style={{ color: 'var(--warning,#B07A1E)' }}>An operating agreement is on the condition, waiting to be reviewed.</span>
+                  : <span style={{ color: 'var(--muted)' }}>No operating agreement on file yet — upload it on the condition, or it is pulled automatically if the borrower already has this entity on their profile.</span>}
+            </div>
+          )}
         </div>
       )}
-      {oa && oa.satisfied && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--teal,#2f7f86)' }}>Operating agreement for the wire entity has been collected.</div>}
 
       {/* signed PDF */}
       {d.signed_document && (
@@ -432,11 +460,14 @@ function DrawRequestCard({ appId }) {
     </div>
   );
 }
-function WireRow({ k, v }) {
+// One wire detail — a small uppercase label above the value, so long values (addresses) read
+// cleanly and the grid never has to right-align a wrapping string.
+function WireField({ k, v, mono }) {
   return (
-    <div className="row between" style={{ gap: 8 }}>
-      <span className="muted small">{k}</span>
-      <span className="small" style={{ fontWeight: 600, textAlign: 'right' }}>{v || '—'}</span>
+    <div>
+      <div className="act-label" style={{ display: 'block' }}>{k}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: v ? 'var(--text)' : 'var(--muted)', marginTop: 2,
+        fontVariantNumeric: mono ? 'tabular-nums' : undefined, wordBreak: 'break-word' }}>{v || '—'}</div>
     </div>
   );
 }
