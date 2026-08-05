@@ -101,10 +101,14 @@ export default function UspsAddressVerification({ appId, onChanged }) {
   const [verifiedInput, setVerifiedInput] = useState(null); // the form snapshot the current result was produced from
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
+  const [errDetail, setErrDetail] = useState('');  // the technical "exactly why" line, when USPS gives one
   const [flash, setFlash] = useState('');
+  const [ovrOpen, setOvrOpen] = useState(false);   // super-admin exception panel
+  const [ovrReason, setOvrReason] = useState('');
   const dialogRef = useRef(null);
   const restoreRef = useRef(null);
   const busyRef = useRef('');
+  const loadedFormRef = useRef(null);   // the address the form was prefilled with (to tell an edit from a no-op)
   busyRef.current = busy;
 
   async function load(prefill) {
@@ -112,7 +116,7 @@ export default function UspsAddressVerification({ appId, onChanged }) {
     try {
       const d = await api.get(`/api/staff/applications/${appId}/usps-verification`);
       setData(d);
-      if (prefill) { setForm(compsFrom(d.property_address)); setVerifiedInput(null); }
+      if (prefill) { const pf = compsFrom(d.property_address); setForm(pf); loadedFormRef.current = pf; setVerifiedInput(null); }
       return d;
     } catch (e) { setErr(e.message || 'Could not load USPS verification.'); return null; }
   }
@@ -144,13 +148,43 @@ export default function UspsAddressVerification({ appId, onChanged }) {
 
   async function check() {
     if (!form.line1 || !form.state) { setErr('Enter at least a street address and state, then verify.'); return; }
-    setBusy('check'); setErr(''); setFlash('');
+    setBusy('check'); setErr(''); setErrDetail(''); setFlash('');
     try {
       const r = await api.post(`/api/staff/applications/${appId}/usps-verification/check`, { address: form });
       setVerifiedInput({ ...form });
       await load(false);
       if (r && (r.status === 'verified' || r.status === 'corrected')) setFlash('USPS returned a deliverable address. Review it, then Import to adopt it.');
-    } catch (e) { setErr(e.message || 'USPS verification failed.'); }
+    } catch (e) {
+      // Surface the plain reason AND the exact technical detail USPS gave, so the
+      // owner can "see exactly why" instead of a generic "try again" (2026-08-05).
+      setErr(e.message || 'USPS verification failed.');
+      setErrDetail((e && e.data && e.data.detail) || '');
+    }
+    finally { setBusy(''); }
+  }
+
+  // SUPER-ADMIN EXCEPTION — accept the address and lift the whole USPS hold-back
+  // (the condition AND the title / insurance / attorney ordering gates) when USPS
+  // itself won't cooperate. Adopts the edited candidate if one was typed, else the
+  // file's current address; records who + why on the file.
+  async function doOverride() {
+    if (!ovrReason.trim()) { setErr('Add a reason for the exception — it’s saved on the file for everyone to see.'); return; }
+    setBusy('override'); setErr(''); setFlash('');
+    try {
+      // Send an address ONLY when the super admin actually edited it — otherwise the
+      // server keeps the file's current address untouched (a no-op override must not
+      // rewrite the address, reopen a contract condition, or push to ClickUp).
+      const edited = loadedFormRef.current ? !sameComps(form, loadedFormRef.current) : true;
+      await api.post(`/api/staff/applications/${appId}/usps-verification/override`, {
+        overrideReason: ovrReason.trim(),
+        address: (edited && form.line1 && form.state) ? form : undefined,
+        lastError: errDetail || err || undefined,
+      });
+      setOvrOpen(false); setOvrReason('');
+      await load(true);
+      setFlash('Exception recorded. The address is accepted, the condition is cleared, and title / insurance / attorney ordering is unlocked.');
+      if (onChanged) await onChanged();
+    } catch (e) { setErr(e.message || 'Could not record the exception.'); }
     finally { setBusy(''); }
   }
 
@@ -314,7 +348,16 @@ export default function UspsAddressVerification({ appId, onChanged }) {
 
               {/* action + guidance */}
               {flash && <div style={{ padding: '10px 12px', borderRadius: 6, border: '1px solid var(--ok)', background: 'var(--success-soft)', color: 'var(--text)', fontSize: 13.5 }}>{flash}</div>}
-              {err && <div style={{ padding: '10px 12px', borderRadius: 6, border: '1px solid var(--danger)', background: 'var(--danger-soft)', color: 'var(--text)', fontSize: 13.5 }}>{err}</div>}
+              {err && (
+                <div style={{ padding: '10px 12px', borderRadius: 6, border: '1px solid var(--danger)', background: 'var(--danger-soft)', color: 'var(--text)', fontSize: 13.5 }}>
+                  <div>{err}</div>
+                  {errDetail && (
+                    <div className="small" style={{ marginTop: 6, color: 'var(--text-soft)' }}>
+                      <span style={{ fontWeight: 700 }}>Exactly what USPS said:</span> <code style={{ wordBreak: 'break-word' }}>{errDetail}</code>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {hasResult && !deliverable && (
                 <div className="small" style={{ color: 'var(--danger)' }}>
@@ -335,6 +378,39 @@ export default function UspsAddressVerification({ appId, onChanged }) {
               <div className="small" style={{ color: 'var(--text-soft)' }}>
                 <strong>Verify</strong> stages USPS’s standardized address. <strong>Import</strong> adopts it as the working property address for the loan, financing tapes and TPR exports, clears this condition, and unlocks title/insurance/attorney ordering. Changing the address later re-opens this condition automatically.
               </div>
+
+              {/* SUPER-ADMIN EXCEPTION — never be stuck when USPS itself won't cooperate.
+                  Only shown to a super admin, and only while the hold-back is still on. */}
+              {data && data.canOverride && !imported && (
+                <div style={{ marginTop: 4, border: '1px dashed var(--warning)', borderRadius: 8, padding: 14, background: 'var(--warning-soft)' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                    <div>
+                      <div className="small" style={{ fontWeight: 700, color: 'var(--text)' }}>Super-admin exception</div>
+                      <div className="small" style={{ color: 'var(--text-soft)', marginTop: 4, maxWidth: 560 }}>
+                        Accept this address without a USPS confirmation. This clears the condition and unlocks title, insurance and attorney ordering. It uses the address in the box above if you edited it, otherwise the file’s current address. The reason is saved on the file.
+                      </div>
+                    </div>
+                    {!ovrOpen && (
+                      <button className="btn ghost small" disabled={!!busy} onClick={() => { setOvrOpen(true); setErr(''); }}>
+                        Override the USPS hold
+                      </button>
+                    )}
+                  </div>
+                  {ovrOpen && (
+                    <div style={{ marginTop: 12 }}>
+                      <label style={LABEL} htmlFor="usps-ovr-reason">Reason for the exception</label>
+                      <textarea id="usps-ovr-reason" className="input" rows={2} value={ovrReason}
+                        onChange={(e) => setOvrReason(e.target.value)} placeholder="e.g. USPS lookup failing; address confirmed against county records and the appraisal." />
+                      <div className="row" style={{ justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
+                        <button className="btn ghost small" disabled={!!busy} onClick={() => { setOvrOpen(false); setOvrReason(''); }}>Cancel</button>
+                        <button className="btn primary small" disabled={!!busy || !ovrReason.trim()} onClick={doOverride}>
+                          {busy === 'override' ? 'Recording…' : 'Accept address & clear the hold'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
