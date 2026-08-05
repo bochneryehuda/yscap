@@ -101,6 +101,10 @@ function brandHeader() {
  *          meta[{label,value}], cta{label,url}, note, replyable, audience })
  *   -> { subject, html, text }
  *
+ * heading     — the big in-body H1 (and the plaintext headline). Defaults to `title`;
+ *               set it to decouple the visible headline from the SUBJECT — e.g. on a
+ *               threaded chain where every message shares one subject but each says
+ *               what it is about.
  * subjectTag  — a short file identifier (e.g. "YS-1042 · 123 Main St") appended
  *               to the SUBJECT line (never to the in-body H1) so the recipient
  *               sees WHICH file the email is about straight from their inbox.
@@ -113,6 +117,14 @@ function brandHeader() {
 function render(p) {
   p = p || {};
   var title    = p.title || 'Notification';
+  // The big in-body headline (the H1). Defaults to `title`, so every existing caller is
+  // byte-identical — but a caller may set it INDEPENDENTLY of `title` when the two must
+  // differ. The one place that needs this is a threaded chain: every message keeps ONE
+  // subject (derived from `title`, below) so it stays on the conversation, while the H1
+  // says what THAT particular message is actually about (owner-directed 2026-08-05:
+  // a closing-date update on the closing chain should not headline "File ready for
+  // closing prep").
+  var heading  = (p.heading != null && String(p.heading).trim()) ? String(p.heading).trim() : title;
   var subjectTag = (p.subjectTag != null && String(p.subjectTag).trim()) ? String(p.subjectTag).trim() : '';
   var kicker   = (p.kicker != null && String(p.kicker).trim()) ? String(p.kicker).trim() : '';
   var pre      = p.preheader || p.intro || title;
@@ -492,7 +504,7 @@ function render(p) {
           eyebrowHtml +
           heroHtml +
           '<h1 style="margin:0 0 16px;font-family:Georgia,\'Times New Roman\',serif;font-size:23px;' +
-            'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
+            'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(heading) + '</h1>' +
           // figures then facts, both ABOVE the generic file meta: the money is the answer, the
           // draw's own details are the supporting read, and the file identity block is reference.
           greetHtml + body + figuresHtml + factsHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
@@ -536,7 +548,9 @@ function render(p) {
   // and keeps only what the recipient typed.
   var t = [];
   if (marker) t.push(marker, '');
-  t.push('PILOT · by YS Capital', '', title, '');
+  // The plaintext body headline mirrors the HTML H1 (`heading`), not the subject —
+  // otherwise a chain update would read one thing in HTML and another in text/plain.
+  t.push('PILOT · by YS Capital', '', heading, '');
   if (greeting) t.push(greeting, '');
   if (intro) t.push(intro, '');
   lines.forEach(function (l) { t.push(l, ''); });
