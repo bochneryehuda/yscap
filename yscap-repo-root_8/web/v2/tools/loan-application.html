@@ -813,6 +813,15 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                             <div class="field"><label for="payoff">Current loan payoff</label><div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="decimal" placeholder="0"></div></div>
                             <div class="field"><label for="origPrice2">Original purchase price</label><div class="input"><span class="adorn">$</span><input id="origPrice2" type="number" inputmode="decimal" placeholder="0"></div></div>
                         </div>
+                        <!-- WHO is being paid off, and WHICH loan (owner-directed: the payoff
+                             is part of the structure — say who holds it and its loan number, so the
+                             closing attorney knows where to send the payoff request). Collected here
+                             exactly as the borrower portal and staff new-file form do, so a refinance
+                             started from ANY side carries the same payoff details. -->
+                        <div class="field-rows two-col" style="margin:0">
+                            <div class="field"><label for="payoffLender">Lender being paid off</label><div class="input"><input id="payoffLender" type="text" placeholder="who holds the current loan"></div></div>
+                            <div class="field"><label for="payoffLoanNo">Their loan number</label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
+                        </div>
                         <div class="field" style="max-width:260px"><label for="acqDate">Date acquired</label><div class="input"><input id="acqDate" type="date"></div></div>
                     </div>
                 </div>
@@ -1832,7 +1841,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     ]});
     var a = [];
     if (!isRefi()) { a.push(["Purchase price", money("price")]); if (el("isAssign").checked) { a.push(["Assignment / wholesale", "Yes"]); a.push(["Seller's contract price", money("origPrice")]); a.push(["Assignment fee", money("assignFee")]); } }
-    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
+    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Lender being paid off", val("payoffLender")]); a.push(["Their loan number", val("payoffLoanNo")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
     a.push(["As-is value", money("asIs")]); a.push(["ARV", money("arv")]);
     S.push({ title: "Acquisition & valuation", step: 2, items: a });
     S.push({ title: "Rehab, timeline & experience", step: 2, items: [
@@ -2102,6 +2111,14 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
          seasoning basis. Refinance-only: on a purchase there is nothing to pay
          off and no prior acquisition. */
       payoffAmount: isRefi() ? val("payoff") : null,
+      /* WHO is being paid off and WHICH loan — the other two thirds of the payoff
+         the borrower portal and staff new-file form both send. The intake handler
+         already stores payoff_lender / payoff_loan_number (refi-gated); the public
+         form simply never collected them, so a refinance started from the marketing
+         site lost them while the other two entry points kept them (owner-directed:
+         "no matter from which side"). Refinance-only, like the amount above. */
+      payoffLender: isRefi() ? (val("payoffLender") || null) : null,
+      payoffLoanNumber: isRefi() ? (val("payoffLoanNo") || null) : null,
       originalPurchasePrice: isRefi() ? val("origPrice2") : null,
       acquisitionDate: isRefi() ? val("acqDate") : null,
       isAssignment: assign,

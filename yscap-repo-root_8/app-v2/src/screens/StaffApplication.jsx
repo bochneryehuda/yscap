@@ -6311,7 +6311,7 @@ function TapeExport({ appId }) {
       const q = await api.staffTapeQuestions(appId, tapeKey);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned }); setBusy(null); return; }
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
       await runExport(tapeKey, name, undefined);
     } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
@@ -6472,7 +6472,11 @@ function TapeExport({ appId }) {
       {pending && (
         <TapeQuestionsModal
           title={pending.questions.length ? `${pending.name} tape — a few details` : `${pending.name} tape — confirm current numbers`}
-          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          subtitle={pending.questions.length
+            ? (pending.supplementalMissing > 0
+                ? "This is a ground-up loan. Fill in these details — they're saved on the file and pre-filled here every time you export."
+                : "These details are saved on the file and pre-filled here. Review or change anything, then export.")
+            : undefined}
           questions={pending.questions}
           seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}

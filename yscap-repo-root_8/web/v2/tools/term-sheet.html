@@ -1049,6 +1049,17 @@
     if (v.propAddr) out.v.pStreet = v.propAddr;
     if (v.propState) out.v.pState = v.propState;
     if (!refi && v.price) out.v.price = s(v.price);
+    // THE PAYOFF TRAVELS WITH THE REFINANCE (owner-directed). The borrower typed the
+    // payoff that drove the cash-to-them figure they were quoted here — carry it (and
+    // who/which loan when the studio has them) into the application so it opens
+    // pre-filled instead of asking again, matching the borrower-portal and staff
+    // new-file hand-offs. The field ids are the same on both tools (payoff /
+    // payoffLender / payoffLoanNo). Refinance-only.
+    if (refi) {
+      if (v.payoff) out.v.payoff = s(v.payoff);
+      if (v.payoffLender) out.v.payoffLender = v.payoffLender;
+      if (v.payoffLoanNo) out.v.payoffLoanNo = v.payoffLoanNo;
+    }
     if (c.isAssign) { out.c.isAssign = true; if (v.origPrice) out.v.origPrice = s(v.origPrice); }
     if (v.asIs) out.v.asIs = s(v.asIs);
     if (v.arv) out.v.arv = s(v.arv);
