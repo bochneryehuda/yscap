@@ -5,6 +5,11 @@ import ToolScenarioBar from '../components/ToolScenarioBar.jsx';
 import { api } from '../lib/api.js';
 import { rememberScroll, restoreRemembered } from '../lib/keep-scroll.js';
 import { scenarioToDraft } from '../lib/scenario.js';
+// The studio's OWN reader + the SAME override/term-option builders the Products
+// & Pricing panel registers with — so a file created from a term sheet registers
+// through the identical guarded path (owner-directed 2026-08-06).
+import { readSnapshot } from '../components/TermSheetStudio.jsx';
+import { overridesFromSnapshot, overridesAreManual, termOptionsFromSnapshot } from '../components/ProductStudioPanel.jsx';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
    tools the public marketing "Investor Suite" (web/v2/suite.html) offers —
@@ -123,10 +128,47 @@ export default function StaffInvestorSuite({ initialTool = null }) {
       const state = win.YS.collectState();          // { v, c, rad }
       const draft = scenarioToDraft({ v: state.v, c: state.c });
       const name = String((state.v || {}).borrowerName || '').trim();
+      /* NOTHING THE TERM SHEET SAID IS FORGOTTEN (owner-directed 2026-08-06:
+         "if you start an application from a scenario that you selected,
+         everything should be remembered, including the manuals, the changes of
+         pricing, this out of pocket, the loan amount, the program"). `draft`
+         above carries the DEAL (price, values, budget, experience, payoff) — it
+         does not, and should not, carry the pricing ELECTION: which program was
+         chosen, the manual LTV/LTC/ARV basis, the markup and origination
+         changes, the fee overrides, the out-of-pocket exception. Those are what
+         make the new file register as the sheet the officer just built.
+
+         Read through the studio's OWN reader (`readSnapshot`) rather than
+         `collectState()`, which cannot see either half of what is needed: it
+         strips every `data-noshare` admin field (the markup) and has no idea
+         which program card is active. `overridesFromSnapshot(..., 'staff')` is
+         then the SAME payload the Products & Pricing panel sends when a human
+         presses Register, so the new file registers through the identical
+         guarded path — approvals, escalations and all.
+
+         The LOAN AMOUNT is deliberately NOT carried. It is not an input; the
+         frozen engine recomputes it on the file from exactly these numbers, so
+         carrying it could only ever let a stale figure disagree with the engine. */
+      let reg = null;
+      try {
+        const snap = readSnapshot(win);
+        if (snap && snap.program) {
+          reg = {
+            program: snap.program,
+            overrides: overridesFromSnapshot(snap, 'staff'),
+            termOptions: termOptionsFromSnapshot(snap),
+            // A manual basis needs the liquidity months before it can register;
+            // the officer is asked for them on the new-file screen rather than
+            // being handed an opaque refusal after the file already exists.
+            manual: overridesAreManual(overridesFromSnapshot(snap, 'staff')),
+          };
+        }
+      } catch (_) { reg = null; }   // never block creating the file
       const prefill = {
         ...draft,
         firstName: name ? name.split(/\s+/)[0] : '',
         lastName: name ? name.split(/\s+/).slice(1).join(' ') : '',
+        __register: reg,
       };
       sessionStorage.setItem('ys-staff-newfile-prefill', JSON.stringify(prefill));
       nav('/internal/new');
