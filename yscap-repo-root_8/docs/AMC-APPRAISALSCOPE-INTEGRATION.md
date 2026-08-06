@@ -178,21 +178,74 @@ is off; writes need the separate outbound gate; dry-run builds+logs and sends no
 9. **Frontend** — order/status/comments/ROV/document panels + admin health/mapping.
 10. **Tests, product-separation, docs, PR.**
 
-## 7. Open items / what CoreLogic must provide
+## 7. Credentials — what we have, what is still missing, how to check
 
-Before this can run end-to-end against UAT, CoreLogic / the vendor must issue:
-`AMC_CLIENT_ID` / `AMC_CLIENT_SECRET` (OAuth), `AMC_LOGIN_ACCOUNT` /
-`AMC_LOGIN_PASSWORD` (DoLogin), `AMC_SUBDOMAIN`, `AMC_LENDER_IDENTIFIER`,
-`AMC_SOURCE_CLIENT_ID`, and confirmed UAT/PROD endpoint hosts. A handful of *optional*
-CreateAppraisal leaf field names (best-contact, some site-analysis fields) are marked
-"verify against UAT" in `cdg.js` — the **required** fields all come from the vendor's
-own sample payloads and are pinned by the pure test.
+**No credential value belongs in this repository.** Everything below is set in the
+Render service environment (or a local `.env`, which is gitignored). This section names
+variables only.
+
+### Received (owner, 2026-08-06) — UAT
+
+| Variable | What arrived | Status |
+|---|---|---|
+| `AMC_CLIENT_ID` | UAT OAuth client id | received |
+| `AMC_CLIENT_SECRET` | UAT OAuth client secret | received |
+| `AMC_LENDER_IDENTIFIER` | the vendor's **"GGID"** (`GG…`) — same field, paste verbatim | received |
+
+### Still required before anything can authenticate
+
+| Variable | What to ask the vendor for | Blocks |
+|---|---|---|
+| `AMC_LOGIN_ACCOUNT` | the AppraisalScope **user** orders are placed as | DoLogin → everything |
+| `AMC_LOGIN_PASSWORD` | that user's password | DoLogin → everything |
+| `AMC_SUBDOMAIN` | our AppraisalScope tenant, e.g. `integrations.uat` | DoLogin → everything |
+| `AMC_SOURCE_CLIENT_ID` | our client/user id inside AppraisalScope | placing an order |
+
+The OAuth pair and the login pair are **two different credentials for two different
+systems** — the first authenticates *the software* to CoreLogic's gateway, the second
+authenticates *a person* to the AppraisalScope tenant behind it. Having one is not
+having the other, which is why `AMC_LOGIN_ACCOUNT` is still outstanding even though
+the OAuth keys have arrived.
+
+`AMC_FALLBACK_APIKEY` is the escape hatch: if the vendor hands over a ready-made UAT
+`api_key` instead of a login, set that and DoLogin is skipped entirely.
+
+### Verifying, without ordering anything
+
+```
+npm run amc:preflight                  # config → GetToken → DoLogin → one read-only lookup
+npm run amc:preflight -- --config-only # just report what is set/missing, call nothing
+npm run amc:preflight -- --lookup GetJobType --verbose
+```
+
+`scripts/amc-preflight.js` reads the same variables the running service does and goes
+through the same transport, so a pass here means the service will work. It turns the
+master switch on **for its own process only** and force-disables the write gate, so it
+cannot place a billable order. Each step isolates one credential and a failure is
+*named* — `credentials`, `session`, `endpoint`, `network`, `vendor` — with the fix.
+
+One trap it is explicitly built to avoid: **an egress firewall answers HTTP 403 too.**
+A blocked outbound connection and a wrong client secret look identical unless you read
+the response body, so the classifier checks the body first and reports a network denial
+as `network`, never as `credentials`. If the preflight reports `network`, the
+credentials have not been tested at all — the request never left our side. CoreLogic's
+hosts must be reachable from wherever it runs (and CoreLogic generally has to allowlist
+the caller's egress IP on their end too — worth confirming when the login is requested).
+
+### Still to verify against a live UAT tenant
+
+A handful of *optional* CreateAppraisal leaf field names (best-contact, some
+site-analysis fields) are marked "verify against UAT" in `cdg.js` — the **required**
+fields all come from the vendor's own sample payloads and are pinned by the pure test.
+The lookups (`GetJobType` etc.) also decide the real `amc_form_map` rules, and those
+cannot be finalized until a lookup call actually returns this tenant's form catalog.
 
 ## 8. Owner decisions (2026-08-05)
 
-- **Credentials:** not issued yet — we must request a UAT account from CoreLogic
-  (`AMC_CLIENT_ID`/`SECRET`, `AMC_LOGIN_ACCOUNT`/`PASSWORD`, `AMC_SUBDOMAIN`,
-  `AMC_LENDER_IDENTIFIER`, `AMC_SOURCE_CLIENT_ID`). Keep building for wire-up-later.
+- **Credentials:** *(updated 2026-08-06)* the UAT OAuth pair and the GGID have arrived;
+  the AppraisalScope login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`), the `AMC_SUBDOMAIN` and
+  `AMC_SOURCE_CLIENT_ID` are still outstanding. Full status and the check command are in
+  section 7.
 - **Payment stays MANUAL**, but the appraisal-fee card must be **linked** to the
   existing payment-card condition (`application_payment_cards` / the `appraisal_card`
   condition, `src/lib/appraisal-card.js`): entering the card **at the order fills the

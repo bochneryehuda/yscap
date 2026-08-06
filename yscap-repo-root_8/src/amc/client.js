@@ -102,7 +102,10 @@ async function getAccessToken() {
       body: 'grant_type=client_credentials',
     }, TIMEOUT_MS);
     const text = buf.toString('utf8');
-    let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
+    // Keep a non-JSON body as `raw` (same as post() does): an intermediary that rejects
+    // the call — a corporate proxy, an egress allowlist — answers text/plain, and that
+    // sentence is the difference between "your secret is wrong" and "your firewall is".
+    let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }
     if (!res.ok) throw httpError('GetToken', res.status, undefined, data);
     const token = data.accessToken || data.access_token;
     if (!token) throw new Error('AMC GetToken returned no accessToken');
