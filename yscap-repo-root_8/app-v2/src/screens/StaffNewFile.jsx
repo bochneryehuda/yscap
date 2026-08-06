@@ -564,18 +564,33 @@ export default function StaffNewFile() {
       const reg = registerRef.current;
       let regNote = '';
       if (reg && reg.program) {
+        const doRegister = (months) => api.staffRegisterProduct(
+          r.applicationId, reg.program, reg.overrides || {},
+          undefined,                          // no econVersion — the file was just born
+          months, false, reg.termOptions || undefined);
         try {
-          await api.staffRegisterProduct(
-            r.applicationId, reg.program, reg.overrides || {},
-            undefined,                        // no econVersion — the file was just born
-            // A MANUAL basis needs the liquidity months, which this screen does
-            // not collect — the server refuses with its own plain wording and the
-            // note below sends them to Products & Pricing to finish it. Better an
-            // honest refusal than a guessed month count on a manual product.
-            undefined,
-            false, reg.termOptions || undefined);
+          await doRegister(undefined);
         } catch (e3) {
-          regNote = e3 && e3.message ? e3.message : 'the product could not be registered automatically';
+          /* A MANUAL PRODUCT STILL TRAVELS, AND WAITS FOR ITS EXCEPTION
+             (owner-directed 2026-08-06: "make sure that the manual program still
+             needs to go through the exception — the exception still needs to be
+             approved, but it should still travel along and wait for the exception
+             as it goes"). A manual basis registers only with a liquidity-month
+             count, which this screen does not collect; refusing there would DROP
+             the manual scenario the officer built, which is the one thing that
+             must not happen. So we retry once with the count the SERVER itself
+             suggests — the company default, exactly what the studio prefills that
+             field with, so nothing is invented here. The registration then opens
+             the super-admin escalation as it always does and the terms are held
+             until it is approved; an admin can counter the months there. */
+          const suggested = e3 && e3.data && e3.data.suggestedAssetMonths;
+          if (e3 && e3.data && e3.data.code === 'manual_asset_months_required' && Number(suggested) >= 1) {
+            try { await doRegister(Number(suggested)); } catch (e4) {
+              regNote = e4 && e4.message ? e4.message : 'the product could not be registered automatically';
+            }
+          } else {
+            regNote = e3 && e3.message ? e3.message : 'the product could not be registered automatically';
+          }
         }
       }
       if (regNote) {
