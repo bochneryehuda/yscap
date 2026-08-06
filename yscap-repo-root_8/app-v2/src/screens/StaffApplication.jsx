@@ -50,6 +50,7 @@ import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
+import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
@@ -5773,6 +5774,11 @@ export default function StaffApplication() {
           under Structure & pricing (most exceptions are pricing exceptions). */}
       <Section hidden={!show('sec-exceptions')} id="sec-exceptions" title="Exceptions" defaultOpen={false}
         info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
+        {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST live
+            HERE now (owner-directed 2026-08-06: "remove it from Products & Pricing,
+            add it to the general request & exceptions area"). Self-hides with no
+            co-borrower. The approve side already lives in the Exceptions box. */}
+        <GuarantyWaiverCard appId={id} />
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 

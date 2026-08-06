@@ -308,30 +308,31 @@ function fakeStorage() {
     eq(versions.length, 2, 'two envelope rows over the file life');
     ok(String(versions[0].product_version) !== String(versions[1].product_version), 're-issue got a distinct product_version (distinct idempotency key)');
 
-    // ---- HIGH-2: a stored term sheet produced BEFORE the appraisal is blocked -
-    // (it could carry a pre-appraisal loan amount that contradicts the disclosure,
-    // which regenerates on the current amount — one envelope, two loan figures).
+    // ---- HIGH-2: the term sheet + application are GENERATED fresh at send time -
+    // (owner-directed 2026-08-06 for the term sheet). Both are BUILT on our server
+    // from the current file/registration on every send, so neither can carry a
+    // stale (pre-appraisal) figure — there is no stored copy that goes out. The
+    // appraisal-staleness protection lives in the SEND GATE (registration_stale /
+    // re-sign the P&P condition after the appraisal), not a document-freshness
+    // guard on a stored PDF. So a backdated STORED term-sheet copy no longer
+    // blocks — it is a preview, never what the borrower signs.
     {
       const tsRow = (await pool.query(
         `SELECT * FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package' ORDER BY created_at DESC LIMIT 1`, [app])).rows[0];
-      // appraisal came back 2026-07-10; backdate the term sheet to before that.
+      // Backdate the stored P&P copy to BEFORE the appraisal — it must NOT block,
+      // because the sender builds its own FINAL and never reuses that copy.
       await pool.query(`UPDATE documents SET created_at='2026-07-01T00:00:00Z' WHERE application_id=$1 AND doc_kind='term_sheet'`, [app]);
-      let staleBlocked = false;
-      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
-      catch (e) { staleBlocked = /before the appraisal/.test(e.message) && e.retryable === false; }
-      ok(staleBlocked, 'HIGH-2: a term sheet produced before the appraisal is blocked (non-retryable)');
-      // refresh it to AFTER the appraisal → the freshness guard must NOT fire
-      await pool.query(`UPDATE documents SET created_at=now() WHERE application_id=$1 AND doc_kind='term_sheet'`, [app]);
-      let freshFreshnessOk = true;
-      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
-      catch (e) { freshFreshnessOk = !/before the appraisal/.test(e.message); }
-      ok(freshFreshnessOk, 'HIGH-2: a term sheet refreshed after the appraisal passes the freshness guard');
-      // The application_export is GENERATED fresh at send time from the current file,
-      // so it can never be stale — no freshnessCheck applies to it. Instead of a
-      // (now-moot) staleness assertion, confirm buildDefinition PRODUCES the generated
-      // application PDF (with the borrower signature anchor) every time.
-      const freshDef = await orchestrate.buildDefinition(tsRow, { db: pool, storage });
-      const freshApp = freshDef.documents.find((dd) => dd.name === 'Loan Application');
+      const def = await orchestrate.buildDefinition(tsRow, { db: pool, storage });
+      const ts = def.documents.find((dd) => dd.name === 'Term Sheet');
+      ok(ts && ts.fileExtension === 'pdf',
+        'HIGH-2: the term sheet is GENERATED fresh at send time — a stale STORED copy never blocks it');
+      const tsPdf = Buffer.from(ts.base64, 'base64').toString('latin1');
+      ok(/FINAL TERM SHEET/.test(tsPdf) && !/INITIAL TERM SHEET/.test(tsPdf),
+        'the built term sheet is stamped FINAL, never "INITIAL — NOT FINAL"');
+      ok(tsPdf.includes('/ts_b1_sig/') && tsPdf.includes('/ts_admin_sig/'),
+        'and carries the borrower + countersign DocuSign anchors');
+      // The application_export is likewise GENERATED fresh on every build.
+      const freshApp = def.documents.find((dd) => dd.name === 'Loan Application');
       ok(freshApp && freshApp.fileExtension === 'pdf', 'the Loan Application is generated fresh on every build (as a PDF)');
       ok(Buffer.from(freshApp.base64, 'base64').toString('latin1').includes('/app_b1_sig/'),
         'the freshly-generated Loan Application carries the borrower signature anchor');

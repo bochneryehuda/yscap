@@ -54,7 +54,7 @@ const DRIFT_LABEL = { loan_amount: 'Loan amount', purchase_price: 'Purchase pric
 const TYPE_META = {
   guaranty_waiver: {
     chip: 'Guaranty waiver',
-    jumpHash: '#sec-pricing', jumpLabel: 'Jump to the guaranty',
+    jumpHash: '#sec-exceptions', jumpLabel: 'Jump to the guaranty',
     defaultPolicy: () => 'Full recourse — both borrowers personally guarantee.',
     requestedChange: (subject) => <>Waive <b>{subject}</b>’s personal guarantee — {subject} becomes a non-guarantor member; the primary borrower remains sole guarantor.</>,
   },
