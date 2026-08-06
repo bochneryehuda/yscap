@@ -53,8 +53,10 @@ router.get('/meta', async (req, res) => {
   // into the registry — a new hire appears in the filter dropdown with no deploy.
   try {
     const r = await db.query(
+      // is_external=false: keep external (TPO / broker) users out of the internal
+      // officer-filter dropdown (TPO PORTAL invariant, CLAUDE.md).
       `SELECT id::text AS v, NULLIF(full_name,'') AS label FROM staff_users
-        WHERE is_active AND full_name IS NOT NULL ORDER BY full_name`);
+        WHERE is_active AND is_external = false AND full_name IS NOT NULL ORDER BY full_name`);
     meta.lookups = { staff: r.rows.filter((x) => x.label) };
   } catch (_) { meta.lookups = { staff: [] }; }
   meta.vizKinds = store.VIZ;

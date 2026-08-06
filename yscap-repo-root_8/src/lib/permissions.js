@@ -66,6 +66,13 @@ const CAPABILITIES = [
   // officer does NOT get it unless an admin grants it to that individual here on
   // the Team screen. (super_admin has every capability implicitly.)
   { key: 'export_data_tapes', label: 'Export capital-provider data tapes', hint: 'Download a loan\'s data tape for its capital provider (Fidelis / Blue Lake / EMCAP …). Off for loan officers unless granted per-person.' },
+  // Sending the official term sheet (and any other package) out on DocuSign is a
+  // LENDER-ONLY action (owner-locked TPO decision): every internal staff role
+  // holds it, so internal behavior is unchanged, but an external broker (kind
+  // 'tpo') can NEVER hold it — `can()` returns false for any non-staff actor —
+  // so a TPO can never send the signable package. A broker uploads and requests;
+  // we send. Do NOT grant this to a TPO role.
+  { key: 'send_term_sheet', label: 'Send documents for signature (DocuSign)', hint: 'Send the official term sheet and other DocuSign packages. Lender-only — never granted to an external broker.' },
   { key: 'manage_team', label: 'Manage the team', hint: 'Add staff, set roles, set passwords.' },
   { key: 'platform_setup', label: 'Platform setup', hint: 'Integrations, email config, and other software setup.' },
   { key: 'view_audit_log', label: 'View the system audit log', hint: 'The company-wide trail of every action across every file and borrower.' },
@@ -76,16 +83,16 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'send_term_sheet', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen. They also export
   // capital-provider data tapes (owner-directed 2026-07-26) and pull credit.
-  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'waive_conditions', 'export_data_tapes'],
-  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc'],
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'waive_conditions', 'export_data_tapes', 'send_term_sheet'],
+  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet'],
   // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
   // desk across all files. Admin-overridable per the coordinator rules.
-  draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
+  draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions', 'send_term_sheet'],
   // Processors sign off conditions, manage draws, export data tapes
   // (owner-directed 2026-07-26), and pull credit. They ALSO hold waive_conditions
   // (owner-directed 2026-07-26): a processor handling a finding must be able to finish
@@ -93,7 +100,7 @@ const ROLE_DEFAULTS = {
   // — instead of being forced to escalate it to a super-admin. The decision is still
   // fully attributed (who/why/when on the finding + the audit log), and an admin can
   // revoke it for a specific person from the Team screen.
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'waive_vesting_llc'],
+  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'waive_vesting_llc', 'send_term_sheet'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They CAN pull_credit (owner-directed 2026-07-23): the LO pulls credit at point of
   // sale, then marks the credit condition Done (the reviewed stamp) — the processor
@@ -102,13 +109,13 @@ const ROLE_DEFAULTS = {
   // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
   // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
-  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc'],
+  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet'],
   // Closers see the whole pipeline (they need the closing queue across files) and
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow
   // per-person from the Team screen.
-  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing', 'waive_vesting_llc'],
-  software_setup: ['manage_conditions', 'platform_setup'],
+  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing', 'waive_vesting_llc', 'send_term_sheet'],
+  software_setup: ['manage_conditions', 'platform_setup', 'send_term_sheet'],
 };
 
 function defaultsFor(role) {
@@ -185,8 +192,57 @@ const visibleOfficersSql = (alias, p) =>
   ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
   ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 
+// ============================================================================
+// TPO PORTAL (owner-directed 2026-08-04; db/472 + db/473; design
+// docs/TPO-PORTAL-BLUEPRINT.md). A TPO user is an EXTERNAL staff_users row
+// (`is_external=true`, `tpo_firm_id` set, role tpo_officer / tpo_processor) whose
+// SESSION carries `kind='tpo'`. They are deliberately NOT in the ROLES array
+// above — that array drives the INTERNAL roster + the internal-invite
+// ASSIGNABLE_ROLES set, and an external role must never be assignable to an
+// internal staffer. `can()` returns false for a tpo actor (kind !== 'staff'),
+// so a tpo session can never satisfy a staff capability gate.
+// ============================================================================
+
+// The two external roles, for display only (a firm-side roster in the TPO
+// portal). Kept OUT of ROLES/ROLE_KEYS on purpose (see the note above).
+const TPO_ROLES = [
+  { key: 'tpo_officer', label: 'Loan Officer (Broker)' },
+  { key: 'tpo_processor', label: 'Processor' },
+];
+const TPO_ROLE_KEYS = TPO_ROLES.map((r) => r.key);
+const TPO_ROLE_LABEL = Object.fromEntries(TPO_ROLES.map((r) => [r.key, r.label]));
+
+/** Is this actor a TPO (external brokerage) user? */
+function isTpoActor(actor) {
+  return !!(actor && actor.kind === 'tpo');
+}
+
+// THE definition of "which files a TPO user may see" — their own firm's TPO
+// files, and ONLY those. Every /api/tpo file/borrower query routes through this
+// so firm isolation lives in ONE place (the same discipline as
+// visibleOfficersSql). `p` is the acting external-staff-id placeholder; it is
+// ALWAYS referenced (a TPO actor is always firm-bounded — there is no
+// see_all_files escape for an external user). The `is_external=true` guard means
+// only a genuine external row ever resolves a firm — an internal id resolves
+// NULL, and `tpo_firm_id = NULL` matches nothing, so a stray internal caller is
+// scoped to zero files rather than to everything.
+const tpoFirmScopeSql = (alias, p) =>
+  `(${alias}.is_tpo = true AND ${alias}.tpo_firm_id = ` +
+  `(SELECT tpo_firm_id FROM staff_users WHERE id=${p} AND is_external=true))`;
+
+// Which BORROWERS a TPO firm may see: anyone who is the borrower or co-borrower
+// on one of the firm's TPO files. `alias` is the borrowers alias; `p` the
+// acting external-staff-id placeholder.
+const tpoBorrowerScopeSql = (alias, p) =>
+  `EXISTS (SELECT 1 FROM applications a2 WHERE a2.deleted_at IS NULL` +
+  ` AND (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id)` +
+  ` AND ${tpoFirmScopeSql('a2', p)})`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
   defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
   visibleOfficersSql,
+  // TPO portal
+  TPO_ROLES, TPO_ROLE_KEYS, TPO_ROLE_LABEL, isTpoActor,
+  tpoFirmScopeSql, tpoBorrowerScopeSql,
 };

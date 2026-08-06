@@ -125,6 +125,16 @@ function decryptSSN(buf) {
   } catch { return null; }
 }
 
+// ---------- Generic secret at rest (AES-256-GCM) ----------
+// The SAME cipher + key as the SSN helpers (SSN_ENCRYPTION_KEY), but named for
+// any secret string we must store encrypted and read back verbatim — e.g. a
+// broker firm's own Xactus credit-vendor password (TPO own-Xactus). Do NOT route
+// an SSN through these (use ssnForStorage — it also normalizes + hashes); these
+// are for opaque secrets that are never searched/matched, only stored + decrypted
+// at the moment of use. Returns/takes a bytea Buffer, or null.
+function encryptSecret(plain) { return encryptSSN(plain); }
+function decryptSecret(buf) { return decryptSSN(buf); }
+
 // #91/#92 — the SINGLE chokepoint for persisting an SSN. Normalizes to the 9
 // digits and returns { encrypted, last4, digits } — or NULL when the value isn't a
 // full 9-digit SSN. Every write path should go through this instead of hand-rolling
@@ -238,7 +248,7 @@ module.exports = {
   hashPassword, verifyPassword,
   signJwt, verifyJwt, jwtFailureReason,
   newTotpSecret, verifyTotp, totpUri,
-  encryptSSN, decryptSSN, ssnForStorage,
+  encryptSSN, decryptSSN, ssnForStorage, encryptSecret, decryptSecret,
   sha256, randomToken,
   passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
   newBackupCodes, hashBackupCode, normalizeBackupCode,

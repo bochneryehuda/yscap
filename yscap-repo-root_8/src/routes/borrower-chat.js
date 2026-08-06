@@ -182,7 +182,7 @@ router.post('/conversations/:cid/delivered', async (req, res) => {
 });
 router.post('/conversations/:cid/typing', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   const b = await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [me(req)]);
   const name = b.rows[0] ? `${b.rows[0].first_name || ''} ${b.rows[0].last_name || ''}`.trim() : 'Borrower';
   events.publishToConversation(conv.id, 'typing', {
@@ -192,7 +192,7 @@ router.post('/conversations/:cid/typing', async (req, res) => {
 });
 router.post('/conversations/:cid/open', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id);
+  if ((req.body || {}).connId) events.setOpenConversation(String(req.body.connId), conv.id, req.actor.id);
   res.json({ ok: true });
 });
 router.put('/conversations/:cid/draft', async (req, res) => {

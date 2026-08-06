@@ -120,7 +120,9 @@ router.post('/start', requireStaff, async (req, res) => {
 // Callable with EITHER token kind: inside a view it describes the view; outside
 // it answers `active:false` so the SPA can clear a stale local banner.
 router.get('/session', async (req, res) => {
-  if (!req.impersonation) return res.json({ active: false });
+  // Only a BORROWER view is reported here — a tpo-view token (surface 'tpo')
+  // gets active:false, exactly as the tpo-view /session ignores a borrower view.
+  if (!req.impersonation || req.impersonation.surface !== 'borrower') return res.json({ active: false });
   const b = await db.query(
     `SELECT id, first_name, last_name, email FROM borrowers WHERE id=$1`, [req.actor.id]);
   const row = b.rows[0] || {};

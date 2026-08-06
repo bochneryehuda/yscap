@@ -7,7 +7,8 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText, scrubFields } = require('../lib/borrower-safe');
+const { scrubText, scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
+const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
@@ -36,7 +37,6 @@ const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
-const apprScore = require('../lib/appraisal/scoring');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 /* The details door speaks camelCase and the field registry speaks snake_case,
@@ -917,23 +917,10 @@ function stripInternalAppFields(row) {
 // stored inputs also carry the markup knobs and the PRIMARY borrower's FICO (which
 // a co-borrower must not read). A borrower may see their loan STRUCTURE (rate,
 // loan amount, values) but never the markup. Staff pricing is a separate endpoint.
-function stripQuoteInternal(q) {
-  if (!q || typeof q !== 'object') return q;
-  const { adminPricing, ...rest } = q;
-  return rest;
-}
-function stripInputsInternal(inp) {
-  if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
-  return rest;
-}
-// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
-function borrowerSafeQuoteBundle(out) {
-  if (!out || typeof out !== 'object') return out;
-  return { ...out, inputs: stripInputsInternal(out.inputs),
-    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
-    silver: stripQuoteInternal(out.silver) };
-}
+// stripQuoteInternal / stripInputsInternal / borrowerSafeQuoteBundle now live in
+// src/lib/borrower-safe.js (single definition, shared with routes/tpo.js) —
+// required at the top of this file. A change to the margin scrub must reach every
+// non-lender surface at once, so it can never leak on one and not the other.
 
 // Scrub capital-partner names out of an LLC bundle's document slots before it
 // reaches a borrower: label/hint COALESCE to the INTERNAL wording (llc.js) and
@@ -999,31 +986,10 @@ async function loadFileForPricing(appId, borrowerId) {
   return { app, exp };
 }
 
-// The borrower may only pass the scenario knobs the Term Sheet Studio lets a
-// borrower choose (leverage, term, reserve, estimated FICO and requested
-// experience). Deal economics (price / values / budget / state) always come
-// from the loan file itself, so a tampered client can't inject a fabricated
-// basis. Every value is coerced + clamped to the studio's own input ranges.
-function borrowerPricingOverrides(raw) {
-  const out = {};
-  const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
-  const targetLTC = Number(raw && raw.targetLTC);
-  if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
-  // An explicit blank clears the reserve: pass '' through so buildInputs resolves
-  // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
-  // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
-  if (raw && raw.irMonths === '') { out.irMonths = ''; }
-  else if (raw && raw.irMonths != null) { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
-  // Interest reserve may instead be an exact dollar amount (the engine caps it at
-  // the loan term). 0 is allowed and clears any prior amount → months path.
-  if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
-  if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
-  if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
-  for (const k of ['expFlips', 'expHolds', 'expGround']) {
-    if (raw && raw[k] != null && raw[k] !== '') { const v = clamp(raw[k], 0, 999); if (v != null) out[k] = Math.round(v); }
-  }
-  return out;
-}
+// borrowerPricingOverrides now lives in src/lib/pricing-overrides.js (single
+// definition, shared with routes/tpo.js) — required at the top of this file — so
+// an external broker can never be handed a wider override allowlist than a
+// borrower by drift. Deal economics still come from the loan file itself.
 // SECURITY (audit S1-04, owner-directed 2026-07-12): the borrower-side "admin
 // pricing unlock" was REMOVED. A borrower session may only ever send the safe,
 // clamped knobs from borrowerPricingOverrides() — never the staff-grade
@@ -1488,107 +1454,11 @@ router.get('/applications/:id/conditions', async (req, res) => {
 router.get('/applications/:id/appraisal', async (req, res) => {
   const own = await db.query(`SELECT id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const appId = own.rows[0].id;
-  const appr = (await db.query(
-    `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
-  if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
-  // Same correction as the staff tab: the property TYPE is the category (single family / 2–4 /
-  // condo), never the Detached / Attached attachment style (owner-reported 2026-08-02).
-  require('../lib/appraisal/property-category').applyPropertyType(appr);
-  const [comps, units, findings, photos] = await Promise.all([
-    db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
-    db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
-    db.query(`SELECT id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
-                FROM appraisal_findings WHERE application_id=$1 AND status='open'
-               ORDER BY (severity='fatal') DESC, created_at`, [appId]),
-    db.query(
-      `SELECT ap.id, ap.document_id, ap.category, ap.caption, ap.sequence, ap.width, ap.height
-         FROM appraisal_photos ap JOIN documents d ON d.id=ap.document_id
-        WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
-        ORDER BY ap.sequence`, [appr.id]),
-  ]);
-  // Underwriting-scrutiny findings are STAFF-ONLY — they reveal how hard the lender is
-  // scrutinizing the deal (inflated-ARV signal, value not carried by the comps, over-paying vs
-  // as-is). A borrower must never see the lender's internal skepticism, so these codes are
-  // dropped from the borrower set entirely (they stay open + visible on the staff desk).
-  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
-  // NOTE-BUYER findings (source='note_buyer' — the per-capital-partner appraisal checks, e.g.
-  // EMCAP's comp/photo/lender requirements) are STAFF-ONLY as a CLASS: their titles name a note
-  // buyer, which may never reach a borrower. Filter by SOURCE, not by code list, so a future
-  // buyer's checks are covered automatically.
-  const hiddenFromBorrower = (f) => SCRUTINY_CODES.has(f.code) || f.source === 'note_buyer';
-  const open = findings.rows
-    .filter((f) => !hiddenFromBorrower(f))
-    .map((f) => ({ ...f, title: scrubText(f.title) }));
-  // A hidden scrutiny/note-buyer finding can still be a REAL clear-to-close blocker
-  // (asis_below_price and the EMCAP anchor checks are fatal). We must not tell the borrower their
-  // file is clear while it's actually gated — but we also can't reveal the underwriting reason.
-  // If a filtered-out finding is a live blocker, surface ONE neutral placeholder so the borrower's
-  // summary honestly shows "under review", not "clear".
-  const hiddenBlocker = findings.rows.some((f) => hiddenFromBorrower(f) && f.severity === 'fatal' && f.blocks_ctc);
-  if (hiddenBlocker) {
-    open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
-      appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
-      title: 'Your appraisal is in final underwriting review' });
-  }
-  // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
-  // source document ids) AND the free-text lender/AMC/client fields OUTRIGHT — a capital-partner
-  // name can never reach a borrower. Scrubbing a free-text field only strips the names we know;
-  // dropping the columns removes the whole class (the borrower UI never reads lender/AMC).
-  const safeAppr = (() => {
-    if (!appr) return null;
-    // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
-    // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
-    // UI never reads it, so dropping it entirely is the safe, clean fix.
-    // owner_of_record + lender_address are STAFF-ONLY (db/158) — drop them like lender_name/amc_name
-    // so they never reach the borrower JSON, even though the UI doesn't render them.
-    // `warnings` is the parser's raw underwriting-scrutiny array (comp_split_review, nbhd_declining,
-    // sale_type_risk, mc_*, etc.) — the SAME class the SCRUTINY_CODES filter hides from the borrower
-    // `findings` list. Drop it too so the scrutiny scrub can't be defeated via the appraisal payload;
-    // the borrower gets the filtered `findings`, never the raw warnings.
-    // The appraiser's DIRECT CONTACT + supervisor personnel + tooling vendor are internal — the
-    // borrower reaches their loan team, never the appraiser directly, so the personal phone/email,
-    // firm street address, supervisor identity/license and software vendor are dropped (M9). The
-    // "Prepared by" card still shows WHO appraised the property (name/firm/license) — standard
-    // appraisal disclosure — but not how to contact them or the internal desk detail.
-    const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
-      lender_name, amc_name, owner_of_record, lender_address,
-      appraiser_email, appraiser_phone, appraiser_company_address,
-      supervisor_name, supervisor_license_id, supervisor_license_state, supervisor_license_exp,
-      software_vendor, ...rest } = appr; // eslint-disable-line no-unused-vars
-    return rest;
-  })();
-  const bSummary = {
-    fatal: open.filter((f) => f.severity === 'fatal').length,
-    warning: open.filter((f) => f.severity === 'warning').length,
-    info: open.filter((f) => f.severity === 'info').length,
-    blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
-  };
-  // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
-  // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
-  // Implied-value cross-check over the operative grid's comps only (never a mix of As-Is + ARV).
-  // Pre-split appraisals (no comp_set) keep the old all-comps behavior.
-  const gridKey = safeAppr.arv_value != null ? 'arv' : 'as_is';
-  const hasSplit = comps.rows.some((c) => c.comp_set);
-  const impliedComps = hasSplit ? comps.rows.filter((c) => c.comp_set === gridKey) : comps.rows;
-  const score = {
-    collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }),
-    arv: null,
-    impliedValue: apprScore.compImpliedValue({ comps: impliedComps, subjectGla: safeAppr.gla }),
-  };
-  // Same as the staff tab: every comparable states what kind of building it is
-  // and how many doors it has. The two facts are property facts, not lender
-  // scrutiny, so they are borrower-safe — but our internal bookkeeping is
-  // dropped: the id in our research warehouse, how many of our reports have
-  // described that address, and WHERE the answer came from (which is a statement
-  // about our own data holdings, and reads as one).
-  const borrowerComps = (await require('../lib/research/comp-identity')
-    .attachCompIdentity(comps.rows, { db, appraisal: safeAppr }))
-    .map(({ property_id, identity_observations, identity_source, ...c }) => c); // eslint-disable-line no-unused-vars
-  res.json({
-    appraisal: safeAppr, comparables: borrowerComps, units: units.rows, findings: open, photos: photos.rows,
-    summary: bSummary, score,
-  });
+  // The borrower-safe appraisal ("property profile report") is a SINGLE DEFINITION shared with the
+  // TPO (broker) view — src/lib/appraisal/borrower-safe-view.js — so the two surfaces can never
+  // drift and leak the lender's internal scrutiny / capital-partner names. The scrub itself is
+  // documented there; this route only owns the borrower access check above.
+  res.json(await require('../lib/appraisal/borrower-safe-view').buildBorrowerSafeAppraisalView(db, own.rows[0].id));
 });
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------

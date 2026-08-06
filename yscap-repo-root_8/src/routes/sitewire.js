@@ -1949,10 +1949,12 @@ async function buildDrawActivity(appId) {
     push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`, null, !!l.release_date);
   }
   // 4) findings accept/dispute lifecycle
-  for (const f of (await db.query(`SELECT sitewire_draw_id, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at FROM draw_findings WHERE application_id=$1`, [appId])).rows) {
+  for (const f of (await db.query(`SELECT sitewire_draw_id, delivered_at, accepted_at, accepted_via, disputed_at, disputed_via, resolved_at FROM draw_findings WHERE application_id=$1`, [appId])).rows) {
     push(f.delivered_at, 'findings', `Findings delivered to borrower (draw #${f.sitewire_draw_id})`);
-    push(f.accepted_at, 'findings', `Borrower ACCEPTED findings (${f.accepted_via || 'portal'})`);
-    push(f.disputed_at, 'findings', 'Borrower DISPUTED findings');
+    // A 'tpo' accept/dispute is the BROKER acting for their borrower (Phase 6d) — label it as such
+    // so this staff-only timeline never mis-reads a broker's money decision as the borrower's.
+    push(f.accepted_at, 'findings', f.accepted_via === 'tpo' ? 'Broker ACCEPTED findings (broker portal)' : `Borrower ACCEPTED findings (${f.accepted_via || 'portal'})`);
+    push(f.disputed_at, 'findings', f.disputed_via === 'tpo' ? 'Broker DISPUTED findings' : 'Borrower DISPUTED findings');
     push(f.resolved_at, 'findings', 'Dispute resolved');
   }
   // 5) Scope-of-Work reallocations

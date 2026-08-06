@@ -24,6 +24,7 @@ const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
 const borrowerView = require('../lib/borrower-view');
+const tpoView = require('../lib/tpo-view');
 const borrowerAssistant = require('../lib/borrower-assistant');
 const { randomInt } = require('crypto');
 
@@ -75,7 +76,9 @@ async function sessionQuery(claims) {
     ? `, EXISTS(SELECT 1 FROM revoked_sessions WHERE sid=$2) AS sid_revoked`
     : `, false AS sid_revoked`;
   const params = withSid ? [claims.sub, sid] : [claims.sub];
-  const sql = claims.kind === 'staff'
+  // A tpo session is an external staff_users row (db/472), so it reads the same
+  // columns as a staff session.
+  const sql = (claims.kind === 'staff' || claims.kind === 'tpo')
     ? `SELECT token_version, role, permissions, is_active${revoked} FROM staff_users WHERE id=$1`
     : `SELECT token_version${revoked} FROM borrower_auth WHERE borrower_id=$1`;
   try {
@@ -109,12 +112,13 @@ async function authenticate(req, res, next) {
   // A pending-MFA challenge is NOT an access token — it only authorizes the
   // /mfa/verify step. Reject it here or the second factor is bypassable.
   if (claims.mfa) return sessionDenied(req, res, 'mfa_incomplete', 'mfa not completed');
-  // Access tokens are ONLY 'staff' or 'borrower'. Any other kind — the e-sign
-  // magic-link tokens ('esign_magic'/'esign_return'), or any future special-purpose
-  // signed token — must NEVER be usable as a Bearer session, even if its `sub`
-  // happened to collide with a real id. Belt-and-suspenders alongside those tokens
+  // Access tokens are ONLY 'staff', 'borrower' or 'tpo' (the external brokerage
+  // portal, db/472). Any other kind — the e-sign magic-link tokens
+  // ('esign_magic'/'esign_return'), or any future special-purpose signed token —
+  // must NEVER be usable as a Bearer session, even if its `sub` happened to
+  // collide with a real id. Belt-and-suspenders alongside those tokens
   // deliberately carrying a non-borrower `sub`.
-  if (claims.kind !== 'staff' && claims.kind !== 'borrower')
+  if (claims.kind !== 'staff' && claims.kind !== 'borrower' && claims.kind !== 'tpo')
     return sessionDenied(req, res, 'wrong_token_kind', 'unauthenticated');
   // BORROWER ASSISTANT (src/lib/borrower-assistant.js): a standing SECOND login a
   // borrower authorized. The token is a real `kind:'borrower'` token (so every
@@ -175,10 +179,15 @@ async function authenticate(req, res, next) {
     }
     return next();
   }
+  // A TPO user is an EXTERNAL staff_users row (is_external=true), so a tpo
+  // session reads and revokes off the SAME tables as a staff session — role,
+  // permissions, is_active, token_version. Only the actor.kind differs, which is
+  // what routes them to the third front door and keeps them out of /api/staff.
+  const staffBacked = claims.kind === 'staff' || claims.kind === 'tpo';
   // token_version check (revocation). This runs on EVERY authenticated request,
   // so a DB blip here must answer 503 fast — never reject and hang the request.
-  const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
+  const tbl = staffBacked ? 'staff_users' : 'borrower_auth';
+  const idCol = staffBacked ? 'id' : 'borrower_id';
   let r;
   try {
     // For staff, also read the CURRENT role + permission overrides so a role or
@@ -232,6 +241,7 @@ async function authenticate(req, res, next) {
         { borrowerViewEnded: 'revoked' });
     }
     req.impersonation = {
+      surface: 'borrower',
       staffId: impersonation.staffId,
       role: su.role || impersonation.role || null,
       name: su.full_name || null,
@@ -244,11 +254,56 @@ async function authenticate(req, res, next) {
     // Best-effort heartbeat on the session register (never blocks the request).
     borrowerView.touchSession(impersonation.sessionId);
   }
+  // TPO VIEW (src/lib/tpo-view.js): the exact mirror of borrower view for the
+  // external brokerage portal. The token is a real tpo access token (kind:'tpo',
+  // validated above) carrying the same impersonation envelope; the INTERNAL
+  // staffer behind it is re-validated HERE, on every request, so the view dies
+  // the moment the human behind it does — the same three ways as borrower view.
+  // The two envelopes are mutually exclusive (readImpersonation keys on the token
+  // kind), so at most one of these blocks ever fires for a given request.
+  const tpoImp = tpoView.readImpersonation(claims);
+  if (tpoImp) {
+    if (tpoView.sessionExpired(tpoImp)) {
+      tpoView.endSession(tpoImp.sessionId, 'expired');
+      return sessionDenied(req, res, 'tpo_view_ended', 'This broker view has ended. Sign in again to carry on.',
+        { tpoViewEnded: 'expired' });
+    }
+    let s;
+    try {
+      // The impersonator MUST be an INTERNAL staffer (is_external=false) — a
+      // broker can never step into another broker's login.
+      s = await db.query(
+        `SELECT token_version, role, permissions, is_active, full_name, email
+           FROM staff_users WHERE id=$1 AND is_external=false`,
+        [tpoImp.staffId]);
+    } catch (e) {
+      console.error('[auth] tpo-view staff check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    const su = s.rows[0];
+    if (!su || su.is_active === false || (su.token_version || 0) !== (tpoImp.staffTv || 0)) {
+      tpoView.endSession(tpoImp.sessionId, 'revoked');
+      return sessionDenied(req, res, 'tpo_view_ended', 'This broker view has ended. Sign in again to carry on.',
+        { tpoViewEnded: 'revoked' });
+    }
+    req.impersonation = {
+      surface: 'tpo',
+      staffId: tpoImp.staffId,
+      role: su.role || tpoImp.role || null,
+      name: su.full_name || null,
+      email: su.email || null,
+      sessionId: tpoImp.sessionId,
+      startedAt: tpoImp.startedAt,
+      staffTv: su.token_version || 0,
+      perms: perms.effectivePermissions(su.role, su.permissions),
+    };
+    tpoView.touchSession(tpoImp.sessionId);
+  }
   // SECURITY: a deactivated staffer must lose access immediately. Deactivation
   // (admin toggle) doesn't bump token_version, so without this check an existing
   // session would keep renewing (sliding token) and retain access to loan files,
   // borrower PII and decrypted SSNs until a separate password reset.
-  if (claims.kind === 'staff' && r.rows[0].is_active === false)
+  if (staffBacked && r.rows[0].is_active === false)
     return sessionDenied(req, res, 'account_deactivated',
       'This account has been turned off. Ask an admin to re-enable it.');
   // CHOKEPOINT — past this line the SESSION IS PROVEN GOOD, so nothing
@@ -267,8 +322,11 @@ async function authenticate(req, res, next) {
   // helper (borrower.js / staff.js `audit()`, the request firehose) can stamp
   // WHO actually did it without each call site knowing about impersonation.
   if (req.impersonation) req.actor.impersonator = req.impersonation;
-  if (claims.kind === 'staff') {
-    // Trust the DB role over the JWT claim (role can change mid-session).
+  if (staffBacked) {
+    // Trust the DB role over the JWT claim (role can change mid-session). For a
+    // staff actor this also resolves the capability Set; a tpo actor carries the
+    // Set too, but `can()` refuses it (kind !== 'staff'), so it can never satisfy
+    // a staff capability gate — TPO powers are gated in the /api/tpo router.
     req.actor.role = r.rows[0].role || claims.role;
     req.actor.perms = perms.effectivePermissions(req.actor.role, r.rows[0].permissions);
   }
@@ -298,15 +356,32 @@ async function authenticate(req, res, next) {
       // re-mints WITH the same envelope (same `impAt`), so the absolute cap above
       // still governs and the refresh simply keeps a live session alive.
       const fresh = req.impersonation
-        ? borrowerView.mintToken({
-            borrowerId: claims.sub, borrowerTv: tv,
-            staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
-            staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
-            startedAt: req.impersonation.startedAt,
-          })
+        // A tpo view must re-mint into a tpo-view token (never a borrower one),
+        // and a borrower view into a borrower-view token — always WITH the same
+        // envelope (same `impAt`), so the absolute cap keeps governing and the
+        // refresh only keeps a live session alive. Getting the surface wrong here
+        // would silently strip the envelope and turn a bounded, audited view into
+        // a permanent unattributed session on the wrong portal.
+        ? (req.impersonation.surface === 'tpo'
+            ? tpoView.mintToken({
+                tpoUserId: claims.sub, tpoTv: tv, tpoRole: r.rows[0].role || claims.role,
+                staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
+                staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
+                startedAt: req.impersonation.startedAt,
+              })
+            : borrowerView.mintToken({
+                borrowerId: claims.sub, borrowerTv: tv,
+                staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
+                staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
+                startedAt: req.impersonation.startedAt,
+              }))
         : claims.kind === 'staff'
           ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
-          : borrowerToken(claims.sub, tv, claims.sid);
+          : claims.kind === 'tpo'
+            // A tpo token must slide into a tpo token, never a staff one — the
+            // kind is what confines the external user to the third front door.
+            ? tpoToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
+            : borrowerToken(claims.sub, tv, claims.sid);
       res.set('X-Refresh-Token', fresh);
     }
   }
@@ -316,7 +391,7 @@ async function authenticate(req, res, next) {
   // appear online to the rest of the team (the presence dot would be a lie, and
   // "they're online, message them" is a decision people make off it).
   if (!req.impersonation) {
-    const ptbl = claims.kind === 'staff' ? 'staff_users' : 'borrowers';
+    const ptbl = staffBacked ? 'staff_users' : 'borrowers';
     db.query(`UPDATE ${ptbl} SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')`, [claims.sub]).catch(() => {});
   }
   next();
@@ -351,6 +426,11 @@ const requireBorrower = (req, res, next) =>
 // staffer — the specific role/permission gate inside still applies.
 const requireStaff = (req, res, next) =>
   req.actor?.kind === 'staff' ? next() : res.status(403).json({ error: 'staff only' });
+// The external-brokerage wall for /api/tpo. A tpo session is a real staff_users
+// row but with kind='tpo', so requireStaff / requireBorrower already refuse it;
+// this is the mirror image — only a tpo session reaches the TPO portal API.
+const requireTpo = (req, res, next) =>
+  req.actor?.kind === 'tpo' ? next() : res.status(403).json({ error: 'tpo only' });
 
 // ---------------- token helpers ----------------
 // `sid` = this DEVICE's session id. Minted fresh on every real sign-in and
@@ -359,6 +439,10 @@ const requireStaff = (req, res, next) =>
 const newSid = () => C.randomToken(12);
 const borrowerToken = (id, tv, sid) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv, sid: sid || newSid() });
 const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff', role, tv, sid: sid || newSid() });
+// A TPO (external brokerage) session. Same shape as a staff token — the row is
+// in staff_users — but `kind:'tpo'` routes it to the third front door and keeps
+// it out of every /api/staff and /api/borrower gate (db/472).
+const tpoToken      = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'tpo', role, tv, sid: sid || newSid() });
 
 /**
  * Mint a real borrower access session for an existing borrower id (reads the CURRENT
@@ -375,8 +459,13 @@ const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff',
  * token and gets their own console session, without re-typing a password.
  */
 async function mintStaffSession(staffId) {
+  // is_external=false — an INTERNAL account only. mintStaffSession mints a
+  // kind:'staff' token, and an external TPO user must ONLY ever hold a kind:'tpo'
+  // token (the /exit callers already pass a validated internal impersonator id;
+  // this is defense-in-depth so the chokepoint can never mint a staff token for
+  // an external id, even if a future caller slips one in).
   const r = await db.query(
-    `SELECT role, token_version FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
+    `SELECT role, token_version FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`, [staffId]);
   if (!r.rows[0]) return null;
   return staffToken(staffId, r.rows[0].role, r.rows[0].token_version || 0);
 }
@@ -494,9 +583,12 @@ router.post('/borrower/register', async (req, res) => {
 // lockout exactly like the direct endpoint would — otherwise the cross-surface
 // fallback is an unthrottled brute-force channel (found in pre-merge audit).
 async function tryStaffCredentials(email, password) {
+  // is_external=false: an external TPO broker (db/472) authenticates ONLY at the
+  // TPO door (/auth/tpo/login), never the staff console — not directly and not
+  // through this cross-surface fallback.
   const r = await db.query(
     `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
-       FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
+       FROM staff_users WHERE email=$1 AND is_active=true AND is_external=false`, [email]);
   const row = r.rows[0];
   // Compensating hash when there's no other-store account, so the fallback's
   // timing doesn't reveal whether a dual (staff+borrower) identity exists.
@@ -604,13 +696,18 @@ router.post('/borrower/login', async (req, res, next) => {
 async function completeMfa(req, res) {
   const { challenge, code } = req.body || {};
   const claims = C.verifyJwt(challenge);
-  if (!claims || !claims.mfa || !['borrower', 'staff'].includes(claims.kind))
+  if (!claims || !claims.mfa || !['borrower', 'staff', 'tpo'].includes(claims.kind))
     return res.status(401).json({ error: 'bad challenge' });
   try {
     const v = await verifyMfaStep(claims.kind, claims.sub, code);
     if (!v.ok) return res.status(v.status).json({ error: v.error });
-    if (claims.kind === 'staff') {
-      const r = await db.query(`SELECT role, token_version, is_active FROM staff_users WHERE id=$1`, [claims.sub]);
+    // staff AND tpo both live in staff_users (db/472); only the minted token
+    // kind differs, which is what routes the external user to the TPO door.
+    if (claims.kind === 'staff' || claims.kind === 'tpo') {
+      const r = await db.query(
+        `SELECT u.role, u.token_version, u.is_active, f.status AS firm_status
+           FROM staff_users u LEFT JOIN tpo_firms f ON f.id = u.tpo_firm_id
+          WHERE u.id=$1`, [claims.sub]);
       if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
       // The password path filters `is_active=true`, but this one didn't — so a
       // DEACTIVATED staffer with 2FA could finish signing in, get a valid-looking
@@ -620,7 +717,16 @@ async function completeMfa(req, res) {
       // a reason they can act on.
       if (r.rows[0].is_active === false)
         return res.status(403).json({ error: 'This account has been turned off. Ask an admin to re-enable it.', code: 'account_deactivated' });
-      return res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
+      // A TPO (broker) session additionally requires an ACTIVE firm. The password
+      // step already enforces this, but the MFA challenge was minted BEFORE the
+      // second factor — this closes the narrow window where the firm is suspended
+      // between issuing the challenge and verifying it. A non-external user can
+      // never carry a tpo challenge (only /tpo/login mints one, is_external only),
+      // and their firm_status is NULL, so this refuses that case too.
+      if (claims.kind === 'tpo' && r.rows[0].firm_status !== 'active')
+        return res.status(403).json({ error: 'Your firm’s access is not active. Contact YS Capital.', code: 'firm_inactive' });
+      const mint = claims.kind === 'tpo' ? tpoToken : staffToken;
+      return res.json({ token: mint(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
     }
     const tv = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [claims.sub]);
     if (!tv.rows[0]) return res.status(401).json({ error: 'invalid code' });
@@ -802,16 +908,19 @@ router.post('/borrower/reset', async (req, res) => {
 // ---------------- MFA setup (borrower or staff) ----------------
 router.post('/mfa/setup', requireAuth, async (req, res) => {
   const secret = C.newTotpSecret();
-  const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
+  // A tpo user is a staff_users row (db/472), so their 2FA enrolls in
+  // staff_users — only a borrower uses borrower_auth. (mfaTbl/mfaIdCol are
+  // defined below this route, so the branch is inlined to match them.)
+  const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
+  const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   await db.query(`UPDATE ${tbl} SET mfa_secret=$2 WHERE ${idCol}=$1`, [req.actor.id, secret]);
-  const label = req.actor.kind === 'staff' ? 'staff' : 'borrower';
+  const label = req.actor.kind === 'borrower' ? 'borrower' : req.actor.kind;
   res.json({ secret, otpauthUrl: C.totpUri(secret, `${label}:${req.actor.id.slice(0, 8)}`) });
 });
 router.post('/mfa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
-  const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
+  const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
+  const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   const r = await db.query(`SELECT mfa_secret FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
   if (!r.rows[0]?.mfa_secret || !C.verifyTotp(r.rows[0].mfa_secret, code))
     return res.status(401).json({ error: 'invalid code' });
@@ -824,7 +933,7 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
   // Confirmation email (best-effort, never blocks the response).
   try {
     let email = null, firstName = null;
-    if (req.actor.kind === 'staff') {
+    if (req.actor.kind !== 'borrower') {   // staff OR tpo — both in staff_users
       const s = await db.query(`SELECT email, full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
       email = s.rows[0]?.email; firstName = (s.rows[0]?.full_name || '').split(' ')[0] || null;
     } else {
@@ -836,8 +945,9 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
 });
 
 // Helpers to address either login table from the actor kind.
-const mfaTbl = (kind) => (kind === 'staff' ? 'staff_users' : 'borrower_auth');
-const mfaIdCol = (kind) => (kind === 'staff' ? 'id' : 'borrower_id');
+// A tpo user is a staff_users row (db/472), so their 2FA lives in staff_users.
+const mfaTbl = (kind) => (kind === 'borrower' ? 'borrower_auth' : 'staff_users');
+const mfaIdCol = (kind) => (kind === 'borrower' ? 'borrower_id' : 'id');
 
 /**
  * Verify one MFA step at login — accepts the current TOTP code OR a one-time
@@ -920,7 +1030,7 @@ router.post('/staff/login', async (req, res, next) => {
   try {
     const r = await db.query(
       `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
-         FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
+         FROM staff_users WHERE email=$1 AND is_active=true AND is_external=false`, [email]);
     const row = r.rows[0];
     // No staff account (or wrong staff password): before failing, see if these
     // are actually BORROWER credentials — the mirror of the borrower page's
@@ -955,6 +1065,44 @@ router.post('/staff/login', async (req, res, next) => {
 // Same cross-kind completion as /borrower/mfa/verify — the signed challenge's
 // kind claim, not the URL, decides which account the code unlocks.
 router.post('/staff/mfa/verify', completeMfa);
+
+// ---------------- TPO (external brokerage) login ----------------
+// The third front door (db/472). A TPO user is a staff_users row flagged
+// `is_external=true`; this door authenticates ONLY those rows and mints a
+// `kind='tpo'` token. There is deliberately NO cross-surface fallback — a
+// broker is only ever a broker, so an internal staffer or a borrower typing
+// here fails cleanly rather than being routed into an account they don't hold.
+router.post('/tpo/login', async (req, res, next) => {
+  const { email, password } = req.body || {};
+  try {
+    // The firm must be ACTIVE — a suspended/closed firm's brokers cannot sign in
+    // (and suspending a firm also revokes any live sessions via token_version).
+    const r = await db.query(
+      `SELECT u.id, u.role, u.password_hash, u.mfa_enabled, u.token_version, u.failed_attempts, u.locked_until
+         FROM staff_users u JOIN tpo_firms f ON f.id = u.tpo_firm_id
+        WHERE u.email=$1 AND u.is_active=true AND u.is_external=true AND f.status='active'`, [email]);
+    const row = r.rows[0];
+    if (!row || !row.password_hash) {
+      // Enumeration defense: spend the same time whether or not the account
+      // exists (mirrors the staff/borrower doors).
+      await C.hashPassword(String(password || '')).catch(() => {});
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+    if (row.locked_until && new Date(row.locked_until) > new Date())
+      return res.status(423).json({ error: 'account locked — try later' });
+    if (!(await C.verifyPassword(password, row.password_hash))) {
+      const fa = (row.failed_attempts || 0) + 1;
+      await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+        [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+    await db.query(`UPDATE staff_users SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]);
+    if (row.mfa_enabled)
+      return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'tpo', role: row.role, mfa: true }, 300) });
+    res.json({ token: tpoToken(row.id, row.role, row.token_version) });
+  } catch (e) { next(e); }
+});
+router.post('/tpo/mfa/verify', completeMfa);
 
 // ---------------- admin: create staff + invites ----------------
 // Roles this legacy endpoint may assign — every persona except super_admin
@@ -1073,6 +1221,28 @@ router.post('/accept', async (req, res, next) => {
         [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
+    }
+    if (row.kind === 'tpo') {
+      // A TPO (external brokerage) invite (db/472/469). Creates an is_external
+      // staff_users row tied to the firm named on the invite, and mints a
+      // kind='tpo' session. NEVER flip an INTERNAL account into an external one:
+      // the ON CONFLICT UPDATE is guarded on `is_external = true`, so a conflict
+      // with an internal row updates nothing and returns no row → refuse.
+      if (!row.tpo_firm_id) return res.status(400).json({ error: 'this invite is not linked to a firm' });
+      const roleWanted = perms.TPO_ROLE_KEYS.includes(row.role) ? row.role : 'tpo_processor';
+      const s = await db.query(
+        `INSERT INTO staff_users (email, full_name, role, password_hash, is_external, tpo_firm_id, is_firm_admin, site_selectable)
+           VALUES ($1,$2,$3,$4,true,$5,$6,false)
+         ON CONFLICT (email) DO UPDATE SET
+           password_hash=EXCLUDED.password_hash, full_name=EXCLUDED.full_name, role=EXCLUDED.role,
+           is_external=true, tpo_firm_id=EXCLUDED.tpo_firm_id, is_firm_admin=EXCLUDED.is_firm_admin,
+           failed_attempts=0, locked_until=NULL, token_version=staff_users.token_version+1
+           WHERE staff_users.is_external = true
+         RETURNING id, role, token_version`,
+        [row.email, fullName || row.email, roleWanted, await C.hashPassword(password), row.tpo_firm_id, row.is_firm_admin]);
+      if (!s.rows[0]) return res.status(403).json({ error: 'that email already belongs to an internal account' });
+      await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
+      return res.json({ token: tpoToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
     }
     const b = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
@@ -1198,8 +1368,10 @@ router.post('/assistant/logout', requireAuth, async (req, res) => {
  * it falls back to the global bump (it has nothing finer to revoke).
  */
 router.post('/logout', requireAuth, async (req, res) => {
-  const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
+  // staff AND tpo both revoke against staff_users (a tpo user is a staff_users
+  // row, db/472); only a borrower uses borrower_auth.
+  const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';
+  const idCol = req.actor.kind === 'borrower' ? 'borrower_id' : 'id';
   const everywhere = (req.body && req.body.everywhere === true) || !req.actor.sid;
   if (everywhere) {
     await db.query(`UPDATE ${tbl} SET token_version = token_version + 1 WHERE ${idCol}=$1`, [req.actor.id]);
@@ -1221,6 +1393,21 @@ router.post('/logout', requireAuth, async (req, res) => {
 });
 
 router.get('/me', requireAuth, async (req, res) => {
+  if (req.actor.kind === 'tpo') {
+    // A TPO (external brokerage) user: their identity + the firm they belong to,
+    // so the third front door can greet them and gate the firm-admin actions.
+    const r = await db.query(
+      `SELECT u.id, u.email, u.full_name, u.role, u.mfa_enabled, u.is_firm_admin,
+              u.tpo_firm_id, f.name AS firm_name, f.status AS firm_status
+         FROM staff_users u LEFT JOIN tpo_firms f ON f.id = u.tpo_firm_id
+        WHERE u.id=$1`, [req.actor.id]);
+    const row = r.rows[0] || {};
+    return res.json({
+      kind: 'tpo', id: row.id, email: row.email, full_name: row.full_name,
+      role: row.role, mfa_enabled: row.mfa_enabled, is_firm_admin: row.is_firm_admin,
+      firm: row.tpo_firm_id ? { id: row.tpo_firm_id, name: row.firm_name, status: row.firm_status } : null,
+    });
+  }
   if (req.actor.kind === 'staff') {
     const r = await db.query(`SELECT id,email,full_name,role,mfa_enabled,permissions FROM staff_users WHERE id=$1`, [req.actor.id]);
     const row = r.rows[0] || {};
@@ -1249,4 +1436,4 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ kind: 'borrower', ...r.rows[0], ...(impersonation ? { impersonation } : {}), ...(assistant || {}) });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken, mintBorrowerSession, mintStaffSession };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, requireTpo, issueEmailToken, mintBorrowerSession, mintStaffSession };

@@ -222,8 +222,39 @@ function sanitizeStaffOverrides(role, raw) {
   return { overrides, strippedAdminKeys: false, isAdmin: isAdminRole(role) };
 }
 
+// The override allowlist for a NON-LENDER surface — a borrower OR an external
+// broker (TPO). They may only send the scenario knobs the Term Sheet Studio lets
+// a non-lender choose (leverage, term, reserve, estimated FICO and requested
+// experience); every staff-grade knob (markup / origination / fees / manual
+// LTV·LTC·ARV·rate basis) is STRUCTURALLY ABSENT. Deal economics (price / values
+// / budget / state) always come from the loan file itself, so a tampered client
+// can't inject a fabricated basis. Every value is coerced + clamped to the
+// studio's own input ranges. Single definition — routes/borrower.js AND
+// routes/tpo.js both call it (moved out of routes/borrower.js unchanged), so the
+// broker can never be handed a wider allowlist than the borrower by drift.
+function borrowerPricingOverrides(raw) {
+  const out = {};
+  const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
+  const targetLTC = Number(raw && raw.targetLTC);
+  if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  // An explicit blank clears the reserve: pass '' through so buildInputs resolves
+  // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
+  // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
+  if (raw && raw.irMonths === '') { out.irMonths = ''; }
+  else if (raw && raw.irMonths != null) { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  // Interest reserve may instead be an exact dollar amount (the engine caps it at
+  // the loan term). 0 is allowed and clears any prior amount → months path.
+  if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
+  if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
+  if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
+  for (const k of ['expFlips', 'expHolds', 'expGround']) {
+    if (raw && raw[k] != null && raw[k] !== '') { const v = clamp(raw[k], 0, 999); if (v != null) out[k] = Math.round(v); }
+  }
+  return out;
+}
+
 module.exports = {
   DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS, APPROVAL_OVERRIDE_KEYS,
   pricingOverridesEngaged, needsPricingApproval, describeOverrides,
-  sanitizeStaffOverrides, isAdminRole, engaged,
+  sanitizeStaffOverrides, borrowerPricingOverrides, isAdminRole, engaged,
 };

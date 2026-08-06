@@ -33,6 +33,7 @@ import StaffTasks from './screens/StaffTasks.jsx';
 import StaffWorkflow from './screens/StaffWorkflow.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
+import StaffTpoFirms from './screens/StaffTpoFirms.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
 import StaffApprovals from './screens/StaffApprovals.jsx';
@@ -52,6 +53,7 @@ import StaffOrders from './screens/StaffOrders.jsx';
 import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
+import StaffTpoView from './screens/StaffTpoView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 // The research desk: the property / comparable / appraiser database (db/409) and
 // the build-your-own valuation grid (db/410).
@@ -81,33 +83,56 @@ import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
 import StaffNotificationCenter from './screens/StaffNotificationCenter.jsx';
+// TPO (broker) portal — the third front door (kind='tpo', firm-scoped).
+import TpoLayout from './components/TpoLayout.jsx';
+import TpoLogin from './screens/TpoLogin.jsx';
+import TpoAccept from './screens/TpoAccept.jsx';
+import TpoPipeline from './screens/TpoPipeline.jsx';
+import TpoTeam from './screens/TpoTeam.jsx';
+import TpoNewLoan from './screens/TpoNewLoan.jsx';
+import TpoBorrowers from './screens/TpoBorrowers.jsx';
+import TpoBorrowerDetail from './screens/TpoBorrowerDetail.jsx';
+import TpoFile from './screens/TpoFile.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console.
    An unauthenticated hit carries the intended route through sign-in (`from`) so
    an email deep-link (e.g. a chat conversation) lands ON its target after login
    instead of dumping the user on the portal home (owner-reported 2026-07-14). */
 function Private({ children }) {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   const loc = useLocation();
   if (!isAuthed) return <Navigate to="/login" state={{ from: loc.pathname + loc.search }} replace />;
   if (isStaff) return <Navigate to="/internal" replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
   return <Layout>{children}</Layout>;
 }
 
 /* Internal-only area. Borrowers who land here are bounced to their dashboard. */
 function StaffPrivate({ children }) {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   const loc = useLocation();
   if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
   return <StaffLayout>{children}</StaffLayout>;
 }
 
+/* Broker (TPO) area. Anyone who is not a signed-in external broker is bounced to
+   their own door — a borrower to their dashboard, a staffer to the console. */
+function TpoPrivate({ children }) {
+  const { isAuthed, isTpo, isStaff } = useAuth();
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/tpo/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isStaff) return <Navigate to="/internal" replace />;
+  if (!isTpo) return <Navigate to="/dashboard" replace />;
+  return <TpoLayout>{children}</TpoLayout>;
+}
+
 /* Anyone hitting an unknown path: route by who they are. */
 function Fallback() {
-  const { isAuthed, isStaff } = useAuth();
+  const { isAuthed, isStaff, isTpo } = useAuth();
   if (!isAuthed) return <Navigate to="/login" replace />;
-  return <Navigate to={isStaff ? '/internal' : '/dashboard'} replace />;
+  return <Navigate to={isStaff ? '/internal' : isTpo ? '/tpo' : '/dashboard'} replace />;
 }
 
 /* The internal console used to live under /staff — keep old links (emails,
@@ -157,6 +182,9 @@ export default function App() {
           {/* Staff console has its OWN reset screen so a dual borrower+staff
               account is never sent two different reset emails (owner 2026-07-14). */}
           <Route path="/internal/forgot" element={<Forgot scope="staff" />} />
+          {/* TPO (broker) portal — the third front door. Public entry points. */}
+          <Route path="/tpo/login" element={<TpoLogin />} />
+          <Route path="/tpo/accept" element={<TpoAccept />} />
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
@@ -171,6 +199,14 @@ export default function App() {
           <Route path="/pricing" element={<Private><PricingStudio /></Private>} />
           <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
 
+          {/* broker (TPO) portal */}
+          <Route path="/tpo" element={<TpoPrivate><TpoPipeline /></TpoPrivate>} />
+          <Route path="/tpo/new" element={<TpoPrivate><TpoNewLoan /></TpoPrivate>} />
+          <Route path="/tpo/file/:id" element={<TpoPrivate><TpoFile /></TpoPrivate>} />
+          <Route path="/tpo/borrowers" element={<TpoPrivate><TpoBorrowers /></TpoPrivate>} />
+          <Route path="/tpo/borrower/:id" element={<TpoPrivate><TpoBorrowerDetail /></TpoPrivate>} />
+          <Route path="/tpo/team" element={<TpoPrivate><TpoTeam /></TpoPrivate>} />
+
           {/* internal console */}
           <Route path="/internal" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
@@ -179,6 +215,7 @@ export default function App() {
           <Route path="/internal/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
           <Route path="/internal/app/:id/draws" element={<StaffPrivate><StaffFileDraws /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
+          <Route path="/internal/tpo-firms" element={<StaffPrivate><StaffTpoFirms /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
           {/* Approvals hub — every queue waiting on a decision, in one tabbed section
@@ -215,6 +252,8 @@ export default function App() {
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
           <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
+          {/* Broker (TPO) view — pick one of your firms' brokers and see PILOT as they see it. */}
+          <Route path="/internal/tpo-view" element={<StaffPrivate><StaffTpoView /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           {/* Research desk — every staff role, no per-file scoping (owner-directed:
               "make it available for all the staff users to see all the things"). */}
