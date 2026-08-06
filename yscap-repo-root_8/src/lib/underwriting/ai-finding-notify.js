@@ -60,6 +60,7 @@ async function retireForSuggestions(client, appId, suggestionIds) {
       `UPDATE notifications
           SET read_at = now()
         WHERE type = $1
+          AND recipient_kind = 'staff'
           AND application_id = $2
           AND read_at IS NULL
           AND link LIKE ANY($3::text[])`,
@@ -115,6 +116,7 @@ async function retireStaleFatalNotificationsOnce(dbClient) {
           SELECT n2.id FROM notifications n2
             LEFT JOIN applications a ON a.id = n2.application_id
            WHERE n2.type = $1
+             AND n2.recipient_kind = 'staff'
              AND n2.read_at IS NULL
              AND (
                -- silver: valid program flagged as invalid
@@ -148,8 +150,9 @@ async function retireStaleFatalNotificationsOnce(dbClient) {
         WHERE n.id IN (
           SELECT n2.id FROM notifications n2
             JOIN ai_suggestions s
-              ON s.id = NULLIF(substring(n2.link from 'finding=([0-9a-fA-F-]{36})'), '')::uuid
+              ON s.id = NULLIF(substring(n2.link from 'finding=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'), '')::uuid
            WHERE n2.type = $1
+             AND n2.recipient_kind = 'staff'
              AND n2.read_at IS NULL
              AND s.status IN (${settledList})
            LIMIT $2
