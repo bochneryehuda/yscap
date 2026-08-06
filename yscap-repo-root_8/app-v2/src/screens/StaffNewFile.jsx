@@ -86,6 +86,15 @@ function prefillToForm(p) {
   setIf(f, 'requestedExpFlips', p.requestedExpFlips); setIf(f, 'requestedExpHolds', p.requestedExpHolds);
   setIf(f, 'requestedExpGround', p.requestedExpGround); setIf(f, 'entityName', p.entityName);
   if (p.isAssignment) { f.isAssignment = true; setIf(f, 'underlyingContractPrice', p.underlyingContractPrice); }
+  // THE PAYOFF TRAVELS WITH THE REFINANCE ON THE STAFF HAND-OFF TOO (owner-directed
+  // 2026-08-02). scenarioToDraft carries payoff*/loan# on a refinance and the borrower
+  // Apply path keeps them, but this staff Investor-Suite → New-file prefill silently
+  // dropped all three — so an officer who priced a refi in the studio, watched the
+  // payoff drive the cash-to-borrower figure, then pressed "Create loan file", had to
+  // retype it (and a retype is where the file quietly stops agreeing with the term
+  // sheet). The New-file form has these exact fields (refinance-only), so carry them.
+  setIf(f, 'payoffAmount', p.payoffAmount); setIf(f, 'payoffLender', p.payoffLender);
+  setIf(f, 'payoffLoanNumber', p.payoffLoanNumber);
   if (p.propertyAddress) { setIf(addr, 'street', p.propertyAddress.street); setIf(addr, 'state', p.propertyAddress.state); }
   return { f, addr };
 }

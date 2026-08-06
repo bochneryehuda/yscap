@@ -175,9 +175,16 @@ ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Blue Lake' }), fidelis) ===
 // Match is casing/spacing tolerant (same normalization the rest of the system
 // uses), so 'FIDELIS', 'fidelis', '  Fidelis ' all resolve to the 'fidelis' key.
 ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: '  FIDELIS ' }), fidelis) === true, 'buyer match is casing/spacing tolerant');
-// But a different word is a different key — exactly like the note-buyer engine,
-// which keys Fidelis conditions on the 'fidelis' label, not 'Fidelis Investors'.
-ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Fidelis Investors' }), fidelis) === false, 'a different label is a different key (system-consistent)');
+// The buyer's REAL labels ("Fidelis Investors", the owner's own "Fidelis Investors
+// LLC") are ENUMERATED tape aliases (fidelis.js buyerAliases), so a correctly-labeled
+// file matches — normNoteBuyer is EXACT, so these longer labels never resolve to the
+// bare 'fidelis' key on their own, and without the aliases a Fidelis file could
+// neither export its tape (non-admin) nor persist its New-Construction answers (which
+// re-asked on every export). A CLOSED list, never a prefix/fuzzy match: the title
+// insurer "Fidelity National" still does not match.
+ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Fidelis Investors' }), fidelis) === true, 'the real "Fidelis Investors" label matches (enumerated alias)');
+ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Fidelis Investors LLC' }), fidelis) === true, "the owner's real 'Fidelis Investors LLC' label matches (enumerated alias)");
+ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Fidelity National' }), fidelis) === false, 'a genuinely different buyer ("Fidelity National") does NOT match');
 let threw = null;
 try { buyerRule.assertBuyer(synthLoan({ noteBuyerRaw: 'Blue Lake' }), fidelis); } catch (e) { threw = e; }
 ok(threw && threw.code === 'buyer_mismatch' && /Blue Lake/.test(threw.message) && /Fidelis/.test(threw.message), 'mismatch error carries a plain-language message');
