@@ -439,6 +439,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const sheetBodyRef = useRef(null);
   const studioSaveT = useRef(null);
   const lastStudioSaved = useRef('');
+  // Did a save in this studio session actually feed an experience claim onto the
+  // file? Drives the one refresh on close (owner-directed 2026-08-06). A ref, not
+  // state: it must not re-render the sheet mid-edit.
+  const fedExperience = useRef(false);
   // Always points at the LATEST finalizeTermSheet closure, so the stable ([]-deps)
   // imperative handle below never calls a stale one (the E-sign Send button reaches
   // it through this handle).
@@ -458,6 +462,14 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   }), []);
 
   // Autosave the studio scenario onto the pricing condition (debounced).
+  //
+  // The save also FEEDS the experience typed here onto the file (owner-directed
+  // 2026-08-06 — see src/lib/studio-experience-claim.js), and the server says so
+  // by returning the claim it wrote. Remember that it happened, but do NOT
+  // refresh the file here: the conditions list lives behind this sheet, and
+  // re-fetching it under the user mid-edit would churn the screen on every
+  // debounced pass. The refresh happens once, on close (see closeStudio) — the
+  // moment they go back to the list that was reading "no experience required".
   const onStudioState = (s2) => {
     setSnap(s2);
     if (!stateUrl || !s2 || !s2.fields) return;
@@ -467,7 +479,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     clearTimeout(studioSaveT.current);
     studioSaveT.current = setTimeout(() => {
       lastStudioSaved.current = key;
-      api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      api.put(stateUrl, { state })
+        .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+        .catch(() => { lastStudioSaved.current = ''; });
     }, 1200);
   };
   const adminActive = isStaff || !!adminKey;   // overrides ride along even when the zone is locked shut
@@ -546,7 +560,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const state = studioStateFromFields(s.fields);
       clearTimeout(studioSaveT.current);
       lastStudioSaved.current = JSON.stringify(state);
-      if (stateUrl) api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      if (stateUrl) {
+        api.put(stateUrl, { state })
+          .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+          .catch(() => { lastStudioSaved.current = ''; })
+          // The experience typed here is now the file's CLAIM, so the
+          // track-record condition has just gone from "no experience required"
+          // to "verify N" (owner-directed 2026-08-06). Re-fetch the file so the
+          // list they are landing back on says so, instead of showing the old
+          // answer until something else happens to reload the screen. Runs after
+          // the catch on purpose: a debounced save may already have fed the claim,
+          // so a failed close-flush must not swallow the refresh it earned.
+          .then(() => {
+            if (!fedExperience.current) return;
+            fedExperience.current = false;
+            if (onRegistered) onRegistered();
+          });
+      }
       setSavedStudio(state);
     }
     setAdminOpen(false);
