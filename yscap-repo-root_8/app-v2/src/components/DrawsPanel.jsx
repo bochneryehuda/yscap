@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
@@ -2029,7 +2030,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
               if (a.needsNote) {
                 note = window.prompt(a.prompt, '');
                 if (note == null) return;                       // cancelled
-                if (String(note).trim().length < 8) { window.alert('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
+                if (String(note).trim().length < 8) { showMessage('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
               }
               act(a.key + draw.sitewire_draw_id, async () => {
                 await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a.key}`, note ? { note: String(note).trim() } : {});
@@ -2278,7 +2279,7 @@ function FindingStatus({ appId, finding, reload }) {
   async function recordAgreement() {
     const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
     if (note == null) return;
-    if (String(note).trim().length < 8) { window.alert('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
+    if (String(note).trim().length < 8) { showMessage('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
     setRecording(true); setRecErr('');
     try {
       await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/mark-accepted`, { note: String(note).trim() });
