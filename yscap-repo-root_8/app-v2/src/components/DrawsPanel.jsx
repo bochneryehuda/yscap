@@ -27,14 +27,17 @@ const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date
   const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
 };
-// Day + time for a full timestamp (a draw step time), day only for a date-only value.
+// Day + time for a full timestamp (a draw step time), day only for a date-only value. For a full
+// timestamp the date is taken from the SAME local moment as the time — not fmtDay's UTC calendar-day
+// extraction — so a near-midnight-UTC value never shows a date that disagrees with its own time.
 const fmtStamp = (v) => {
   if (!v) return '';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return fmtDay(v);
   const iso = String(v);
   const hasTime = /T\d/.test(iso) || iso.includes(':');
-  return hasTime ? `${fmtDay(v)} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : fmtDay(v);
+  if (!hasTime) return fmtDay(v);   // date-only → shift-free local calendar date
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return fmtDay(v);
+  return `${d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 };
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',

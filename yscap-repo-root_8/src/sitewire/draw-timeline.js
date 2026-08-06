@@ -55,7 +55,8 @@ function timeFor(stage, t) {
  * @param borrower      borrower voice + no capital-partner step
  * @returns [{ stage, label, at, state: 'done' | 'current' | 'upcoming' }]
  */
-function stageTimeline(times, currentStage, { borrower = false } = {}) {
+function stageTimeline(times, currentStage, opts) {
+  const borrower = !!(opts && opts.borrower);
   const t = times || {};
   const flow = (borrower ? BORROWER_FLOW : STAFF_FLOW).slice();
   // Show the dispute detour only when the borrower actually pushed back — for BOTH audiences (a

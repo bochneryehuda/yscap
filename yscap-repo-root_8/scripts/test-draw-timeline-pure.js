@@ -110,6 +110,8 @@ console.log('\nH · TERMINAL + degenerate inputs never throw');
     const empty = stageTimeline(null, '', { borrower: false });
     ok(Array.isArray(empty) && empty.every((s) => s.state === 'upcoming'), 'no times + unknown stage → all upcoming, no crash');
     ok(stageTimeline(undefined, undefined).length > 0, 'undefined inputs still return the staff flow');
+    // an explicit null opts must not throw on the destructure (robustness)
+    ok(stageTimeline(TIMES, 'released', null).length > 0, 'a null opts argument is handled, not thrown on');
   } catch (_) { threw = true; }
   ok(!threw, 'degenerate inputs never throw');
 }
