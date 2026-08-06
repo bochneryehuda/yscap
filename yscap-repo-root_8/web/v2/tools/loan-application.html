@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<script src="../theme.js?v=n7"></script>
+<script src="../theme.js?v=tsprog1"></script>
 <script>
 (function () {
   try {
@@ -11,7 +11,7 @@
   } catch (e) {}
 })();
 </script>
-<script src="../brand.js?v=n4"></script>
+<script src="../brand.js?v=tsprog1"></script>
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Capital — Loan Application | Fix &amp; Flip · Bridge · Rental</title>
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot4">
+<link rel="stylesheet" href="../suite.css?v=tsprog1">
 <style>
 /* =====================================================================
    LOAN APPLICATION — editorial reskin to the approved blueprint.
@@ -819,6 +819,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                              exactly as the borrower portal and staff new-file form do, so a refinance
                              started from ANY side carries the same payoff details. -->
                         <div class="field-rows two-col" style="margin:0">
+                            <!-- The product elected on the Term Sheet Generator, carried by its "Start application →"
+                                 hand-off (owner-directed 2026-08-06) so the new file can register the pricing the
+                                 applicant was actually shown. Hidden and never typed: it is restored by
+                                 YS.applyState from the #d= fragment, exactly like the payoff carriers. -->
+                            <input id="tsProgram" type="hidden" value="">
                             <div class="field"><label for="payoffLender">Lender being paid off</label><div class="input"><input id="payoffLender" type="text" placeholder="who holds the current loan"></div></div>
                             <div class="field"><label for="payoffLoanNo">Their loan number</label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
                         </div>
@@ -1058,11 +1063,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 </footer>
 
 </div>
-<script src="../suite.js?v=admin8"></script>
-<script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller18-asgelig"></script>
-<script src="title-cost.js?v=admin8"></script>
-<script src="address-autocomplete.js?v=usps1"></script>
+<script src="../suite.js?v=tsprog1"></script>
+<script src="rb-logo.js?v=tsprog1"></script>
+<script src="standard-program.js?v=tsprog1"></script>
+<script src="title-cost.js?v=tsprog1"></script>
+<script src="address-autocomplete.js?v=tsprog1"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -2117,6 +2122,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
          form simply never collected them, so a refinance started from the marketing
          site lost them while the other two entry points kept them (owner-directed:
          "no matter from which side"). Refinance-only, like the amount above. */
+      /* The product elected on the Term Sheet Generator (owner-directed
+         2026-08-06: "it should feed automatically into the products and pricing
+         that he'd chosen"). Only ever one of the three self-registerable
+         programs — the generator never carries MANUAL, which is an approval-
+         bearing admin product and must not register itself off a public form. */
+      pricingProgram: val("tsProgram") || null,
       payoffLender: isRefi() ? (val("payoffLender") || null) : null,
       payoffLoanNumber: isRefi() ? (val("payoffLoanNo") || null) : null,
       originalPurchasePrice: isRefi() ? val("origPrice2") : null,
@@ -2358,6 +2369,6 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 })();
 
 </script>
-<script src="../float-actions.js?v=admin10-applyfix"></script>
+<script src="../float-actions.js?v=tsprog1"></script>
 </body>
 </html>
