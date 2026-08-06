@@ -54,6 +54,13 @@ const PROGRAM_HIGHEST_CAPS = {
   standard: { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
   manual:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },   // Manual prices on the Standard engine.
   gold:     { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.93  },
+  // Silver (the EMCAP product) was MISSING — so an old Silver registration whose caps
+  // didn't persist fell all the way back to the generic DEFAULT_CAPS 0.90 LTC and could
+  // FALSE-flag a legitimately-sized Silver loan as over-leverage. This fallback mirrors
+  // Standard's ceiling (looser than the 0.90 default it replaces, so it can only REDUCE
+  // false findings, never add one). Only ever used when a registration didn't persist its
+  // own caps; a current Silver registration measures against its exact per-tier caps.
+  silver:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
 };
 
 // Build a caps override from a file's REGISTERED engine caps (quote.caps fractions) so the leverage

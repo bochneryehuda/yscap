@@ -972,6 +972,15 @@ if (require.main === module) {
         require('./lib/underwriting/investor-guidelines/desk-sync').backfillGuidelineRetractions()
           .then((r) => r && r.retracted && console.log('[boot] guideline-retraction backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] guideline-retraction backfill failed:', e.message));
+        // Retire stale "fatal AI finding" NOTIFICATIONS on previous files (owner-reported
+        // 2026-08-06, seen "on a lot of files"). #1034 fixed the loan_amount / silver
+        // findings in the grounding, and the findings self-heal on the next file view — but
+        // the notification each one wrote had no link to the finding's lifecycle and lived
+        // on forever as an unread fatal. This marks those read (never deletes). Bounded,
+        // self-draining, idempotent; never blocks boot.
+        require('./lib/underwriting/ai-finding-notify').retireStaleFatalNotificationsOnce()
+          .then((r) => r && (r.retiredStale || r.retiredSettled) && console.log('[boot] stale AI-fatal notifications retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] stale AI-fatal notification retire failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
