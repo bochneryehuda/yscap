@@ -764,6 +764,13 @@ function CreditHero({ report }) {
 // The entire report, laid out with the whole screen (owner-directed 2026-07-23):
 // opens on import and from the condition's "Open full report" button, closeable.
 function CreditReportOverlay({ report, history, justImported, onClose, onDownload }) {
+  // "Open PDF" DOWNLOADED the file (owner-reported 2026-08-06 about the manual
+  // upload: "you only have a button open that does not preview the document — it
+  // downloads it. It should be a regular preview button"). The manual-upload panel
+  // was fixed first; this is the SAME class on the imported-report overlay, so it
+  // reads the report inline through the same DocPreview and keeps Download as its
+  // own explicit action. Local state — the overlay owns its own preview.
+  const [previewDoc, setPreviewDoc] = useState(null);
   // Scroll-locked + position-preserving + Escape-to-close (see useScrollLock).
   useScrollLock(onClose);
 
@@ -780,7 +787,8 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
             </p>
           </div>
           <div className="crx-overlay-tools">
-            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open PDF</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => setPreviewDoc({ id: report.pdfDocumentId, filename: 'credit-report.pdf', content_type: 'application/pdf' })}>Preview</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
             <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
           </div>
@@ -802,6 +810,15 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
           )}
         </div>
       </div>
+      {previewDoc && (
+        <DocPreview
+          title="Credit report"
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => onDownload(previewDoc.id, previewDoc.filename)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </div>
   );
 }

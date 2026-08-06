@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -59,7 +60,7 @@ export default function StaffTasks() {
       }
       setErr(msg);
       if (isCompletion(body)) {
-        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
+        try { showMessage('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
     } finally { setBusy(null); }
   }, [busy, reload, role]);
