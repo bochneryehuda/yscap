@@ -42,8 +42,8 @@ export default function ExceptionRegisterCard({ appId, canSeeBox }) {
 
       {rows.length === 0 && (
         <div className="notice">No exceptions on this file — it follows every policy as written. Requests are made
-          from the section they belong to (the guaranty and pricing asks under Loan structure &amp; pricing, the early
-          send under E-sign).</div>
+          from the section they belong to (the guaranty waiver asks right here in Exceptions, the pricing ask under
+          Loan structure &amp; pricing, the early send under E-sign).</div>
       )}
 
       {rows.map((r) => {

@@ -4,7 +4,6 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
-import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
 import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
@@ -1307,9 +1306,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
-      {/* Personal guaranty + the co-borrower guaranty-waiver request (staff only,
-          owner-directed 2026-07-22). Self-hides when the file has no co-borrower. */}
-      {isStaff && app && app.id && !openStudio && <GuarantyWaiverCard appId={app.id} />}
+      {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST moved
+          OFF Products & Pricing into the Exceptions section (owner-directed
+          2026-08-06): the request now lives with the other exceptions, not here. */}
 
       {/* Request an exception to a guideline the deal otherwise follows — e.g. to
           finance MORE of an assignment fee than the 15% cap (a bigger loan).
