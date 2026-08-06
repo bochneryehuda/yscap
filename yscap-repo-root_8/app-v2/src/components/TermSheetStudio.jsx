@@ -203,8 +203,17 @@ export function buildStudioState(x) {
 
 /* Everything the studio currently shows, read straight out of the static
    page: the raw inputs (by element id), the chosen program, and the exact
-   calc objects the static tool renders + exports from. */
-function readSnapshot(win) {
+   calc objects the static tool renders + exports from.
+
+   EXPORTED (owner-directed 2026-08-06) so the Investor Suite's "Create loan
+   file →" can read its own term-sheet iframe with the SAME function this
+   component uses. That hand-off has to carry the elected program and the admin
+   pricing knobs onto the new file, and the alternatives were both worse: the
+   plain `YS.collectState()` drops every `data-noshare` admin field (the markup)
+   AND has no idea which program card is active, and re-deriving any of it in
+   the Suite would be a second reading of the studio that could disagree with
+   this one. One reader, one answer. */
+export function readSnapshot(win) {
   const doc = win.document;
   const val = (id) => { const e = doc.getElementById(id); return e ? String(e.value).trim() : ''; };
   // #143 — the dollar inputs DISPLAY comma-grouped ("400,000"); every money field

@@ -75,7 +75,7 @@ function readStaffPrefill() {
 }
 function prefillToForm(p) {
   const f = {}, addr = {};
-  if (!p) return { f, addr };
+  if (!p) return { f, addr, register: null };
   const str = (x) => (x === '' || x == null) ? '' : String(x);
   const setIf = (o, k, val) => { const s = str(val); if (s !== '') o[k] = s; };
   setIf(f, 'firstName', p.firstName); setIf(f, 'lastName', p.lastName);
@@ -96,7 +96,12 @@ function prefillToForm(p) {
   setIf(f, 'payoffAmount', p.payoffAmount); setIf(f, 'payoffLender', p.payoffLender);
   setIf(f, 'payoffLoanNumber', p.payoffLoanNumber);
   if (p.propertyAddress) { setIf(addr, 'street', p.propertyAddress.street); setIf(addr, 'state', p.propertyAddress.state); }
-  return { f, addr };
+  /* The pricing ELECTION the Investor Suite read off the live term sheet — the
+     program, the manual basis, the markup/origination changes, the fee overrides
+     and the out-of-pocket. It is NOT form state (none of it is typed on this
+     screen); it rides straight to the register call once the file exists, so the
+     file is born as the sheet the officer just built (owner-directed 2026-08-06). */
+  return { f, addr, register: (p && p.__register) || null };
 }
 
 /* Optional co-borrower at file creation (#98). Internal-only borrower-name
@@ -313,6 +318,9 @@ export default function StaffNewFile() {
   const _d = (_urlBorrowerId && _rawDraft && (_rawDraft.borrowerId || '') !== _urlBorrowerId) ? null : _rawDraft;
   if (_d !== _rawDraft) { try { localStorage.removeItem(DRAFT_KEY); } catch (_) { /* ignore */ } }
   const _pf = prefillToForm(readStaffPrefill());   // term-sheet → new-file prefill (consumed once)
+  // Survives every re-render between opening the form and submitting it; never
+  // state, because it changes nothing on screen.
+  const registerRef = useRef(_pf.register);
   const _fromTermSheet = Object.keys(_pf.f).length > 0 || Object.keys(_pf.addr).length > 0;
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
@@ -540,6 +548,54 @@ export default function StaffNewFile() {
       }
       if (r && r.coBorrowerWarning) console.warn('[new-file] co-borrower:', r.coBorrowerWarning);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
+      /* BORN REGISTERED (owner-directed 2026-08-06: "starting an application …
+         should be like the registration button, because it's coming from the
+         Term Sheet Generator"). The Investor Suite handed over the pricing
+         ELECTION it read from the live term sheet — program, manual basis,
+         markup/origination changes, fee overrides, out-of-pocket — so the file
+         registers here through the SAME endpoint a human presses Register on.
+         Nothing is recomputed locally: the frozen engine sizes the loan on the
+         file from these inputs, which is why the loan amount is not carried.
+
+         NEVER BLOCKS THE FILE. It is created either way — a refusal (an
+         exception is needed, a value disagrees with the application) leaves
+         exactly today's outcome, an unregistered file, and says so with the one
+         place to go. Swallowing the reason would be worse than not trying. */
+      const reg = registerRef.current;
+      let regNote = '';
+      if (reg && reg.program) {
+        const doRegister = (months) => api.staffRegisterProduct(
+          r.applicationId, reg.program, reg.overrides || {},
+          undefined,                          // no econVersion — the file was just born
+          months, false, reg.termOptions || undefined);
+        try {
+          await doRegister(undefined);
+        } catch (e3) {
+          /* A MANUAL PRODUCT STILL TRAVELS, AND WAITS FOR ITS EXCEPTION
+             (owner-directed 2026-08-06: "make sure that the manual program still
+             needs to go through the exception — the exception still needs to be
+             approved, but it should still travel along and wait for the exception
+             as it goes"). A manual basis registers only with a liquidity-month
+             count, which this screen does not collect; refusing there would DROP
+             the manual scenario the officer built, which is the one thing that
+             must not happen. So we retry once with the count the SERVER itself
+             suggests — the company default, exactly what the studio prefills that
+             field with, so nothing is invented here. The registration then opens
+             the super-admin escalation as it always does and the terms are held
+             until it is approved; an admin can counter the months there. */
+          const suggested = e3 && e3.data && e3.data.suggestedAssetMonths;
+          if (e3 && e3.data && e3.data.code === 'manual_asset_months_required' && Number(suggested) >= 1) {
+            try { await doRegister(Number(suggested)); } catch (e4) {
+              regNote = e4 && e4.message ? e4.message : 'the product could not be registered automatically';
+            }
+          } else {
+            regNote = e3 && e3.message ? e3.message : 'the product could not be registered automatically';
+          }
+        }
+      }
+      if (regNote) {
+        try { sessionStorage.setItem('ys-newfile-register-note', regNote); } catch (_) { /* best-effort */ }
+      }
       nav(`/internal/app/${r.applicationId}`);
     } catch (e2) {
       setErr(e2.message || 'Could not create the file.');
