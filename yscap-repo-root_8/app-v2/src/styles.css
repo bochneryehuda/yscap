@@ -1068,6 +1068,10 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
    header + file identity bar) — it never slides underneath, and it scrolls
    inside itself if the section list is taller than the viewport. */
 .file-nav{position:sticky;top:152px;z-index:20;max-height:calc(100vh - 168px);overflow-y:auto;
+  /* Opaque fill on the sticky rail itself (belt-and-suspenders): the visible fill
+     lives on the child <ol>, but a sticky container with no background can flash
+     page content through any area the <ol> doesn't cover. */
+  background:var(--surface);
   /* Visible slim scrollbar so a long file's section list can be scrolled with a
      trackpad, same fix as the main sidebar (owner-reported 2026-07-31). */
   scrollbar-width:thin;scrollbar-color:var(--border) transparent}
@@ -1174,8 +1178,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
      or two lines instead of being crushed word-per-line between the buttons */
   .file-top-main{flex:1 1 100%}
   .file-top-addr{white-space:normal;font-size:17px}
+  /* SOLID, not a fade: the strip is pinned at the top of the file on phones and
+     the file content scrolls underneath it — a gradient that fades to transparent
+     let that content show through the bottom of the strip (owner-reported: "stuff
+     that has a transparent background, you can see what's going on behind it while
+     scrolling, mainly at the top of the file"). An opaque fill + the border-bottom
+     is the clean separation. */
   .file-nav{position:sticky;top:0;margin:0 -24px 18px;padding:8px 16px;
-    background:linear-gradient(180deg,var(--ink) 82%,transparent);border-bottom:1px solid var(--line)}
+    background:var(--ink);border-bottom:1px solid var(--line)}
   .file-nav ol{display:flex;overflow-x:auto;gap:4px;padding:4px;scrollbar-width:none;border-radius:12px}
   .file-nav ol::-webkit-scrollbar{display:none}
   .file-nav a{border-left:none;border-bottom:2px solid transparent;white-space:nowrap;padding:8px 11px}
@@ -1246,8 +1256,10 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .toolsheet-sub{flex:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
   padding:8px calc(14px + env(safe-area-inset-right)) 8px calc(14px + env(safe-area-inset-left));
   border-bottom:1px solid var(--line);background:var(--ink-1)}
-/* the studio sheet's action bar sticks to the bottom of the scrolling sheet */
-.toolsheet-actions{position:sticky;bottom:0;z-index:6;background:linear-gradient(180deg,transparent,var(--ink) 26%);
+/* the studio sheet's action bar sticks to the bottom of the scrolling sheet.
+   SOLID fill (matching its sibling .studio-foot): a transparent-topped gradient
+   let the sheet's content bleed through the top edge of the bar while scrolling. */
+.toolsheet-actions{position:sticky;bottom:0;z-index:6;background:var(--ink);
   padding:12px 0 max(10px, env(safe-area-inset-bottom));display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 @media(max-width:720px){
   .toolsheet-titles .small{display:none}
@@ -1776,7 +1788,11 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:flex;flex-direction:column;gap:8px;
   position:sticky;bottom:0;background:var(--surface);padding-bottom:2px}
 
-.app-topbar{grid-area:top;min-height:68px;background:var(--surface);border-bottom:1px solid var(--border);
+/* min-height 72 (not 68) so the topbar's bottom always meets .file-top's top:72px.
+   At 68 a 4px band opened between the two sticky bars on desktop and scrolling
+   content flashed through it at the very top of the file (owner-reported: bleed
+   "on the top of the file"). >=72 means their edges meet or harmlessly overlap. */
+.app-topbar{grid-area:top;min-height:72px;background:var(--surface);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:16px;padding:0 28px;position:sticky;top:0;z-index:50}
 .app-topbar::before{content:'';position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--primary-border),var(--gold) 55%,var(--primary-border))}
@@ -2995,6 +3011,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-btn.ghost { background:var(--surface); color:var(--teal-br); border-color:var(--border); }
 .crx-btn.ghost:hover:not(:disabled) { border-color:var(--teal); background:var(--primary-soft); }
 .crx-btn:disabled { opacity:.5; cursor:not-allowed; }
+.crx-btn.ghost.danger { color:#B42318; }
+.crx-btn.ghost.danger:hover:not(:disabled) { border-color:#B42318; background:#FEF3F2; }
 .crx-btn:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
 .crx-link { background:none; border:0; padding:6px 0; margin-top:8px; color:var(--teal-br); font-family:var(--sans);
   font-size:.9rem; font-weight:600; cursor:pointer; }

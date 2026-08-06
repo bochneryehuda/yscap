@@ -490,9 +490,16 @@ function attachmentsForForward(atts) {
     when the text-only send failed too.
     `noTeam` = the recipients are the ADMIN FALLBACK (the file has no active
     assignees): the email leads with that and asks for the file to be assigned. */
-async function forwardToAssignees({ applicationId, fromEmail, subject, text, html, attachments, toEmails, noTeam }) {
+async function forwardToAssignees({ applicationId, fromEmail, subject, text, html, attachments, toEmails, noTeam, cc }) {
   const ctx = await notify.fileContext(applicationId).catch(() => null);
   const who = fromEmail || 'Someone';
+  // Visible Cc — the draw loop-in (coordinator + loan officer + draws@ desk) when the file is
+  // in a draw process, so a reply on a draw thread reaches the draw coordinator and everyone can
+  // SEE who is looped in (owner-directed 2026-08-06). Empty on a non-draw file. Never the sender
+  // or a To recipient (the provider de-dups Cc-vs-To, but the sender is not a To, so drop them
+  // here). The list is already lowercased/de-duped by `replyCcFrom`.
+  const ccEmails = (Array.isArray(cc) ? cc : [])
+    .filter((e) => e && e !== fromEmail && !(Array.isArray(toEmails) ? toEmails : []).includes(e));
   // We forward the PLAIN TEXT inside our own branded wrapper rather than inlining
   // the sender's raw HTML — external HTML in a staff email is a phishing/tracking
   // vector. Hyperlink TARGETS from an HTML-only reply are preserved inline.
@@ -518,6 +525,7 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
     }, 'staff');
     const r = await email.sendMail({
       to: toEmails,
+      cc: ccEmails.length ? ccEmails : undefined,
       subject: built.subject, text: built.text, html: built.html,
       attachments: atts,
       replyTo: fileReplyTo(applicationId),
@@ -1229,11 +1237,17 @@ async function processReceivedEvent(event) {
     }
 
     const attachments = attachmentsForForward(await attachmentsOnce());
+    // On a file that is in a draw process, loop the draw coordinator + loan officer + draws@ desk
+    // in on the reply, VISIBLY (owner-directed 2026-08-06). Empty on a non-draw file, so an
+    // ordinary reply is unchanged. Best-effort — never block the forward.
+    let drawCc = [];
+    try { drawCc = await require('./draw-recipients').drawReplyLoopIn(applicationId); }
+    catch (_) { /* best-effort: the reply still forwards */ }
     try {
       await forwardToAssignees({
         applicationId, fromEmail, subject,
         text: full.text, html: full.html, attachments, toEmails: targets.map((t) => t.email),
-        noTeam,
+        noTeam, cc: drawCc,
       });
     } catch (e) {
       console.error('[inbound-file-email] forward failed:', safeErr(e));

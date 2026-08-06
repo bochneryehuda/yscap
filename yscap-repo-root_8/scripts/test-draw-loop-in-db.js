@@ -35,6 +35,7 @@ const dr = require(REPO + '/src/lib/draw-recipients');
 const notify = require(REPO + '/src/lib/notify');
 const emailMod = require(REPO + '/src/lib/email');
 const orchestrate = require(REPO + '/src/lib/esign/orchestrate');
+const fileInbox = require(REPO + '/src/lib/file-inbox');
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✓', msg); } else { fail++; console.log('  ✗ FAIL', msg); } };
@@ -278,6 +279,80 @@ async function main() {
       'the wire-form ready-to-sign email (magic link) is never BCC\'d to staff');
     ok(/magic signUrl authenticates AS this borrower/.test(src) && /VIEWER on the envelope itself/.test(src),
       '…and the reason is written down beside it, so it is never "fixed" by adding one');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n6. drawReplyLoopIn — who a REPLY on a draw-process file loops in (owner-directed 2026-08-06)');
+  // -------------------------------------------------------------------------
+  {
+    const loopIn = await dr.drawReplyLoopIn(appA);
+    ok(loopIn.includes(coordA.email) && loopIn.includes(dr.DRAW_DESK_INBOX) && loopIn.includes(lo.email),
+      'a file in a draw process loops in the coordinator + the draws@ desk + the loan officer');
+
+    const detailed = await dr.drawReplyLoopInDetailed(appA);
+    const coordChip = detailed.find((x) => x.email === coordA.email);
+    ok(coordChip && coordChip.name === coordA.name, '…the detailed form carries a display NAME for the composer chips');
+    ok(detailed.some((x) => x.email === dr.DRAW_DESK_INBOX && /draw desk/i.test(x.name)), '…and a friendly name for the draws@ desk');
+
+    ok((await dr.drawReplyLoopIn(appNoCoord)).length === 0,
+      'a file with NO assigned draw coordinator loops NOBODY in — an ordinary reply is unchanged');
+    ok((await dr.drawReplyLoopIn(null)).length === 0, 'no file → no loop-in (never throws)');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n7. The file-inbox reply FORWARD carries the draw loop-in on a VISIBLE Cc');
+  // -------------------------------------------------------------------------
+  {
+    sends = [];
+    await fileInbox.forwardToAssignees({
+      applicationId: appA, fromEmail: borrower.email, subject: 'Re: draw',
+      text: 'Here is the invoice.', html: null, attachments: [],
+      toEmails: [lo.email, processor.email], cc: await dr.drawReplyLoopIn(appA),
+    });
+    const call = sends[0] || {};
+    const ccSet = new Set([].concat(call.cc || []).map(lower));
+    ok(ccSet.has(coordA.email) && ccSet.has(dr.DRAW_DESK_INBOX),
+      'a borrower reply on a draw file is forwarded with the coordinator + the draws@ desk on the Cc');
+    ok(!ccSet.has(lo.email), '…the loan officer is not duplicated onto the Cc (already a To recipient)');
+    ok(![].concat(call.to || []).map(lower).includes(borrower.email), 'the reply sender is never a recipient of the forward');
+
+    // A file NOT in a draw process forwards with NO draw Cc — the ordinary path is untouched.
+    sends = [];
+    await fileInbox.forwardToAssignees({
+      applicationId: appNoCoord, fromEmail: borrower.email, subject: 'Re: docs',
+      text: 'x', html: null, attachments: [], toEmails: [lo.email], cc: await dr.drawReplyLoopIn(appNoCoord),
+    });
+    ok(!(sends[0] && sends[0].cc && sends[0].cc.length), 'a non-draw file forwards with no draw Cc');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n8. The draw-wire "new entity" alert is ONE email with EVERYBODY visible on it');
+  // -------------------------------------------------------------------------
+  {
+    // The 69 Bassett report: "I don't see anybody looped into this email on the CC line."
+    // The alert now goes through notifyAppStaffThread(type:'draw'), so it is a single email
+    // whose recipients — the assignees PLUS the draw loop-in — are all visible.
+    sends = [];
+    await notify.notifyAppStaffThread(appA, {
+      type: 'draw', title: 'Draw wire goes to a NEW entity — operating agreement required',
+      body: 'A fatal condition was opened.', applicationId: appA,
+    });
+    await notify.drainEmails();
+    const emailCalls = sends.filter((c) => !c._skipCapture);
+    ok(emailCalls.length === 1, 'the alert goes out as exactly ONE email (not one per assignee, nobody visible)');
+    const to = new Set([].concat(emailCalls[0] && emailCalls[0].to || []).map(lower));
+    ok(to.has(coordA.email) && to.has(dr.DRAW_DESK_INBOX) && to.has(lo.email),
+      'the coordinator, the draws@ desk and the loan officer are all VISIBLE recipients of that one email');
+    ok(!to.has(borrower.email), 'the borrower is never on this internal staff alert');
+
+    // Source guard: the alert must route through notifyAppStaffThread(type:'draw'), never the
+    // old notifyAppStaff(condition_added) that put nobody on the CC line.
+    const wireSrc = fs.readFileSync(path.join(REPO, 'src/lib/esign/draw-wire.js'), 'utf8');
+    const alertBlock = wireSrc.slice(wireSrc.indexOf('new-entity wire needs an operating agreement'));
+    ok(/notifyAppStaffThread\(appId,\s*\{\s*type:\s*'draw'/.test(alertBlock),
+      'draw-wire.js routes the new-entity alert through notifyAppStaffThread(type:draw)');
+    ok(!/notifyAppStaff\(appId,\s*\{\s*\n\s*type:\s*'condition_added'/.test(alertBlock),
+      '…and no longer through the old notifyAppStaff(condition_added)');
   }
 
   console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
