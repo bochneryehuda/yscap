@@ -64,6 +64,25 @@ function mockDocusign(wireValues) {
     ok(drawWire.classifyAccountName('Riverside Trust', { borrowerName: 'Jane Borrower', llcName: 'Riverside Inc' }).kind === 'new_entity',
       'two different non-empty legal forms are still a new entity (Trust vs Inc)');
 
+    // OWNER-REPORTED false new-entity (2026-08-06, "69 Bassett LLC"): the wire went to the
+    // file's OWN vesting entity, which was on the borrower's library but was NOT the linked
+    // a.llc_id, so the llc_id-only check flagged a fatal "new entity". A known entity of the
+    // borrower now clears as 'known_entity'.
+    ok(drawWire.classifyAccountName('69 Bassett LLC', { borrowerName: 'Pat Owner', llcName: null, knownEntities: ['69 Bassett LLC', 'Some Other Holdings LLC'] }).kind === 'known_entity',
+      '69 Bassett LLC matches a KNOWN entity of the borrower (not the linked llc_id) → known_entity, not fatal');
+    ok(drawWire.classifyAccountName('69 Bassett', { borrowerName: 'Pat Owner', llcName: null, knownEntities: ['69 Bassett LLC'] }).kind === 'known_entity',
+      'the dropped-legal-form tolerance also applies to a known library entity');
+    ok(drawWire.classifyAccountName('Unrelated Escrow LLC', { borrowerName: 'Pat Owner', llcName: '69 Bassett LLC', knownEntities: ['69 Bassett LLC'] }).kind === 'new_entity',
+      'a name matching NOTHING on the borrower (not vesting, not a known entity) still escalates fatal — the safety net holds');
+    ok(drawWire.classifyAccountName('69 Bassett LLC', { borrowerName: 'Pat Owner', llcName: '69 Bassett LLC', knownEntities: ['69 Bassett LLC'] }).kind === 'subject_llc',
+      'the LINKED vesting entity still takes precedence and reads subject_llc, not known_entity');
+    // A co-borrower may wire in their OWN personal name (borrowerNames list).
+    ok(drawWire.classifyAccountName('Chris Cosigner', { borrowerName: 'Pat Owner', borrowerNames: ['Chris Cosigner'], llcName: null }).kind === 'borrower_personal',
+      'the co-borrower typing their own name clears as borrower_personal');
+    // Back-compat: the old 2-arg shape is byte-identical (no knownEntities, no borrowerNames).
+    ok(drawWire.classifyAccountName('Anonymous LLC', { borrowerName: 'Pat Owner', llcName: 'Maple Ridge LLC' }).kind === 'new_entity',
+      'with no knownEntities supplied, an unrelated LLC is still a new_entity (back-compat)');
+
     // ---- (1b) displayEntityName — a CLEAN name for creating the LLC on the profile (Task 5) ----
     ok(drawWire.displayEntityName('MW Trading LLC, A New York Limited Liability Company') === 'MW Trading LLC',
       'displayEntityName strips the full legal description');
@@ -122,6 +141,29 @@ function mockDocusign(wireValues) {
     ok(!oa2, 'OA condition auto-retracted (deleted, untouched) when name matches subject LLC');
     const wrow2 = (await db.query(`SELECT name_kind, operating_agreement_item_id FROM draw_wire_instructions WHERE application_id=$1`, [a.id])).rows[0];
     ok(wrow2.name_kind === 'subject_llc' && wrow2.operating_agreement_item_id === null, 'wire row updated to subject_llc, OA link cleared');
+
+    // --- case D: the 69 Bassett scenario — the vesting entity is on the borrower's LIBRARY
+    //     but a.llc_id is NULL, so it is NOT the linked subject LLC. A wire to it must clear
+    //     as a KNOWN entity, NOT raise a fatal "new entity" (owner-directed 2026-08-06). ---
+    const b2 = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Pat','Owner',$1) RETURNING id`, [`pat${Date.now()}@e.com`])).rows[0];
+    // A library entity for the borrower that is NEVER linked as a.llc_id.
+    await db.query(`INSERT INTO llcs (borrower_id,llc_name) VALUES ($1,'69 Bassett LLC')`, [b2.id]);
+    const a2 = (await db.query(
+      `INSERT INTO applications (borrower_id,llc_id,status,property_address,ys_loan_number)
+       VALUES ($1,NULL,'funded','{"oneLine":"69 Bassett St, New Haven, CT 06511"}',$2) RETURNING id`,
+      [b2.id, `YSCAP-${(Date.now() + 1) % 1000000}`])).rows[0];
+    ids.push(a2.id);
+    const env2 = (await db.query(
+      `INSERT INTO esign_envelopes (application_id,purpose,status,envelope_id) VALUES ($1,'draw_request','completed',$2) RETURNING id`,
+      [a2.id, `env2-${Date.now()}`])).rows[0];
+    const wireKnown = { account_name: '69 Bassett LLC', bank_name: 'Community Bank', account_number: '55550000', routing_number: '021000021', bank_address: '9 Main', account_address: '69 Bassett St' };
+    const rD = await drawWire.captureWireFromEnvelope(db, mockDocusign(wireKnown), { id: env2.id, application_id: a2.id, envelope_id: 'env2-x' });
+    ok(rD && rD.name_kind === 'known_entity', 'capture: the file\'s own library entity (not linked as a.llc_id) → known_entity');
+    ok(rD && rD.name_matches === true, '…and name_matches is true (no operating agreement collected)');
+    const oaD = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2`, [a2.id, `draw:wire_oa:${a2.id}`])).rows[0];
+    ok(!oaD, 'no fatal operating-agreement condition was raised for a known entity of the borrower');
+    const wrowD = (await db.query(`SELECT name_kind FROM draw_wire_instructions WHERE application_id=$1`, [a2.id])).rows[0];
+    ok(wrowD && wrowD.name_kind === 'known_entity', 'the wire row stores the known_entity classification');
 
     // --- ensureDrawRequestCondition is idempotent ---
     const c1 = await drawWire.ensureDrawRequestCondition(db, a.id);
