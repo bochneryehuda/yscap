@@ -156,6 +156,16 @@ function buildQuery(input = {}) {
     if (terms) where.push(`p.address_tsv @@ to_tsquery('simple', ${P(terms)})`);
     else where.push(`p.display_address ILIKE ${P('%' + q + '%')}`);   // punctuation-only input
   }
+  // ADDRESSES KEPT FOR REVIEW ARE OUT OF THE ORDINARY SEARCH.
+  // A comparable whose address the report left too thin to identify (no house
+  // number, say) is still recorded — the owner wanted nothing dropped — but it is
+  // filed with needs_review=true and kept out of the normal answer so an
+  // unverifiable address never pads a facet-only ("all 3-bed in NJ") result. It
+  // could never match an address search anyway. `include_review` opts back in.
+  // The `hits` CTE in facets() reuses this WHERE, so both the list and the sidebar
+  // counts exclude these together.
+  if (!f.include_review) where.push('COALESCE(p.needs_review, false) = false');
+
   const state = str(f.state);
   if (state) where.push(`p.state = ${P(state.toUpperCase())}`);
   const cities = list(f.city);

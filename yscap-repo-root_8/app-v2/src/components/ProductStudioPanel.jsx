@@ -587,7 +587,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     app.term, app.requested_ir_months, app.requested_ir_amount,
     app.is_assignment, app.underlying_contract_price, app.assignment_fee,
     app.payoff_amount, app.payoff_lender, app.payoff_loan_number, app.estimated_cash_out,
-    app.loan_type, app.program, app.property_type, app.units, app.fico,
+    app.loan_type, app.program, app.property_type, app.units, app.fico, app.co_fico,
     app.entity_name, app.co_borrower_id, app.co_borrower_pg_waived, app.liquidity_buffer_waived,
     app.est_closing_date, app.expected_closing, app.property_address,
     app.first_name, app.middle_name, app.last_name, app.name_suffix, app.full_name,
@@ -658,6 +658,32 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender,
       payoffLoanNumber: app.payoff_loan_number, estimatedCashOut: app.estimated_cash_out,
     });
+    /* FICO IS FILE-OWNED, NOT A FROZEN SCENARIO CHOICE (owner-directed 2026-08-05:
+       "everywhere should be updated according to the imported credit score … the
+       middle score of one borrower and the higher middle score of two borrowers").
+       The imported credit report's middle score — the HIGHER-OF-TWO on a co-borrower
+       file, exactly what the credit condition shows as "prices the deal" — must fill
+       Products & Pricing / the term sheet, NOT the score the product was FIRST
+       registered at (that stale value used to freeze here, so a re-import never
+       reached the studio). The server already computes it as the file's current
+       pricing FICO — the quote input = the higher-of-two borrowers.fico that the
+       credit import writes the report score into — so prefer it, then the file's own
+       fico, then the borrower profile's. It overrides the registered/draft fico ONLY
+       when a real value exists (never blanks it), and the staff can still type a
+       what-if over it; the register sends whatever the field holds, so this is what
+       makes a re-register price at the imported score. */
+    const filePricingFico = (() => {
+      // The HIGHER of the two borrowers' scores, straight off the (always-fresh)
+      // app prop — each borrower's fico is their imported middle score after the
+      // credit write-back, so this is the file's current "prices the deal" score.
+      const hi = Math.max(Number(app.fico) || 0, Number(app.co_fico) || 0);
+      if (hi > 0) return hi;
+      // Fallbacks: the server's pricing quote input (also higher-of-two), then the
+      // borrower profile's fico (the borrower studio, where there is no app.co_fico).
+      const q = (data.quote && data.quote.inputs) ? Number(data.quote.inputs.fico) : 0;
+      if (q > 0) return q;
+      return (profile && Number(profile.fico) > 0) ? Number(profile.fico) : '';
+    })();
     // The last working scenario (autosaved) resumes — but the file-owned
     // economics/experience SNAP to the file's CURRENT values first (#148): an
     // autosave made before the file was edited must never carry the old
@@ -720,6 +746,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // sheet is the borrower-facing artifact, so it must read the file's truth.
       v.coBorrowerPgWaived = app.co_borrower_pg_waived ? 'true' : '';
       v.liqBufferWaived = app.liquidity_buffer_waived ? 'true' : '';
+      // FICO snaps to the file's current pricing score (the imported credit
+      // report's middle score / higher-of-two) — a draft autosaved before credit
+      // was imported must never re-register at the old estimate.
+      if (filePricingFico) v.fico = String(filePricingFico);
       return { v, c };
     }
     // Staff AND a broker read the parties off the FILE; a borrower reads their
@@ -768,7 +798,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -790,9 +820,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
-        // A broker's quote strips the internal FICO and has no borrower profile,
-        // so the file's own higher-of-two FICO is the fallback (`app.fico`).
-        fico: inp.fico || (profile && profile.fico) || app.fico || '',
+        // main's file-pricing FICO wins; then the studio input; then the borrower
+        // profile; then — for a broker's TPO quote, which strips the internal FICO
+        // and has no borrower profile — the file's own higher-of-two FICO (`app.fico`).
+        fico: filePricingFico || inp.fico || (profile && profile.fico) || app.fico || '',
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         ...econFallback(inp), ...filePayoff(),
       }));
@@ -813,7 +844,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         arv: app.arv,
         rehabBudget: app.rehab_budget,
         rehabType: app.rehab_type,
-        fico: app.fico || (profile && profile.fico) || '',
+        fico: filePricingFico || app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,

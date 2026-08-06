@@ -28,6 +28,11 @@ async function main() {
     assert(t.includes('15% of'), 'assignment 15% cap taught');
     assert(/NEVER expose a note buyer/i.test(t), 'note-buyer secrecy taught');
     assert(t.includes('registered_program'), 'program-vs-registered_program taught');
+    // The authoritative program enumeration must include 'silver' (the EMCAP Silver Program).
+    // Omitting it made the narrative reasoner flag every Silver file "not in the authoritative
+    // program list (standard/gold/manual/none)" as a FATAL false positive (owner-reported).
+    assert(/'silver'/.test(t), "silver is in the authoritative registered_program list");
+    assert(/silver.{0,40}real,?\s*fully-valid program/i.test(t), 'silver is taught as a valid program, not unknown');
   });
 
   // 2 — money() distinguishes a real 0 from a missing value (the primer's own rule).
@@ -51,9 +56,10 @@ async function main() {
   // 4 — staff summary surfaces the note buyer, discrepancies and missing-required.
   await check('staff summary shows note buyer + discrepancies + missing', () => {
     // Real source-priority discrepancy shape: { field, governing:{source,value}, conflicts:[{source,value}] }.
+    // Here loan_amount is GENUINELY absent (no displayed value) so it stays "MISSING REQUIRED".
     const s = p.fileSummaryText({
       applicationId: 'x',
-      fields: { registered_program: 'gold', note_buyer: 'bluelake', loan_amount: 500000 },
+      fields: { registered_program: 'gold', note_buyer: 'bluelake' },
       structure: {
         discrepancies: [{
           field: 'arv',
@@ -70,6 +76,39 @@ async function main() {
     assert(/arv: governing=380000 \(appraisal\) vs 400000 \(application\)/.test(s), 'discrepancy rendered from the real shape');
     assert(/MISSING REQUIRED/.test(s), 'missing-required surfaced');
     assert(/human_confirmed fact outranks/.test(s), 'verified-fact note present');
+  });
+
+  // 4a — REGRESSION (owner-reported "fatal" false positive): a required field the file DOES show
+  // a value for (a preliminary loan_amount on an un-registered file) must NOT be reported as both
+  // "$360,500" AND "MISSING REQUIRED" — that self-contradiction made the whole-file narrative
+  // reasoner raise a FATAL finding. It now reconciles to a NOT-YET-REGISTERED note instead.
+  await check('a shown-but-unregistered loan_amount is NOT a MISSING-REQUIRED contradiction', () => {
+    const s = p.fileSummaryText({
+      applicationId: 'x',
+      fields: { registered_program: 'none', loan_amount: 360500, purchase_price: 315500, rehab_budget: 45000, arv: 500000 },
+      structure: { discrepancies: [], ready: false },
+      facts: [],
+      missing: ['loan_amount'],   // whole-loan context: no registered/engine-sized loan yet
+    });
+    assert(/Loan amount \(total financed\): \$360,500/.test(s), 'the preliminary loan amount is still shown');
+    assert(!/MISSING REQUIRED[^\n]*loan_amount/.test(s), 'loan_amount is NOT listed as missing-required when the file shows a value');
+    assert(/NOT YET REGISTERED[^\n]*loan_amount/.test(s), 'loan_amount surfaces as a not-yet-registered workflow state instead');
+    assert(/NOT a data contradiction/.test(s), 'the not-yet-registered note tells the model it is not a contradiction');
+  });
+
+  // 4b — a required field that is GENUINELY absent everywhere still surfaces as MISSING REQUIRED,
+  // and the 'none' program sentinel is treated as absent (not a real displayed value).
+  await check('a truly-absent required field still reads MISSING REQUIRED; program=none is absent', () => {
+    const s = p.fileSummaryText({
+      applicationId: 'x',
+      fields: { registered_program: 'none' },   // 'none' = not registered → treated as absent
+      structure: { discrepancies: [], ready: false },
+      facts: [],
+      missing: ['loan_amount', 'program'],
+    });
+    assert(/MISSING REQUIRED[^\n]*loan_amount/.test(s), 'genuinely-absent loan_amount is MISSING REQUIRED');
+    assert(/MISSING REQUIRED[^\n]*program/.test(s), "program is MISSING REQUIRED when registered_program is the 'none' sentinel");
+    assert(!/NOT YET REGISTERED/.test(s), 'nothing is mislabeled not-yet-registered when there is no displayed value');
   });
 
   // 5 — borrower-facing summary drops the note-buyer line and scrubs partner names.
