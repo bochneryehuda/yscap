@@ -165,6 +165,33 @@ function mockDocusign(wireValues) {
     const wrowD = (await db.query(`SELECT name_kind FROM draw_wire_instructions WHERE application_id=$1`, [a2.id])).rows[0];
     ok(wrowD && wrowD.name_kind === 'known_entity', 'the wire row stores the known_entity classification');
 
+    // --- case E: an ADOPTED-but-UNVERIFIED entity (entity-adopt, db/400, OA not yet on file)
+    //     must NOT clear a draw wire — it still escalates so the operating agreement is collected
+    //     before money goes out. A VERIFIED adopted entity clears. (Pre-merge audit item 5.) ---
+    const b3 = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Sam','Adopter',$1) RETURNING id`, [`sam${Date.now()}@e.com`])).rows[0];
+    const a3 = (await db.query(
+      `INSERT INTO applications (borrower_id,llc_id,status,property_address,ys_loan_number)
+       VALUES ($1,NULL,'funded','{"oneLine":"7 Adopt Ave"}',$2) RETURNING id`,
+      [b3.id, `YSCAP-${(Date.now() + 2) % 1000000}`])).rows[0];
+    ids.push(a3.id);
+    // Adopted onto the profile because assets came from it, but no OA on file yet → is_verified=false.
+    await db.query(`INSERT INTO llcs (borrower_id,llc_name,adopted_from_application_id,is_verified) VALUES ($1,'Adopted Pending LLC',$2,false)`, [b3.id, a3.id]);
+    // A different adopted entity whose OA HAS been accepted → is_verified=true.
+    await db.query(`INSERT INTO llcs (borrower_id,llc_name,adopted_from_application_id,is_verified) VALUES ($1,'Verified Adopted LLC',$2,true)`, [b3.id, a3.id]);
+    const env3 = (await db.query(
+      `INSERT INTO esign_envelopes (application_id,purpose,status,envelope_id) VALUES ($1,'draw_request','completed',$2) RETURNING id`,
+      [a3.id, `env3-${Date.now()}`])).rows[0];
+    // Wire to the adopted-PENDING entity → still a fatal new entity (OA must be collected).
+    const rE1 = await drawWire.captureWireFromEnvelope(db, mockDocusign({ ...wireKnown, account_name: 'Adopted Pending LLC' }), { id: env3.id, application_id: a3.id, envelope_id: 'env3-x' });
+    ok(rE1 && rE1.name_kind === 'new_entity', 'an ADOPTED-but-unverified entity does NOT clear — still new_entity (collect the OA first)');
+    const oaE = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2`, [a3.id, `draw:wire_oa:${a3.id}`])).rows[0];
+    ok(!!oaE, '…and the fatal operating-agreement condition is raised for the adopted-pending entity');
+    // Re-capture to the VERIFIED adopted entity → clears as known_entity, OA retracted.
+    const rE2 = await drawWire.captureWireFromEnvelope(db, mockDocusign({ ...wireKnown, account_name: 'Verified Adopted LLC' }), { id: env3.id, application_id: a3.id, envelope_id: 'env3-x' });
+    ok(rE2 && rE2.name_kind === 'known_entity', 'a VERIFIED adopted entity clears as known_entity');
+    const oaE2 = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2`, [a3.id, `draw:wire_oa:${a3.id}`])).rows[0];
+    ok(!oaE2, '…and its OA condition is retracted');
+
     // --- ensureDrawRequestCondition is idempotent ---
     const c1 = await drawWire.ensureDrawRequestCondition(db, a.id);
     const c2 = await drawWire.ensureDrawRequestCondition(db, a.id);

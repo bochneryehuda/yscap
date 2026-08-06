@@ -322,6 +322,13 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
                     OR x.borrower_id = a.co_borrower_id
                     OR lb.borrower_id = a.borrower_id
                     OR lb.borrower_id = a.co_borrower_id )
+                 -- SAFETY: an entity ADOPTED onto the profile (entity-adopt.js, db/400 — e.g. because
+                 -- the borrower's bank statements came from it) whose operating agreement is NOT yet
+                 -- on file (is_verified=false) is exactly the entity whose control documents the wire
+                 -- fatal exists to collect BEFORE money goes out. It does NOT clear a draw wire — it
+                 -- still escalates. A normal library entity (the vesting entity, a ClickUp-synced or
+                 -- manually-added one — adopted_from_application_id IS NULL) or a VERIFIED entity clears.
+                 AND ( x.adopted_from_application_id IS NULL OR x.is_verified = true )
             ) AS known_entities
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
