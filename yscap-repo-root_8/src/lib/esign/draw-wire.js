@@ -142,10 +142,24 @@ function personalMatch(accountName, borrowerName) {
 
 /**
  * Classify the wire account name. Returns { kind, matches }.
- *   kind: 'unknown' (blank) | 'subject_llc' | 'borrower_personal' | 'new_entity'
- *   matches: true when no operating agreement is needed (borrower or subject LLC).
+ *   kind: 'unknown' (blank) | 'subject_llc' | 'borrower_personal' | 'known_entity' | 'new_entity'
+ *   matches: true when no operating agreement is needed (borrower, subject LLC, or a
+ *            known entity of the borrower).
+ *
+ * Inputs (all optional, all back-compatible with the original `{borrowerName, llcName}`):
+ *   borrowerName  — the primary borrower's personal name.
+ *   borrowerNames — extra personal names to accept (e.g. the co-borrower). Either the
+ *                   borrower OR the co-borrower typing their own name clears.
+ *   llcName       — the file's LINKED vesting entity (applications.llc_id → llcs.llc_name).
+ *   knownEntities — every entity ALREADY on the borrower's / co-borrower's profile
+ *                   (their llcs library). A wire to an entity the file's borrower is
+ *                   already associated with is NOT an unknown third party — the whole
+ *                   point of the fatal check (owner-directed 2026-08-06, the "69 Bassett
+ *                   LLC" false positive: the file's OWN vesting entity lived on the
+ *                   borrower's library but was not the linked a.llc_id, so the old
+ *                   llc_id-only check wrongly raised a fatal "new entity").
  */
-function classifyAccountName(accountName, { borrowerName, llcName } = {}) {
+function classifyAccountName(accountName, { borrowerName, borrowerNames, llcName, knownEntities } = {}) {
   const raw = String(accountName == null ? '' : accountName).trim();
   if (!raw) return { kind: 'unknown', matches: null };
   // Subject/vesting LLC — same descriptive base AND a compatible legal form (a DIFFERENT
@@ -153,9 +167,20 @@ function classifyAccountName(accountName, { borrowerName, llcName } = {}) {
   if (llcName && String(llcName).trim() && entityMatch(raw, llcName)) {
     return { kind: 'subject_llc', matches: true };
   }
-  // Personal name — only when it does NOT look like a company.
-  if (!hasEntityDesignator(raw) && borrowerName && personalMatch(raw, borrowerName)) {
-    return { kind: 'borrower_personal', matches: true };
+  // Personal name (borrower or co-borrower) — only when it does NOT look like a company.
+  if (!hasEntityDesignator(raw)) {
+    const names = [];
+    if (Array.isArray(borrowerNames)) names.push(...borrowerNames);
+    if (borrowerName) names.push(borrowerName);
+    for (const n of names) if (n && personalMatch(raw, n)) return { kind: 'borrower_personal', matches: true };
+  }
+  // A KNOWN entity of the borrower — one already on the borrower's / co-borrower's profile.
+  // Not the file's LINKED subject LLC, but not an unknown third party either → clears (no
+  // operating agreement needed) and is recorded distinctly as 'known_entity'.
+  if (Array.isArray(knownEntities)) {
+    for (const k of knownEntities) {
+      if (k && String(k).trim() && entityMatch(raw, k)) return { kind: 'known_entity', matches: true };
+    }
   }
   return { kind: 'new_entity', matches: false };
 }
@@ -280,13 +305,43 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
   const file = (await db.query(
     `SELECT b.first_name, b.last_name,
             TRIM(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')) AS bname,
-            l.llc_name
+            NULLIF(TRIM(COALESCE(cb.first_name,'')||' '||COALESCE(cb.last_name,'')),'') AS cbname,
+            l.llc_name,
+            -- Every entity already on the borrower's / co-borrower's profile (their llcs
+            -- library), via the primary owner (llcs.borrower_id) AND the many-to-many
+            -- (llc_borrowers). A wire to any of these is a KNOWN entity of the file's
+            -- borrower — not the unknown third party the fatal check is for. This is what
+            -- clears the file's OWN vesting entity even when it was never the linked
+            -- a.llc_id (owner-directed 2026-08-06, "69 Bassett LLC").
+            ARRAY(
+              SELECT DISTINCT x.llc_name
+                FROM llcs x
+                LEFT JOIN llc_borrowers lb ON lb.llc_id = x.id
+               WHERE NULLIF(btrim(x.llc_name),'') IS NOT NULL
+                 AND ( x.borrower_id = a.borrower_id
+                    OR x.borrower_id = a.co_borrower_id
+                    OR lb.borrower_id = a.borrower_id
+                    OR lb.borrower_id = a.co_borrower_id )
+                 -- SAFETY: an entity ADOPTED onto the profile (entity-adopt.js, db/400 — e.g. because
+                 -- the borrower's bank statements came from it) whose operating agreement is NOT yet
+                 -- on file (is_verified=false) is exactly the entity whose control documents the wire
+                 -- fatal exists to collect BEFORE money goes out. It does NOT clear a draw wire — it
+                 -- still escalates. A normal library entity (the vesting entity, a ClickUp-synced or
+                 -- manually-added one — adopted_from_application_id IS NULL) or a VERIFIED entity clears.
+                 AND ( x.adopted_from_application_id IS NULL OR x.is_verified = true )
+            ) AS known_entities
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
        LEFT JOIN llcs l ON l.id = a.llc_id
       WHERE a.id = $1`, [appId])).rows[0] || {};
   const accountName = (wire.account_name || '').trim();
-  const cls = classifyAccountName(accountName, { borrowerName: file.bname, llcName: file.llc_name });
+  const cls = classifyAccountName(accountName, {
+    borrowerName: file.bname,
+    borrowerNames: file.cbname ? [file.cbname] : [],
+    llcName: file.llc_name,
+    knownEntities: Array.isArray(file.known_entities) ? file.known_entities : [],
+  });
 
   const acctNum = (wire.account_number || '').trim();
   const acctEnc = acctNum ? cryptoLib.encryptSSN(acctNum) : null;   // AES-256-GCM (generic string cipher)
