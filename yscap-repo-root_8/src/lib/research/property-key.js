@@ -150,16 +150,47 @@ function normalizeParts(input) {
 }
 
 /**
+ * WHY an address cannot be turned into a key — or null when it can.
+ *
+ * `propertyKey` returns null for THREE different reasons, and a caller that only
+ * sees null can say no more than "we could not use this address". This names the
+ * one piece that is missing, so a left-out comparable is explained precisely and a
+ * human can open the appraisal and see exactly what the appraiser left off the
+ * grid. It is the SINGLE SOURCE of the null decision — `propertyKey` returns null
+ * exactly when this returns a problem — so the two can never disagree, and the
+ * order (house number, then state, then locality) is the order the reviewer reads.
+ *
+ * PURE, same normalization as `propertyKey`.
+ *
+ * @returns {{missing:('house_number'|'state'|'locality'), reason:string}|null}
+ */
+function keyProblem(input) {
+  const p = normalizeParts(input);
+  if (!p.street || !hasHouseNumber(p.street)) {
+    return { missing: 'house_number',
+      reason: 'no house number — the report gave a street with no number in front of it, so this sale cannot be pinned to one property' };
+  }
+  if (!p.state || p.state.length !== 2) {
+    return { missing: 'state',
+      reason: 'no state — the report gave no state for this address, and none could be borrowed from the subject property' };
+  }
+  const locality = p.city ? tokenKey(p.city) : (p.zip ? 'z' + p.zip : '');
+  if (!locality) {
+    return { missing: 'locality',
+      reason: 'no town or ZIP — the report gave neither a town nor a ZIP code for this address' };
+  }
+  return null;
+}
+
+/**
  * The dedupe key, or null when the address is not identifiable.
  * Shape: `street|unit|locality|state`, where locality is the city, or `z<zip>`
- * when the report carried no city.
+ * when the report carried no city. See `keyProblem` for WHICH piece is missing.
  */
 function propertyKey(input) {
+  if (keyProblem(input)) return null;
   const p = normalizeParts(input);
-  if (!p.street || !hasHouseNumber(p.street)) return null;
-  if (!p.state || p.state.length !== 2) return null;
   const locality = p.city ? tokenKey(p.city) : (p.zip ? 'z' + p.zip : '');
-  if (!locality) return null;
   return [streetKey(p.street), unitKey(p.unit), locality, p.state.toLowerCase()].join('|');
 }
 
@@ -334,7 +365,7 @@ function bathsNumeric({ bathsFull, bathsHalf, bathsText }) {
 const KEY_VERSION = 2;
 
 module.exports = {
-  propertyKey, normalizeParts, displayAddress, titleCity, saleDate, yearBuilt, lotSqft, num, int, bathsNumeric,
+  propertyKey, keyProblem, normalizeParts, displayAddress, titleCity, saleDate, yearBuilt, lotSqft, num, int, bathsNumeric,
   KEY_VERSION,
   _internals: { tokenKey, unitKey, streetKey, hasHouseNumber, zip5 },
 };
