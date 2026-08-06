@@ -86,6 +86,8 @@ export default function TpoTeam() {
         </div>
       )}
 
+      {isFirmAdmin && <BrokerFeeCard />}
+
       {team === null && <div className="muted">Loading…</div>}
       {team !== null && (
         <div className="card" style={{ overflowX: 'auto' }}>
@@ -117,6 +119,63 @@ export default function TpoTeam() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/* The firm's OWN origination fee — the ONLY pricing control a broker has. It never
+   touches the rate ("we generate the rate on their side"); it is added on top of the
+   origination on this firm's term sheets. Firm-admin only (this card is mounted only
+   for a firm admin). Owner-directed 2026-08-06. */
+function BrokerFeeCard() {
+  const [fee, setFee] = useState('');        // input string
+  const [saved, setSaved] = useState(null);  // last-saved value (null = no fee)
+  const [maxFee, setMaxFee] = useState(5);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api.tpoBrokerFee().then(r => {
+      if (!live) return;
+      setSaved(r.brokerFeePct != null ? r.brokerFeePct : null);
+      setFee(r.brokerFeePct != null ? String(r.brokerFeePct) : '');
+      if (r.maxBrokerFeePct != null) setMaxFee(r.maxBrokerFeePct);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  async function save() {
+    setBusy(true); setMsg(''); setErr('');
+    try {
+      const val = fee.trim() === '' ? '' : Number(fee);
+      const r = await api.tpoBrokerFeeSet(val);
+      setSaved(r.brokerFeePct != null ? r.brokerFeePct : null);
+      setMsg('Saved.');
+    } catch (e) { setErr(e?.data?.error || e.message || 'Could not save your fee.'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card" style={{ padding: 20, marginBottom: 18 }}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>Your origination fee</div>
+      <p className="muted small" style={{ marginTop: 0, maxWidth: 620 }}>
+        Set your firm’s own origination fee. It’s added on top of the origination on your term sheets —
+        you can raise or lower it, up to {maxFee}%. You can’t change the rate; we set that. Leave it blank
+        for no fee.
+      </p>
+      <div className="field" style={{ maxWidth: 220 }}>
+        <label>Broker origination fee (%)</label>
+        <input className="input" inputMode="decimal" value={fee}
+          onChange={e => setFee(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="e.g. 1.5" />
+      </div>
+      <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 4 }}>
+        <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save fee'}</button>
+        <span className="muted small">{saved != null ? `Current: ${saved}%` : 'No fee set'}</span>
+        {msg && <span className="small" style={{ color: 'var(--success)', fontWeight: 600 }}>{msg}</span>}
+        {err && <span className="small" style={{ color: 'var(--danger,#B4453C)', fontWeight: 600 }}>{err}</span>}
+      </div>
     </div>
   );
 }

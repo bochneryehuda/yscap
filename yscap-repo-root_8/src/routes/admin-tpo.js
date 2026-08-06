@@ -15,7 +15,12 @@ const perms = require('../lib/permissions');
 const mail = require('../lib/email/catalog');
 const firmCredentials = require('../lib/credit/firm-credentials');   // TPO own-Xactus (Phase 5b)
 const creditProvider = require('../lib/credit/provider');
+const tpoPricing = require('../lib/tpo-pricing');            // per-firm pricing overrides + resolver
+const pricingSettings = require('../lib/pricing-settings');
+const F = require('../lib/fields');                          // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
+
+const numOrNull = (v) => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
 
 router.use(requireAuth, requireStaff, requirePermission('manage_team'));
 
@@ -206,6 +211,115 @@ router.post('/firms/:id/credit-credentials/test', requirePermission('platform_se
     const creds = await firmCredentials.resolveForFirm(req.params.id);
     if (!creds) return res.json({ configured: false, live: false, detail: 'No active credit account is configured for this firm yet.' });
     res.json(await creditProvider.testConnection(creds));
+  } catch (e) { next(e); }
+});
+
+// ── Per-firm PRICING overrides (owner-directed 2026-08-06) ──────────────────────
+// Special pricing for ONE brokerage firm: markup + origination that override the
+// TPO CHANNEL defaults for that firm's files. NULL on any field = fall back to the
+// channel (which falls back to retail). Viewing is manage_team (router default);
+// SETTING needs platform_setup (like the credit account). The firm's OWN broker fee
+// (broker_orig_pct) is NOT written here — the broker sets it from inside their
+// portal; it is shown here read-only for context. Changes NO retail number.
+function shapeFirmPricing(row) {
+  row = row || {};
+  const n = (v) => (v == null || v === '' ? null : Number(v));
+  return {
+    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct),
+    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct),
+    markupTiers: pricingSettings.cleanMarkupTiers(row.markup_tiers),
+    brokerFeePct: n(row.broker_orig_pct),   // read-only here (the broker owns it)
+  };
+}
+// Pull the resolver-shaped fields out of a merged cd (retail<-channel<-firm).
+function pickPct(cd) {
+  return {
+    markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct, markupSilverPct: cd.markupSilverPct,
+    origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
+    markupTiers: cd.markupTiers || null, brokerFeePct: cd.brokerFeePct != null ? cd.brokerFeePct : null,
+  };
+}
+const FIRM_PRICING_COLS = 'markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers';
+
+// View a firm's pricing overrides + the value each blank field falls back to +
+// what the firm actually prices at right now.
+router.get('/firms/:id/pricing', async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const retail = await pricingSettings.load();
+    const chan = (await db.query(`SELECT ${FIRM_PRICING_COLS} FROM tpo_pricing_settings WHERE id = 1`)).rows[0] || {};
+    const firm = (await db.query(`SELECT ${FIRM_PRICING_COLS}, broker_orig_pct FROM tpo_firm_pricing WHERE tpo_firm_id = $1`, [req.params.id])).rows[0];
+    res.json({
+      firm: shapeFirmPricing(firm),                                      // the firm's own override values (editable)
+      fallback: pickPct(tpoPricing.mergeSettings(retail, chan, null)),   // what a blank firm box uses (retail<-channel)
+      effective: pickPct(tpoPricing.mergeSettings(retail, chan, firm || null)),  // what this firm prices at now
+    });
+  } catch (e) { next(e); }
+});
+
+// Set this firm's markup/origination overrides. platform_setup (sensitive). The
+// UPSERT deliberately NEVER touches broker_orig_pct, so the broker's own fee is
+// preserved. Every value optional (NULL = fall back to the channel).
+router.put('/firms/:id/pricing', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    const b = req.body || {};
+    const cols = {
+      markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct),
+      orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct),
+    };
+    for (const [k, v] of Object.entries(cols)) {
+      if (v == null) continue;
+      if (v < 0 || v > tpoPricing.MAX_MARKUP_ORIG_PCT) return res.status(400).json({ error: `${k} must be between 0 and 100` });
+    }
+    if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
+      return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+    }
+    // markup_tiers: an explicit value replaces; omitting it preserves the firm's current map.
+    let markupTiers;
+    if (b.markupTiers !== undefined) {
+      markupTiers = pricingSettings.cleanMarkupTiers(b.markupTiers);
+      if (markupTiers) {
+        for (const prog of Object.keys(markupTiers)) {
+          for (const [t, v] of Object.entries(markupTiers[prog])) {
+            if (v < 0 || v > tpoPricing.MAX_MARKUP_ORIG_PCT) return res.status(400).json({ error: `${prog} tier ${t} markup must be between 0 and 100` });
+            if (prog === 'silver' && v > 1) return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+          }
+        }
+      }
+    } else {
+      const cur = (await db.query(`SELECT markup_tiers FROM tpo_firm_pricing WHERE tpo_firm_id = $1`, [req.params.id])).rows[0];
+      markupTiers = pricingSettings.cleanMarkupTiers(cur && cur.markup_tiers);
+    }
+    const tiersJson = markupTiers ? F.jsonbText(markupTiers) : null;
+    await db.query(
+      `INSERT INTO tpo_firm_pricing (tpo_firm_id, markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (tpo_firm_id) DO UPDATE SET
+         markup_std_pct=EXCLUDED.markup_std_pct, markup_gold_pct=EXCLUDED.markup_gold_pct, markup_silver_pct=EXCLUDED.markup_silver_pct,
+         orig_std_pct=EXCLUDED.orig_std_pct, orig_gold_pct=EXCLUDED.orig_gold_pct, orig_silver_pct=EXCLUDED.orig_silver_pct,
+         markup_tiers=EXCLUDED.markup_tiers, updated_by=EXCLUDED.updated_by`,
+      [req.params.id, cols.markup_std_pct, cols.markup_gold_pct, cols.markup_silver_pct, cols.orig_std_pct, cols.orig_gold_pct, cols.orig_silver_pct, tiersJson, req.actor.id]);
+    await tpoPricing.loadFirms();   // warm the cache so the save reflects immediately
+    await auditTpo(req, 'tpo_firm_pricing_set', req.params.id, { ...cols, markup_tiers: markupTiers });
+    const firm = (await db.query(`SELECT ${FIRM_PRICING_COLS}, broker_orig_pct FROM tpo_firm_pricing WHERE tpo_firm_id = $1`, [req.params.id])).rows[0];
+    res.json({ ok: true, firm: shapeFirmPricing(firm) });
+  } catch (e) { next(e); }
+});
+
+// Clear this firm's markup/origination overrides (revert to the channel defaults).
+// Keeps the firm's own broker fee. platform_setup.
+router.delete('/firms/:id/pricing', requirePermission('platform_setup'), async (req, res, next) => {
+  try {
+    if (!(await firmOr404(req, res))) return;
+    await db.query(
+      `UPDATE tpo_firm_pricing SET markup_std_pct=NULL, markup_gold_pct=NULL, markup_silver_pct=NULL,
+         orig_std_pct=NULL, orig_gold_pct=NULL, orig_silver_pct=NULL, markup_tiers=NULL, updated_by=$2
+       WHERE tpo_firm_id = $1`, [req.params.id, req.actor.id]);
+    await tpoPricing.loadFirms();
+    await auditTpo(req, 'tpo_firm_pricing_cleared', req.params.id, {});
+    const firm = (await db.query(`SELECT ${FIRM_PRICING_COLS}, broker_orig_pct FROM tpo_firm_pricing WHERE tpo_firm_id = $1`, [req.params.id])).rows[0];
+    res.json({ ok: true, firm: shapeFirmPricing(firm) });
   } catch (e) { next(e); }
 });
 

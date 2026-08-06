@@ -167,6 +167,9 @@ function FirmDetail({ firm, onChanged }) {
       {/* Own-Xactus credit account (the point of Phase 5b) */}
       <CreditAccountCard firmId={firm.id} firmName={firm.name} canSet={can('platform_setup')} />
 
+      {/* Special pricing for this firm (owner-directed 2026-08-06) */}
+      <FirmPricingCard firmId={firm.id} firmName={firm.name} canSet={can('platform_setup')} />
+
       {/* Team + invites */}
       <TeamPanel firm={firm} detail={detail} onChanged={load} />
     </div>
@@ -397,6 +400,94 @@ function CreditAccountCard({ firmId, firmName, canSet }) {
           Only a platform administrator can set up a firm's own credit login.
           {err && <span style={{ color: 'var(--danger,#B4453C)', fontWeight: 600, marginLeft: 6 }}>{err}</span>}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* A firm's special PRICING overrides (owner-directed 2026-08-06) — markup +
+   origination just for this broker firm's files. A blank box uses the TPO channel
+   default (which uses retail). The broker never sets the rate; the firm's OWN
+   broker fee is set by the firm in their portal and shown here read-only.
+   platform_setup to change. Dark text on white per the HARD RULE. */
+const FP_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct'];
+const FP_ROWS = [
+  { k: 'markupStdPct', label: 'Standard markup (%)' },
+  { k: 'markupGoldPct', label: 'Gold markup (%)' },
+  { k: 'markupSilverPct', label: 'Silver markup (%, max 1)' },
+  { k: 'origStdPct', label: 'Standard origination (%)' },
+  { k: 'origGoldPct', label: 'Gold origination (%)' },
+  { k: 'origSilverPct', label: 'Silver origination (%)' },
+];
+const fpToForm = (o) => { const f = {}; for (const k of FP_KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : ''; return f; };
+
+function FirmPricingCard({ firmId, firmName, canSet }) {
+  const [data, setData] = useState(null);   // { firm, fallback, effective }
+  const [form, setForm] = useState(fpToForm(null));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    api.adminTpoFirmPricing(firmId)
+      .then((d) => { setData(d); setForm(fpToForm(d.firm)); })
+      .catch((e) => setErr(e?.data?.error || e.message || 'Could not load the firm pricing.'));
+  }, [firmId]);
+  useEffect(() => { load(); }, [load]);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: String(v).replace(/[^0-9.]/g, '') }));
+
+  async function save() {
+    setBusy(true); setMsg(''); setErr('');
+    try {
+      const body = {};
+      for (const k of FP_KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
+      const d = await api.adminTpoFirmPricingSet(firmId, body);
+      setForm(fpToForm(d.firm)); setMsg('Saved.'); load();
+    } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }
+    finally { setBusy(false); }
+  }
+  async function clearAll() {
+    if (!window.confirm(`Clear ${firmName}'s special pricing? Their files go back to the TPO channel defaults.`)) return;
+    setBusy(true); setMsg(''); setErr('');
+    try { const d = await api.adminTpoFirmPricingClear(firmId); setForm(fpToForm(d.firm)); setMsg('Cleared — back to the channel defaults.'); load(); }
+    catch (e) { setErr(e?.data?.error || e.message || 'Could not clear.'); }
+    finally { setBusy(false); }
+  }
+
+  if (!data) return null;
+  const fb = data.fallback || {};
+  const brokerFee = data.firm ? data.firm.brokerFeePct : null;
+
+  return (
+    <div style={{ borderTop: '1px solid var(--line)', paddingTop: 12, marginTop: 12 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="small" style={{ fontWeight: 700, color: INK }}>Special pricing for this firm</div>
+        <InfoTip tip="Optional. Markup and origination just for this broker firm's files. A blank box uses the TPO channel default (which uses retail). The rate is never something the broker controls; the firm sets only their own broker fee." />
+      </div>
+      <div className="small" style={{ color: MUTED, marginTop: 4 }}>
+        This firm’s own broker fee: <b style={{ color: INK }}>{brokerFee != null ? brokerFee + '%' : 'none'}</b> — set by the firm in their portal.
+      </div>
+      {canSet ? (
+        <>
+          <div className="grid cols-3" style={{ gap: 10, marginTop: 10 }}>
+            {FP_ROWS.map((r) => (
+              <label key={r.k} className="small" style={{ color: INK }}>{r.label}
+                <input className="input" inputMode="decimal" value={form[r.k]}
+                  placeholder={fb[r.k] != null ? `default ${fb[r.k]}%` : 'default'}
+                  onChange={(e) => set(r.k, e.target.value)} />
+              </label>
+            ))}
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 10, alignItems: 'center' }}>
+            <button className="btn btn-sm primary" disabled={busy} onClick={save}>Save special pricing</button>
+            <button className="btn btn-sm ghost" disabled={busy} onClick={clearAll}>Clear (use channel defaults)</button>
+            {msg && <span className="small" style={{ color: 'var(--success)', fontWeight: 600 }}>{msg}</span>}
+            {err && <span className="small" style={{ color: 'var(--danger,#B4453C)', fontWeight: 600 }}>{err}</span>}
+          </div>
+        </>
+      ) : (
+        <div className="small" style={{ color: MUTED, marginTop: 6 }}>Only a platform administrator can set special pricing for a firm.</div>
       )}
     </div>
   );

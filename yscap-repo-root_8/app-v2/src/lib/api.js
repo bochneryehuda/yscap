@@ -424,6 +424,10 @@ export const api = {
   tpoSetBorrowerPortal: (id, enabled) => req('POST', `/api/tpo/applications/${id}/borrower-portal`, { enabled }),
   tpoTeam:        () => req('GET', '/api/tpo/team'),
   tpoTeamInvite:  (b) => req('POST', '/api/tpo/team/invite', b),   // {email, fullName?, role?}
+  // The firm's OWN broker origination fee — the ONLY pricing control a broker has
+  // (never the rate). GET returns { isFirmAdmin, brokerFeePct, maxBrokerFeePct }.
+  tpoBrokerFee:    () => req('GET', '/api/tpo/pricing/broker-fee'),
+  tpoBrokerFeeSet: (brokerFeePct) => req('PUT', '/api/tpo/pricing/broker-fee', { brokerFeePct }),
   // Phase 3 — the firm's borrowers + full PII.
   tpoBorrowers:      () => req('GET', '/api/tpo/borrowers'),
   tpoBorrower:       (id) => req('GET', `/api/tpo/borrowers/${id}`),
@@ -1163,6 +1167,11 @@ export const api = {
   adminTpoFirmCreditActive: (id, active) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/active`, { active }),
   adminTpoFirmCreditClear:  (id) => req('DELETE', `/api/admin/tpo/firms/${id}/credit-credentials`),
   adminTpoFirmCreditTest:   (id) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/test`, {}),
+  // Per-firm PRICING overrides (special pricing for one broker firm) — markup/orig
+  // that override the TPO channel defaults for that firm. broker fee is read-only here.
+  adminTpoFirmPricing:      (id) => req('GET', `/api/admin/tpo/firms/${id}/pricing`),
+  adminTpoFirmPricingSet:   (id, b) => req('PUT', `/api/admin/tpo/firms/${id}/pricing`, b),
+  adminTpoFirmPricingClear: (id) => req('DELETE', `/api/admin/tpo/firms/${id}/pricing`),
 
   // ---- Condition Center: admin studio (global condition library + rules) ----
   adminConditionFields:    () => req('GET', '/api/admin/conditions/fields'),
@@ -1196,6 +1205,10 @@ export const api = {
   // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
   adminPricingGet: () => req('GET', '/api/admin/pricing'),
   adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
+  // TPO (broker/wholesale) channel pricing controls — separate markup + origination
+  // defaults for the TPO channel (blank = same as retail). manage_pricing-gated.
+  adminTpoPricingGet: () => req('GET', '/api/admin/pricing/tpo'),
+  adminTpoPricingPut: (b) => req('PUT', '/api/admin/pricing/tpo', b),
 
   // ---- Loan-Officer Notification Center: per-notification prefs + draft queue ----
   loNotifCatalog:      () => req('GET',  '/api/staff/notification-center/catalog'),

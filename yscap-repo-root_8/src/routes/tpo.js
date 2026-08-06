@@ -29,6 +29,11 @@ const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const { scrubText, scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
 const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
 const pricing = require('../lib/pricing');
+// The wholesale-channel pricing layer: resolves this TPO file's effective markup /
+// origination defaults + per-firm overrides + broker fee (owner-directed 2026-08-06).
+// Passed as opts.settings to every TPO quote so the channel/firm values take effect;
+// with nothing configured it resolves to the retail company defaults, byte-identical.
+const tpoPricing = require('../lib/tpo-pricing');
 const { RECENT_EXIT_SQL } = require('../lib/experience');
 const { persistProductRegistration } = require('../lib/product-registration');
 const notify = require('../lib/notify');
@@ -250,6 +255,58 @@ router.post('/team/invite', async (req, res, next) => {
       emailed = !!(r && r.ok);
     } catch (_) { /* best-effort */ }
     res.status(201).json({ ok: true, token, acceptUrl, emailed });
+  } catch (e) { next(e); }
+});
+
+// ── The firm's OWN broker origination fee (owner-directed 2026-08-06) ──────────
+// A broker firm sets ITS OWN origination / broker fee here — the ONLY pricing
+// control a broker has. They can NEVER touch the RATE ("we generate the rate on
+// their side"): this writes ONLY broker_orig_pct, clamped to a sane ceiling, and
+// the firm is ALWAYS the actor's own firm (never client-supplied), mirroring
+// /team/invite. The fee is added on top of origination wherever origination shows
+// on that firm's files (resolved by src/lib/tpo-pricing.js).
+router.get('/pricing/broker-fee', async (req, res, next) => {
+  try {
+    const me = (await db.query(`SELECT tpo_firm_id, is_firm_admin FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const row = me.tpo_firm_id
+      ? (await db.query(`SELECT broker_orig_pct FROM tpo_firm_pricing WHERE tpo_firm_id=$1`, [me.tpo_firm_id])).rows[0]
+      : null;
+    res.json({
+      isFirmAdmin: !!me.is_firm_admin,
+      brokerFeePct: (row && row.broker_orig_pct != null) ? Number(row.broker_orig_pct) : null,
+      maxBrokerFeePct: tpoPricing.MAX_BROKER_FEE_PCT,
+    });
+  } catch (e) { next(e); }
+});
+
+router.put('/pricing/broker-fee', async (req, res, next) => {
+  try {
+    const me = (await db.query(`SELECT tpo_firm_id, is_firm_admin FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    if (!me.is_firm_admin) return res.status(403).json({ error: 'only a firm admin can set the broker fee' });
+    const firmId = me.tpo_firm_id;
+    if (!firmId) return res.status(400).json({ error: 'no firm on your account' });
+    const b = req.body || {};
+    // A blank / empty value CLEARS the fee (no broker fee); a number is the
+    // origination points, clamped to the ceiling. NEVER accept any other key —
+    // the broker can only ever set their own fee, never a rate/markup.
+    let fee = null;
+    if (b.brokerFeePct != null && b.brokerFeePct !== '') {
+      const n = Number(b.brokerFeePct);
+      if (!isFinite(n) || n < 0) return res.status(400).json({ error: 'the broker fee must be a number 0 or higher' });
+      if (n > tpoPricing.MAX_BROKER_FEE_PCT) return res.status(400).json({ error: `the broker fee can’t be more than ${tpoPricing.MAX_BROKER_FEE_PCT}%` });
+      fee = n;
+    }
+    // UPSERT only the broker-fee columns — the admin's markup/origination overrides
+    // for this firm (if any) are preserved untouched.
+    await db.query(
+      `INSERT INTO tpo_firm_pricing (tpo_firm_id, broker_orig_pct, broker_fee_updated_by, broker_fee_updated_at)
+       VALUES ($1,$2,$3, now())
+       ON CONFLICT (tpo_firm_id) DO UPDATE SET
+         broker_orig_pct=EXCLUDED.broker_orig_pct, broker_fee_updated_by=EXCLUDED.broker_fee_updated_by, broker_fee_updated_at=now()`,
+      [firmId, fee, req.actor.id]);
+    await tpoPricing.loadFirms();   // warm the cache so the fee reflects immediately
+    await tpoAudit(req, 'tpo_set_broker_fee', 'tpo_firm', firmId, { broker_orig_pct: fee });
+    res.json({ ok: true, brokerFeePct: fee, maxBrokerFeePct: tpoPricing.MAX_BROKER_FEE_PCT });
   } catch (e) { next(e); }
 });
 
@@ -527,7 +584,7 @@ router.get('/applications/:id/pricing', async (req, res, next) => {
     const history = hist.rows.map(redactRow);
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
-    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, undefined, { settings: tpoPricing.effectiveSettingsFor(f.app) })); quote.experience = f.exp; } catch (_) {} }
     // Manual-review exception status only (never the internal summary / decision note).
     let manualEscalation = null;
     try {
@@ -554,7 +611,7 @@ router.post('/applications/:id/pricing/quote', async (req, res, next) => {
     const f = await loadTpoFileForPricing(req.actor.id, req.params.id);
     if (!f) return res.status(404).json({ error: 'file not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides, { settings: tpoPricing.effectiveSettingsFor(f.app) }));
     res.json({ ...out, experience: f.exp });
   } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -628,7 +685,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
       coBorrowerPgWaived: !!f.app.co_borrower_pg_waived,
     };
-    const quote = pricing.quoteProgram(program, inputs);
+    const tpoSettings = tpoPricing.effectiveSettingsFor(f.app);
+    const quote = pricing.quoteProgram(program, inputs, { settings: tpoSettings });
     if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
@@ -700,6 +758,29 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'tpo', actor: req.actor.id });
       }
     } catch (e) { console.error('[tpo-register] vesting from studio failed:', db.describeError(e)); }
+    // AUTO-SET THE CAPITAL PROVIDER (note buyer) FROM THE REGISTERED PROGRAM
+    // (owner-directed 2026-08-06). On a broker file the capital provider follows the
+    // program (Gold→Blue Lake, Standard→Fidelis, Silver→EMCAP), so fill it in the
+    // BACKEND — title/insurance ordering and the note-buyer conditions need it. It is
+    // STAFF-ONLY: the TPO checklist/quote scrubs already strip the note buyer, so a
+    // broker never sees it. MANUAL has no fixed provider — leave it for an admin to
+    // set by hand. Written as the canonical label so it normalizes to the provider
+    // key every consumer expects (conditions engine, tape gate, Sitewire); the
+    // normNoteBuyer guard makes it idempotent (no churn / no re-fire when unchanged).
+    // Runs BEFORE evaluateApplication so the note-buyer-driven rules reflect it.
+    try {
+      const provKey = require('../lib/tapes/program-provider').providerForProgram(program);
+      const registry = require('../lib/conditions/field-registry');
+      const NOTE_BUYER_LABEL = { bluelake: 'Blue Lake', fidelis: 'Fidelis', emcap: 'EMCAP' };
+      const label = provKey ? NOTE_BUYER_LABEL[provKey] : null;
+      if (label) {
+        const cur = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0];
+        if (!cur || registry.normNoteBuyer(cur.lender) !== provKey) {
+          await db.query(`UPDATE applications SET lender=$2, updated_at=now() WHERE id=$1`, [appId, label]);
+          await tpoAudit(req, 'tpo_note_buyer_auto_set', 'application', appId, { program, provider: label });
+        }
+      }
+    } catch (e) { console.warn('[tpo-register] note-buyer auto-set failed:', db.describeError(e)); }
     // Registration rewrites loan amount / rate / program — re-run condition rules,
     // sync the liquidity requirement, enforce the Gold 5% SOW contingency, and
     // clear a signed Heter Iska if the loan amount moved. Same as the borrower door.
