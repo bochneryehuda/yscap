@@ -904,6 +904,8 @@
             <div class="ts-sub">Estimated fees &amp; cash to close</div>
             <div class="ts-grid2">
                 <div class="ts-line"><span class="k" id="rOrigLbl">Origination (1.25%)</span><span class="v" id="rOrig">$0</span></div>
+                <!-- TPO broker origination fee — shown by the JS only on a TPO file where a broker fee is set (owner-directed 2026-08-06). -->
+                <div class="ts-line" id="rBrokerWrap" style="display:none"><span class="k" id="rBrokerLbl">Broker origination fee</span><span class="v" id="rBroker">—</span></div>
                 <div class="ts-line"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
                 <div class="ts-line"><span class="k">Credit report</span><span class="v" id="rCredit">$150</span></div>
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
@@ -1000,7 +1002,7 @@
 <script src="silver-program.js?v=silver9-bandeps-tiermk1"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

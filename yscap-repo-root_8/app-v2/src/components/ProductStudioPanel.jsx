@@ -302,6 +302,12 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
           <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+          {/* TPO broker origination fee (owner-directed 2026-08-06) — only present on
+              a broker-registered file where a broker fee is set; retail registrations
+              never carry it, so this row never renders on them. */}
+          {Number(cc.brokerFee) > 0 && (
+            <Row k={`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}%)` : ''}`} v={money2(cc.brokerFee)} />
+          )}
           <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
           <Row k="Credit report" v={money2(cc.creditFee)} />
           <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
@@ -1495,6 +1501,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                     showAdmin={staffAdmin} adminCapable={isStaff} onState={onStudioState}
                     issueHold={(data && data.termSheetHold) || null}
                     provenance={data && data.termSheetFinal ? 'file_final' : 'file'}
+                    /* TPO only: the resolved firm pricing (channel/firm markup +
+                       origination + broker fee) so the broker sheet prices exactly
+                       what registers. Null on staff/borrower (route omits it). */
+                    pricingDefaults={(isTpo && data && data.pricingDefaults) || null}
                     officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)
                       ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
                       : null} />

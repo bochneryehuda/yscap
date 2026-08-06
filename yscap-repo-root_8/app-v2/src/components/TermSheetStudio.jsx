@@ -396,7 +396,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, adminCapable = true, officer = null, issueHold = null, provenance = null }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, adminCapable = true, officer = null, issueHold = null, provenance = null, pricingDefaults = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -404,6 +404,12 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   onStateRef.current = onState;
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
+  // Resolved TPO firm pricing (channel/firm markup + origination + the broker fee)
+  // for a broker file — null off a TPO file. Pushed into the tool so a broker sheet
+  // prices and prints exactly what its firm's settings register (owner-directed
+  // 2026-08-06). A ref so the boot handler reads the latest without re-subscribing.
+  const pricingDefaultsRef = useRef(pricingDefaults);
+  pricingDefaultsRef.current = pricingDefaults;
   const [failed, setFailed] = useState(false);
   // Gate the iframe hidden until it is dark, de-chromed and prefilled — without
   // this the marketing page paints for ~1s in light theme with its full chrome
@@ -499,6 +505,15 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       if (!win) return false;
       try { win.TS_PROVENANCE = kind ? { kind } : null; return true; } catch (_) { return false; }
     },
+    /* Push the resolved TPO firm pricing into the tool imperatively — belt-and-
+       suspenders next to the boot handler + the prop effect, so a caller that has
+       just loaded the firm settings can seed them in the same tick before it
+       captures the sheet. No-op with no settings or before the frame is up. */
+    setPricingDefaults(d) {
+      const win = winRef.current;
+      if (!win || !win.TS || typeof win.TS.setPricingDefaults !== 'function' || !d) return false;
+      try { win.TS.setPricingDefaults(d); return true; } catch (_) { return false; }
+    },
     /* Build the exact PDF the static tool downloads, but capture the bytes
        instead: doc.save() is swapped for an output('blob') capture for the
        duration of the one export call, then restored. */
@@ -530,6 +545,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   useEffect(() => {
     try { const w = winRef.current; if (w) w.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
   }, [provenance]);
+  // Push the resolved TPO firm pricing whenever it lands/changes (a pricing reload
+  // on a TPO file). The tool's own boot fetch is overridden by this. No-op off a
+  // TPO file (pricingDefaults null) or before the frame is up (the boot handler
+  // covers the initial push).
+  useEffect(() => {
+    try {
+      const w = winRef.current;
+      if (w && w.TS && typeof w.TS.setPricingDefaults === 'function' && pricingDefaults) w.TS.setPricingDefaults(pricingDefaults);
+    } catch (_) { /* best-effort */ }
+  }, [pricingDefaults]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -642,6 +667,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // final — and the PDF prints the matching stamp (termsheet.js
         // PROV_COPY). Absent → the tool self-derives (website/officer/portal).
         try { win.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
+        // TPO firm pricing (owner-directed 2026-08-06): seed the resolved firm
+        // markup/origination + broker fee so a broker sheet prices what registers.
+        // Wins over the tool's own /api/pricing-defaults boot fetch (the override
+        // flag makes ordering irrelevant). No-op off a TPO file (null).
+        try { if (pricingDefaultsRef.current && win.TS && typeof win.TS.setPricingDefaults === 'function') win.TS.setPricingDefaults(pricingDefaultsRef.current); } catch (_) { /* best-effort */ }
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);

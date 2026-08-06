@@ -26,7 +26,13 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null };
+  // brokerFeePct (owner-directed 2026-08-06): the TPO BROKER's own origination
+  // points, seeded onto CO from the resolved firm settings via setPricingDefaults
+  // on a TPO file only. It starts 0 and /api/pricing-defaults never carries it, so
+  // for every retail / borrower / marketing sheet it stays 0 → the broker-fee line
+  // and its cash-to-close / liquidity contribution are INERT and every retail
+  // number is byte-identical.
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0 };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -577,7 +583,8 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
+    var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -604,7 +611,7 @@
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
       totalCost: displayCost, downPayment: _sl.downPayment, excessOOP: excessOOP,
       oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
-      origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
@@ -644,7 +651,8 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
@@ -668,7 +676,7 @@
       totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
-      origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
@@ -708,7 +716,8 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
@@ -731,7 +740,7 @@
       totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
-      origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
@@ -1190,6 +1199,16 @@
       .map(function (f) { return { name: String(f.name), amount: Number(f.amount) }; });
   }
   function extraFeesTotal() { return extraFeeList().reduce(function (a, f) { return a + f.amount; }, 0); }
+  // TPO broker origination fee (owner-directed 2026-08-06). Points on the loan the
+  // BROKER (firm admin) sets on their OWN files — never a rate markup — seeded onto
+  // CO.brokerFeePct from the resolved firm settings (setPricingDefaults). Folded
+  // into `closing` exactly like origination so it cascades into cash-to-close and
+  // the liquidity to show (a real borrower closing cost). CO.brokerFeePct is 0 for
+  // every retail/borrower sheet, so brokerFeeFrac()/brokerFeeAmt() return 0 and the
+  // whole thing is INERT (byte-identical retail). Mirrors the server's pricing.js:
+  // brokerFee = totalLoan x (brokerFeePct/100), positive-only.
+  function brokerFeeFrac() { var p = Number(CO.brokerFeePct); return (isFinite(p) && p > 0) ? p / 100 : 0; }
+  function brokerFeeAmt(loan) { var f = brokerFeeFrac(); return (f > 0 && loan > 0) ? loan * f : 0; }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
   function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
@@ -1222,6 +1241,31 @@
   function syncManualOrigHint() {
     var e = el("tsOrigManual"); if (!e) return;
     try { e.placeholder = String(adminNum("tsOrigStd", CO.origStd)); } catch (_) { /* cosmetic only */ }
+  }
+  // Overlay a pricing-defaults object onto CO. Called with the COMPANY defaults
+  // (the /api/pricing-defaults shape) on boot, and with the resolved TPO FIRM
+  // settings (the same cd shape + brokerFeePct) via setPricingDefaults on a TPO
+  // file. Both paths seed CO identically — only the SOURCE differs — so a broker
+  // sheet prices exactly what its firm's settings register, and a retail sheet is
+  // byte-identical (brokerFeePct absent → 0).
+  var pricingDefaultsOverridden = false;   // a host push (TPO) must not be clobbered by the retail boot fetch
+  function applyPricingDefaults(d) {
+    if (!d || typeof d !== "object") return;
+    if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
+    if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
+    if (d.markupSilverPct != null) CO.markupSilver = Number(d.markupSilverPct);
+    if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
+    if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
+    if (d.origSilverPct != null) CO.origSilver = Number(d.origSilverPct);
+    if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
+    if (d.creditFee != null) CO.credit = Number(d.creditFee);
+    if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
+    CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
+    CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
+    CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
+    // TPO broker origination points — present ONLY on a resolved TPO settings
+    // object; retail /api/pricing-defaults never carries it, so it resets to 0.
+    CO.brokerFeePct = (d.brokerFeePct != null && isFinite(Number(d.brokerFeePct)) && Number(d.brokerFeePct) > 0) ? Number(d.brokerFeePct) : 0;
   }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
   // A STRUCTURAL manual basis (custom LTV / LTC / ARV) is what actually makes a
@@ -1564,6 +1608,12 @@
     YS.put("rDown", sized ? YS.fmtUSD(d.downPayment) : EM);
     YS.put("rOrigLbl", "Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")");
     YS.put("rOrig", sized ? YS.fmtUSD2(d.origFee) : EM);
+    // TPO broker origination fee — its own line, shown only when set (a TPO file).
+    // Hidden with brokerFee 0, so a retail sheet never carries it.
+    (function () { var w = el("rBrokerWrap");
+      if (w) { if (sized && d.brokerFee > 0) { w.style.display = "";
+        YS.put("rBrokerLbl", "Broker origination fee (" + origPctStr(d.brokerFeePct / 100) + ")"); YS.put("rBroker", YS.fmtUSD2(d.brokerFee)); }
+        else { w.style.display = "none"; } } })();
     YS.put("rLender", sized ? YS.fmtUSD2(d.lenderFee) : EM);
     YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
     YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
@@ -2077,6 +2127,15 @@
         if (svi > -1) Array.prototype.splice.apply(silver, [svi, 0].concat(sd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
       }
     }
+    // TPO broker origination fee (owner-directed 2026-08-06) — its own line before
+    // cash-to-close, so the Excel fee list adds up the same as the panel and PDF.
+    // brokerFee is 0 on every retail sheet, so nothing is inserted there.
+    [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
+      var rows = pr[0], dd = pr[1], ok = pr[2];
+      if (!ok || !dd || !(dd.brokerFee > 0)) return;
+      var i = rows.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
+      if (i > -1) rows.splice(i, 0, ["Broker origination fee (" + origPctStr(dd.brokerFeePct / 100) + ")", money2(dd.brokerFee)]);
+    });
     // REFINANCE: reconcile each block's fee list to cash-to-close by naming the
     // existing-loan payoff and the funds advanced at closing (owner-directed
     // 2026-08-04) — otherwise a refi's fees sum to closing costs while cash-to-close
@@ -2587,6 +2646,10 @@
       yR += 9;
       yR = cardHead(xR, colW, "Estimated cash to close", yR);
       yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money2(d.origFee) : "\u2014", yR);
+      // TPO broker origination fee (owner-directed 2026-08-06) \u2014 only on a TPO file
+      // where a broker fee is set; brokerFee is 0 on every other sheet, so this row
+      // never prints on a retail term sheet.
+      if (sized && d.brokerFee > 0) yR = rowIn(xR, colW, "Broker origination fee (" + origPctStr(d.brokerFeePct / 100) + ")", money2(d.brokerFee), yR);
       yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money2(d.lenderFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
@@ -3340,6 +3403,7 @@
       minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,
       ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"],
+      (d.brokerFee > 0) ? ["Broker origination fee", origPctStr(d.brokerFeePct / 100) + " of loan"] : null,
       isBridge ? null : ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
     ]);
 
@@ -3506,28 +3570,21 @@
     (function(){
       try {
         fetch("/api/pricing-defaults").then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
-          if (d && typeof d === "object") {
-            if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
-            if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
-            if (d.markupSilverPct != null) CO.markupSilver = Number(d.markupSilverPct);
-            if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
-            if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
-            if (d.origSilverPct != null) CO.origSilver = Number(d.origSilverPct);
-            if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
-            if (d.creditFee != null) CO.credit = Number(d.creditFee);
-            if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
-            CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
-            CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
-            // Per-tier markup company defaults (item 15) — { standard:{1,2,3},
-            // gold, silver } of percents, or null (feature off). syncAdminMarkup
-            // pushes it into the engines; null keeps the historic per-tier markup.
-            CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
-          }
+          // A TPO host may push the resolved firm settings (setPricingDefaults)
+          // BEFORE this retail fetch resolves — never clobber them with the
+          // company defaults. applyPricingDefaults also handles the per-tier
+          // markup company defaults (item 15) and the broker fee (TPO only).
+          if (!pricingDefaultsOverridden) applyPricingDefaults(d);
         }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
       } catch (e) { recompute(); }
     })();
   }
   window.TS = { exportPdf: exportPdf, exportLetter: exportLetter, exportXlsx: exportXlsx, importXlsx: importXlsx, share: function (b) { try { YS.shareLink(b); } catch (e) {} },
+    // TPO (owner-directed 2026-08-06): the host (ProductStudioPanel in tpo mode)
+    // pushes the file's RESOLVED firm pricing — the TPO channel/firm markup +
+    // origination + the broker's origination fee — so the broker sheet prices and
+    // prints exactly what the register records. Wins over the boot fetch.
+    setPricingDefaults: function (d) { try { pricingDefaultsOverridden = true; applyPricingDefaults(d); seedAdminDefaults(); recompute(); } catch (e) {} },
     _calc: calc, _calcGold: calcGold, _calcSilver: calcSilver, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };
   window.APP = window.TS;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();

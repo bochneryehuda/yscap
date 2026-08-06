@@ -598,8 +598,19 @@ router.get('/applications/:id/pricing', async (req, res, next) => {
     if (termSheetHold) termSheetHold = 'The terms are being finalized — the loan team is reviewing the appraisal. A term sheet will be available shortly.';
     let termSheetFinal = false;
     try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(req.params.id, { db })).final; } catch (_) { termSheetFinal = false; }
+    // The resolved firm pricing the STUDIO seeds so a broker's client-generated
+    // term-sheet PDF prices and prints exactly what the register records — the TPO
+    // channel/firm markup + origination overrides and the broker's own origination
+    // fee (owner-directed 2026-08-06). This is the company/channel/firm pricing
+    // CONFIG (the cd shape + brokerFeePct), NOT per-file underwriting margin: it
+    // carries no adminPricing / ovr* / spread field (those live on a registration's
+    // stored inputs, stripped by stripInputsInternal). The channel markup it names
+    // is already implicit in the note rate the broker is shown (quote.noteRate), so
+    // it discloses nothing a broker with the client engine could not already derive.
+    let pricingDefaults = null;
+    try { pricingDefaults = tpoPricing.effectiveSettingsFor(f.app); } catch (_) { pricingDefaults = null; }
     res.json({ current, history, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal, pricingDefaults });
   } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
