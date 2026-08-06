@@ -1,5 +1,5 @@
 -- ============================================================================
--- 477 — AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway).
+-- 480 — AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway).
 --
 -- The first OUTBOUND appraisal-ordering integration. Today PILOT only INGESTS a
 -- completed appraisal XML (src/lib/appraisal/desk.js runAppraisalImport); ordering

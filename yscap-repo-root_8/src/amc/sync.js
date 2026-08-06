@@ -29,7 +29,7 @@ const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
 
-// The order states that are still live at the AMC (mirror the partial index in db/477).
+// The order states that are still live at the AMC (mirror the partial index in db/480).
 const OPEN_STATUSES = ['ordered', 'in_process', 'assigned', 'inspected', 'in_review', 'product_available', 'on_hold'];
 const POLL_BATCH = Math.max(1, parseInt(process.env.AMC_POLL_BATCH || '25', 10) || 25);
 
