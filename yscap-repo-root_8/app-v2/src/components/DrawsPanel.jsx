@@ -293,6 +293,9 @@ export default function DrawsPanel({ appId }) {
 const WIRE_KIND = {
   borrower_personal: { label: 'Borrower’s account', tone: 'on' },
   subject_llc: { label: 'Subject LLC account', tone: 'on' },
+  // A known entity of the borrower (on their profile / library) — not the file's linked
+  // subject LLC, but not an unknown third party either, so no operating agreement is needed.
+  known_entity: { label: 'Borrower’s entity', tone: 'on' },
   new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
