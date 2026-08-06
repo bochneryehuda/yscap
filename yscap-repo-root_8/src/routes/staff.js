@@ -4009,10 +4009,29 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
   if (!state) return res.status(400).json({ error: 'state required' });
   const r = await db.query(
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
-      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id`,
+      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id, tool_key`,
     [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
-  res.json({ ok: true, savedAt: new Date().toISOString() });
+  // THE EXPERIENCE TYPED IN THE TERM SHEET STUDIO IS THE FILE'S CLAIM
+  // (owner-directed 2026-08-06: "if they entered any experience on the term
+  // sheet generated, they should feed directly into the file"). This save IS
+  // the moment the studio scenario lands on the file, and it is the one door
+  // both the panel's debounced autosave and its close-flush go through — so
+  // feeding the claim here is what makes the track-record condition require
+  // verifying what the deal was actually priced on, whether or not the officer
+  // ever pressed Register. Best-effort and never able to fail the save; the
+  // whole rule (verbatim-so-it-can-be-lowered, blank-states-nothing, frozen
+  // files refused, fails closed) lives in the module.
+  let experienceClaim = null;
+  if (r.rows[0].tool_key === 'product_pricing') {
+    const fed = await require('../lib/studio-experience-claim')
+      .applyStudioExperienceClaim(req.params.id, state, db);
+    if (fed.written) {
+      experienceClaim = fed.claim;
+      await audit(req, 'studio_experience_claim', 'application', req.params.id, fed.claim);
+    }
+  }
+  res.json({ ok: true, savedAt: new Date().toISOString(), experienceClaim });
 });
 router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const it = await db.query(
@@ -8250,9 +8269,9 @@ async function signOffGate(itemId, actor) {
   // the file (nothing to verify for the chosen structure), it may be signed off
   // freely; it only becomes gated once experience is claimed on the application /
   // term sheet / product.
-  const claimed = (Number(app.requested_exp_flips) || 0) + (Number(app.requested_exp_holds) || 0) + (Number(app.requested_exp_ground) || 0);
+  const claim = require('../lib/experience').requestedFromApp(app);
+  const claimed = claim.flips + claim.holds + claim.ground;
   if (claimed === 0) return null;
-  if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
        FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
@@ -8262,14 +8281,28 @@ async function signOffGate(itemId, actor) {
     else if (/flip/.test(row.dt)) v.flips += row.n;
     else v.holds += row.n;
   }
-  const inp = reg.inputs || {};
-  const need = { flips: Number(inp.expFlips) || 0, holds: Number(inp.expHolds) || 0, ground: Number(inp.expGround) || 0 };
+  // WHAT MUST BE VERIFIED = the registered product's experience, falling back to
+  // the FILE'S OWN CLAIM when nothing is registered yet — ONE definition, shared
+  // with the condition sync and the track-record to-do list (experience.js), so
+  // the gate can never refuse on a number the condition never showed. This used
+  // to re-inline `reg.inputs` and refuse outright with "Register a product
+  // first", which is a dead end on a condition about the track record: an
+  // officer who generated a term sheet claiming 10 stabilized rentals was told
+  // to go register a product rather than to verify the ten deals
+  // (owner-directed 2026-08-06: "the condition should require verifying 10 —
+  // you should not be able to sign it off till you verify 10"). A REGISTERED
+  // file is unaffected: the registration still governs.
+  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
   const short = [];
   if (v.flips < need.flips) short.push(`${need.flips - v.flips} more flip${need.flips - v.flips === 1 ? '' : 's'}`);
   if (v.holds < need.holds) short.push(`${need.holds - v.holds} more hold${need.holds - v.holds === 1 ? '' : 's'}`);
   if (v.ground < need.ground) short.push(`${need.ground - v.ground} more ground-up`);
   if (short.length) {
-    return `Experience does not match the registered product — it claims ${need.flips} flip(s) / ${need.holds} hold(s) / ${need.ground} ground-up, but only ${v.flips}/${v.holds}/${v.ground} are VERIFIED on the track record. Verify ${short.join(', ')}, or re-register the product with the experience the borrower can prove.`;
+    const basis = reg ? 'the registered product' : 'the term sheet';
+    const fix = reg
+      ? 'or re-register the product with the experience the borrower can prove.'
+      : 'or lower the experience in Products & Pricing to what the borrower can prove.';
+    return `Experience does not match ${basis} — it claims ${need.flips} flip(s) / ${need.holds} hold(s) / ${need.ground} ground-up, but only ${v.flips}/${v.holds}/${v.ground} are VERIFIED on the track record. Verify ${short.join(', ')}, ${fix}`;
   }
   return null;
 }

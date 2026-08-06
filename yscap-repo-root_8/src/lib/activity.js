@@ -123,6 +123,26 @@ const AUDIT_RENDER = {
       };
     },
   },
+  // The experience typed in the Term Sheet Studio becomes the file's CLAIM the
+  // moment the scenario saves (owner-directed 2026-08-06) — and that claim is
+  // what the track-record condition then refuses to be signed off without. STAFF
+  // ONLY: it belongs to the underwriter reading "why does this file suddenly need
+  // ten verified holds?", not to the borrower's feed.
+  studio_experience_claim: {
+    borrowerSafe: false, kind: 'product',
+    render(d) {
+      d = d || {};
+      const bits = [
+        d.flips != null ? `${d.flips} flip${d.flips === 1 ? '' : 's'}` : null,
+        d.holds != null ? `${d.holds} hold${d.holds === 1 ? '' : 's'} / rentals` : null,
+        d.ground != null ? `${d.ground} ground-up` : null,
+      ].filter(Boolean);
+      return {
+        verb: 'set the claimed experience from the Term Sheet Studio',
+        label: bits.length ? `${bits.join(' · ')} — must be verified on the track record before the experience condition can be signed off` : null,
+      };
+    },
+  },
   link_llc: { borrowerSafe: true, kind: 'llc', render: (d) => ({ verb: (d && d.previous) ? 'switched the vesting entity' : 'linked the vesting entity', label: null }) },
   save_appraisal_card: { borrowerSafe: true, kind: 'card', render: (d) => ({ verb: 'saved the appraisal payment card', label: d && d.last4 ? `Card ending ${d.last4}` : null }) },
   save_rehab_budget: { borrowerSafe: true, kind: 'edit', render: (d) => ({ verb: 'updated the rehab budget / scope of work', label: d && d.total != null ? `New total ${money(d.total)}` : null }) },
