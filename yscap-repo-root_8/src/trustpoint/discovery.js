@@ -197,7 +197,7 @@ async function sweep() {
     }
     // A LINKED project flipping to DISCARDED needs a human look at the link (audit #22).
     if (lrow && lrow.application_id && shape.status === 'DISCARDED' && !lrow.discarded) {
-      await notify.notifyAppStaff(lrow.application_id, {
+      await notify.notifyAppStaffThread(lrow.application_id, {
         type: 'draw_inbound', title: 'TrustPoint project was discarded',
         body: 'The TrustPoint project linked to this file was DISCARDED on their side. Check whether the link is still right (it may have been replaced by a new project).',
         applicationId: lrow.application_id, link: `/internal/app/${lrow.application_id}/draws`,
