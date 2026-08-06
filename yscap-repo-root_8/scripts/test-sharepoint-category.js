@@ -72,6 +72,15 @@ ok(cat({ doc_kind: 'draw_inspection_report', filename: 'trustpoint-draw-2-servic
   'TrustPoint service invoice → "Draws/Draw 2/TrustPoint"');
 ok(cat({ doc_kind: 'draw_inspection_report', filename: 'sitewire-draw-3-inspection-def456.pdf' }) === 'Draws/Draw 3/Sitewire',
   'Sitewire per-draw inspection PDF → "Draws/Draw 3/Sitewire"');
+// The PILOT-branded TrustPoint ("trinary") report (trustpoint/report.js) carries
+// the draw NUMBER, so it files per-draw next to the inspector's TrustPoint docs.
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'draw-2-a1b2c3d4-report-staff-abc123.pdf' }) === 'Draws/Draw 2/TrustPoint',
+  'PILOT-branded TrustPoint report (draw-N-...-report-) → "Draws/Draw 2/TrustPoint"');
+// TrustPoint's OWN fetched report (trustpoint/mirror.js) is named by TrustPoint's
+// draw id, NOT the draw number, so it groups under one clear TrustPoint folder
+// (out of "Unfiled draw", honest that the number isn't in the filename).
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'trustpoint-draw-report-abcd1234-56ef.pdf' }) === 'Draws/TrustPoint reports',
+  "TrustPoint's own report (no draw number in the name) → \"Draws/TrustPoint reports\"");
 ok(cat({ doc_kind: 'draw_inspection_report', filename: 'pilot-project-report-staff-YSCAP1-abc123.pdf' }) === 'Draws/All draws (project)/Our report',
   'whole-project report → "Draws/All draws (project)/Our report"');
 ok(cat({ doc_kind: 'draw_inspection_report', filename: 'something-unrecognized.pdf' }) === 'Draws/Unfiled draw/Reports',

@@ -192,7 +192,7 @@ async function backfillDrawPacketsOnce(limit = 50) {
           SELECT 1 FROM documents doc
            WHERE doc.application_id = d.application_id AND doc.doc_kind = 'draw_packet'
              AND doc.is_current = true
-             AND doc.filename LIKE 'pilot-draw-' || COALESCE(d.number::text, '') || '-packet-%')
+             AND doc.filename LIKE 'pilot-draw-' || COALESCE(d.number::text, substr(d.sitewire_draw_id::text, 1, 8)) || '-packet-%')
         ORDER BY d.sitewire_draw_id
         LIMIT $1`, [limit])).rows;
     for (const r of due) {

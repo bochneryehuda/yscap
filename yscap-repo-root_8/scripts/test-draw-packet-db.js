@@ -203,6 +203,19 @@ const rowOf = (rows, label) => rows.find((r) => String(r[0] || '').toLowerCase()
     const currentCount = (await db.query(
       `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='draw_packet' AND is_current=true`, [app])).rows[0].c;
     eq('5f there is exactly ONE current packet for the draw', currentCount, 1);
+    // 5g the unique index (db/479) is the REAL backstop that makes the 23505 catch
+    //    reachable: two concurrent boot backfills across Render instances both pass
+    //    the existing-filename SELECT, but the second INSERT is refused — so a draw
+    //    can never end up with two current packets.
+    let dupBlocked = false;
+    try {
+      await db.query(
+        `INSERT INTO documents (application_id, filename, content_type, size_bytes, storage_provider, storage_ref,
+            uploaded_by_kind, doc_kind, source_type, visibility, is_current, review_status)
+         VALUES ($1,$2,'x',1,'local','x/y','staff','draw_packet','system','staff_only',true,'accepted')`,
+        [app, doc.filename]);
+    } catch (e) { dupBlocked = !!(e && e.code === '23505'); }
+    ok('5g a duplicate draw_packet (same application+filename) is refused by the unique index', dupBlocked);
   }
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} draw-packet / rollup / heal assertions ${fail === 0 ? 'passed' : ''}`);

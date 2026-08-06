@@ -370,8 +370,17 @@ function drawInfoFromName(name) {
   if ((m = /^pilot-draw-(\d+)-report-(?:staff|borrower)-/i.exec(s))) return { num: +m[1], sub: 'Our report' };
   if (/^pilot-project-report-/i.test(s))                             return { project: true, sub: 'Our report' };
   if ((m = /^trustpoint-draw-(\d+)-inspection-result/i.exec(s)))     return { num: +m[1], sub: 'Inspector' };
+  // TrustPoint's OWN report PDF (trustpoint/mirror.js) is named by TrustPoint's
+  // draw id, not the draw NUMBER, so it can't file per-draw from the filename —
+  // group it under one clear TrustPoint folder (honest, and out of "Unfiled").
+  // Checked before the generic trustpoint-draw-<n> case (which needs a digit).
+  if (/^trustpoint-draw-report-/i.test(s))                           return { flat: 'TrustPoint reports' };
   if ((m = /^trustpoint-draw-(\d+)-/i.exec(s)))                      return { num: +m[1], sub: 'TrustPoint' };
   if ((m = /^sitewire-draw-(\d+)-/i.exec(s)))                        return { num: +m[1], sub: 'Sitewire' };
+  // The PILOT-branded TrustPoint ("trinary") report (trustpoint/report.js) is
+  // `draw-<N>-<tag>-report-<mode>-<ver>.pdf` — it carries the draw number, so it
+  // files per-draw alongside the inspector's own TrustPoint documents.
+  if ((m = /^draw-(\d+)-[a-z0-9]+-report-/i.exec(s)))                return { num: +m[1], sub: 'TrustPoint' };
   return { sub: 'Reports' };
 }
 // The per-draw folder PATH for a draw document (the packet Excel, or any report).
@@ -379,6 +388,7 @@ function drawInfoFromName(name) {
 // and stable, and the existing multi-segment resolver creates each level.
 function drawFolderPathFor(row) {
   const info = drawInfoFromName(row.filename);
+  if (info.flat) return ['Draws', info.flat];   // a draw report with no draw number in its filename
   const drawSeg = info.project ? 'All draws (project)'
     : (info.num != null ? `Draw ${info.num}` : 'Unfiled draw');
   const path = ['Draws', drawSeg];
