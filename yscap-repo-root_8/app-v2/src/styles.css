@@ -4084,3 +4084,36 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   color:var(--text);font-variant-numeric:tabular-nums;margin-top:3px}
 .dd-payout-why{flex:1 1 220px;min-width:200px;font-size:13px;line-height:1.5;color:var(--text-muted)}
 @media(max-width:720px){.dd-payout{gap:8px}.dd-payout-why{flex-basis:100%}}
+
+/* ---- PILOT'S OWN MESSAGE BOX (AppDialog) ----------------------------------
+   Replaces the browser's native alert(), whose title is the ORIGIN HOSTNAME —
+   PILOT's own plain-English refusals were arriving stamped "yscap.onrender.com
+   says" (owner-reported 2026-08-06). Sits on .cv-modal, so the solid surface,
+   the shadow and the phone bottom-sheet behaviour all come for free.
+   Every text colour here is an EXPLICIT dark per the hard rule — an --ink*
+   token is a LIGHT paper colour in this palette and would render white-on-white. */
+.app-dialog{max-width:460px;padding:20px 22px 18px}
+.app-dialog-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}
+/* The gold navigation chevron reads as PILOT at a glance; an error turns it red
+   so the tone is legible before a single word is read. */
+.app-dialog-mark{flex:none;width:26px;height:26px;border-radius:8px;margin-top:2px;
+  background:var(--gold,#AE8746);
+  -webkit-mask:linear-gradient(#000,#000) center/13px 13px no-repeat;
+          mask:linear-gradient(#000,#000) center/13px 13px no-repeat;
+  box-shadow:inset 0 0 0 99px var(--gold,#AE8746)}
+.app-dialog-mark.bad{background:#b04a3f;box-shadow:inset 0 0 0 99px #b04a3f}
+.app-dialog-kicker{margin:0;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  font-weight:700;color:#4B585C}
+.app-dialog-title{margin:1px 0 0;font-size:17px;line-height:1.25;color:#141B22}
+/* pre-wrap: these messages carry real line breaks (a sign-off refusal is two
+   paragraphs) and must keep them; overflow-wrap stops a long filename or an
+   address from pushing the card sideways on a phone. */
+.app-dialog-body{margin:0 0 16px;white-space:pre-wrap;overflow-wrap:anywhere;
+  font-size:14px;line-height:1.5;color:#3A4550}
+.app-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+@media(max-width:640px){
+  .app-dialog{padding:18px 16px calc(16px + env(safe-area-inset-bottom))}
+  /* Full-width, thumb-reachable buttons on a phone; the primary action sits
+     last (nearest the thumb) exactly as it does on desktop. */
+  .app-dialog-actions .btn{flex:1 1 auto;min-width:120px}
+}

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
@@ -27,17 +28,17 @@ export default function StaffAiSilencedCodes() {
   }, []);
   useEffect(() => { load(); }, [load]);
   const add = async () => {
-    if (!code.trim() || !reason.trim()) { alert('Both code and reason are required.'); return; }
+    if (!code.trim() || !reason.trim()) { showMessage('Both code and reason are required.'); return; }
     try {
       await api.aiSilencedCodesAdd(code.trim(), reason.trim());
       setCode(''); setReason('');
       load();
-    } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
   };
   const remove = async (c) => {
     if (!window.confirm(`Un-mute "${c}"? New findings with this code will start surfacing again.`)) return;
     try { await api.aiSilencedCodesRemove(c); load(); }
-    catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+    catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
   };
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '20px 16px' }}>

@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { engineReport } from './lib/engines.js';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import RouteChrome from './components/RouteChrome.jsx';
+import AppDialogHost from './components/AppDialog.jsx';
 import Layout from './components/Layout.jsx';
 import StaffLayout from './components/StaffLayout.jsx';
 import Login from './screens/Login.jsx';
@@ -137,6 +138,13 @@ export default function App() {
     <AuthProvider>
       <HashRouter>
         <RouteChrome />
+        {/* PILOT's own message box. Mounted ONCE, here, for two reasons: it
+            covers every screen including the public ones (login, e-sign, guest
+            chat), and it sits OUTSIDE the ErrorBoundary so a screen that
+            crashes cannot take the dialog down with it. Without a mounted host
+            lib/dialog falls back to the browser's native box, so a message is
+            never swallowed — see the note in that file. */}
+        <AppDialogHost />
         <ErrorBoundary>
         <Routes>
           {/* public */}

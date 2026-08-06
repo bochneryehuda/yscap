@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -447,16 +448,16 @@ function TrackRecord({ id }) {
   const [busy, setBusy] = useState('');
   async function verify(t) {
     setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { alert(e.message || 'Could not verify'); }
+    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { showMessage(e.message || 'Could not verify'); }
     finally { setBusy(''); }
   }
   async function revoke(t) {
     const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
     if (reason == null) return;                       // cancelled
-    if (!reason.trim()) { alert('A reason is required to revoke verification.'); return; }
+    if (!reason.trim()) { showMessage('A reason is required to revoke verification.'); return; }
     setBusy(t.id);
     try { await api.staffVerifyTrackRecord(t.id, { status: 'pending', reason: reason.trim() }); reload(); }
-    catch (e) { alert(e.message || 'Could not revoke verification'); }
+    catch (e) { showMessage(e.message || 'Could not revoke verification'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -790,7 +791,7 @@ function Tasks({ id }) {
     finally { setBusy(false); gate.leave(); }
   }
   async function complete(r) {
-    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { alert(e.message || 'Failed'); }
+    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { showMessage(e.message || 'Failed'); }
   }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
@@ -840,7 +841,7 @@ function Documents({ id }) {
   async function dl(d) {
     setBusy(d.id);
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
-    catch (e) { alert(e.message || 'Download failed'); }
+    catch (e) { showMessage(e.message || 'Download failed'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -899,12 +900,12 @@ function Notes({ id }) {
     if (!body.trim()) return;
     if (!gate.enter()) return;             // a note add is already in flight
     setBusy(true);
-    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { alert(e.message || 'Could not add note'); }
+    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { showMessage(e.message || 'Could not add note'); }
     finally { setBusy(false); gate.leave(); }
   }
   async function del(n) {
     if (!window.confirm('Delete this note?')) return;
-    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { alert(e.message || 'Could not delete'); }
+    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { showMessage(e.message || 'Could not delete'); }
   }
   return (
     <div className="panel">

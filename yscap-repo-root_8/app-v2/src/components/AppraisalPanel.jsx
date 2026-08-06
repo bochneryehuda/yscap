@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { fmtDate } from '../lib/dates.js';
 // Severity words + colours: ONE shared map. Three screens each kept a private copy
@@ -180,7 +181,7 @@ function Finding({ appId, f, onChange, readOnly }) {
   const act = async (action, value) => {
     setBusy(true);
     try { await api.appraisalResolveFinding(appId, f.id, { action, value, note: '' }); onChange && onChange(); }
-    catch (e) { alert(e.message || 'Could not resolve'); }
+    catch (e) { showMessage(e.message || 'Could not resolve'); }
     finally { setBusy(false); }
   };
   const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units'].includes(f.field);
@@ -772,7 +773,7 @@ function SourceDocs({ a }) {
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (e) { alert(e.message || 'Could not open the document'); }
+    } catch (e) { showMessage(e.message || 'Could not open the document'); }
     finally { setBusy(''); }
   };
   const docs = [];

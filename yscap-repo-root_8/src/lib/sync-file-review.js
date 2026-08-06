@@ -84,7 +84,15 @@ const REASON_ACTIONS = {
   economics_frozen_conflict: ['keep_frozen_figures', 'accept_clickup_figures'],
   // ClickUp moved a PRE-Clear-to-Close file to Clear to Close; PILOT held the
   // status change and asks a human to CONFIRM the move (owner-directed 2026-07-27).
-  ctc_confirm_needed: ['confirm_ctc'],
+  // The confirm is GATED on the file actually being ready — every open required
+  // condition and the executed term-sheet package — because "ClickUp says so" is
+  // not the same question as "is this file finished?" (owner-directed 2026-08-06:
+  // "it should go to manual review and not really be CTC till the file is really
+  // ready for CTC"). TWO decisions:
+  //   • confirm_ctc          — advance, refused with a plain list if not ready, OR
+  //   • confirm_ctc_override — ADMIN-only: advance anyway, recorded, the same
+  //     escape hatch every other gate on this file has.
+  ctc_confirm_needed: ['confirm_ctc', 'confirm_ctc_override'],
   // A two-way deal field (program / loan type / property type / term / economics)
   // was changed on BOTH sides — the portal AND ClickUp — to different values, so
   // the inbound pull HELD the file's value instead of silently reverting the edit
@@ -585,12 +593,19 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
       applicationId: row.application_id };
   }
 
-  if (action === 'confirm_ctc') {
+  if (action === 'confirm_ctc' || action === 'confirm_ctc_override') {
     // Confirm the held Clear-to-Close move (owner-directed 2026-07-27): advance
     // PILOT to Clear to Close so it matches ClickUp, and notify the borrower.
     // Available to any staffer who can resolve the file's reviews (moving a file
     // to Clear to Close is a normal status action, not an admin-only override).
     if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    // The OVERRIDE is admin-only — it advances a file the readiness gate refused,
+    // which is exactly the outcome the owner asked us to stop happening by
+    // accident. Checked here, at the door, not inferred from the role inside.
+    const override = action === 'confirm_ctc_override';
+    if (override && !isAdmin) {
+      throw httpError(403, 'Only an admin can move a file to Clear to Close before it is ready.');
+    }
     let internalStatus = null;
     try {
       const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
@@ -599,14 +614,19 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     const { confirmCtc } = require('./inbound-ctc-confirm');
     const out = await confirmCtc({
       appId: row.application_id, actorId: actorId || null, internalStatus,
+      force: override, allowForce: !!isAdmin,
       taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
-    await audit('sync_review_confirm_ctc', row.application_id, actorId, { reviewId: row.id, fromStatus: out.fromStatus, reverted: !!out.reverted });
+    await audit(override ? 'sync_review_confirm_ctc_override' : 'sync_review_confirm_ctc',
+      row.application_id, actorId,
+      { reviewId: row.id, fromStatus: out.fromStatus, reverted: !!out.reverted, forced: !!out.forced });
     return {
       note: out.reverted
         ? 'ClickUp is no longer Clear to Close (it changed back since this review was raised), so PILOT was NOT moved. This review is now cleared.'
         : out.alreadyThere
           ? 'the file is already Clear to Close / Funded — nothing to change.'
-          : 'confirmed — the file is now Clear to Close in PILOT (it matches ClickUp), and the borrower was notified.',
+          : out.forced
+            ? 'moved to Clear to Close with an admin override — the file was NOT finished, and what was still outstanding is recorded on the file. The borrower was notified.'
+            : 'confirmed — the file is now Clear to Close in PILOT (it matches ClickUp), and the borrower was notified.',
       applicationId: row.application_id };
   }
 

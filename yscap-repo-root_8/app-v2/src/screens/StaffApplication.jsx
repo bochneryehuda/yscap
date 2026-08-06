@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -3224,11 +3225,11 @@ function ManualConditionDelete({ it, appId, onChanged }) {
         const who = e.data.creatorName || 'the person who added it';
         if (window.confirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
           const reason = window.prompt('Add a short note for them (optional):', '') || '';
-          try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); window.alert(`Asked ${who} to delete it. They'll get a prompt.`); }
-          catch (_) { window.alert('Could not send the request.'); }
+          try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); showMessage(`Asked ${who} to delete it. They'll get a prompt.`); }
+          catch (_) { showMessage('Could not send the request.'); }
         }
       } else {
-        window.alert((e && e.message) || 'Could not delete the condition.');
+        showMessage((e && e.message) || 'Could not delete the condition.');
       }
     } finally { setBusy(false); }
   }
@@ -3245,7 +3246,7 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
   const [busy, setBusy] = useState(false);
   if (!it || !it.delete_requested_by) return null;
   const who = it.delete_requested_by_name || 'A teammate';
-  async function del() { setBusy(true); try { await api.staffDeleteCondition(appId, it.id); onChanged && onChanged(); } catch (e) { window.alert((e && e.message) || 'Could not delete it.'); } finally { setBusy(false); } }
+  async function del() { setBusy(true); try { await api.staffDeleteCondition(appId, it.id); onChanged && onChanged(); } catch (e) { showMessage((e && e.message) || 'Could not delete it.'); } finally { setBusy(false); } }
   async function keep() { setBusy(true); try { await api.staffDismissDeleteRequest(appId, it.id); onChanged && onChanged(); } catch (_) {} finally { setBusy(false); } }
   return (
     <div className="notice" style={{ marginTop: 6, borderLeft: '3px solid var(--gold)', padding: '6px 10px', background: 'rgba(174,135,70,0.06)' }}>
@@ -3349,7 +3350,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
     if (card) { setCard(null); return; }
     setCardBusy(true);
     try { setCard(await api.staffAppraisalCard(appId)); }
-    catch (e) { alert(e.message || 'No card on file yet.'); }
+    catch (e) { showMessage(e.message || 'No card on file yet.'); }
     finally { setCardBusy(false); }
   }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
@@ -4557,7 +4558,7 @@ export default function StaffApplication() {
       }
       setErr(msg);
       if (completing) {
-        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
+        try { showMessage('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
     }
   }
@@ -4577,7 +4578,7 @@ export default function StaffApplication() {
     } catch (e) {
       const emsg = (e && e.data && e.data.error) || (e && e.message) || 'Could not send the request.';
       setErr(emsg);
-      try { window.alert(emsg); } catch (_) { /* no window */ }
+      try { showMessage(emsg); } catch (_) { /* no window */ }
     }
   }
   async function downloadDoc(doc) {
@@ -6225,7 +6226,7 @@ function TprExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'TPR_export.zip'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (
@@ -6313,7 +6314,7 @@ function TapeExport({ appId }) {
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
       if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
       await runExport(tapeKey, name, undefined);
-    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+    } catch (e) { showMessage((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
     setBusy(tapeKey); setMsg('');
@@ -6339,7 +6340,7 @@ function TapeExport({ appId }) {
         setPending(null); setReqOpen(true); load();
         setBusy(null); return;
       }
-      alert(d.message || e.message || 'Export failed');
+      showMessage(d.message || e.message || 'Export failed');
     }
     finally { setBusy(null); }
   }
@@ -6495,7 +6496,7 @@ function MismoExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffExportMismo(appId); saveBlob(blob, filename || 'MISMO_3.4.xml'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (
