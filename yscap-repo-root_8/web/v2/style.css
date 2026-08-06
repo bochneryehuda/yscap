@@ -62,7 +62,12 @@
 }
 
 *{ box-sizing:border-box; }
-html{ scroll-behavior:smooth; scroll-padding-top:96px; overflow-x:hidden; }
+/* MOBILE SCROLL: use `overflow-x:clip` (not `hidden`) so neither <html> nor <body>
+   becomes a scroll container. `overflow-x:hidden` forces overflow-y to `auto`, which
+   makes the element a momentum-less scroll container — the "can barely scroll on a
+   phone" bug. `clip` pins the layout viewport to the device width without that side
+   effect, and keeps position:sticky working. Mirrors app-v2/src/styles.css. */
+html{ scroll-behavior:smooth; scroll-padding-top:96px; overflow-x:hidden; overflow-x:clip; }
 body{
     margin:0;
     font-family:var(--font-b);
@@ -73,6 +78,7 @@ body{
     -webkit-font-smoothing:antialiased;
     text-rendering:optimizeLegibility;
     overflow-x:hidden;
+    overflow-x:clip;
 }
 a{ color:inherit; text-decoration:none; }
 img{ max-width:100%; display:block; }

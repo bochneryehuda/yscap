@@ -37,7 +37,8 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
-import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
+import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
+import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
@@ -4293,6 +4294,28 @@ export default function StaffApplication() {
       // NEXT file and scroll it to the top (open A, switch to B within ~650ms).
       return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
     }
+    // A plain REFRESH lands here: no deep link, no ?finding/?focus. The room is
+    // already restored (the [id] effect read it from sessionStorage); if the
+    // reader was scrolled into a specific section, open it and put them back on it.
+    // A remembered NON-trivial place (any section, or a room other than Overview)
+    // wins over the closer's default landing below — a closer who was working a
+    // section should refresh back onto it, not be yanked to Closing. A first-time
+    // open, or "remembered the top of Overview", has nothing meaningful to restore
+    // and falls through so the closer landing still runs.
+    const savedRoom = readStation(id);
+    const savedSec = readSection(id);
+    if (savedRoom && (savedRoom !== 'st-overview' || savedSec)) {
+      if (!savedSec) return;   // remembered only the room; the [id] effect already put them there
+      let inner = null;
+      const t = setTimeout(() => {
+        requestOpenSection(savedSec);   // the section may render collapsed — open it first
+        inner = setTimeout(() => {
+          const el = document.getElementById(savedSec);
+          if (el) el.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }, 120);
+      }, 220);
+      return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
+    }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
     if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
@@ -4818,13 +4841,36 @@ export default function StaffApplication() {
      exactly — the rooms code stands aside entirely, incl. the jump resolver. */
   const [fileViewPref, setFileViewPref] = useStickyFilter('fileView', 'rooms');
   const classic = fileViewPref === 'classic';
-  const [activeStation, setActiveStation] = useState('st-overview');
-  // Opening a DIFFERENT file starts at Overview — the component is reused
-  // across /internal/app/:id, so without this file B opened in whatever room
-  // file A was left in (audit 2026-08-02 #3).
-  useEffect(() => { setActiveStation('st-overview'); pendingRevealRef.current = null; }, [id]);
+  // Start in the room the reader was last in ON THIS FILE, so a browser REFRESH
+  // lands them back where they were working — not on Overview (owner-reported).
+  // Per-file (readStation keys on the id), so opening a DIFFERENT file never
+  // inherits this file's room — the guarantee the old hard `st-overview` reset
+  // was there to give (audit 2026-08-02 #3). A file never opened before, or a
+  // fresh tab, has nothing stored and still starts on Overview.
+  const [activeStation, setActiveStation] = useState(() => readStation(id) || 'st-overview');
+  useEffect(() => { setActiveStation(readStation(id) || 'st-overview'); pendingRevealRef.current = null; }, [id]);
   const activeStationRef = useRef(activeStation); activeStationRef.current = activeStation;
   const pendingRevealRef = useRef(null);
+  // Keep the reader's place saved as they scroll (room + the section they're
+  // reading), so a refresh restores it (see the landing effect below). Debounced
+  // to ~300ms after scrolling STOPS — one sessionStorage write per scroll burst,
+  // never per frame. A pure courtesy: it never throws and does nothing in classic
+  // view (no rooms to restore there).
+  useEffect(() => {
+    if (classic) return undefined;
+    let t = null;
+    const onScroll = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        t = null;
+        savePlace(idRef.current, { station: activeStationRef.current, section: nearestFileSectionId() || '' });
+      }, 300);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => { window.removeEventListener('scroll', onScroll); if (t) clearTimeout(t); };
+    // Re-arm on file change too, so a pending save from the previous file's
+    // scroll can't fire against the new one.
+  }, [classic, id]);
   // Permission-gated rooms vanish exactly as their sections do today; a deep
   // link into a hidden room stays a silent no-op (parity with today).
   const stationEnabled = useCallback((stId) => {
@@ -4934,11 +4980,13 @@ export default function StaffApplication() {
       }
       pendingRevealRef.current = target;
       setActiveStation(st);
+      writeStation(idRef.current, st);   // remember the room for a refresh
       return true;
     });
   }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
+    writeStation(idRef.current, stId);   // remember the room (and clear the section) for a refresh
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     pendingRevealRef.current = null;
     setActiveStation(stId);
@@ -4953,6 +5001,7 @@ export default function StaffApplication() {
     if (!classic && activeStationRef.current !== 'st-deal') {
       pendingRevealRef.current = t;
       setActiveStation('st-deal');
+      writeStation(idRef.current, 'st-deal');   // remember the room for a refresh
       return;
     }
     runReveal(t);
