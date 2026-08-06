@@ -70,6 +70,14 @@ async function retractOpen(client, appId, why) {
       `UPDATE ai_suggestions SET status='dismissed', status_reason=$3, updated_at=now()
         WHERE application_id=$1 AND source=$2 AND status='open' RETURNING id`,
       [appId, SOURCE, `Withdrawn automatically: ${why}`]);
+    // Retire the `ai_fatal_finding` notification each retracted finding had (owner-reported
+    // 2026-08-06): the finding self-heals here, but its notification lived on forever and
+    // kept showing as an unread fatal. Best-effort — a notify-retire failure never reverses
+    // the retraction.
+    try {
+      const ids = r.rows.map((x) => x.id);
+      if (ids.length) await require('./ai-finding-notify').retireForSuggestions(client, appId, ids);
+    } catch (_) { /* additive */ }
     return r.rowCount || 0;
   } catch (_) { return 0; }
 }
@@ -147,4 +155,4 @@ async function analyzeFile(client, appId, db) {
   }
 }
 
-module.exports = { enabled, analyzeFile, _internals: { concernKey, SCHEMA, SOURCE } };
+module.exports = { enabled, analyzeFile, _internals: { concernKey, SCHEMA, SOURCE, retractOpen } };

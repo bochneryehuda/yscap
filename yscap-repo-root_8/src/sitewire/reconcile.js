@@ -19,6 +19,7 @@ const M = require('./mapper');
 const routing = require('./routing');
 const tpIntake = require('./trustpoint-intake');
 const EV = require('./inspection-evidence');
+const { inboundDrawCopy } = require('./draw-inbound-copy');
 
 /**
  * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
@@ -200,6 +201,29 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
   const drawId = draw.sitewire_draw_id;
   const newStatus = draw.status || null;
   const newAppr = Number(draw.total_approved_cents) || 0;
+  // The draw's money block (ranked figures + its own facts box) for the internal draw emails —
+  // owner-directed 2026-08-03: "it should say how much the draw request is". The numbers come from
+  // the ONE money source (draw-email-blocks → rollup), loaded at most once per reaction and only
+  // when a notification actually fires (most reactions are no-op transitions that never notify).
+  // Best-effort: a draw email still goes without its figures, never fails for want of them.
+  let _blocks; let _blocksTried = false;
+  const drawBlocks = async () => {
+    if (_blocksTried) return _blocks;
+    _blocksTried = true;
+    try { _blocks = await require('./draw-email-blocks').drawEmailBlocks(db, appId, { sitewireDrawId: drawId }); }
+    catch (_) { _blocks = null; }
+    return _blocks;
+  };
+  // Never LEAD with a "$0" headline when the amount did not come through (missing-vs-zero: a
+  // genuinely submitted draw carries a real requested/approved/net figure, so an all-zero money
+  // block means the number is unknown, not that the draw is worth nothing). Drop the money band
+  // there — the budget facts still go if present. Presence check only, on the SAME three fields
+  // drawFigures reads to pick its headline; no arithmetic, no second money query.
+  const hasFigure = (m) => !!m && (Number(m.requested_cents) > 0 || Number(m.approved_cents) > 0 || Number(m.net_release_cents) > 0);
+  const moneyOpts = (b) => ({
+    figures: (b && hasFigure(b.money) && b.figures) || undefined,
+    facts: (b && b.facts) || undefined,
+  });
   // TrustPoint import-task hook (phase 1, 2026-07-24): a LIVE inbound submission on a
   // trustpoint-routed file opens the coordinator's manual-entry task. GO-FORWARD by
   // construction — called only from the live reaction branches below, never from silent
@@ -231,14 +255,20 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       // row (audit-4 #11): a historical draw is never a borrower submission.
       if (draw.historical === true) { await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw_historical', null, newStatus, false); return; }
       await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
-      const nextStep = ctx.platform === 'trustpoint'
-        ? (tpIntake.SUBMITTED_STATUSES.has(String(newStatus))
-            ? 'This file\'s draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.'
-            : 'This file\'s draws are administered on TrustPoint — a task will open for the draw coordinator once it is submitted.')
-        : ctx.method === 'traditional' ? 'Review it and arrange the on-site inspection.' : 'Review it and start the inspection.';
-      await notify.notifyAppStaff(appId, {
-        type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
-        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${nextStep}`,
+      // Say the two things the reader needs first (owner-directed 2026-08-03): is this a VIRTUAL or
+      // a PHYSICAL inspection, and does it NEED ACTION (a TrustPoint hand-entry / a Trinity physical
+      // inspection) or run automatically (a Sitewire virtual). The dollar amount + budget breakdown
+      // ride the money block below.
+      const copy = inboundDrawCopy({
+        platform: ctx.platform, method: ctx.method,
+        submitted: tpIntake.SUBMITTED_STATUSES.has(String(newStatus)),
+      });
+      const b = await drawBlocks();
+      await notify.notifyAppStaffThread(appId, {
+        type: 'draw_inbound', title: 'A new draw request came in',
+        badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'New draw', tone: 'gold' },
+        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
+        ...moneyOpts(b),
         applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       maybeImportTask();
     }
@@ -265,9 +295,10 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
       await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status', null, newStatus, !!r);
       if (r) {
-        await notify.notifyAppStaff(appId, {
+        const b = await drawBlocks();
+        await notify.notifyAppStaffThread(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body,
+          body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
       maybeImportTask();
@@ -284,9 +315,10 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
       await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
       if (r) {
-        await notify.notifyAppStaff(appId, {
+        const b = await drawBlocks();
+        await notify.notifyAppStaffThread(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body,
+          body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
       maybeImportTask();

@@ -13,8 +13,10 @@
  *      the FINISHED house, so it must never roll up as the property's condition
  *      today. This is the subtlest correctness rule in the whole warehouse.
  *   5. SUPERSEDED — a replaced report is retired, not counted twice.
- *   6. THE SKIP LEDGER — a comparable with an unusable address is skipped, counted
- *      and explained, never stored under an invented key.
+ *   6. THIN ADDRESSES ARE KEPT, NOT DROPPED — a comparable missing only its town
+ *      borrows the subject's; one with no house number is kept for review; only a
+ *      comparable with no street at all is a true skip. Nothing is stored under an
+ *      invented key or silently lost.
  *   7. SEARCH — every filter the screen offers, over the real SQL.
  *   8. THE ROUTES — staff-only, and the valuation flow end to end: create, add
  *      comps, adjust, reconcile, finalize, and refuse to edit a finished one.
@@ -130,7 +132,8 @@ async function makeAppraisal(appId, o) {
         { seq: '2', address: '98 Oak Street', city: CITY, state: 'NJ', zip: '08854',
           price: 460000, gla: 1600, saleDate: '2026-01-01', condition: 'C3', set: 'arv', beds: 4 },
         // A comparable the report described too thinly to identify — no house number.
-        { seq: '3', address: 'Elm Court', city: CITY, state: 'NJ', price: 390000, gla: 1300 },
+        // KEPT FOR REVIEW now (owner-directed 2026-08-05), not dropped.
+        { seq: '3', address: 'Elm Court', city: CITY, state: 'NJ', price: 390000, gla: 1300, saleDate: '2026-03-15' },
         // A LISTING, not a sale: its price is an asking price.
         { seq: '4', address: '7 Birch Ln', city: CITY, state: 'NJ', zip: '08854',
           price: 505000, gla: 1550, saleDate: '2026-06-01', status: 'active', conditionText: 'Avg-Good' },
@@ -140,13 +143,15 @@ async function makeAppraisal(appId, o) {
     // ---- 1. ingest ---------------------------------------------------------
     const r1 = await ingest.ingestAppraisal(D, A1);
     ok(r1.ok, 'the appraisal folds into the warehouse');
-    ok(r1.observations === 4, `subject + 3 identifiable comparables become observations (got ${r1.observations})`);
-    ok(r1.skipped.length === 1 && /did not write enough of this address/.test(r1.skipped[0].why),
-      'the comparable with no house number is SKIPPED with a reason, not stored under an invented key');
+    // The thin comp (no house number) is now KEPT FOR REVIEW rather than dropped
+    // (owner-directed 2026-08-05), so all four comparables become observations.
+    ok(r1.observations === 5, `subject + all four comparables become observations, the thin one kept for review (got ${r1.observations})`);
+    ok(r1.skipped.length === 0 && (r1.salvaged || []).some((x) => x.kind === 'needs_review' && /house number/i.test(x.why || '')),
+      'the comparable with no house number is KEPT FOR REVIEW with a reason, not dropped or stored under an invented key');
 
     const log = (await db.query(`SELECT * FROM property_ingest_log WHERE appraisal_id=$1`, [A1])).rows[0];
-    ok(log && log.status === 'ok' && log.rows_skipped === 1 && (log.skip_reasons || []).length === 1,
-      'the skip is COUNTED on the ingest ledger — a silent skip is indistinguishable from having no comps');
+    ok(log && log.status === 'ok' && log.rows_skipped === 0,
+      'nothing was dropped — the thin comp was kept, so the ledger records no skip');
 
     const subj = (await db.query(
       `SELECT p.* FROM properties p JOIN property_observations o ON o.property_id=p.id

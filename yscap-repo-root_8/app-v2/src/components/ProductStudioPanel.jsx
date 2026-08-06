@@ -4,7 +4,6 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
-import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
 import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
@@ -440,6 +439,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const sheetBodyRef = useRef(null);
   const studioSaveT = useRef(null);
   const lastStudioSaved = useRef('');
+  // Did a save in this studio session actually feed an experience claim onto the
+  // file? Drives the one refresh on close (owner-directed 2026-08-06). A ref, not
+  // state: it must not re-render the sheet mid-edit.
+  const fedExperience = useRef(false);
   // Always points at the LATEST finalizeTermSheet closure, so the stable ([]-deps)
   // imperative handle below never calls a stale one (the E-sign Send button reaches
   // it through this handle).
@@ -459,6 +462,14 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   }), []);
 
   // Autosave the studio scenario onto the pricing condition (debounced).
+  //
+  // The save also FEEDS the experience typed here onto the file (owner-directed
+  // 2026-08-06 — see src/lib/studio-experience-claim.js), and the server says so
+  // by returning the claim it wrote. Remember that it happened, but do NOT
+  // refresh the file here: the conditions list lives behind this sheet, and
+  // re-fetching it under the user mid-edit would churn the screen on every
+  // debounced pass. The refresh happens once, on close (see closeStudio) — the
+  // moment they go back to the list that was reading "no experience required".
   const onStudioState = (s2) => {
     setSnap(s2);
     if (!stateUrl || !s2 || !s2.fields) return;
@@ -468,7 +479,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     clearTimeout(studioSaveT.current);
     studioSaveT.current = setTimeout(() => {
       lastStudioSaved.current = key;
-      api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      api.put(stateUrl, { state })
+        .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+        .catch(() => { lastStudioSaved.current = ''; });
     }, 1200);
   };
   const adminActive = isStaff || !!adminKey;   // overrides ride along even when the zone is locked shut
@@ -547,7 +560,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const state = studioStateFromFields(s.fields);
       clearTimeout(studioSaveT.current);
       lastStudioSaved.current = JSON.stringify(state);
-      if (stateUrl) api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      if (stateUrl) {
+        api.put(stateUrl, { state })
+          .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+          .catch(() => { lastStudioSaved.current = ''; })
+          // The experience typed here is now the file's CLAIM, so the
+          // track-record condition has just gone from "no experience required"
+          // to "verify N" (owner-directed 2026-08-06). Re-fetch the file so the
+          // list they are landing back on says so, instead of showing the old
+          // answer until something else happens to reload the screen. Runs after
+          // the catch on purpose: a debounced save may already have fed the claim,
+          // so a failed close-flush must not swallow the refresh it earned.
+          .then(() => {
+            if (!fedExperience.current) return;
+            fedExperience.current = false;
+            if (onRegistered) onRegistered();
+          });
+      }
       setSavedStudio(state);
     }
     setAdminOpen(false);
@@ -574,7 +603,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     app.term, app.requested_ir_months, app.requested_ir_amount,
     app.is_assignment, app.underlying_contract_price, app.assignment_fee,
     app.payoff_amount, app.payoff_lender, app.payoff_loan_number, app.estimated_cash_out,
-    app.loan_type, app.program, app.property_type, app.units, app.fico,
+    app.loan_type, app.program, app.property_type, app.units, app.fico, app.co_fico,
     app.entity_name, app.co_borrower_id, app.co_borrower_pg_waived, app.liquidity_buffer_waived,
     app.est_closing_date, app.expected_closing, app.property_address,
     app.first_name, app.middle_name, app.last_name, app.name_suffix, app.full_name,
@@ -645,6 +674,32 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender,
       payoffLoanNumber: app.payoff_loan_number, estimatedCashOut: app.estimated_cash_out,
     });
+    /* FICO IS FILE-OWNED, NOT A FROZEN SCENARIO CHOICE (owner-directed 2026-08-05:
+       "everywhere should be updated according to the imported credit score … the
+       middle score of one borrower and the higher middle score of two borrowers").
+       The imported credit report's middle score — the HIGHER-OF-TWO on a co-borrower
+       file, exactly what the credit condition shows as "prices the deal" — must fill
+       Products & Pricing / the term sheet, NOT the score the product was FIRST
+       registered at (that stale value used to freeze here, so a re-import never
+       reached the studio). The server already computes it as the file's current
+       pricing FICO — the quote input = the higher-of-two borrowers.fico that the
+       credit import writes the report score into — so prefer it, then the file's own
+       fico, then the borrower profile's. It overrides the registered/draft fico ONLY
+       when a real value exists (never blanks it), and the staff can still type a
+       what-if over it; the register sends whatever the field holds, so this is what
+       makes a re-register price at the imported score. */
+    const filePricingFico = (() => {
+      // The HIGHER of the two borrowers' scores, straight off the (always-fresh)
+      // app prop — each borrower's fico is their imported middle score after the
+      // credit write-back, so this is the file's current "prices the deal" score.
+      const hi = Math.max(Number(app.fico) || 0, Number(app.co_fico) || 0);
+      if (hi > 0) return hi;
+      // Fallbacks: the server's pricing quote input (also higher-of-two), then the
+      // borrower profile's fico (the borrower studio, where there is no app.co_fico).
+      const q = (data.quote && data.quote.inputs) ? Number(data.quote.inputs.fico) : 0;
+      if (q > 0) return q;
+      return (profile && Number(profile.fico) > 0) ? Number(profile.fico) : '';
+    })();
     // The last working scenario (autosaved) resumes — but the file-owned
     // economics/experience SNAP to the file's CURRENT values first (#148): an
     // autosave made before the file was edited must never carry the old
@@ -707,6 +762,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // sheet is the borrower-facing artifact, so it must read the file's truth.
       v.coBorrowerPgWaived = app.co_borrower_pg_waived ? 'true' : '';
       v.liqBufferWaived = app.liquidity_buffer_waived ? 'true' : '';
+      // FICO snaps to the file's current pricing score (the imported credit
+      // report's middle score / higher-of-two) — a draft autosaved before credit
+      // was imported must never re-register at the old estimate.
+      if (filePricingFico) v.fico = String(filePricingFico);
       return { v, c };
     }
     const name = isStaff
@@ -752,7 +811,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -774,7 +833,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
-        fico: inp.fico || (profile && profile.fico) || '',
+        fico: filePricingFico || inp.fico || (profile && profile.fico) || '',
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         ...econFallback(inp), ...filePayoff(),
       }));
@@ -795,7 +854,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         arv: app.arv,
         rehabBudget: app.rehab_budget,
         rehabType: app.rehab_type,
-        fico: app.fico || (profile && profile.fico) || '',
+        fico: filePricingFico || app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
@@ -908,9 +967,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // before the register and can be stale). Stamp, capture, then report the
       // stamp we ACTUALLY set on the upload so the DocuSign send can refuse an
       // initial sheet instead of mailing one.
-      const stampFinal = !!(resp && resp.termSheetFinal);
+      // Products & Pricing produces ONLY the INITIAL term sheet (owner-directed
+      // 2026-08-06: "the term sheet generator should only generate initials; the
+      // only place a final is generated is the DocuSign package sender"). This
+      // stored sheet is the preview/record copy on the file; the FINAL that goes
+      // out is BUILT fresh on our server by the sender at send time
+      // (esign/term-sheet-pdf.js), so this copy is never sent and is always initial.
+      const stampFinal = false;
       let stamped = false;
-      try { stamped = studioRef.current.setProvenance(stampFinal ? 'file_final' : 'file') === true; } catch (_) { stamped = false; }
+      try { stamped = studioRef.current.setProvenance('file') === true; } catch (_) { stamped = false; }
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       if (pdf && pdf.blob) {
         try {
@@ -1271,9 +1336,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
-      {/* Personal guaranty + the co-borrower guaranty-waiver request (staff only,
-          owner-directed 2026-07-22). Self-hides when the file has no co-borrower. */}
-      {isStaff && app && app.id && !openStudio && <GuarantyWaiverCard appId={app.id} />}
+      {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST moved
+          OFF Products & Pricing into the Exceptions section (owner-directed
+          2026-08-06): the request now lives with the other exceptions, not here. */}
 
       {/* Request an exception to a guideline the deal otherwise follows — e.g. to
           finance MORE of an assignment fee than the 15% cap (a bigger loan).

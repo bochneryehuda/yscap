@@ -962,6 +962,24 @@ if (require.main === module) {
         require('./lib/underwriting/investor-guidelines/desk-sync').backfillGuidelineRetractions()
           .then((r) => r && r.retracted && console.log('[boot] guideline-retraction backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] guideline-retraction backfill failed:', e.message));
+        // Retire stale "fatal AI finding" NOTIFICATIONS on previous files (owner-reported
+        // 2026-08-06, seen "on a lot of files"). #1034 fixed the loan_amount / silver
+        // findings in the grounding, and the findings self-heal on the next file view — but
+        // the notification each one wrote had no link to the finding's lifecycle and lived
+        // on forever as an unread fatal. This marks those read (never deletes). Bounded,
+        // self-draining, idempotent; never blocks boot.
+        require('./lib/underwriting/ai-finding-notify').retireStaleFatalNotificationsOnce()
+          .then((r) => r && (r.retiredStale || r.retiredSettled) && console.log('[boot] stale AI-fatal notifications retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] stale AI-fatal notification retire failed:', e.message));
+        // Previous AND future draws (owner-directed 2026-08-06): the draw-packet Excel
+        // is now filed as a document so it mirrors into the per-draw SharePoint folder
+        // ("Draws/Draw N") alongside the inspection reports. This files a packet for any
+        // draw that doesn't already carry a current one, so previous draws get theirs on
+        // the next boot. Bounded, best-effort, self-draining; never blocks boot.
+        // Off-switch: DRAW_PACKET_BACKFILL_DISABLED=1.
+        require('./sitewire/draw-packet').backfillDrawPacketsOnce()
+          .then((r) => r && r.filed && console.log('[boot] draw-packet documents filed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-packet backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

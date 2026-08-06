@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot3">
+<link rel="stylesheet" href="../suite.css?v=pilot4">
 <!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
      embeds into (Products & Pricing / Term Sheet Studio), so we force the light
      theme before first paint regardless of any stale saved 'dark' preference. The
@@ -1049,6 +1049,17 @@
     if (v.propAddr) out.v.pStreet = v.propAddr;
     if (v.propState) out.v.pState = v.propState;
     if (!refi && v.price) out.v.price = s(v.price);
+    // THE PAYOFF TRAVELS WITH THE REFINANCE (owner-directed). The borrower typed the
+    // payoff that drove the cash-to-them figure they were quoted here — carry it (and
+    // who/which loan when the studio has them) into the application so it opens
+    // pre-filled instead of asking again, matching the borrower-portal and staff
+    // new-file hand-offs. The field ids are the same on both tools (payoff /
+    // payoffLender / payoffLoanNo). Refinance-only.
+    if (refi) {
+      if (v.payoff) out.v.payoff = s(v.payoff);
+      if (v.payoffLender) out.v.payoffLender = v.payoffLender;
+      if (v.payoffLoanNo) out.v.payoffLoanNo = v.payoffLoanNo;
+    }
     if (c.isAssign) { out.c.isAssign = true; if (v.origPrice) out.v.origPrice = s(v.origPrice); }
     if (v.asIs) out.v.asIs = s(v.asIs);
     if (v.arv) out.v.arv = s(v.arv);

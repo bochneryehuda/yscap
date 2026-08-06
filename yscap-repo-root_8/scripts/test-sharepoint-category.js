@@ -57,7 +57,36 @@ ok(cat({ doc_kind: 'photo_id' }) === 'Photo ID', 'photo_id → "Photo ID" (profi
 ok(cat({ doc_kind: 'term_sheet' }) === 'Term Sheet/Unsigned', 'term sheet → "Term Sheet/Unsigned"');
 ok(cat({ doc_kind: 'term_sheet_signed' }) === 'Term Sheet/Signed', 'signed term sheet → "Term Sheet/Signed"');
 ok(cat({ doc_kind: 'tpr_export' }) === 'TPR Exports', 'tpr export → "TPR Exports"');
-ok(cat({ doc_kind: 'draw_inspection_report' }) === 'Draw Reports', 'draw report → "Draw Reports"');
+// ---- DRAW documents file into PER-DRAW folders (owner-directed 2026-08-06):
+// Draws/Draw N/<source>, with the packet Excel at the Draw N root. The draw
+// number + source are read from the system-generated filename.
+ok(cat({ doc_kind: 'draw_packet', filename: 'pilot-draw-1-packet-YSCAP1-abc123.xlsx' }) === 'Draws/Draw 1',
+  'draw packet Excel → "Draws/Draw 1" (the anchor at the Draw N root)');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'pilot-draw-1-report-staff-YSCAP1-abc123.pdf' }) === 'Draws/Draw 1/Our report',
+  'our staff report → "Draws/Draw 1/Our report"');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'pilot-draw-1-report-borrower-YSCAP1-abc123.pdf' }) === 'Draws/Draw 1/Our report',
+  'our borrower report → "Draws/Draw 1/Our report"');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'trustpoint-draw-2-inspection-result-document-2026-01-01-abcdef.pdf' }) === 'Draws/Draw 2/Inspector',
+  'TrustPoint inspection-result → "Draws/Draw 2/Inspector"');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'trustpoint-draw-2-service-invoice-2026-01-01-abcdef.pdf' }) === 'Draws/Draw 2/TrustPoint',
+  'TrustPoint service invoice → "Draws/Draw 2/TrustPoint"');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'sitewire-draw-3-inspection-def456.pdf' }) === 'Draws/Draw 3/Sitewire',
+  'Sitewire per-draw inspection PDF → "Draws/Draw 3/Sitewire"');
+// The PILOT-branded TrustPoint ("trinary") report (trustpoint/report.js) carries
+// the draw NUMBER, so it files per-draw next to the inspector's TrustPoint docs.
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'draw-2-a1b2c3d4-report-staff-abc123.pdf' }) === 'Draws/Draw 2/TrustPoint',
+  'PILOT-branded TrustPoint report (draw-N-...-report-) → "Draws/Draw 2/TrustPoint"');
+// TrustPoint's OWN fetched report (trustpoint/mirror.js) is named by TrustPoint's
+// draw id, NOT the draw number, so it groups under one clear TrustPoint folder
+// (out of "Unfiled draw", honest that the number isn't in the filename).
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'trustpoint-draw-report-abcd1234-56ef.pdf' }) === 'Draws/TrustPoint reports',
+  "TrustPoint's own report (no draw number in the name) → \"Draws/TrustPoint reports\"");
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'pilot-project-report-staff-YSCAP1-abc123.pdf' }) === 'Draws/All draws (project)/Our report',
+  'whole-project report → "Draws/All draws (project)/Our report"');
+ok(cat({ doc_kind: 'draw_inspection_report', filename: 'something-unrecognized.pdf' }) === 'Draws/Unfiled draw/Reports',
+  'an unrecognized draw doc → a safe "Draws/Unfiled draw/Reports" bucket (never lost, never "Draw Reports")');
+ok(backup.isRegenKind('draw_packet') === true,
+  'draw_packet is a regen kind (settles/supersedes, no Version-N churn)');
 ok(cat({ doc_kind: 'closing_correspondence' }) === 'Closing/Correspondence', 'closing correspondence → "Closing/Correspondence"');
 ok(cat({ doc_kind: 'closing_pkg_signed' }) === 'Closing', 'signed closing package → "Closing"');
 ok(cat({ doc_kind: 'track_record_html' }) === 'REO/Track Record Saved Copy', 'track-record HTML → "REO/Track Record Saved Copy"');

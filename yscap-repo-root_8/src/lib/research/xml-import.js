@@ -175,7 +175,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
   const out = {
     ok: false, status: 'error', importId: null, filename, reason: null,
     subjectAddress: null, appraiserName: null, comparables: 0,
-    properties: 0, observations: 0, sales: 0, skipped: [], appraisalId: null,
+    properties: 0, observations: 0, sales: 0, skipped: [], salvaged: [], appraisalId: null,
   };
   const bytes = xml == null ? '' : String(xml);
   if (!bytes.trim()) { out.reason = 'The file was empty.'; return out; }
@@ -268,7 +268,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
   // missing, with a header row claiming success. When handed the pool we take our
   // own connection; a caller inside its own transaction keeps ownership.
   const runner = async (client) => {
-    const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], appraiserId: null };
+    const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], salvaged: [], appraiserId: null };
     await ingest.writeReport(client, { a, comps, rentals, link: { importId, untrusted }, out: w });
     return w;
   };
@@ -298,6 +298,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
   out.observations = w.observations;
   out.sales = w.sales;
   out.skipped = w.skipped;
+  out.salvaged = w.salvaged || [];
   out.status = 'ok';
   out.ok = true;
 
@@ -331,7 +332,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null, source =
  */
 async function importMany(db, files = [], { uploadedBy = null, onProgress = null, source = 'hand upload', untrusted = false } = {}) {
   const results = [];
-  const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0 };
+  const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0, salvaged: 0 };
   for (let i = 0; i < files.length; i++) {
     const f = files[i] || {};
     let r;
@@ -349,6 +350,7 @@ async function importMany(db, files = [], { uploadedBy = null, onProgress = null
     summary.observations += r.observations || 0;
     summary.sales += r.sales || 0;
     summary.comparables += r.comparables || 0;
+    summary.salvaged += (r.salvaged && r.salvaged.length) || 0;
     results.push(r);
     if (onProgress) { try { onProgress(i + 1, files.length, r); } catch (_) { /* a progress hook never breaks the run */ } }
   }

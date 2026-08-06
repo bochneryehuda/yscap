@@ -92,8 +92,10 @@ THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
 
 PROGRAM / STRUCTURE
 - registered_program: 'standard' (Standard Program), 'gold' (Gold Standard Program),
-  'manual' (a manual override of the structure), or 'none' (not registered yet). This is the
-  product REGISTERED in the Term Sheet Studio — the authoritative structure.
+  'silver' (Silver Program — the EMCAP product), 'manual' (a manual override of the structure),
+  or 'none' (not registered yet). This is the product REGISTERED in the Term Sheet Studio — the
+  authoritative structure. 'silver' is a REAL, fully-valid program: never treat it as an unknown
+  or out-of-list program.
 - The frozen pricing engines (Standard = window.YSP, Gold = window.GSP) are the SOLE authority
   for every number (rates, caps, sizing, fees, reserves). AI NEVER recomputes, re-prices,
   invents, or overrides an engine number. A missing engine number stays missing.
@@ -280,8 +282,39 @@ function fileSummaryText(primer, opts) {
       lines.push(`    · ${discrepancyLine(d)}`);
     }
   }
+  // The whole-loan context reports a required fact "missing" when it is absent from the
+  // AUTHORITATIVE (registered) structure — loan_amount (and note_rate) are sourced from the
+  // registration ONLY, so a file with a PRELIMINARY loan amount on the application (shown in the
+  // "Loan amount" line above) but no registered product lists loan_amount here as missing.
+  // Printing "Loan amount $360,500" AND "loan_amount MISSING REQUIRED" side by side reads as a
+  // self-contradiction, and the whole-file narrative reasoner (correctly, given that input)
+  // flags it FATAL — a false positive the owner reported. So reconcile the two views against the
+  // SAME displayed fields: a required key the file has NO value for anywhere is genuinely missing
+  // (NOT_READY); a required key the file DOES show a value for is simply NOT YET REGISTERED /
+  // engine-sized — a normal workflow state, never a data contradiction. This keeps the
+  // authoritative structure (registration-only) intact while making the grounding coherent.
   if (primer && Array.isArray(primer.missing) && primer.missing.length) {
-    lines.push(`- MISSING REQUIRED (treat as NOT_READY): ${primer.missing.join(', ')}`);
+    // A missing-required key uses the whole-loan-context field name; the displayed summary uses
+    // the rule-context name (only `program` differs — it renders as `registered_program`). And
+    // `registered_program === 'none'` is the primer's explicit "not registered yet" sentinel, NOT
+    // a real value, so a missing program shown as 'none' stays genuinely missing (no false "it's
+    // there" reconciliation).
+    const DISPLAY_KEY = { program: 'registered_program' };
+    const hasDisplayedValue = (k) => {
+      const dk = DISPLAY_KEY[k] || k;
+      const v = f[dk];
+      if (v === null || v === undefined || v === '') return false;
+      if (dk === 'registered_program' && String(v).trim().toLowerCase() === 'none') return false;
+      return true;
+    };
+    const trulyMissing = primer.missing.filter((k) => !hasDisplayedValue(k));
+    const notYetRegistered = primer.missing.filter((k) => hasDisplayedValue(k));
+    if (trulyMissing.length) {
+      lines.push(`- MISSING REQUIRED (absent from every source — treat as NOT_READY): ${trulyMissing.join(', ')}`);
+    }
+    if (notYetRegistered.length) {
+      lines.push(`- NOT YET REGISTERED (a preliminary value is on the file, shown above, but the product is not yet registered/engine-sized — a normal workflow state, NOT a data contradiction): ${notYetRegistered.join(', ')}`);
+    }
   }
   if (Array.isArray(primer && primer.facts) && primer.facts.length) {
     const confirmed = primer.facts.filter((x) => x && (x.status === 'human_confirmed' || x.status === 'verified')).length;

@@ -107,11 +107,11 @@ const REGISTRY = Object.freeze([
   pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName', 'uldd.fannieTrustName', 'closingDocument.borrowerUnparsedName1'], type: 'text', category: 'identity', compare: 'entity', naWhenOursMissing: true, our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. naWhenOursMissing (owner-directed 2026-08-05): when the file has NO subject LLC (vested on an individual), our side is blank, so 1859 reads "Doesn\'t apply" instead of holding the term sheet — the vesting Officer/Individual disagreement, if any, surfaces on field 4008 (vesting_title_role) instead. AUTHORITATIVE source is the fieldReader (read by number). The loanPath list is a best-effort FALLBACK for when the fieldReader is unavailable, and the SAME field lives at a DIFFERENT path from loan to loan: finalVestingDescription reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" on one loan; VERIFIED LIVE 2026-07-26 on loan YSCAP258134629 (117 Brook) the vesting name lives at closingDocument.borrowerUnparsedName1 / uldd.fannieTrustName ("MW TRADING LLC") — finalVestingDescription is absent there. compare:entity strips any trailing legal description so all forms equal our "MW Trading LLC". On an INDIVIDUAL-vested loan borrowerUnparsedName1 is a person name; that only matters when the fieldReader is down AND our side carries an llc — a rare degraded case that (correctly) surfaces a disagreement rather than a false match' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
-  pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
-  pull({ key: 'max_total_loan', encompassFieldId: 'CX.MAXTOTALLOAN', type: 'money', category: 'sizing', compare: 'money', our: 'column:loan_amount (Encompass second copy of the total)', note: 'Max/total loan — must equal our total loan amount' }),
-  pull({ key: 'final_initial_loan', encompassFieldId: 'CX.FINALINITIALLOAN', type: 'money', category: 'sizing', compare: 'money', our: 'quote:initialAdvance = loan_amount − financed_rehab − financed_reserve', note: 'Final initial advance — compute-only on our side' }),
+  pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', wholeDollar: true, our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
+  pull({ key: 'max_total_loan', encompassFieldId: 'CX.MAXTOTALLOAN', type: 'money', category: 'sizing', compare: 'money', wholeDollar: true, our: 'column:loan_amount (Encompass second copy of the total)', note: 'Max/total loan — must equal our total loan amount' }),
+  pull({ key: 'final_initial_loan', encompassFieldId: 'CX.FINALINITIALLOAN', type: 'money', category: 'sizing', compare: 'money', wholeDollar: true, our: 'quote:initialAdvance = loan_amount − financed_rehab − financed_reserve', note: 'Final initial advance — compute-only on our side' }),
   pull({ key: 'rehab_budget', encompassFieldId: 'CX.REHABBUDGET', type: 'money', category: 'rehab', compare: 'money', our: 'column:rehab_budget (+ SOW total)', note: 'Rehab / construction budget' }),
-  pull({ key: 'financed_rehab_budget', encompassFieldId: 'CX.FINANCEDREHABBUDGET', type: 'money', category: 'rehab', compare: 'money', our: 'derive(financed rehab = quote:rehabHoldback; equals rehab_budget unless the OOP-rehab exception was approved)', note: 'Financed portion of rehab' }),
+  pull({ key: 'financed_rehab_budget', encompassFieldId: 'CX.FINANCEDREHABBUDGET', type: 'money', category: 'rehab', compare: 'money', wholeDollar: true, our: 'derive(financed rehab = quote:rehabHoldback; equals rehab_budget unless the OOP-rehab exception was approved)', note: 'Financed portion of rehab' }),
   // Out-of-pocket rehab (owner-authorized 2026-07-31): the rehab NOT financed
   // (rehab_budget − financed holdback). $0 on nearly every file, so zeroMeansNone so a
   // blank-our-side vs 0-Encompass never reads as "no data to compare". READ-ONLY like
@@ -120,11 +120,11 @@ const REGISTRY = Object.freeze([
 
   // ── Purchase / assignment / cost (money) ──────────────────────────────────
   pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),
-  pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
+  pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', wholeDollar: true, our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
   pull({ key: 'contract_price', encompassFieldId: 'CX.ORIGINALCONTRACTPURCHASEP', type: 'money', category: 'cost', compare: 'money', our: 'column:underlying_contract_price (falls back to purchase_price when no assignment)', note: 'Seller / underlying contract price (assignment basis)' }),
   pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
-  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
-  pull({ key: 'total_cost', encompassFieldId: 'CX.TOTALCOST', type: 'money', category: 'cost', compare: 'money', our: 'derive(min(effective purchase, as-is) + rehab + financed reserve + program extras)', note: 'Total cost (LTC basis) — no column, derive' }),
+  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, wholeDollar: true, our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
+  pull({ key: 'total_cost', encompassFieldId: 'CX.TOTALCOST', type: 'money', category: 'cost', compare: 'money', wholeDollar: true, our: 'derive(min(effective purchase, as-is) + rehab + financed reserve + program extras)', note: 'Total cost (LTC basis) — no column, derive' }),
 
   // ── Valuation (money + percent) ───────────────────────────────────────────
   pull({ key: 'as_is_value', encompassFieldId: 'CX.ASISVALUE', type: 'money', category: 'valuation', compare: 'money', our: 'column:as_is_value', note: 'As-is value (NOT std 356 — 356 is ARV$ on this tenant)' }),
@@ -273,7 +273,12 @@ const VALUE_MAPS = Object.freeze({
     'fidelis': 'fidelis', 'fidelis investors': 'fidelis', 'fidelis investments': 'fidelis', 'fidelis investments llc': 'fidelis', 'fidelis investors llc': 'fidelis',
     'blue lake': 'bluelake', 'bluelake': 'bluelake', 'blue lake capital': 'bluelake',
     'corrfirst': 'corrfirst', 'corr first': 'corrfirst',
-    'emcap': 'emcap', 'em cap': 'emcap',
+    // Owner-reported 2026-08-06: our side reads "EMCAP Financial", Encompass reads
+    // "EMCAP" — the same buyer. "Financial" is a descriptive word, not a corporate
+    // form the name-fallback strips, so both spellings are enumerated onto one token
+    // (same pattern as "Fidelis" ≡ "Fidelis Investors" above).
+    'emcap': 'emcap', 'em cap': 'emcap', 'emcap financial': 'emcap', 'em cap financial': 'emcap',
+    'emcap financial llc': 'emcap',
     'rcn': 'rcn', 'rcn capital': 'rcn',
     'roc capital': 'roccapital', 'roc': 'roccapital', 'roc360': 'roccapital',
     'temple view capital': 'templeview', 'temple view': 'templeview', 'templeview': 'templeview',
@@ -631,6 +636,19 @@ function normDate(v) {
 // real (≥0.1-point) disagreement. EPS makes the "exactly at tolerance" boundary
 // inclusive despite IEEE-754 rounding (e.g. 92.11−92.10 = 0.01000000000000512).
 const MONEY_TOL = 0.005;
+// Encompass stores the computed loan/cost figures (total loan, initial advance,
+// financed rehab + reserve, total cost, effective purchase) as WHOLE DOLLARS — it
+// cannot hold cents — while PILOT computes them to the cent and floors the loan
+// breakdown per the frozen rounding rule. Two roundings of the SAME true amount can
+// sit up to a WHOLE DOLLAR apart (PILOT floors 2,598,093.72 → 2,598,093 while
+// Encompass rounds it to 2,598,094), so the tolerance is $1 INCLUSIVE — that is the
+// widest a cents-rounding gap can ever be, and a real disagreement is ≥ $2 (loan
+// figures never differ by cents for a real reason). Owner-reported 2026-08-06:
+// "$2,598,093.72 vs $2,598,094 should come up as a match … Encompass cannot handle
+// cents … the loan amount is rounded down anyway." Only the flagged loan/cost entries
+// use it; every other money field stays exact-to-the-penny (a $1 gap on a purchase
+// price is still a real mismatch).
+const WHOLE_DOLLAR_TOL = 1;
 const PERCENT_TOL = 0.01;
 const EPS = 1e-9;
 
@@ -687,6 +705,12 @@ function compareField(entryOrKey, ourValue, encValue) {
     }
     base.oursNorm = a; base.theirsNorm = b;
     if (a === null || b === null) return base; // incomparable
+    // A whole-dollar figure Encompass rounds off matches on a gap of up to $1
+    // INCLUSIVE (the widest a cents-rounding difference can be); a >$1 gap still flags.
+    if (kind === 'money' && e.wholeDollar) {
+      base.status = Math.abs(a - b) <= WHOLE_DOLLAR_TOL + EPS ? 'match' : 'mismatch';
+      return base;
+    }
     const tol = kind === 'money' ? MONEY_TOL : kind === 'percent' ? PERCENT_TOL : 0;
     base.status = Math.abs(a - b) <= tol + EPS ? 'match' : 'mismatch';
     return base;
@@ -754,5 +778,5 @@ module.exports = {
   fieldReaderToMap,
   mapValue,
   compareField,
-  _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, normPartnerName, stripCorpForm, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },
+  _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, normPartnerName, stripCorpForm, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, WHOLE_DOLLAR_TOL, PERCENT_TOL },
 };
