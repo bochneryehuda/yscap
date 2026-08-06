@@ -264,7 +264,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
         submitted: tpIntake.SUBMITTED_STATUSES.has(String(newStatus)),
       });
       const b = await drawBlocks();
-      await notify.notifyAppStaff(appId, {
+      await notify.notifyAppStaffThread(appId, {
         type: 'draw_inbound', title: 'A new draw request came in',
         badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'New draw', tone: 'gold' },
         body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
@@ -296,7 +296,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status', null, newStatus, !!r);
       if (r) {
         const b = await drawBlocks();
-        await notify.notifyAppStaff(appId, {
+        await notify.notifyAppStaffThread(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
@@ -316,7 +316,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
       if (r) {
         const b = await drawBlocks();
-        await notify.notifyAppStaff(appId, {
+        await notify.notifyAppStaffThread(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
