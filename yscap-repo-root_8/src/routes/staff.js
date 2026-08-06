@@ -3326,7 +3326,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // staleness cleared, its pending-approval known — rather than the stale
     // answer the panel fetched before the register. The client sets the studio's
     // provenance from this, exports the PDF, and reports the stamp back on the
-    // upload; the DocuSign send then refuses anything not stamped FINAL.
+    // upload. It labels the studio's own PREVIEW copy and NOTHING ELSE — the
+    // DocuSign sender BUILDS the final sheet itself from the last registration
+    // (esign/term-sheet-pdf.js), so it never refuses on this stamp. The old
+    // refusal was the "you only have the initial one" dead end; do not re-add it.
     // Best-effort: unreadable → initial, which is the honest wording.
     let termSheetFinal = false;
     try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(appId, { db })).final; }
