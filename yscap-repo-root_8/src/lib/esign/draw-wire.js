@@ -336,13 +336,18 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
   }
 
   // Tell the team a new-entity wire needs an operating agreement (action-needed → email).
+  // ONE email, everybody VISIBLY on it — the file's assignees PLUS the draw loop-in (coordinator
+  // + loan officer + draws@ desk), via notifyAppStaffThread with a 'draws'-category type
+  // (owner-directed 2026-08-06: "I don't see anybody looped into this email on the CC line …
+  // everybody that is receiving this email should be on the CC line, including the loan officer
+  // and the draw coordinator"). This is a draw-wire event, so 'draw' is the right category; the
+  // thread helper manages the per-assignee in-app rows itself (no inAppOnly here).
   if (cls.kind === 'new_entity') {
     try {
       const notify = opts.notify || require('../notify');
       const ctx = await notify.fileContext(appId).catch(() => null);
-      await notify.notifyAppStaff(appId, {
-        type: 'condition_added',
-        inAppOnly: false,   // action needed — do email the team
+      await notify.notifyAppStaffThread(appId, {
+        type: 'draw',
         title: 'Draw wire goes to a NEW entity — operating agreement required',
         badge: { text: 'Action needed', tone: 'action' },
         body: `The borrower's draw request lists a wire account in the name "${accountName}", which is neither the borrower nor the subject LLC. `

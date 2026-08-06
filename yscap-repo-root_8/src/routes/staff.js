@@ -5417,7 +5417,20 @@ router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
          FROM application_assignees aa JOIN staff_users su ON su.id=aa.staff_id
         WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
           AND su.email IS NOT NULL AND btrim(su.email)<>''`, [req.params.id]);
-    res.json(r.rows.filter((p) => p.email && p.email !== meEmail));
+    const list = r.rows.filter((p) => p.email && p.email !== meEmail);
+    // Show the draw loop-in (coordinator + draws@ desk + loan officer) as chips too, so the
+    // composer preview matches who the reply will actually Cc on a draw-process file
+    // (owner-directed 2026-08-06 — "so we can see who is looped in"). Empty on a non-draw file.
+    try {
+      const seen = new Set(list.map((p) => p.email));
+      const loopIn = await require('../lib/draw-recipients').drawReplyLoopInDetailed(req.params.id);
+      for (const p of loopIn) {
+        if (!p.email || p.email === meEmail || seen.has(p.email)) continue;
+        seen.add(p.email);
+        list.push({ email: p.email, name: p.name, kind: 'draw' });
+      }
+    } catch (_) { /* preview-only; the send loops them in regardless */ }
+    res.json(list);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5713,14 +5726,26 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       : scopeIn === 'title' ? 'title_message'
       : scopeIn === 'insurance' ? 'insurance_message'
       : 'staff_reply';
+    // On a file that is in a draw process, loop the draw coordinator + loan officer + draws@ desk
+    // in on the reply, VISIBLY on the Cc line (owner-directed 2026-08-06: "everybody that is
+    // receiving this email should be on the CC line, including the loan officer and the draw
+    // coordinator"). Self-gating: empty on a file with no assigned draw coordinator, so a plain
+    // file reply is unchanged. These are all internal YS addresses (no note-buyer name), so it is
+    // borrower-safe. Never the sender or a To recipient. Best-effort.
+    let drawCc = [];
+    try {
+      const loopIn = await require('../lib/draw-recipients').drawReplyLoopIn(appId);
+      drawCc = require('../lib/draw-recipients').replyCcFrom(loopIn, { toEmails, sender: meEmail });
+    } catch (_) { /* best-effort: the reply still sends */ }
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
+      cc: drawCc.length ? drawCc : undefined,
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName || undefined,
       _ctx: { applicationId: appId, type: replyType, audience },
     });
-    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
-    res.json({ ok: true, sent_to: toEmails });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject });
+    res.json({ ok: true, sent_to: toEmails, cc: drawCc });
   } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
 });
 
