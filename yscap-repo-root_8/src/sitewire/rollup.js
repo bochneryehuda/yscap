@@ -266,10 +266,23 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   // PROJECT it here and mark it as a projection until the release makes it final.
   const projected = await projectedFee(db, appId);
   const findingByDraw = new Map();
+  // The latest finding per draw carries the borrower-facing step times (delivered/accepted/disputed/
+  // resolved) — the source for the per-stage draw timeline (owner-directed: a timestamp on every step).
   for (const f of (await db.query(
-    `SELECT sitewire_draw_id, status FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC NULLS LAST`, [appId])).rows) {
+    `SELECT sitewire_draw_id, status, delivered_at, accepted_at, disputed_at, resolved_at
+       FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC NULLS LAST`, [appId])).rows) {
     if (!findingByDraw.has(N(f.sitewire_draw_id))) findingByDraw.set(N(f.sitewire_draw_id), f);
   }
+  // When a draw was FIRST delivered to the investor (the `with_investor` stage's time). Best-effort:
+  // the investor-delivery table is recent, and a draw never sent to an investor simply has no time.
+  const investorByDraw = new Map();
+  try {
+    for (const r of (await db.query(
+      `SELECT sitewire_draw_id, min(sent_at) AS sent_at FROM draw_investor_deliveries
+        WHERE application_id=$1 GROUP BY sitewire_draw_id`, [appId])).rows) {
+      investorByDraw.set(N(r.sitewire_draw_id), r.sent_at);
+    }
+  } catch (_) { /* no investor-delivery record → the timeline simply omits that stage's date */ }
   const drawRowById = new Map(draws.map((d) => [N(d.sitewire_draw_id), d]));
   const reqRowsByDraw = new Map();
   for (const r of requests) { const k = N(r.sitewire_draw_id); const a = reqRowsByDraw.get(k) || []; a.push(r); reqRowsByDraw.set(k, a); }
@@ -307,6 +320,22 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
     d.is_final_approved = m.is_final_approved;
     d.is_released = m.is_released;
     d.net_explanation = APPROVAL.netExplanation(m);
+    // The recorded time of each ladder step, gathered from the tables that own it. `draw-timeline.js`
+    // (pure) turns this into the ordered done/current/upcoming timeline; a stage with no recorded
+    // time is shown blank, never guessed. Timestamps only — no labels — so it is audience-neutral and
+    // the borrower route can strip it (the with_investor time is never borrower-facing).
+    const dr = drawRowById.get(d.sitewire_draw_id) || {};
+    const fnd = findingByDraw.get(d.sitewire_draw_id) || null;
+    d.stage_times = {
+      submitted_at: dr.submitted_at || null,
+      delivered_at: fnd ? fnd.delivered_at : null,
+      accepted_at: fnd ? fnd.accepted_at : null,
+      disputed_at: fnd ? fnd.disputed_at : null,
+      resolved_at: fnd ? fnd.resolved_at : null,
+      investor_delivered_at: investorByDraw.get(d.sitewire_draw_id) || null,
+      approved_at: dr.approved_at || null,
+      released_at: (l && l.release_date) || null,
+    };
     if (l) feesCharged += m.fee_cents; else feesProjected += m.fee_cents;
   }
   // OUR fees on this project, kept separately from the borrower's money (owner-directed 2026-08-03:

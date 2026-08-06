@@ -27,6 +27,18 @@ const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date
   const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
 };
+// Day + time for a full timestamp (a draw step time), day only for a date-only value. For a full
+// timestamp the date is taken from the SAME local moment as the time — not fmtDay's UTC calendar-day
+// extraction — so a near-midnight-UTC value never shows a date that disagrees with its own time.
+const fmtStamp = (v) => {
+  if (!v) return '';
+  const iso = String(v);
+  const hasTime = /T\d/.test(iso) || iso.includes(':');
+  if (!hasTime) return fmtDay(v);   // date-only → shift-free local calendar date
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return fmtDay(v);
+  return `${d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+};
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
   pending: 'Awaiting your approval', pending_capital_partner: 'With capital partner', approved: 'Approved',
@@ -1855,6 +1867,36 @@ const DRAW_ACTIONS = (isOpen) => (isOpen ? [
     hint: 'Put an approved draw back into the inspection stage.' },
 ]);
 
+/* The draw's journey as a staged, timestamped path — the draw equivalent of a loan file's status
+   timeline (owner-directed: "a timestamp on every step … a unified status like a loan file's
+   stages"). The resolved shape (each stage done/current/upcoming, with the date it was reached) is
+   built server-side by src/sitewire/draw-timeline.js so the desk never re-derives it. Collapsed by
+   default so it never crowds the card; a stage with no recorded time shows no date, never a guess. */
+function DrawTimeline({ timeline }) {
+  if (!Array.isArray(timeline) || timeline.length === 0) return null;
+  const cur = timeline.find((s) => s.state === 'current');
+  return (
+    <details style={{ marginTop: 10 }}>
+      <summary className="small" style={{ cursor: 'pointer', color: 'var(--muted)', fontWeight: 600 }}>
+        Draw timeline{cur ? ` — ${cur.label}` : ''}
+      </summary>
+      <ol className="timeline" style={{ marginTop: 10 }}>
+        {timeline.map((s) => (
+          <li key={s.stage} className={`tl-step ${s.state}`}>
+            <span className="tl-dot" />
+            <div className="tl-body">
+              <div className="tl-label">{s.label}</div>
+              {s.at
+                ? <div className="muted small">{fmtStamp(s.at)}</div>
+                : (s.state === 'current' ? <div className="muted small">In progress</div> : null)}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
@@ -1900,6 +1942,8 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           {draw.final_approved_cents > 0 ? '' : ' This is what the inspector approved — it still needs the borrower’s acceptance, the capital partner’s review and our final approval.'}
         </div>
       )}
+
+      <DrawTimeline timeline={draw.timeline} />
 
       {/* Sitewire pipeline status — the same status control Sitewire's own desk has, per draw */}
       {Array.isArray(quickStatuses) && quickStatuses.length > 0 && (

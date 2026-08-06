@@ -136,7 +136,9 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     // `rollup.fees` — our fee income ACROSS the project — stays deleted below and always will be.
     if (Array.isArray(rollup.draws)) {
       rollup.draws = rollup.draws.map((d) => {
-        const { fee_kind, net_explanation, ...safe } = d;
+        // `stage_times` carries the with_investor delivery time — the capital-partner step is never
+        // borrower-facing (frozen rule); the borrower sees their own finding-driven stepper instead.
+        const { fee_kind, net_explanation, stage_times, ...safe } = d;
         safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
         return safe;
       });
