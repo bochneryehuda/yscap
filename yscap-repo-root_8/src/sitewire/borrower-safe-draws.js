@@ -35,7 +35,10 @@ function borrowerSafeRollup(rollup) {
   if (Array.isArray(rollup.lines)) for (const l of rollup.lines) l.label = scrub(l.label);
   if (Array.isArray(rollup.draws)) {
     rollup.draws = rollup.draws.map((d) => {
-      const { fee_kind, net_explanation, ...safe } = d; // eslint-disable-line no-unused-vars
+      // `stage_times` carries the with_investor / capital-partner delivery time (#1045's per-step
+      // timeline) — the capital-partner step is never borrower/broker-facing (frozen rule); both
+      // surfaces show their own finding-driven stepper instead.
+      const { fee_kind, net_explanation, stage_times, ...safe } = d; // eslint-disable-line no-unused-vars
       safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
       return safe;
     });

@@ -22,6 +22,7 @@ const orchestrator = require('../sitewire/orchestrator');
 const sowLineEdit = require('../sitewire/sow-line-edit');
 const reconcile = require('../sitewire/reconcile');
 const rollupMod = require('../sitewire/rollup');
+const drawTimeline = require('../sitewire/draw-timeline');
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
@@ -1791,6 +1792,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // merge risk flags onto the rollup draw summaries
     const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src, quick_notify_status_id: d.quick_notify_status_id, coordinator_id: d.coordinator_id }]));
     for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; d.quick_notify_status_id = r.quick_notify_status_id; d.coordinator_id = r.coordinator_id; } }
+    // The per-draw STAGE TIMELINE (owner-directed: "a timestamp on every step … a unified status like
+    // a loan file's stages"). Staff voice — includes the capital-partner step. The resolved shape is
+    // attached here so the desk renders it without re-deriving; `stage_times` come off the rollup.
+    for (const d of rollup.draws) d.timeline = drawTimeline.stageTimeline(d.stage_times, d.approval_stage, { borrower: false });
     // retainage held vs released + the lien-waiver register (roadmap money model)
     const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;

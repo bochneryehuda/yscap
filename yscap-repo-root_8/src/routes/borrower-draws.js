@@ -76,10 +76,12 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     // Borrower-safe strip (the ONE definition, shared with the TPO surface): scrub SOW-line labels,
     // drop the per-draw `fee_kind` (our fee schedule) + the STAFF `net_explanation` — re-adding the
-    // BORROWER wording so the screen and the PDF phrase the deduction the same way — and delete
-    // `rollup.fees` (our fee income across the project is never borrower/broker-facing). The
-    // per-draw money the borrower WILL be paid (net release / released) stays (owner-directed
-    // 2026-08-03: "add the released amount to the borrower screen too").
+    // BORROWER wording so the screen and the PDF phrase the deduction the same way — drop
+    // `stage_times` (the with_investor / capital-partner delivery time is never borrower/broker-facing
+    // — frozen rule; #1045 added it to the timeline) — and delete `rollup.fees` (our fee income across
+    // the project is never borrower/broker-facing). The per-draw money the borrower WILL be paid (net
+    // release / released) stays (owner-directed 2026-08-03: "add the released amount to the borrower
+    // screen too"). See src/sitewire/borrower-safe-draws.js for the single definition.
     const rollup = borrowerSafeDraws.borrowerSafeRollup(await rollupMod.loadRollup(db, req.params.appId, { sowState }));
     res.json({ rollup });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
