@@ -966,6 +966,15 @@ if (require.main === module) {
         require('./lib/underwriting/ai-finding-notify').retireStaleFatalNotificationsOnce()
           .then((r) => r && (r.retiredStale || r.retiredSettled) && console.log('[boot] stale AI-fatal notifications retired:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] stale AI-fatal notification retire failed:', e.message));
+        // Previous AND future draws (owner-directed 2026-08-06): the draw-packet Excel
+        // is now filed as a document so it mirrors into the per-draw SharePoint folder
+        // ("Draws/Draw N") alongside the inspection reports. This files a packet for any
+        // draw that doesn't already carry a current one, so previous draws get theirs on
+        // the next boot. Bounded, best-effort, self-draining; never blocks boot.
+        // Off-switch: DRAW_PACKET_BACKFILL_DISABLED=1.
+        require('./sitewire/draw-packet').backfillDrawPacketsOnce()
+          .then((r) => r && r.filed && console.log('[boot] draw-packet documents filed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-packet backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

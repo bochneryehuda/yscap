@@ -179,6 +179,32 @@ const rowOf = (rows, label) => rows.find((r) => String(r[0] || '').toLowerCase()
     eq('4h …and nothing is left expected', Number(r2.fees.projected_cents), 0);
   }
 
+  // ======================================================================
+  // 5. THE PACKET IS FILED AS A DOCUMENT so it mirrors into the per-draw
+  //    SharePoint folder ("Draws/Draw N") alongside the inspection reports.
+  // ======================================================================
+  {
+    const { storeDrawPacketDoc } = require('../src/sitewire/draw-packet');
+    const backup = require('../src/lib/sharepoint-backup');
+    const docId = await storeDrawPacketDoc(app, DRAW);
+    ok('5a storeDrawPacketDoc files a document', !!docId);
+    const doc = (await db.query(
+      `SELECT filename, doc_kind, source_type, visibility, is_current, review_status
+         FROM documents WHERE id=$1`, [docId])).rows[0];
+    ok('5b it is a system-generated, staff-only, current, born-accepted draw_packet',
+      doc && doc.doc_kind === 'draw_packet' && doc.source_type === 'system'
+        && doc.visibility === 'staff_only' && doc.is_current === true && doc.review_status === 'accepted');
+    ok('5c the filename names the draw so it can be routed', /^pilot-draw-1-packet-.*\.xlsx$/.test(doc.filename));
+    eq('5d it categorizes to the Draw 1 folder (the per-draw anchor)',
+      backup.categoryFor({ doc_kind: doc.doc_kind, filename: doc.filename }), 'Draws/Draw 1');
+    // idempotent: same data -> same filename -> same row, no duplicate current packet
+    const again = await storeDrawPacketDoc(app, DRAW);
+    eq('5e re-filing the same packet returns the same document (idempotent)', again, docId);
+    const currentCount = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='draw_packet' AND is_current=true`, [app])).rows[0].c;
+    eq('5f there is exactly ONE current packet for the draw', currentCount, 1);
+  }
+
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} draw-packet / rollup / heal assertions ${fail === 0 ? 'passed' : ''}`);
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
