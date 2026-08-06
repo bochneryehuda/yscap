@@ -938,9 +938,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // before the register and can be stale). Stamp, capture, then report the
       // stamp we ACTUALLY set on the upload so the DocuSign send can refuse an
       // initial sheet instead of mailing one.
-      const stampFinal = !!(resp && resp.termSheetFinal);
+      // Products & Pricing produces ONLY the INITIAL term sheet (owner-directed
+      // 2026-08-06: "the term sheet generator should only generate initials; the
+      // only place a final is generated is the DocuSign package sender"). This
+      // stored sheet is the preview/record copy on the file; the FINAL that goes
+      // out is BUILT fresh on our server by the sender at send time
+      // (esign/term-sheet-pdf.js), so this copy is never sent and is always initial.
+      const stampFinal = false;
       let stamped = false;
-      try { stamped = studioRef.current.setProvenance(stampFinal ? 'file_final' : 'file') === true; } catch (_) { stamped = false; }
+      try { stamped = studioRef.current.setProvenance('file') === true; } catch (_) { stamped = false; }
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       if (pdf && pdf.blob) {
         try {
