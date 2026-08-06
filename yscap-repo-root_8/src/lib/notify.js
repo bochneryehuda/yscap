@@ -1090,6 +1090,86 @@ async function notifyAppThread(appId, opts = {}) {
   return { borrowers: rows, staff, emailedTogether: emailed };
 }
 
+/**
+ * The deduped, visible recipient list for a staff thread — a PURE helper so the composition can
+ * be unit-tested with no database. Lowercases + trims, drops blanks, and de-duplicates across the
+ * assignees, the draw loop-in (coordinator + officer + desk) and any explicit caller list, so the
+ * loan officer who is BOTH an assignee and in the loop-in appears exactly once.
+ */
+function _staffThreadRecipients({ assignees = [], loopIn = [], explicit = [] } = {}) {
+  return [...new Set([...assignees, ...loopIn, ...explicit]
+    .map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))];
+}
+
+/**
+ * ONE INTERNAL STAFF EMAIL, THE WHOLE TEAM VISIBLY ON IT — the staff-only sibling of
+ * notifyAppThread.
+ *
+ * Owner-directed 2026-08-03: the internal "a new draw request came in" notice went out as one
+ * email PER assignee (`notifyAppStaff`), so nobody could see who else received it and a reply
+ * reached no one — the exact complaint the borrower-facing draw redesign fixed for the borrower
+ * emails but never for this staff one. This sends ONE email whose recipients are all VISIBLE —
+ * the file's active assignees PLUS, for a 'draws' notification, the draw loop-in team (the
+ * coordinator + the loan officer + the draws@ desk, `draw-recipients.drawLoopInBcc`) — carried on
+ * the file's shared reply-to (`file+<id>@`) so a reply-all keeps the conversation on ONE chain
+ * (that address fans back out to the team, never to the borrower). "For all three purposes"
+ * (Sitewire / Trinity / TrustPoint) is covered because the loop-in resolves the coordinator the
+ * same way for every draw workflow.
+ *
+ * The per-assignee IN-APP rows still go (via `notifyAppStaff` with `inAppOnly`), so the desk feed,
+ * the per-staffer mute settings and the "was anybody on this file?" answer are unchanged — exactly
+ * as notifyAppThread keeps them for the borrower path.
+ *
+ * FAILS TOWARD SENDING: if the one email cannot be composed or the file resolves NO recipients,
+ * the ordinary per-assignee `notifyAppStaff` runs WITH email enabled, so the event never goes dark.
+ */
+async function notifyAppStaffThread(appId, opts = {}) {
+  const shared = { ...opts, applicationId: opts.applicationId || appId };
+
+  let recipients = [];
+  try {
+    const assignees = (await db.query(
+      // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
+      `SELECT DISTINCT su.email
+         FROM application_assignees aa
+         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
+          AND COALESCE(su.email,'') <> ''`, [appId])).rows.map((r) => r.email);
+    let loopIn = [];
+    if (categoryOf(opts.type) === 'draws') {
+      // The coordinator + officer + draws@ desk, exactly as the borrower draw emails loop them in.
+      try { loopIn = await require('./draw-recipients').drawLoopInBcc(appId); } catch (_) { /* best-effort */ }
+    }
+    recipients = _staffThreadRecipients({ assignees, loopIn, explicit: Array.isArray(opts.to) ? opts.to : [] });
+  } catch (e) {
+    console.error('[notify] app-staff-thread recipients', appId, (e && e.message) || e);
+  }
+
+  let emailed = false;
+  if (recipients.length) {
+    try {
+      const ctx = await fileContext(appId).catch(() => null);
+      // Enrich + build through the SAME path notifyAdmins uses to send one email to a fixed list,
+      // so the file subject tag, the kicker and the money block (figures/facts) all render.
+      const enriched = await enrichFileOpts({ ...shared, _fileCtx: ctx || undefined }, 'staff');
+      const msg = buildEmail(enriched, 'staff');
+      _track(email.sendMail({
+        to: recipients,
+        subject: msg.subject, text: msg.text, html: msg.html,
+        replyTo: opts.replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      }).catch(() => {}));
+      emailed = true;
+    } catch (e) {
+      console.error('[notify] app-staff-thread send', appId, (e && e.message) || e);
+    }
+  }
+
+  // In-app rows for every assignee (feed + mute settings + coverage answer). Its email is
+  // suppressed only when the one shared email actually went — otherwise it emails as the fallback.
+  const staff = await notifyAppStaff(appId, { ...shared, inAppOnly: emailed });
+  return { emailed, recipients: recipients.length, staff };
+}
+
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
   // Enrich once with the file's identity so BOTH the per-admin emails and the
@@ -1217,4 +1297,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, notifyAppStaffThread, _staffThreadRecipients, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
