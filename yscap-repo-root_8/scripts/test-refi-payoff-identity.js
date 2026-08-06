@@ -325,6 +325,21 @@ console.log('\n--- the loan file stores it, and every entry surface offers it --
     && /setIf\(f, 'payoffLoanNumber', p\.payoffLoanNumber\)/.test(newFile),
     'the staff New-file prefill carries the payoff amount, lender and loan number from the term sheet');
 
+  /* THE MARKETING SITE IS THE THIRD ENTRY POINT (owner: "no matter from which
+     side … marketing screen"). The public application now COLLECTS who/which loan
+     (it already sent the amount) and the studio hand-off CARRIES the payoff into
+     it. Before, translate() carried no payoff and loan-application.html had no
+     lender/loan# fields, so a refinance started from the marketing site lost them
+     while the borrower Apply path and the staff New-file path kept all three. */
+  const marketApp = readRepo('web/v2/tools/loan-application.html');
+  assert(/id="payoffLender"/.test(marketApp) && /id="payoffLoanNo"/.test(marketApp),
+    'the public application form collects the payoff lender and loan number');
+  assert(/payoffLender: isRefi\(\) \?/.test(marketApp) && /payoffLoanNumber: isRefi\(\) \?/.test(marketApp),
+    'and SENDS them to /api/apply (refinance-only)');
+  const marketStudio = readRepo('web/v2/tools/term-sheet.html');
+  assert(/out\.v\.payoff = s\(v\.payoff\)/.test(marketStudio),
+    'the marketing studio hand-off carries the payoff amount into the application');
+
   /* The staff edit form used to own these two boxes. It no longer does — the
      Payoff section does (section 5 below) — so all this file still asks of it is
      that it READS them, for the one-line summary that points you there. */
