@@ -578,13 +578,16 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    // FIRM SCOPE FIRST: resolve the file inside the broker's firm before anything
+    // else, so a file OUTSIDE the firm is a plain 404 and never leaks its lock/state
+    // through a downstream message (no existence/state oracle on an out-of-firm id).
+    const f = await loadTpoFileForPricing(req.actor.id, appId);
+    if (!f) return res.status(404).json({ error: 'file not found' });
     // A frozen/registered file (term-sheet sent, clear-to-close, funded) can't be
     // re-registered — same guard as every register door, actor-less so a broker
     // never inherits a super-admin unlock.
     const locked = await require('../lib/file-lock').structuralLockReason(appId);
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
-    const f = await loadTpoFileForPricing(req.actor.id, appId);
-    if (!f) return res.status(404).json({ error: 'file not found' });
     // Optimistic concurrency: a stale studio session must never re-register
     // economics the file no longer has (#148).
     if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
@@ -1181,6 +1184,7 @@ router.get('/applications/:id/appraisal', async (req, res, next) => {
 // scrubbed so a staff-named file never suggests a capital-partner on the broker's disk.
 router.get('/appraisal-photo/:docId', async (req, res, next) => {
   try {
+    if (!isUuid(req.params.docId)) return res.status(404).end();   // a malformed id is a 404, not a 500 (matches the draw-media guard)
     const r = await db.query(
       `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider
          FROM appraisal_photos ap
