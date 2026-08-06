@@ -2995,6 +2995,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-btn.ghost { background:var(--surface); color:var(--teal-br); border-color:var(--border); }
 .crx-btn.ghost:hover:not(:disabled) { border-color:var(--teal); background:var(--primary-soft); }
 .crx-btn:disabled { opacity:.5; cursor:not-allowed; }
+.crx-btn.ghost.danger { color:#B42318; }
+.crx-btn.ghost.danger:hover:not(:disabled) { border-color:#B42318; background:#FEF3F2; }
 .crx-btn:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
 .crx-link { background:none; border:0; padding:6px 0; margin-top:8px; color:var(--teal-br); font-family:var(--sans);
   font-size:.9rem; font-weight:600; cursor:pointer; }
