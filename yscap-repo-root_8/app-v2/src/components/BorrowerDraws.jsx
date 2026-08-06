@@ -136,23 +136,34 @@ export default function BorrowerDraws({ appId }) {
   );
 }
 
-/* The borrower's draw lifecycle at a glance — five plain-language steps from inspection to money in hand.
-   Driven only by borrower-safe finding state (status + a released flag), no capital-partner detail. */
-function DrawStepper({ finding }) {
+// A short, shift-free date ("Aug 1") for a draw step — parses a date-only value in local time so it
+// never slips a day, and shows nothing for a step that hasn't happened yet.
+const fmtStepDay = (v) => {
+  if (!v) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+/* The borrower's draw lifecycle at a glance — plain-language steps from inspection to money in hand,
+   each carrying the date it was reached (owner-directed: a timestamp on every step). Driven only by
+   borrower-safe finding state (status + timestamps + a released flag), no capital-partner detail. */
+function DrawStepper({ finding, releasedAt }) {
   const st = finding.status;
   const disputed = st === 'disputed';
   const accepted = st === 'accepted' || st === 'resolved';
   const released = !!finding.released;
   const steps = [
-    { key: 'inspected', label: 'Inspected', done: true },
-    { key: 'results', label: 'Results ready', done: true },
-    { key: 'review', label: disputed ? 'Under review' : 'You accept', done: accepted, active: st === 'delivered', warn: disputed },
-    { key: 'released', label: 'Funds released', done: released, active: accepted && !released },
+    { key: 'inspected', label: 'Inspected', done: true, at: null },
+    { key: 'results', label: 'Results ready', done: true, at: finding.delivered_at },
+    { key: 'review', label: disputed ? 'Under review' : 'You accept', done: accepted, active: st === 'delivered', warn: disputed, at: disputed ? finding.disputed_at : (finding.accepted_at || finding.resolved_at) },
+    { key: 'released', label: 'Funds released', done: released, active: accepted && !released, at: released ? releasedAt : null },
   ];
   return (
     <div className="row" style={{ gap: 0, alignItems: 'flex-start', margin: '4px 0 14px', flexWrap: 'nowrap', overflowX: 'auto' }}>
       {steps.map((s, i) => {
         const color = s.warn ? 'var(--warning, #b8860b)' : s.done ? 'var(--teal)' : s.active ? 'var(--gold, #ae8746)' : 'var(--ink-3, #c9cdd0)';
+        const day = s.done ? fmtStepDay(s.at) : '';
         return (
           <React.Fragment key={s.key}>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 66, flex: '0 0 auto' }}>
@@ -160,6 +171,7 @@ function DrawStepper({ finding }) {
                 {s.done ? '✓' : (s.warn ? '!' : i + 1)}
               </span>
               <span className="small" style={{ marginTop: 5, textAlign: 'center', color: (s.done || s.active || s.warn) ? 'var(--text)' : 'var(--text-muted)', fontWeight: (s.active || s.warn) ? 700 : 500, lineHeight: 1.15 }}>{s.label}</span>
+              {day && <span style={{ marginTop: 2, fontSize: 10, textAlign: 'center', color: 'var(--text-muted)', lineHeight: 1.1 }}>{day}</span>}
             </div>
             {i < steps.length - 1 && <span style={{ flex: '1 1 18px', minWidth: 18, height: 2, background: steps[i + 1].done || steps[i].done ? 'var(--teal)' : 'var(--line)', marginTop: 10 }} />}
           </React.Fragment>
@@ -418,7 +430,7 @@ function FindingCard({ finding, appId, onChanged, money }) {
       )}
 
       {/* Visual step tracker — inspection → results → your acceptance → funds released */}
-      <DrawStepper finding={finding} />
+      <DrawStepper finding={finding} releasedAt={money && money.release_date} />
 
       <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12, boxShadow: 'none' }}>
         <table className="dd-table" style={{ minWidth: 520 }}>
