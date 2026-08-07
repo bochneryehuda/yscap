@@ -1548,7 +1548,40 @@
     var mOn = el("tsManualOn"); if (mOn) mOn.addEventListener("change", manualVis);   // recompute comes from the form auto-wiring
   }
 
+  /* THE LADDER RUNG SURVIVES A REOPEN (owner-directed 2026-08-07).
+     The chosen rung lives ONLY in the module-scope vars above, which reset to null
+     every time this iframe loads — so reopening a registered file put the slider back
+     at MAXIMUM, and the mandatory post-appraisal re-register (esign/gate.js requires
+     one before a term sheet may issue) then registered that maximum. Measured: a
+     signed $1,794,000 at 8.500% came back as $2,070,000 at 9.125% — +$276,000 and
+     +62.5bps above the paper, with no approval and no record.
+
+     So the portal hands the selection back in a hidden field and it is adopted ONCE.
+     The field is BLANKED on adoption: without that, dragging the slider to maximum
+     would be undone on the next recompute, which is the same class of bug pointing
+     the other way. A rung the current ladder no longer offers is simply not found by
+     renderLeverage's clamp and falls back to the maximum, which is correct. */
+  var ladderPickAdopted = false;
+  function adoptLadderPick() {
+    var e = el("tsLadderPick");
+    if (!e || !e.value) return;
+    var raw = String(e.value).trim();
+    e.value = "";                                   // one-shot: never fight the user
+    ladderPickAdopted = true;
+    if (!raw) return;
+    var m = /^(ltc|arv):(.+)$/.exec(raw);
+    if (m) {                                        // Silver is keyed by rung
+      silverChosenRung = raw;
+      var v = parseFloat(m[2]);
+      if (m[1] === "ltc" && v > 0) { chosenLTC = v; goldChosenLTC = v; }
+      return;
+    }
+    var n = parseFloat(raw);                        // Standard / Gold carry an LTC value
+    if (n > 0) { chosenLTC = n; goldChosenLTC = n; silverChosenRung = "ltc:" + n; }
+  }
+
   function recompute() {
+    adoptLadderPick();
     syncAdminMarkup();
     syncManualOrigHint();          // a blank Manual field hints the Standard value it will use
     updateConditionals();
@@ -2810,7 +2843,9 @@
         y += 92; footer();
       }
 
-      // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
+      // ---------------- FINAL PAGE: the pricing ladder (STANDARD *and* SILVER) ----------------
+      // Silver joined this page on 2026-08-06 and renders its OWN columns below — the
+      // heading said "STANDARD PROGRAM ONLY" for a while after that was no longer true.
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
       // Suppress the ladder on a manual admin exception too — the overridden basis

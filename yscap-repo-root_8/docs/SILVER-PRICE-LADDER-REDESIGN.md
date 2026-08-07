@@ -1,6 +1,9 @@
 # Silver (EMCAP) price ladder — ONE ladder, stepped by real price breaks
 
-Owner-directed 2026-08-06. **Design + safety research. Nothing here is built yet.**
+Owner-directed 2026-08-06. **SHIPPED** — merged to `main` in #1055. This began as design
++ safety research; the build order in §5 is complete and every item below is live.
+Kept as the record of WHY it was built this way, and of the blast radius that was
+checked before it was.
 
 > *"I think we should build one ladder which you can slide down to reduce your loan
 > amount. On the backend, it should automatically calculate whenever you get an ARV
@@ -152,7 +155,9 @@ change — only the alternatives list. Flagged to the owner and accepted.
 ## 5. Build order (each step independently verifiable)
 
 1. ~~Equivalence harness FIRST~~ — **DONE** (`test-silver-arv-lever-pure.js`, 8,100
-   scenarios, baseline read from git so the proof re-runs in CI forever).
+   scenarios). NOTE the baseline is built by REMOVING the lever line, **not** by
+   reading git — the git method was written first and then abandoned; see the closing
+   paragraph of this section for why, and CLAUDE.md for the three guards it needs.
 2. ~~`targetARLTV` in the engine (both copies)~~ — **DONE**, zero drift when unset.
 3. ~~Rebuild `priceLadder` as the single, price-break ladder (R1–R5), with rung keys~~
    — **DONE** (19 assertions over 4,455 ladders).

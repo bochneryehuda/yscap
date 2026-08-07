@@ -425,6 +425,20 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             sqft_pre=$18,
             sqft_post=$19,
             financed_rehab_budget=$23,
+            -- THE PAYOFF THE DEAL WAS PRICED ON (owner-directed 2026-08-07:
+            -- "the payoff on the studio should go into the application where it
+            -- says payoff, and that's basically reduced from his initial loan").
+            -- A refinance pays the existing loan out of the INITIAL ADVANCE, so
+            -- this figure decides cash to close AND its direction: the borrower
+            -- brings the shortfall, or keeps what is left over. The studio's
+            -- payoff box is live and editable, so an officer entering a fresh
+            -- payoff-letter figure quoted one number while the file kept another
+            -- (measured: a $208,410 swing that inverted who pays whom).
+            -- Refinance-only and fill-or-update, never touched on a purchase,
+            -- where there is nothing to pay off and a stale value would be worse
+            -- than none.
+            payoff_amount = CASE WHEN $25::numeric IS NOT NULL THEN $25::numeric
+                                 ELSE payoff_amount END,
             -- THE REGISTERED PROGRAM CHOOSES THE NOTE BUYER (owner-directed
             -- 2026-08-06: "Fidelis for the standard, Blue Lake for the gold,
             -- EMCAP for the silver … whenever it's a manual program you leave it
@@ -481,6 +495,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       // $24 — the note buyer this program implies (NULL on manual/unknown).
       // Fill-only in the SET clause above, so it can only ever fill a blank.
       require('./note-buyer-for-program').noteBuyerForProgram(program),
+      // $25 — the payoff, only on a refinance and only when the deal carried one.
+      // NULL leaves the column untouched (a purchase, or a register that never
+      // saw the field), so this can never wipe a payoff a human recorded.
+      (String(inputs.loanType || '').toLowerCase().indexOf('purchase') < 0 && num(inputs.payoff) > 0)
+        ? Math.round(num(inputs.payoff) * 100) / 100 : null,
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
