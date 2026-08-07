@@ -57,10 +57,19 @@ const loanFor = (first, last, dob, addr, llcName, funded = '2024-03-15') => ({
     // cross-source case the owner named ("don't add it twice"): enrichment must
     // dedupe A against it via the strong canon and NOT re-add it, NOR touch it.
     const clickupA = { formatted_address: '12 Churchill Ln, Brooklyn, NY 11230, USA' };
+    // The verification is a SEPARATE UPDATE, as production does it: db/481's guard
+    // forbids a track record from being born verified ("there should not even be a
+    // single thing where somebody entered their track record that should come up as
+    // verified"), so asking for it in the INSERT silently produced an unverified row and
+    // this fixture stopped testing what it says it tests. A reviewer's click is an
+    // UPDATE, so this is also the faithful shape.
     const trExisting = (await client.query(
-      `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, address_key, notes)
-       VALUES ($1,$2::jsonb, true, 'portal', $3, 'original human record') RETURNING id`,
+      `INSERT INTO track_records (borrower_id, property_address, origin, address_key, notes)
+       VALUES ($1,$2::jsonb, 'portal', $3, 'original human record') RETURNING id`,
       [b.id, JSON.stringify(clickupA), enrich._internals.addrKey(clickupA)])).rows[0];
+    await client.query(
+      `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`,
+      [trExisting.id]);
     await client.query(`INSERT INTO llcs (borrower_id, llc_name, is_verified, origin) VALUES ($1,'Existing LLC', true, 'portal')`, [b.id]);
 
     // Two Encompass loans for this borrower: one already-present (skip), one new (add).

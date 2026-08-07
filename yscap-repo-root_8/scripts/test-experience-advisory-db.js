@@ -50,9 +50,15 @@ async function attach(appId, code) {
 }
 async function addVerifiedFlip(borId) {
   // A completed flip whose SALE date is inside the frozen 3-year exit window, VERIFIED.
+  const ins = await db.query(
+    // Verification is a SEPARATE UPDATE, as production does it — db/481's guard forbids
+    // a track record from being BORN verified, so asking for it in the INSERT produced an
+    // unverified line and these VERIFIED-experience assertions measured zero.
+    `INSERT INTO track_records (borrower_id, deal_type, sale_date)
+     VALUES ($1,'Fix & Flip', CURRENT_DATE - INTERVAL '30 days') RETURNING id`, [borId]);
   await db.query(
-    `INSERT INTO track_records (borrower_id, deal_type, sale_date, is_verified)
-     VALUES ($1,'Fix & Flip', CURRENT_DATE - INTERVAL '30 days', true)`, [borId]);
+    `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`,
+    [ins.rows[0].id]);
 }
 async function row(itemId) {
   return (await db.query(

@@ -10105,9 +10105,14 @@ router.put('/track-records/:id', async (req, res) => {
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
   // Same stamp as the create door: whoever last put these figures on the line is
-  // recorded, so "who typed this?" is answerable on an edit and not only on a
-  // create. (No status reset — see trackRecordEnteredCols: a staffer may
-  // deliberately correct a VERIFIED line.)
+  // recorded, so "who typed this?" is answerable on an edit and not only on a create.
+  //
+  // AND IT NOW RESETS THE REVIEW (2026-08-07). A staffer may still correct a VERIFIED
+  // line — that has not changed — but the correction lands PENDING, because the
+  // reviewer confirmed the OLD figures and nobody has looked at the new ones. The
+  // owner's rule: "Every single detail of a track record you need to click on verify."
+  // db/481's trigger enforces it for every writer including the imports; this door
+  // states it too so the intent is readable where the edit happens.
   const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {

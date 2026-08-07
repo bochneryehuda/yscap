@@ -96,11 +96,19 @@ const studioState = (v) => ({ v: { propState: 'NJ', dealType: 'Fix & Hold (BRRRR
     const addVerifiedHold = async (n, bid = borrowerId) => {
       for (let i = 0; i < n; i++) {
         holdSeq++;
-        await db.query(
-          `INSERT INTO track_records (borrower_id, property_address, deal_type, is_verified, rent_date)
+        const ins = await db.query(
+          // The verification is a SEPARATE UPDATE, as production does it — db/481's guard
+          // forbids a track record from being BORN verified, so asking for it in the
+          // INSERT produced an unverified line and these VERIFIED-experience assertions
+          // measured zero. A reviewer's click has always been an UPDATE.
+          `INSERT INTO track_records (borrower_id, property_address, deal_type, rent_date)
            VALUES ($1, jsonb_build_object('line1', $2::text, 'city','Newark','state','NJ','zip','07102'),
-                   'Fix & Hold (BRRRR)', true, CURRENT_DATE - INTERVAL '60 days')`,
+                   'Fix & Hold (BRRRR)', CURRENT_DATE - INTERVAL '60 days')
+           RETURNING id`,
           [bid, `${100 + holdSeq} Hold Ave`]);
+        await db.query(
+          `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`,
+          [ins.rows[0].id]);
       }
     };
 

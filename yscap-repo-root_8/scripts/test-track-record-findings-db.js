@@ -35,12 +35,24 @@ async function borrower(name) {
     [name, `${tag}_${name}@example.com`])).rows[0].id;
 }
 async function line(borrowerId, oneLine, extra = {}) {
-  const cols = { property_address: JSON.stringify({ oneLine }), origin: 'clickup_backfill', is_verified: false, ...extra };
+  // VERIFICATION IS A SEPARATE UPDATE, exactly as production does it. db/481's guard
+  // forbids a track record from being BORN verified — "there should not even be a
+  // single thing where somebody entered their track record that should come up as
+  // verified" — so a fixture that asked for one in its INSERT silently got an
+  // unverified row. Nothing in production ever inserts a verified line either; the
+  // reviewer's click is an UPDATE, so doing it that way here is also more faithful.
+  const { is_verified: wantVerified, ...rest } = extra;
+  const cols = { property_address: JSON.stringify({ oneLine }), origin: 'clickup_backfill', ...rest };
   const names = Object.keys(cols), vals = Object.values(cols);
-  return (await db.query(
+  const id = (await db.query(
     `INSERT INTO track_records (borrower_id, ${names.join(',')})
      VALUES ($1, ${names.map((_, i) => '$' + (i + 2)).join(',')}) RETURNING id`,
     [borrowerId, ...vals])).rows[0].id;
+  if (wantVerified) {
+    await db.query(
+      `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [id]);
+  }
+  return id;
 }
 
 (async () => {
