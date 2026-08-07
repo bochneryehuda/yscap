@@ -1061,11 +1061,14 @@ module.exports = {
   // Credentials come from Render env ONLY (never source, never chat). Nothing
   // reaches Class until CLASS_ENABLED=1 and the four values are set.
   //
-  // HOSTS ARE UNCONFIRMED and therefore fully overridable. Their guide (p.3) gives
-  // `orders-external{,.uat,.test}.classvaluation.com`; their onboarding email gave
-  // `api{,.uat}.classvaluation.com/swagger`. Those disagree, and the guide only
-  // ever shows the TEST identity host, so the UAT/prod identity hosts are inferred.
-  // Confirm all three with the vendor before anything is switched on.
+  // WE ARE ON THE **V1** ORDERS API — the guide YS Capital was given ("Class Orders
+  // API Guide", rev 0.17, 08-03-2026). Its order hosts are
+  // `api{,.uat,.test}.classvaluation.com` (p.3, with a verbatim call at p.13), which
+  // is ALSO what their onboarding email gave — the two agree, so the order hosts are
+  // confirmed. A separate V2 document uses `orders-external.*` and different field
+  // spellings; do not mix them. Both guides only ever show the TEST identity host, so
+  // the UAT/production identity hosts are still INFERRED — confirm before switching
+  // on. Everything stays overridable by env.
   class: {
     enabled:         process.env.CLASS_ENABLED === '1',           // master (default OFF)
     outboundEnabled: process.env.CLASS_OUTBOUND_ENABLED === '1',  // write gate (default OFF)

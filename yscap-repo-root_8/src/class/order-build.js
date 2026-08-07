@@ -27,9 +27,14 @@
  *     planned development and the industry files it as single family, so it maps
  *     to SingleFamily — as a stated assumption, never silently.
  *
- * THEIR API MISSPELLS "OCCUPANCY" AS `ocupancy` (guide p.26). It is sent exactly
- * as they spell it. Do NOT "fix" it — the corrected spelling is a different,
- * unrecognised field and the value would be dropped on their side with no error.
+ * THE SPELLING OF `occupancy` IS VERSION-SPECIFIC, AND WE ARE ON V1. The **V1**
+ * guide (rev 0.17, p.30) spells it correctly — `occupancy` — and that is what we
+ * send. The separate **V2** document misspells it `ocupancy`. An earlier cut of
+ * this module was written against V2 and deliberately sent the typo; on V1 that
+ * would be an unrecognised field, silently dropped on their side with no error.
+ * The two documents also disagree about the base hosts (see client.js). If this
+ * integration is ever moved to V2, the spelling moves WITH it — never "correct" or
+ * "fix" it in isolation.
  */
 
 // ---- our canonical property key -> their propertyTypeEnum -----------------
@@ -70,7 +75,14 @@ const LOAN_TYPE = {
   ground_up: 'NewConstruction',
 };
 
-// ---- our occupancy -> their `ocupancy` (their spelling) -------------------
+// ---- our occupancy -> their `occupancy` (V1 spelling — see the header) ----
+// UNLIKE every other map here, this one is NOT pinned to a published list: on V1
+// `occupancy` is a free-form String ("Self-descriptive", p.30). The only value
+// their own vocabulary confirms is `Investment` — the UAD 3.6 extension in the same
+// guide types the field as PrimaryResidence | SecondHome | Investment | Other — and
+// Investment is what essentially every RTL file resolves to. The other four are our
+// plain-English wording and are unverified; if Class ever rejects one, it is a
+// wording fix here, not a mapping bug.
 const OCCUPANCY = {
   investment: 'Investment',
   tenant: 'Tenant',
@@ -155,8 +167,8 @@ function buildOrder(ctx = {}, overrides = {}) {
   }
   loanType = pick('loanType', loanType);
 
-  // ---- occupancy (THEIR SPELLING — see the header) -------------------------
-  const ocupancy = pick('ocupancy', OCCUPANCY[norm(p.occupancy)] || null);
+  // ---- occupancy (V1 spelling — see the header) ----------------------------
+  const occupancy = pick('occupancy', OCCUPANCY[norm(p.occupancy)] || null);
 
   // ---- required identity ---------------------------------------------------
   const referenceNumber = pick('referenceNumber', text(ctx.referenceNumber));
@@ -218,8 +230,7 @@ function buildOrder(ctx = {}, overrides = {}) {
     },
     dueDate: pick('dueDate', text(ctx.dueDate)),
     purpose,
-    // Their spelling. Do not correct it.
-    ocupancy,
+    occupancy,
     propertyTypeEnum,
     instructions: pick('instructions', text(ctx.instructions)),
     contractPrice: money(ctx.contractPrice),

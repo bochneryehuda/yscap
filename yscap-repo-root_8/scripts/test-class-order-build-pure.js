@@ -4,7 +4,7 @@
  *
  * Pins the three things that would send a wrong order, and the one that would
  * send an order nobody saw first:
- *   1. Their misspelled `ocupancy` field is sent misspelled.
+ *   1. The V1 spelling `occupancy` is sent — NOT the V2 document's `ocupancy` typo.
  *   2. An enum we cannot map is REPORTED, never guessed into a neighbour.
  *   3. A value we derived is declared as an assumption, so the preview can show it.
  *   4. Writes are gated; reads are not.
@@ -28,13 +28,13 @@ const BASE = {
 };
 
 // ---------------------------------------------------------------------------
-console.log('\n--- THEIR SPELLING IS PRESERVED ---');
+console.log('\n--- THE V1 FIELD NAME IS SENT, NOT THE V2 TYPO ---');
 const r = ob.buildOrder(BASE);
-ok(Object.prototype.hasOwnProperty.call(r.body, 'ocupancy'),
-   'the body carries `ocupancy` — Class\'s own misspelling (correcting it would silently drop the value)');
-ok(!Object.prototype.hasOwnProperty.call(r.body, 'occupancy'),
-   'and does NOT carry the correctly-spelled `occupancy`, which Class does not recognise');
-ok(r.body.ocupancy === 'Investment', 'an RTL investment property maps to their Investment value');
+ok(Object.prototype.hasOwnProperty.call(r.body, 'occupancy'),
+   'the body carries `occupancy` — the V1 guide\'s spelling (rev 0.17, p.30)');
+ok(!Object.prototype.hasOwnProperty.call(r.body, 'ocupancy'),
+   'and does NOT carry the V2 document\'s `ocupancy` typo, which V1 would drop unrecognised');
+ok(r.body.occupancy === 'Investment', 'an RTL investment property maps to their Investment value');
 
 // ---------------------------------------------------------------------------
 console.log('\n--- the happy path is complete and placeable ---');
@@ -116,6 +116,13 @@ ok(cfgd.ready === false, 'with no credentials it is not ready');
 
 const h = client.hosts();
 ok(/classvaluation\.com/.test(h.ordersUrl) && /classvaluation\.com/.test(h.tokenUrl), 'both hosts resolve');
+// The V1 guide prints `https://api.uat.classvaluation.com/orders` verbatim (p.13).
+// The V2 document's `orders-external.*` hosts are a DIFFERENT API — pinned so a
+// regression back to them is caught here rather than by a 404 in production.
+ok(h.ordersUrl === 'https://api.uat.classvaluation.com', 'the UAT order host is the V1 one');
+ok(!/orders-external/.test(h.ordersUrl), 'and is NOT the V2 document\'s orders-external host');
+ok(client._internals.HOSTS.production.orders === 'https://api.classvaluation.com', 'production likewise');
+ok(client._internals.HOSTS.test.orders === 'https://api.test.classvaluation.com', 'test likewise');
 ok(h.environment === 'uat', 'UAT is the default environment, never production');
 ok(h.tokenConfirmed === false,
    'the UAT identity host is reported UNCONFIRMED — their guide only ever prints the test one');

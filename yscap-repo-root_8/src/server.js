@@ -402,6 +402,9 @@ app.use('/api/appraisal', require('./routes/appraisal'));
 // auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
 // (src/amc/**, db/480); RTL only.
 app.use('/api/amc', require('./routes/amc'));
+// The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
+// Each answers only for itself; nothing here picks between them.
+app.use('/api/class', require('./routes/class'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds

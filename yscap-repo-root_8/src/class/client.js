@@ -6,6 +6,13 @@
  * the three switches, the dry-run, the write gate, the token lifecycle, the
  * timeout, the retry rule, and the masking. No route may call `fetch` directly.
  *
+ * WHICH GUIDE THIS IS BUILT ON. The **V1 Orders API** ("Class Orders API Guide",
+ * rev 0.17, 08-03-2026) — the version YS Capital is on. There is a separate V2
+ * document whose base hosts (`orders-external.*`), field spellings and enum lists
+ * DIFFER; do not mix the two. Within the V1 guide itself, `POST /v2/orders` is the
+ * UAD 3.6 extension (same host, `api-version=2.0`) and is deliberately NOT used —
+ * we order on plain `POST /orders`, which is UAD 2.6.
+ *
  * AUTH IS ONE CALL, NOT TWO (their guide, p.9). OAuth2 **password grant** —
  * `client_id` + `client_secret` + `username` + `password`, every one marked
  * [Required] and "supplied by Class Valuation". This is the whole reason the
@@ -27,11 +34,12 @@
  * secret is wrong" — and the expensive mistake is sending someone to re-issue a
  * perfectly good credential. Every response body is preserved, JSON or not.
  *
- * HOSTS ARE UNCONFIRMED. Their guide and their onboarding email disagree about
- * the base URL, and the guide only ever prints the TEST identity host. Everything
- * is derived from one table and overridable by env; `hosts()` reports whether the
- * values in use were confirmed or inferred, so a preflight can say so out loud
- * rather than failing with a DNS error nobody can interpret.
+ * THE IDENTITY HOST IS STILL UNCONFIRMED. The V1 guide prints all three ORDER
+ * hosts, but only ever shows the TEST identity host — the UAT and production ones
+ * are inferred from its shape. Everything is derived from one table and overridable
+ * by env; `hosts()` reports whether the values in use were confirmed or inferred,
+ * so a preflight can say so out loud rather than failing with a DNS error nobody
+ * can interpret.
  */
 
 const cfg = require('../config');
@@ -49,14 +57,16 @@ const CLASS = () => cfg.class || {};
 // CONFIRMED by the vendor's own documentation or INFERRED by us.
 // ---------------------------------------------------------------------------
 const HOSTS = {
-  // The guide (p.3) prints these three order hosts explicitly.
-  production: { orders: 'https://orders-external.classvaluation.com',     ordersConfirmed: true,
-                token:  'https://ids.classvaluation.com/connect/token',    tokenConfirmed: false },
-  uat:        { orders: 'https://orders-external.uat.classvaluation.com', ordersConfirmed: true,
+  // The V1 guide (p.3) prints these three order hosts explicitly, and p.13 shows a
+  // real create call at `POST https://api.uat.classvaluation.com/orders` — so the
+  // order paths hang off the ROOT of these hosts.
+  production: { orders: 'https://api.classvaluation.com',      ordersConfirmed: true,
+                token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: false },
+  uat:        { orders: 'https://api.uat.classvaluation.com',  ordersConfirmed: true,
                 token:  'https://ids.uat.classvaluation.com/connect/token', tokenConfirmed: false },
-  // The ONLY identity host the guide ever shows is the test one — so this is the
+  // The ONLY identity host either guide ever shows is the test one — so this is the
   // one row where the token URL is confirmed and the others are inferred from it.
-  test:       { orders: 'https://orders-external.test.classvaluation.com', ordersConfirmed: true,
+  test:       { orders: 'https://api.test.classvaluation.com', ordersConfirmed: true,
                 token:  'https://ids.test.classvaluation.com/connect/token', tokenConfirmed: true },
 };
 
@@ -272,6 +282,11 @@ module.exports = {
   products: (query) => get('/products', query, 'products'),
   order: (orderId) => get(`/orders/${encodeURIComponent(orderId)}`, undefined, 'order'),
   orders: (query) => get('/orders', query, 'orders'),
+  // THE V1 GUIDE CONTRADICTS ITSELF ON THIS ONE PATH: its order-completion walkthrough
+  // (p.7, added in the newest revision) says `GET /orders/{orderId}/attachments`, while
+  // the older Attachments reference section (p.14) writes `GET /{orderId}/attachments`
+  // with no `/orders`. We follow the newer walkthrough. If the first live pull 404s,
+  // this — not the credential — is the thing to try.
   attachments: (orderId, query) => get(`/orders/${encodeURIComponent(orderId)}/attachments`, query, 'attachments'),
   attachment: (orderId, attachmentId, query) =>
     get(`/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'),
