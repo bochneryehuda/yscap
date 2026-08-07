@@ -275,6 +275,8 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
   const [note, setNote] = useState('');
   const [showDeal, setShowDeal] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const [followMsg, setFollowMsg] = useState('');
   const [previewDoc, setPreviewDoc] = useState(null);
 
@@ -341,11 +343,30 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
     finally { setBusy(''); }
   };
 
+  /* CANCEL NOW EMAILS OUTSIDE COUNSEL (owner-directed 2026-08-07). The old confirm said "Nobody is
+     emailed", which was true then and is exactly the behaviour the owner asked to change: an
+     attorney holding our package and a term sheet has to be told to stand down, not just quietly
+     dropped off the updates.
+
+     A REASON BOX, not a confirm dialog. The reason goes INTO the email counsel receives ("this is
+     a brokered file, it is closing with RCN"), which is the single most useful line on it — and a
+     browser confirm cannot collect one. `reopen` keeps its one-click path: putting an order back
+     on the desk emails nobody and needs no explanation. */
   const cancel = async (reopen) => {
-    if (!reopen && !window.confirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.')) return;
     setBusy('cancel'); setMsg(null);
-    try { await api.staffCancelClosingPrep(appId, reopen); reload(); }
-    catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
+    try {
+      const r = await api.staffCancelClosingPrep(appId, reopen, reopen ? null : cancelReason);
+      setCancelOpen(false); setCancelReason('');
+      // Say which of the two things happened. "Cancelled" and "cancelled AND counsel was told"
+      // are different states, and assuming the second when only the first is true is how an
+      // attorney ends up drafting a file nobody is working.
+      if (!reopen) {
+        setMsg(r && r.notified
+          ? { tone: 'ok', text: 'Cancelled — the attorney has been told to disregard this file, and no further updates will go out to them.' }
+          : { tone: 'warn', text: 'Cancelled and all further updates are stopped — but we could not send the cancellation email. Contact the attorney directly.' });
+      }
+      reload();
+    } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
     finally { setBusy(''); }
   };
 
@@ -464,8 +485,10 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
                 ability to write to counsel about a deal that is done. Reopen is
                 the action there. */}
             {order.status !== 'completed' && (
-              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
-                Cancel request
+              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }}
+                onClick={() => { setCancelOpen((o) => !o); setFollowOpen(false); }}
+                title="Tell the attorney to disregard this file and stop every further update to them">
+                Cancel closing prep
               </button>
             )}
           </>
@@ -495,6 +518,32 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
               {busy === 'follow' ? 'Sending…' : 'Send follow-up'}
             </button>
             <button className="btn ghost small" onClick={() => { setFollowOpen(false); setFollowMsg(''); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {cancelOpen && (
+        <div className="panel" style={{ background: 'var(--surface-soft, #f4f1ea)', marginTop: 10, borderLeft: '3px solid var(--danger, #B24A2B)' }}>
+          <div style={{ fontWeight: 700, color: INK }}>Cancel closing prep</div>
+          <div className="small" style={{ color: MUTED, marginTop: 4 }}>
+            The attorney is emailed on this same chain and told to disregard the file and stop work.
+            After this, nothing further goes out to them — no executed term sheet, no closing-date
+            change, no clear-to-close. Everything they already sent stays on the file, and you can
+            reopen the request later if the deal comes back.
+          </div>
+          <label className="muted small" style={{ color: MUTED, display: 'block', marginTop: 8 }}>
+            Why (optional — this goes in the email they receive)
+          </label>
+          <textarea className="input" rows={2} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="e.g. This is a brokered file — it is closing with RCN." />
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn primary small" disabled={busy === 'cancel'}
+              style={{ background: 'var(--danger, #B24A2B)', borderColor: 'var(--danger, #B24A2B)' }}
+              onClick={() => cancel(false)}>
+              {busy === 'cancel' ? 'Cancelling…' : 'Cancel and tell the attorney'}
+            </button>
+            <button className="btn ghost small" disabled={busy === 'cancel'}
+              onClick={() => { setCancelOpen(false); setCancelReason(''); }}>Keep it open</button>
           </div>
         </div>
       )}

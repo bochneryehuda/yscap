@@ -206,7 +206,15 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
      anything above the three dots"). The server splits an inbound message at read
      time (lib/email-log.splitStoredBody) and returns BOTH halves, so nothing is
      hidden — `showQuoted` swaps this reader back to the whole original body. An
-     outbound message, and an inbound one with no quote in it, are untouched. */
+     outbound message, and an inbound one with no quote in it, are untouched.
+
+     THE CONTRACT IS ADDITIVE: `body_html` is always the message AS STORED and
+     `replyHtml` is the trimmed half, so expanding is simply "read the stored body".
+     A second implementation trimmed `body_html` itself, which would have made this
+     control open the very thing it had already removed.
+
+     `showQuoted` is declared once, further up with the other reader state — it is
+     per-message because this component is keyed on the row. */
   const trimmed = !!(full && full.trimmed);
   const html = full && ((trimmed && !showQuoted && full.replyHtml) || full.body_html);
   const text = full && ((trimmed && !showQuoted && full.replyText) || full.body_text);

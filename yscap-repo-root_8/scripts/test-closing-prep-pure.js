@@ -350,8 +350,30 @@ const ATTACH = {
     && part.subject.includes('File ready for closing prep'),
     'a documents-part email has its own headline but keeps the chain subject');
 }
-assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_date,clear_to_close,manual',
-  'the chain event kinds are exactly the ones the migration CHECK allows');
+/* THE EVENT-KIND LIST AND THE DATABASE MUST AGREE, and this now READS the database's answer
+   instead of restating it. A hard-coded literal here means every widening fails the test for the
+   right reason and is then fixed by editing the literal — which is exactly how the two drift: the
+   next person updates the string and forgets the migration. The CHECK is parsed out of the
+   HIGHEST-numbered migration that defines it, which is how Postgres ends up seeing it. */
+{
+  const fs = require('fs'), path = require('path');
+  const dbDir = path.join(__dirname, '..', 'db');
+  const files = fs.readdirSync(dbDir).filter((f) => /^\d+_.*\.sql$/.test(f))
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  let allowed = null;
+  for (const f of files) {
+    const sql = fs.readFileSync(path.join(dbDir, f), 'utf8');
+    // The last CHECK on event_kind in the highest-numbered file that mentions one.
+    const matches = [...sql.matchAll(/event_kind\s+IN\s*\(([^)]*)\)/gi)];
+    if (matches.length) {
+      allowed = matches[matches.length - 1][1]
+        .split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean);
+    }
+  }
+  assert(Array.isArray(allowed) && allowed.length, 'no event_kind CHECK found in db/*.sql');
+  assert(ct.EVENT_KINDS.slice().sort().join(',') === allowed.slice().sort().join(','),
+    `the chain event kinds must match the migration CHECK — code has [${ct.EVENT_KINDS}], the database allows [${allowed}]`);
+}
 
 /* ───────────── 8. attachments: budget, priority order, nothing silent ─────── */
 (async () => {

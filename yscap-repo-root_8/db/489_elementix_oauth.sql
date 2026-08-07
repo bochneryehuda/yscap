@@ -1,4 +1,4 @@
--- 487_elementix_oauth.sql — where PILOT keeps its Elementix authorization.
+-- 489_elementix_oauth.sql — where PILOT keeps its Elementix authorization.
 --
 -- Elementix's MCP endpoint uses the standard MCP OAuth flow (confirmed by the
 -- vendor, 2026-08-07: "standard OAuth flow for the MCP endpoint — the AI

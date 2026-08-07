@@ -22,6 +22,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const workflow = require('./workflow');
+const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
@@ -336,6 +337,133 @@ async function dailyPipelineDigestOnce() {
       await _stamp('pipeline_digest_daily', st.id, { files: files.rows.length });
       sent++;
     } catch (e) { console.error('[digest] pipeline', st.id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 2b) WEEKLY LOAN-OFFICER PIPELINE SNAPSHOT (owner-directed 2026-08-07: *"we also need to set up
+   a nice email every week to only the loan officers with a snapshot of their pipeline, active
+   files, funded files, totals, and details."*).
+
+   Deliberately NOT a second copy of the daily digest above. The daily one is a to-do list —
+   oldest-at-stage first, so the top row is the thing to chase today. This one is a WEEK's read:
+   the totals first (what is in flight, what closed), then the file-by-file detail.
+
+   ONLY LOAN OFFICERS, by the owner's word. `role='loan_officer'` is the test, so a processor or
+   a closer who happens to be assigned to files does not receive it — they have their own Workflow
+   nudge, and an officer's book is a sales read, not a task list.
+
+   Every figure is a plain count/sum over the officer's own assigned, non-deleted files. Nothing
+   here is a pricing number — `loan_amount` is the registered amount already stored on the row. */
+async function weeklyOfficerPipelineOnce() {
+  let sent = 0;
+  let officers = [];
+  try {
+    officers = (await db.query(
+      `SELECT id, email, full_name FROM staff_users
+        WHERE is_active = true AND role = 'loan_officer'
+          AND COALESCE(notifications_enabled, true) = true
+          AND email IS NOT NULL AND btrim(email) <> ''
+        ORDER BY full_name`)).rows;
+  } catch (_) { return 0; }
+
+  const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+
+  for (const st of officers) {
+    try {
+      /* ONE query for the officer's whole book — active AND funded — so the totals and the detail
+         table can never be computed off two different snapshots taken a moment apart. Funded is
+         windowed to the last 90 days: "funded files" on a weekly snapshot means recent closings,
+         and an all-time total would grow forever and stop being news. */
+      const r = await db.query(
+        `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.status_changed_at,
+                a.loan_amount, a.expected_closing, a.funded_date,
+                (SELECT count(*)::int FROM checklist_items ci
+                  WHERE ci.application_id = a.id AND ci.audience IN ('borrower','both')
+                    AND ci.status IN ('outstanding','requested','issue')) AS open_borrower
+           FROM applications a
+           JOIN application_assignees aa ON aa.application_id = a.id
+                AND aa.staff_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+          WHERE a.deleted_at IS NULL
+            AND (a.status <> ALL($2)
+                 OR (a.status = 'funded' AND a.funded_date IS NOT NULL
+                     AND a.funded_date >= (now() - interval '90 days')::date))
+          ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
+          LIMIT 200`, [st.id, TERMINAL]);
+
+      const all = r.rows;
+      const active = all.filter((f) => f.status !== 'funded');
+      const funded = all.filter((f) => f.status === 'funded');
+      // Nothing in flight AND nothing closed recently → there is no snapshot to send. A weekly
+      // email that says "you have no files" every week is the noise this is meant to avoid.
+      if (!active.length && !funded.length) continue;
+      if (!(await _gateRecipient('officer_pipeline_weekly', st.id, '6 days'))) continue;
+
+      const sum = (rows) => rows.reduce((t, f) => t + (Number(f.loan_amount) || 0), 0);
+      const activeVol = sum(active);
+      const fundedVol = sum(funded);
+      const openItems = active.reduce((t, f) => t + (Number(f.open_borrower) || 0), 0);
+
+      const table = active.length ? {
+        title: 'Your active files — longest at their current stage first',
+        head: ['Property / file', 'Stage', 'Days', 'Loan amount', 'Borrower items'],
+        align: ['left', 'left', 'right', 'right', 'right'],
+        rows: active.slice(0, 25).map((f) => {
+          const d = daysAt(f.status_changed_at);
+          return [
+            `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+            STATUS_LABEL[f.status] || f.status,
+            d != null ? String(d) : '—',
+            f.loan_amount != null ? money0(f.loan_amount) : '—',
+            f.open_borrower ? String(f.open_borrower) : '—',
+          ];
+        }),
+        note: active.length > 25 ? `…and ${active.length - 25} more active files in your pipeline.` : null,
+      } : null;
+
+      const fundedTable = funded.length ? {
+        title: 'Funded in the last 90 days',
+        head: ['Property / file', 'Funded', 'Loan amount'],
+        align: ['left', 'left', 'right'],
+        rows: funded.slice(0, 15).map((f) => [
+          `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+          f.funded_date ? String(f.funded_date).slice(0, 10) : '—',
+          f.loan_amount != null ? money0(f.loan_amount) : '—',
+        ]),
+        note: funded.length > 15 ? `…and ${funded.length - 15} more funded in the window.` : null,
+      } : null;
+
+      const first = (st.full_name || '').trim().split(/\s+/)[0];
+      await notify.notifyStaff(st.id, {
+        type: 'digest',
+        title: `Your week: ${active.length} active file${active.length === 1 ? '' : 's'}`,
+        badge: { text: 'Weekly snapshot', tone: 'teal' },
+        body: `${active.length} active (${money0(activeVol)}) · ${funded.length} funded in 90 days (${money0(fundedVol)})`,
+        emailBody: `Here is your book as it stands${first ? `, ${first}` : ''} — what is in flight, what has closed, and where each file is sitting.`,
+        figures: {
+          primary: { label: 'Active pipeline', value: money0(activeVol), sub: `across ${active.length} file${active.length === 1 ? '' : 's'}`, tone: 'teal' },
+          secondary: [
+            { label: 'Funded (90 days)', value: money0(fundedVol), tone: 'positive' },
+            { label: 'Files funded', value: String(funded.length), tone: 'positive' },
+            { label: 'Borrower items open', value: String(openItems) },
+          ],
+        },
+        // Two tables cannot both ride the single `table` slot, so the funded list goes in as a
+        // second block through `sections` — a titled block whose body is one line per file. The
+        // active list is the one that gets the real table, because it is the one people scan.
+        table,
+        sections: fundedTable ? [{
+          title: fundedTable.title,
+          body: [
+            ...fundedTable.rows.map((row) => `${row[0]} — funded ${row[1]} · ${row[2]}`),
+            ...(fundedTable.note ? [fundedTable.note] : []),
+          ],
+        }] : null,
+        link: '/internal/pipeline', ctaLabel: 'Open your pipeline', emailTo: st.email,
+      });
+      await _stamp('officer_pipeline_weekly', st.id, { active: active.length, funded: funded.length });
+      sent++;
+    } catch (e) { console.error('[digest] officer-pipeline-weekly', st.id, e && e.message); }
   }
   return sent;
 }
@@ -1425,11 +1553,35 @@ async function workflowAgingOnce() {
   for (const r of rows) {
     try {
       if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      /* NAME THE FILES, ONE CARD PER WORKFLOW (owner-directed 2026-08-07: *"emails like this
+         should have a list of the files and the status of each and every file and whose loan
+         officer in every single file … nicely design every workflow separately"*). The old body
+         was a count and a link — everything it knew, it made the reader go and look up again; the
+         first pass at the fix was one merged list, which reads as ONE job arbitrarily split.
+         `workflowQueues.buildQueueTables` (pure) splits the rows by workflow family so a
+         processor's queue, a closer's queue and a draw coordinator's queue arrive as three
+         separate cards, each saying what that queue is for, and — for draws only — carrying only
+         the files where somebody is actually waiting on money.
+
+         Best-effort: if the detail query fails the nudge still goes with its count, because a
+         person with overdue work being told nothing is the worse outcome. */
+      let items = [];
+      try { items = await workflow.overdueItemsFor(r.to_staff_id); } catch (_) { items = []; }
+      let queues = { tables: [], shown: 0, parked: 0 };
+      try {
+        queues = workflowQueues.buildQueueTables(items, workflow.typeConfig, { perTable: 8 });
+      } catch (e) { console.error('[digest] workflow-queues', e && e.message); }
+      /* The count in the headline is the recipient's REAL overdue total. The cards can hold fewer
+         (the per-card cap, and the parked draw files) — so when they do, say so rather than let the
+         two numbers silently disagree. */
+      const unlisted = Math.max(0, (Number(r.overdue) || 0) - queues.shown - queues.parked);
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
         badge: { text: 'Overdue', tone: 'action' },
-        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time. Open your Workflow to pick ${r.overdue === 1 ? 'it' : 'them'} up or send ${r.overdue === 1 ? 'it' : 'them'} back.`,
+        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time.`,
+        emailBody: `These hand-offs are past the target time they were meant to be picked up or sent back in. They are grouped below by the queue they belong to — pick one up, or send it back to whoever submitted it.${unlisted ? ` ${unlisted} more ${unlisted === 1 ? 'is' : 'are'} waiting in your Workflow.` : ''}`,
+        tables: queues.tables.length ? queues.tables : null,
         link: '/internal/workflow', ctaLabel: 'Open my Workflow' });
       await _stamp('workflow_overdue', r.to_staff_id, { overdue: r.overdue });
       sent++;
@@ -1926,14 +2078,32 @@ async function exceptionAgingOnce() {
   if (!rows.length) return 0;
   if (!(await _gate('exception_aging_digest', null, '20 hours'))) return 0;
   const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
-  const lines = rows.slice(0, 10).map((r) => {
+  /* THE LIST IS A TABLE, NOT A PARAGRAPH OF BULLETS (owner-directed 2026-08-07: *"e-mails like
+     this should be much nicer designed"*). The old body packed every waiting exception into one
+     newline-joined run of "• Send before clear-to-close — 276 Blake St, New Haven · waiting 10d"
+     inside a single paragraph — which mail clients reflow, so on a phone the bullets wrapped into
+     each other and the ages ran together. Each row now has its own line and its own age column,
+     and the OLDEST is first: the whole point of a review-target digest is that the top row is the
+     one hurting most. The plain-text body keeps a readable list for any client that strips HTML. */
+  const shown = rows.slice(0, 12);
+  const ageOf = (r) => {
     const days = Math.floor(Number(r.open_hours || 0) / 24);
-    const age = days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+    return days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+  };
+  const addrOf = (r) => {
     const a = r.property_address;
     const addr1 = !a ? '' : (typeof a === 'string' ? a : [a.line1 || a.address, a.city].filter(Boolean).join(', '));
-    return `• ${labels[r.exception_type] || r.exception_type} — ${addr1 || r.ys_loan_number || 'a file'} · waiting ${age}`;
-  });
-  if (rows.length > 10) lines.push(`…and ${rows.length - 10} more.`);
+    return addr1 || r.ys_loan_number || 'a file';
+  };
+  const table = {
+    title: 'Waiting on a decision — oldest first',
+    head: ['Property / file', 'Exception', 'Waiting'],
+    align: ['left', 'left', 'right'],
+    rows: shown.map((r) => [addrOf(r), labels[r.exception_type] || r.exception_type, ageOf(r)]),
+    note: rows.length > shown.length
+      ? `…and ${rows.length - shown.length} more in the Exceptions box.`
+      : null,
+  };
   const supers = await db.query(`SELECT id FROM staff_users WHERE role='super_admin' AND is_active=true`);
   let sent = 0;
   for (const su of supers.rows) {
@@ -1943,7 +2113,10 @@ async function exceptionAgingOnce() {
         title: rows.length === 1 ? 'An exception request is waiting past its review target'
           : `${rows.length} exception requests are waiting past their review target`,
         badge: { text: 'Review due', tone: 'action' },
-        body: `These policy-exception requests have been open longer than the review target. The requester can’t move them — only a super-admin can approve or deny:\n\n${lines.join('\n')}`,
+        // The in-app row keeps a short summary; the email gets the sentence + the table.
+        body: `${rows.length} policy-exception request${rows.length === 1 ? ' has' : 's have'} been open longer than the review target.`,
+        emailBody: 'These policy-exception requests have been open longer than the review target. The person who raised them cannot move them — only an approver can decide.',
+        table,
         link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
       });
       sent++;
@@ -2131,6 +2304,10 @@ async function runDue() {
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
     if (weekday === 'Mon') await weeklyLoAiDigestOnce().catch((e) => console.error('[digests] lo-weekly-ai', e && e.message));
+    // The loan officers' own weekly book snapshot (owner-directed 2026-08-07). Monday morning,
+    // alongside the other weeklies; it self-gates on a 6-day window so a Monday that misses the
+    // window (a deploy, an outage) still catches up on the Tuesday rather than skipping a week.
+    if (weekday === 'Mon') await weeklyOfficerPipelineOnce().catch((e) => console.error('[digests] officer-pipeline-weekly', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -2327,5 +2504,6 @@ module.exports = {
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
+  weeklyOfficerPipelineOnce,
   backupFreshnessWatchOnce,
 };
