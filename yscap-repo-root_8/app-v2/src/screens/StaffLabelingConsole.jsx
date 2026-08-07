@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -54,7 +55,7 @@ export default function StaffLabelingConsole() {
   const handleUpload = async (e) => {
     e.preventDefault();
     const f = fileRef.current && fileRef.current.files && fileRef.current.files[0];
-    if (!f) { alert('Pick a file first.'); return; }
+    if (!f) { showMessage('Pick a file first.'); return; }
     setBusy(true);
     try {
       const dataUrl = await new Promise((res, rej) => {
@@ -69,7 +70,7 @@ export default function StaffLabelingConsole() {
       fileRef.current.value = '';
       setAddForm({ ...addForm, pages: '' });
       await load();
-    } catch (e) { alert('Upload failed: ' + (e && e.message || 'error')); }
+    } catch (e) { showMessage('Upload failed: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 
@@ -77,7 +78,7 @@ export default function StaffLabelingConsole() {
     if (!window.confirm('Remove this example from training? (The uploaded file stays in Azure.)')) return;
     setBusy(true);
     try { await api.labelingDeleteExample(id); await load(); }
-    catch (e) { alert('Could not remove: ' + (e && e.message || 'error')); }
+    catch (e) { showMessage('Could not remove: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 
@@ -91,9 +92,9 @@ export default function StaffLabelingConsole() {
     setBusy(true);
     try {
       const r = await api.labelingRequestTraining({ targetProject, docType: targetProject === 'extractor' ? docType : null, modelId: modelId.trim() });
-      if (r && r.note) alert(r.note);
+      if (r && r.note) showMessage(r.note);
       await load();
-    } catch (e) { alert('Training request failed: ' + (e && e.message || 'error')); }
+    } catch (e) { showMessage('Training request failed: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 

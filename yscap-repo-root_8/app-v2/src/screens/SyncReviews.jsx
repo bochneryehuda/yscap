@@ -119,7 +119,8 @@ const REASON_FILE_ACTIONS = {
     { action: 'accept_clickup_figures', label: 'Use ClickUp’s figures (update the locked file)', title: 'Admin only: pull ClickUp’s figures into this locked file, overriding the lock. Best for a reconciled/closed file whose numbers PILOT should now match. The pricing / Scope-of-Work conditions reopen because the registered numbers changed.', adminOnly: true },
   ],
   ctc_confirm_needed: [
-    { action: 'confirm_ctc', label: 'Confirm — move to Clear to Close', title: 'Move this file to Clear to Close in PILOT so it matches ClickUp. This is a major milestone: it locks the file and notifies the borrower.' },
+    { action: 'confirm_ctc', label: 'Confirm — move to Clear to Close', title: 'Move this file to Clear to Close in PILOT so it matches ClickUp. This is a major milestone: it locks the file and notifies the borrower. It is refused if the file is not actually finished — anything still outstanding is listed above.' },
+    { action: 'confirm_ctc_override', label: 'Override — move it anyway', title: 'Admin only: move the file to Clear to Close even though it is not finished. What was still outstanding is recorded on the file.', adminOnly: true },
   ],
   portal_edit_conflict: [
     { action: 'keep_portal_value', label: 'Keep the PILOT value', title: 'Keep the file’s value and push it to ClickUp so the two match. Use this when the PILOT value is the right one.' },
@@ -139,6 +140,26 @@ function frozenChanges(r) {
       from: c.from == null ? null : String(c.from), to: c.to == null ? null : String(c.to),
     }));
   } catch { return []; }
+}
+// IS THE FILE ACTUALLY READY for Clear to Close? Captured onto the row when the
+// move was held (owner-directed 2026-08-06 — a file reached CTC with conditions
+// open and no executed term sheet package). The reviewer is being asked to
+// advance a file to a LOCKING milestone, so what is still outstanding belongs on
+// the card, not behind a click into the file. The snapshot is from when the pull
+// happened; the server re-checks LIVE at confirm time, so this is guidance and
+// never the authority — an older row can read "not ready" on a file that has
+// since been finished, and the Confirm button will simply work.
+function ctcReadiness(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    const rd = raw && raw.readiness;
+    if (!rd || typeof rd.ready !== 'boolean') return null;   // older row / unreadable — say nothing
+    return {
+      ready: rd.ready,
+      summary: rd.summary ? String(rd.summary) : null,
+      outstanding: Array.isArray(rd.outstanding) ? rd.outstanding.map(String) : [],
+    };
+  } catch { return null; }
 }
 // The OTHER file that shares the contested loan number (from the row's forensic raw_value).
 function otherLoanFile(r) {
@@ -557,6 +578,25 @@ export default function SyncReviews() {
                 </span></div>
               ) : null;
             })()}
+            {r.reason === 'ctc_confirm_needed' && (() => {
+              const rd = ctcReadiness(r);
+              if (!rd) return null;
+              return (
+                <div className="metrow"><span className="k">Is it ready?</span><span className="v">
+                  {rd.ready ? (
+                    <strong style={{ color: '#2F7F86' }}>Everything on this file is cleared — it is ready for Clear to Close.</strong>
+                  ) : (
+                    <>
+                      <strong style={{ color: '#b04a3f' }}>Not ready — these were still outstanding when ClickUp moved it:</strong>
+                      <ul style={{ margin: '4px 0 0', paddingLeft: 18, color: '#3A4550' }}>
+                        {rd.outstanding.map((t, i) => <li key={i} className="small">{t}</li>)}
+                      </ul>
+                      <em className="muted small">Finish these on the file, then Confirm. (Checked again when you confirm, so this list may already be out of date.)</em>
+                    </>
+                  )}
+                </span></div>
+              );
+            })()}
             <p className="muted small" style={{ margin: '8px 0' }}>
               {isSitewire
                 ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
@@ -709,7 +749,9 @@ export default function SyncReviews() {
                           value={relinkInput[r.id] || ''} aria-label="ClickUp card to link to this file"
                           onChange={(e) => setRelinkInput((m) => ({ ...m, [r.id]: e.target.value }))} />
                       )}
-                      <button className={`btn btn-sm ${a.action === 'accept_clickup_figures' ? '' : 'primary'}`} title={a.title}
+                      {/* An admin OVERRIDE is never the expected next step — it is the
+                          escape hatch beside it, so it never renders as the primary button. */}
+                      <button className={`btn btn-sm ${(a.adminOnly || a.action === 'accept_clickup_figures') ? '' : 'primary'}`} title={a.title}
                         disabled={busyId === r.id || (needsPick && !picked) || (needsTask && !typed)}
                         onClick={() => {
                           if (needsTask) return relinkFromRow(r.id, false);
@@ -724,6 +766,15 @@ export default function SyncReviews() {
                             'Move this file to Clear to Close in PILOT?\n\n' +
                             'This is a major milestone: it locks the file’s loan structure and notifies the borrower ' +
                             'that they’re clear to close. Only confirm if the file really is clear to close.')) return;
+                          // The override advances a file PILOT has judged UNFINISHED — the
+                          // exact thing the gate exists to stop happening by accident. Name
+                          // the consequence, and say plainly that it is recorded.
+                          if (a.action === 'confirm_ctc_override' && !window.confirm(
+                            'Move this file to Clear to Close even though it is NOT finished?\n\n' +
+                            'PILOT checked and things are still outstanding on this file (listed above) — that can ' +
+                            'include the signed term sheet package never having been executed.\n\n' +
+                            'This locks the file’s loan structure and tells the borrower they’re clear to close. ' +
+                            'Your name and everything that was still outstanding are recorded on the file.')) return;
                           return act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined });
                         }}>
                         {busyId === r.id ? '…' : a.label}

@@ -405,6 +405,22 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  /* A file created from a term sheet REGISTERS ITSELF on the way in
+     (owner-directed 2026-08-06). When that register was refused — a manual basis
+     needs its liquidity months, a value disagrees with the application, an
+     exception is required — the file still exists, unregistered, exactly as it
+     would have before. The reason is handed over in sessionStorage and surfaced
+     HERE, on the one screen where it can be acted on, rather than being
+     swallowed on a page the officer has already navigated away from. Consumed
+     once: a stale reason on a later visit would be a lie. */
+  useEffect(() => {
+    try {
+      const n = sessionStorage.getItem('ys-newfile-register-note');
+      if (!n) return;
+      sessionStorage.removeItem('ys-newfile-register-note');
+      setErr(`This file was created from a term sheet, but the product could not be registered automatically: ${n} Review the scenario below and register it here.`);
+    } catch (_) { /* best-effort */ }
+  }, []);
   // Manual Program: months of liquidity the registrant must state before a
   // manual product (LTV/LTC/ARV override) can register. Prefilled from the current
   // manual registration or the admin default; required only when the scenario is

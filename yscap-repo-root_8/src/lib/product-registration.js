@@ -425,6 +425,25 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             sqft_pre=$18,
             sqft_post=$19,
             financed_rehab_budget=$23,
+            -- THE REGISTERED PROGRAM CHOOSES THE NOTE BUYER (owner-directed
+            -- 2026-08-06: "Fidelis for the standard, Blue Lake for the gold,
+            -- EMCAP for the silver … whenever it's a manual program you leave it
+            -- untouched"). Derived rather than picked — the Term Sheet Generator
+            -- has no note-buyer field, and the pairing is already the backend's
+            -- own knowledge (tapes/program-provider, the same table the tape
+            -- export gate enforces), so a picker would just be a second place for
+            -- it to disagree. Set HERE because persistProductRegistration is the
+            -- ONE path every register door goes through — staff, borrower,
+            -- marketing intake and accept-counter alike.
+            --
+            -- FILL-ONLY (COALESCE), and that is the whole safety story: a note
+            -- buyer a human typed, or one ClickUp pulled in, is NEVER overwritten
+            -- by a re-register. $24 is NULL for a manual product (and for any
+            -- program outside the pairing), so manual stays the open selection
+            -- the owner asked for. A change here is picked up by the
+            -- evaluateApplication pass every register route already runs, so the
+            -- buyer's conditions attach on their own.
+            lender=COALESCE(lender, $24),
             updated_at=now()
       WHERE id=$1`,
     [
@@ -459,6 +478,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       claimExpVal(claimedExp, 'holds'),
       claimExpVal(claimedExp, 'ground'),
       financedRehab,                                  // $23 — financed rehab (holdback); full budget when no OOP exception
+      // $24 — the note buyer this program implies (NULL on manual/unknown).
+      // Fill-only in the SET clause above, so it can only ever fill a blank.
+      require('./note-buyer-for-program').noteBuyerForProgram(program),
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
