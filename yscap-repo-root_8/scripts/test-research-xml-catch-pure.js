@@ -94,9 +94,11 @@ ok(look(MISMO26, { filename: null, contentType: null }).maybe,
   '  …and with NEITHER, the bytes themselves are enough');
 
 // ── a format we cannot read yet is HELD, not lost ───────────────────────────
-// A UAD 3.6 report is a real appraisal PILOT's parser refuses. Recording it (the
-// import ledger keeps the parser's own reason) is what makes "how many are we holding
-// that we cannot read?" answerable — the day a 3.6 reader ships they are all here.
+// A UAD 3.6 report is a real appraisal, and the catch has always recognised it as one.
+// It used to be RECORDED as held because the parser refused the format; the 3.6 reader
+// (`extract36`) now reads it, so the same recognition sends it straight into the
+// warehouse instead. Either way the sniff must say yes — that has not changed, and it
+// is why the grid test is the parser's OWN rather than a second opinion.
 const UAD36 = `<?xml version="1.0"?><MESSAGE MISMOReferenceModelIdentifier="3.6">
  <DEAL><COLLATERALS><COLLATERAL><PROPERTIES><PROPERTY>
   <SALES_COMPARISON><COMPARABLE_SALE/></SALES_COMPARISON>
