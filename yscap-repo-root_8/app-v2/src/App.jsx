@@ -17,6 +17,7 @@ import AssistantLogin from './screens/AssistantLogin.jsx';
 import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
+import AcceptTerms from './screens/AcceptTerms.jsx';
 import EsignDone from './screens/EsignDone.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Tasks from './screens/Tasks.jsx';
@@ -158,6 +159,10 @@ export default function App() {
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
+          {/* An officer's emailed term sheet: see the terms, create a password,
+              answer two questions, and land in a file already carrying them
+              (owner-directed 2026-08-07). PUBLIC — nobody has an account yet. */}
+          <Route path="/accept-terms/:token" element={<AcceptTerms />} />
           {/* Where a borrower lands after signing from PILOT's branded e-sign email —
               exchanges the one-time login code so they return INSIDE their file logged in. */}
           <Route path="/esign/done" element={<EsignDone />} />

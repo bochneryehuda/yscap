@@ -187,10 +187,23 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
 
     // Track record for the borrower: 1 VERIFIED recent flip, 1 UNVERIFIED recent flip,
     // 1 VERIFIED but OLD flip (exited >3y ago → outside the frozen window). Only the first counts.
-    const tr = (dealType, verified, saleOffset) => pool.query(
-      `INSERT INTO track_records (borrower_id, deal_type, purchase_price, sale_price, sale_date, is_verified)
-         VALUES ($1,$2,200000,260000, (CURRENT_DATE - ($3 || ' months')::interval), $4)`,
-      [bId, dealType, String(saleOffset), verified]);
+    // A LINE IS INSERTED PENDING AND THEN VERIFIED BY A REVIEWER — never inserted
+    // verified. db/485's guard forces `is_verified=false` on every INSERT, whatever
+    // it asks for ("there should not even be a single thing where somebody entered
+    // their track record that should come up as verified"), so a fixture that hands
+    // the INSERT a true silently gets an unverified row and the verified count reads
+    // 0. This is the real path: create, then a human presses Verify.
+    const tr = async (dealType, verified, saleOffset) => {
+      const r = await pool.query(
+        `INSERT INTO track_records (borrower_id, deal_type, purchase_price, sale_price, sale_date)
+           VALUES ($1,$2,200000,260000, (CURRENT_DATE - ($3 || ' months')::interval)) RETURNING id`,
+        [bId, dealType, String(saleOffset)]);
+      if (verified) {
+        await pool.query(
+          `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`,
+          [r.rows[0].id]);
+      }
+    };
     await tr('flip', true, 6);     // verified, exited 6 months ago → counts
     await tr('flip', false, 6);    // unverified, recent → does NOT count (verifiedOnly)
     await tr('flip', true, 60);    // verified but 5 years ago → outside the 3-year window → does NOT count

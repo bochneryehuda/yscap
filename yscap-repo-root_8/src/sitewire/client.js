@@ -118,6 +118,9 @@ async function call(path, { method = 'GET', body, noRetry = false, allowNulls = 
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
     await takeToken();
+    // …and the SHARED budget on top: `takeToken` above is per-process, and render.yaml runs
+    // two (owner-directed 2026-08-07 — the same hole ClickUp phoned about).
+    await require('../lib/api-rate-limit').acquire('sitewire');
     let res, text;
     try {
       ({ res, text } = await fetchWithTimeout(`${base()}${path}`, { method, headers: authHeaders(), body: payload }, TIMEOUT_MS));

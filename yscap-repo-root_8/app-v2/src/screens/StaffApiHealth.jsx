@@ -597,6 +597,44 @@ export default function StaffApiHealth() {
         </div>
       )}
 
+      {/* HOW MUCH ROOM IS LEFT ON EACH OUTSIDE SERVICE (owner-directed 2026-08-07, after
+          ClickUp phoned about our request rate). "Held back" is the number to watch: while
+          it stays at zero the cap is never in anybody's way, and a climbing count is the
+          signal to raise a limit BEFORE a provider calls. Renders nothing until the
+          budgets exist. Explicit dark text — var(--ink*) is a LIGHT token here. */}
+      {!loading && Array.isArray(data && data.rateLimits) && data.rateLimits.length > 0 && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <div className="panel-h"><h3>Request limits</h3></div>
+          <div className="panel-b">
+            <p className="small" style={{ margin: '0 0 8px', color: '#4B585C' }}>
+              PILOT paces itself so it never asks an outside service for more than they allow — counted across
+              every part of PILOT at once, not per copy. “Held back” is how many times we had to wait our turn.
+            </p>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="small" style={{ width: '100%', borderCollapse: 'collapse', color: '#141B22', minWidth: 420 }}>
+                <thead>
+                  <tr>
+                    {['Service', 'Allowed per minute', 'Room left right now', 'Held back'].map((h) => (
+                      <th key={h} style={{ textAlign: 'left', padding: '4px 10px 6px 0', color: '#4B585C', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rateLimits.map((r) => (
+                    <tr key={r.api}>
+                      <td style={{ padding: '3px 10px 3px 0', fontWeight: 600 }}>{r.api}</td>
+                      <td style={{ padding: '3px 10px 3px 0' }}>{r.limitPerMin}</td>
+                      <td style={{ padding: '3px 10px 3px 0' }}>{Math.floor(r.tokensAvailable)}</td>
+                      <td style={{ padding: '3px 10px 3px 0', color: r.waits > 0 ? '#8A6D3B' : '#4B585C' }}>{r.waits}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* The document-mirror scoreboard + backfill controls — front and center,
           because "is every document in SharePoint?" is the question this page most
           needs to answer at a glance. Loads its own data independent of the list. */}

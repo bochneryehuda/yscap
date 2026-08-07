@@ -46,7 +46,7 @@ import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote, NoteBuyerMark } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
@@ -1515,14 +1515,18 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
-  // It used to collapse only once YOUR role-action was done, so a file's whole
-  // list rendered fully expanded — 24 conditions measured 8,116px, over seven
-  // screens. `expandOverride` is still the per-row manual override on top.
-  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic (shut)
+  //
+  // OPEN/SHUT IS THE PARENT'S `expandedConds`, NOT LOCAL STATE (2026-08-07). This
+  // row used to keep its own `expandOverride`, so the list ran on TWO collapse
+  // stores — the internal rows on this one, every other row on the parent's Set.
+  // That is the same root as the wandering Collapse button: two stores cannot help
+  // but behave differently, and they did (full screen opened both but restored only
+  // one on the way out, and no "open/close everything" could ever reach these
+  // rows). One Set now owns every row on the file.
   const signed = !!it.signed_off_at;
   // No `completer` here any more — who may do what is decided inside the shared
   // action bar (components/ConditionActions), so this row cannot answer that
@@ -1539,16 +1543,16 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  // In full screen everything opens by default (owner-directed); the per-row
-  // manual override still wins, so you can collapse an internal condition by hand.
-  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
-  if (collapsed) {
+  // Full screen opens everything — the parent seeds `expandedConds` with every
+  // visible row on the way in and restores the normal state on the way out, so an
+  // internal condition now behaves exactly like every other one.
+  if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
       // exactly where it was on screen (lib/keep-scroll.js).
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
-          onToggle={() => setExpandOverride(true)} onPatch={onPatch} />
+          onToggle={onToggleExpand} onPatch={onPatch} />
       </div>
     );
   }
@@ -1599,6 +1603,8 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             </pre>
           )}
         </div>
+        {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+        <ConditionCollapse onToggle={onToggleExpand} />
       </div>
 
       {it.template_code === 'rtl_cond_credit' && (
@@ -1754,12 +1760,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
-          row and the borrower-facing one can never drift again. */}
+          row and the borrower-facing one can never drift again. Collapse is NOT in
+          here: it is a view control, not an action on the loan, and mixing the two
+          is what put it at the bottom of this one row and nowhere else. */}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
           docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
-        {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
-          onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
       <ConditionNote it={it} onPatch={onPatch} />
     </div>
@@ -3546,8 +3552,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   : app.llc_id ? <span className="pill">In progress</span>
                     : app.personal_name_purchase ? <span className="pill ok">Individual — no entity</span>
                       : <span className="pill">No entity linked</span>}
-                <div className="spacer" />
-                <button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button>
+                {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+                <ConditionCollapse onToggle={() => toggleCond('__llc')} />
               </div>
               <div className="muted small">
                 {app.personal_name_purchase && !app.llc_id
@@ -3601,7 +3607,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
                 onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
-                onRequestWaiver={onRequestWaiver} />
+                onRequestWaiver={onRequestWaiver}
+                expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -3650,8 +3657,6 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
-                  {/* Always offered — every row opens now, so every row must close. */}
-                  <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>
                   {/* Delete a manually-added condition (owner-directed 2026-08-04). */}
                   <ManualConditionDelete it={it} appId={appId} onChanged={onChanged} />
                 </div>
@@ -3827,6 +3832,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   so sending one back is always a real option here. */}
               <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
                 docs={itemDocs} canSendBack onRequestWaiver={onRequestWaiver} />
+              {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+              <ConditionCollapse onToggle={() => toggleCond(it.id)} />
             </div>
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
