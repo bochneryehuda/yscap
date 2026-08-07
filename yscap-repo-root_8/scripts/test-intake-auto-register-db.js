@@ -45,7 +45,7 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
        VALUES ($1,'Auto Officer','loan_officer',true,false,'x',0) RETURNING id`,
       [`autoreg-${sfx}@test.local`])).rows[0].id;
     borrowerId = (await db.query(
-      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Auto','Reg',$1) RETURNING id`,
+      `INSERT INTO borrowers (first_name,last_name,email,fico) VALUES ('Auto','Reg',$1,760) RETURNING id`,
       [`autoreg-bo-${sfx}@test.local`])).rows[0].id;
 
     // A healthy, comfortably eligible purchase — the plain case this door exists for.
@@ -126,8 +126,50 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});
     }
     if (staffId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]).catch(() => {});
-    await db.pool.end().catch(() => {});
   }
+  /* THE FICO MUST BE JOINED IN — it is NOT a column on `applications`.
+     A bare `SELECT * FROM applications` left it undefined, `buildInputs` resolved it
+     to 0, and EVERY engine guards its floor with `fico > 0` — so a zero score did not
+     FAIL the floor, it SKIPPED it. On this public, unauthenticated door that meant
+     anyone could cause a file to be born with an ELIGIBLE, approval-free
+     registration on a program the borrower is flatly ineligible for (Gold priced
+     7.75% at a 600 score against a 660 floor). It was also wrong on every
+     auto-registered file: the rate never matched what the applicant was shown. */
+  {
+    const bid = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,fico) VALUES ('Floor','Test',$1,600) RETURNING id`,
+      [`autoreg-floor-${sfx}@test.local`])).rows[0].id;
+    const mk = async () => (await db.query(
+      `INSERT INTO applications
+        (borrower_id,loan_type,program,property_type,units,property_address,purchase_price,
+         as_is_value,arv,rehab_budget,rehab_type,term,requested_ir_months,
+         requested_exp_flips,requested_exp_holds,requested_exp_ground,status)
+       VALUES ($1,'Purchase','Fix & Flip w/ Construction','SFR (1 unit)',1,
+         '{"line1":"5 Floor St","city":"Newark","state":"NJ","zip":"07102"}'::jsonb,
+         558000,558000,900000,150000,'Light Rehab','12 Months',0,6,6,6,'file_intake')
+       RETURNING id`, [bid])).rows[0].id;
+
+    for (const prog of ['gold', 'silver']) {
+      const id = await mk();
+      const r = await AR.autoRegisterFromIntake(id, prog, db);
+      assert(r.registered === false && /ineligible/.test(String(r.reason)),
+        `Z1 a 600 score is REFUSED on ${prog} — the floor is tested, not skipped (${JSON.stringify(r)})`);
+      await db.query('DELETE FROM applications WHERE id=$1', [id]);
+    }
+    // …and with no score at all, nothing auto-registers: an absent score is
+    // PROVISIONAL pricing, which is right for a human what-if and wrong for an
+    // unattended door that would register an ELIGIBLE product nobody vetted.
+    await db.query('UPDATE borrowers SET fico=NULL WHERE id=$1', [bid]);
+    const id2 = await mk();
+    const r2 = await AR.autoRegisterFromIntake(id2, 'standard', db);
+    assert(r2.registered === false && r2.reason === 'no_fico',
+      `Z2 no score at all is refused, never registered provisionally (${JSON.stringify(r2)})`);
+    await db.query('DELETE FROM applications WHERE id=$1', [id2]);
+    await db.query('DELETE FROM borrowers WHERE id=$1', [bid]);
+  }
+
+    await db.pool.end().catch(() => {});
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
   process.exit(failures ? 1 : 0);
 })();
