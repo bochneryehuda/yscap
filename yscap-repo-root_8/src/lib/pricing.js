@@ -224,11 +224,16 @@ function buildInputs(app, experience, overrides) {
     // MAXIMUM loan while the signed sheet shows the smaller, better-priced one.
     // Zero = no lever, exactly like targetLTC.
     targetARLTV: 0,
-    // A typed loan amount (owner-directed 2026-08-06) — a voluntary CEILING on the
-    // tier's own dollar wall, on every program. Zero = no amount, exactly like the
-    // two levers above. It can only reduce; raising a loan still requires the
-    // approval-gated manual basis.
-    targetLoan: 0,
+    /* A typed loan amount (owner-directed 2026-08-06) — a voluntary CEILING on the
+       tier's own dollar wall, on every program. It can only reduce; raising a loan
+       still requires the approval-gated manual basis.
+       DELIBERATELY ABSENT FROM THE BASE rather than present-as-zero, which is the
+       `oopRehab` treatment and not the `targetLTC` one. A base `targetLoan: 0` is
+       stored into product_registrations.inputs on EVERY registration, and the studio
+       restores that key into a MONEY box — so every re-opened file showed "Loan
+       amount ($): 0" instead of its "maximum" placeholder. Pricing-inert either way
+       (the engine tests `> 0`), but a zero sitting in a money field on a term-sheet
+       screen is the kind of thing somebody eventually believes. */
     // Sticky per-file markup (#101): once a file is registered with a per-file
     // markup override it is persisted on the application (db/109) and re-applied to
     // EVERY subsequent quote — staff live, borrower live, AND borrower register — so

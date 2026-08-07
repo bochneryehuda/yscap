@@ -47,25 +47,37 @@ for (const e of ENGINES) LIVE[e] = require(`../web/v2/tools/${e}.js`);
    proving nothing. Removing the one line instead keeps the claim TRUE permanently:
    whatever the engines become, adding the box to them must change no number. The
    strip is asserted to have actually bitten (B0 below), so it can never go vacuous. */
-const LEVER_RE = /^.*if \(input\.targetLoan && input\.targetLoan > 0\).*$\n/m;
+/* /g IS LOAD-BEARING, AND SO IS COUNTING MATCHES RATHER THAN REPLACEMENTS. With a
+   non-global regex `String.replace` rewrites only the FIRST occurrence, so a file
+   carrying a SECOND line of this shape — a decoy above the real one, or a comment
+   quoting it — would have the wrong line removed while a "we stripped one" guard
+   still passed. The baseline would then keep the lever and A1 would compare
+   lever-against-lever: vacuous, and silently so. An adversarial audit proved that
+   exact hole by sabotaging an engine to re-price at the FICO floor whenever the box
+   was used, and this suite reported ALL PASS. Three guards now: exactly ONE match
+   per file, the strip actually removes it, and NO residual reference survives. */
+const LEVER_RE = /^.*if \(input\.targetLoan && input\.targetLoan > 0\).*$\n/gm;
 
 function baselineEngines() {
   const dir = path.join(__dirname, '..', 'web/v2/tools');
   const written = [];
   const out = {};
-  let stripped = 0;
   try {
     // Written BESIDE the live engines, not in a temp dir: they `require` siblings by
     // relative path, which only resolve from that folder. Dot-prefixed so they are
     // never mistaken for a real engine copy by test-engine-copies-match.
     for (const e of ENGINES) {
       const live = fs.readFileSync(path.join(dir, `${e}.js`), 'utf8');
-      const src = live.replace(LEVER_RE, () => { stripped++; return ''; });
+      const hits = live.match(LEVER_RE) || [];
+      if (hits.length !== 1) {
+        throw new Error(`${e}: expected exactly ONE targetLoan lever line, found ${hits.length} — the baseline strip cannot be trusted, so the equivalence proof would be vacuous`);
+      }
+      const src = live.replace(LEVER_RE, '');
+      if (/input\.targetLoan/.test(src)) {
+        throw new Error(`${e}: the baseline still references input.targetLoan after the strip — the lever was not removed`);
+      }
       const p = path.join(dir, `.${e}-baseline-${process.pid}.js`);
       fs.writeFileSync(p, src); written.push(p);
-    }
-    if (stripped !== ENGINES.length) {
-      throw new Error(`baseline strip removed ${stripped} lever lines, expected ${ENGINES.length} — the equivalence proof would be vacuous`);
     }
     // Gold and Silver reuse the STANDARD engine's sizeLoan through `require('./standard-program.js')`,
     // so a baseline Gold loaded here would call the LIVE Standard and the comparison
@@ -156,6 +168,29 @@ console.log(`scenario matrix: ${CASES.length} cases x ${ENGINES.length} programs
     }
   }
   assert(zeroDrift === 0, `A3 an empty / 0 / blank box is "no amount", never a zero ceiling (drift: ${zeroDrift})`);
+
+  /* A4 — A NON-BINDING AMOUNT IS A COMPLETE NO-OP, RATE INCLUDED. Sections B-D
+     compare loan sizes, which cannot see a change that leaves the size alone: an
+     engine sabotaged to add a hidden markup, drop the FICO to its floor, or alter a
+     fee "whenever the box is used" passed every one of them. This is the assertion
+     that closes it, and it needs no judgement about which way a rate SHOULD move
+     when a lever bites — an amount set far ABOVE what the deal supports changes
+     nothing at all, so the ENTIRE priced result must be byte-identical. */
+  let noopDrift = 0, noopChecked = 0, firstNoop = null;
+  for (const e of ENGINES) {
+    for (const c of CASES) {
+      const ev = LIVE[e].evaluate(c);
+      const loan = (ev && ev.sizing && ev.sizing.totalLoan) || 0;
+      if (!(loan > 0)) continue;
+      noopChecked++;
+      const before = shape(ev);
+      const after = shape(LIVE[e].evaluate(Object.assign({}, c, { targetLoan: Math.round(loan * 4) + 1e7 })));
+      if (before !== after) { noopDrift++; if (!firstNoop) firstNoop = { e, c, before, after }; }
+    }
+  }
+  assert(noopChecked > 1000 && noopDrift === 0,
+    `A4 an amount ABOVE what the deal supports changes NOTHING — rate, fees and cash included (${noopChecked} checked, drift: ${noopDrift})`);
+  if (firstNoop) console.log(`    first drift (${firstNoop.e}):`, firstNoop.before, '\n    vs:', firstNoop.after);
 }
 
 // ---- B/C/D. Reduce only, land on the number, keep the owner's split ------------

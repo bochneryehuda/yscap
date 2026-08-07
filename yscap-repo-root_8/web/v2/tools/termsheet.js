@@ -3451,7 +3451,11 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice"];
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice",
+    // A typed loan amount is the largest number anyone enters in the admin zone, so
+    // it groups like every other money box — 1,207,500 rather than 1207500, which is
+    // genuinely hard to read at a glance and easy to mistype by a factor of ten.
+    "tsTargetLoan"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");

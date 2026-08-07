@@ -44,14 +44,24 @@ const LIVE = require('../web/v2/tools/silver-program.js');
    nothing. Removing the one line keeps the claim TRUE permanently: whatever this
    engine becomes, adding the lever to it must change no number. The strip is asserted
    to have actually bitten, so the proof can never go vacuous. */
-const LEVER_RE = /^.*if \(input\.targetARLTV && input\.targetARLTV > 0\).*$\n/m;
+/* /g IS LOAD-BEARING, AND SO IS COUNTING MATCHES RATHER THAN REPLACEMENTS — see the
+   same guard in test-target-loan-pure.js. A non-global `replace` rewrites only the
+   FIRST occurrence, so a decoy second line would leave the real lever in the baseline
+   and make this proof compare lever-against-lever. An adversarial audit demonstrated
+   exactly that, sabotaging the engine to add a hidden +50bps markup on every
+   value-side rung while this suite still reported ALL PASS. */
+const LEVER_RE = /^.*if \(input\.targetARLTV && input\.targetARLTV > 0\).*$\n/gm;
 
 function baselineEngine() {
   const livePath = path.join(__dirname, '..', 'web/v2/tools/silver-program.js');
-  let stripped = 0;
-  const src = fs.readFileSync(livePath, 'utf8').replace(LEVER_RE, () => { stripped++; return ''; });
-  if (stripped !== 1) {
-    throw new Error(`baseline strip removed ${stripped} lever lines, expected 1 — the equivalence proof would be vacuous`);
+  const live = fs.readFileSync(livePath, 'utf8');
+  const hits = live.match(LEVER_RE) || [];
+  if (hits.length !== 1) {
+    throw new Error(`expected exactly ONE targetARLTV lever line, found ${hits.length} — the baseline strip cannot be trusted, so the equivalence proof would be vacuous`);
+  }
+  const src = live.replace(LEVER_RE, '');
+  if (/input\.targetARLTV/.test(src)) {
+    throw new Error('the baseline still references input.targetARLTV after the strip — the lever was not removed');
   }
   // Written BESIDE the live engine, not in a temp dir: it `require`s siblings
   // (./standard-program.js) by relative path, which only resolve from that folder.
@@ -134,6 +144,25 @@ for (const c of CASES) {
   }
 }
 assert(zeroDrift === 0, `A3 a 0 / null / blank lever is "no lever", never a zero cap (drift: ${zeroDrift})`);
+
+/* A4 — A NON-BINDING LEVER IS A COMPLETE NO-OP, RATE INCLUDED. Sections B-F compare
+   loan sizes and ratios, which cannot see a change that leaves the size alone: an
+   engine sabotaged to add a hidden markup "whenever the lever is used" passed all of
+   them. A ceiling set far ABOVE any cap this program allows must change NOTHING, so
+   the entire priced result is compared — and that needs no judgement about which way
+   a rate should move when the lever genuinely bites. */
+let noopDrift = 0, noopChecked = 0, firstNoop = null;
+for (const c of CASES) {
+  const ev = LIVE.evaluate(c);
+  if (!ev || !ev.sizing || !(ev.sizing.totalLoan > 0)) continue;
+  noopChecked++;
+  const before = shape(ev);
+  const after = shape(LIVE.evaluate(Object.assign({}, c, { targetARLTV: 0.99 })));
+  if (before !== after) { noopDrift++; if (!firstNoop) firstNoop = { before, after }; }
+}
+assert(noopChecked > 500 && noopDrift === 0,
+  `A4 a ceiling ABOVE every cap this program allows changes NOTHING — rate, fees and cash included (${noopChecked} checked, drift: ${noopDrift})`);
+if (firstNoop) console.log('    first drift:', firstNoop.before, '\n    vs:', firstNoop.after);
 
 // ---- B/C/D/F — the lever's behaviour across the matrix -------------------------
 const AR_RUNGS = [0.75, 0.70, 0.65];

@@ -331,7 +331,11 @@
   /* The BORROWER-FACING price ladder's rungs are the lifted edges only: a rung one
      hundredth of a point under another buys the identical cell and would print as a
      near-duplicate row. */
-  var LADDER_EDGES_DESC = edgesDesc(LTC_EDGES_UP, AR_EDGES_UP);
+  /* The pre-2026-08-06 rung list — the LTC edges and the ARV edges MERGED into one
+     list, every one of which was then applied as a loan-to-COST cap. That was the
+     defect the single price-break ladder replaced (the 65%/70% ARV edges were
+     producing far smaller loans under a "Leverage (LTC)" label), so it is deleted
+     rather than left lying next to its replacement for someone to reach for. */
 
   /* Each block = market|size|product|purpose|term|tier → 54 cells (3 AR × 3 FICO × 6 LTC)
      flattened in band order above. Values are the note-buyer grid rate in
@@ -1539,7 +1543,6 @@
      on the file by registering with that same lever. */
   var LTC_RUNGS_DESC = edgesDesc(LTC_EDGES_UP);   // cost-side frontiers, high -> low
   var ARV_RUNGS_DESC = edgesDesc(AR_EDGES_UP);    // value-side frontiers, high -> low
-  var LADDER_BUCKETS = LADDER_EDGES_DESC;         // retained: the pre-2026-08-06 rung list
   function priceLadder(input) {
     var full = evaluate(input);
     if (full.status === "INELIGIBLE" || !full.sizing || !(full.sizing.totalLoan > 0)) {

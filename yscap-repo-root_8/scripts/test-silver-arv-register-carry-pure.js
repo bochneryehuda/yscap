@@ -52,8 +52,30 @@ const studio = new Function(
 // lines are lifted the same way rather than re-typed here — re-typing them would
 // let the portal and this test drift apart, which is the whole bug being guarded.
 const PANEL = fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/components/ProductStudioPanel.jsx'), 'utf8');
-assert(/targetARLTV: d\.inp && d\.inp\.targetARLTV \? d\.inp\.targetARLTV : null/.test(PANEL),
-  'A2 the register snapshot carries the value-side lever alongside the cost-side one');
+/* A2 IS STRUCTURAL, NOT A BARE "IS THIS STRING SOMEWHERE IN THE FILE" — that weaker
+   form passed while the value could still be dropped for every borrower. This module
+   is JSX with React imports, so it cannot be required in node; what CAN be pinned is
+   the shape that matters: `overridesFromSnapshot` builds a shared `base`, then
+   early-returns it for a non-staff caller before the staff-only block. A ladder rung
+   is a choice EITHER party may make on their own sheet, so both levers must sit in
+   `base` (before that early return); a typed loan amount is admin-zone and must sit
+   AFTER it. Moving a lever across that line is exactly the silent regression this
+   guards — the rung would vanish from every borrower register and price at maximum. */
+{
+  const fn = (PANEL.match(/export function overridesFromSnapshot[\s\S]*?\n}/) || [])[0] || '';
+  assert(!!fn, 'A2a overridesFromSnapshot was located in the panel');
+  const gate = fn.indexOf("mode !== 'staff'");
+  assert(gate > 0, 'A2b …and it early-returns the shared base for a non-staff caller');
+  const posArv = fn.indexOf('targetARLTV');
+  const posLtc = fn.indexOf('targetLTC');
+  const posLoan = fn.indexOf('targetLoan');
+  assert(posArv > 0 && posArv < gate,
+    'A2 the VALUE-side ladder rung is in the shared base — a borrower register carries it too');
+  assert(posLtc > 0 && posLtc < gate,
+    'A2c …alongside the cost-side rung, which has always been there');
+  assert(posLoan > gate,
+    'A2d …while the typed loan amount stays in the STAFF-only block (admin zone)');
+}
 const STUDIO_JSX = fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/components/TermSheetStudio.jsx'), 'utf8');
 assert(/targetARLTV: \(d\.inp && d\.inp\.targetARLTV\) \|\| null/.test(STUDIO_JSX),
   'A3 …and so does the studio snapshot the panel reads it out of');

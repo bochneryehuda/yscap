@@ -329,7 +329,10 @@ export function adminStateFromEngineInputs(inp) {
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
   put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)
-  put('tsTargetLoan', inp.targetLoan);   // the typed loan amount, so reopening a file restores it
+  // The typed loan amount, so reopening a file restores it. `put` keeps a 0 (it only
+  // skips null/''), and a 0 here means "no amount" — restoring it would paint a zero
+  // into a money box. Belt-and-suspenders with pricing.js no longer storing one.
+  if (Number(inp.targetLoan) > 0) put('tsTargetLoan', inp.targetLoan);
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves
