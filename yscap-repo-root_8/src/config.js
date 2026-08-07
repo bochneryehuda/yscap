@@ -1037,4 +1037,79 @@ module.exports = {
     pollSec:   Math.max(60, parseInt(process.env.AMC_POLL_SEC || '600', 10) || 600),  // status/comment poll cadence
     lookupRefreshHours: Math.max(1, parseInt(process.env.AMC_LOOKUP_REFRESH_HOURS || '24', 10) || 24),
   },
+
+  // ---------------------------------------------------------------------------
+  // Class Valuation — the SECOND appraisal vendor (owner-directed 2026-08-07).
+  //
+  // It is NOT a variant of the AMC/CoreLogic integration and must not be folded
+  // into it. Three differences decide the whole shape:
+  //   • AUTH is ONE call, not two. OAuth2 PASSWORD grant — client id + secret +
+  //     username + password, all four issued by Class (their guide, p.9, marks
+  //     every one [Required] and "supplied by Class Valuation"). There is no
+  //     second login and no per-message api key.
+  //   • It is REST, not one action-typed endpoint. POST /orders, GET /orders/{id},
+  //     GET /orders/{id}/attachments — each its own path.
+  //   • It PUSHES. Class calls a webhook of ours on every change; CoreLogic is
+  //     poll-only. So there is no poll cadence here — there is a callback URL and
+  //     the Basic-auth credentials WE issue to them.
+  //
+  // Switches mirror the AMC ones exactly, and for the same reason:
+  //   CLASS_ENABLED          master — token + reads (products, orders, attachments)
+  //   CLASS_OUTBOUND_ENABLED separate gate — actually PLACE an order / write
+  //   CLASS_DRYRUN           build + log the exact body, send nothing
+  //
+  // Credentials come from Render env ONLY (never source, never chat). Nothing
+  // reaches Class until CLASS_ENABLED=1 and the four values are set.
+  //
+  // WE ARE ON THE **V1** ORDERS API — the guide YS Capital was given ("Class Orders
+  // API Guide", rev 0.17, 08-03-2026). Its order hosts are
+  // `api{,.uat,.test}.classvaluation.com` (p.3, with a verbatim call at p.13), which
+  // is ALSO what their onboarding email gave — the two agree, so the order hosts are
+  // confirmed. A separate V2 document uses `orders-external.*` and different field
+  // spellings; do not mix them. Both guides only ever show the TEST identity host, so
+  // the UAT/production identity hosts are still INFERRED — confirm before switching
+  // on. Everything stays overridable by env.
+  class: {
+    enabled:         process.env.CLASS_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.CLASS_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.CLASS_DRYRUN === '1',            // build + log, send nothing
+
+    // ---- credentials (Render env ONLY) — all four required by the password grant ----
+    clientId:     process.env.CLASS_CLIENT_ID || null,
+    clientSecret: process.env.CLASS_CLIENT_SECRET || null,
+    username:     process.env.CLASS_USERNAME || null,   // the API user, NOT necessarily the portal login
+    password:     process.env.CLASS_PASSWORD || null,
+
+    // ---- which UAD version we order on (owner-directed 2026-08-07) ----
+    // 'v1' = UAD 2.6 (POST /orders) — the DEFAULT, and what the industry is on today.
+    // 'v2' = UAD 3.6 (POST /v2/orders) — built and ready for the shift.
+    // Both live on the SAME hosts and the SAME credentials; only the path and the
+    // body shape differ. Staff can also pick the version for ONE order on the screen,
+    // so 3.6 can be tried on a single file before this default is moved.
+    apiVersion: (process.env.CLASS_API_VERSION || 'v1').trim().toLowerCase(),
+
+    // ---- hosts (all overridable; see the note above) ----
+    // environment: 'uat' (default) | 'test' | 'production'
+    environment: (process.env.CLASS_ENVIRONMENT || 'uat').trim().toLowerCase(),
+    tokenUrl:  (process.env.CLASS_TOKEN_URL || '').trim().replace(/\/+$/, '') || null,
+    ordersUrl: (process.env.CLASS_ORDERS_URL || '').trim().replace(/\/+$/, '') || null,
+
+    // ---- the org scoping Class puts in the POST /orders query string ----
+    orgId:       process.env.CLASS_ORG_ID || null,
+    lenderOrgId: process.env.CLASS_LENDER_ORG_ID || null,
+
+    // ---- the callback (webhook) half: credentials WE issue to Class ----
+    // Class POSTs to us with HTTP Basic auth using exactly these. Registered via
+    // POST /callbacks; the URL defaults to APP_URL + the mounted route.
+    callbackUrl:      (process.env.CLASS_CALLBACK_URL || '').trim() || null,
+    callbackUser:     process.env.CLASS_CALLBACK_USER || null,
+    callbackPassword: process.env.CLASS_CALLBACK_PASSWORD || null,
+    // Their registration also allows an ApiToken mode (a token in a header we name)
+    // instead of Basic. We register Basic; these exist so the mode can be switched at
+    // Class's end without a deploy. Unset = that mode is simply off.
+    callbackToken:       process.env.CLASS_CALLBACK_TOKEN || null,
+    callbackTokenHeader: (process.env.CLASS_CALLBACK_TOKEN_HEADER || 'x-api-key').trim(),
+
+    timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
+  },
 };

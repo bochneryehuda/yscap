@@ -53,6 +53,10 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
+// Class Valuation callbacks — the appraisal vendor PUSHES order events to us. Same
+// discipline as the three above: its own small JSON parser + rate limit, mounted
+// before the global one, HTTP Basic (their contract) and failing closed.
+app.use('/api/class/callbacks', require('./routes/class-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -410,6 +414,9 @@ app.use('/api/appraisal', require('./routes/appraisal'));
 // auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
 // (src/amc/**, db/480); RTL only.
 app.use('/api/amc', require('./routes/amc'));
+// The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
+// Each answers only for itself; nothing here picks between them.
+app.use('/api/class', require('./routes/class'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -1033,6 +1040,11 @@ if (require.main === module) {
     // + the API key; read-only toward TrustPoint (webhook registration is the one
     // journaled write, and it only happens from the admin route).
     try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
+    // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
+    // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
+    // for the next unrelated callback to sweep it up, and on a quiet file there may
+    // not be one. Self-gated by CLASS_ENABLED, bounded, and it never throws.
+    try { require('./class/poller').start(); } catch (e) { console.warn('class poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
