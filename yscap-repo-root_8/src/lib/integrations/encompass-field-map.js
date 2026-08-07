@@ -167,7 +167,20 @@ const REGISTRY = Object.freeze([
   pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
-  pull({ key: 'total_experience_deals', encompassFieldId: 'CX.TOTALEXPERIENCEDEALS', type: 'int', category: 'experience', compare: 'int', gate: GATE.ADVISORY, our: 'derive(requested_exp_flips/holds/ground + verified track record)', note: 'Verified experience count used to qualify' }),
+  // A FIRST-TIME BORROWER IS A ZERO, NOT A BLANK (owner-reported 2026-08-07:
+  // "borrower with zero experience — our system is empty, it doesn't say zero, and
+  // Encompass has a zero, so empty and zero should be a match and it shouldn't come
+  // up as not matching"). ZERO IS A REAL, COMMON ANSWER on this field — the whole
+  // point of the experience tier is that plenty of borrowers have none — and our
+  // side derives it from `requested_exp_*`, which are NULL until somebody states a
+  // count. So the ordinary state of a genuine first-timer is blank here and 0 in
+  // Encompass, which read as a mismatch on every such file. `zeroMeansNone` is the
+  // existing owner-directed rule for exactly this shape (assignment fee on a
+  // non-assignment, a nil interest reserve), and it is safe here for the same
+  // reason: a 0 against a 0-meaning blank matches, while a blank against a REAL
+  // count (Encompass says 6, we hold nothing) still reads "no data to compare" and
+  // still asks a human to go and enter it. Advisory either way — it never gated.
+  pull({ key: 'total_experience_deals', encompassFieldId: 'CX.TOTALEXPERIENCEDEALS', type: 'int', category: 'experience', compare: 'int', gate: GATE.ADVISORY, zeroMeansNone: true, our: 'derive(requested_exp_flips/holds/ground + verified track record)', note: 'Verified experience count used to qualify — 0 and blank mean the same thing (a first-time borrower)' }),
   pull({ key: 'rehab_type', encompassFieldId: 'CX.REHABTYPE', type: 'enum', category: 'rehab', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'rehabType', our: 'column:rehab_type', note: 'Rehab type — value-mapped (§6): Light/Cosmetic → light, Heavy → heavy, Expansion → adding SF. Advisory: our 5 buckets (incl. Moderate) have no Encompass counterpart, so a bucket difference surfaces but never blocks' }),
   pull({ key: 'accrual_type', encompassFieldId: 'CX.ACCRUALTYPE', type: 'enum', category: 'interest', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'accrual', our: 'column:accrual_type', note: 'Accrual basis — advisory; Drawn/Non-Dutch → non_dutch, Note/Dutch → dutch' }),
 
