@@ -27,6 +27,22 @@ process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || 'dev-only-ssn
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'dev-only-jwt-secret-for-tests';
 
 const assert = require('assert');
+
+// NO VENDOR CALLS. Learned the hard way: an assertion that drove `beginConnect`
+// down the company-wide path reached live discovery AND dynamic client
+// registration at Elementix from the CI runner — a unit test quietly talking to
+// (and registering an OAuth client with) a paid third party on every push.
+//
+// The trap THROWS so no bytes ever leave the process, and it also RECORDS, which
+// is the half that matters: `discover()` deliberately swallows every network
+// error, so a throw alone is silent and the next person re-adds the call without
+// ever seeing it. The recorded list is asserted empty at the end of the run.
+const attemptedCalls = [];
+global.fetch = (url) => {
+  attemptedCalls.push(String(url));
+  throw new Error(`this test must never call out — something tried to reach ${url}`);
+};
+
 const oauth = require('../src/elementix/oauth');
 const client = require('../src/elementix/client');
 
@@ -334,21 +350,28 @@ console.log('\n7. The paid tool cannot be called by accident');
   // prefers an officer's own row over the company one, so it would quietly move
   // that officer onto a second authorization with no second seat behind it.
   assert.strictEqual(O.SEAT_MODEL, 'company', 'one company-wide login, per the owner');
-  const perOfficer = await oauth.beginConnect({ staffId: '00000000-0000-0000-0000-000000000001', actorId: null });
-  assert.strictEqual(perOfficer.ok, false);
+
+  // Asserted against the PURE rule, not by driving beginConnect down the
+  // company-wide path. That is not squeamishness: CI proved that calling
+  // beginConnect({staffId:null}) reaches live discovery AND dynamic client
+  // registration at Elementix from the runner. A unit test must never call the
+  // vendor — so the rule is a pure function and this is what tests it.
+  const perOfficer = O.seatRefusal('00000000-0000-0000-0000-000000000001');
+  assert.ok(perOfficer && perOfficer.ok === false);
   assert.strictEqual(perOfficer.reason, 'officer_seat_not_enabled');
   assert.ok(/company/i.test(perOfficer.detail), 'and it says to connect company-wide instead');
+  assert.strictEqual(O.seatRefusal(null), null,
+    'the company-wide path is NOT refused — it is the one the owner chose');
   ok('a per-officer connection is refused while the company holds one seat');
 
-  // The refusal must be decided BEFORE any network or database work — it is a
-  // policy answer, not something to discover partway through an OAuth handshake.
-  // Proven by the fact that it answers at all here: discovery cannot reach
-  // Elementix from this test and the pending row cannot be written without a
-  // database, so anything past those steps could not have returned this cleanly.
-  const companyWide = await oauth.beginConnect({ staffId: null, actorId: null });
-  assert.notStrictEqual(companyWide.reason, 'officer_seat_not_enabled',
-    'the company-wide path is NOT refused — it is the one the owner chose');
-  ok('the refusal is decided up front, and only for the per-officer case');
+  // …and beginConnect really consults it, decided BEFORE any network or database
+  // work. Safe to call for real ONLY on the per-officer path, because that is the
+  // one that returns before the first byte leaves the process — which is also the
+  // property being asserted.
+  const wired = await oauth.beginConnect({ staffId: '00000000-0000-0000-0000-000000000001', actorId: null });
+  assert.strictEqual(wired.reason, 'officer_seat_not_enabled',
+    'beginConnect asks the seat rule, and asks it first');
+  ok('the refusal is wired into beginConnect and decided up front');
 
   // ---------------------------------------------------------------------------
   console.log('\n10. The switches actually reach the API Health page');
@@ -373,6 +396,14 @@ console.log('\n7. The paid tool cannot be called by accident');
   assert.ok(swList.filter((s) => s.integration === 'elementix').every((s) => !s.dangerous),
     'a read-only vendor has no dangerous switch — there is no write path to Elementix');
   ok(`all ${swList.length} switches hang off a real integration entry, Elementix included`);
+
+  // The other half of the network trap at the top of this file. `discover()`
+  // swallows network errors by design, so a throw on its own is invisible — this
+  // is what makes an accidental live call to Elementix a FAILURE rather than a
+  // silent success.
+  assert.deepStrictEqual(attemptedCalls, [],
+    `this test tried to reach the vendor: ${attemptedCalls.join(', ')}`);
+  ok('nothing in this suite called out to Elementix');
 
   console.log(`\n✓ ${n} assertions passed — Elementix connection logic is sound.\n`);
 })().catch((e) => {

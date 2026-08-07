@@ -73,6 +73,30 @@ const HTTP_TIMEOUT_MS = 15000;
  */
 const SEAT_MODEL = 'company';
 
+/**
+ * Is this connection attempt allowed by the seat model? Returns a shaped refusal,
+ * or null when it may proceed.
+ *
+ * A per-officer approval is REFUSED while the company holds a single seat, because
+ * it is not a harmless extra row: `accessToken(staffId)` PREFERS an officer's own
+ * row over the company one, so approving one would quietly move that officer onto
+ * a second authorization with no second seat behind it, and split the record of
+ * who looked up what. To buy per-officer seats later, flip SEAT_MODEL — nothing
+ * else has to change.
+ *
+ * PURE on purpose: no network, no database. That is what lets it be tested for
+ * real, which matters because the alternative — asserting it through
+ * `beginConnect` — reaches live discovery and client registration at Elementix.
+ * A unit test must never call the vendor.
+ */
+function seatRefusal(staffId) {
+  if (SEAT_MODEL === 'company' && staffId) {
+    return { ok: false, reason: 'officer_seat_not_enabled',
+      detail: 'PILOT holds one company-wide Elementix login, so connect it company-wide rather than per officer.' };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // At-rest encryption for the tokens.
 //
@@ -398,18 +422,10 @@ function redirectUri() {
  * `staffId` null = the company-wide connection; a staff id = that officer's own.
  */
 async function beginConnect({ staffId = null, actorId = null } = {}) {
-  // ONE COMPANY LOGIN (owner-directed 2026-08-07: "one company login for now").
-  // The schema keeps the per-officer shape — it costs nothing and the day may come
-  // — but a per-officer connection is REFUSED while the company holds a single
-  // seat, because it is not a harmless extra row: `accessToken(staffId)` PREFERS
-  // an officer's own row over the company one, so approving one would quietly
-  // move that officer onto a second authorization with no second seat behind it,
-  // and split the record of who looked up what. To buy per-officer seats later,
-  // flip this one constant — nothing else has to change.
-  if (SEAT_MODEL === 'company' && staffId) {
-    return { ok: false, reason: 'officer_seat_not_enabled',
-      detail: 'PILOT holds one company-wide Elementix login, so connect it company-wide rather than per officer.' };
-  }
+  // The seat rule is asked FIRST, before any network or database work: it is a
+  // policy answer, not something to discover halfway through an OAuth handshake.
+  const seat = seatRefusal(staffId);
+  if (seat) return seat;
 
   const d = await discover();
   if (!d.ok) return { ok: false, ...d };
@@ -696,6 +712,6 @@ module.exports = {
   _internals: {
     encrypt, decrypt, canEncrypt, newPkce, newState,
     resourceMetadataUrlFrom, candidateResourceMetadataUrls, candidateAuthServerMetadataUrls,
-    REFRESH_SKEW_SEC, PENDING_TTL_SEC, SEAT_MODEL,
+    REFRESH_SKEW_SEC, PENDING_TTL_SEC, SEAT_MODEL, seatRefusal,
   },
 };
