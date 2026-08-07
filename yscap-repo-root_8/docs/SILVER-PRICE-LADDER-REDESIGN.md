@@ -111,7 +111,7 @@ Inert when unset. Mirrors `targetLTC` exactly.
 | # | What it is | Risk | Guard |
 |---|---|---|---|
 | B1 | **`web/tools/silver-program.js`** (V1 copy) | Two copies exist; `test-engine-copies-match` asserts they are identical | Apply the change to both, or confirm V1's exemption first. Run that test. |
-| B2 | **`src/lib/pricing.js:728`** — the SERVER calls `SVP.priceLadder` for the portal | A changed row shape breaks the portal panel | Keep the existing row fields; ADD new ones (`cut`, achieved ARV). Never rename. |
+| B2 | **`src/lib/pricing.js:734`** — the SERVER calls `SVP.priceLadder` for the portal | A changed row shape breaks the portal panel | **DONE — satisfied by construction.** The row fields were only ADDED to (`key`, `cut`, `arvPct`); nothing was renamed. The server passes `pl.rows` through VERBATIM (`{maxLtc, binding, rows}`) and never reads a per-row field, and a grep of `src/` + `app-v2/src/` finds NO consumer of the quote's `ladder` at all today (the `d.ladder` in StaffCompSearch / StaffValuation is the comp-search relaxation ladder, a different thing). So the added fields ride along and there is nothing to break. |
 | B3 | **`termsheet.js:1002`** — the on-screen slider | Rungs change identity | See B6. |
 | B4 | **`termsheet.js:2761`** — the term-sheet **PDF** ladder page | Wrong/duplicate rows on a signable document | §4. |
 | B5 | ~~the xlsx / derivation export~~ **NOT A CONSUMER — verified** | — | `priceLadder`/`goldLadder` have exactly THREE call sites (the slider at ~1002, the PDF page at ~2761, the slider's own input handler at ~3426). The xlsx and the derivation page carry only the deal's OWN achieved `LTC / as-is / ARV`, never the ladder, so neither needs a change. The line I first catalogued here is the slider handler — i.e. B3, not a separate surface. |
@@ -151,12 +151,19 @@ change — only the alternatives list. Flagged to the owner and accepted.
 
 ## 5. Build order (each step independently verifiable)
 
-1. Equivalence harness FIRST — capture today's Silver output across the scenario
-   matrix as the baseline to diff against.
-2. `targetARLTV` in the engine (both copies) + prove byte-identical when unset.
-3. Rebuild `priceLadder` as the single, price-break ladder (R1–R5), with rung keys.
-4. Portal/server consumers (B2), then the studio slider (B3).
-5. PDF page + xlsx (B4/B5), with the highlight matched on the rung key.
-6. Registration carry-through (B9).
-7. The manual loan-amount box.
-8. Re-freeze note in CLAUDE.md recording the authorised change.
+1. ~~Equivalence harness FIRST~~ — **DONE** (`test-silver-arv-lever-pure.js`, 8,100
+   scenarios, baseline read from git so the proof re-runs in CI forever).
+2. ~~`targetARLTV` in the engine (both copies)~~ — **DONE**, zero drift when unset.
+3. ~~Rebuild `priceLadder` as the single, price-break ladder (R1–R5), with rung keys~~
+   — **DONE** (19 assertions over 4,455 ladders).
+4. ~~Portal/server consumers (B2), then the studio slider (B3)~~ — **DONE.** B2 needed
+   no change (see the table). The slider now selects by RUNG KEY, so a value-side
+   rung is selectable and is priced on the axis its key names.
+5. ~~PDF page (B4)~~ — **DONE.** B5 was a mis-catalogued line and is not a surface.
+6. ~~Registration carry-through (B9)~~ — **DONE**, and proved end to end: rung → the
+   studio's own key parser → the portal snapshot → `buildInputs` → the frozen
+   engine, asserting the file registers the loan and rate the sheet printed.
+   `test-silver-arv-register-carry-pure.js`, proven to bite (576 failures — one per
+   value-side rung — with the whitelist entry removed).
+7. **The manual loan-amount box.** ← next
+8. **Re-freeze note in CLAUDE.md** recording the authorised change.
