@@ -112,7 +112,9 @@ function guardTaskUpdatePayload(payload) {
 // owns the long game. Errors are tagged e.retryable / e.status / e.retryAfter so
 // pushOutboxOnce can retry transient failures PATIENTLY instead of dead-lettering
 // a good edit during a brief outage.
-const RPM = Math.max(1, parseInt(process.env.CLICKUP_MAX_RPM || '70', 10) || 70);        // pace under ClickUp's 100/min
+// The per-minute rate now lives in lib/api-rate-limit.js, which reads the SAME
+// CLICKUP_MAX_RPM env (default 90, still under ClickUp's 100). A second copy here would
+// be a number that silently disagrees with the one actually enforced.
 const MAX_TRIES = Math.max(1, parseInt(process.env.CLICKUP_MAX_TRIES || '3', 10) || 3);  // short in-call budget
 const TIMEOUT_MS = Math.max(1000, parseInt(process.env.CLICKUP_TIMEOUT_MS || '20000', 10) || 20000);
 const BASE_BACKOFF_MS = 500;
@@ -162,21 +164,23 @@ function httpError(method, path, status, retryAfterSec) {
   return err;
 }
 
-// Per-process token bucket. Refills continuously at RPM/minute. Per-process (like
-// the volume breaker) — multiple instances each get their own budget; a shared
-// DB-backed limiter is a later refinement. Still turns "fire as fast as we can"
-// into "never exceed ~RPM/min", which is the whole point.
-let _tokens = RPM;
-let _lastRefill = Date.now();
-async function takeToken() {
-  for (;;) {
-    const now = Date.now();
-    _tokens = Math.min(RPM, _tokens + ((now - _lastRefill) / 60000) * RPM);
-    _lastRefill = now;
-    if (_tokens >= 1) { _tokens -= 1; return; }
-    await sleep(Math.ceil((1 - _tokens) * (60000 / RPM)));
-  }
-}
+// THE BUDGET IS SHARED ACROSS EVERY PROCESS (owner-directed 2026-08-07: "we cannot ask
+// them for more than 100 requests per minute… never allow more than 100 requests within
+// a minute").
+//
+// This used to be a MODULE-LEVEL bucket, and the comment here named its own hole:
+// "Per-process — multiple instances each get their own budget; a shared DB-backed limiter
+// is a later refinement." render.yaml runs TWO processes against the SAME ClickUp token —
+// the web service (which also runs the sync when RUN_SYNC is on) and the pipeline worker
+// — so each paced itself to 70/min in ignorance of the other and the token could
+// legitimately see 140 in a minute. That is the call ClickUp made. No per-process number
+// could have fixed it; the budget had to move somewhere every process can see, which is
+// the database (lib/api-rate-limit.js, db/482).
+//
+// The per-process bucket is still applied inside `acquire` as layer 2, so if the database
+// is unreachable we degrade to exactly the old behaviour rather than stopping the sync.
+const apiRateLimit = require('../lib/api-rate-limit');
+async function takeToken() { await apiRateLimit.acquire('clickup'); }
 
 async function fetchWithTimeout(url, opts, ms) {
   const ac = new AbortController();
@@ -197,7 +201,7 @@ async function call(path, { method = 'GET', body, idempotent } = {}) {
   const idem = idempotent != null ? !!idempotent : method !== 'POST';
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
-    await takeToken(); // pre-throttle: never exceed ~RPM/min, so we rarely get 429'd
+    await takeToken(); // pre-throttle (shared across processes) so we rarely get 429'd
     let res;
     try {
       res = await fetchWithTimeout(`${BASE}${path}`, {
