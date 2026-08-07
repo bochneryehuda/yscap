@@ -41,34 +41,49 @@ const mk = async (street, unit, obs) => {
     const e = await mk('99 Quiet Rd', null, 4);
     console.log('before:', (await db.query(
       `SELECT count(*)::int n FROM properties WHERE city=$1`, [CITY])).rows[0].n, 'rows');
-    const out = await RK.rekeyOnce(db, { limit: 100 });
-    console.log('sweep:', JSON.stringify(out));
+    /* RUN THE SWEEP TO EXHAUSTION, rather than once — because that is what "after the
+       sweep has run" actually means, and asserting on ONE pass is what made this test
+       fail on a long-lived database while the sweep worked perfectly.
+
+       `rekeyOnce` is BOUNDED (100 rows) and self-draining, and `properties` is a shared
+       warehouse: with 75 other rows queued, one pass spends most of its budget
+       elsewhere and can leave part of this fixture behind — which is exactly what
+       happened ("8 Saint James Pl" survived at key_version null, so only one of the two
+       merges had run). At boot the pass repeats until there is nothing left, so the
+       test drives it the same way. Bounded so a bug that never drains fails the test
+       instead of hanging it. */
+    const out = { passes: 0, scanned: 0, merged: 0, rekeyed: 0 };
+    for (let i = 0; i < 60; i++) {
+      const p = await RK.rekeyOnce(db, { limit: 100 });
+      out.passes += 1; out.scanned += p.scanned; out.merged += p.merged; out.rekeyed += p.rekeyed;
+      if (!p.scanned) break;
+    }
+    console.log('sweep drained:', JSON.stringify(out));
     const after = (await db.query(
       `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
     console.log('after: ', after.length, 'rows');
     for (const r of after) console.log('   ', r.street.padEnd(20), r.address_key, 'obs=' + r.observation_count, 'v=' + r.key_version);
-    /* THE SECOND PASS MUST CHANGE NOTHING *HERE* — and that has to be asked about
-       THESE rows, not about the whole table. `properties` is a shared warehouse and
-       the sweep is bounded (100 rows a pass), so on a database where the research
-       suites have already filed reports the first pass legitimately spends part of
-       its budget elsewhere and the second one still has work to do. Asserting a
-       GLOBAL `scanned === 0` therefore failed in the full suite while passing in
-       isolation — the sweep working correctly, read as a regression. Comparing this
-       city's own rows before and after keeps the real question (is the sweep
-       idempotent on a row it has already re-keyed?) and drops the accidental one. */
+    /* AND ONE MORE PASS MUST CHANGE NOTHING *HERE* — asked about THESE rows, not about
+       the whole table. A global `scanned === 0` would be an assertion about every other
+       suite's leftovers, not about this fixture. */
     const again = await RK.rekeyOnce(db, { limit: 100 });
-    console.log('second run (must not touch these rows):',
+    console.log('one more pass (must not touch these rows):',
       JSON.stringify({ scanned: again.scanned, merged: again.merged, rekeyed: again.rekeyed }));
     const afterAgain = (await db.query(
       `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
     const settled = JSON.stringify(after) === JSON.stringify(afterAgain);
-    if (!settled) console.log('   the second pass CHANGED these rows:', JSON.stringify(afterAgain));
+    if (!settled) console.log('   the extra pass CHANGED these rows:', JSON.stringify(afterAgain));
     const status = await RK.rekeyStatus(db);
     const streets = after.map((r) => r.street).sort().join(' | ');
     // THE RICHER HISTORY SURVIVES: "150 15 Ave" had 5 observations to "150 15th
     // Ave"'s 2, and "8 St James Pl" had 3 to "8 Saint James Pl"'s 1. Keeping the
     // thinner row would move the larger history under an address seen once.
-    const good = after.length === 3 && out.merged === 2 && settled
+    // 5 fixture rows in, 3 out, so both duplicate pairs merged — counted from the
+    // FIXTURE rather than from the sweep's global tally, which also counts merges among
+    // rows another suite left behind. WHICH row survived is what proves the richer
+    // history won, and the `streets` check below is that: "150 15 Ave" over "150 15th
+    // Ave", "8 St James Pl" over "8 Saint James Pl".
+    const good = after.length === 3 && settled
       && after.every((r) => r.key_version === K.KEY_VERSION)
       && streets === '150 15 Ave | 8 St James Pl | 99 Quiet Rd';
     if (!good) console.log('   survivors were:', streets);
