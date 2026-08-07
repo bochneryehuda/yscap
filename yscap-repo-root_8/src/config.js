@@ -1104,6 +1104,11 @@ module.exports = {
     callbackUrl:      (process.env.CLASS_CALLBACK_URL || '').trim() || null,
     callbackUser:     process.env.CLASS_CALLBACK_USER || null,
     callbackPassword: process.env.CLASS_CALLBACK_PASSWORD || null,
+    // Their registration also allows an ApiToken mode (a token in a header we name)
+    // instead of Basic. We register Basic; these exist so the mode can be switched at
+    // Class's end without a deploy. Unset = that mode is simply off.
+    callbackToken:       process.env.CLASS_CALLBACK_TOKEN || null,
+    callbackTokenHeader: (process.env.CLASS_CALLBACK_TOKEN_HEADER || 'x-api-key').trim(),
 
     timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
   },

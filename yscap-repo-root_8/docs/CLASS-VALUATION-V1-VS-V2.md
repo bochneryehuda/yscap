@@ -140,3 +140,118 @@ does not know the other name would reject the whole order rather than ignore a f
 - **Occupancy**: `vacant` has no 3.6 value, so it becomes `Other` **and says so**;
   anything 3.6 cannot express blocks rather than being guessed. On 2.6 the same file
   is fine, because the field is free text there.
+
+## Callbacks — one registration, both versions, and where the version comes from
+
+Class **pushes**: we register a URL once and they POST an event whenever something
+happens to an order (`StatusChanged`, `NewAttachments`, `SetAppointment`,
+`AssignedToVendor`, `InspectionCompleted`, `OrderPaid`, `ClientFeeChanged`,
+`ClientDueDateChanged`, `PaymentLinkSentToBorrower`, `CustomFieldsSet`,
+`ScannerEvents`, `DesktopEvents`, `NewNotes`, `AvmReport`, `AvmData`).
+
+**Registration is per ORGANIZATION and carries no version.** The body is an event
+name, a URL and the credentials they should use — nothing else. So **one registration
+covers orders on both UAD versions**, and there is no second setup to do when the
+default moves to 3.6.
+
+### The version problem, and the rule
+
+**Their event does not say which version its order was placed on.** Every event
+carries the same envelope either way:
+
+```
+{ orderId, referenceNumber, eventName, sent, created, data }
+```
+
+That matters because a follow-up read is *not* version-neutral: `GET /orders/{id}`
+and `GET /v2/orders/{id}` describe the same order in different vocabularies. Reading
+a 3.6 order through the 2.6 path **does not error** — it answers in the other
+vocabulary, and anything keyed on a field name quietly finds nothing.
+
+So the rule, enforced in `src/class/callbacks.js`:
+
+> **The version comes from OUR order row, never from the event, and never from the
+> current default.**
+
+`class_orders.api_version` and `class_orders.order_path` are written when the order
+is placed (db/486) — *before* the call goes out, so an order that times out on the
+wire still has a record its callback can match. When the version is genuinely unknown
+(an order placed before that table existed), the event is still **recorded** and any
+version-specific call is **declined**. Falling back to the configured default would be
+the worst of the three options: it is right most of the time, which is exactly what
+makes the wrong answer invisible.
+
+### Receiving
+
+`POST /api/class/callbacks` — mounted **before** the global JSON parser with its own
+small one and a rate limit, like the ClickUp / DocuSign / TrustPoint webhooks.
+
+- **HTTP Basic**, with credentials we choose and hand them at registration
+  (`CLASS_CALLBACK_USER` / `CLASS_CALLBACK_PASSWORD`), compared over sha256 digests so
+  the check is constant-time. Their `ApiToken` mode is supported too
+  (`CLASS_CALLBACK_TOKEN` / `CLASS_CALLBACK_TOKEN_HEADER`) in case they switch.
+- **Fails CLOSED**: with nothing configured, every delivery is refused. An
+  unauthenticated public endpoint that writes rows is worse than a receiver that is
+  switched off.
+- **Stores first, thinks later.** The delivery is written verbatim and answered 200
+  immediately (their contract is 200 within 30 seconds); processing happens off the
+  request path. A 500 is only ever returned when we failed to *store* it — which is
+  the one case where their retry is genuinely our second chance.
+- **Deduped** on (event, sha256 of the payload + the UTC day), so a retry collapses
+  but a byte-identical legitimate event weeks later is not swallowed.
+- An event for an order we do not have is **kept**, not dropped, and marked handled
+  rather than retried forever.
+
+Setup lives at `GET|POST /api/class/callback-setup` (`platform_setup`) — deliberately
+**not** under `/callbacks`, because that path is the public receiver and a staff route
+hidden behind it would be answered by the webhook's own catch-all.
+
+## Working the order: messages, revisions, and reconsiderations of value
+
+Once an order is live, four things happen against it. Three of them share a shape at
+Class but are genuinely different asks, and one of them does not exist as its own call
+at all.
+
+| What the desk does | Class endpoint | Version-specific? |
+|---|---|---|
+| Message back and forth | `GET|POST /orders/{id}/notes` | **No** |
+| Ask for a correction | `POST /orders/{id}/request-revision` | **No** |
+| Dispute the value (ROV) | *the same* `request-revision` | **No** |
+| Cancel the order | `POST /orders/{id}/request-cancel` | **No** |
+| Status / documents / inspection news | their callbacks (push) | **No** |
+
+**Only order CREATE, order READ and the product catalogue have a `/v2` variant.**
+Nothing else does — so `src/class/messages.js` deliberately takes no version and does
+not consult the order's `api_version`. Threading one through would imply a choice that
+does not exist, and the first person to "fix" it would go looking for a `/v2/notes`
+Class never published.
+
+### There is no ROV endpoint
+
+A reconsideration of value at Class is a **revision filed with value-related reason
+codes**. So:
+
+- `src/class/revision-reasons.js` carries their full closed list (~90 codes) verbatim,
+  including the two the guide itself misspells — transcribed exactly, because
+  "correcting" one sends a code they reject.
+- The ROV set is a **lens on that list**, never a vocabulary of ours. A made-up code
+  like `ROV` or `ValueDispute` is invalid and is refused.
+- Filing an ROV with no value-related reason is **refused**: it would reach the
+  appraiser as an ordinary correction.
+- The reverse is also handled — a *value* reason filed through the plain "ask for a
+  fix" button is still **recorded as an ROV**, because "did we dispute the value on
+  this file?" must not depend on which button somebody pressed.
+- Their `Other` code means nothing on its own, so choosing it without an explanation
+  is refused rather than sent as an empty ask.
+
+### A message is never lost to a failed send
+
+Notes are written to `class_notes` **before** the call goes out, in the direction that
+says we wrote them. If the send fails, the message sits there with the error on it and
+can be retried — the screen shows "not delivered", never a message that silently
+vanished. Their replies arrive on the `NewNotes` callback (or a manual "check for
+replies" pull) into the same thread, keyed on their note id so a retried delivery
+cannot duplicate a message.
+
+Asking to cancel does **not** mark the order cancelled. The order moves when their
+`StatusChanged` callback says so — asking is not the same as them agreeing.

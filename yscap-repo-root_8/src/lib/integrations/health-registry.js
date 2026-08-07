@@ -547,7 +547,13 @@ const INTEGRATIONS = [
       { name: 'CLASS_USERNAME', required: true }, { name: 'CLASS_PASSWORD', required: true },
       { name: 'CLASS_ENVIRONMENT', required: false }, { name: 'CLASS_API_VERSION', required: false },
       { name: 'CLASS_ORG_ID', required: false },
-      { name: 'CLASS_LENDER_ORG_ID', required: false }],
+      { name: 'CLASS_LENDER_ORG_ID', required: false },
+      // The PUSH half: the address Class calls, and the username/password THEY use
+      // when calling us. Optional for ordering, required before any status, document
+      // or inspection news can reach the file on its own.
+      { name: 'CLASS_CALLBACK_URL', required: false },
+      { name: 'CLASS_CALLBACK_USER', required: false },
+      { name: 'CLASS_CALLBACK_PASSWORD', required: false }],
     switches: [{ name: 'CLASS_ENABLED', label: 'Reading + polling' }, { name: 'CLASS_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
     liveProbe: false,
     async probe() {
@@ -559,7 +565,13 @@ const INTEGRATIONS = [
       if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (CLASS_ENABLED) is off, so nothing talks to Class Valuation yet.' };
       const env = `Pointed at their ${c.environment.toUpperCase()} environment, ordering on the UAD ${c.uad} form by default.`;
       const hosts = c.hostsConfirmed ? '' : ' Their sign-in address for this environment has not been confirmed by Class yet — check it before ordering for real.';
-      return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${hosts}` };
+      // The push half is what makes an order tell us it progressed. Called out
+      // separately because ordering works fine without it — and then goes quiet,
+      // which is the confusing failure this line exists to pre-empt.
+      const push = c.callbackReady
+        ? ' Their status updates can reach us.'
+        : ' NOTE: the callback address and login are not set, so orders will go out but nothing will come back on its own.';
+      return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${push}${hosts}` };
     },
   },
 ];

@@ -71,6 +71,8 @@ export default function ClassAppraisalPanel({ appId }) {
   const [notice, setNotice] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [orders, setOrders] = useState(null);
+  const [openOrder, setOpenOrder] = useState(null);
 
   // The preview is re-fetched with the overrides, so what is on screen is always
   // what the SERVER would build — never a value this component patched locally.
@@ -80,6 +82,10 @@ export default function ClassAppraisalPanel({ appId }) {
       const pv = await api.classPreview(appId, ov || {});
       setPreview(pv || null);
     } catch (e) { setErr(e.message || 'Could not load the order preview.'); }
+  }, [appId]);
+
+  const loadOrders = useCallback(async () => {
+    try { setOrders(await api.classOrders(appId)); } catch (_) { /* the preview still renders */ }
   }, [appId]);
 
   useEffect(() => {
@@ -92,10 +98,11 @@ export default function ClassAppraisalPanel({ appId }) {
         setConfig(cfg || null);
       } catch (_) { /* the preview still renders */ }
       await load({});
+      await loadOrders();
       if (alive) setLoading(false);
     })();
     return () => { alive = false; };
-  }, [appId, load]);
+  }, [appId, load, loadOrders]);
 
   const setOverride = useCallback((key, value) => {
     setOverrides((prev) => {
@@ -117,6 +124,7 @@ export default function ClassAppraisalPanel({ appId }) {
           ? 'Test mode — the order was built and written to the log. Nothing was sent to Class.'
           : `Order placed with Class Valuation.${out.orderId ? ' Their order number is ' + out.orderId + '.' : ''}`);
         await load(overrides);
+        await loadOrders();
       } else {
         setErr((out && out.message) || 'Could not place the order.');
       }
@@ -124,7 +132,7 @@ export default function ClassAppraisalPanel({ appId }) {
       setErr(e.message || 'Could not place the order.');
     }
     setBusy(false);
-  }, [appId, overrides, load]);
+  }, [appId, overrides, load, loadOrders]);
 
   const cfg = config && config.class ? config.class : null;
   // The option lists come from the PREVIEW, because the preview knows which UAD
@@ -154,6 +162,12 @@ export default function ClassAppraisalPanel({ appId }) {
       {notice ? <Banner tone="good">{notice}</Banner> : null}
 
       <ConnectionLine cfg={cfg} hosts={config && config.hosts} notOn={notOn} />
+
+      <PlacedOrders
+        appId={appId} data={orders} openOrder={openOrder}
+        onOpen={(id) => setOpenOrder(openOrder === id ? null : id)}
+        onChanged={loadOrders}
+      />
 
       {preview ? (
         <>
@@ -236,6 +250,285 @@ export default function ClassAppraisalPanel({ appId }) {
 }
 
 /* ---------------------------------------------------------------- pieces --- */
+
+// Their status words, in ours. The server has already translated Class's
+// StatusChanged values; this is only how each reads on screen.
+const ORDER_STATUS = {
+  placing: ['Sending…', TEAL], dryrun: ['Test build', MUTED], ordered: ['Ordered', TEAL],
+  in_process: ['In progress', TEAL], assigned: ['With the appraiser', TEAL],
+  inspected: ['Inspected', TEAL], completed: ['Report ready', GOOD],
+  on_hold: ['On hold', GOLD], cancelled: ['Cancelled', BAD], error: ['Needs attention', BAD],
+};
+const fmtDay = (d) => { if (!d) return null; try { return new Date(d).toLocaleDateString('en-US'); } catch (_) { return null; } };
+const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleString('en-US'); } catch (_) { return ''; } };
+
+// The orders already placed on this file, with everything Class has told us since.
+function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
+  const rows = (data && data.orders) || [];
+  if (!rows.length) return null;
+  const unreadFor = (id) => ((data.unread || []).find((u) => String(u.class_order_row) === String(id)) || {}).n || 0;
+  const asksFor = (id) => (data.openAsks || []).filter((a) => String(a.class_order_row) === String(id));
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <SectionTitle>Orders placed with Class</SectionTitle>
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+        {rows.map((o, i) => {
+          const [label, color] = ORDER_STATUS[o.status] || [o.status, MUTED];
+          const unread = unreadFor(o.id);
+          const asks = asksFor(o.id);
+          return (
+            <div key={o.id} style={{ borderTop: i ? `1px solid ${LINE}` : 'none' }}>
+              <div onClick={() => onOpen(o.id)}
+                style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', cursor: 'pointer',
+                         background: String(openOrder) === String(o.id) ? '#FBF9F4' : '#fff' }}>
+                <span style={{ border: `1px solid ${color}`, color, borderRadius: 999, padding: '2px 9px',
+                               fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: INK, fontWeight: 600 }}>
+                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
+                    {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: MUTED }}>
+                    {/* Which form version this order is on. It is on the row rather than
+                        derived, because it is what every follow-up depends on. */}
+                    UAD {o.uad} · ordered {fmtDay(o.placed_at || o.created_at) || '—'}
+                    {o.due_date ? ` · due ${fmtDay(o.due_date)}` : ''}
+                    {o.appointment_date ? ` · inspection ${fmtDay(o.appointment_date)}` : ''}
+                  </div>
+                </div>
+                {unread ? <span style={{ background: TEAL, color: '#fff', borderRadius: 999, padding: '1px 8px',
+                                          fontSize: 12, fontWeight: 700 }}>{unread} new</span> : null}
+                {asks.length ? <span style={{ color: GOLD, fontSize: 12, fontWeight: 600 }}>
+                  {asks.some((a) => a.kind === 'rov') ? 'value disputed' : 'revision asked'}
+                </span> : null}
+                <span style={{ color: TEAL, fontSize: 13 }}>{String(openOrder) === String(o.id) ? 'Hide' : 'Open'}</span>
+              </div>
+              {String(openOrder) === String(o.id)
+                ? <OrderDetail appId={appId} order={o} onChanged={onChanged} /> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// One order: the conversation with Class, and the three things we can ask them for.
+function OrderDetail({ appId, order, onChanged }) {
+  const [thread, setThread] = useState(null);
+  const [tab, setTab] = useState('messages');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  const [draft, setDraft] = useState('');
+
+  const load = useCallback(async () => {
+    try { setThread(await api.classThread(appId, order.id)); } catch (e) { setErr(e.message || 'Could not load the conversation.'); }
+  }, [appId, order.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const send = async () => {
+    if (!draft.trim()) return;
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const out = await api.classNote(appId, order.id, draft);
+      // The message is kept either way — a failed send is a delivery problem, not a
+      // lost message — so the draft is cleared and the row shows why it did not go.
+      setDraft('');
+      setNotice(out && out.ok ? (out.dryrun ? 'Saved. Test mode, so nothing was sent.' : 'Sent to Class.') : '');
+      if (!(out && out.ok)) setErr((out && out.message) || 'We could not deliver that to Class. It is saved here and can be sent again.');
+      await load();
+    } catch (e) {
+      setErr(e.message || 'We could not deliver that to Class. It is saved here.');
+      await load();
+    }
+    setBusy(false);
+  };
+
+  const pull = async () => {
+    setBusy(true); setErr('');
+    try {
+      const out = await api.classThreadSync(appId, order.id);
+      if (!(out && out.ok)) setErr((out && out.message) || 'Could not check with Class right now.');
+      await load();
+    } catch (e) { setErr(e.message || 'Could not check with Class right now.'); }
+    setBusy(false);
+  };
+
+  const markRead = async () => { try { await api.classMarkRead(appId, order.id); await load(); if (onChanged) onChanged(); } catch (_) { /* cosmetic */ } };
+
+  const notes = (thread && thread.notes) || [];
+  const revisions = (thread && thread.revisions) || [];
+
+  return (
+    <div style={{ borderTop: `1px solid ${LINE}`, padding: 12, background: '#FBF9F4' }}>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {notice ? <Banner tone="good">{notice}</Banner> : null}
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+        {[['messages', `Messages${thread && thread.unread ? ` (${thread.unread} new)` : ''}`],
+          ['revision', 'Ask for a fix'],
+          ['rov', 'Dispute the value'],
+          ['history', `What we've asked for${revisions.length ? ` (${revisions.length})` : ''}`]].map(([k, lbl]) => (
+          <button key={k} type="button" onClick={() => setTab(k)}
+            style={{ border: `1px solid ${tab === k ? TEAL : LINE}`, background: tab === k ? '#EAF3F3' : '#fff',
+                     color: INK, borderRadius: 8, padding: '5px 10px', fontWeight: 550, cursor: 'pointer' }}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'messages' ? (
+        <>
+          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#fff', maxHeight: 320,
+                        overflowY: 'auto', padding: 10, marginBottom: 8 }}>
+            {notes.length ? notes.map((n) => {
+              const ours = n.direction === 'FromClient';
+              return (
+                <div key={n.id} style={{ marginBottom: 10, textAlign: ours ? 'right' : 'left' }}>
+                  <div style={{
+                    display: 'inline-block', maxWidth: '80%', textAlign: 'left',
+                    background: ours ? '#EAF3F3' : '#F4F1EA', border: `1px solid ${LINE}`,
+                    borderRadius: 10, padding: '7px 10px', color: INK, whiteSpace: 'pre-wrap',
+                  }}>
+                    {n.content || <span style={{ color: MUTED }}>(no text)</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: n.send_error ? BAD : MUTED, marginTop: 2 }}>
+                    {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
+                    {n.send_error ? ` · not delivered: ${n.send_error}` : ''}
+                    {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
+                  </div>
+                </div>
+              );
+            }) : <div style={{ color: MUTED, fontSize: 13 }}>Nothing said yet.</div>}
+          </div>
+          <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3}
+            placeholder="Write to Class about this order…"
+            style={{ ...inputStyle, width: '100%', resize: 'vertical', marginBottom: 8 }} />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn primary" disabled={busy || !draft.trim()} onClick={send}>{busy ? 'Working…' : 'Send'}</button>
+            <button className="btn soft" disabled={busy} onClick={pull}>Check for replies</button>
+            {thread && thread.unread ? <button className="btn ghost" onClick={markRead}>Mark read</button> : null}
+          </div>
+        </>
+      ) : null}
+
+      {tab === 'revision' || tab === 'rov' ? (
+        <AskForm appId={appId} order={order} kind={tab} onDone={async () => { await load(); if (onChanged) onChanged(); }} />
+      ) : null}
+
+      {tab === 'history' ? (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#fff' }}>
+          {revisions.length ? revisions.map((r, i) => (
+            <div key={r.id} style={{ borderTop: i ? `1px solid ${LINE}` : 'none', padding: '9px 12px' }}>
+              <div style={{ color: INK, fontWeight: 600 }}>
+                {r.kind === 'rov' ? 'Value disputed' : r.kind === 'cancel' ? 'Cancellation asked for' : 'Fix asked for'}
+                <span style={{ color: r.status === 'error' ? BAD : MUTED, fontWeight: 400, fontSize: 12 }}>
+                  {' · '}{r.status === 'error' ? 'not delivered' : r.status}{' · '}{fmtWhen(r.requested_at)}
+                </span>
+              </div>
+              <ul style={{ margin: '4px 0 0 18px', padding: 0, color: MUTED, fontSize: 13 }}>
+                {(r.reasons || []).map((x, j) => <li key={j}>{x.reason || x.reasonType}</li>)}
+              </ul>
+              {r.last_error ? <div style={{ fontSize: 12, color: BAD, marginTop: 4 }}>{r.last_error}</div> : null}
+            </div>
+          )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>We haven’t asked Class for anything on this order.</div>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Ask Class for a correction, or dispute the value. ONE form, because at Class it is
+// ONE call — a reconsideration of value is a revision filed with value reasons, and
+// the copy says so rather than implying a request type that does not exist.
+function AskForm({ appId, order, kind, onDone }) {
+  const [reasons, setReasons] = useState(null);
+  const [picked, setPicked] = useState([]);
+  const [why, setWhy] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [problems, setProblems] = useState([]);
+  const [done, setDone] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { const r = await api.classReasons(kind); if (alive) setReasons(r); }
+      catch (_) { if (alive) setReasons({ common: [], all: [] }); }
+    })();
+    return () => { alive = false; };
+  }, [kind]);
+
+  const list = reasons ? (showAll ? reasons.all : reasons.common) : [];
+  const toggle = (code) => setPicked((p) => (p.includes(code) ? p.filter((c) => c !== code) : p.concat(code)));
+
+  const submit = async () => {
+    setBusy(true); setErr(''); setProblems([]); setDone('');
+    try {
+      const out = await api.classRevision(appId, order.id, {
+        kind,
+        reasons: picked.map((code) => ({ reasonType: code, reason: why.trim() || undefined })),
+      });
+      if (out && out.ok) {
+        setDone(out.dryrun ? 'Recorded. Test mode, so nothing was sent.' : 'Sent to Class.');
+        setPicked([]); setWhy('');
+      } else if (out && out.problems) {
+        setProblems(out.problems);
+      } else {
+        setErr((out && out.message) || 'We could not send that to Class. It is recorded here.');
+      }
+      if (onDone) await onDone();
+    } catch (e) {
+      setErr(e.message || 'We could not send that to Class. It is recorded here.');
+      if (onDone) await onDone();
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {done ? <Banner tone="good">{done}</Banner> : null}
+      <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>
+        {kind === 'rov'
+          ? 'Tell Class you disagree with the value. Pick what the problem is and explain it — this goes to the appraiser as a formal request to reconsider.'
+          : 'Ask Class to correct something on the report. Pick what is wrong and explain it.'}
+      </div>
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#fff', maxHeight: 240,
+                    overflowY: 'auto', marginBottom: 8 }}>
+        {list.map((r, i) => (
+          <label key={r.code} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '7px 10px',
+                                        borderTop: i ? `1px solid ${LINE}` : 'none', cursor: 'pointer' }}>
+            <input type="checkbox" checked={picked.includes(r.code)} onChange={() => toggle(r.code)} />
+            <span style={{ color: INK }}>{r.label}</span>
+          </label>
+        ))}
+        {!list.length ? <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>Loading their list…</div> : null}
+      </div>
+      <button type="button" onClick={() => setShowAll((v) => !v)} style={{ ...linkBtn, marginBottom: 8 }}>
+        {showAll ? 'Show just the usual reasons' : `Show every reason Class accepts (${reasons ? reasons.all.length : 0})`}
+      </button>
+      <textarea value={why} onChange={(e) => setWhy(e.target.value)} rows={3}
+        placeholder={kind === 'rov' ? 'What supports a different value? (e.g. three closer sales at $410,000)' : 'What needs fixing?'}
+        style={{ ...inputStyle, width: '100%', resize: 'vertical', marginBottom: 8 }} />
+      {problems.length ? (
+        <ul style={{ margin: '0 0 8px 18px', padding: 0, color: BAD, fontSize: 13 }}>
+          {problems.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      ) : null}
+      <button className="btn primary" disabled={busy || !picked.length} onClick={submit}>
+        {busy ? 'Working…' : kind === 'rov' ? 'Send the value dispute' : 'Send the fix request'}
+      </button>
+      <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
+        Class handles both of these the same way — a value dispute is a fix request about the value.
+      </div>
+    </div>
+  );
+}
+
 
 function ConnectionLine({ cfg, hosts, notOn }) {
   if (!cfg) {

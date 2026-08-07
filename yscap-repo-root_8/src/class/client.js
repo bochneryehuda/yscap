@@ -291,8 +291,16 @@ module.exports = {
   configured, hosts, invalidateToken, getAccessToken, request, get, post,
   // READS (master switch only)
   products: (query) => get('/products', query, 'products'),
-  order: (orderId) => get(`/orders/${encodeURIComponent(orderId)}`, undefined, 'order'),
-  orders: (query) => get('/orders', query, 'orders'),
+  // READING AN ORDER IS VERSION-SPECIFIC. `GET /orders/{id}` and `GET /v2/orders/{id}`
+  // describe the SAME order with different field names (propertyTypeEnum vs
+  // propertyType, a typed occupancy, the renamed GSE references). Reading a 3.6 order
+  // through the 2.6 path does not error — it answers in the other vocabulary, and
+  // anything keyed on a field name would quietly find nothing. So the version is
+  // REQUIRED to be passed by whoever knows it (the stored order row), and the default
+  // here is only for a caller that genuinely has no order in hand.
+  order: (orderId, opts = {}) =>
+    get(`${orderBuild.profileFor(opts.version).path}/${encodeURIComponent(orderId)}`, undefined, 'order'),
+  orders: (query, opts = {}) => get(orderBuild.profileFor(opts.version).path, query, 'orders'),
   // THE V1 GUIDE CONTRADICTS ITSELF ON THIS ONE PATH: its order-completion walkthrough
   // (p.7, added in the newest revision) says `GET /orders/{orderId}/attachments`, while
   // the older Attachments reference section (p.14) writes `GET /{orderId}/attachments`
@@ -301,6 +309,15 @@ module.exports = {
   attachments: (orderId, query) => get(`/orders/${encodeURIComponent(orderId)}/attachments`, query, 'attachments'),
   attachment: (orderId, attachmentId, query) =>
     get(`/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'),
+  // CALLBACKS ARE REGISTERED PER ORGANIZATION, NOT PER ORDER OR PER VERSION. Their
+  // registration body carries an event name and a URL and nothing else — so ONE
+  // registration covers orders on both UAD versions, and the event that arrives does
+  // not say which version its order was placed on. That is exactly why the version is
+  // stored on our own order row (db/486) instead of being read off the callback.
+  // Notes, revisions and cancellations are NOT version-specific — the guide
+  // documents exactly one path for each, shared by both UAD versions. Only order
+  // CREATE, order READ and the product catalogue have a /v2 variant.
+  notes: (orderId, query) => get(`/orders/${encodeURIComponent(orderId)}/notes`, query, 'notes'),
   listCallbacks: () => get('/callbacks', undefined, 'callbacks'),
   // WRITES (outbound gate)
   // THE PATH IS THE VERSION. `/orders` is UAD 2.6, `/v2/orders` is UAD 3.6 — same
@@ -313,6 +330,9 @@ module.exports = {
   addNote: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/notes`, body, { label: 'addNote' }),
   requestRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-revision`, body, { label: 'requestRevision' }),
   requestCancel: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-cancel`, body, { label: 'requestCancel' }),
+  requestGseRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-gse-revision`, body, { label: 'requestGseRevision' }),
   registerCallback: (body) => post('/callbacks', body, { label: 'registerCallback' }),
+  registerAllCallbacks: (body) => post('/callbacks/addAll', body, { label: 'registerAllCallbacks' }),
+  deleteCallback: (id) => request('DELETE', '/callbacks', { query: { id }, write: true, label: 'deleteCallback' }),
   _internals: { maskSafe, readBody, backoff, HOSTS },
 };

@@ -541,6 +541,16 @@ export const api = {
     return req('GET', `/api/class/products${qs ? '?' + qs : ''}`);
   },
   classPlaceOrder: (appId, body) => req('POST', `/api/class/files/${appId}/order`, body),
+  // After the order: the orders on a file, the conversation with Class, and the
+  // three things a desk asks for once a report is back.
+  classOrders:      (appId) => req('GET', `/api/class/files/${appId}/orders`),
+  classThread:      (appId, o) => req('GET', `/api/class/files/${appId}/orders/${o}/thread`),
+  classThreadSync:  (appId, o) => req('POST', `/api/class/files/${appId}/orders/${o}/thread/sync`),
+  classNote:        (appId, o, content) => req('POST', `/api/class/files/${appId}/orders/${o}/notes`, { content }),
+  classMarkRead:    (appId, o) => req('POST', `/api/class/files/${appId}/orders/${o}/read`),
+  classRevision:    (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/revision`, body),
+  classCancelOrder: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/cancel`, body),
+  classReasons:     (kind) => req('GET', `/api/class/revision-reasons?kind=${encodeURIComponent(kind || 'revision')}`),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
