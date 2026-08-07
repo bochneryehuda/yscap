@@ -515,6 +515,22 @@ export const api = {
   amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
   amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
   amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
+
+  // ---- Class Valuation appraisal ordering (the SECOND vendor) ----
+  // Deliberately its own set of calls, never shared with the AMC ones: the owner has
+  // not picked a default vendor, so nothing here may quietly become "the" appraisal
+  // desk. `classPreview` takes the staff overrides so the screen re-previews as they
+  // type — the server is the one that decides what a change does.
+  classConfig:   () => req('GET', '/api/class/config'),
+  classPreview:  (appId, overrides) => {
+    const qs = new URLSearchParams(Object.entries(overrides || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/class/files/${appId}/preview${qs ? '?' + qs : ''}`);
+  },
+  classProducts: (query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/class/products${qs ? '?' + qs : ''}`);
+  },
+  classPlaceOrder: (appId, body) => req('POST', `/api/class/files/${appId}/order`, body),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),

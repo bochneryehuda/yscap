@@ -105,6 +105,61 @@ ok(notif.body.notificationList.length === 2, 'blanks dropped and duplicates coll
 ok(notif.body.notificationList[0].Type === 'BorrowerInfo', 'their only documented notification type is used');
 
 // ---------------------------------------------------------------------------
+// EVERY VALUE WE EMIT MUST BE ON THEIR LIST. This is the guard that makes the
+// "never guess an enum" rule enforceable: the maps and the published lists sit in
+// one file, so a value added to a map that Class does not actually accept is
+// caught here rather than by a rejected order.
+console.log('\n--- every value we can emit is on Class\'s own list ---');
+const ENUMS = ob.ENUMS;
+ok(ENUMS.propertyTypeEnum.length > 5 && ENUMS.purpose.length > 5 && ENUMS.loanType.length > 5,
+   'their three published value lists are carried');
+const emitted = {
+  propertyTypeEnum: [...Object.values(ob._internals.PROPERTY_TYPE),
+                     ...Object.values(ob._internals.PROPERTY_TYPE_ASSUMED).map(([v]) => v)],
+  purpose: Object.values(ob._internals.PURPOSE),
+  loanType: [...Object.values(ob._internals.LOAN_TYPE), 'Other'],   // 'Other' is the declared fallback
+};
+for (const [list, values] of Object.entries(emitted)) {
+  for (const v of values) {
+    ok(ENUMS[list].includes(v), `${list}: "${v}" is a value Class publishes`);
+  }
+}
+// The V1 list carries three values the V2 document does not — a cheap tell that
+// these were transcribed from the right guide.
+for (const v of ['ConstructionLoan', 'K203', 'HELOC']) {
+  ok(ENUMS.loanType.includes(v), `loanType carries the V1-only value "${v}"`);
+}
+ok(!ENUMS.occupancy, 'there is NO occupancy list — on V1 it is a free-form string, so we must not pretend otherwise');
+ok(ob.OCCUPANCY_SUGGESTIONS.includes('Investment'),
+   'Investment is offered — the one occupancy word their own vocabulary confirms');
+
+// ---------------------------------------------------------------------------
+// The order SCREEN decides which rows get an input box; the ROUTE decides what it
+// will actually accept. If those two lists drift, a staffer types into a box whose
+// value is silently dropped on the way in — nothing errors, the order just goes
+// out with the old value. So they are compared directly.
+console.log('\n--- the screen\'s editable fields match what the server accepts ---');
+{
+  const fs = require('fs');
+  const path = require('path');
+  const grab = (file, marker) => {
+    const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const at = src.indexOf(marker);
+    if (at < 0) return null;
+    const open = src.indexOf('[', at);
+    const close = src.indexOf(']', open);
+    if (open < 0 || close < 0) return null;
+    return src.slice(open + 1, close).match(/'([a-zA-Z]+)'/g).map((s) => s.replace(/'/g, '')).sort();
+  };
+  const server = grab('src/routes/class.js', 'const OVERRIDE_KEYS');
+  const screen = grab('app-v2/src/components/ClassAppraisalPanel.jsx', 'const EDITABLE');
+  ok(server && server.length, 'the server\'s override allowlist was found');
+  ok(screen && screen.length, 'the screen\'s editable list was found');
+  ok(JSON.stringify(server) === JSON.stringify(screen),
+     `the two lists are identical (server: ${server}, screen: ${screen})`);
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n--- the client: writes gated, reads not, secrets masked ---');
 process.env.CLASS_ENABLED = '0';
 delete require.cache[require.resolve('../src/config')];

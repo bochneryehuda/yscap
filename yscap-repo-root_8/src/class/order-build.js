@@ -37,11 +37,41 @@
  * "fix" it in isolation.
  */
 
+// ---------------------------------------------------------------------------
+// THEIR CLOSED VALUE LISTS, transcribed from the V1 guide (rev 0.17, pp.29-30).
+// These exist so the order SCREEN can offer exactly what Class accepts instead of
+// retyping the vendor's list in a component — one copy, and the picker cannot
+// drift from the builder. Order is theirs, verbatim; do not sort or prune.
+//
+// `occupancy` is deliberately absent: on V1 it is a free-form String with no
+// published list (see the OCCUPANCY map below), so the screen suggests rather
+// than constrains.
+// ---------------------------------------------------------------------------
+const ENUMS = {
+  propertyTypeEnum: [
+    'SingleFamily', 'Condominium', 'Cooperative', 'ManufacturedHome', 'TwoToFourFamily',
+    'Other', 'Farm', 'Duplex', 'MultiFamily', 'Commercial', 'Industrial',
+    'TownhouseorRowhouse', 'MobileHome', 'ModularHome', 'VacantLand', 'VacantLot',
+    'Office', 'RawLand', 'DevelopedLand',
+  ],
+  purpose: [
+    'NA', 'Auction', 'Bridge', 'Construction', 'DebtConsolidation', 'DeedInLieu',
+    'Foreclosure', 'HomeEquity', 'LeaseHold', 'AscertainMarketValue', 'Modification',
+    'Other', 'Purchase', 'Refinance', 'Relocation', 'Renewal', 'REO', 'Loan', 'ORE',
+    'Settlement', 'ShortSale',
+  ],
+  loanType: [
+    'None', 'Conventional', 'ConventionalInsured', 'ConventionalUninsured', 'FHA',
+    'FMHA', 'Other', 'PublicNativeAmericanHousing', 'Reverse', 'USDA', 'VA',
+    'NewConstruction', 'ForeclosureREO', 'L203K', 'AllInOne', 'AltQMAgency',
+    'AltQMIncome', 'AltQMJumbo', 'CMHC', 'ConstructionFinancing', 'FHA203kLimited',
+    'FHA203kStandard', 'FSARHSFmHA', 'HARP2', 'HomeEquity', 'HomeOwnershipAcclerator',
+    'HomeStyleRenovation', 'Jumbo', 'OneTimeClose', 'Section184NativeAmericalLoan',
+    'ConstructionLoan', 'K203', 'HELOC',
+  ],
+};
+
 // ---- our canonical property key -> their propertyTypeEnum -----------------
-// Their list: SingleFamily, Condominium, Cooperative, ManufacturedHome,
-// TwoToFourFamily, Other, Farm, Duplex, MultiFamily, Commercial, Industrial,
-// TownhouseorRowhouse, MobileHome, ModularHome, VacantLand, VacantLot, Office,
-// RawLand, DevelopedLand.
 const PROPERTY_TYPE = {
   sfr: 'SingleFamily',
   condo: 'Condominium',
@@ -243,5 +273,9 @@ function buildOrder(ctx = {}, overrides = {}) {
 
 module.exports = {
   buildOrder,
+  ENUMS,
+  // The five words we send for the free-form `occupancy` field — suggestions for
+  // the screen, not a list Class publishes.
+  OCCUPANCY_SUGGESTIONS: Object.values(OCCUPANCY).filter((v, i, a) => a.indexOf(v) === i),
   _internals: { PROPERTY_TYPE, PROPERTY_TYPE_ASSUMED, PURPOSE, LOAN_TYPE, OCCUPANCY, norm, contact },
 };

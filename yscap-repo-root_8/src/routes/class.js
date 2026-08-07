@@ -21,6 +21,7 @@ const { assigneeExistsSql } = require('../lib/permissions');
 const { can } = require('../lib/permissions');
 const client = require('../class/client');
 const orderService = require('../class/order-service');
+const orderBuild = require('../class/order-build');
 
 router.use(requireAuth, requireStaff);
 
@@ -50,8 +51,17 @@ function readOverrides(src) {
 
 // Whether the integration is configured / switched on. Booleans only — never a
 // credential, never a masked one either; there is nothing here worth leaking.
+//
+// It also hands the screen Class's own closed value lists. The picker MUST come
+// from here rather than a list retyped in a component, or the options a staffer
+// can choose would drift from what the builder is willing to send.
 router.get('/config', async (_req, res) => {
-  res.json({ class: client.configured(), hosts: client.hosts() });
+  res.json({
+    class: client.configured(),
+    hosts: client.hosts(),
+    enums: orderBuild.ENUMS,
+    occupancySuggestions: orderBuild.OCCUPANCY_SUGGESTIONS,
+  });
 });
 
 // The auto-filled order preview: every field that would be sent, each labelled

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Class Valuation preview + order desk — real Postgres, real HTTP.
+ * Class Valuation preview + order desk — real Postgres.
  *
  * A pure test cannot catch a wrong column name (it mocks the query), and this
  * repo has been bitten by exactly that class more than once — a phantom column
@@ -15,7 +15,7 @@
  *     and refuses while the switches are off — in that order;
  *   • the per-file scope still 403s a staffer who is not on the file.
  */
-const assert = require('assert');
+const { signJwt } = require('../src/lib/crypto');
 if (!process.env.DATABASE_URL) { console.log('test-class-preview-db: SKIP (no DATABASE_URL)'); process.exit(0); }
 
 const db = require('../src/db');
@@ -105,11 +105,95 @@ async function main() {
   ok(missingFromScreen.length === 0,
      `every field in the body appears on the screen (unshown: ${missingFromScreen.join(', ') || 'none'})`);
 
+  // ==========================================================================
+  // THE ORDERING GATES, over real HTTP. These are the four refusals that stand
+  // between a click and an appraiser being dispatched to someone's property, and
+  // they are the reason this test boots the real server rather than calling the
+  // service directly: three of the four live in the ROUTE, not in the builder.
+  // ==========================================================================
+  const app = require('../src/server');
+  const server = app.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const officer = (await db.query(
+    `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,$2,'loan_officer',true) RETURNING id`,
+    [`cls-lo-${tag}@example.test`, 'Ophelia Officer'])).rows[0].id;
+  const outsider = (await db.query(
+    `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,$2,'loan_officer',true) RETURNING id`,
+    [`cls-out-${tag}@example.test`, 'Otto Other'])).rows[0].id;
+  await db.query('UPDATE applications SET loan_officer_id=$2 WHERE id=$1', [appId, officer]);
+  await db.query(`INSERT INTO application_assignees (application_id, staff_id, role)
+                  VALUES ($1,$2,'loan_officer') ON CONFLICT DO NOTHING`, [appId, officer]);
+
+  const jwtFor = (id) => signJwt({ sub: id, kind: 'staff', role: 'loan_officer', tv: 0, sid: 'test' });
+  const call = async (method, path, body, jwt) => {
+    const r = await fetch(`${base}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${jwt || jwtFor(officer)}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let j = null; try { j = await r.json(); } catch (_) { /* a non-JSON body is still a result */ }
+    return { status: r.status, body: j };
+  };
+
+  // The screen's own data feed.
+  const cfgRes = await call('GET', '/api/class/config');
+  ok(cfgRes.status === 200, 'the config route answers');
+  ok(cfgRes.body && cfgRes.body.enums && Array.isArray(cfgRes.body.enums.propertyTypeEnum),
+     'and hands the screen Class\'s own value lists, so the picker cannot drift from the builder');
+  ok(!JSON.stringify(cfgRes.body).match(/client_?secret|password/i),
+     'and carries no credential of any shape');
+
+  // GATE 1 — a GET can never place an order, and a POST without an explicit
+  // confirmation is a refusal rather than a default.
+  const noConfirm = await call('POST', `/api/class/files/${appId}/order`, { overrides: { productId: 42 } });
+  ok(noConfirm.status === 400 && noConfirm.body.error === 'confirm_required',
+     'ordering without an explicit confirmation is refused');
+
+  // GATE 2 — incomplete is refused, and the refusal NAMES what is missing. This
+  // is re-checked at send time, not trusted from whatever the screen last saw.
+  const incomplete = await call('POST', `/api/class/files/${appId}/order`, { confirm: true });
+  ok(incomplete.status === 422 && incomplete.body.error === 'incomplete',
+     'a file with no product chosen cannot be ordered');
+  ok((incomplete.body.missing || []).some((m) => m.field === 'productId'),
+     'and the refusal names the missing product rather than a generic error');
+
+  // GATE 3 — with everything filled in, the SWITCHES are still the last word.
+  const switchedOff = await call('POST', `/api/class/files/${appId}/order`, { confirm: true, overrides: { productId: 42 } });
+  ok(switchedOff.status === 409 && /CLASS_(DISABLED|NOT_CONFIGURED)/.test(switchedOff.body.error || ''),
+     'a complete order still cannot go out while the connection is switched off');
+
+  // GATE 4 — the per-file scope. A staffer who is not on this file cannot see the
+  // preview and cannot order, and gets the same 403 either way.
+  const jwtOut = jwtFor(outsider);
+  const peek = await call('GET', `/api/class/files/${appId}/preview`, null, jwtOut);
+  ok(peek.status === 403, 'a staffer who is not on the file cannot see the order preview');
+  const sneak = await call('POST', `/api/class/files/${appId}/order`, { confirm: true, overrides: { productId: 42 } }, jwtOut);
+  ok(sneak.status === 403, 'and cannot order on it either');
+
+  // The preview over HTTP must agree with the preview computed in-process — the
+  // screen and the send would otherwise be looking at two different orders.
+  const httpPv = await call('GET', `/api/class/files/${appId}/preview?productId=42`);
+  ok(httpPv.status === 200 && httpPv.body.canPlace === true, 'the HTTP preview accepts an override from the screen');
+  ok(httpPv.body.fields.length === pv2.fields.length, 'and lists exactly the same fields as the service does');
+
+  // An override the allowlist does not carry is DROPPED, never passed through.
+  const smuggle = await call('GET', `/api/class/files/${appId}/preview?productId=42&amcName=Someone%20Else`);
+  ok(smuggle.status === 200 && smuggle.body.body.amcName === undefined,
+     'a field outside the allowlist cannot be smuggled into the order body');
+
   // --- cleanup ------------------------------------------------------------
+  server.close();
   await db.query('DELETE FROM applications WHERE id=$1', [appId]);
   await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
+  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, outsider]]);
 
   console.log(`\ntest-class-preview-db: ${pass} passed, ${fail} failed`);
+  // NOTE for whoever reads this output next: a trailing
+  //   "[request-audit] flush failed … Cannot use a pool after calling end"
+  // line is EXPECTED and is not a failure. The shared request audit flushes on its
+  // own timer and this test ends the pool first; the exit code above is the verdict.
   await db.pool.end().catch(() => {});
   if (fail) process.exit(1);
 }
