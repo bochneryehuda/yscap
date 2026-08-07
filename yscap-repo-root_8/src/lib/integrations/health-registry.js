@@ -536,6 +536,31 @@ const INTEGRATIONS = [
       return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled. Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
     },
   },
+  {
+    key: 'class', name: 'Class Valuation (appraisal ordering)', group: 'framework',
+    purpose: 'The SECOND appraisal vendor, alongside AppraisalScope / NAN. Order an appraisal with every field filled in and shown first, then track it and pull the finished report back onto the file. Built against their V1 Orders API; it needs the four Class credentials, then the ordering screen and the callback receiver come with later build phases. Nothing decides between the two vendors — that stays a deliberate choice.',
+    direction: 'Two-way (planned) — we place orders, they push status back by webhook',
+    auth: 'OAuth2 password grant (client id + secret + username + password)',
+    // All four are [Required] by their password grant — there is no partial mode, and
+    // a portal login on its own is not enough (V1 guide p.9).
+    env: [{ name: 'CLASS_CLIENT_ID', required: true }, { name: 'CLASS_CLIENT_SECRET', required: true },
+      { name: 'CLASS_USERNAME', required: true }, { name: 'CLASS_PASSWORD', required: true },
+      { name: 'CLASS_ENVIRONMENT', required: false }, { name: 'CLASS_ORG_ID', required: false },
+      { name: 'CLASS_LENDER_ORG_ID', required: false }],
+    switches: [{ name: 'CLASS_ENABLED', label: 'Reading + polling' }, { name: 'CLASS_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: false,
+    async probe() {
+      const c = require('../../class/client').configured();
+      if (!c.ready) {
+        const missing = [!c.hasClient ? 'the client id + secret' : null, !c.hasUser ? 'the username + password' : null].filter(Boolean).join(' and ');
+        return { configured: false, live: null, detail: `Not connected — the Class Valuation connector is built and off by default. Class still needs to supply ${missing || 'the four credentials'} (CLASS_CLIENT_ID / CLASS_CLIENT_SECRET / CLASS_USERNAME / CLASS_PASSWORD). All four are required by their sign-in; a portal login on its own is not enough.` };
+      }
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (CLASS_ENABLED) is off, so nothing talks to Class Valuation yet.' };
+      const env = `Pointed at their ${c.environment.toUpperCase()} environment.`;
+      const hosts = c.hostsConfirmed ? '' : ' Their sign-in address for this environment has not been confirmed by Class yet — check it before ordering for real.';
+      return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${hosts}` };
+    },
+  },
 ];
 
 // Turn a probe result + descriptor into the resolved shape the page renders. `state` is the single
