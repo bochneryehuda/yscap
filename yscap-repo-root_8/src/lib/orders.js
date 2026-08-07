@@ -88,7 +88,7 @@ function dayText(d) {
  * Two separate coverages, and the distinction is the whole point — an agent who
  * reads only "builders risk" quotes a policy whose VACANCY CLAUSE then guts it:
  *
- *  • BUILDER'S RISK / COURSE OF CONSTRUCTION — the renovation policy. Written on a
+ *  • BUILDERS RISK / COURSE OF CONSTRUCTION — the renovation policy. Written on a
  *    SPECIAL FORM at REPLACEMENT COST, covering the structure plus materials on
  *    site and in transit, with renovation/construction expressly PERMITTED. Without
  *    "renovations permitted" a standard property form excludes the work itself.
@@ -106,7 +106,7 @@ function dayText(d) {
  * this touches a frozen pricing figure.
  */
 const INSURANCE_COVERAGE_LINES = [
-  "Builder's Risk / Course of Construction coverage on a special form at replacement cost, covering the structure, materials on site and materials in transit, with renovation and construction work expressly permitted.",
+  "Builders Risk / Course of Construction coverage on a special form at replacement cost, covering the structure, materials on site and materials in transit, with renovation and construction work expressly permitted.",
   'Vacant property coverage — please include a vacancy permit / vacancy permission endorsement so the policy’s vacancy clause and any vacancy exclusion do not apply for the full policy term. The property is vacant and under renovation.',
   'Dwelling / building limit at no less than the greater of the loan amount or the replacement cost of the structure.',
   'YS Capital Group named as mortgagee and loss payee exactly as the clause below reads, with the loan number shown.',
@@ -122,7 +122,7 @@ const INSURANCE_COVERAGE_LINES = [
  * Two rules, both deliberate:
  *  • The MAILING ADDRESS is the borrower's own home address, not the subject
  *    property (owner-directed: "Mailing address can be the borrowers personal home
- *    address") — a builder's risk policy on a vacant house cannot be mailed to the
+ *    address") — a Builders Risk policy on a vacant house cannot be mailed to the
  *    vacant house. The entity is the NAMED INSURED; the human is where the paper
  *    goes, which is why the label says so.
  *  • A value we do not have is OMITTED, never printed as a blank or a guess. A row
@@ -371,7 +371,7 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     intro,
     lines,
     meta,
-    // WHAT WE ARE ASKING TO BE COVERED — Builder's Risk AND vacant property, each
+    // WHAT WE ARE ASKING TO BE COVERED — Builders Risk AND vacant property, each
     // named in the industry's own terms so a binder cannot come back with a vacancy
     // clause still in it. Insurance only; a title order has no coverage to request.
     sections: kind === 'insurance'
