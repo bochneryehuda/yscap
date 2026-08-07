@@ -9,6 +9,11 @@ import { scenarioToDraft } from '../lib/scenario.js';
 // & Pricing panel registers with — so a file created from a term sheet registers
 // through the identical guarded path (owner-directed 2026-08-06).
 import { readSnapshot } from '../components/TermSheetStudio.jsx';
+// WHO IS DRIVING THIS TOOL — the one place the portal tells an embedded static tool
+// which staff member it is working for (lib/toolOfficer.js). Without it the tool is
+// anonymous, its leads post with no officer, and the round-robin gives a staffer's
+// own work to somebody else (owner-reported 2026-08-07).
+import { stampToolOfficer } from '../lib/toolOfficer.js';
 import { overridesFromSnapshot, overridesAreManual, termOptionsFromSnapshot } from '../components/ProductStudioPanel.jsx';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
@@ -224,6 +229,11 @@ export default function StaffInvestorSuite({ initialTool = null }) {
               // on a staffer's own login — outside any file — is OFFICER
               // GENERATED (still an initial, never final).
               if (open.slug === 'term-sheet') { try { win.TS_PROVENANCE = { kind: 'officer' }; } catch (_) { /* cosmetic */ } }
+              // EVERY tool here, not just the term sheet: the rehab budget, the track
+              // record and the loan application all post leads through the same door
+              // and were all anonymous inside the portal. Fire-and-forget — the tool
+              // reads the stamp at click time, and a failure must never block loading.
+              stampToolOfficer(win);
             }} />
         </div>
       </div>

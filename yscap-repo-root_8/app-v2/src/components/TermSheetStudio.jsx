@@ -10,6 +10,9 @@ import { moneyNum } from '../lib/money.js';
    identical document can be attached to the loan file. Every guideline,
    limitation, note and number the borrower sees is the static tool's own. */
 
+// WHO IS DRIVING THIS TOOL — one definition, shared with the Investor Suite.
+import { stampToolOfficer } from '../lib/toolOfficer.js';
+
 const STUDIO_URL = '/tools/term-sheet.html';
 
 // Marketing chrome that has no place inside the portal. Everything else —
@@ -641,6 +644,17 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
+        /* NO ASSIGNED OFFICER IS NOT "NOBODY" — it is the person at the keyboard
+           (owner-directed 2026-08-07: "if somebody is doing something from his login,
+           it should always stay with his information, his name"). On a file WITH an
+           assigned officer that officer wins and nothing changes: the term sheet is
+           the file's, not the operator's. On an UNASSIGNED file the tool was
+           completely anonymous, so anything it posted lost its owner to the lead
+           round-robin exactly as the Investor Suite did. The stamp also declares the
+           staff-portal origin unconditionally, which is what keeps the rotation out
+           of the way even when the identity cannot be resolved (lib/toolOfficer.js).
+           Fire-and-forget: it must never delay or block the studio. */
+        stampToolOfficer(win, { keepExisting: !!(officer && officer.name) });
         // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
         // findings hold generation — the tool's Download-PDF button refuses
         // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The
