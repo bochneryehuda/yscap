@@ -432,6 +432,61 @@ async function pendingCount(client = db) {
  *  can decide without waiting for the loan officer to act on the counter).
  *  Returns the row, or null if it was already decided / no longer exists.
  */
+/* AN APPROVAL RELEASES THE HOLD ON THE REGISTRATION IT WAS GRANTED FOR
+   (owner-reported 2026-08-07: "if the appraisal comes in and you re-register, and
+   then the admin approves, you should not need another re-register").
+
+   ROOT CAUSE. `product_registrations.needs_approval` (db/343) is written ONCE, at
+   INSERT, and from then on only READ — `esign/gate.js` blocks the term sheet on it.
+   Approving the escalation marked the REQUEST approved and never touched that
+   stamp, so the gate went on saying "waiting for approval" after the approval had
+   been granted. The only way to obtain a registration without the stamp was to make
+   a NEW one — and on that one the grant IS recognised (exceptionCoveredByGrant), so
+   it sails through. That is the pointless extra re-register the owner hit, forced
+   entirely by a flag with no writer.
+
+   THE RELEASE IS NOT UNCONDITIONAL — it asks the SAME question a re-register asks.
+   `exceptionCoveredByGrant` is the one definition of "this grant covers these
+   terms", so approving cannot clear a hold on terms the approval does not actually
+   cover (an officer who re-registered at 0.9% while 1.0% sat pending must still be
+   approved for 0.9%). Because it is the same predicate the register door uses,
+   approve-then-re-register and re-register-then-approve now settle identically —
+   which is the owner's whole point about order not mattering.
+
+   FAILS CLOSED, AND NEVER REVERSES THE DECISION. Anything unreadable leaves the
+   stamp in place, which is exactly today's behaviour (the officer re-registers);
+   and the whole release is best-effort, because an approval a super-admin has
+   granted must never be rolled back by a bookkeeping write. */
+async function releaseApprovalHold(escalation, client = db) {
+  const appId = escalation && escalation.application_id;
+  if (!appId) return { released: false, reason: 'no_application' };
+  const cur = (await client.query(
+    `SELECT id, program, status, total_loan, override_changes, is_manual
+       FROM product_registrations
+      WHERE application_id=$1 AND is_current AND COALESCE(needs_approval,false)
+      LIMIT 1`, [appId])).rows[0];
+  if (!cur) return { released: false, reason: 'nothing_on_hold' };
+  const grant = await latestApprovedGrant(appId, client);
+  if (!grant) return { released: false, reason: 'no_grant' };
+  const cov = exceptionCoveredByGrant({
+    program: cur.program,
+    status: cur.status,
+    overrideChanges: Array.isArray(cur.override_changes) ? cur.override_changes : [],
+    loanAmount: cur.total_loan != null ? Number(cur.total_loan) : null,
+    // The registration does not store the guideline reasons that made it MANUAL, so
+    // they come from the grant itself: this escalation was opened FOR these terms,
+    // and a re-register that gained a NEW reason would have opened its own row and
+    // superseded this one. Passing the grant's own reasons therefore asks "are the
+    // reasons still the approved ones?" — never "assume there are none".
+    manualReasons: grant.manualReasons,
+  }, grant);
+  if (!cov.covered) return { released: false, reason: cov.reason || 'not_covered' };
+  await client.query(
+    `UPDATE product_registrations SET needs_approval=false
+      WHERE id=$1 AND COALESCE(needs_approval,false)`, [cur.id]);
+  return { released: true, registrationId: cur.id, reason: cov.reason || 'covered' };
+}
+
 async function decideEscalation(id, decision, staffId, note, client = db) {
   const status = decision === 'approved' ? 'approved' : 'declined';
   const r = await client.query(
@@ -441,7 +496,14 @@ async function decideEscalation(id, decision, staffId, note, client = db) {
       WHERE id=$1 AND status IN ('pending','countered')
       RETURNING *`,
     [id, status, staffId || null, note ? String(note).slice(0, 500) : null]);
-  return r.rows[0] || null;
+  const row = r.rows[0] || null;
+  // Only an APPROVAL releases a hold. A decline must leave it exactly where it is.
+  if (row && status === 'approved') {
+    try { row.holdRelease = await releaseApprovalHold(row, client); }
+    catch (e) { row.holdRelease = { released: false, reason: 'error' };
+      console.warn('[manual-program] approval hold release failed:', db.describeError ? db.describeError(e) : e.message); }
+  }
+  return row;
 }
 
 /** Counter-offer an escalation (owner-directed 2026-07-21). Instead of a plain
@@ -478,6 +540,7 @@ module.exports = {
   exceptionCoveredByGrant, latestApprovedGrant,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
   openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation, counterEscalation,
+  releaseApprovalHold,
   // exported for tests
   _internals: { itemsFromChanges, itemsFromSlim, canonValue },
 };
