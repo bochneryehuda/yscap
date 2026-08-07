@@ -196,6 +196,11 @@ export function overridesFromSnapshot(snap, mode) {
       // register route's own allowlist never accepts it, so it stays staff-only
       // even though this panel is shared.
       targetLoan: f.tsTargetLoan,
+      // The payoff the studio priced on — a refinance pays the existing loan out of
+      // the initial advance, so this decides cash to close and its DIRECTION.
+      // Without it the register silently used the file's (possibly stale, possibly
+      // empty) column while the printed sheet used what the officer typed.
+      payoff: f.payoff,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,

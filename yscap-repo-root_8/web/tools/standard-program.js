@@ -364,6 +364,30 @@
         totalLoan = acquisition + rehabLoan + financedIR;
         fullPmt = totalLoan * (rate / 12);
         rehabOverCap = true;
+        /* RE-FIT THE RESERVE TO THE SMALLER PAYMENT (owner-directed 2026-08-07).
+           The reserve was sized above against `capDesired(val, pmt)` = the term cap
+           times the payment BEFORE this guard cut the loan. The cut lowers the
+           payment and never re-ran that fit, so the financed reserve could exceed
+           its own documented ceiling — measured $76,713 (18.67 months) on an
+           18-month Gold ground-up whose 75%-of-term cap is $55,455, and LARGER in
+           dollars on the smaller loan. The borrower financed, and paid origination
+           and interest on, money that can never accrue as interest within the term,
+           and the note buyer's workbook cap was exceeded.
+           Only reachable inside this guard (a rehab-over-cap deal), only when a term
+           cap exists, and it can only ever REDUCE — each pass lowers the reserve,
+           which lowers the basis, the loan and the payment, so it converges downward
+           and is bounded. Every documented month cap is honoured because `capMo` IS
+           that cap (full term on Standard, the frozen 75%-of-term on Gold ground-up,
+           zero on Gold reno / bridge, where no reserve exists to re-fit). */
+        if (capMo > 0) {
+          for (var gFit = 0; gFit < 40 && financedIR > capMo * fullPmt + 0.005; gFit++) {
+            financedIR = capMo * fullPmt;
+            ltcBasisG = costBasis0 + (reserveInCost ? financedIR : 0);
+            rehabLoan = Math.max(0, m * ltcBasisG - acquisition - financedIR);
+            totalLoan = acquisition + rehabLoan + financedIR;
+            fullPmt = totalLoan * (rate / 12);
+          }
+        }
       }
     }
 
