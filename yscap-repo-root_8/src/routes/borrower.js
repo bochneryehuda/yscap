@@ -1009,6 +1009,13 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  // The Silver ladder's value-side rung. Same class as targetLTC — a voluntary
+  // REDUCTION the studio lets a borrower pick, and one the engine can only ever
+  // apply as a MIN against the cap, so it can never enlarge a loan. It is clamped
+  // to a real ratio: a tampered client sending 5 (i.e. 500%) would simply be
+  // inert, but bounding it keeps a nonsense value out of the persisted inputs.
+  const targetARLTV = Number(raw && raw.targetARLTV);
+  if (isFinite(targetARLTV) && targetARLTV > 0 && targetARLTV <= 1) out.targetARLTV = targetARLTV;
   // An explicit blank clears the reserve: pass '' through so buildInputs resolves
   // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
   // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).

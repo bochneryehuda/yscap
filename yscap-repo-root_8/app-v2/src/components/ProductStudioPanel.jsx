@@ -123,6 +123,13 @@ export function overridesFromSnapshot(snap, mode) {
   const base = {
     ...compact({
       targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+      // THE VALUE-SIDE LEVER MUST TRAVEL WITH THE COST-SIDE ONE. On Silver (EMCAP)
+      // a ladder rung can be earned by giving up ARV leverage instead of cost
+      // leverage, and the two are different engine inputs. Carrying only targetLTC
+      // would register the deal's MAXIMUM loan whenever the borrower picked a
+      // value-side step — the file would price differently from the paper they
+      // signed. compact() drops it when unset, so every other program is unchanged.
+      targetARLTV: d.inp && d.inp.targetARLTV ? d.inp.targetARLTV : null,
       // Interest reserve may instead be an exact dollar amount (owner-directed
       // 2026-07-12) — carried through to the frozen engine, which honors it over
       // months and fits it under the same caps. A BLANK amount is sent as 0 (not

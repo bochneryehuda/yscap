@@ -218,6 +218,12 @@ function buildInputs(app, experience, overrides) {
     heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
+    // The Silver (EMCAP) ladder can step down the VALUE side as well as the cost
+    // side, because EMCAP prices on the ARV band and the LTC band alike. A rung the
+    // borrower picked has to arrive here or the file would register the deal's
+    // MAXIMUM loan while the signed sheet shows the smaller, better-priced one.
+    // Zero = no lever, exactly like targetLTC.
+    targetARLTV: 0,
     // Sticky per-file markup (#101): once a file is registered with a per-file
     // markup override it is persisted on the application (db/109) and re-applied to
     // EVERY subsequent quote — staff live, borrower live, AND borrower register — so
@@ -246,7 +252,7 @@ function buildInputs(app, experience, overrides) {
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
-    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
+    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section

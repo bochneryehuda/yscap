@@ -225,8 +225,12 @@ assert(ltcMoved > 0, `D1 an ARV cut moves the LTC ratio too, so both bands re-pr
     'I1 the ladder page names which side earned each step');
   assert(/Value \(ARV\)/.test(ts) && /Cost \(LTC\)/.test(ts) && /Initial advance/.test(ts),
     'I2 …and shows BOTH ratios plus the initial advance, because one cut moves both');
-  assert(/\(r\.ltc == null\) \? false/.test(ts),
-    'I3 a value-side rung (ltc === null) can never be matched as the selected row');
+  assert(/r\.key === selKey/.test(ts),
+    'I3 the selected row is matched on the rung KEY, never on a value two rungs can share');
+  assert(!/silverChosenLTC/.test(ts),
+    'I3b nothing still selects a Silver rung by LTC value (the old, ambiguous selection)');
+  assert(/isSilver \? rows\[idx\]\.key : rows\[idx\]\.ltc/.test(ts),
+    'I3c the slider stores the rung key on Silver, and the LTC value everywhere else');
   // Every column table in this file must sum to the full width, or a column runs
   // off the edge of a document that goes out for signature.
   const tables = ts.match(/var cols = [\s\S]*?\];/g) || [];
@@ -242,6 +246,55 @@ assert(ltcMoved > 0, `D1 an ARV cut moves the LTC ratio too, so both bands re-pr
   }
   assert(seen >= 2, `I4 both the Silver and the Standard ladder tables were checked (${seen})`);
   assert(bad === 0, `I5 every ladder table's column widths sum to exactly the page width (bad: ${bad})`);
+}
+
+// ---- J. The studio's OWN rung parser drives the right lever --------------------
+// H5 proved every rung reproduces when the lever is derived by the TEST. This runs
+// the studio's shipped applySilverRung instead, so a rung selected on the slider is
+// priced on the axis its key names — the failure this guards against is silent and
+// expensive: a value-side rung applied as a COST cut prices a different loan than
+// the row the borrower clicked, on a sheet that goes out for signature.
+{
+  const ts = fs.readFileSync(path.join(__dirname, '..', 'web/v2/tools/termsheet.js'), 'utf8');
+  const src = ts.match(/function applySilverRung\(inp\) \{[\s\S]*?\n  \}/);
+  assert(!!src, 'J0 the studio carries one applySilverRung, and this test runs THAT one');
+  const studio = new Function(
+    `let silverChosenRung = null; ${src[0]}
+     return { pick: (k) => { silverChosenRung = k; }, apply: applySilverRung };`)();
+
+  let checked = 0, wrongLoan = 0, arvSeen = 0, ltcSeen = 0;
+  for (const c of CASES.slice(0, 900)) {
+    const L = LIVE.priceLadder(c);
+    if (!L.eligible || !L.rows.length) continue;
+    for (const r of L.rows) {
+      if (!r.cut) continue;
+      studio.pick(r.key);
+      const inp = studio.apply(Object.assign({}, c));
+      // The key must have driven the axis it names — and ONLY that axis.
+      if (r.cut === 'arv') { arvSeen++; if (inp.targetLTC != null) wrongLoan++; }
+      else { ltcSeen++; if (inp.targetARLTV != null) wrongLoan++; }
+      const re = LIVE.evaluate(inp);
+      checked++;
+      if (!re.sizing || Math.abs(re.sizing.totalLoan - r.totalLoan) > 1
+          || Math.abs((re.noteRate || 0) - r.noteRate) > 1e-12) wrongLoan++;
+    }
+  }
+  assert(checked > 100, `J1 the studio's parser was run on ${checked} real rungs`);
+  assert(arvSeen > 0 && ltcSeen > 0,
+    `J2 both families were selected through it — ${ltcSeen} cost-side, ${arvSeen} value-side`);
+  assert(wrongLoan === 0,
+    `J3 every rung the slider selects prices EXACTLY the row it shows (violations: ${wrongLoan})`);
+
+  // A stale or malformed key must fall through to the deal's maximum. The rungs are
+  // recomputed on every keystroke, so a selected rung genuinely can stop existing —
+  // and neither lever may ever be set to something that RAISES a cap.
+  let leaked = 0;
+  for (const k of [null, '', 'max', 'arv:', 'ltc:abc', 'arv:0', 'ltc:-0.5', 'arv:NaN', 'ltc']) {
+    studio.pick(k);
+    const inp = studio.apply({});
+    if (inp.targetLTC != null || inp.targetARLTV != null) { leaked++; console.log(`    key ${JSON.stringify(k)} set a lever`); }
+  }
+  assert(leaked === 0, `J4 a stale, blank or malformed rung sets no lever at all — it can only fall back to the maximum (leaks: ${leaked})`);
 }
 
 // ---- The two engine copies stay identical (the frozen-copies rule) -------------

@@ -379,6 +379,9 @@ export function selectionFromSnapshot(snap) {
     arvLtvPct: d.arvPct != null ? d.arvPct * 100 : null,
     binding: d.binding || '',
     targetLTC: (d.inp && d.inp.targetLTC) || null,
+    // Silver's ladder steps on the VALUE side too, so the snapshot has to carry
+    // whichever lever the chosen rung used — see overridesFromSnapshot.
+    targetARLTV: (d.inp && d.inp.targetARLTV) || null,
   };
 }
 
