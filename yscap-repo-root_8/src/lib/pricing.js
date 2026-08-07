@@ -224,6 +224,11 @@ function buildInputs(app, experience, overrides) {
     // MAXIMUM loan while the signed sheet shows the smaller, better-priced one.
     // Zero = no lever, exactly like targetLTC.
     targetARLTV: 0,
+    // A typed loan amount (owner-directed 2026-08-06) — a voluntary CEILING on the
+    // tier's own dollar wall, on every program. Zero = no amount, exactly like the
+    // two levers above. It can only reduce; raising a loan still requires the
+    // approval-gated manual basis.
+    targetLoan: 0,
     // Sticky per-file markup (#101): once a file is registered with a per-file
     // markup override it is persisted on the application (db/109) and re-applied to
     // EVERY subsequent quote — staff live, borrower live, AND borrower register — so
@@ -252,7 +257,7 @@ function buildInputs(app, experience, overrides) {
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
-    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV',
+    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section

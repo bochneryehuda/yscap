@@ -1056,6 +1056,11 @@
        byte-identical against the pre-change engine (scripts/test-silver-arv-lever-pure.js).
        An ADMIN basis override (ovrARLTV, next line) still wins, as it does for LTC. */
     if (input.targetARLTV && input.targetARLTV > 0) capsEff.maxARLTV = Math.min(capsEff.maxARLTV, input.targetARLTV);
+    /* A typed loan amount — a voluntary ceiling on the tier's own dollar wall, so it
+       can only ever REDUCE. Same kind as the two levers above; see the full note in
+       standard-program.js (whose sizeLoan this engine reuses). Inert when unset;
+       raising a loan still requires the admin basis below. */
+    if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
     if (input.ovrLTC > 0) capsEff.maxLTC = input.ovrLTC;

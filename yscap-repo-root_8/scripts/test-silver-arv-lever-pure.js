@@ -9,9 +9,11 @@
  * This engine is FROZEN, so the bar is not "the new lever works" — it is:
  *
  *   A. INERT WHEN UNSET. With no targetARLTV the engine's output must be
- *      byte-identical to the pre-change engine, over a broad scenario matrix.
- *      The baseline is read from git (HEAD's committed copy), so this proof
- *      re-runs in CI forever, not just on the day it was written.
+ *      byte-identical to the same engine WITHOUT the lever, over a broad scenario
+ *      matrix. The baseline is built by REMOVING the lever line from today's engine
+ *      rather than by reading HEAD, so the proof stays meaningful forever — see the
+ *      note on baselineEngine(); a git baseline goes vacuous the moment the change
+ *      is committed.
  *   B. IT CAN ONLY EVER REDUCE. A set lever may never produce a LARGER loan than
  *      the same scenario with no lever — it is a MIN on a ceiling, and that must
  *      hold across the matrix, not just in principle.
@@ -27,9 +29,7 @@
  */
 'use strict';
 
-const { execFileSync } = require('child_process');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 let failures = 0;
@@ -37,11 +37,22 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
 
 const LIVE = require('../web/v2/tools/silver-program.js');
 
-/** HEAD's committed engine, loaded from git so the equivalence proof is permanent. */
+/* THE BASELINE IS TODAY'S ENGINE WITH THE LEVER SURGICALLY REMOVED — deliberately no
+   longer "HEAD's committed copy". Reading it from git proved inertness only until the
+   change was committed; once it landed, HEAD carried the lever too and the comparison
+   quietly degenerated into "the engine equals itself" — passing forever while proving
+   nothing. Removing the one line keeps the claim TRUE permanently: whatever this
+   engine becomes, adding the lever to it must change no number. The strip is asserted
+   to have actually bitten, so the proof can never go vacuous. */
+const LEVER_RE = /^.*if \(input\.targetARLTV && input\.targetARLTV > 0\).*$\n/m;
+
 function baselineEngine() {
-  const src = execFileSync('git', ['show', 'HEAD:yscap-repo-root_8/web/v2/tools/silver-program.js'], {
-    cwd: path.join(__dirname, '..', '..'), maxBuffer: 64 * 1024 * 1024, encoding: 'utf8',
-  });
+  const livePath = path.join(__dirname, '..', 'web/v2/tools/silver-program.js');
+  let stripped = 0;
+  const src = fs.readFileSync(livePath, 'utf8').replace(LEVER_RE, () => { stripped++; return ''; });
+  if (stripped !== 1) {
+    throw new Error(`baseline strip removed ${stripped} lever lines, expected 1 — the equivalence proof would be vacuous`);
+  }
   // Written BESIDE the live engine, not in a temp dir: it `require`s siblings
   // (./standard-program.js) by relative path, which only resolve from that folder.
   // Dot-prefixed so it is never mistaken for a real engine copy, and removed in a
@@ -110,7 +121,7 @@ for (const c of CASES) {
   if (ev && ev.sizing && ev.sizing.totalLoan > 0) priced++;
 }
 assert(drift === 0,
-  `A1 with the lever UNSET the engine is byte-identical to HEAD over ${CASES.length} scenarios (drift: ${drift})`);
+  `A1 with the lever UNSET the engine is byte-identical to the same engine WITHOUT the lever, over ${CASES.length} scenarios (drift: ${drift})`);
 if (firstDrift) console.log('    first drift:', JSON.stringify(firstDrift.c), '\n    was:', firstDrift.a, '\n    now:', firstDrift.b);
 assert(priced > CASES.length * 0.2,
   `A2 the matrix is meaningful — ${priced} of ${CASES.length} scenarios actually price (not a matrix of dead cases)`);

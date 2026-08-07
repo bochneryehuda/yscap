@@ -356,6 +356,14 @@
     // in calc()/normalize() as a pure transform of the already-sized structure.
     var oopReq = adminNumRaw("tsOopRehab"); if (oopReq != null && oopReq > 0) o.oopRehab = oopReq;
     if (chk("tsOopRehabMax")) o.oopRehabMax = true;
+    /* A TYPED LOAN AMOUNT (owner-directed 2026-08-06). Read on EVERY program — the box
+       lives in the admin zone, like the out-of-pocket rehab above. It reaches the
+       frozen engines as a voluntary ceiling on the tier's own dollar wall, so it can
+       only ever REDUCE and needs no approval: the same class as a ladder rung. Going
+       ABOVE the maximum is structurally impossible here BY DESIGN — that is what the
+       manual basis (LTV / LTC / ARV) is for, and it already routes to admin approval.
+       Blank/0 sends nothing at all, so an untouched box changes no number anywhere. */
+    var tgtLoan = adminNumRaw("tsTargetLoan"); if (tgtLoan != null && tgtLoan > 0) o.targetLoan = tgtLoan;
     return o;
   }
 

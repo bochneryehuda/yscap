@@ -258,6 +258,8 @@ export function readSnapshot(win) {
       // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the dollar box + the
       // "raise the initial to its max" toggle in the admin zone.
       tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
+      // A typed loan amount (owner-directed 2026-08-06) — the admin zone's exact-amount box.
+      tsTargetLoan: moneyVal('tsTargetLoan'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
       // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
@@ -327,6 +329,7 @@ export function adminStateFromEngineInputs(inp) {
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
   put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)
+  put('tsTargetLoan', inp.targetLoan);   // the typed loan amount, so reopening a file restores it
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves

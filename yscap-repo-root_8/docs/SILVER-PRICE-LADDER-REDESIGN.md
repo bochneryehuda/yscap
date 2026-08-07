@@ -165,5 +165,16 @@ change — only the alternatives list. Flagged to the owner and accepted.
    engine, asserting the file registers the loan and rate the sheet printed.
    `test-silver-arv-register-carry-pure.js`, proven to bite (576 failures — one per
    value-side rung — with the whitelist entry removed).
-7. **The manual loan-amount box.** ← next
-8. **Re-freeze note in CLAUDE.md** recording the authorised change.
+7. ~~The manual loan-amount box~~ — **DONE, and on ALL THREE programs** (the owner was
+   asked and chose every program, not Silver only). It is a voluntary CEILING
+   (`targetLoan`), one line per engine, so no sizing math changed and "reduce only" is
+   structural rather than a validation rule. `test-target-loan-pure.js`, 9,720
+   evaluations byte-identical when empty.
+8. ~~Re-freeze note in CLAUDE.md~~ — **DONE** for both authorised changes (the ARV
+   lever and the typed loan amount).
+
+**Build order complete.** One correction worth carrying forward: an equivalence
+baseline must be built by REMOVING the new line from today's engine, never by reading
+`HEAD` — a git baseline goes vacuous the moment the change is committed, and passes
+forever while proving nothing. Both proofs were rewritten to strip the line, and each
+asserts the strip actually bit.

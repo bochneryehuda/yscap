@@ -188,6 +188,14 @@ export function overridesFromSnapshot(snap, mode) {
       // register/quote payload (buildInputs whitelists it); the engine/normalize caps
       // it at the maximum. A blank is dropped by compact() (no exception).
       oopRehab: f.tsOopRehab,
+      // A typed loan amount (owner-directed 2026-08-06). Rides the register/quote
+      // payload exactly like oopRehab above. It reaches the frozen engines as a
+      // voluntary CEILING, so it can only ever reduce and carries no approval —
+      // the way UP is the manual basis keys above, which already escalate. A blank
+      // is dropped by compact(), so an untouched box changes nothing. The borrower
+      // register route's own allowlist never accepts it, so it stays staff-only
+      // even though this panel is shared.
+      targetLoan: f.tsTargetLoan,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,
