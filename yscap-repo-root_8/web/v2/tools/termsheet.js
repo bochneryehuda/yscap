@@ -2810,7 +2810,9 @@
         y += 92; footer();
       }
 
-      // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
+      // ---------------- FINAL PAGE: the pricing ladder (STANDARD *and* SILVER) ----------------
+      // Silver joined this page on 2026-08-06 and renders its OWN columns below — the
+      // heading said "STANDARD PROGRAM ONLY" for a while after that was no longer true.
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
       // Suppress the ladder on a manual admin exception too — the overridden basis
