@@ -12911,19 +12911,29 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
     // recipient (nobody should be Cc'd on their own message), and the whole lookup is
     // best-effort: a hand-off notification must never fail for want of a Cc address.
     let loCc = null;
+    let noteBuyerMeta = [];
     try {
       const lo = (await db.query(
-        `SELECT s.id, s.email FROM applications a
-           JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active = true
+        `SELECT s.id, s.email, a.lender FROM applications a
+           LEFT JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active = true
           WHERE a.id = $1`, [appId])).rows[0];
       if (lo && lo.email && String(lo.id) !== String(toStaffId)) loCc = [lo.email];
+      // THE NOTE BUYER IS ATTACHED TO *THIS* EMAIL, NOT TO THE SHARED BLOCK (owner-directed
+      // 2026-08-07: *"it should say in the email who the loan officer on the file is and who the
+      // note buyer on the file is"*). It was first added to `notify.fileContext`'s staff meta,
+      // which every staff email on a file inherits — and that broke the investor draw reminders,
+      // which speak of "the investor" on purpose so the desk can forward one without disclosing
+      // who funds the loan. The hand-off is the email the owner named, so the name rides here as
+      // `extraMeta` and nowhere else. STAFF-ONLY by construction: `notifyStaff` never renders
+      // `borrowerMeta`, and this row is not on it.
+      if (lo && lo.lender) noteBuyerMeta = [{ label: 'Note buyer', value: String(lo.lender) }];
     } catch (_) { /* the hand-off still goes without the officer copied */ }
     await notify.notifyStaff(toStaffId, {
       type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
       body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
-      // The file's own facts — who the loan officer is, who the processor is, who the note buyer
-      // is, and the deal's numbers — ride in the enrichment `meta` block, which now carries all
-      // three (see notify.fileContext). Nothing to hand-list here.
+      // The loan officer, the processor and the deal's numbers ride in the shared enrichment `meta`
+      // block (see notify.fileContext); only the note buyer is hand-attached, for the reason above.
+      extraMeta: noteBuyerMeta,
       cc: loCc || undefined,
       applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
     }).catch(() => {});

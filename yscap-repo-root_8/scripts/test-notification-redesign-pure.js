@@ -698,4 +698,58 @@ ok('the server folds an INBOUND reply and leaves an OUTBOUND message untouched',
   assert.strictEqual((src.match(/foldQuotedHistory\(out, row\)/g) || []).length, 3);
 });
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   H · THE NOTE BUYER RIDES ON ONE EMAIL, NEVER ON THE SHARED BLOCK
+   Owner (item 12): "it should say in the email who the loan officer on the file is and who the
+   note buyer on the file is." That is the Workflow hand-off.
+
+   THE BUG THIS PINS: the note buyer was first added to `notify.fileContext`'s STAFF meta — the
+   block EVERY staff email on a file inherits — which silently put a capital-partner name into the
+   investor draw reminders, whose whole design is to say "the investor" so the desk can forward one
+   without disclosing who funds the loan. CI caught it (test-draw-coordinator-reminders-db). The
+   name now rides as that one email's own `extraMeta`.
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nH · a note-buyer name is attached per-email, never to the shared staff block');
+
+const notifySrc = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/notify.js'), 'utf8');
+const staffSrc  = require('fs').readFileSync(require('path').join(__dirname, '../src/routes/staff.js'), 'utf8');
+
+ok('the shared staff meta block does NOT carry the note buyer', () => {
+  // The block runs from the staff `meta` array to where that array is closed. It is delimited on
+  // `...extraMeta,` — the array's last entry — NOT on the word "borrowerMeta", which the block's
+  // own explanatory comment mentions and which would cut the slice short of the rows being tested.
+  const start = notifySrc.indexOf("{ label: 'Borrower', value:");
+  const end = notifySrc.indexOf('...extraMeta,', start);
+  assert.ok(start > 0 && end > start, 'located the shared meta block');
+  const block = notifySrc.slice(start, end);
+  assert.ok(/label: 'Loan officer'/.test(block), 'the officer IS on it — that leaks nothing');
+  assert.ok(/label: 'Processor'/.test(block), 'the processor IS on it');
+  assert.ok(!/label: 'Note buyer'/.test(block),
+    'a note-buyer row here rides EVERY staff email — including the investor draw reminders');
+});
+
+ok('the Workflow hand-off attaches it itself', () => {
+  const i = staffSrc.indexOf("type: 'workflow_submitted'");
+  assert.ok(i > 0, 'found the hand-off notify');
+  const around = staffSrc.slice(i - 1600, i + 400);
+  assert.ok(/label: 'Note buyer'/.test(around), 'the hand-off names the note buyer');
+  assert.ok(/extraMeta/.test(around), 'and it rides as that email’s own extraMeta');
+});
+
+ok('extraMeta is honoured for staff and REFUSED for a borrower', () => {
+  const i = notifySrc.indexOf('opts.extraMeta');
+  assert.ok(i > 0, 'enrichFileOpts forwards extraMeta');
+  const around = notifySrc.slice(i - 400, i + 300);
+  assert.ok(/audience !== 'borrower'/.test(around),
+    'a borrower email must never be able to inherit a hand-attached note-buyer row');
+});
+
+ok('the note buyer never reaches the notifications DB row', () => {
+  // Same discipline as _fileCtx / subjectTag / kicker: the INSERT names its columns, so an
+  // email-only opt cannot be persisted.
+  const ins = notifySrc.slice(notifySrc.indexOf('INSERT INTO notifications'), notifySrc.indexOf('INSERT INTO notifications') + 400);
+  assert.ok(!/extraMeta|meta/.test(ins), ins.slice(0, 200));
+});
+
 console.log(`\n${passed} passed, ${process.exitCode ? 'SOME FAILED' : '0 failed'}`);

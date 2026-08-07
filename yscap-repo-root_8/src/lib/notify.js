@@ -127,6 +127,17 @@ async function enrichFileOpts(opts, audience) {
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
+  // ONE EMAIL'S OWN EXTRA FACTS — appended here rather than threaded through `fileContext` so it
+  // works on BOTH paths, including the fan-out helpers that pre-fetch `_fileCtx` once and would
+  // otherwise skip a per-call argument entirely.
+  //
+  // STAFF ONLY, and that restriction is the point: this exists because the Workflow hand-off needs
+  // to name the file's NOTE BUYER, which may never reach a borrower surface. Honouring it on a
+  // borrower email would hand every future caller a way through that rule by accident, so a
+  // borrower's meta is left exactly as `borrowerMeta` built it.
+  if (audience !== 'borrower' && Array.isArray(opts.extraMeta) && opts.extraMeta.length) {
+    out.meta = [...(out.meta || []), ...opts.extraMeta.filter(Boolean)];
+  }
   // Borrower emails always carry the premium loan-officer contact CARD (from the
   // file's assigned officer) so the borrower sees a real person + how to reach
   // them on every message. Officer's own business contact only — never a note
@@ -1272,12 +1283,19 @@ async function fileContext(appId, extraMeta = []) {
       // WHO IS ON THIS FILE — owner-directed 2026-08-07, on the Workflow hand-off email: *"it
       // should say in the email who the loan officer on the file is and who the note buyer on the
       // file is."* A processor picking up a hand-off had no way to tell either from the email, and
-      // both are already on the row this query reads. Added to the STAFF meta block only:
-      // `borrowerMeta` is built separately below and never receives these, so the frozen rule that
-      // a note-buyer / capital-partner name never reaches a borrower surface is structurally kept.
+      // both are already on the row this query reads. STAFF meta only — `borrowerMeta` is built
+      // separately below and never receives these.
+      //
+      // THE NOTE BUYER IS DELIBERATELY *NOT* HERE, and that is the whole lesson of this block: this
+      // is the SHARED identity block, so anything added rides EVERY staff email on a file — and
+      // several staff surfaces withhold the capital-partner name ON PURPOSE. The investor draw
+      // reminders speak of "the investor" precisely so the desk can forward one without leaking who
+      // funds the loan (`test-draw-coordinator-reminders-db.js` pins it, and it caught exactly this
+      // when the row was added here). The owner asked for the note buyer on ONE email, so it is
+      // attached to THAT email's own `extraMeta` in `workflow.notifyHandoff` — never to the block
+      // every surface inherits. Put a note-buyer name on a specific email; never on this list.
       a.lo_name ? { label: 'Loan officer', value: [a.lo_name, a.lo_email].filter(Boolean).join(' · ') } : null,
       a.proc_name ? { label: 'Processor', value: [a.proc_name, a.proc_email].filter(Boolean).join(' · ') } : null,
-      a.lender ? { label: 'Note buyer', value: String(a.lender) } : null,
       ...extraMeta,
     ].filter(Boolean);
     // Borrower-safe identity block: a clean "which file" summary (no internal
