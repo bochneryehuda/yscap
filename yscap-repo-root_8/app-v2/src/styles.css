@@ -2893,6 +2893,26 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* ── Email Center: fit-to-width email body + Open-large popup ── */
 .ec-frame-wrap{ width:100%; overflow:hidden; background:#fff; }
 .ec-frame-wrap .ec-frame{ display:block; border:none; background:#fff; }
+
+/* THE THREE DOTS — the quoted history, folded (owner-directed 2026-08-07).
+   Modelled on the control every mail client uses, because that is the one the team
+   already knows: a small pill of dots sitting under the reply, opening the earlier
+   messages in place. Deliberately quiet — it is a way to look further back, never an
+   action — and the label is spelled out so nobody has to know what "•••" means here.
+   Text colours are explicit darks per the palette rule (an --ink* token is LIGHT). */
+.ec-dots{
+  display:flex; align-items:center; gap:10px;
+  margin:4px 16px 14px; padding:5px 12px;
+  background:var(--surface-soft,#F4F1EA); border:1px solid var(--line,#E6E0D4); border-radius:999px;
+  color:#4B585C; font:inherit; font-size:12.5px; font-weight:550; line-height:1.2;
+  cursor:pointer; transition:background .12s ease, border-color .12s ease;
+}
+.ec-dots:hover{ background:#EDE7DA; border-color:#D8D0BF; }
+.ec-dots:focus-visible{ outline:2px solid var(--teal,#2F7F86); outline-offset:2px; }
+.ec-dots-mark{ letter-spacing:.16em; color:#3A4550; font-size:13px; }
+.ec-dots.open .ec-dots-mark{ opacity:.55; }
+/* On a phone the label + dots must not fight for one line. */
+@media (max-width:720px){ .ec-dots{ margin-left:12px; margin-right:12px; } }
 .ec-modal-back{ position:fixed; inset:0; z-index:1000; background:rgba(20,27,34,.55);
   display:flex; align-items:center; justify-content:center; padding:clamp(6px,2vh,26px) clamp(6px,2vw,26px); }
 .ec-modal-card{ width:min(1320px,97vw); height:min(94vh,1000px); background:var(--ink,#F6F3EC);

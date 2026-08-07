@@ -104,4 +104,81 @@ function splitReply(text) {
   return { reply, quoted: s.slice(cut).trim(), trimmed: true };
 }
 
-module.exports = { REPLY_MARKER, REPLY_MARKER_PHRASE, topReply, splitReply, quoteStart, MARKER_RE };
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE HTML SIDE — the same cut, on the body a reader actually looks at.
+   ═══════════════════════════════════════════════════════════════════════════
+   The plaintext split above is what a PARSER reads. A person in the Email Center
+   reads the HTML body, and until now that meant every reply on the closing chain
+   rendered the entire history inline — the exact thing the owner described as
+   *"messing everything up terribly"*.
+
+   Every mail client wraps the quoted history in its own container, so the cut is a
+   container search rather than a line scan. Each pattern below matches a TAG OPEN,
+   which is what makes the cut safe: the index already sits on a `<`, so slicing
+   there can never land mid-tag or mid-attribute.
+*/
+const HTML_QUOTE_PATTERNS = [
+  /<div[^>]*class="[^"]*gmail_quote/i,          // Gmail (also gmail_quote_container)
+  /<div[^>]*id="divRplyFwdMsg"/i,                // Outlook.com / OWA
+  /<div[^>]*id="appendonly"/i,                   // Outlook desktop
+  /<div[^>]*class="[^"]*yahoo_quoted/i,          // Yahoo
+  /<div[^>]*class="[^"]*moz-cite-prefix/i,       // Thunderbird
+  /<blockquote[^>]*type="cite"/i,                // Apple Mail
+  /<hr[^>]*id="stopSpelling"/i,                  // Outlook's separator rule
+];
+
+/** Text with every tag and entity stripped — used only to ask "is there anything here?". */
+function htmlHasWords(html) {
+  return /[a-z0-9]/i.test(String(html || '').replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' '));
+}
+
+/**
+ * Where the quoted history starts in an HTML body, or -1.
+ *
+ * The EARLIEST container wins, same rule as the plaintext side. Our OWN marker is
+ * also honoured — it is printed in every message we send, so a reply quoting us
+ * carries it even when the client used a container we do not recognise; the index
+ * is walked BACK to the enclosing tag open so the slice stays on a tag boundary,
+ * and the walk is ABANDONED rather than guessed at when no clean boundary is in
+ * reach (a cut inside a tag would render as visible garbage).
+ */
+function htmlQuoteStart(html) {
+  const s = String(html || '');
+  let cut = -1;
+  for (const p of HTML_QUOTE_PATTERNS) {
+    const idx = s.search(p);
+    if (idx > 0 && (cut === -1 || idx < cut)) cut = idx;
+  }
+  const m = s.search(MARKER_RE);
+  if (m > 0) {
+    // Walk back to the nearest tag open. 2,000 characters is generous for one
+    // wrapper's markup and short enough that we never reach into a different block.
+    let i = s.lastIndexOf('<', m);
+    const floor = m - 2000;
+    while (i > 0 && i >= floor && !/^<\/?[a-zA-Z]/.test(s.slice(i, i + 2))) i = s.lastIndexOf('<', i - 1);
+    if (i > 0 && i >= floor && (cut === -1 || i < cut)) cut = i;
+  }
+  return cut;
+}
+
+/**
+ * Split an HTML body into `{ reply, quoted, trimmed }` — the same contract, and the
+ * same refusal to lose anything: an unrecognised body, or one whose "reply" half
+ * turns out to carry no words, comes back whole with `trimmed:false`.
+ *
+ * The two halves are BOTH returned. Collapsing the history is a reading decision the
+ * screen makes; nothing here throws content away, and the record keeps every byte.
+ */
+function splitReplyHtml(html) {
+  const s = String(html || '');
+  const cut = htmlQuoteStart(s);
+  if (cut <= 0) return { reply: s, quoted: '', trimmed: false };
+  const reply = s.slice(0, cut);
+  if (!htmlHasWords(reply)) return { reply: s, quoted: '', trimmed: false };
+  return { reply, quoted: s.slice(cut), trimmed: true };
+}
+
+module.exports = {
+  REPLY_MARKER, REPLY_MARKER_PHRASE, topReply, splitReply, quoteStart, MARKER_RE,
+  splitReplyHtml, htmlQuoteStart, HTML_QUOTE_PATTERNS,
+};

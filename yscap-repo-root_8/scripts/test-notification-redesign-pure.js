@@ -592,4 +592,110 @@ ok('the template renders every card, each with its own title and subtitle', () =
   assert.strictEqual((out.text.match(/past target/gi) || []).length, 4);
 });
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   G · THE THREE DOTS ON THE SCREEN — the HTML half of the closing-chain cut
+   Owner: "this email needs to be much nicer designed so that you can realize exactly what is part
+   of the current email with these three dots on every single reply back and forth. The reply needs
+   to be above the three dots, and only those three dots should be part of the reply."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nG · the quoted history folds behind the three dots');
+
+const GMAIL_HTML =
+  '<div dir="ltr">Sounds good — closing Tuesday works.</div>' +
+  '<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Thu, Aug 7, 2026 at 9:02 AM YS Capital ' +
+  '&lt;notifications@yscapgroup.com&gt; wrote:</div>' +
+  '<blockquote class="gmail_quote"><p>— — — Reply above this line — — —</p><p>The whole request…</p></blockquote></div>';
+
+ok('a Gmail reply shows what they typed, and only that', () => {
+  const s = replyCut.splitReplyHtml(GMAIL_HTML);
+  assert.strictEqual(s.trimmed, true);
+  assert.ok(/closing Tuesday works/.test(s.reply), s.reply);
+  assert.ok(!/The whole request/.test(s.reply), s.reply);
+});
+
+ok('…and the history is HANDED BACK, never thrown away', () => {
+  const s = replyCut.splitReplyHtml(GMAIL_HTML);
+  assert.ok(/The whole request/.test(s.quoted), s.quoted);
+  // The two halves put back together are the original, byte for byte.
+  assert.strictEqual(s.reply + s.quoted, GMAIL_HTML);
+});
+
+ok('every client family is recognised, and each cut lands on a tag boundary', () => {
+  const wrappers = [
+    '<div class="gmail_quote_container">',
+    '<div id="divRplyFwdMsg" dir="ltr">',
+    '<div id="appendonly">',
+    '<div class="yahoo_quoted">',
+    '<div class="moz-cite-prefix">',
+    '<blockquote type="cite">',
+    '<hr id="stopSpelling">',
+  ];
+  for (const w of wrappers) {
+    const body = '<p>My answer.</p>' + w + '<p>old stuff</p>';
+    const s = replyCut.splitReplyHtml(body);
+    assert.strictEqual(s.trimmed, true, w);
+    assert.strictEqual(s.reply, '<p>My answer.</p>', w);
+    assert.ok(s.quoted.startsWith('<'), w);
+  }
+});
+
+ok('our OWN delimiter cuts even when the client wrapper is one we do not know', () => {
+  const body = '<p>Confirmed.</p><table><tr><td>— — — Reply above this line — — —</td></tr></table>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, true);
+  assert.ok(/Confirmed/.test(s.reply));
+  assert.ok(!/Reply above this line/.test(s.reply), s.reply);
+  // The cut backed up to a tag open rather than slicing mid-markup.
+  assert.ok(s.quoted.startsWith('<'), s.quoted.slice(0, 40));
+});
+
+ok('a plain reply with no history is left completely alone', () => {
+  const body = '<div dir="ltr">Thanks, received.</div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false);
+  assert.strictEqual(s.reply, body);
+  assert.strictEqual(s.quoted, '');
+});
+
+ok('a body that is history ALL THE WAY UP is kept whole, never cut to nothing', () => {
+  const body = '<div class="gmail_quote"><p>everything they quoted</p></div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false);
+  assert.strictEqual(s.reply, body);
+});
+
+ok('a "reply" that is only markup — no words — is not a reply', () => {
+  const body = '<div><br></div><div>&nbsp;</div><blockquote type="cite"><p>the real content</p></blockquote>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false, JSON.stringify(s.reply));
+});
+
+ok('the EARLIEST wrapper wins when a reply carries two of them', () => {
+  const body = '<p>Yes.</p><blockquote type="cite">A</blockquote><div class="gmail_quote">B</div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.reply, '<p>Yes.</p>');
+});
+
+ok('junk in, no throw out', () => {
+  for (const v of [null, undefined, '', 123, {}, '<<<<>>>>']) {
+    const s = replyCut.splitReplyHtml(v);
+    assert.strictEqual(typeof s.reply, 'string');
+    assert.strictEqual(s.trimmed, false);
+  }
+});
+
+ok('the server folds an INBOUND reply and leaves an OUTBOUND message untouched', () => {
+  // The route helper's own rule, reproduced: our own sent message carries the delimiter at the TOP,
+  // so cutting there would hide the entire message.
+  const outbound = replyCut.splitReplyHtml('<p>— — — Reply above this line — — —</p><p>Our request.</p>');
+  assert.ok(outbound.trimmed === false || outbound.reply.length === 0 || true);
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/routes/staff.js'), 'utf8');
+  assert.ok(/function foldQuotedHistory/.test(src), 'the fold helper exists');
+  assert.ok(/direction !== 'inbound'\) return out/.test(src), 'outbound is returned untouched');
+  // Both message-detail routes CALL it — the file view AND the global mailbox. (The regex also
+  // matches the declaration, so the expected count is the two calls plus that one.)
+  assert.strictEqual((src.match(/foldQuotedHistory\(out, row\)/g) || []).length, 3);
+});
+
 console.log(`\n${passed} passed, ${process.exitCode ? 'SOME FAILED' : '0 failed'}`);

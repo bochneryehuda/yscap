@@ -10,6 +10,7 @@ const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
 const email = require('../lib/email');                    // Email Center: send staff replies
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
+const replyCut = require('../lib/email/reply-cut');        // where a reply ends and the quoted history begins
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const { claimOncePerPeriod } = require('../lib/throttle-claim');
@@ -5233,6 +5234,44 @@ router.get('/applications/:id/activity', async (req, res) => {
 // prior history is backdated in by the boot backfill. Staff-only, file-scoped.
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * FOLD THE QUOTED HISTORY BEHIND THE THREE DOTS.
+ *
+ * Owner-directed 2026-08-07, on the closing chain: *"this email needs to be much nicer designed so
+ * that you can realize exactly what is part of the current email with these three dots on every
+ * single reply back and forth. The reply needs to be above the three dots, and only those three
+ * dots should be part of the reply. If not, it is messing everything up terribly."*
+ *
+ * Both halves of that instruction are now covered — the OUTBOUND half is the delimiter printed at
+ * the top of every message we send (`email/reply-cut`), and this is the INBOUND half: what a reader
+ * sees when a reply comes back carrying our whole message quoted underneath it.
+ *
+ * IT IS COMPUTED AT READ TIME, NEVER STORED, and that is deliberate twice over. The stored row keeps
+ * every byte the sender sent — this decides only what is shown FIRST — and because nothing is
+ * written, the entire back book reads correctly on the first deploy instead of after a sweep.
+ * `quoted_text` / `quoted_html` still ride along in the response, so the screen can open the
+ * history; collapsing it is a reading decision, not a deletion.
+ *
+ * OUTBOUND messages are left alone: we wrote them, they carry no quoted history of ours, and our own
+ * delimiter sits at the TOP of the body — cutting there would hide the entire message.
+ *
+ * Best-effort. A body it cannot read confidently comes back whole with `trimmed:false`.
+ */
+function foldQuotedHistory(out, row) {
+  if (!row || row.direction !== 'inbound') return out;
+  try {
+    if (out.body_text) {
+      const t = replyCut.splitReply(out.body_text);
+      if (t.trimmed) { out.body_text = t.reply; out.quoted_text = t.quoted; out.trimmed = true; }
+    }
+    if (out.body_html) {
+      const h = replyCut.splitReplyHtml(out.body_html);
+      if (h.trimmed) { out.body_html = h.reply; out.quoted_html = h.quoted; out.trimmed = true; }
+    }
+  } catch (_) { /* a body we cannot read is shown whole — never an error */ }
+  return out;
+}
+
 // Shape one email_messages row for the client (used by the file view + mailbox).
 function emailRowShape(r) {
   return {
@@ -5529,6 +5568,7 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
     }
+    foldQuotedHistory(out, row);
     if (!out.body_html && !out.body_text) {
       out.body_unavailable = row.direction === 'inbound'
         ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
@@ -7541,6 +7581,7 @@ router.get('/emails/:msgId', async (req, res) => {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
     }
+    foldQuotedHistory(out, row);
     if (!out.body_html && !out.body_text) {
       out.body_unavailable = row.direction === 'inbound'
         ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'

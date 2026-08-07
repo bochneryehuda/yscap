@@ -196,8 +196,19 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
     return () => { alive = false; };
   }, [expanded, row.id, appId, globalMode]);
 
-  const html = full && full.body_html;
-  const text = full && full.body_text;
+  // THE THREE DOTS (owner-directed 2026-08-07). A reply arrives as [what they just typed] followed
+  // by [our entire message, quoted]. The server hands back the two halves separately (staff.js
+  // `foldQuotedHistory`), so what the reader sees first is only what this person actually wrote —
+  // and the history sits behind a "…" they can open. Nothing is thrown away: `quoted_*` is right
+  // here, one click down. `trimmed` is false whenever the split was not confident, and then the
+  // whole body renders exactly as it always did.
+  const [showQuoted, setShowQuoted] = useState(false);
+  useEffect(() => { setShowQuoted(false); }, [row.id]);
+  const trimmed = !!(full && full.trimmed);
+  const quotedHtml = (full && full.quoted_html) || '';
+  const quotedText = (full && full.quoted_text) || '';
+  const html = full && (showQuoted && quotedHtml ? full.body_html + quotedHtml : full.body_html);
+  const text = full && (showQuoted && quotedText ? full.body_text + '\n\n' + quotedText : full.body_text);
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
   // Fit the email to the available width so a fixed-width (e.g. 600px) design is
   // never cut off — scale it down to the reader's width and reserve the scaled
@@ -297,6 +308,16 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                   ? <div className="ec-frame-wrap" ref={wrapRef}><iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={fit} /></div>
                   : text ? <pre className="ec-plain">{text}</pre>
                     : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
+              {trimmed && !loading && !err
+                ? <button
+                    className={`ec-dots${showQuoted ? ' open' : ''}`}
+                    onClick={() => setShowQuoted((v) => !v)}
+                    title={showQuoted ? 'Hide the earlier messages' : 'Show the earlier messages quoted underneath this reply'}
+                  >
+                    <span className="ec-dots-mark" aria-hidden="true">•••</span>
+                    <span className="ec-dots-label">{showQuoted ? 'Hide the earlier messages' : 'Show the earlier messages'}</span>
+                  </button>
+                : null}
             </div>
             <div className="ec-msg-actions">
               {canResend ? <button className="btn ghost small" onClick={resend} disabled={busy === 'resend'}>{busy === 'resend' ? 'Resending…' : '↻ Resend'}</button> : null}
