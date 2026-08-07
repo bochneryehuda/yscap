@@ -33,7 +33,11 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
-const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
+const portalInvite = require('../lib/portal-invite');
+// EVERYONE ON THIS CONVERSATION, including whoever the other side added — one
+// definition for the title/insurance orders and the closing chain (owner-directed
+// 2026-08-07: "our system is looping them back out").
+const threadParticipants = require('../lib/thread-participants');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -5629,6 +5633,22 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        /* KEEP EVERYONE THE OTHER SIDE LOOPED IN (owner-directed 2026-08-07, extremely
+           important). `lastRecipients` reads the messages WE sent, so the assistant
+           counsel — or the settlement agent, or the realtor — that the attorney CC'd on
+           their own reply was never a candidate, and every reply PILOT sent quietly
+           removed them from the conversation. Their address WAS captured on the inbound
+           message; nothing read it. Scoped to THIS chain's thread_key so two closings on
+           one file can never cross, and the borrower + any insurance contact are carved
+           out because both are hard rules of this desk that a vendor's Cc must not
+           rewrite (closing-prep.neverLoopIn). */
+        const closingParties = await threadParticipants.replyRecipients({
+          applicationId: appId,
+          msgTypes: ['closing_message', 'attorney_message'],
+          threadKey: thread.thread_key || undefined,
+          to: last.to, cc: last.cc,
+          never: await closingPrep.neverLoopIn(appId),
+        });
         // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
         // (write to closing counsel on this chain) must agree, and a chain row is NOT
         // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
@@ -5643,7 +5663,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const senderName = meRow.full_name || meRow.email || '';
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
-          to: last.to, cc: last.cc, fromName: senderName, staffId: req.actor.id,
+          to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
           msgType: 'closing_followup',
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
@@ -5687,7 +5707,21 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-      const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
+         important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
+         the officer and processor — the vendor's own assistant, whom they CC'd on their
+         reply, is not in that data at all, so every reply removed them.
+         The BORROWER is deliberately NOT added this way: whether the borrower is on an
+         order is governed by the owner-directed ccBorrower setting (off by default),
+         and a vendor's one-off Cc must not turn that into policy. */
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      const { to, cc } = parties;
+      const { replyTo } = base;
       // Reply on the SAME vendor chain the order was placed on (owner-directed
       // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
       const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
@@ -6269,7 +6303,16 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
     const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    // Same rule as the reply door above: a follow-up must not drop the party the vendor
+    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    const fuParties = await threadParticipants.replyRecipients({
+      applicationId: appId, msgTypes: [`${kind}_message`],
+      to: fuBase.to, cc: fuBase.cc,
+      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+    });
+    const { to, cc } = fuParties;
+    const { replyTo } = fuBase;
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     // THE PROVIDER'S ANSWER DECIDES (orders.sendOrderMail). A bare send recorded a
     // follow-up the vendor never received whenever email was off or the API key had
