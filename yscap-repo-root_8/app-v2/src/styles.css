@@ -2811,6 +2811,16 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .ec-msg-body{ background:#fff; border-radius:6px; margin-top:10px; overflow:hidden; border:1px solid var(--line); }
 .ec-frame{ width:100%; border:none; display:block; min-height:120px; background:#fff; }
 .ec-plain{ white-space:pre-wrap; font-family:var(--sans); font-size:14px; color:var(--text); padding:16px; margin:0; }
+/* THE THREE DOTS — the trimmed-conversation control, borrowed from the mail clients
+   so it needs no explaining (owner-reported 2026-08-07). Only rendered when there IS
+   trimmed history; never decoration. */
+.ec-trimmed{ display:flex; align-items:center; gap:10px; padding:0 16px 14px; flex-wrap:wrap; }
+.ec-dots{ flex:none; display:inline-flex; align-items:center; justify-content:center;
+  min-width:34px; height:20px; padding:0 8px; border:1px solid #EAE4D7; border-radius:6px;
+  background:#F4F1EA; color:#3A4550; font:inherit; font-size:13px; line-height:1;
+  letter-spacing:1px; cursor:pointer; }
+.ec-dots:hover{ background:#EAE4D7; }
+.ec-dots:focus-visible{ outline:2px solid var(--teal); outline-offset:2px; }
 .ec-msg-actions{ display:flex; justify-content:flex-end; margin-top:8px; }
 
 .ec-pill{ font-size:11.5px; padding:2px 9px; border-radius:999px; border:1px solid transparent; font-weight:600; }
@@ -2894,25 +2904,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .ec-frame-wrap{ width:100%; overflow:hidden; background:#fff; }
 .ec-frame-wrap .ec-frame{ display:block; border:none; background:#fff; }
 
-/* THE THREE DOTS — the quoted history, folded (owner-directed 2026-08-07).
-   Modelled on the control every mail client uses, because that is the one the team
-   already knows: a small pill of dots sitting under the reply, opening the earlier
-   messages in place. Deliberately quiet — it is a way to look further back, never an
-   action — and the label is spelled out so nobody has to know what "•••" means here.
-   Text colours are explicit darks per the palette rule (an --ink* token is LIGHT). */
-.ec-dots{
-  display:flex; align-items:center; gap:10px;
-  margin:4px 16px 14px; padding:5px 12px;
-  background:var(--surface-soft,#F4F1EA); border:1px solid var(--line,#E6E0D4); border-radius:999px;
-  color:#4B585C; font:inherit; font-size:12.5px; font-weight:550; line-height:1.2;
-  cursor:pointer; transition:background .12s ease, border-color .12s ease;
-}
-.ec-dots:hover{ background:#EDE7DA; border-color:#D8D0BF; }
-.ec-dots:focus-visible{ outline:2px solid var(--teal,#2F7F86); outline-offset:2px; }
-.ec-dots-mark{ letter-spacing:.16em; color:#3A4550; font-size:13px; }
-.ec-dots.open .ec-dots-mark{ opacity:.55; }
-/* On a phone the label + dots must not fight for one line. */
-@media (max-width:720px){ .ec-dots{ margin-left:12px; margin-right:12px; } }
+/* THE THREE DOTS live ABOVE, with `.ec-trimmed` — a SECOND `.ec-dots` block stood here
+   (owner-directed 2026-08-07) from a parallel session that built the same control. Two
+   sessions styling one class name is a silent bug, not a duplicate comment: the later
+   block wins wholesale, so main's markup would have rendered under rules written for a
+   different DOM (a pill with `.ec-dots-mark` / `.ec-dots-label` children it does not
+   have). The surviving pair is the one whose markup shipped. Keep exactly one. */
 .ec-modal-back{ position:fixed; inset:0; z-index:1000; background:rgba(20,27,34,.55);
   display:flex; align-items:center; justify-content:center; padding:clamp(6px,2vh,26px) clamp(6px,2vw,26px); }
 .ec-modal-card{ width:min(1320px,97vw); height:min(94vh,1000px); background:var(--ink,#F6F3EC);
@@ -3707,6 +3704,18 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    a list of forty workable. It must not also toggle the row. */
 .cnd-do{flex:none}
 .cnd-done .cnd-name{color:#4B585C;font-weight:500}
+/* THE CONTROL THAT CLOSES AN OPEN CONDITION — the counterpart of .cnd, and the
+   ONE place an open row's Collapse can live (owner-reported 2026-08-07: it was
+   sometimes at the top, sometimes at the bottom, sometimes absent). `margin-left:
+   auto` pins it to the far right of whatever header row hosts it, so it lands in
+   the SAME spot on every condition without each renderer aligning it by hand. It
+   carries the same chevron as the compact line, already rotated open, so the
+   thing that closes the row looks like the thing that opened it. */
+.cnd-collapse{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+  padding:2px 6px;border:0;border-radius:6px;background:none;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:550;color:#4B585C;white-space:nowrap}
+.cnd-collapse:hover{color:var(--teal-br);background:var(--surface-soft,#F4F1EA)}
+.cnd-collapse:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 @media(max-width:720px){
   .cnd{flex-wrap:wrap;gap:6px}
   .cnd-name{flex:1 1 100%;white-space:normal}
@@ -4137,3 +4146,63 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
      last (nearest the thumb) exactly as it does on desktop. */
   .app-dialog-actions .btn{flex:1 1 auto;min-width:120px}
 }
+
+/* ===== Registered-product structure output (owner-directed 2026-08-07) =====
+   The registered product's page was one long undifferentiated run of key/value
+   lines under four headings, and the owner asked for it "restructured, redesigned
+   and set up with correct tables … separate sections for each and everything …
+   more totals". So each group of figures is now a real TABLE that ADDS UP to a
+   named total, and a total looks like one.
+
+   Colours are explicit darks per the hard rule — every `--ink*` token in this
+   palette is a LIGHT paper colour, so using one for text renders white on white. */
+/* The sections FLOW into two balanced columns rather than being dealt into two
+   fixed halves. With `.grid.cols-2` the money sections (which are much longer) piled
+   into one side and the page ended with half a screen of blank space beside them —
+   visible only once it was actually rendered. Multi-column keeps the same
+   top-to-bottom-then-next-column reading order and lets the browser pick the split,
+   so adding a section later cannot re-open that gap. */
+.sos-cols{column-count:2;column-gap:26px}
+@media(max-width:900px){.sos-cols{column-count:1}}
+.sos{margin:0 0 14px;break-inside:avoid}
+.sos:last-child{margin-bottom:0}
+.sos-h{margin:0 0 2px;font-size:11px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:#4B585C}
+/* The one-line explanation under a section heading: what these figures ARE. A
+   number on this page decides real money, so a section says what it is for. */
+.sos-sub{margin:0 0 4px;font-size:11.5px;color:#4B585C}
+/* A TOTAL is the line the section exists to produce: a heavier rule above it (so
+   it reads as the sum of what is above, not as another entry), the label in ink
+   rather than muted, and the figure in the PILOT serif like every other headline
+   figure in the portal.
+   THE SIZE IS LOAD-BEARING: Fraunces at the body size reads LIGHTER than the sans
+   `.metrow .v` at weight 600, so the first cut rendered every total as the least
+   prominent figure in its own section — the exact opposite of the point, and only
+   visible in a real render. 19px matches `.rb-grand .v`, the portal's existing
+   grand-total treatment. */
+.sos .metrow.sos-total{border-top:2px solid var(--ink-3,#EAE4D7);padding-top:11px}
+.sos .metrow.sos-total .k{color:#141B22;font-weight:650;font-size:12.5px}
+.sos .metrow.sos-total .v{font-family:var(--serif,'Fraunces',serif);font-size:19px;
+  line-height:1.15;font-weight:700;color:#141B22}
+/* A SUB-item of the line above it (the parts of a payoff, the pieces of a rate):
+   indented so the table reads as a hierarchy rather than a flat list. */
+.sos .metrow.sos-sub-row .k{padding-left:12px}
+/* A FIGURE IS NEVER BROKEN IN HALF. `.metrow .v` carries `overflow-wrap:anywhere`
+   so a long email or filename cannot push its panel off a phone — right for those,
+   wrong for money: rendered at 390px inside the ORIGINAL `.grid.cols-2` layout, a
+   long label squeezed the value column until "$25,000.00" wrapped to "$25,000.0"
+   and a stray "0" underneath, which is not merely ugly — it misreads.
+   The flowing layout above already fixes that case (it hands the row back the grid
+   gap, which is enough), so this is a SAFEGUARD rather than the fix: with
+   `anywhere` deliberately forced back on, no figure breaks at 1280, 390 or 320px.
+   It is kept because a figure must never be able to split whatever a future label
+   does. Normal wrapping breaks at SPACES only, so money and percentages stay whole
+   while "Full recourse — personal guaranty required" still wraps; every value here
+   is a figure, a date or a short phrase, so nothing is left unbreakably wide. The
+   render check asserts both halves — no split figures, no sideways scroll. */
+.sos .metrow .v{overflow-wrap:normal}
+/* Staff-only figures (our buy rate and margin) carry a quiet gold edge so nobody
+   reads one out to a borrower by accident. */
+.sos-internal{border-left:2px solid var(--gold,#AE8746);padding-left:9px;margin-left:-11px}
+.sos-internal-tag{display:inline-block;margin-left:6px;font-size:9.5px;font-weight:700;
+  letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#AE8746);vertical-align:1px}

@@ -460,8 +460,19 @@ ok('the typed reason reaches the attorney', () => {
 });
 
 ok('and it carries the reply delimiter like every other message on the chain', () => {
-  assert.ok(cancelEmail.text.startsWith(replyCut.REPLY_MARKER), cancelEmail.text.slice(0, 80));
+  /* Keyed on the PHRASE, not on a decorated line. The token is the contract both halves cut
+     on; the surrounding dashes and the trailing wording are presentation, and the chain's
+     messages settled on `quote.replyMarker('and it reaches the whole loan team')`. Asserting
+     the exact line would fail the next time the wording is tuned, on a message that is in
+     fact correct — so assert what actually has to be true. */
+  const marker = require('../src/lib/email/quote').replyMarker('and it reaches the whole loan team');
+  assert.ok(cancelEmail.text.startsWith(marker), cancelEmail.text.slice(0, 90));
   assert.ok(cancelEmail.html.includes(replyCut.REPLY_MARKER_PHRASE));
+  // EVERY message the chain sends carries the SAME delimiter — a cancellation is not special.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/closing-prep.js'), 'utf8');
+  const markers = src.match(/replyMarker: [^\n]*/g) || [];
+  assert.ok(markers.length >= 5, `expected every chain message to set one, saw ${markers.length}`);
+  assert.strictEqual(new Set(markers).size, 1, `they must all be the same:\n${[...new Set(markers)].join('\n')}`);
 });
 
 ok('no reason typed → no empty "Why" box', () => {
@@ -625,7 +636,10 @@ ok('every client family is recognised, and each cut lands on a tag boundary', ()
   const wrappers = [
     '<div class="gmail_quote_container">',
     '<div id="divRplyFwdMsg" dir="ltr">',
-    '<div id="appendonly">',
+    // Outlook desktop's real id is `appendonsend`. This list once said `appendonly`, which is
+    // not a wrapper any client emits — so the assertion passed against a pattern that could
+    // never match a real message. Corrected when the two HTML splitters were consolidated.
+    '<div id="appendonsend">',
     '<div class="yahoo_quoted">',
     '<div class="moz-cite-prefix">',
     '<blockquote type="cite">',
@@ -686,16 +700,29 @@ ok('junk in, no throw out', () => {
 });
 
 ok('the server folds an INBOUND reply and leaves an OUTBOUND message untouched', () => {
-  // The route helper's own rule, reproduced: our own sent message carries the delimiter at the TOP,
-  // so cutting there would hide the entire message.
-  const outbound = replyCut.splitReplyHtml('<p>— — — Reply above this line — — —</p><p>Our request.</p>');
-  assert.ok(outbound.trimmed === false || outbound.reply.length === 0 || true);
+  /* The split is INBOUND-ONLY, and that is the load-bearing half: our own sent message carries
+     the delimiter at the TOP, so cutting there would hide the entire message rather than its
+     history. Asserted against `email-log.splitStoredBody`, which is where the fold lives — a
+     second implementation in the route once did the same job by rewriting `body_html` in place
+     and was retired, because running both made the reader's "show the original" control open a
+     body that had already been trimmed. */
+  const emailLog = require('../src/lib/email-log');
+  const quoted = '<p>Their answer.</p><div class="gmail_quote"><p>our earlier note</p></div>';
+  const inbound = emailLog.splitStoredBody({ direction: 'inbound', body_html: quoted });
+  assert.strictEqual(inbound.trimmed, true, 'an inbound reply is split');
+  assert.ok(/Their answer/.test(inbound.replyHtml), 'the reply half is what they typed');
+  assert.ok(!/our earlier note/.test(inbound.replyHtml), 'the history is out of the reply half');
+
+  const outbound = emailLog.splitStoredBody({ direction: 'outbound', body_html: quoted });
+  assert.strictEqual(outbound.trimmed, false, 'an OUTBOUND message is never folded');
+  assert.strictEqual(outbound.replyHtml, null, 'and nothing is trimmed off it');
+
   const src = require('fs').readFileSync(require('path').join(__dirname, '../src/routes/staff.js'), 'utf8');
-  assert.ok(/function foldQuotedHistory/.test(src), 'the fold helper exists');
-  assert.ok(/direction !== 'inbound'\) return out/.test(src), 'outbound is returned untouched');
-  // Both message-detail routes CALL it — the file view AND the global mailbox. (The regex also
-  // matches the declaration, so the expected count is the two calls plus that one.)
-  assert.strictEqual((src.match(/foldQuotedHistory\(out, row\)/g) || []).length, 3);
+  // Both message-detail routes fold — the file view AND the global mailbox.
+  assert.strictEqual((src.match(/emailLog\.splitStoredBody\(row\)/g) || []).length, 2);
+  // THE CONTRACT IS ADDITIVE. The retired helper must not come back: a route that trims the
+  // stored body puts the history beyond reach of the one control that exists to show it.
+  assert.ok(!/function foldQuotedHistory/.test(src), 'the in-place rewrite stays retired');
 });
 
 

@@ -3189,6 +3189,45 @@
     } catch (e) { return mk(); }
   })();
 
+  /* WHO IS DRIVING THIS TOOL, and WHERE FROM.
+     The tool reads its officer from window.YSBRAND, which brand.js fills from the
+     ?lo= link parameter on the marketing site. Inside the PILOT portal there is no
+     ?lo=, so the host stamps both of these onto our window instead
+     (app-v2/src/lib/toolOfficer.js) — otherwise this tool is anonymous there, every
+     lead it posts carries no officer, and the server's round-robin hands a staffer's
+     own work to a different officer (owner-reported 2026-08-07).
+     `fromStaffPortal` is the SAFETY half: the server never round-robins a lead that
+     declares it, so an unresolved identity falls to the sales desk rather than to a
+     stranger. It is sent as `undefined` (omitted) off the portal, so a public
+     visitor's submission is byte-identical to before. */
+  function officerCodeNow() {
+    var ob = window.YSBRAND || {};
+    return ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
+  }
+  function fromStaffPortal() {
+    try { return window.YS_FROM_STAFF_PORTAL === true ? true : undefined; } catch (e) { return undefined; }
+  }
+
+  /* The subject property in the shape `leads.property_address` stores (`{oneLine,...}`),
+     so the lead screen and the convert-to-file flow read it the way they read a
+     hand-typed lead. "TBD" is a real answer here — a visitor may price a deal before
+     it is under contract — and it is recorded rather than dropped. */
+  function dealPropertyAddress() {
+    try {
+      if (chk("addrTBD")) return { oneLine: "TBD" };
+      var line = (val("propAddr") || "").trim();
+      var st = (val("propState") || "").trim();
+      if (!line && !st) return undefined;
+      return { oneLine: [line, st].filter(Boolean).join(", "), line1: line || undefined, state: st || undefined };
+    } catch (e) { return undefined; }
+  }
+  /* The whole entered form, for the officer to read on the lead. Never lets a state
+     snapshot failure cost us the lead — the capture matters more than the detail. */
+  function collectStateSafe() {
+    try { return (window.YS && typeof YS.collectState === "function") ? YS.collectState() : undefined; }
+    catch (e) { return undefined; }
+  }
+
   var _lastGen = null;   // {leadId, contactToken} \u2192 lets the optional contact ask attach to the same lead
   // fileArg: a Blob (PDF path) OR a ready {dataBase64, filename, contentType}
   // (the Excel path) OR null \u2014 the notification sends with whatever it gets.
@@ -3214,10 +3253,27 @@
         attsP.then(function (atts) {
           return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t, sessionId: LEAD_SESSION,
-              officerCode: code || undefined, subject: subject,
+              officerCode: code || undefined, fromStaffPortal: fromStaffPortal(), subject: subject,
               message: "A visitor generated a " + kind.toLowerCase() + " in the Term Sheet Studio. The exact figures are below" + (atts.length ? " and the PDF is attached." : "."),
               attachments: atts,
-              payload: { kind: kind, metaRows: dealMetaRows(d, kind), loanAmount: (d && d.totalLoan) || 0, program: chosenProgram } }) });
+              /* EVERYTHING THEY TYPED, so an anonymous generation is a WORKABLE lead
+                 (owner-directed 2026-08-07: "he wants that person to be added into his
+                 account as a lead with the phone number, the LLC property, and
+                 everything that that person entered with all the information he used to
+                 enter the term sheet"). These are the fields the lead row itself stores —
+                 the entity, the property, the type, the program and the loan amount —
+                 which is what makes the lead show something instead of appearing as a
+                 nameless row; `state` carries the FULL form for the officer to read.
+                 `name` gives the lead an identity when no email or phone was left. */
+              name: (borrowerOfRecord() || "").trim() || undefined,
+              company: (val("entityName") || "").trim() || undefined,
+              borrowerName: (val("borrowerName") || "").trim() || undefined,
+              propertyAddress: dealPropertyAddress(),
+              propertyType: (val("propType") || "").trim() || undefined,
+              program: chosenProgramName(false) || undefined,
+              loanAmount: (d && d.totalLoan) || undefined,
+              payload: { kind: kind, metaRows: dealMetaRows(d, kind), loanAmount: (d && d.totalLoan) || 0,
+                program: chosenProgram, state: collectStateSafe() } }) });
         }).then(function (r) { return (r && r.ok) ? r.json() : null; })
           .then(function (resp) {
             if (resp && resp.leadId && resp.contactToken) { _lastGen = { leadId: resp.leadId, contactToken: resp.contactToken }; offerContactAsk(); }
@@ -3290,7 +3346,7 @@
       var sbtn = document.getElementById("tsExcSend");
       sbtn.disabled = true; sbtn.textContent = "Sending\u2026";
       fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "term_sheet_exception", sessionId: LEAD_SESSION, officerCode: code || undefined,
+        body: JSON.stringify({ tool: "term_sheet_exception", sessionId: LEAD_SESSION, officerCode: code || undefined, fromStaffPortal: fromStaffPortal(),
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
           subject: "Exception request \u2014 " + (sum.subject.replace(/^Manual review request \u2014 /, "")),
           message: sum.body + (extra ? "\n\nVisitor note:\n" + extra : ""),
@@ -3323,7 +3379,7 @@
     var atts = [];
     try { var blob = await exportPdf(null, true); if (blob) atts.push({ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: await blobToB64(blob) }); } catch (e) { /* send without the attachment if the PDF engine failed */ }
     var r = await fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tool: "term_sheet", sessionId: LEAD_SESSION, officerCode: code || undefined, name: summary.borrower || undefined, email: summary.email,
+      body: JSON.stringify({ tool: "term_sheet", sessionId: LEAD_SESSION, officerCode: code || undefined, fromStaffPortal: fromStaffPortal(), name: summary.borrower || undefined, email: summary.email,
         subject: "Term sheet request \u2014 " + (summary.borrower || summary.program), message: leadBody(summary),
         attachments: atts, payload: summary }) });
     if (!r.ok) throw new Error("send " + r.status);

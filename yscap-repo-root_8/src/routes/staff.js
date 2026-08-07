@@ -34,7 +34,11 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
-const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
+const portalInvite = require('../lib/portal-invite');
+// EVERYONE ON THIS CONVERSATION, including whoever the other side added — one
+// definition for the title/insurance orders and the closing chain (owner-directed
+// 2026-08-07: "our system is looping them back out").
+const threadParticipants = require('../lib/thread-participants');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1406,11 +1410,23 @@ router.post('/applications', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
-// Invite the file's borrower to the portal (they need not have signed up yet).
-// Issues a borrower invite bound to their email; on acceptance they link to the
-// SAME borrower record (ON CONFLICT email) and immediately see this file. If
-// they already have a login they're simply pointed to sign in.
-async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }) {
+/**
+ * Invite a borrower to the portal (they need not have signed up yet).
+ *
+ * Issues a borrower invite bound to their EMAIL; on acceptance they link to the SAME
+ * borrower record (ON CONFLICT email). If they already have a login they are simply
+ * pointed to sign in.
+ *
+ * `appId` IS OPTIONAL (owner-directed 2026-08-07: "You need to be able to invite the
+ * Borrower, even if it doesn't have any active loans in our system. Just invite this
+ * Borrower so he should be able to create an active loan."). With a file, the invite
+ * names the property and lands them on it. WITHOUT one, it is a plain portal
+ * invitation — which is all the invite ever needed, because `invite_tokens` is keyed
+ * on the email and never on an application; `POST /invite-to-portal` has proved that
+ * since #102. On arrival the borrower starts their own application
+ * (`POST /api/borrower/applications`), which is exactly what the owner asked for.
+ */
+async function inviteBorrowerToFile({ appId = null, borrowerId, email, firstName, req }) {
   const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
   let acceptUrl, token = null;
   if (hasAuth.rows[0]) {
@@ -1423,9 +1439,13 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
       [C.sha256(token), email, req.actor.id]);
     acceptUrl = mail.link('/accept?token=' + token);
   }
-  const meta = await db.query(
-    `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
-            ys_loan_number FROM applications WHERE id=$1`, [appId]);
+  // No file → nothing to name, and no query to run. `rows[0]` is then undefined and
+  // the optional chains below already fall back to "your loan".
+  const meta = appId
+    ? await db.query(
+      `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
+              ys_loan_number FROM applications WHERE id=$1`, [appId])
+    : { rows: [] };
   // #150 — LO branding: the invite arrives FROM the inviting officer (display
   // name) and carries their full contact block, so the client knows exactly
   // who is inviting them — not just "the company."
@@ -1438,8 +1458,14 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     inviter: inv.full_name || null,
     officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
-  await audit(req, 'invite_borrower', 'application', appId, { email });
+    // With no file there is nothing to name, so the email must not promise one.
+    noFile: !appId,
+    // #68 reply reaches the team; #150 From = the officer. With no file there is no
+    // per-file address, so the provider layer's default Reply-To applies.
+  }, { replyTo: appId ? fileReplyTo(appId) : undefined, from: require('../lib/email').fromWithName(inv.full_name) });
+  // Audited against whichever thing this invitation was actually about, so the trail
+  // never points at an application id that does not exist.
+  await audit(req, 'invite_borrower', appId ? 'application' : 'borrower', appId || borrowerId, { email, noFile: !appId });
   // Record that it went out, on the PERSON (lib/portal-invite) — otherwise the
   // file can never say whether anyone has invited them, and the only safe move
   // is to send it again. Note this fires for the already-has-a-login case too:
@@ -5234,43 +5260,6 @@ router.get('/applications/:id/activity', async (req, res) => {
 // prior history is backdated in by the boot backfill. Staff-only, file-scoped.
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * FOLD THE QUOTED HISTORY BEHIND THE THREE DOTS.
- *
- * Owner-directed 2026-08-07, on the closing chain: *"this email needs to be much nicer designed so
- * that you can realize exactly what is part of the current email with these three dots on every
- * single reply back and forth. The reply needs to be above the three dots, and only those three
- * dots should be part of the reply. If not, it is messing everything up terribly."*
- *
- * Both halves of that instruction are now covered — the OUTBOUND half is the delimiter printed at
- * the top of every message we send (`email/reply-cut`), and this is the INBOUND half: what a reader
- * sees when a reply comes back carrying our whole message quoted underneath it.
- *
- * IT IS COMPUTED AT READ TIME, NEVER STORED, and that is deliberate twice over. The stored row keeps
- * every byte the sender sent — this decides only what is shown FIRST — and because nothing is
- * written, the entire back book reads correctly on the first deploy instead of after a sweep.
- * `quoted_text` / `quoted_html` still ride along in the response, so the screen can open the
- * history; collapsing it is a reading decision, not a deletion.
- *
- * OUTBOUND messages are left alone: we wrote them, they carry no quoted history of ours, and our own
- * delimiter sits at the TOP of the body — cutting there would hide the entire message.
- *
- * Best-effort. A body it cannot read confidently comes back whole with `trimmed:false`.
- */
-function foldQuotedHistory(out, row) {
-  if (!row || row.direction !== 'inbound') return out;
-  try {
-    if (out.body_text) {
-      const t = replyCut.splitReply(out.body_text);
-      if (t.trimmed) { out.body_text = t.reply; out.quoted_text = t.quoted; out.trimmed = true; }
-    }
-    if (out.body_html) {
-      const h = replyCut.splitReplyHtml(out.body_html);
-      if (h.trimmed) { out.body_html = h.reply; out.quoted_html = h.quoted; out.trimmed = true; }
-    }
-  } catch (_) { /* a body we cannot read is shown whole — never an error */ }
-  return out;
-}
 
 // Shape one email_messages row for the client (used by the file view + mailbox).
 function emailRowShape(r) {
@@ -5563,12 +5552,23 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
     const out = emailRowShape({ ...row, has_body: true });
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     // Historical/lightweight outbound row → re-render the branded body on demand.
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
     }
-    foldQuotedHistory(out, row);
     if (!out.body_html && !out.body_text) {
       out.body_unavailable = row.direction === 'inbound'
         ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
@@ -5689,6 +5689,22 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        /* KEEP EVERYONE THE OTHER SIDE LOOPED IN (owner-directed 2026-08-07, extremely
+           important). `lastRecipients` reads the messages WE sent, so the assistant
+           counsel — or the settlement agent, or the realtor — that the attorney CC'd on
+           their own reply was never a candidate, and every reply PILOT sent quietly
+           removed them from the conversation. Their address WAS captured on the inbound
+           message; nothing read it. Scoped to THIS chain's thread_key so two closings on
+           one file can never cross, and the borrower + any insurance contact are carved
+           out because both are hard rules of this desk that a vendor's Cc must not
+           rewrite (closing-prep.neverLoopIn). */
+        const closingParties = await threadParticipants.replyRecipients({
+          applicationId: appId,
+          msgTypes: ['closing_message', 'attorney_message'],
+          threadKey: thread.thread_key || undefined,
+          to: last.to, cc: last.cc,
+          never: await closingPrep.neverLoopIn(appId),
+        });
         // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
         // (write to closing counsel on this chain) must agree, and a chain row is NOT
         // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
@@ -5703,7 +5719,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const senderName = meRow.full_name || meRow.email || '';
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
-          to: last.to, cc: last.cc, fromName: senderName, staffId: req.actor.id,
+          to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
           msgType: 'closing_followup',
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
@@ -5747,7 +5763,21 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-      const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
+         important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
+         the officer and processor — the vendor's own assistant, whom they CC'd on their
+         reply, is not in that data at all, so every reply removed them.
+         The BORROWER is deliberately NOT added this way: whether the borrower is on an
+         order is governed by the owner-directed ccBorrower setting (off by default),
+         and a vendor's one-off Cc must not turn that into policy. */
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      const { to, cc } = parties;
+      const { replyTo } = base;
       // Reply on the SAME vendor chain the order was placed on (owner-directed
       // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
       const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
@@ -6329,7 +6359,16 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
     const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    // Same rule as the reply door above: a follow-up must not drop the party the vendor
+    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    const fuParties = await threadParticipants.replyRecipients({
+      applicationId: appId, msgTypes: [`${kind}_message`],
+      to: fuBase.to, cc: fuBase.cc,
+      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+    });
+    const { to, cc } = fuParties;
+    const { replyTo } = fuBase;
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     // THE PROVIDER'S ANSWER DECIDES (orders.sendOrderMail). A bare send recorded a
     // follow-up the vendor never received whenever email was off or the API key had
@@ -7577,11 +7616,22 @@ router.get('/emails/:msgId', async (req, res) => {
     const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
     }
-    foldQuotedHistory(out, row);
     if (!out.body_html && !out.body_text) {
       out.body_unavailable = row.direction === 'inbound'
         ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
@@ -9322,14 +9372,37 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    // A borrower with NO active file has nothing to be invited TO. Rather than a
-    // dead end, the profile offers to START an application for them and invite them
-    // to fill it in — a `code` the client keys on to reach the invite-only new-file
-    // path (owner-directed 2026-08-04, #23). Passing borrowerId there links the new
-    // file to THIS exact profile, so their records carry over.
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to', code: 'no_active_file' });
-    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
-    res.json({ ok: true, ...out });
+    /* A BORROWER WITH NO FILE IS STILL INVITABLE (owner-reported 2026-08-07: "we have
+       in our Borrower profiles all the borrowers, even though they didn't take a loan
+       on our system because it was not an RTL loan. If somebody takes a DSCR loan, it
+       takes the information from ClickUp and builds them up a profile. When we tried
+       to invite the Borrower into our system to be able to apply for an RTL loan, it
+       comes up that there are no active loans that you can invite this Borrower to.
+       You need to be able to invite the Borrower, even if it doesn't have any active
+       loans in our system. Just invite this Borrower so he should be able to create an
+       active loan.").
+
+       ROOT CAUSE, and it is the repo's own documented class. This route used to refuse
+       with a 400 + `code:'no_active_file'`, and the 2026-08-04 fix for it was written
+       in ONE SCREEN'S CLICK HANDLER (StaffBorrowerDetail) instead of here. There are
+       FOUR buttons that call this endpoint — the borrowers LIST, the shared
+       BorrowerProfilePanel (mounted on the CRM profile AND on every loan file), the
+       co-borrower invite, and that one detail screen — so three of them still
+       dead-ended, including the two a staffer is most likely to press. A per-screen
+       workaround for a server refusal is a workaround every future screen must
+       remember; the server is the only place it can be fixed once.
+
+       So the refusal is GONE rather than handled: with no file this sends a plain
+       portal invitation. `invite_tokens` is keyed on the EMAIL and never on an
+       application (`POST /invite-to-portal` has relied on that since #102), so nothing
+       had to be invented. And it deliberately does NOT manufacture an empty
+       application the way the old client fallback did — that minted a loan number, a
+       checklist and a ClickUp task for a deal nobody has, to satisfy a check that
+       should not have existed. The owner's words are "so he should be able to create
+       an active loan": the borrower starts it themselves from the portal. */
+    const out = await inviteBorrowerToFile({
+      appId: app ? app.id : null, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, noFile: !app, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -10143,9 +10216,14 @@ router.put('/track-records/:id', async (req, res) => {
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
   // Same stamp as the create door: whoever last put these figures on the line is
-  // recorded, so "who typed this?" is answerable on an edit and not only on a
-  // create. (No status reset — see trackRecordEnteredCols: a staffer may
-  // deliberately correct a VERIFIED line.)
+  // recorded, so "who typed this?" is answerable on an edit and not only on a create.
+  //
+  // AND IT NOW RESETS THE REVIEW (2026-08-07). A staffer may still correct a VERIFIED
+  // line — that has not changed — but the correction lands PENDING, because the
+  // reviewer confirmed the OLD figures and nobody has looked at the new ones. The
+  // owner's rule: "Every single detail of a track record you need to click on verify."
+  // db/485's trigger enforces it for every writer including the imports; this door
+  // states it too so the intent is readable where the edit happens.
   const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {
@@ -14124,6 +14202,72 @@ router.get('/leads', async (req, res) => {
          ${where}
         ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
                  l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ── EMAIL A TERM SHEET TO A BORROWER (owner-directed 2026-08-07) ───────────────
+   The owner: "Any term sheet generator from the staff's log-in, whenever he finishes
+   building up the term sheet, should have an option to deliver to a borrower via
+   email, with the loan officer's branding, all the terms nicely together with an
+   attached initial term sheet."
+
+   OPEN TO EVERY STAFF ROLE, deliberately: the officer building the sheet is the person
+   who sends it, and the 2026-07-27 rule already opened the studio's whole admin zone
+   to every role because gating it killed the feature for the people who use it. The
+   control is that a manual / off-default scenario carries its APPROVAL through to the
+   registration (lib/term-sheet-offer), exactly as pressing Register on a file does.
+
+   `officerId` is NOT taken from the body — the sender is the officer. Sending on
+   somebody else's behalf would put their name and Reply-To on an email they never saw,
+   which is the class the 2026-08-07 term-sheet attribution work exists to prevent. */
+router.post('/term-sheet-offers', async (req, res) => {
+  const b = req.body || {};
+  const offers = require('../lib/term-sheet-offer');
+  try {
+    const problem = offers.offerProblem({
+      borrowerEmail: b.borrowerEmail, program: b.program, draft: b.draft });
+    if (problem) return res.status(400).json({ error: problem });
+    const created = await offers.createOffer({
+      officerId: req.actor.id, createdBy: req.actor.id,
+      borrowerEmail: b.borrowerEmail, borrowerName: b.borrowerName, borrowerPhone: b.borrowerPhone,
+      draft: b.draft, program: b.program, overrides: b.overrides, termOptions: b.termOptions,
+      isManual: !!b.isManual, quote: b.quote,
+      pdfBase64: b.pdfBase64, pdfFilename: b.pdfFilename,
+    });
+    if (!created.ok) return res.status(400).json({ error: created.problem || 'Could not create the offer.' });
+    const officer = (await db.query(
+      `SELECT id, full_name, email, phone, nmls, title FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || null;
+    // The SEND is separate from the record on purpose: the offer row already exists,
+    // so a provider hiccup is a re-send rather than a rebuilt term sheet.
+    const sent = await offers.sendOfferEmail(created.offer, created.token, { officer, quote: b.quote });
+    await audit(req, 'term_sheet_offer_sent', 'borrower', null, {
+      offerId: created.offer.id, email: created.offer.borrower_email,
+      program: created.offer.program, isManual: !!created.offer.is_manual,
+      attached: sent.attached || 0, ok: !!sent.ok });
+    if (!sent.ok) {
+      return res.status(502).json({ error: 'The terms were saved but the email could not be sent: ' + (sent.problem || 'unknown'),
+        offerId: created.offer.id });
+    }
+    res.json({ ok: true, offerId: created.offer.id, to: created.offer.borrower_email,
+      attached: sent.attached || 0, expiresAt: created.offer.expires_at, skipped: !!sent.skipped });
+  } catch (e) {
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : e.message });
+  }
+});
+
+/* What this officer has sent, and where each one stands. Scoped to the SENDER — an
+   offer carries a borrower's email and their terms, so it is not a shared list. */
+router.get('/term-sheet-offers', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT o.id, o.borrower_email, o.borrower_name, o.program, o.is_manual, o.property_address,
+              o.sent_at, o.send_error, o.opened_at, o.accepted_at, o.expires_at, o.revoked_at,
+              o.application_id, o.register_result, a.ys_loan_number
+         FROM term_sheet_offers o
+         LEFT JOIN applications a ON a.id = o.application_id
+        WHERE o.officer_id = $1
+        ORDER BY o.created_at DESC LIMIT 100`, [req.actor.id]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

@@ -10,6 +10,9 @@ import { moneyNum } from '../lib/money.js';
    identical document can be attached to the loan file. Every guideline,
    limitation, note and number the borrower sees is the static tool's own. */
 
+// WHO IS DRIVING THIS TOOL — one definition, shared with the Investor Suite.
+import { stampToolOfficer } from '../lib/toolOfficer.js';
+
 const STUDIO_URL = '/tools/term-sheet.html';
 
 // Marketing chrome that has no place inside the portal. Everything else —
@@ -410,6 +413,32 @@ export function blobToBase64(blob) {
   });
 }
 
+/* CAPTURE THE EXACT PDF THE STATIC TOOL WOULD DOWNLOAD, for any window hosting it.
+   `doc.save()` is swapped for an `output('blob')` capture for the duration of the one
+   export call and then restored in a `finally`, so a throw mid-export can never leave
+   the tool unable to download normally. Returns `{blob, filename}` or null — null on
+   every "not ready" path (no frame, no TS API, the PDF engine would not load), so a
+   caller can say "give it a moment" instead of shipping an empty attachment.
+
+   ONE DEFINITION, used by the studio component's `capturePdf()` ref method AND by the
+   Investor Suite, which hosts the same tool through a bare StaticToolFrame. */
+export async function capturePdfFromWindow(win) {
+  if (!win || !win.TS) return null;
+  if (!(win.jspdf && win.jspdf.jsPDF)) {
+    try { await loadPdfEngine(win.document); } catch (_) { return null; }
+  }
+  if (!(win.jspdf && win.jspdf.jsPDF)) return null;
+  const API = win.jspdf.jsPDF.API;
+  const orig = API.save;
+  let captured = null;
+  API.save = function saveCapture(name) {
+    try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
+    return this;
+  };
+  try { await win.TS.exportPdf(null); } finally { API.save = orig; }
+  return captured;
+}
+
 function loadPdfEngine(doc) {
   return new Promise((resolve, reject) => {
     const add = (src, onerr) => {
@@ -528,25 +557,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       try { win.TS_PROVENANCE = kind ? { kind } : null; return true; } catch (_) { return false; }
     },
     /* Build the exact PDF the static tool downloads, but capture the bytes
-       instead: doc.save() is swapped for an output('blob') capture for the
-       duration of the one export call, then restored. */
-    async capturePdf() {
-      const win = winRef.current;
-      if (!win || !win.TS) return null;
-      if (!(win.jspdf && win.jspdf.jsPDF)) {
-        try { await loadPdfEngine(win.document); } catch (_) { return null; }
-      }
-      if (!(win.jspdf && win.jspdf.jsPDF)) return null;
-      const API = win.jspdf.jsPDF.API;
-      const orig = API.save;
-      let captured = null;
-      API.save = function saveCapture(name) {
-        try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
-        return this;
-      };
-      try { await win.TS.exportPdf(null); } finally { API.save = orig; }
-      return captured;
-    },
+       instead. The mechanics live in the exported `capturePdfFromWindow` so the
+       Investor Suite — which hosts the same tool through a bare StaticToolFrame
+       rather than this component — captures the sheet the SAME way, rather than
+       growing a second copy of a save()-swapping trick. */
+    async capturePdf() { return capturePdfFromWindow(winRef.current); },
   }), []);
 
   // Keep the tool's hold reason live: a resolved finding lifts the hold on the
@@ -660,6 +675,17 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
+        /* NO ASSIGNED OFFICER IS NOT "NOBODY" — it is the person at the keyboard
+           (owner-directed 2026-08-07: "if somebody is doing something from his login,
+           it should always stay with his information, his name"). On a file WITH an
+           assigned officer that officer wins and nothing changes: the term sheet is
+           the file's, not the operator's. On an UNASSIGNED file the tool was
+           completely anonymous, so anything it posted lost its owner to the lead
+           round-robin exactly as the Investor Suite did. The stamp also declares the
+           staff-portal origin unconditionally, which is what keeps the rotation out
+           of the way even when the identity cannot be resolved (lib/toolOfficer.js).
+           Fire-and-forget: it must never delay or block the studio. */
+        stampToolOfficer(win, { keepExisting: !!(officer && officer.name) });
         // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
         // findings hold generation — the tool's Download-PDF button refuses
         // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The

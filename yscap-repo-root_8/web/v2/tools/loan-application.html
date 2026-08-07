@@ -1469,7 +1469,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "term_sheet_exception",
       name: bName(1) || null, email: vEmail || null, phone: vPhone || null,
-      officerCode: officerCode, subject: sum.subject, message: sum.body,
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: sum.subject, message: sum.body,
       formToken: FORM_TOKEN.t || undefined,
       payload: { kind: "loan_application_manual_review", state: YS.collectState() }
     }) })
@@ -2188,7 +2188,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       : ((new URLSearchParams(location.search).get("lo")) || "");
     return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "loan_application", name: bName(1), email: val("b1Email"), phone: val("b1Phone"),
-      officerCode: officerCode, subject: subject, message: buildSummary(), payload: YS.collectState()
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: subject, message: buildSummary(), payload: YS.collectState()
     }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function () { finish(off, null); })

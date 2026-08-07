@@ -57,7 +57,6 @@ const cfg = require('../config');
 const tpl = require('./email/template');
 // The reply delimiter both halves of the chain key on — printed at the TOP of every message we
 // put on the chain, and cut at on the way back in (lib/email/reply-cut.js).
-const { REPLY_MARKER } = require('./email/reply-cut');
 const storage = require('./storage');
 const closingThread = require('./closing-thread');
 
@@ -1018,8 +1017,11 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
     // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
     // records is what they actually wrote rather than the whole conversation again.
-    replyMarker: REPLY_MARKER,
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;
@@ -1063,7 +1065,7 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
     // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
     // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
     // records is what they actually wrote rather than the whole conversation again.
-    replyMarker: REPLY_MARKER,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     replyable: true,
     audience: 'staff',
   });
@@ -1119,8 +1121,11 @@ function buildCancelEmail(data, { reason = '', address = null, senderName = '' }
     callout: note ? { title: 'Why', body: note, tone: 'neutral' } : null,
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
-    replyMarker: REPLY_MARKER,
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1155,8 +1160,8 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
     // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
     // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
     // records is what they actually wrote rather than the whole conversation again.
-    replyMarker: REPLY_MARKER,
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1265,8 +1270,8 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
     // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
     // records is what they actually wrote rather than the whole conversation again.
-    replyMarker: REPLY_MARKER,
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1565,6 +1570,51 @@ async function markCarriedByOrder(applicationId, thread, pkg) {
   }
 }
 
+/**
+ * ADDRESSES THAT MAY NEVER BE ADDED TO A CLOSING CHAIN, whoever puts them on it.
+ *
+ * `thread-participants` keeps the people the OTHER SIDE looped in (owner-directed
+ * 2026-08-07, extremely important). Two sets of addresses are carved out of that,
+ * because both are HARD RULES of this desk and a vendor's Cc must not be able to
+ * rewrite either:
+ *
+ *  · THE BORROWER (and co-borrower). This chain carries lender-to-counsel
+ *    correspondence — pricing, the whole entity file. `routes/staff.js` documents
+ *    leaking it to the borrower as the exact trap the closing reply branch exists to
+ *    prevent; a party who CC's the borrower once must not make that policy.
+ *  · THE INSURANCE CONTACT. "The insurance contact is never included" — not as a
+ *    recipient, not in the body — and `getClosingPrepData` excludes them in SQL,
+ *    testing BOTH the directory row's type AND the per-file link's own copy. This
+ *    reads them the same way, so it can never be looser than that exclusion.
+ *
+ * Best-effort: an unreadable list returns [] and the caller still sends. A missed
+ * carve-out is caught by the caller's own base list (we never ADD the borrower), so
+ * failing open here cannot leak — it can only fail to suppress a vendor's own Cc.
+ */
+async function neverLoopIn(applicationId) {
+  const out = [];
+  try {
+    const r = await db.query(
+      `SELECT b.email AS borrower_email, cb.email AS co_email
+         FROM applications a
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id = $1`, [applicationId]);
+    if (r.rows[0]) { out.push(r.rows[0].borrower_email, r.rows[0].co_email); }
+  } catch (_) { /* best-effort */ }
+  try {
+    const r = await db.query(
+      `SELECT sc.email
+         FROM application_service_contacts l
+         JOIN service_contacts sc ON sc.id = l.service_contact_id
+        WHERE l.application_id = $1
+          AND (sc.contact_type = ANY($2::text[]) OR COALESCE(l.contact_type,'') = ANY($2::text[]))`,
+      [applicationId, NEVER_SHARE_CONTACT_TYPES]);
+    for (const x of r.rows) out.push(x.email);
+  } catch (_) { /* best-effort */ }
+  return out.filter(Boolean).map((e) => String(e).trim().toLowerCase());
+}
+
 /** The To/Cc the chain was last sent to. */
 async function lastRecipients(threadId) {
   try {
@@ -1666,7 +1716,7 @@ module.exports = {
   attachBudgetRawBytes, maxParts, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail, buildCancelEmail,
-  announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
+  announce, lastRecipients, neverLoopIn, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
   isSizeSkip,

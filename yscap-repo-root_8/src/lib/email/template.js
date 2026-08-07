@@ -176,6 +176,15 @@ function render(p) {
     .concat(Array.isArray(p.tables) ? p.tables.filter(function (t) {
       return t && Array.isArray(t.rows) && t.rows.length;
     }) : []);
+  // THE EARLIER CONVERSATION, quoted the way every mail client quotes — a
+  // `gmail_quote` container that clients render as the little three-dots "show
+  // trimmed content" control instead of pages of visible text (owner-reported
+  // 2026-08-07: "it has every reply in the bottom in lines… it shouldn't sound so
+  // outdated with all this text from all the previous emails"). NOTHING IS DROPPED:
+  // the history still travels, indented and quiet, one click from the reply. Built
+  // by lib/email/quote.js, which owns the markup so this template and the inbound
+  // parser agree on what a quote container is. {attribution, body}
+  var quoted   = (p.quoted && p.quoted.body && String(p.quoted.body).trim()) ? p.quoted : null;
 
   /* ---------------- STATUS PILL ---------------- */
   function pill(b) {
@@ -554,6 +563,20 @@ function render(p) {
       '</table>'
     : '';
 
+  /* ---------------- THE QUOTED EARLIER CONVERSATION ----------------
+     Rendered LAST in the content cell, which is where a client's trimming heuristic
+     expects a quote container to sit — that is what turns it into the three-dots
+     control rather than a wall of text. The markup itself comes from
+     lib/email/quote.js so this template and the inbound parser can never disagree
+     about what a quote container looks like. Escaping happens there too: this is
+     text an outside party sent us. */
+  var quotedHtml = quoted
+    ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0 0;">' +
+        '<tr><td style="padding-top:14px;border-top:1px solid ' + BRAND.line + ';">' +
+          require('./quote').quoteBlockHtml(quoted.attribution || '', quoted.body) +
+        '</td></tr></table>'
+    : '';
+
   var greetHtml = greeting
     ? '<p style="margin:0 0 14px;font-family:Arial,Helvetica,sans-serif;font-size:15px;' +
       'color:' + BRAND.ink + ';">' + esc(greeting) + '</p>'
@@ -627,7 +650,10 @@ function render(p) {
             'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(heading) + '</h1>' +
           // figures then facts, both ABOVE the generic file meta: the money is the answer, the
           // draw's own details are the supporting read, and the file identity block is reference.
-          greetHtml + body + figuresHtml + factsHtml + changesHtml + tableHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
+          // `quotedHtml` stays LAST, after everything this message itself says: it is the EARLIER
+          // conversation, and a mail client collapses it behind the three dots only when it is the
+          // tail of the body. `changesHtml`/`tableHtml` sit with the facts — they are this message.
+          greetHtml + body + figuresHtml + factsHtml + changesHtml + tableHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml + quotedHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
@@ -753,6 +779,15 @@ function render(p) {
   if (note) t.push(note, '');
   if (replyable) t.push('You can reply directly to this email to reach your '
     + (p.audience === 'borrower' ? 'loan team.' : 'YS Capital team.'), '');
+  // The quoted history, `>`-prefixed — the plaintext form of the same container. A
+  // reader on a text-only client must not lose the conversation just because their
+  // client cannot draw the three dots.
+  if (quoted) {
+    if (quoted.attribution) t.push(String(quoted.attribution));
+    String(quoted.body).replace(/\r\n/g, '\n').split('\n').slice(0, 400)
+      .forEach(function (l) { t.push('> ' + l); });
+    t.push('');
+  }
   t.push('—', COMPANY.name + ' · NMLS #' + COMPANY.nmls, COMPANY.phone + ' · ' + COMPANY.email + ' · yscapgroup.com');
 
   // Subject carries the file tag ("<title> · <loan# · borrower · property>") so

@@ -51,6 +51,9 @@ const db = require('../db');
 const email = require('./email');
 const notify = require('./notify');
 const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient, closingTokenFromRecipient } = require('./file-address');
+// The ONE definition of where a person's own reply ends and the quoted history
+// begins — shared with the chat family, the Email Center and the outbound marker.
+const emailQuote = require('./email/quote');
 
 const RESEND_BASE = 'https://api.resend.com';
 
@@ -503,8 +506,26 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
   // We forward the PLAIN TEXT inside our own branded wrapper rather than inlining
   // the sender's raw HTML — external HTML in a staff email is a phishing/tracking
   // vector. Hyperlink TARGETS from an HTML-only reply are preserved inline.
-  const plain = text || htmlToText(html);
-  const lines = bodyLines(plain);
+  //
+  // THE FORWARD LEADS WITH WHAT THEY TYPED, AND ONLY THAT (owner-reported
+  // 2026-08-07: "it has every reply in the bottom in lines… it shouldn't sound so
+  // outdated with all this text from all the previous emails"). The earlier
+  // conversation is not dropped — it rides as a proper quote container, which is
+  // what a mail client turns into its three-dots "show trimmed content" control.
+  // On an HTML-only reply the markup is cut FIRST, on the client's own quote
+  // container, because that is a fact rather than a guess; the text patterns are the
+  // backstop. Both halves fail toward keeping text: a cut that would leave an empty
+  // reply is not made (lib/email/quote.js rules 1–3).
+  const htmlBody = (!text && html) ? emailQuote.splitQuotedHtml(html) : null;
+  const plain = text || htmlToText(htmlBody ? htmlBody.reply : html);
+  const split = emailQuote.splitQuoted(plain);
+  const quotedHistory = split.quoted
+    || (htmlBody && htmlBody.quoted ? htmlToText(htmlBody.quoted) : '');
+  const lines = bodyLines(split.reply);
+  const quoted = quotedHistory
+    ? { attribution: `Earlier in this conversation${subject ? ` — “${String(subject).slice(0, 120)}”` : ''}:`,
+        body: String(quotedHistory).slice(0, MAX_BODY_CHARS) }
+    : null;
   const send = async (atts, note) => {
     const bodyLead = lines.length ? lines : ['(no message text — see the attachment, if any)'];
     const built = notify.buildEmail({
@@ -522,6 +543,12 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
       note: noTeam
         ? 'This file has no active team assigned. Replying to this message continues the file thread; assign a loan officer or processor on the file so replies reach the right people.'
         : 'This is a reply to a file email. Reply to this message and it reaches everyone assigned to the file.',
+      // The delimiter is what makes the NEXT round clean: printed at the top of the
+      // content, it lands just below whatever the reader types when their client
+      // quotes this email underneath — so the same cut that produced `lines` above
+      // works on their reply too. Same token every family uses.
+      replyMarker: emailQuote.replyMarker('and it reaches everyone on this file'),
+      quoted,
     }, 'staff');
     const r = await email.sendMail({
       to: toEmails,

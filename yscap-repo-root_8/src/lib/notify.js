@@ -213,6 +213,10 @@ function buildEmail(opts, audience) {
     // Titled how-to blocks (owner-directed 2026-07-21) — clean, professional
     // instruction sections (e.g. "How to request a draw", "What happens next").
     sections:  opts.sections || null,
+    // The earlier conversation, quoted in the shape mail clients collapse behind
+    // their three-dots control (lib/email/quote.js). Used by the inbound forwards so
+    // a reply notification leads with the reply and not with a copy of the thread.
+    quoted:    opts.quoted || null,
     audience,
   });
 }

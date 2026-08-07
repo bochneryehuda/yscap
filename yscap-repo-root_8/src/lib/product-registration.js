@@ -437,7 +437,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             -- Refinance-only and fill-or-update, never touched on a purchase,
             -- where there is nothing to pay off and a stale value would be worse
             -- than none.
-            payoff_amount = CASE WHEN $25::numeric IS NOT NULL THEN $25::numeric
+            payoff_amount = CASE WHEN $26::numeric IS NOT NULL THEN $26::numeric
                                  ELSE payoff_amount END,
             -- THE REGISTERED PROGRAM CHOOSES THE NOTE BUYER (owner-directed
             -- 2026-08-06: "Fidelis for the standard, Blue Lake for the gold,
@@ -457,7 +457,26 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             -- the owner asked for. A change here is picked up by the
             -- evaluateApplication pass every register route already runs, so the
             -- buyer's conditions attach on their own.
-            lender=COALESCE(lender, $24),
+            -- THE NOTE BUYER FOLLOWS THE REGISTERED PROGRAM (owner-directed
+            -- 2026-08-07). Fill a blank, as before — and additionally CORRECT a
+            -- value this system derived for a DIFFERENT program. A borrower can
+            -- self-register and so choose the program, which chose the buyer; an
+            -- officer registering the right program afterwards left the wrong
+            -- buyer stamped, and that file could then export no data tape at all.
+            -- Narrow on purpose: only one of OUR OWN three derived labels, only
+            -- when it disagrees with the program now registered. A name a human
+            -- typed, one ClickUp fed in, or any partner we do not derive is never
+            -- touched — which is exactly what the fill-only rule protected.
+            -- KNOWN CONSEQUENCE, accepted by the owner: someone who deliberately
+            -- sets Blue Lake on a Silver file will see it corrected on the next
+            -- re-register. Deriving it is the point; the overview card remains the
+            -- place to state something different.
+            lender = CASE
+                       WHEN lender IS NULL THEN $24::text
+                       WHEN $24::text IS NOT NULL AND lender <> $24::text
+                            AND lender = $25::text THEN $24::text
+                       ELSE lender
+                     END,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -492,10 +511,20 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       claimExpVal(claimedExp, 'holds'),
       claimExpVal(claimedExp, 'ground'),
       financedRehab,                                  // $23 — financed rehab (holdback); full budget when no OOP exception
-      // $24 — the note buyer this program implies (NULL on manual/unknown).
-      // Fill-only in the SET clause above, so it can only ever fill a blank.
+      // $24 — the note buyer this program implies (NULL on manual/unknown). The
+      // SET clause above fills a blank with it and, together with $25, corrects
+      // one of our own stamps; it can never overwrite a human's choice.
       require('./note-buyer-for-program').noteBuyerForProgram(program),
-      // $25 — the payoff, only on a refinance and only when the deal carried one.
+      // $25 — the label the PREVIOUS registration derived. This is what tells one
+      // of OUR OWN stamps from a human's choice, and it satisfies both of the
+      // owner's requirements at once: if the file still shows exactly what the last
+      // registration stamped, it is ours and follows the new program; if it shows
+      // anything else, a human changed it on the overview and it is left alone.
+      // A comparison against "any label we derive" would have been wrong — it would
+      // overwrite an officer who deliberately put EMCAP on a Standard file.
+      (prev && prev.program)
+        ? require('./note-buyer-for-program').noteBuyerForProgram(prev.program) : null,
+      // $26 — the payoff, only on a refinance and only when the deal carried one.
       // NULL leaves the column untouched (a purchase, or a register that never
       // saw the field), so this can never wipe a payoff a human recorded.
       (String(inputs.loanType || '').toLowerCase().indexOf('purchase') < 0 && num(inputs.payoff) > 0)

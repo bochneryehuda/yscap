@@ -23,8 +23,18 @@
  * PURE — no DB, no network, no I/O.
  */
 
-/** The stable token both sides key on. Never reword it without changing both halves at once. */
-const REPLY_MARKER_PHRASE = 'Reply above this line';
+/**
+ * The stable token both sides key on. Never reword it without changing both halves at once.
+ *
+ * IT IS DERIVED FROM `./quote`, NOT DECLARED HERE. Two sessions centralized this phrase in the
+ * same week — one into this module, one into `quote.js` — which would have left the codebase with
+ * TWO "one definition"s of the token and re-armed exactly the drift both were written to prevent
+ * (a reword on one side silently stops the other side cutting, and nothing errors). `quote.js`
+ * owns it: it is the broader module, backing the inbound cut for every family and rendering the
+ * quote block the email template prints. This module keeps its own richer HTML splitter and its
+ * own printed delimiter line; only the TOKEN is shared.
+ */
+const REPLY_MARKER_PHRASE = require('./quote').REPLY_MARKER_PHRASE;
 /** The full delimiter line as it is printed in the message body. */
 const REPLY_MARKER = `— — — ${REPLY_MARKER_PHRASE} — — —`;
 
@@ -169,13 +179,26 @@ function htmlQuoteStart(html) {
  * The two halves are BOTH returned. Collapsing the history is a reading decision the
  * screen makes; nothing here throws content away, and the record keeps every byte.
  */
+/*
+ * DELEGATED TO `./quote`, NOT IMPLEMENTED TWICE (2026-08-07). Two sessions built an HTML
+ * reply-splitter in the same week and both landed. Running both is worse than either: the
+ * route applied `quote.splitQuotedHtml` and then this one, so the "show the original" control
+ * would have opened a body that had already been trimmed — the history unreachable from a
+ * button whose whole purpose is to reach it.
+ *
+ * `quote.js` owns the split (it is the module the email template and every inbound family
+ * already use) and it absorbed the two boundaries this implementation had and it lacked:
+ * Yahoo's wrapper, and OUR OWN delimiter with the walk-back-to-a-tag-open that makes a cut on
+ * an unrecognised client safe. Its own patterns are the stricter pair — they accept
+ * single-quoted attributes, and its Outlook id is the real `appendonsend` rather than the
+ * `appendonly` typo below, which matched nothing.
+ *
+ * This wrapper stays because it is the contract the pure suite pins and because
+ * `htmlQuoteStart` / `HTML_QUOTE_PATTERNS` are still exported for inspection. Do not
+ * re-implement the split here.
+ */
 function splitReplyHtml(html) {
-  const s = String(html || '');
-  const cut = htmlQuoteStart(s);
-  if (cut <= 0) return { reply: s, quoted: '', trimmed: false };
-  const reply = s.slice(0, cut);
-  if (!htmlHasWords(reply)) return { reply: s, quoted: '', trimmed: false };
-  return { reply, quoted: s.slice(cut), trimmed: true };
+  return require('./quote').splitQuotedHtml(html);
 }
 
 module.exports = {
