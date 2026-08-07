@@ -553,6 +553,16 @@
     // optional leverage choice: borrower may take LESS than the program max LTC for better pricing
     if (input.targetLTC && input.targetLTC > 0) maxLTC = Math.min(maxLTC, input.targetLTC);
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: maxLTC };
+    /* A TYPED LOAN AMOUNT IS A VOLUNTARY CEILING, NOT A NEW WAY TO SIZE A LOAN
+       (owner-directed 2026-08-06). It is a MIN against the tier's own dollar wall, so
+       it can only ever REDUCE — an amount ABOVE what the caps allow is unreachable
+       here BY DESIGN, and the only way up is the admin basis below (ovrAcqLTV /
+       ovrARLTV / ovrLTC), which already routes to approval. Because sizeLoan finances
+       the rehab first and gives the remainder to the initial advance, and the loan
+       grows monotonically to the nearest wall, capping the wall lands the structure on
+       the typed amount with the owner's own split intact — no sizing math changes.
+       Inert when unset. */
+    if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
