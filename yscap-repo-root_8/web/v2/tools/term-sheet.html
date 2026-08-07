@@ -722,6 +722,10 @@
 
                 <div class="ts-admin-group">Loan amount <span class="ts-admin-note">— type an exact amount</span></div>
                 <div class="ts-admin-grid2">
+                    <!-- The ladder rung the file was REGISTERED at, handed back by the portal so a
+                         reopened file re-registers the same loan it was signed at rather than
+                         jumping to the maximum. Adopted once by adoptLadderPick(), then blanked. -->
+                    <input id="tsLadderPick" data-noshare type="hidden">
                     <div class="field"><label for="tsTargetLoan">Loan amount ($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
                 </div>
                 <p class="ts-admin-mnote" id="tsTargetLoanHint">Blank = the deal's maximum. A <strong>smaller</strong> amount is simply taking less: no approval needed, exactly like a step on the pricing ladder. The construction budget stays fully financed and the reduction comes off the initial advance. To go <strong>above</strong> the maximum, set the basis below (LTV / LTC / ARV) — that is an exception and goes to an admin for approval.</p>

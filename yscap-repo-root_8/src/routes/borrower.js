@@ -28,6 +28,7 @@ const numberBounds = require('../lib/number-bounds');     // ONE definition of e
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
+const stickyOverrides = require('../lib/pricing-sticky');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
@@ -1058,7 +1059,11 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
-    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // The panel's live quote is what the borrower READS, so it is priced with the
+    // file's own carried values too — otherwise the screen advertises a loan that
+    // registering cannot produce (owner-directed 2026-08-07).
+    const effPanel = await stickyOverrides.effectiveOverrides(f.app.id, {}, db);
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effPanel)); quote.experience = f.exp; } catch (_) {} }
     // If the borrower's registration is a manual-review exception waiting on a
     // super-admin, surface that state so the studio shows "registered but NOT
     // confirmed — waiting for approval" on reload (not just the transient submit
@@ -1089,7 +1094,10 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    // The SAME effective overrides the register will use — a what-if that ignores
+    // what the file carries would quote a loan the register cannot produce.
+    const effQ = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effQ));
     res.json({ ...out, experience: f.exp });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1150,16 +1158,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        still change it freely — they can see the box, and their own door never runs
        this. Best-effort: an unreadable prior registration must never block a
        borrower's register, and it can only ever make the loan SMALLER. */
-    try {
-      // `is_current` is this table's own current-row flag (unique partial index);
-      // there is no superseded_at column. Same predicate experience.js uses.
-      const prior = await db.query(
-        `SELECT inputs FROM product_registrations
-          WHERE application_id = $1 AND is_current LIMIT 1`, [f.app.id]);
-      const prev = Number(prior.rows[0] && prior.rows[0].inputs && prior.rows[0].inputs.targetLoan);
-      if (isFinite(prev) && prev > 0) overrides.targetLoan = prev;
-    } catch (_) { /* never block a register on the sticky read */ }
-    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    const effReg = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const inputs = pricing.buildInputs(f.app, f.exp, effReg);
     /* A refinance is sized on the as-is value, so with none on file there is no
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a

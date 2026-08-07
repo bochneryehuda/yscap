@@ -263,6 +263,7 @@ export function readSnapshot(win) {
       tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
       // A typed loan amount (owner-directed 2026-08-06) — the admin zone's exact-amount box.
       tsTargetLoan: moneyVal('tsTargetLoan'),
+      tsLadderPick: val('tsLadderPick'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
       // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
@@ -336,6 +337,15 @@ export function adminStateFromEngineInputs(inp) {
   // skips null/''), and a 0 here means "no amount" — restoring it would paint a zero
   // into a money box. Belt-and-suspenders with pricing.js no longer storing one.
   if (Number(inp.targetLoan) > 0) put('tsTargetLoan', inp.targetLoan);
+  /* THE LADDER RUNG THE FILE WAS REGISTERED AT. It lives only in the studio's own
+     module scope, which resets on every iframe load — so without this a reopened file
+     showed the slider at MAXIMUM and the mandatory post-appraisal re-register
+     (esign/gate.js requires one before a term sheet may issue) registered that
+     maximum: a signed $1,794,000 at 8.500% came back as $2,070,000 at 9.125%.
+     The value-side rung is named so the studio applies it on the RIGHT axis — two
+     rungs can share an LTC, so a bare number could pick the wrong one. */
+  if (Number(inp.targetARLTV) > 0) put('tsLadderPick', 'arv:' + Number(inp.targetARLTV));
+  else if (Number(inp.targetLTC) > 0) put('tsLadderPick', 'ltc:' + Number(inp.targetLTC));
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves
