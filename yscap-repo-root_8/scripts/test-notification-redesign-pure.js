@@ -469,4 +469,127 @@ ok('no reason typed → no empty "Why" box', () => {
   assert.ok(!/\bWHY\b/.test(e.text), e.text);
 });
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   F · EVERY WORKFLOW IS DESIGNED SEPARATELY
+   Owner: "emails like this should have a list of the files and the status of each and every file
+   and whose loan officer in every single file, nicely designed … if it's in the draw coordinator
+   workflow, the draw coordinator workflows should only be stuff that they need to do now. It means
+   stuff that has open draws, and the same thing for the closer work loan for the purchasing
+   workflow. Nicely design every workflow separately."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nF · the overdue nudge splits into one card per workflow');
+
+const wfQueues = require('../src/lib/email/workflow-queues');
+const workflow = require('../src/lib/workflow');
+
+// One person who somehow holds every kind of hand-off at once — the whole point is that these are
+// four different desks, not one list.
+const mixed = [
+  { submission_type: 'processing', property_address: { street: '1 Oak St', city: 'Newark', state: 'NJ' },
+    file_status: 'in_processing', lo_name: 'Dani R', hours_over: 30 },
+  { submission_type: 'condition_clearing', property_address: { oneLine: '2 Elm Ave, Newark, NJ' },
+    file_status: 'underwriting', lo_name: null, hours_over: 96 },
+  { submission_type: 'closing', property_address: { oneLine: '3 Pine Rd, Lakewood, NJ' },
+    file_status: 'clear_to_close', lo_name: 'Moshe K', hours_over: 12 },
+  // A draw file where a borrower IS waiting on money.
+  { submission_type: 'trinity_inspection_order', property_address: { oneLine: '4 Ash Ln, Passaic, NJ' },
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 50, has_open_draw: true },
+  // Two funded files set up for draws that nobody has asked for money on yet.
+  { submission_type: 'draw_setup', property_address: { oneLine: '5 Birch Ct, Trenton, NJ' },
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 400, has_open_draw: false },
+  { submission_type: 'draw_setup', ys_loan_number: 'yscap258134728',
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 700, has_open_draw: false },
+  { submission_type: 'post_closing', property_address: { oneLine: '7 Cedar Way, Camden, NJ' },
+    file_status: 'funded', lo_name: 'Moshe K', hours_over: 80 },
+];
+
+const grouped = wfQueues.buildQueueTables(mixed, workflow.typeConfig, { perTable: 8 });
+
+ok('four different desks arrive as four separate cards, not one merged list', () => {
+  const titles = grouped.tables.map((t) => t.title);
+  assert.strictEqual(grouped.tables.length, 4, titles.join(' | '));
+  assert.ok(/^Processing —/.test(titles[0]), titles[0]);
+  assert.ok(/^Closing —/.test(titles[1]), titles[1]);
+  assert.ok(/^Construction draws —/.test(titles[2]), titles[2]);
+  assert.ok(/^Purchasing \/ investor delivery —/.test(titles[3]), titles[3]);
+});
+
+ok('each card says what that queue is FOR — the line that makes two lists read as two jobs', () => {
+  for (const t of grouped.tables) assert.ok(t.subtitle && t.subtitle.length > 20, t.title);
+  assert.ok(/investor/i.test(grouped.tables[3].subtitle));
+});
+
+ok('the draw card carries ONLY the file somebody is waiting on money for', () => {
+  const draws = grouped.tables.find((t) => /Construction draws/.test(t.title));
+  assert.strictEqual(draws.rows.length, 1);
+  assert.ok(/Ash Ln/.test(draws.rows[0][0]), JSON.stringify(draws.rows));
+});
+
+ok('…and the parked draw files are COUNTED and explained, never silently dropped', () => {
+  const draws = grouped.tables.find((t) => /Construction draws/.test(t.title));
+  assert.strictEqual(grouped.parked, 2);
+  assert.ok(/2 other files are/.test(draws.note), draws.note);
+  assert.ok(/nobody has asked for a draw/.test(draws.note), draws.note);
+});
+
+ok('every row names the property, the job, the file status, the loan officer and how late it is', () => {
+  const proc = grouped.tables[0];
+  assert.deepStrictEqual(proc.head, ['Property / file', 'Waiting for', 'File status', 'Loan officer', 'Over by']);
+  assert.deepStrictEqual(proc.rows[0], ['1 Oak St, Newark, NJ', 'Processing', 'in processing', 'Dani R', '30h']);
+  // Past two days it reads in days; an unassigned officer says so rather than blank.
+  assert.deepStrictEqual(proc.rows[1], ['2 Elm Ave, Newark, NJ', 'Condition Clearing', 'underwriting', 'unassigned', '4d']);
+});
+
+ok('a file with no address falls back to its loan number, never to nothing', () => {
+  const only = wfQueues.buildQueueTables(
+    [{ submission_type: 'draw_setup', ys_loan_number: 'yscap258134728', file_status: 'funded', hours_over: 5, has_open_draw: true }],
+    workflow.typeConfig, {});
+  assert.strictEqual(only.tables[0].rows[0][0], 'YSCAP258134728');
+});
+
+ok('a draw queue that is ENTIRELY parked still gets a card saying so', () => {
+  const parkedOnly = wfQueues.buildQueueTables(
+    [{ submission_type: 'draw_setup', ys_loan_number: 'a1', file_status: 'funded', hours_over: 300, has_open_draw: false }],
+    workflow.typeConfig, {});
+  assert.strictEqual(parkedOnly.shown, 0);
+  assert.strictEqual(parkedOnly.tables.length, 1);
+  assert.ok(/Construction draws/.test(parkedOnly.tables[0].title));
+  assert.ok(/1 file is/.test(parkedOnly.tables[0].rows[0][0]), JSON.stringify(parkedOnly.tables[0].rows));
+});
+
+ok('an unrecognised hand-off lands in "Everything else" rather than vanishing', () => {
+  const odd = wfQueues.buildQueueTables(
+    [{ submission_type: 'something_new', ys_loan_number: 'a1', file_status: 'funded', hours_over: 5 }],
+    workflow.typeConfig, {});
+  assert.strictEqual(odd.tables.length, 1);
+  assert.ok(/Everything else/.test(odd.tables[0].title));
+  assert.strictEqual(odd.tables[0].rows[0][1], 'something new');
+});
+
+ok('a long queue is capped per card and SAYS how many it left out', () => {
+  const many = Array.from({ length: 11 }, (_, i) => ({
+    submission_type: 'processing', ys_loan_number: 'a' + i, file_status: 'funded', hours_over: 10,
+  }));
+  const capped = wfQueues.buildQueueTables(many, workflow.typeConfig, { perTable: 8 });
+  assert.strictEqual(capped.tables[0].rows.length, 8);
+  assert.ok(/…and 3 more in this queue\./.test(capped.tables[0].note), capped.tables[0].note);
+});
+
+ok('the template renders every card, each with its own title and subtitle', () => {
+  const out = tpl.render({
+    title: '7 files in your Workflow are overdue',
+    body: 'grouped below by the queue they belong to',
+    tables: grouped.tables,
+    audience: 'staff',
+  });
+  for (const t of grouped.tables) {
+    assert.ok(out.html.includes(t.title.split(' —')[0]), t.title);
+    assert.ok(out.text.includes(t.subtitle), t.subtitle);
+  }
+  // The four queues each appear once — a merged list would show one heading. (The plaintext
+  // renderer upper-cases a table title, so this is matched case-insensitively.)
+  assert.strictEqual((out.text.match(/past target/gi) || []).length, 4);
+});
+
 console.log(`\n${passed} passed, ${process.exitCode ? 'SOME FAILED' : '0 failed'}`);

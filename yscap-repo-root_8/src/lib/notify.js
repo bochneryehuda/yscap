@@ -193,6 +193,8 @@ function buildEmail(opts, audience) {
     // other email, which renders exactly as before.
     changes:   opts.changes || null,
     table:     opts.table || null,
+    // …and the plural, for an email that carries more than one queue (see template.js `tables`).
+    tables:    opts.tables || null,
     steps:     opts.steps || null,
     progress:  opts.progress || null,
     callout:   opts.callout || null,

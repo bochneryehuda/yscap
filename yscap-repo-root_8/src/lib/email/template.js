@@ -165,6 +165,17 @@ function render(p) {
   // not a notification, it is a chore (owner-directed 2026-08-07).
   // {title, head:[…], rows:[[…]], note, align:[…]}
   var table    = (p.table && Array.isArray(p.table.rows) && p.table.rows.length) ? p.table : null;
+  // SEVERAL lists in one email. Owner-directed 2026-08-07: *"nicely design every workflow
+  // separately"* — a person who holds two different queues (a processor's hand-offs and a draw
+  // coordinator's) is doing two different jobs, and one merged list forces them to sort it out
+  // themselves. `tables` is the plural of `table`; a caller may pass either, and both render in
+  // order. Each entry is its OWN card with its own heading and its own columns, because two
+  // queues rarely want the same columns.
+  var tables   = []
+    .concat(table ? [table] : [])
+    .concat(Array.isArray(p.tables) ? p.tables.filter(function (t) {
+      return t && Array.isArray(t.rows) && t.rows.length;
+    }) : []);
 
   /* ---------------- STATUS PILL ---------------- */
   function pill(b) {
@@ -309,7 +320,12 @@ function render(p) {
     var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
       '<tr><td style="padding:16px 18px 14px;">';
     if (tb.title) {
-      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 10px;">' + esc(tb.title) + '</div>';
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 ' + (tb.subtitle ? '4px' : '10px') + ';">' + esc(tb.title) + '</div>';
+    }
+    // What this particular queue IS — the line that makes two lists in one email read as two
+    // different jobs rather than one list that was arbitrarily split.
+    if (tb.subtitle) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.5;color:' + BRAND.muted + ';margin:0 0 10px;">' + esc(tb.subtitle) + '</div>';
     }
     out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">';
     if (head.length) {
@@ -575,7 +591,7 @@ function render(p) {
   var figuresHtml  = figures ? figureBand(figures) : '';
   var factsHtml    = facts ? factsBox(facts) : '';
   var changesHtml  = changes ? changeBox(changes) : '';
-  var tableHtml    = table ? listTable(table) : '';
+  var tableHtml    = tables.map(function (t) { return listTable(t); }).join('');
   var sections = Array.isArray(p.sections) ? p.sections.filter(function (s) { return s && (s.title || s.body); }) : [];
   var sectionsHtml = sections.length ? sectionBlocks(sections) : '';
   var stepsHtml    = steps.length ? stepper(steps) : '';
@@ -702,16 +718,17 @@ function render(p) {
     if (changes.note) t.push(changes.note);
     t.push('');
   }
-  if (table) {
-    if (table.title) t.push(String(table.title).toUpperCase());
-    if (Array.isArray(table.head) && table.head.length) t.push('  ' + table.head.join(' | '));
-    table.rows.forEach(function (r) {
+  tables.forEach(function (tb) {
+    if (tb.title) t.push(String(tb.title).toUpperCase());
+    if (tb.subtitle) t.push(tb.subtitle);
+    if (Array.isArray(tb.head) && tb.head.length) t.push('  ' + tb.head.join(' | '));
+    tb.rows.forEach(function (r) {
       var cells = Array.isArray(r) ? r : [r];
       t.push('  ' + cells.map(function (v) { return v == null ? '' : String(v); }).join(' | '));
     });
-    if (table.note) t.push(table.note);
+    if (tb.note) t.push(tb.note);
     t.push('');
-  }
+  });
   sections.forEach(function (s) {
     if (s.title) t.push(String(s.title).toUpperCase());
     (Array.isArray(s.body) ? s.body : (s.body ? [s.body] : [])).forEach(function (b) { t.push(b); });

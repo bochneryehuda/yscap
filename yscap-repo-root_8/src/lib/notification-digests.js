@@ -22,6 +22,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const workflow = require('./workflow');
+const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
@@ -1552,46 +1553,35 @@ async function workflowAgingOnce() {
   for (const r of rows) {
     try {
       if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
-      /* NAME THE FILES (owner-directed 2026-08-07: *"emails like this should have a list of the
-         files and the status of each and every file and whose loan officer in every single file,
-         nicely designed"*). The old body was a count and a link — everything it knew, it made the
-         reader go and look up again. Each row now carries the property, WHAT the hand-off is (a
-         draw coordinator's queue and a closer's queue are different jobs, which is the owner's
-         *"nicely design every workflow separately"* — the hand-off kind is the column that
-         separates them), the file's own status, its loan officer, and how far past target it is.
+      /* NAME THE FILES, ONE CARD PER WORKFLOW (owner-directed 2026-08-07: *"emails like this
+         should have a list of the files and the status of each and every file and whose loan
+         officer in every single file … nicely design every workflow separately"*). The old body
+         was a count and a link — everything it knew, it made the reader go and look up again; the
+         first pass at the fix was one merged list, which reads as ONE job arbitrarily split.
+         `workflowQueues.buildQueueTables` (pure) splits the rows by workflow family so a
+         processor's queue, a closer's queue and a draw coordinator's queue arrive as three
+         separate cards, each saying what that queue is for, and — for draws only — carrying only
+         the files where somebody is actually waiting on money.
 
          Best-effort: if the detail query fails the nudge still goes with its count, because a
          person with overdue work being told nothing is the worse outcome. */
       let items = [];
       try { items = await workflow.overdueItemsFor(r.to_staff_id); } catch (_) { items = []; }
-      const overdueTable = items.length ? {
-        title: 'Past target — longest waiting first',
-        head: ['Property / file', 'Waiting for', 'File status', 'Loan officer', 'Over by'],
-        align: ['left', 'left', 'left', 'left', 'right'],
-        rows: items.map((it) => {
-          const cfg2 = workflow.typeConfig ? workflow.typeConfig(it.submission_type) : null;
-          const a = it.property_address || {};
-          const addr = (typeof a === 'string' ? a : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ')))
-            || (it.ys_loan_number ? String(it.ys_loan_number).toUpperCase() : 'a file');
-          const hrs = Math.max(0, Math.round(Number(it.hours_over) || 0));
-          const over = hrs >= 48 ? `${Math.floor(hrs / 24)}d` : `${hrs}h`;
-          return [
-            addr,
-            (cfg2 && cfg2.label) || String(it.submission_type || '').replace(/_/g, ' '),
-            String(it.file_status || '').replace(/_/g, ' ') || '—',
-            it.lo_name || 'unassigned',
-            over,
-          ];
-        }),
-        note: r.overdue > items.length ? `…and ${r.overdue - items.length} more in your Workflow.` : null,
-      } : null;
+      let queues = { tables: [], shown: 0, parked: 0 };
+      try {
+        queues = workflowQueues.buildQueueTables(items, workflow.typeConfig, { perTable: 8 });
+      } catch (e) { console.error('[digest] workflow-queues', e && e.message); }
+      /* The count in the headline is the recipient's REAL overdue total. The cards can hold fewer
+         (the per-card cap, and the parked draw files) — so when they do, say so rather than let the
+         two numbers silently disagree. */
+      const unlisted = Math.max(0, (Number(r.overdue) || 0) - queues.shown - queues.parked);
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
         badge: { text: 'Overdue', tone: 'action' },
         body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time.`,
-        emailBody: `These hand-offs are past the target time they were meant to be picked up or sent back in. Pick one up, or send it back to whoever submitted it.`,
-        table: overdueTable,
+        emailBody: `These hand-offs are past the target time they were meant to be picked up or sent back in. They are grouped below by the queue they belong to — pick one up, or send it back to whoever submitted it.${unlisted ? ` ${unlisted} more ${unlisted === 1 ? 'is' : 'are'} waiting in your Workflow.` : ''}`,
+        tables: queues.tables.length ? queues.tables : null,
         link: '/internal/workflow', ctaLabel: 'Open my Workflow' });
       await _stamp('workflow_overdue', r.to_staff_id, { overdue: r.overdue });
       sent++;
