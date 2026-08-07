@@ -249,7 +249,36 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const progMax = (q.guidelines && q.guidelines.programCaps) || caps;
   const pricedLower = !!(progMax && caps && (
     caps.maxLtc < progMax.maxLtc - 1e-9 || caps.maxArvLtv < progMax.maxArvLtv - 1e-9 || caps.maxAcqLtv < progMax.maxAcqLtv - 1e-9));
-  const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
+  const Row = ({ k, v, sub = false }) => (
+    <div className={'metrow' + (sub ? ' sos-sub-row' : '')}><span className="k">{k}</span><span className="v">{v}</span></div>
+  );
+  /* THE LINE A SECTION EXISTS TO PRODUCE (owner-directed 2026-08-07: "we also need
+     to have more totals … a total of the closing costs, with the origination fee,
+     legal fee, and title fees all together"). Every total on this page is a figure
+     the pricing engine itself produced — never a sum this component adds up, which
+     could silently disagree with the loan by a cent. */
+  const Total = ({ k, v }) => (
+    <div className="metrow sos-total"><span className="k">{k}</span><span className="v">{v}</span></div>
+  );
+  const Sec = ({ title, note, children, internal = false }) => (
+    <section className={'sos' + (internal ? ' sos-internal' : '')}>
+      <p className="sos-h">{title}{internal && <span className="sos-internal-tag">internal</span>}</p>
+      {note && <p className="sos-sub">{note}</p>}
+      {children}
+    </section>
+  );
+  const g = q.guidelines || {};
+  const refi = q.refi || null;                       // null on a purchase
+  const isRefi = !!refi || inp.loanType === 'Refinance';
+  const oop = Number(s.oopRehab) || 0;               // rehab brought out of pocket (exception)
+  const payoff = Number(refi ? refi.payoff : inp.payoff) || 0;
+  /* Our buy rate and margin. Present ONLY on a staff read: the server keeps the
+     whole build-up inside `adminPricing`, which every borrower-facing path strips
+     (routes/borrower.js, lib/tpr-export.js), and `showAdmin` is the second layer.
+     `exact` is the server's own "this was measured, not estimated" flag — an
+     unmeasurable build-up shows the note rate alone rather than a plausible guess. */
+  const build = (showAdmin && q.adminPricing && q.adminPricing.rateBuildUp) || null;
+  const showBuild = !!(build && build.exact && build.buyRatePct != null);
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
       <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
@@ -265,61 +294,149 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <strong>{reg.status === 'INELIGIBLE' ? 'Not eligible as entered' : 'Manual review needed'}:</strong> {shortReason(q.reasons, reg.status)}
         </p>
       )}
-      <div className="grid cols-2">
-        <div>
-          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Loan structure</p>
-          <Row k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
-          <Row k="Note rate (interest-only)" v={fmtRatePct(q.noteRate ?? reg.note_rate) + '%'} />
-          <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
-          <Row k="Construction holdback" v={money(s.rehabHoldback)} />
-          {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
-          <Row k="Down payment (equity)" v={money(s.downPayment)} />
-          {s.assignmentExcessOOP > 0 && <Row k="Assignment over cap (out of pocket)" v={money(s.assignmentExcessOOP)} />}
-          <Row k="Payment — initial advance" v={s.initialPayment ? money(s.initialPayment) + '/mo' : '—'} />
-          <Row k="Payment — fully drawn" v={s.monthlyPayment ? money(s.monthlyPayment) + '/mo' : '—'} />
-          <Row k="Term" v={inp.term ? inp.term + ' months' : '—'} />
-          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Leverage</p>
-          <Row k="Loan-to-cost (LTC)" v={pct(s.ltcPct, 1)} />
-          <Row k="Initial / as-is LTV" v={pct(s.acqLtvPct, 1)} />
-          <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
-          {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
-          {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
-            // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
-            // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
-            // show only the as-is advance cap that actually governs (audit #12).
-            ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
-            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
-          {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
-          {pricedLower && (
-            <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
-              {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
-              The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
-            </p>
-          )}
-        </div>
-        <div>
-          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
-          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
-          <Row k="Credit report" v={money2(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
-          {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
-            <Row key={i} k={f.name} v={money2(f.amount)} />
-          ))}
-          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
-          {/* 1% closing-cost buffer (owner-authorized 2026-07-31): extra cash to
-              verify so attorney/other closing charges never run short. Waivable
-              per file by an admin (toggle below the card). */}
-          {(Number(q.closingBuffer) > 0 || q.closingBufferWaived) && (
-            <Row k={q.closingBufferWaived ? 'Closing cost buffer — waived on this file' : 'Closing cost buffer (1% of loan)'}
-              v={q.closingBufferWaived ? '$0.00' : money2(q.closingBuffer)} />
-          )}
-          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
-          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
+      {/* One flowing two-column run, NOT two hand-dealt halves — the money sections
+          are much longer than the structure ones, so splitting them by hand left
+          half a screen blank beside them. */}
+      <div className="sos-cols">
+          {/* RATE — the owner asked to see the rate the way it is BUILT ("the buy
+              rate, the markup, and the final rate"), not just the number the
+              borrower pays. On a borrower read, and whenever the build-up could
+              not be measured exactly, this is simply the note-rate row. Term,
+              payments and the draw fee are their OWN section below: a total has to
+              be the LAST line of its sum, or it reads as one more entry. */}
+          <Sec title="Rate" internal={showBuild}
+            note={showBuild ? 'What the note rate is made of. The buy rate and our margin are internal — never quote them to a borrower.' : null}>
+            {showBuild && <Row k="Program buy rate" v={fmtRatePctFromPct(build.buyRatePct) + '%'} />}
+            {showBuild && <Row k="YS markup" v={(build.markupPct > 0 ? '+ ' : '') + fmtRatePctFromPct(build.markupPct) + '%'} />}
+            <Total k="Note rate (interest-only)" v={fmtRatePct(q.noteRate ?? reg.note_rate) + '%'} />
+            {build && build.why === 'rate_overridden' && (
+              <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+                An admin set this rate directly, so it carries no buy rate / markup build-up.
+              </p>
+            )}
+          </Sec>
+
+          <Sec title="Payments & term">
+            <Row k="Term" v={inp.term ? inp.term + ' months' : '—'} />
+            <Row k="Payment — initial advance" v={s.initialPayment ? money(s.initialPayment) + '/mo' : '—'} />
+            <Row k="Payment — fully drawn" v={s.monthlyPayment ? money(s.monthlyPayment) + '/mo' : '—'} />
+            {Number(g.drawFee) > 0 && <Row k="Draw fee (per draw)" v={money2(g.drawFee)} />}
+          </Sec>
+
+          {/* LOAN STRUCTURE — the three pieces of the loan, then the loan. Ordered
+              so they read as parts of the total below them (the frozen rounding
+              rule guarantees they reconcile to the cent). */}
+          <Sec title="Loan structure" note="The advance, the holdback and any financed reserve are the three pieces of the loan.">
+            <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
+            <Row k="Construction holdback (drawn later)" v={money(s.rehabHoldback)} />
+            {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
+            <Total k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
+          </Sec>
+
+          {/* WHAT THE BORROWER PUTS IN — the money that is NOT the loan. The
+              out-of-pocket rehab row is the owner's "I want to show what is out of
+              pocket of rehab": an approved exception that moves part of the rehab
+              budget off the holdback and onto the borrower so the initial advance
+              can rise. */}
+          <Sec title="Borrower's own funds in the deal">
+            {!isRefi && <Row k="Down payment (equity)" v={money(s.downPayment)} />}
+            {oop > 0 && <Row k="Rehab out of pocket (approved exception)" v={money2(oop)} />}
+            {s.assignmentExcessOOP > 0 && <Row k="Assignment fee over the financeable cap" v={money(s.assignmentExcessOOP)} />}
+            {oop > 0 && s.maxOopRehab > 0 && (
+              <Row k="Most that could be taken out of pocket" v={money2(s.maxOopRehab)} />
+            )}
+            {isRefi && !(oop > 0) && !(s.assignmentExcessOOP > 0) && (
+              <p className="small" style={{ margin: '4px 0 0', color: '#4B585C' }}>
+                A refinance has no down payment — the cash to close below is what the payoff and the closing costs come to over the funds advanced.
+              </p>
+            )}
+          </Sec>
+
+          <Sec title="Leverage" note="Where this loan sits against value, cost and the program's ceilings.">
+            <Row k="Loan-to-cost (LTC)" v={pct(s.ltcPct, 1)} />
+            <Row k="Initial / as-is LTV" v={pct(s.acqLtvPct, 1)} />
+            <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
+            {Number(s.costBasis) > 0 && <Row k="Total project cost (the LTC basis)" v={money(s.costBasis)} />}
+            {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
+            {s.binding && <Row k="Binding limit" v={s.binding} />}
+            {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
+              // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
+              // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
+              // show only the as-is advance cap that actually governs (audit #12).
+              ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
+              : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
+            {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
+            {pricedLower && (
+              <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+                {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
+                The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
+              </p>
+            )}
+          </Sec>
+
+          {/* CLOSING COSTS, WITH THE TOTAL THE OWNER ASKED FOR BY NAME: "a total of
+              the closing costs, with the origination fee, legal fee, and title fees
+              all together". `dueAtClosing` IS that sum (origination + UW/legal +
+              credit + title + any extra fees), straight from the engine — the
+              appraisal sits BELOW it because it is paid outside closing, and folding
+              it in would overstate what the borrower brings to the table. */}
+          <Sec title="Closing costs" note="Everything charged at the closing table, then the appraisal, which is paid separately.">
+            <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+            <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+            <Row k="Credit report" v={money2(cc.creditFee)} />
+            <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+            {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
+              <Row key={i} k={f.name} v={money2(f.amount)} />
+            ))}
+            <Total k="Total closing costs due at closing" v={money2(cc.dueAtClosing)} />
+            <Row k="Appraisal (est., paid outside closing)" v={money2(cc.appraisalPoc)} sub />
+            <Total k="Total closing costs including the appraisal" v={money2(cc.totalIncludingPoc)} />
+          </Sec>
+
+          {/* CASH TO CLOSE — itemized the way the engine actually computes it, which
+              is a DIFFERENT sum on a refinance (payoff + closing − the funds we
+              advance) than on a purchase (down payment + closing). */}
+          <Sec title="Cash to close"
+            note={isRefi ? 'On a refinance the borrower brings whatever the payoff and the closing costs come to over the funds we advance.'
+              : 'The equity and the closing costs the borrower brings to the table.'}>
+            {isRefi ? (
+              <>
+                <Row k="Payoff of the existing loan" v={payoff > 0 ? money2(payoff) : '—'} />
+                <Row k="Closing costs due at closing" v={money2(refi ? refi.closing : cc.dueAtClosing)} />
+                <Row k="Less funds advanced at closing" v={'− ' + money2(refi ? refi.fundedAtClose : s.initialAdvance)} />
+                <Total k="Estimated cash to close" v={money2(q.cashToClose)} />
+                {refi && Number(refi.cashOut) > 0 && <Total k="Cash out to the borrower" v={money2(refi.cashOut)} />}
+              </>
+            ) : (
+              <>
+                <Row k="Down payment (equity)" v={money2(s.downPayment)} />
+                {s.assignmentExcessOOP > 0 && <Row k="Assignment fee over the financeable cap" v={money2(s.assignmentExcessOOP)} />}
+                <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+                <Total k="Estimated cash to close" v={money2(q.cashToClose)} />
+              </>
+            )}
+          </Sec>
+
+          {/* LIQUIDITY — the engine's own build-up:
+                cashToClose + reserveRequirement + oopRehab + closingBuffer.
+              Itemizing it is the point: "liquidity to verify" as a bare figure told
+              nobody WHY the borrower has to show that much. */}
+          <Sec title="Liquidity to verify" note="The cash the borrower has to actually show us, and what makes it up.">
+            <Row k="Estimated cash to close" v={money2(q.cashToClose)} />
+            <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}${q.reserveMonths ? ` · ${q.reserveMonths} months` : ''}`}
+              v={money2(q.reserveRequirement)} />
+            {oop > 0 && <Row k="Rehab out of pocket" v={money2(oop)} />}
+            {/* 1% closing-cost buffer (owner-authorized 2026-07-31): extra cash to
+                verify so attorney/other closing charges never run short. Waivable
+                per file by an admin (toggle below the card). */}
+            {(Number(q.closingBuffer) > 0 || q.closingBufferWaived) && (
+              <Row k={q.closingBufferWaived ? 'Closing cost buffer — waived on this file' : 'Closing cost buffer (1% of loan)'}
+                v={q.closingBufferWaived ? '$0.00' : money2(q.closingBuffer)} />
+            )}
+            <Total k="Total liquidity to verify" v={money2(q.liquidity ?? q.liquidityRequired)} />
+          </Sec>
+
+          <Sec title="Scenario as registered" note="The deal exactly as it was priced. Changing any of these reopens Products &amp; pricing.">
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           {/* NAME THE FIGURE THE LOAN WAS SIZED ON (owner-directed 2026-08-02).
               On a refinance `inp.purchasePrice` IS the as-is value — that is the
@@ -333,13 +450,21 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
             <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
+          {/* THE PAYOFF, which the owner asked for by name. It is a real pricing
+              input on a refinance (cash-to-close is sized off it), and it was on no
+              surface here at all. */}
+          {isRefi && <Row k="Payoff of the existing loan" v={payoff > 0 ? money(payoff) : '—'} />}
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           {registeredRehabType(inp) && <Row k="Rehab scope" v={registeredRehabType(inp)} />}
+          {oop > 0 && <Row k="Of that, out of pocket" v={money2(oop)} sub />}
+          <Row k="Property type / units" v={`${inp.propertyType || '—'}${inp.units ? ' · ' + inp.units + (inp.units > 1 ? ' units' : ' unit') : ''}`} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Requested interest reserve" v={`${inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`}${(inp.irAmount > 0 || inp.irMonths > 0) ? ` · financed: ${money(s.financedReserve || 0)}` : ''}`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
+          </Sec>
+
           {(() => {
             // Term-sheet options (owner-directed 2026-07-22) — accrual, 3-month
             // minimum interest, deferred origination fee, and the estimated dates.
@@ -351,8 +476,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             };
             const def = Number(to.deferredOrigPct) || 0;
             return (
-              <>
-                <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Term-sheet options</p>
+              <Sec title="Term-sheet options" note="What the term sheet says beyond the numbers.">
                 <Row k="Guaranty / recourse" v={to.coBorrowerPgWaived === true ? 'Full recourse — co-borrower guaranty waived (approved exception)' : 'Full recourse — personal guaranty required'} />
                 <Row k="Interest accrual" v={to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'} />
                 <Row k="3-month minimum interest" v={to.minInterestEnabled === true ? 'Included' : 'Not included'} />
@@ -360,10 +484,9 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
                 {to.estClosing && <Row k="Estimated closing date" v={niceDate(to.estClosing)} />}
                 {to.firstPayment && <Row k="First payment date (est.)" v={niceDate(to.firstPayment)} />}
                 {to.maturity && <Row k="Maturity date (est.)" v={niceDate(to.maturity)} />}
-              </>
+              </Sec>
             );
           })()}
-        </div>
       </div>
     </div>
   );
