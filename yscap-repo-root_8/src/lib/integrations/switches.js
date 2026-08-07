@@ -54,6 +54,11 @@ const SWITCHES = [
   // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
   // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.
   { key: 'APPRAISAL_ASIS_AUTO_ENABLED', integration: 'azure_docint', label: 'Lower the As-Is value automatically when the appraisal reads lower than the purchase price', dangerous: true, envDefault: () => cfg.appraisalAsIsAutoEnabled },
+  // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
+  // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact
+  // enrichment, which is a per-person human click and can never be turned on globally.
+  { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
+  { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

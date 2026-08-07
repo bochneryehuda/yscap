@@ -433,6 +433,10 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
+  // Elementix (recorded deeds / mortgages over MCP) — the one-time OAuth approval,
+  // the read-only capability probe, and the connection status. READ-ONLY vendor:
+  // there is no write path to Elementix anywhere in this codebase.
+  app.use('/api/admin/elementix', requireAuth, requireStaff, require('./routes/admin-elementix'));
   // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
   // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
   // The router applies its own requireAuth + platform_setup guards, and every
