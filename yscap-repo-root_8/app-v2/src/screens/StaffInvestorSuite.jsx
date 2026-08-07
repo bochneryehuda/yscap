@@ -8,7 +8,7 @@ import { scenarioToDraft } from '../lib/scenario.js';
 // The studio's OWN reader + the SAME override/term-option builders the Products
 // & Pricing panel registers with — so a file created from a term sheet registers
 // through the identical guarded path (owner-directed 2026-08-06).
-import { readSnapshot } from '../components/TermSheetStudio.jsx';
+import { readSnapshot, capturePdfFromWindow, blobToBase64 } from '../components/TermSheetStudio.jsx';
 // WHO IS DRIVING THIS TOOL — the one place the portal tells an embedded static tool
 // which staff member it is working for (lib/toolOfficer.js). Without it the tool is
 // anonymous, its leads post with no officer, and the round-robin gives a staffer's
@@ -111,6 +111,15 @@ export default function StaffInvestorSuite({ initialTool = null }) {
 
   const noteCount = useCallback((slug, n) => setCounts((c) => (c[slug] === n ? c : { ...c, [slug]: n })), []);
 
+  /* "Email to borrower →" (owner-directed 2026-08-07). The SAME payload
+     "Create loan file →" builds — the deal AND the pricing election — but the
+     destination is the borrower's inbox instead of the new-file form, and the file
+     is born on the other side when they accept. `send` holds the confirm sheet's
+     state; null means it is closed. */
+  const [send, setSend] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(null);
+
   // "Create loan file →" (owner-directed, from main): turn the term sheet you just
   // built into a NEW loan file, pre-filled with everything you entered. Maps the
   // studio's own input state with the SAME scenario→file translation the borrower
@@ -182,6 +191,72 @@ export default function StaffInvestorSuite({ initialTool = null }) {
     }
   }
 
+  /* READ THE TERM SHEET ONCE — the deal, the pricing election, and who it is for.
+     Shared by "Create loan file →" and "Email to borrower →" so the two can never
+     carry different terms out of the same sheet. Returns null (and sets the note)
+     when the frame is not ready, exactly as createFileFromStudio does. */
+  function readStudioOffer() {
+    const win = winFor(open && open.slug);
+    if (!win || !win.YS || typeof win.YS.collectState !== 'function') {
+      setNote('Give the term sheet a moment to finish loading, then try again.');
+      return null;
+    }
+    const state = win.YS.collectState();
+    const draft = scenarioToDraft({ v: state.v, c: state.c });
+    const name = String((state.v || {}).borrowerName || '').trim();
+    const email = String((state.v || {}).borrowerEmail || (state.v || {}).email || '').trim();
+    const phone = String((state.v || {}).borrowerPhone || (state.v || {}).phone || '').trim();
+    let snap = null;
+    try { snap = readSnapshot(win); } catch (_) { snap = null; }
+    if (!snap || !snap.program) {
+      setNote('Pick a program on the term sheet before sending it.');
+      return null;
+    }
+    return {
+      win, draft, name, email, phone,
+      program: snap.program,
+      overrides: overridesFromSnapshot(snap, 'staff'),
+      termOptions: termOptionsFromSnapshot(snap),
+      isManual: overridesAreManual(overridesFromSnapshot(snap, 'staff')),
+      // What the officer is looking at — carried so the email and the accept page
+      // quote the sheet they built. Display/record only on the server.
+      quote: (snap && snap.quote) || null,
+    };
+  }
+
+  function openSendSheet() {
+    setNote(''); setSent(null);
+    const o = readStudioOffer();
+    if (!o) return;
+    setSend({ ...o, email: o.email, name: o.name, phone: o.phone });
+  }
+
+  /* SEND. The PDF is captured the SAME way the studio component captures it (one
+     shared helper), and a capture failure is NOT fatal: the email still carries every
+     figure in its body, so a missing attachment is a worse email rather than a lost
+     offer — the server records how many attachments actually rode along. */
+  async function sendOffer() {
+    if (!send || sending) return;
+    setSending(true); setNote('');
+    let pdfBase64 = null; let pdfFilename = null;
+    try {
+      const cap = await capturePdfFromWindow(send.win);
+      if (cap && cap.blob) { pdfBase64 = await blobToBase64(cap.blob); pdfFilename = cap.filename; }
+    } catch (_) { pdfBase64 = null; }
+    try {
+      const r = await api.sendTermSheetOffer({
+        borrowerEmail: send.email, borrowerName: send.name, borrowerPhone: send.phone,
+        draft: send.draft, program: send.program, overrides: send.overrides,
+        termOptions: send.termOptions, isManual: send.isManual, quote: send.quote,
+        pdfBase64: pdfBase64 || undefined, pdfFilename: pdfFilename || undefined,
+      });
+      setSend(null);
+      setSent({ to: r.to, attached: r.attached, skipped: !!r.skipped });
+    } catch (e) {
+      setNote(e.message || 'Could not send the terms.');
+    } finally { setSending(false); }
+  }
+
   // Lock the page scroll while the full-screen tool is open — and give the
   // reader their place back when it closes. Locking the body drops the document
   // to the viewport height, so the browser clamps them to 0 on open and never
@@ -219,9 +294,30 @@ export default function StaffInvestorSuite({ initialTool = null }) {
             <button className="btn btn-gold small" onClick={createFileFromStudio}
               title="Open a new loan file pre-filled with these numbers">Create loan file →</button>
           )}
+          {/* EMAIL THE TERMS (owner-directed 2026-08-07). Sits beside "Create loan
+              file" because they are the same sheet going to two places: one starts the
+              file here, the other lets the borrower start it themselves — and the file
+              they start is born with these exact terms already registered. */}
+          {open.slug === 'term-sheet' && (
+            <button className="btn primary small" onClick={openSendSheet}
+              title="Email these terms to the borrower, with the term sheet attached">Email to borrower →</button>
+          )}
           <a className="btn ghost small" href={url} target="_blank" rel="noopener noreferrer" title="Open this tool in a new browser tab">Open in a new tab ↗</a>
         </div>
         {note && <div className="notice err" role="alert" style={{ margin: '0 12px' }}>{note}</div>}
+        {sent && (
+          <div className="notice ok" role="status" style={{ margin: '0 12px' }}>
+            Sent to <strong>{sent.to}</strong>
+            {sent.attached ? ' with the term sheet attached.' : ' — the terms are in the email; the PDF could not be attached.'}
+            {sent.skipped ? ' (No email provider is configured on this environment, so nothing actually left the building.)' : ''}
+            {' '}They can accept and start their application straight from it.
+          </div>
+        )}
+        {send && (
+          <SendOfferSheet offer={send} sending={sending}
+            onChange={(patch) => setSend((s0) => ({ ...s0, ...patch }))}
+            onCancel={() => setSend(null)} onSend={sendOffer} />
+        )}
         <div className="isuite-full-body">
           <StaticToolFrame key={open.slug} src={url} title={open.name} fill
             onReady={(win) => { winRef.current = { gen, slug: open.slug, win };
@@ -275,6 +371,53 @@ export default function StaffInvestorSuite({ initialTool = null }) {
           </div>
         </section>
       ))}
+    </div>
+  );
+}
+
+/* THE CONFIRM SHEET FOR "Email to borrower →" (owner-directed 2026-08-07).
+   It exists because the term sheet's own borrower fields are often blank — an officer
+   builds the numbers first and the name second — and because an email that leaves on a
+   typo cannot be recalled. So the address is shown, editable, and required before the
+   button is live. It also SAYS what the borrower will be able to do, since accepting
+   creates a real file: a send is not a preview. */
+function SendOfferSheet({ offer, sending, onChange, onCancel, onSend }) {
+  const emailOk = /^[^@\s]+@[^@.\s]+(\.[^@.\s]+)+$/.test(String(offer.email || '').trim());
+  return (
+    <div className="cv-modal-back" role="dialog" aria-modal="true" aria-label="Email these terms to the borrower">
+      <div className="cv-modal" style={{ maxWidth: 460 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 17, color: '#141B22' }}>Email these terms</h3>
+        <p className="small" style={{ margin: '0 0 14px', color: '#4B585C' }}>
+          They get your branding, every figure from this sheet, the term sheet attached, and one button that
+          starts their loan application already carrying these exact terms.
+        </p>
+        <label>Borrower’s email
+          <input type="email" value={offer.email || ''} autoFocus
+            onChange={(e) => onChange({ email: e.target.value })}
+            placeholder="borrower@example.com" />
+        </label>
+        <label>Borrower’s name
+          <input value={offer.name || ''} onChange={(e) => onChange({ name: e.target.value })}
+            placeholder="So the email can greet them by name" />
+        </label>
+        <label>Mobile number (optional)
+          <input value={offer.phone || ''} onChange={(e) => onChange({ phone: e.target.value })} />
+        </label>
+        {/* A MANUAL or off-default scenario still needs an admin's approval, and the
+            officer should know that BEFORE sending — not discover it when the file
+            lands held. This is the same rule the studio warns about on Register. */}
+        {offer.isManual && (
+          <p className="small" style={{ margin: '4px 0 0', color: '#8a6d3b' }}>
+            These terms use a manual basis, so the file this creates will go to an admin for approval — exactly as it would if you registered it yourself.
+          </p>
+        )}
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn ghost" type="button" disabled={sending} onClick={onCancel}>Cancel</button>
+          <button className="btn primary" type="button" disabled={sending || !emailOk} onClick={onSend}>
+            {sending ? 'Sending…' : 'Send the terms'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

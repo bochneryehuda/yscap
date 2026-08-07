@@ -381,6 +381,14 @@ app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// An emailed term sheet's own two doors (owner-directed 2026-08-07). Mounted OUTSIDE
+// /api/borrower because the read is public — the borrower clicking the officer's link
+// has no account yet, which is the whole point — and the token is the authorization.
+// Rate-limited like every other public token door: the token is 24 random bytes, so
+// guessing is hopeless, but a probe should still not be free.
+app.use('/api/term-sheet-offers',
+  rateLimit({ bucket: 'term-sheet-offer', windowMs: 60000, max: 60 }),
+  require('./routes/term-sheet-offers'));
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));

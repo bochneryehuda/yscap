@@ -47,14 +47,28 @@ const mk = async (street, unit, obs) => {
       `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
     console.log('after: ', after.length, 'rows');
     for (const r of after) console.log('   ', r.street.padEnd(20), r.address_key, 'obs=' + r.observation_count, 'v=' + r.key_version);
+    /* THE SECOND PASS MUST CHANGE NOTHING *HERE* — and that has to be asked about
+       THESE rows, not about the whole table. `properties` is a shared warehouse and
+       the sweep is bounded (100 rows a pass), so on a database where the research
+       suites have already filed reports the first pass legitimately spends part of
+       its budget elsewhere and the second one still has work to do. Asserting a
+       GLOBAL `scanned === 0` therefore failed in the full suite while passing in
+       isolation — the sweep working correctly, read as a regression. Comparing this
+       city's own rows before and after keeps the real question (is the sweep
+       idempotent on a row it has already re-keyed?) and drops the accidental one. */
     const again = await RK.rekeyOnce(db, { limit: 100 });
-    console.log('second run (must be a no-op):', JSON.stringify({ scanned: again.scanned, merged: again.merged, rekeyed: again.rekeyed }));
+    console.log('second run (must not touch these rows):',
+      JSON.stringify({ scanned: again.scanned, merged: again.merged, rekeyed: again.rekeyed }));
+    const afterAgain = (await db.query(
+      `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
+    const settled = JSON.stringify(after) === JSON.stringify(afterAgain);
+    if (!settled) console.log('   the second pass CHANGED these rows:', JSON.stringify(afterAgain));
     const status = await RK.rekeyStatus(db);
     const streets = after.map((r) => r.street).sort().join(' | ');
     // THE RICHER HISTORY SURVIVES: "150 15 Ave" had 5 observations to "150 15th
     // Ave"'s 2, and "8 St James Pl" had 3 to "8 Saint James Pl"'s 1. Keeping the
     // thinner row would move the larger history under an address seen once.
-    const good = after.length === 3 && out.merged === 2 && again.scanned === 0
+    const good = after.length === 3 && out.merged === 2 && settled
       && after.every((r) => r.key_version === K.KEY_VERSION)
       && streets === '150 15 Ave | 8 St James Pl | 99 Quiet Rd';
     if (!good) console.log('   survivors were:', streets);

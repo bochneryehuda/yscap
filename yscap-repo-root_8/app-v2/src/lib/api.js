@@ -309,6 +309,16 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  /* An officer's emailed term sheet (owner-directed 2026-08-07). The READ is public —
+     the borrower has no account yet when they click the link, and the token is the
+     authorization — so it must not be filed under the borrower routes. `start` needs
+     the session /auth/accept just handed out. */
+  termSheetOffer:     (token) => req('GET', `/api/term-sheet-offers/${encodeURIComponent(token)}`),
+  startFromTermSheetOffer: (token, initial) =>
+    req('POST', `/api/term-sheet-offers/${encodeURIComponent(token)}/start`, { initial }),
+  // Staff side: send a term sheet built in the Investor Suite to a borrower.
+  sendTermSheetOffer: (b) => req('POST', '/api/staff/term-sheet-offers', b),
+  termSheetOffersSent: () => req('GET', '/api/staff/term-sheet-offers'),
   // Borrower HELPER (assistant) login — a standing second login a borrower
   // authorized (can do everything but see personal info / sign). Its own creds.
   assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),

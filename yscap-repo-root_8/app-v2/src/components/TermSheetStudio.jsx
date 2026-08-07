@@ -394,6 +394,32 @@ export function blobToBase64(blob) {
   });
 }
 
+/* CAPTURE THE EXACT PDF THE STATIC TOOL WOULD DOWNLOAD, for any window hosting it.
+   `doc.save()` is swapped for an `output('blob')` capture for the duration of the one
+   export call and then restored in a `finally`, so a throw mid-export can never leave
+   the tool unable to download normally. Returns `{blob, filename}` or null — null on
+   every "not ready" path (no frame, no TS API, the PDF engine would not load), so a
+   caller can say "give it a moment" instead of shipping an empty attachment.
+
+   ONE DEFINITION, used by the studio component's `capturePdf()` ref method AND by the
+   Investor Suite, which hosts the same tool through a bare StaticToolFrame. */
+export async function capturePdfFromWindow(win) {
+  if (!win || !win.TS) return null;
+  if (!(win.jspdf && win.jspdf.jsPDF)) {
+    try { await loadPdfEngine(win.document); } catch (_) { return null; }
+  }
+  if (!(win.jspdf && win.jspdf.jsPDF)) return null;
+  const API = win.jspdf.jsPDF.API;
+  const orig = API.save;
+  let captured = null;
+  API.save = function saveCapture(name) {
+    try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
+    return this;
+  };
+  try { await win.TS.exportPdf(null); } finally { API.save = orig; }
+  return captured;
+}
+
 function loadPdfEngine(doc) {
   return new Promise((resolve, reject) => {
     const add = (src, onerr) => {
@@ -512,25 +538,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       try { win.TS_PROVENANCE = kind ? { kind } : null; return true; } catch (_) { return false; }
     },
     /* Build the exact PDF the static tool downloads, but capture the bytes
-       instead: doc.save() is swapped for an output('blob') capture for the
-       duration of the one export call, then restored. */
-    async capturePdf() {
-      const win = winRef.current;
-      if (!win || !win.TS) return null;
-      if (!(win.jspdf && win.jspdf.jsPDF)) {
-        try { await loadPdfEngine(win.document); } catch (_) { return null; }
-      }
-      if (!(win.jspdf && win.jspdf.jsPDF)) return null;
-      const API = win.jspdf.jsPDF.API;
-      const orig = API.save;
-      let captured = null;
-      API.save = function saveCapture(name) {
-        try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
-        return this;
-      };
-      try { await win.TS.exportPdf(null); } finally { API.save = orig; }
-      return captured;
-    },
+       instead. The mechanics live in the exported `capturePdfFromWindow` so the
+       Investor Suite — which hosts the same tool through a bare StaticToolFrame
+       rather than this component — captures the sheet the SAME way, rather than
+       growing a second copy of a save()-swapping trick. */
+    async capturePdf() { return capturePdfFromWindow(winRef.current); },
   }), []);
 
   // Keep the tool's hold reason live: a resolved finding lifts the hold on the
