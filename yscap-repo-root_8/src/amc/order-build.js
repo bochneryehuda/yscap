@@ -16,6 +16,9 @@
  * OVERRIDABLE on the preview — marked "verify against UAT".
  */
 const { norm } = require('./form-select');
+// The repo's ONE definition of "what kind of property is this" — reused, never
+// re-derived, so the appraisal desk and the loan file cannot disagree.
+const { propertyTypeKey } = require('../lib/property-type');
 
 // Our property category → AppraisalScope titleCategoryType. Best-effort labels;
 // staff can override on the preview. Unknown → pass the category through as-is.
@@ -52,11 +55,27 @@ function loanPurposeFor(loanPurpose) {
 }
 
 // The deal shape form selection keys on.
+//
+// `loanType` and `propertyKey` (2026-08-07) are what the owner's real form defaults
+// key on, and neither could be read off the original three fields:
+//   • loanPurpose is deliberately collapsed to Purchase/Refinance — that IS the CDG
+//     field — so it can never distinguish a fix & flip from a bridge, which is the
+//     whole basis of choosing between the "Completed Subject to (w/As Is Value)"
+//     forms and the plain ones.
+//   • propertyCategory carries the RAW stored label, so "Condominium" and "Condo"
+//     are different strings for one thing. propertyKey is the repo's canonical key
+//     (property-type.propertyTypeKey), reused rather than re-derived so the appraisal
+//     desk and the loan file can never disagree about what a property IS.
+// Both are additive: the original three are untouched, so an existing rule matches
+// exactly as before.
 function dealShapeFor(ctx) {
+  const rawType = ctx.loanType || ctx.loanPurpose || null;
   return {
     program: ctx.program || null,
     propertyCategory: ctx.property && ctx.property.category || ctx.propertyCategory || null,
     loanPurpose: loanPurposeFor(ctx.loanPurpose) || (ctx.loanPurpose || null),
+    loanType: rawType,
+    propertyKey: propertyTypeKey(ctx.property && ctx.property.category || ctx.propertyCategory || null),
   };
 }
 
