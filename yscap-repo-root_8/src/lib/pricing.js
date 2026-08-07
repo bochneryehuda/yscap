@@ -263,6 +263,14 @@ function buildInputs(app, experience, overrides) {
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
+    // THE PAYOFF THE STUDIO WAS PRICED ON (owner-directed 2026-08-07). A refinance
+    // pays the existing loan out of the INITIAL ADVANCE — the borrower brings the
+    // shortfall, or keeps what is left over. It is a live, editable field in the
+    // studio's DEAL section (not the admin zone), so an officer typing a fresh
+    // payoff letter figure quoted one cash-to-close while the register used only
+    // the file's stale column: a measured $208,410 swing that INVERTED who pays
+    // whom. Whitelisted so the studio and the file price the same deal.
+    'payoff',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section

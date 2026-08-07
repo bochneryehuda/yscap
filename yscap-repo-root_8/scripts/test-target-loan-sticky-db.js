@@ -94,10 +94,14 @@ const pricing = require('../src/lib/pricing');
     const src = require('fs').readFileSync(path.join(__dirname, '..', 'src/routes/borrower.js'), 'utf8');
     assert(!/out\.targetLoan\s*=/.test(src),
       'D1 the borrower allowlist never accepts a client-supplied loan amount');
-    assert(/overrides\.targetLoan = prev/.test(src),
-      'D2 …and the route carries the file\'s OWN registered amount forward instead');
-    assert(/AND is_current LIMIT 1/.test(src),
-      'D3 …read with the table\'s real current-row predicate');
+    assert(/stickyOverrides\.effectiveOverrides\(/.test(src),
+      'D2 …and the route carries the file\'s OWN registered values forward, through the ONE chokepoint');
+    const chokepoints = (src.match(/stickyOverrides\.effectiveOverrides\(/g) || []).length;
+    assert(chokepoints >= 3,
+      `D3 …on EVERY borrower pricing surface, not just the register (${chokepoints})`);
+    const sticky = require('fs').readFileSync(path.join(__dirname, '..', 'src/lib/pricing-sticky.js'), 'utf8');
+    assert(/AND is_current LIMIT 1/.test(sticky),
+      'D4 …read with the table\'s real current-row predicate');
   }
   void borrowerRaw; void sanitized;
 
