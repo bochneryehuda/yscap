@@ -21,6 +21,9 @@ const notify = require('./notify');
 const email = require('./email');
 const cfg = require('../config');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
+// The ONE definition of "is this document still waiting on a human?" — never re-inline a review
+// test (CLAUDE.md document-acceptance rule).
+const docAcceptance = require('./document-acceptance');
 
 const KINDS = new Set(['reminder', 'task']);
 
@@ -141,15 +144,50 @@ function _fmtItem(label, detail) {
   const l = String(label || '').trim();
   return d ? `${l} — ${d.length > 160 ? d.slice(0, 157) + '…' : d}` : l;
 }
+/**
+ * Template codes / tool keys that are NEVER on the borrower's outstanding list, however open the
+ * condition itself is.
+ *
+ * `rtl_p1_product` / tool_key `product_pricing` — "Products & pricing — register your product"
+ * (owner-directed 2026-08-07: *"this item never needs to be on the list of the outstanding items
+ * emailed to the borrower"*). Registering a product is the LOAN TEAM's job — it is done in the
+ * Term Sheet Studio by an officer — so listing it under "here's what your loan team is still
+ * waiting on" asks the borrower for something they cannot do and, worse, reads as their fault.
+ * The condition itself stays exactly as it is on the file and on the staff screens; this only
+ * removes it from the borrower-facing list.
+ */
+const NOT_BORROWER_OUTSTANDING = ['rtl_p1_product'];
+const NOT_BORROWER_OUTSTANDING_TOOLS = ['product_pricing'];
+
 async function outstandingItems(appId, client = db) {
   const items = await client.query(
-    `SELECT COALESCE(NULLIF(borrower_label,''), 'An item your loan team needs') AS label,
-            CASE WHEN status='issue' AND issue_reason IS NOT NULL THEN 'sent back — ' || issue_reason
-                 ELSE borrower_hint END AS detail
-       FROM checklist_items
-      WHERE application_id=$1 AND audience IN ('borrower','both')
-        AND status IN ('outstanding','requested','issue')
-      ORDER BY sort_order LIMIT 30`, [appId]);
+    `SELECT COALESCE(NULLIF(ci.borrower_label,''), 'An item your loan team needs') AS label,
+            CASE WHEN ci.status='issue' AND ci.issue_reason IS NOT NULL THEN 'sent back — ' || ci.issue_reason
+                 ELSE ci.borrower_hint END AS detail
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+      WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
+        AND ci.status IN ('outstanding','requested','issue')
+        -- A DOCUMENT NOBODY HAS LOOKED AT YET IS NOT SOMETHING THE BORROWER STILL OWES US
+        -- (owner-directed 2026-08-07: *"any pending document that was not accepted yet, that
+        -- condition should not be on the list anymore till the loan officer rejected the
+        -- document. While it is still pending review, it should not be on this list because it is
+        -- going to make him feel like, 'Hey, I uploaded this document. Why is it still on the
+        -- list?'"*). The ball is on OUR side of the net, so the item drops off — and comes
+        -- straight back the moment a reviewer REJECTS the document, because a rejected document
+        -- is no longer awaiting anyone and the item is genuinely outstanding again. Note this
+        -- reads the SAME \`document-acceptance\` predicate every other surface reads, so "is this
+        -- waiting on a human?" can never mean one thing here and another on the sign-off gate.
+        AND NOT EXISTS (
+          SELECT 1 FROM documents d
+           WHERE d.checklist_item_id = ci.id
+             AND d.is_current = true
+             AND ${docAcceptance.AWAITING_SQL('d')}
+        )
+        AND COALESCE(ct.code,'') <> ALL($2::text[])
+        AND COALESCE(ci.tool_key,'') <> ALL($3::text[])
+      ORDER BY ci.sort_order LIMIT 30`,
+    [appId, NOT_BORROWER_OUTSTANDING, NOT_BORROWER_OUTSTANDING_TOOLS]);
   const conds = await client.query(
     // ORDERED, like its checklist sibling above (audit finding 2026-07-26). This list is BORROWER-
     // FACING — it is the body of the "what's still needed" email and the portal's outstanding list.

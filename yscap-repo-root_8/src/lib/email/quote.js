@@ -56,6 +56,10 @@
     HTML and in plain text; see the contract rule above. */
 const REPLY_MARKER_PHRASE = 'Reply above this line';
 
+/** The phrase as a matcher, escaped from the token above so the two can never drift. Used by
+    the HTML splitter's last-resort boundary; the text side builds its own from the same token. */
+const MARKER_RE = new RegExp(REPLY_MARKER_PHRASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
 /**
  * The decorated delimiter line, for a given audience wording. Printed at the TOP of
  * the message content, which is what puts it just BELOW the recipient's fresh reply
@@ -143,7 +147,14 @@ const HTML_QUOTE_BOUNDARIES = [
   /<blockquote[^>]*type=["']cite["']/i,          // Apple Mail / Thunderbird
   /<div[^>]*class=["'][^"']*moz-cite-prefix/i,   // Thunderbird
   /<blockquote[^>]*class=["'][^"']*gmail_quote/i,
+  /<div[^>]*class=["'][^"']*yahoo_quoted/i,      // Yahoo Mail
 ];
+
+/** Is there anything a reader would call content here? Tags AND entities are removed first,
+    then we ask for a real letter or digit — `&nbsp;` is whitespace to a person, not a word. */
+function htmlHasWords(html) {
+  return /[a-z0-9]/i.test(String(html || '').replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' '));
+}
 
 /**
  * Split an HTML reply on its own quote container.
@@ -156,11 +167,33 @@ function splitQuotedHtml(html) {
     const idx = s.search(p);
     if (idx > 0 && (cut === -1 || idx < cut)) cut = idx;
   }
+  /* OUR OWN DELIMITER IS THE LAST RESORT, and it is the one that works when the client's
+     wrapper is one we have never seen. The text side already cuts on this phrase; the HTML
+     side must too, or a reply from an unknown client comes through whole.
+
+     It cannot be sliced AT the phrase — that lands mid-tag and yields broken markup — so we
+     WALK BACK to the nearest tag open. 2,000 characters is generous for one wrapper's markup
+     and short enough that we never reach into a different block. If no clean boundary is in
+     reach the marker is ABANDONED rather than guessed at: showing the whole message is a
+     cosmetic problem, emitting malformed HTML into the reader is not. */
+  const m = s.search(MARKER_RE);
+  if (m > 0) {
+    let i = s.lastIndexOf('<', m);
+    const floor = m - 2000;
+    while (i > 0 && i >= floor && !/^<\/?[a-zA-Z]/.test(s.slice(i, i + 2))) i = s.lastIndexOf('<', i - 1);
+    if (i > 0 && i >= floor && (cut === -1 || i < cut)) cut = i;
+  }
   if (cut <= 0) return { reply: s, quoted: '', trimmed: false };
   const reply = s.slice(0, cut);
-  // RULE 2, again: a quote container that opens the body (a forward with no comment)
-  // means the quote IS the message.
-  if (!/[^\s<>&;]/.test(reply.replace(/<[^>]+>/g, ' '))) return { reply: s, quoted: '', trimmed: false };
+  /* RULE 2, again: a quote container that opens the body (a forward with no comment)
+     means the quote IS the message.
+
+     ENTITIES ARE STRIPPED BEFORE ASKING. A reply of `<div><br></div><div>&nbsp;</div>`
+     is empty to a reader, but tag-stripping alone leaves the literal text "&nbsp;", whose
+     letters read as content — so the message was trimmed down to nothing visible and the
+     real text was pushed behind the three dots. Ask for an actual letter or digit AFTER
+     both tags and entities are gone. */
+  if (!htmlHasWords(reply)) return { reply: s, quoted: '', trimmed: false };
   return { reply, quoted: s.slice(cut), trimmed: true };
 }
 
