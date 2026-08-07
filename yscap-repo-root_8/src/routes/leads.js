@@ -194,7 +194,32 @@ router.post('/', async (req, res) => {
            AND created_at > now() - interval '30 days' LIMIT 1`, [tool, email]);
       if (dup.rows[0]) return res.status(201).json({ ok: true, leadId: dup.rows[0].id, routedTo: 'the YS Capital Group loan desk' });
     }
-    // Resolve the branded ?lo= officer code to a real, selectable staff row.
+    /* ── WHO OWNS THIS SUBMISSION ─────────────────────────────────────────────────────────
+       Owner-directed 2026-08-07, two complaints about the same endpoint:
+
+       (1) *"A random person goes on our website. He puts in a thing, and he exports a term sheet.
+           It gets to the queue, and it goes to a loan officer. There's no information. There's not
+           even a name. There's no reason why something like this should go to a loan officer. It's
+           just making them crazy as a lead. Only if it has any information should it go to a loan
+           officer. If not, it should not go into the queue. It's not considered a lead. It should
+           just go to the sales inbox."*
+
+       (2) *"the same term sheet without an address … was on the same browser session and went to a
+           DIFFERENT loan officer … It should go to one loan officer if it's on one browser
+           session."*
+
+       So: a submission that names NOBODY is not a lead and is never assigned; and within one
+       browser session the officer, once picked, does not change. */
+
+    // Does this submission tell us who the visitor is? Name, email or phone — any one of them is
+    // enough to call somebody back, which is the entire test. `term_sheet_generated` is the tool
+    // that can arrive with none of them (CONTACTLESS_TOOLS), and that is precisely the case the
+    // owner is describing.
+    const hasContact = !!(name || email || phone);
+
+    // Resolve the branded ?lo= officer code to a real, selectable staff row. This is a DELIBERATE
+    // choice by the visitor (they arrived on that officer's own link), so it applies even with no
+    // contact details — an anonymous visitor on Yehuda's link is still Yehuda's visitor.
     let officerId = null, officerRow = null;
     const code = b.officerCode ? String(b.officerCode).toLowerCase().replace(/[^a-z0-9._-]/g, '') : '';
     if (code) {
@@ -230,8 +255,43 @@ router.post('/', async (req, res) => {
        to be auto-assigned, so a spoofed value costs nothing. */
     const leadAssign = require('../lib/lead-assignment');
     const fromStaffPortal = b.fromStaffPortal === true || b.fromStaffPortal === 'true';
+
+    // An opaque per-visit id the page holds in sessionStorage. It carries nothing about the
+    // person — it only says "these submissions came from one visit". Capped and character-limited
+    // because it is public input headed for a text column.
+    const sessionId = b.sessionId ? String(b.sessionId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || null : null;
+
+    /* STICK TO THE OFFICER THIS SESSION ALREADY HAS (owner-directed 2026-08-07). Checked BEFORE
+       the rotation, so a visitor who exports three term sheets in one sitting produces three
+       submissions for ONE officer instead of walking the roster. Best-effort: an unreadable
+       lookup simply falls through, which is the behaviour that existed before.
+
+       DELIBERATELY NOT APPLIED TO A STAFF-PORTAL SUBMISSION. Stickiness answers "which officer
+       is this VISITOR already talking to"; a staff-portal lead whose own officer code did not
+       resolve must reach the sales desk, never an officer who had nothing to do with it (the
+       rule directly above). Letting a session id assign one would re-open exactly that bug
+       through a second door. */
+    let viaSession = false;
+    if (!officerId && sessionId && !fromStaffPortal) {
+      try {
+        const prior = (await db.query(
+          `SELECT l.officer_id, s.full_name, s.email
+             FROM leads l JOIN staff_users s ON s.id = l.officer_id AND s.is_active = true
+            WHERE l.session_id = $1 AND l.officer_id IS NOT NULL
+            ORDER BY l.created_at DESC LIMIT 1`, [sessionId])).rows[0];
+        if (prior) {
+          officerId = prior.officer_id;
+          officerRow = { id: prior.officer_id, full_name: prior.full_name, email: prior.email };
+          viaSession = true;
+        }
+      } catch (_) { /* fall through to the rotation */ }
+    }
+
+    // Decided AFTER the session lookup, so an officer the session resolved is seen as a real
+    // owner and the rotation is correctly skipped. `viaSession` then names the REASON, which
+    // `decideLeadOfficer` would otherwise report as an `?lo=` link.
     const decision = leadAssign.decideLeadOfficer({ officerId, tool, fromStaffPortal });
-    let assignedVia = decision.assignedVia;
+    let assignedVia = viaSession ? 'session' : decision.assignedVia;
     if (!officerId && fromStaffPortal) {
       // Stated to be somebody's own work, but we could not resolve who. Say so —
       // this is a wiring fault worth seeing, not a lead to hand out.
@@ -241,10 +301,18 @@ router.post('/', async (req, res) => {
     // #29 round-robin: with no branded officer, assign the lead to the next loan officer in fair
     // rotation so it gets an OWNER instead of sitting unowned on the sales desk. An empty pool
     // falls through to the sales-desk / admin routing below, so a lead is never lost.
-    if (decision.mayRoundRobin) {
+    //
+    // TWO independent restrictions, and BOTH must hold. `decision.mayRoundRobin` covers the
+    // newsletter and the staff-portal cases; `hasContact` covers the owner's other rule
+    // (2026-08-07) — a submission that names NOBODY is not a lead, and rotating an anonymous
+    // export onto an officer's desk hands them something they cannot act on. It still reaches
+    // sales below, so nothing is lost either way.
+    const anonymous = !hasContact && !officerId;
+    if (decision.mayRoundRobin && hasContact) {
       const rr = await leadAssign.pickRoundRobinOfficer();
       if (rr) { officerRow = rr; officerId = rr.id; assignedVia = 'round_robin'; }
     }
+    if (anonymous) assignedVia = 'anonymous';
 
     const label = TOOL_LABEL[tool] || tool;
     // Record WHICH page sent the submission (the browser's Referer header) in
@@ -271,15 +339,30 @@ router.post('/', async (req, res) => {
     // anonymous term sheet from the next. The entity/borrower they typed IS the identity
     // they gave us; failing that, the property. Never invents one.
     const leadName = name || leadFacts.displayNameFrom(b, facts);
+    // THE ROW IS STILL WRITTEN — an anonymous export is real marketing signal and the team may
+    // well want to look at what the site is producing. What changes is that it does NOT sit in
+    // anybody's working queue: 'archived' is exactly the state the queue's own filter excludes
+    // (`status NOT IN ('converted','archived')`), so it is out of the badge and the default list
+    // while staying findable, and `assigned_via='anonymous'` records WHY it is there. If the
+    // visitor comes back and leaves their details, that is a NEW submission with contact info and
+    // it is routed normally.
+    const leadStatus = anonymous ? 'archived' : 'new';
+    // BOTH sides' columns, and the two changes reinforce each other: an ANONYMOUS export is
+    // archived out of the working queue (mine) AND now carries the entity/property the visitor
+    // typed (main's `leadName` + deal facts), so the row a human goes looking for is actually
+    // readable instead of a nameless blank. Bind positions are counted in the test — the shifted
+    // bind that once put an interest reserve into `payoff_lender` came from editing a list like
+    // this one, so add a column and its value in the SAME position or not at all.
     const ins = await db.query(
       `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via,
-                          company,property_address,property_type,program,loan_amount)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+                          session_id,status,company,property_address,property_type,program,loan_amount)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [tool, leadName, email, phone, code || null, officerId,
        b.subject ? String(b.subject).slice(0, 240) : `${label} — ${leadName || email || 'new lead'}`,
        b.message ? String(b.message).slice(0, 4000) : null,
        payloadJson,
        req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia,
+       sessionId, leadStatus,
        facts.company, facts.propertyAddress ? F.jsonbText(facts.propertyAddress) : null,
        facts.propertyType, facts.program, facts.loanAmount]);
     const leadId = ins.rows[0].id;
@@ -403,6 +486,19 @@ router.post('/', async (req, res) => {
       const wantsSales = !!salesTo && !officerId && tool !== 'subscribe';
       if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
       if (wantsSales) {
+        // An anonymous export says so on its face, so nobody on the sales desk spends a minute
+        // hunting for a name that was never given (owner-directed 2026-08-07). It is a signal that
+        // the site produced a term sheet, not a person to call — and it is deliberately NOT in
+        // anybody's lead queue.
+        if (anonymous) {
+          notifyOpts.badge = { text: 'No contact details', tone: 'neutral' };
+          notifyOpts.emailBody = 'A visitor generated this on the site and left no name, email or phone, '
+            + 'so there is nobody to follow up with and it has not been routed to a loan officer or '
+            + 'added to the leads queue. The figures they were shown are below.';
+          notifyOpts.ctaLabel = 'Open leads';
+          notifyOpts.note = 'You are seeing this because nobody was named on the submission. '
+            + 'If they come back and leave their details it will arrive as a normal lead.';
+        }
         const built = notify.buildEmail(notifyOpts, 'staff');
         // Reply-To the visitor when we have their address — sales can just hit
         // reply. Attachments ride along (the generated PDF/Excel the tools send).
@@ -412,8 +508,11 @@ router.post('/', async (req, res) => {
           replyTo: email || null,
           _ctx: { type: 'new_lead', audience: 'staff' },
         }).catch(() => {});
-        // Admins keep their in-app Leads-desk rows (badge/count), no email blast.
-        await notify.notifyAdmins({ ...notifyOpts, inAppOnly: true });
+        // Admins keep their in-app Leads-desk rows (badge/count), no email blast — but NOT for an
+        // anonymous export, which is the "making them crazy" notification the owner asked to stop.
+        // The row is on the archived leads list either way; nobody needs an in-app nudge about a
+        // visitor who left no way to reach them.
+        if (!anonymous) await notify.notifyAdmins({ ...notifyOpts, inAppOnly: true });
       } else if (!officerId) {
         if (tool === 'subscribe') {
           const built = notify.buildEmail(notifyOpts, 'staff');
@@ -488,16 +587,53 @@ router.post('/contact', async (req, res) => {
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'invalid email' });
   try {
     const cur = (await db.query(
-      `SELECT id, tool, subject, officer_id, name, email, phone FROM leads WHERE id=$1`, [leadId])).rows[0];
+      `SELECT id, tool, subject, officer_id, name, email, phone, status, assigned_via, session_id
+         FROM leads WHERE id=$1`, [leadId])).rows[0];
     if (!cur) return res.status(404).json({ error: 'not found' });
     // Fill BLANKS only, and notify with the values ACTUALLY stored. A replay
     // (or a call that changes nothing) stores nothing and re-notifies no one.
     const finalName = cur.name || name, finalEmail = cur.email || email, finalPhone = cur.phone || phone;
     const changed = finalName !== cur.name || finalEmail !== cur.email || finalPhone !== cur.phone;
     if (!changed) return res.json({ ok: true, unchanged: true });
-    await db.query(`UPDATE leads SET name=$2, email=$3, phone=$4 WHERE id=$1`,
-      [leadId, finalName, finalEmail, finalPhone]);
-    const lead = cur;
+
+    /* THIS IS THE MOMENT AN ANONYMOUS EXPORT BECOMES A REAL LEAD (owner-directed 2026-08-07:
+       *"Only if it has any information should it go to a loan officer"*).
+
+       The submission arrived with nobody named, so it was parked out of the queue and never
+       routed. The visitor has now told us who they are, which is exactly the condition the
+       owner set — so it re-enters the queue and gets an owner, the same way it would have if
+       they had left their details in the first place. Session stickiness applies here too: if
+       this visit already has an officer, they keep it rather than the rotation choosing again.
+
+       An already-routed or already-working lead is untouched — this only ever promotes a lead
+       that was parked BECAUSE nobody was named. */
+    let officerId = cur.officer_id;
+    let promoted = false;
+    if (!officerId && cur.assigned_via === 'anonymous') {
+      try {
+        if (cur.session_id) {
+          const prior = (await db.query(
+            `SELECT l.officer_id FROM leads l
+               JOIN staff_users s ON s.id = l.officer_id AND s.is_active = true
+              WHERE l.session_id = $1 AND l.officer_id IS NOT NULL
+              ORDER BY l.created_at DESC LIMIT 1`, [cur.session_id])).rows[0];
+          if (prior) officerId = prior.officer_id;
+        }
+        if (!officerId) {
+          const rr = await require('../lib/lead-assignment').pickRoundRobinOfficer();
+          if (rr) officerId = rr.id;
+        }
+      } catch (_) { /* an unroutable lead still gets un-parked below and reaches sales */ }
+      promoted = true;
+    }
+    await db.query(
+      `UPDATE leads SET name=$2, email=$3, phone=$4,
+              officer_id = COALESCE($5, officer_id),
+              assigned_via = CASE WHEN $6 THEN (CASE WHEN $5 IS NULL THEN NULL ELSE 'round_robin' END) ELSE assigned_via END,
+              status = CASE WHEN $6 AND status = 'archived' THEN 'new' ELSE status END
+        WHERE id=$1`,
+      [leadId, finalName, finalEmail, finalPhone, officerId || null, promoted]);
+    const lead = { ...cur, officer_id: officerId };
     // Tell the same people who saw the generation that the visitor is reachable now.
     try {
       const label = TOOL_LABEL[lead.tool] || lead.tool;

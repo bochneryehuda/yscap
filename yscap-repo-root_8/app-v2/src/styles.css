@@ -2903,6 +2903,13 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* ── Email Center: fit-to-width email body + Open-large popup ── */
 .ec-frame-wrap{ width:100%; overflow:hidden; background:#fff; }
 .ec-frame-wrap .ec-frame{ display:block; border:none; background:#fff; }
+
+/* THE THREE DOTS live ABOVE, with `.ec-trimmed` — a SECOND `.ec-dots` block stood here
+   (owner-directed 2026-08-07) from a parallel session that built the same control. Two
+   sessions styling one class name is a silent bug, not a duplicate comment: the later
+   block wins wholesale, so main's markup would have rendered under rules written for a
+   different DOM (a pill with `.ec-dots-mark` / `.ec-dots-label` children it does not
+   have). The surviving pair is the one whose markup shipped. Keep exactly one. */
 .ec-modal-back{ position:fixed; inset:0; z-index:1000; background:rgba(20,27,34,.55);
   display:flex; align-items:center; justify-content:center; padding:clamp(6px,2vh,26px) clamp(6px,2vw,26px); }
 .ec-modal-card{ width:min(1320px,97vw); height:min(94vh,1000px); background:var(--ink,#F6F3EC);

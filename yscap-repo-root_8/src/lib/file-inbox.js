@@ -1322,13 +1322,18 @@ async function processReceivedEvent(event) {
   return { status: finalStatus, count: forwardedTotal };
 }
 
-// Best-effort: strip a quoted reply/signature so we only post what they typed
-// (same heuristic as routes/inbound-chat.js).
-function topReply(text) {
-  const s = String(text || '').replace(/\r\n/g, '\n');
-  const cut = s.search(/\n\s*On .+ wrote:\n|\n\s*-{2,}\s*\n|\n>{1,}/);
-  return (cut > 0 ? s.slice(0, cut) : s).trim();
-}
+/**
+ * Strip a quoted reply/signature so we only keep what they typed.
+ *
+ * This WAS a third private copy of the heuristic, and it was the weakest of the three: it knew
+ * nothing about our own "Reply above this line" delimiter, nothing about Outlook's "From:" header
+ * block or its horizontal rule, and its Gmail attribution pattern required "wrote:" to land on one
+ * line — which Gmail wraps whenever the sender's name and address are long, i.e. constantly. So a
+ * reply arriving here kept far more of the quoted conversation than the same reply arriving on the
+ * chat route. Now delegated to lib/email/reply-cut, the ONE definition, which the chat route and
+ * the closing chain's outbound marker also read (owner-directed 2026-08-07).
+ */
+function topReply(text) { return require('./email/reply-cut').topReply(text); }
 
 // Only ever surface the error's shape — never a message that could contain email
 // content, addresses, keys, or secrets.
