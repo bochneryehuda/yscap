@@ -210,4 +210,3 @@ FCRA / DPPA: [15 U.S.C. §1681a(d)](https://www.law.cornell.edu/definitions/usco
 [Compliance Alliance — FCRA and commercial loans](https://compliancealliance.com/news-events/newsletter/november-2022-newsletters/the-fcra-and-commercial-loans/) ·
 [18 U.S.C. §2721 (DPPA)](https://www.law.cornell.edu/uscode/text/18/2721) ·
 [EPIC — DPPA overview](https://epic.org/dppa/)
-</content>

@@ -236,15 +236,44 @@ experience. We have no source for any of those today.
 
 ## 5. Open questions
 
-1. **Elementix authentication** — outstanding with the vendor. Phases 0, 1 and 4 do not wait
-   on it. Phase 2's client is built with the credential pluggable.
-2. **Is Elementix's contact product FCRA or non-FCRA classified?** This decides whether the
+### Answered
+
+1. **Elementix authentication — ANSWERED (vendor, 2026-08-07).** *"Its a standard OAuth flow for
+   the MCP endpoint — the AI client/harness will handle the work for you."* No key is bought:
+   PILOT signs in on the seat the company already pays for. Built in `src/elementix/oauth.js`
+   — a human approves once in a browser and PILOT renews with a refresh token. The part the
+   vendor's answer did not settle (whether a refresh token is issued at all, which is what
+   decides unattended operation) is answered from our own server by `discover()` +
+   `unattendedVerdict()`, and the fact — as opposed to the promise — is recorded by
+   `completeConnect`.
+
+2. **How many seats — ANSWERED (owner, 2026-08-07): one company login for now.** The whole team
+   reads through a single approved connection. Two consequences that shape the phases below:
+
+   - **Credit spend must be attributed on OUR side.** Elementix only ever sees one account, so
+     it cannot tell us which officer unlocked a contact. Phase 3 therefore records the staff id
+     on the paid enrichment at the moment of the click — that record is the *only* possible
+     source for a per-officer budget (open question 6), so it is not optional bookkeeping.
+   - **The hourly ceiling is genuinely shared.** 1,000 requests/hour covers everybody at once,
+     which is why `src/elementix/client.js` self-caps at 400 rather than racing to the limit: a
+     batch job must not be able to starve the officer on the phone.
+
+   The per-officer shape stays in the schema, and `beginConnect` **refuses** a per-officer
+   approval while the company holds one seat — `accessToken(staffId)` prefers an officer's own
+   row over the company one, so approving one would quietly move that officer onto a second
+   authorization with no second seat behind it. Reversing this is one constant (`SEAT_MODEL`).
+
+### Still open
+
+3. **Is Elementix's contact product FCRA or non-FCRA classified?** This decides whether the
    two-plane separation is sufficient or whether the underwriting use needs a different
    product entirely. Ask the vendor; then counsel.
-3. **Unassigned leads** — today every officer can convert any unassigned lead. Intended?
-4. **Automatic call recording** — on for every officer, or only some? It cannot be tested in
+4. **Unassigned leads** — today every officer can convert any unassigned lead. Intended?
+5. **Automatic call recording** — on for every officer, or only some? It cannot be tested in
    sandbox, so this needs a production pilot.
-5. **Skip-trace budget** — per officer per month, and who approves an increase.
+6. **Skip-trace budget** — per officer per month, and who approves an increase. Only answerable
+   because of the per-click attribution above; with one shared login the vendor cannot tell us
+   whose spend it was.
 
 ## 6. Explicitly not building
 
@@ -253,4 +282,3 @@ any bulk "trace this whole list" action · any automatic skip-trace spend · pro
 marketing-plane contact data into an underwriting decision · export of enriched contact data
 anywhere · auto-verification of a track record · a shared "investor score" surfaced to note
 buyers (that would likely make us a consumer reporting agency).
-</content>

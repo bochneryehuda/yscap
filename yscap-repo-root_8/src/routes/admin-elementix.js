@@ -82,8 +82,11 @@ router.get('/discover', async (req, res) => {
 
 router.get('/connect', async (req, res) => {
   try {
-    // `scope=me` connects the officer's own seat instead of the company's, for the
-    // day seats are bought per officer. Default is the company-wide connection.
+    // The company holds ONE Elementix login (owner-directed 2026-08-07), so the
+    // default — and currently the only accepted — scope is company-wide.
+    // `scope=me` is still mapped rather than ignored, so somebody who asks for a
+    // per-officer connection gets `oauth.beginConnect`'s plain refusal saying why,
+    // instead of silently getting the company one and believing otherwise.
     const staffId = String(req.query.scope || '') === 'me' ? req.actor.id : null;
     const out = await oauth.beginConnect({ staffId, actorId: req.actor.id });
     if (!out.ok) {

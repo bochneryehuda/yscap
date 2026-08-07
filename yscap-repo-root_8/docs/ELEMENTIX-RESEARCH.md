@@ -221,4 +221,3 @@ or from an **LLC** (`match_entity`, `get_entity_associated_people`).
 - Elementix UUIDs look deterministic (v5-style) and each payload carries `_url` / `_elementixUrl`
   for linking a PILOT record straight back to their app.
 - `welcome` should be called once per conversation before other tools.
-</content>

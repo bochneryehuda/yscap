@@ -57,6 +57,22 @@ const REFRESH_SKEW_SEC = 120;
 /** Discovery / token calls are bounded — a hung vendor must never hang a request. */
 const HTTP_TIMEOUT_MS = 15000;
 
+/**
+ * HOW MANY ELEMENTIX SEATS THE COMPANY HOLDS — 'company' | 'officer'.
+ *
+ * The owner's answer (2026-08-07) is ONE COMPANY LOGIN, so the whole team reads
+ * through a single approved connection. Two consequences follow from that and are
+ * enforced elsewhere rather than restated here:
+ *   - the 1,000 requests/hour ceiling really is shared by everybody, which is why
+ *     src/elementix/client.js self-caps well under it;
+ *   - Elementix can only ever see ONE account, so "which officer spent a credit?"
+ *     has to be recorded on OUR side at the moment of the click — the vendor
+ *     cannot tell us. See docs/ELEMENTIX-CRM-PLAN.md.
+ *
+ * `beginConnect` refuses a per-officer approval while this is 'company'.
+ */
+const SEAT_MODEL = 'company';
+
 // ---------------------------------------------------------------------------
 // At-rest encryption for the tokens.
 //
@@ -382,6 +398,19 @@ function redirectUri() {
  * `staffId` null = the company-wide connection; a staff id = that officer's own.
  */
 async function beginConnect({ staffId = null, actorId = null } = {}) {
+  // ONE COMPANY LOGIN (owner-directed 2026-08-07: "one company login for now").
+  // The schema keeps the per-officer shape — it costs nothing and the day may come
+  // — but a per-officer connection is REFUSED while the company holds a single
+  // seat, because it is not a harmless extra row: `accessToken(staffId)` PREFERS
+  // an officer's own row over the company one, so approving one would quietly
+  // move that officer onto a second authorization with no second seat behind it,
+  // and split the record of who looked up what. To buy per-officer seats later,
+  // flip this one constant — nothing else has to change.
+  if (SEAT_MODEL === 'company' && staffId) {
+    return { ok: false, reason: 'officer_seat_not_enabled',
+      detail: 'PILOT holds one company-wide Elementix login, so connect it company-wide rather than per officer.' };
+  }
+
   const d = await discover();
   if (!d.ok) return { ok: false, ...d };
   if (!d.authorizationEndpoint || !d.tokenEndpoint) {
@@ -667,6 +696,6 @@ module.exports = {
   _internals: {
     encrypt, decrypt, canEncrypt, newPkce, newState,
     resourceMetadataUrlFrom, candidateResourceMetadataUrls, candidateAuthServerMetadataUrls,
-    REFRESH_SKEW_SEC, PENDING_TTL_SEC,
+    REFRESH_SKEW_SEC, PENDING_TTL_SEC, SEAT_MODEL,
   },
 };

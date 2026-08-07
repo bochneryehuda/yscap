@@ -327,7 +327,31 @@ console.log('\n7. The paid tool cannot be called by accident');
   ok(`self-capped at ${b.maxPerHour}/hour against a shared 1,000/hour platform limit`);
 
   // ---------------------------------------------------------------------------
-  console.log('\n9. The switches actually reach the API Health page');
+  console.log('\n9. One company login (owner-directed 2026-08-07)');
+  // ---------------------------------------------------------------------------
+  // The schema keeps the per-officer shape, but approving one while the company
+  // holds a single seat is NOT a harmless extra row: `accessToken(staffId)`
+  // prefers an officer's own row over the company one, so it would quietly move
+  // that officer onto a second authorization with no second seat behind it.
+  assert.strictEqual(O.SEAT_MODEL, 'company', 'one company-wide login, per the owner');
+  const perOfficer = await oauth.beginConnect({ staffId: '00000000-0000-0000-0000-000000000001', actorId: null });
+  assert.strictEqual(perOfficer.ok, false);
+  assert.strictEqual(perOfficer.reason, 'officer_seat_not_enabled');
+  assert.ok(/company/i.test(perOfficer.detail), 'and it says to connect company-wide instead');
+  ok('a per-officer connection is refused while the company holds one seat');
+
+  // The refusal must be decided BEFORE any network or database work — it is a
+  // policy answer, not something to discover partway through an OAuth handshake.
+  // Proven by the fact that it answers at all here: discovery cannot reach
+  // Elementix from this test and the pending row cannot be written without a
+  // database, so anything past those steps could not have returned this cleanly.
+  const companyWide = await oauth.beginConnect({ staffId: null, actorId: null });
+  assert.notStrictEqual(companyWide.reason, 'officer_seat_not_enabled',
+    'the company-wide path is NOT refused — it is the one the owner chose');
+  ok('the refusal is decided up front, and only for the per-officer case');
+
+  // ---------------------------------------------------------------------------
+  console.log('\n10. The switches actually reach the API Health page');
   // ---------------------------------------------------------------------------
   // A switch is rendered NESTED INSIDE its integration (health-registry.js line
   // ~556 filters switches by `s.integration === entry.key`), so a switch naming an
