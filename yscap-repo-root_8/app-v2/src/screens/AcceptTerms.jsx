@@ -196,7 +196,12 @@ export default function AcceptTerms() {
           <p style={{ marginTop: 0, color: '#141B22' }}>
             You already have a PILOT account for <strong>{offer.borrowerEmail}</strong>. Sign in and we’ll start your application with these terms.
           </p>
-          <button className="btn primary" onClick={() => nav('/login?next=' + encodeURIComponent('#/accept-terms/' + token))}>
+          {/* Router STATE, not a query string — `returnDest` in Login.jsx reads
+              `loc.state.from`, which is the mechanism that already exists for
+              "come back here after signing in". A `?next=` param would be ignored
+              and drop them on the dashboard with their terms link gone. */}
+          <button className="btn primary"
+            onClick={() => nav('/login', { state: { from: `/accept-terms/${token}` } })}>
             Sign in to continue
           </button>
           <button className="btn ghost" style={{ marginLeft: 8 }} onClick={() => setStep('initial')}>
