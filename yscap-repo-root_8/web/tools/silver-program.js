@@ -1042,6 +1042,20 @@
     // ---- effective caps: voluntary de-leverage + admin overrides ----
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
     if (input.targetLTC && input.targetLTC > 0) capsEff.maxLTC = Math.min(capsEff.maxLTC, input.targetLTC);
+    /* VOLUNTARY DE-LEVERAGE ON THE VALUE SIDE (owner-directed 2026-08-06). EMCAP
+       prices on BOTH frontiers — every rate block is 3 AR x 3 FICO x 6 LTC — so a
+       borrower can earn a better cell by giving up ARV leverage just as they can by
+       giving up cost leverage, and until now only the cost side had a lever. The
+       owner: "it's very possible that LTC is also getting reduced… calculate the
+       pricing of both of them" — which needs nothing extra, because rateAt() below
+       already settles the rate on the ACHIEVED ratios, so a cut here moves both
+       bands and both are re-read.
+       MIN, exactly like targetLTC one line above: this can only ever LOWER the
+       ceiling, never raise it, so it cannot over-lend and cannot reach a structure
+       the guidelines refuse. Unset (0 / absent) it is completely inert — proven
+       byte-identical against the pre-change engine (scripts/test-silver-arv-lever-pure.js).
+       An ADMIN basis override (ovrARLTV, next line) still wins, as it does for LTC. */
+    if (input.targetARLTV && input.targetARLTV > 0) capsEff.maxARLTV = Math.min(capsEff.maxARLTV, input.targetARLTV);
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
     if (input.ovrLTC > 0) capsEff.maxLTC = input.ovrLTC;
