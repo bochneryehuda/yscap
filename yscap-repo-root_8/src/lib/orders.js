@@ -64,6 +64,84 @@ function mortgageeClauseFor(lender) {
 
 function money(n) { return n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
 
+/**
+ * A date-only value in plain English ("August 21, 2026"), by CALENDAR-STRING
+ * arithmetic only — never `new Date('YYYY-MM-DD')`, which shifts a date-only value
+ * by the server's timezone (the standing date rule; mirrors closing-prep.dayText).
+ */
+function dayText(d) {
+  if (!d) return null;
+  const s = typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10);
+  const [y, m, day] = s.split('-').map(Number);
+  if (!y || !m || !day) return null;
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${MONTHS[m - 1]} ${day}, ${y}`;
+}
+
+/**
+ * THE COVERAGE WE ARE ACTUALLY ASKING FOR, in the industry's own words
+ * (owner-directed 2026-08-07: "we need builders' risk coverage and vacant property
+ * coverage" — with the exact language researched rather than paraphrased).
+ *
+ * Two separate coverages, and the distinction is the whole point — an agent who
+ * reads only "builders risk" quotes a policy whose VACANCY CLAUSE then guts it:
+ *
+ *  • BUILDER'S RISK / COURSE OF CONSTRUCTION — the renovation policy. Written on a
+ *    SPECIAL FORM at REPLACEMENT COST, covering the structure plus materials on
+ *    site and in transit, with renovation/construction expressly PERMITTED. Without
+ *    "renovations permitted" a standard property form excludes the work itself.
+ *  • VACANT PROPERTY — a standard commercial/dwelling property form contains a
+ *    VACANCY CLAUSE that suspends or cuts coverage once a building has stood vacant
+ *    (customarily 60 days), which is exactly the state every one of these files is
+ *    in. The fix has a name: a VACANCY PERMIT / VACANCY PERMISSION ENDORSEMENT that
+ *    removes the vacancy clause and any vacancy exclusion for the full policy term.
+ *    Asking for "coverage on a vacant property" without naming the endorsement is
+ *    how a binder arrives that reads fine and pays nothing.
+ *
+ * The remaining three lines are the requirements every note buyer imposes anyway
+ * (limit, mortgagee clause, notice of cancellation) — stating them up front is what
+ * stops a second round trip. DISPLAY ONLY: no number here is computed, and none of
+ * this touches a frozen pricing figure.
+ */
+const INSURANCE_COVERAGE_LINES = [
+  "Builder's Risk / Course of Construction coverage on a special form at replacement cost, covering the structure, materials on site and materials in transit, with renovation and construction work expressly permitted.",
+  'Vacant property coverage — please include a vacancy permit / vacancy permission endorsement so the policy’s vacancy clause and any vacancy exclusion do not apply for the full policy term. The property is vacant and under renovation.',
+  'Dwelling / building limit at no less than the greater of the loan amount or the replacement cost of the structure.',
+  'YS Capital Group named as mortgagee and loss payee exactly as the clause below reads, with the loan number shown.',
+  'At least 30 days’ written notice of cancellation or non-renewal to the mortgagee.',
+];
+
+/**
+ * THE INFORMATION THE AGENT ALWAYS COMES BACK FOR (owner-reported 2026-08-07: the
+ * agency replied to a live order asking for the borrower's mailing address, phone,
+ * email, closing date, purchase price and rehab cost — every one of which PILOT
+ * already holds). It is now stated in the order itself, so the round trip is gone.
+ *
+ * Two rules, both deliberate:
+ *  • The MAILING ADDRESS is the borrower's own home address, not the subject
+ *    property (owner-directed: "Mailing address can be the borrowers personal home
+ *    address") — a builder's risk policy on a vacant house cannot be mailed to the
+ *    vacant house. The entity is the NAMED INSURED; the human is where the paper
+ *    goes, which is why the label says so.
+ *  • A value we do not have is OMITTED, never printed as a blank or a guess. A row
+ *    reading "Purchase Price: —" teaches an agent our numbers are unreliable and
+ *    invites the same reply this exists to prevent; its absence reads as "not
+ *    stated", which is the truth. Same discipline as closing-prep's fact rows.
+ */
+function insuranceDetailMeta(data) {
+  const out = [];
+  const add = (label, value) => { if (value != null && String(value).trim()) out.push({ label, value: String(value).trim() }); };
+  add('Named Insured', data.entityName || null);
+  add(data.entityName ? 'Mailing Address (borrower’s home address)' : 'Borrower Mailing Address', data.borrowerMailingAddress);
+  add('Borrower Phone', data.borrowerPhone);
+  add('Borrower Email', data.borrowerEmail);
+  add('Estimated Closing Date', dayText(data.expectedClosing));
+  add('Purchase Price', data.purchasePrice != null ? money(data.purchasePrice) : null);
+  add('Rehab / Construction Cost', data.rehabBudget != null ? money(data.rehabBudget) : null);
+  return out;
+}
+
 /** Purchase vs Refinance, best-effort from the file's loan_type. */
 function transactionType(loanType) {
   const s = String(loanType || '').toLowerCase();
@@ -90,9 +168,12 @@ async function getOrderData(appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount, a.lender,
             a.usps_match, a.usps_imported_at,
+            a.purchase_price, a.rehab_budget, a.expected_closing, a.est_closing_date,
             a.loan_officer_id, a.processor_id,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
+            b.cell_phone AS borrower_cell, b.current_address AS borrower_address,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
+            cb.cell_phone AS co_cell,
             l.llc_name AS entity_name,
             lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
             lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
@@ -129,6 +210,22 @@ async function getOrderData(appId) {
     borrowerName: borrowerName || a.borrower_email || 'Borrower',
     borrowerEmail: a.borrower_email || null,
     coBorrowerEmail: a.co_email || null,
+    // The borrower's OWN contact details, for the insurance order's detail block.
+    // The mailing address is deliberately the borrower's HOME address — a builder's
+    // risk policy on a vacant house cannot be mailed to the vacant house — rendered
+    // through the ONE canonical address formatter so the agent reads the same
+    // mailing one-line every other surface shows (never a geocoder display name).
+    borrowerPhone: a.borrower_cell || a.co_cell || null,
+    borrowerMailingAddress: (() => {
+      try { return require('./address').canonicalOneLine(a.borrower_address || {}) || null; }
+      catch (_) { return null; }
+    })(),
+    // The estimated closing date, resolved EXACTLY as closing-prep resolves it
+    // (the file's confirmed expected closing, else the estimate on the term sheet)
+    // so the attorney order and the insurance order can never state two dates.
+    expectedClosing: a.expected_closing || a.est_closing_date || null,
+    purchasePrice: a.purchase_price != null ? Number(a.purchase_price) : null,
+    rehabBudget: a.rehab_budget != null ? Number(a.rehab_budget) : null,
     dob: a.date_of_birth ? new Date(a.date_of_birth).toLocaleDateString('en-US') : '',
     entityName: a.entity_name || '',
     // The note buyer (capital partner), STAFF-ONLY, drives the mortgagee clause on
@@ -213,11 +310,14 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
         ? String(note).trim()
         : `Following up to confirm when we can expect the ${kind === 'title' ? 'title search' : 'insurance quote'} to be completed. Please provide the following as soon as they become available:`,
       lines: wantLines.concat(['', signOff]),
+      // A follow-up on an INSURANCE order is precisely the moment an agent is waiting
+      // on borrower/deal details, so it restates them rather than making them ask
+      // again. Same helper as the order, so the two can never state different facts.
       meta: [
         { label: 'Property', value: data.propertyLine || '—' },
         { label: 'Borrower', value: data.borrowerName },
         data.loanNumber ? { label: 'Loan Number', value: data.loanNumber } : null,
-      ].filter(Boolean),
+      ].filter(Boolean).concat(kind === 'insurance' ? insuranceDetailMeta(data) : []),
       officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,
@@ -227,25 +327,33 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   }
 
   // The initial order.
+  // On an INSURANCE order the meta block carries everything the agency used to write
+  // back for (mailing address, phone, email, closing date, purchase price, rehab
+  // cost) — see insuranceDetailMeta. `filter(Boolean)` still runs last so a detail we
+  // genuinely do not hold is simply absent rather than printed as a blank.
   const meta = [
     data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
     { label: 'Property Address', value: data.propertyLine || '—' },
     { label: 'Borrower Name', value: data.borrowerName },
     kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
-    data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
-    { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
-    { label: 'Loan Number', value: data.loanNumber || '(pending)' },
-  ].filter(Boolean);
+    // The entity is printed by insuranceDetailMeta as the NAMED INSURED on an
+    // insurance order, so it is not repeated here.
+    kind !== 'insurance' && data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
+  ].filter(Boolean)
+    .concat(kind === 'insurance' ? insuranceDetailMeta(data) : [])
+    .concat([
+      { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
+      { label: 'Loan Number', value: data.loanNumber || '(pending)' },
+    ]);
 
   const intro = kind === 'title'
     ? `Hi ${vendorGreetName(vendor)}, please proceed with ordering title for the following transaction:`
-    : `Hi ${vendorGreetName(vendor)}, could you please provide an insurance quote for the following transaction? Let us know if you require any additional details to proceed.`;
+    : `Hi ${vendorGreetName(vendor)}, could you please provide an insurance quote for the following transaction? Everything we have on the deal is below — please let us know if anything else is needed to bind.`;
 
-  const lines = (kind === 'insurance'
-    ? ['Please quote a Builders Risk policy issued in the business entity name, covering a vacant rental property under renovation, with renovations permitted.',
-       'Please let us know if you need any additional information to complete the order.']
-    : ['Please let us know if you need any additional information to complete the order.'])
-    .concat(['', signOff]);
+  const lines = kind === 'insurance'
+    // The coverage ask is its own titled section (below), so the body stays short.
+    ? ['', signOff]
+    : ['Please let us know if you need any additional information to complete the order.', '', signOff];
 
   const built = tpl.render({
     title: `${label} Order Request`,
@@ -256,6 +364,16 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     intro,
     lines,
     meta,
+    // WHAT WE ARE ASKING TO BE COVERED — Builder's Risk AND vacant property, each
+    // named in the industry's own terms so a binder cannot come back with a vacancy
+    // clause still in it. Insurance only; a title order has no coverage to request.
+    sections: kind === 'insurance'
+      ? [{ title: 'Coverage required', body: INSURANCE_COVERAGE_LINES },
+         { title: 'Policy term & effective date',
+           body: [dayText(data.expectedClosing)
+             ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
+             : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
+      : undefined,
     // The mortgagee clause as a highlighted callout — it's the load-bearing part
     // of the order (the vendor lists us as mortgagee with this exact loan number).
     callout: { title: 'Mortgagee Clause', body: clause },
@@ -446,7 +564,8 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault, ccBorrowerSettingKey,
-  transactionType, propertyLine, money,
+  transactionType, propertyLine, money, dayText,
+  INSURANCE_COVERAGE_LINES, insuranceDetailMeta,
   mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
   sendOrderMail, sendVerdict, isAmbiguousSendFailure,
   newOrderMessageId, replyOrderSubject,

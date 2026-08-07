@@ -3687,6 +3687,18 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    a list of forty workable. It must not also toggle the row. */
 .cnd-do{flex:none}
 .cnd-done .cnd-name{color:#4B585C;font-weight:500}
+/* THE CONTROL THAT CLOSES AN OPEN CONDITION — the counterpart of .cnd, and the
+   ONE place an open row's Collapse can live (owner-reported 2026-08-07: it was
+   sometimes at the top, sometimes at the bottom, sometimes absent). `margin-left:
+   auto` pins it to the far right of whatever header row hosts it, so it lands in
+   the SAME spot on every condition without each renderer aligning it by hand. It
+   carries the same chevron as the compact line, already rotated open, so the
+   thing that closes the row looks like the thing that opened it. */
+.cnd-collapse{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+  padding:2px 6px;border:0;border-radius:6px;background:none;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:550;color:#4B585C;white-space:nowrap}
+.cnd-collapse:hover{color:var(--teal-br);background:var(--surface-soft,#F4F1EA)}
+.cnd-collapse:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 @media(max-width:720px){
   .cnd{flex-wrap:wrap;gap:6px}
   .cnd-name{flex:1 1 100%;white-space:normal}
