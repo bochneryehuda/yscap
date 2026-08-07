@@ -32,12 +32,19 @@ function fieldMatches(ruleValue, dealValue) {
   return { match: r === d, wildcard: false };
 }
 
-// How many of a rule's three dimensions are specified (not wildcards) — the specificity score.
+// How many of a rule's dimensions are specified (not wildcards) — the specificity score.
+// `loan_type` + `property_key` were added 2026-08-07 (db/481) because the owner's real
+// form rules key on them and the original three could not express either: `loan_purpose`
+// collapses to Purchase/Refinance (that IS the CDG field), so "fix and flip" vs "bridge"
+// was unrepresentable, and `property_category` held a RAW label ("Condominium" vs
+// "Condo") that could not match reliably.
 function specificity(rule) {
   let n = 0;
   if (norm(rule.program)) n++;
   if (norm(rule.property_category)) n++;
   if (norm(rule.loan_purpose)) n++;
+  if (norm(rule.loan_type)) n++;
+  if (norm(rule.property_key)) n++;
   return n;
 }
 
@@ -58,7 +65,9 @@ function chooseForm(deal, rules) {
     const prog = fieldMatches(rule.program, d.program);
     const cat = fieldMatches(rule.property_category, d.propertyCategory);
     const purp = fieldMatches(rule.loan_purpose, d.loanPurpose);
-    if (!prog.match || !cat.match || !purp.match) continue;
+    const lt = fieldMatches(rule.loan_type, d.loanType);
+    const pk = fieldMatches(rule.property_key, d.propertyKey);
+    if (!prog.match || !cat.match || !purp.match || !lt.match || !pk.match) continue;
     candidates.push(rule);
   }
   if (!candidates.length) return null;
