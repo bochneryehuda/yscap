@@ -8,7 +8,7 @@
  * what they accept and the builder can never send a value they will reject.
  *
  * NOT VERSION-SPECIFIC. Unlike ordering, the revision endpoint has no `/v2` variant —
- * one path, one reason list, both UAD versions. See db/487.
+ * one path, one reason list, both UAD versions. See db/489.
  *
  * ── THERE IS NO "ROV" ENDPOINT, AND THAT IS THE IMPORTANT THING HERE ────────────
  *

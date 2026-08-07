@@ -174,7 +174,7 @@ So the rule, enforced in `src/class/callbacks.js`:
 > current default.**
 
 `class_orders.api_version` and `class_orders.order_path` are written when the order
-is placed (db/486) — *before* the call goes out, so an order that times out on the
+is placed (db/488) — *before* the call goes out, so an order that times out on the
 wire still has a record its callback can match. When the version is genuinely unknown
 (an order placed before that table existed), the event is still **recorded** and any
 version-specific call is **declined**. Falling back to the configured default would be

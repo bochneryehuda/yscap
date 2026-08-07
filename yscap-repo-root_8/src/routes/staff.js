@@ -3140,6 +3140,41 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
+      /* THE STALE CLEAR IS THE LAST WORD ON THIS REGISTRATION — and it has to live
+         HERE, not inside persistProductRegistration (owner-reported 2026-08-07:
+         "even after you re-register, you sign off, and you upload your appraisal …
+         it still says the registration needs to be current. Deal economics has
+         changed … who changed the deal economics?").
+
+         ROOT CAUSE. `persistProductRegistration` already knows its own write-back
+         trips the db/071/072/466 economics trigger, and clears `stale` on the fresh
+         row — its comment says "do it LAST, after the experience sync, so nothing
+         re-flags it". It was not last. THIS ROUTE then writes more watched columns:
+         the four sticky `file_markup_*` values and the typed cash-out. The trigger
+         fires on the markup write and stamps `stale = true` on the very registration
+         that was created a few statements earlier (its UPDATE targets
+         `is_current AND NOT stale`, which the clear had just made true). Reproduced
+         on a real database: a fresh registration goes stale on the next statement,
+         with the GENERIC reason — "deal economics changed" and nothing named,
+         because the markups are not in the trigger's itemized list (db/486 fixes
+         that half). So `esignSendGate` refused the term sheet on
+         `registration_stale` forever: re-registering repeated the sequence, and the
+         trigger's second UPDATE re-opened Products & Pricing, so signing off could
+         not settle it either. Both halves of the report, one cause.
+
+         A MARKUP IS NOT NEWS TO THE REGISTRATION THAT WAS PRICED ON IT. The trigger
+         is right to watch these columns — a markup change after the fact genuinely
+         invalidates a registration — and it stays untouched. What is wrong is a
+         registration marking ITSELF stale over the values it was just priced with.
+
+         Guarded on `AND stale` so it can only ever undo a flag raised inside this
+         transaction, and placed immediately before COMMIT so any post-register file
+         write added later is covered by construction rather than by remembering.
+         THE RULE: anything in this route that writes a watched column on
+         `applications` belongs ABOVE this line. */
+      await client.query(
+        `UPDATE product_registrations SET stale=false, stale_reason=NULL
+          WHERE id=$1 AND stale`, [reg.id]);
       await client.query('COMMIT');
     } catch (e) {
       /* RELEASE THE CONNECTION ON THE WAY OUT — the `finally` below belongs to

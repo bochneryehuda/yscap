@@ -313,7 +313,7 @@ module.exports = {
   // registration body carries an event name and a URL and nothing else — so ONE
   // registration covers orders on both UAD versions, and the event that arrives does
   // not say which version its order was placed on. That is exactly why the version is
-  // stored on our own order row (db/486) instead of being read off the callback.
+  // stored on our own order row (db/488) instead of being read off the callback.
   // Notes, revisions and cancellations are NOT version-specific — the guide
   // documents exactly one path for each, shared by both UAD versions. Only order
   // CREATE, order READ and the product catalogue have a /v2 variant.

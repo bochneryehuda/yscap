@@ -1,7 +1,7 @@
 -- ============================================================================
--- 487 — Class Valuation: the conversation, and the asks.
+-- 489 — Class Valuation: the conversation, and the asks.
 --
--- db/486 records the ORDER and receives their callbacks. This adds the two-way
+-- db/488 records the ORDER and receives their callbacks. This adds the two-way
 -- working relationship on top of it, which is what an appraisal desk actually spends
 -- its time on:
 --
@@ -15,7 +15,7 @@
 --     value-related ones). Also the GSE-data revision, which is a different thing on
 --     a different endpoint and is kept apart rather than blurred into the same row.
 --
--- A WORD ON VERSIONS, because it is the opposite of what db/486 needed. Ordering and
+-- A WORD ON VERSIONS, because it is the opposite of what db/488 needed. Ordering and
 -- reading an order ARE version-specific (`/orders` vs `/v2/orders`). Notes,
 -- revisions, cancellations and attachments are NOT — the guide documents exactly one
 -- path for each, shared by both UAD versions. So nothing in these tables carries a
