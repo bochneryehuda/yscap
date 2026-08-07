@@ -22,6 +22,7 @@ const cfg = require('../config');
 const email = require('./email');
 const notify = require('./notify');
 const tpl = require('./email/template');
+const quote = require('./email/quote');
 const { orderReplyTo } = require('./file-address');
 // RCN detection is the ONE shared note-buyer helper (mirrors isFidelis/isEmcap/
 // isBlueLake), so the order clause and the underwriting mortgagee-address check
@@ -321,6 +322,12 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
       officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,
+      // The shared reply delimiter (lib/email/quote.js). A vendor's reply comes back
+      // through file-inbox, which cuts on this token — printed at the TOP of the
+      // content, so it lands just below whatever they type once their client quotes
+      // us underneath. Without it the cut relies on the client's own attribution
+      // alone, and a vendor on an exotic client sent us the whole thread every round.
+      replyMarker: quote.replyMarker('and it reaches the whole loan team'),
       audience: 'staff',
     });
     return built;
@@ -381,6 +388,7 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     officer: officerCard,
     note: 'Reply to this email and it reaches the whole loan team.',
     replyable: true,
+    replyMarker: quote.replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;

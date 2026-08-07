@@ -5475,6 +5475,13 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
     const out = emailRowShape({ ...row, has_body: true });
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
     // Historical/lightweight outbound row → re-render the branded body on demand.
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
@@ -7438,6 +7445,13 @@ router.get('/emails/:msgId', async (req, res) => {
     const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }

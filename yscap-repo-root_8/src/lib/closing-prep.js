@@ -1009,6 +1009,10 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     files: attach ? attach.attachments.map((a) => a.filename) : [],
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;
@@ -1046,6 +1050,10 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
     files,
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1074,6 +1082,7 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1176,6 +1185,7 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }

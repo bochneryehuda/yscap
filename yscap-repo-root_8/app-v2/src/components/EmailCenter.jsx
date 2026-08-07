@@ -150,6 +150,10 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
      truncated any email taller than it. Once the animation is done the ceiling is
      dropped entirely, so a long email is simply as tall as it is. */
   const [settled, setSettled] = useState(false);
+  // Was the reader asked to see the quoted conversation under this reply? Resets per
+  // message (this component is keyed on the row), so opening the next reply starts
+  // trimmed again.
+  const [showQuoted, setShowQuoted] = useState(false);
   useEffect(() => {
     if (!expanded) {
       // RESET FOR THE NEXT OPEN. Re-opening while `settled` was still true would
@@ -196,8 +200,16 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
     return () => { alive = false; };
   }, [expanded, row.id, appId, globalMode]);
 
-  const html = full && full.body_html;
-  const text = full && full.body_text;
+  /* ONLY THEIR REPLY, WITH THE HISTORY BEHIND THE THREE DOTS (owner-reported
+     2026-08-07: "in the chat within the system, we should only see their reply. We
+     shouldn't see all the old messages, because it should realize that this is
+     anything above the three dots"). The server splits an inbound message at read
+     time (lib/email-log.splitStoredBody) and returns BOTH halves, so nothing is
+     hidden — `showQuoted` swaps this reader back to the whole original body. An
+     outbound message, and an inbound one with no quote in it, are untouched. */
+  const trimmed = !!(full && full.trimmed);
+  const html = full && ((trimmed && !showQuoted && full.replyHtml) || full.body_html);
+  const text = full && ((trimmed && !showQuoted && full.replyText) || full.body_text);
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
   // Fit the email to the available width so a fixed-width (e.g. 600px) design is
   // never cut off — scale it down to the reader's width and reserve the scaled
@@ -297,6 +309,19 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                   ? <div className="ec-frame-wrap" ref={wrapRef}><iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={fit} /></div>
                   : text ? <pre className="ec-plain">{text}</pre>
                     : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
+              {/* THE THREE DOTS. Same control every mail client uses for the same
+                  job, so it needs no explaining — and it is only ever offered when
+                  there genuinely is trimmed history, never as decoration. */}
+              {trimmed && !loading && !err ? (
+                <div className="ec-trimmed">
+                  <button type="button" className="ec-dots" onClick={() => setShowQuoted((v) => !v)}
+                    title={showQuoted ? 'Hide the earlier messages in this conversation' : 'Show the earlier messages in this conversation'}
+                    aria-expanded={showQuoted}>···</button>
+                  <span className="muted small">
+                    {showQuoted ? 'Showing the whole conversation' : 'Earlier messages in this conversation are hidden'}
+                  </span>
+                </div>
+              ) : null}
             </div>
             <div className="ec-msg-actions">
               {canResend ? <button className="btn ghost small" onClick={resend} disabled={busy === 'resend'}>{busy === 'resend' ? 'Resending…' : '↻ Resend'}</button> : null}
