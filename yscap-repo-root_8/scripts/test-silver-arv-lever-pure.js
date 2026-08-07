@@ -215,6 +215,35 @@ assert(ltcMoved > 0, `D1 an ARV cut moves the LTC ratio too, so both bands re-pr
     `H7 the owner's case is real: ${arvBigger} times a value-side rung is a BIGGER loan than the cost-side rung below it`);
 }
 
+// ---- I. The term-sheet ladder page (source guard) ------------------------------
+// The PDF is drawn by jsPDF and cannot be asserted here, so guard the contract it
+// depends on: the Silver branch exists, its columns fit the page, and the selected
+// row can never be matched on a value-side rung (which carries ltc === null).
+{
+  const ts = fs.readFileSync(path.join(__dirname, '..', 'web/v2/tools/termsheet.js'), 'utf8');
+  assert(/Value cut/.test(ts) && /Cost cut/.test(ts),
+    'I1 the ladder page names which side earned each step');
+  assert(/Value \(ARV\)/.test(ts) && /Cost \(LTC\)/.test(ts) && /Initial advance/.test(ts),
+    'I2 …and shows BOTH ratios plus the initial advance, because one cut moves both');
+  assert(/\(r\.ltc == null\) \? false/.test(ts),
+    'I3 a value-side rung (ltc === null) can never be matched as the selected row');
+  // Every column table in this file must sum to the full width, or a column runs
+  // off the edge of a document that goes out for signature.
+  const tables = ts.match(/var cols = [\s\S]*?\];/g) || [];
+  let bad = 0, seen = 0;
+  for (const t of tables) {
+    for (const block of t.split('] : [')) {
+      const ws = (block.match(/w: (0?\.\d+)/g) || []).map((x) => Number(x.slice(3)));
+      if (ws.length < 4) continue;
+      seen++;
+      const sum = ws.reduce((a, b) => a + b, 0);
+      if (Math.abs(sum - 1) > 1e-9) { bad++; console.log(`    column widths sum to ${sum.toFixed(4)}: ${ws.join(', ')}`); }
+    }
+  }
+  assert(seen >= 2, `I4 both the Silver and the Standard ladder tables were checked (${seen})`);
+  assert(bad === 0, `I5 every ladder table's column widths sum to exactly the page width (bad: ${bad})`);
+}
+
 // ---- The two engine copies stay identical (the frozen-copies rule) -------------
 {
   const a = fs.readFileSync(path.join(__dirname, '..', 'web/v2/tools/silver-program.js'), 'utf8');

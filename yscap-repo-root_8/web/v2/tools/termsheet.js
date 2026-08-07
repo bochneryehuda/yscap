@@ -2762,12 +2762,28 @@
       if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
-        doc.text("Your pricing at every leverage level", M, y);
+        doc.text(d.silver ? "Your pricing at every step down" : "Your pricing at every leverage level", M, y);
         doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 5.5, M + 42, y + 5.5);   // gold rule under the heading
         y += 16;
-        para("Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
+        /* SILVER READS DIFFERENTLY BECAUSE IT PRICES DIFFERENTLY (owner-directed
+           2026-08-06). EMCAP prices on BOTH the cost ratio and the value ratio, so a
+           step down can be earned on either side and each row must show both — a row
+           that displayed only the LTC would misrepresent what bought the rate. Every
+           row is a REAL price improvement (the ladder never offers a step that buys
+           nothing), and each is the LARGEST loan at that rate. */
+        para(d.silver
+          ? "A smaller loan earns a better rate. Each row below is a real price improvement \u2014 and is the largest loan that earns that rate, so you never give up more than you have to. A step can come from the cost side or the value side; the \u201cStep\u201d column says which, and both ratios are shown because moving one moves the other. The highlighted row is the option you selected."
+          : "Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
         var tW = W - 2 * M;
-        var cols = [
+        var cols = d.silver ? [
+          { t: "Step", w: 0.15, a: "l" },
+          { t: "Loan amount", w: 0.17, a: "r" },
+          { t: "Initial advance", w: 0.17, a: "r" },
+          { t: "Cost (LTC)", w: 0.12, a: "r" },
+          { t: "Value (ARV)", w: 0.12, a: "r" },
+          { t: "Payment / mo", w: 0.14, a: "r" },
+          { t: "Note rate", w: 0.13, a: "r" }
+        ] : [
           { t: "Leverage (LTC)", w: 0.26, a: "l" },
           { t: "Loan amount", w: 0.20, a: "r" },
           { t: "Cash down", w: 0.18, a: "r" },
@@ -2789,12 +2805,24 @@
         // / true maximum" marker), which is also what an unset slider resolves to.
         var selLtc = (d.silver ? silverChosenLTC : (d.gold ? goldChosenLTC : chosenLTC)) || lad.rows[0].ltc;
         lad.rows.forEach(function (r, i) {
-          var rowH = 20, isSel = Math.abs(r.ltc - selLtc) < 1e-9;
+          /* MATCH THE SELECTED RUNG BY ITS OWN IDENTITY WHEN IT HAS ONE. On Silver a
+             cost-side and a value-side rung can legitimately land on the SAME LTC, so
+             the old `r.ltc` compare could highlight the wrong row on a document that
+             goes out for signature. A value-side rung carries ltc === null, so the
+             numeric compare can never match one by accident either. */
+          var rowH = 20;
+          var isSel = (r.ltc == null) ? false : Math.abs(r.ltc - selLtc) < 1e-9;
           if (isSel) { doc.setFillColor.apply(doc, GOLD); doc.rect(M, ry, tW, rowH, "F"); }
           else if (i % 2) { doc.setFillColor(244, 240, 231); doc.rect(M, ry, tW, rowH, "F"); }
           doc.setFont("helvetica", isSel ? "bold" : "normal"); doc.setFontSize(8.6);
           doc.setTextColor.apply(doc, isSel ? [20, 27, 34] : DARK);
-          var vals = [
+          var vals = d.silver ? [
+            r.isMax ? "Maximum" : (r.cut === "arv" ? "Value cut" : "Cost cut"),
+            money(Math.floor(r.totalLoan)), money(Math.floor(r.initialAdvance)),
+            pc(r.targetLtcPct), pc(r.arvPct),
+            money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
+            fmtRate3(r.noteRate * 100) + "%"
+          ] : [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
             money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
             fmtRate3(r.noteRate * 100) + "%"
