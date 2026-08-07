@@ -151,6 +151,20 @@ function render(p) {
   var figures  = (p.figures && p.figures.primary && p.figures.primary.value) ? p.figures : null;
   // The facts that belong to THIS event rather than to the file. {rows:[{label,value}], progress}
   var facts    = (p.facts && ((Array.isArray(p.facts.rows) && p.facts.rows.length) || p.facts.progress)) ? p.facts : null;
+  // A CHANGE LEDGER — "what is different from the standard", one row per moved value, each showing
+  // what it WAS and what it is BEING ASKED FOR. Owner-directed 2026-08-07, on the pricing-override
+  // and manual-product approval emails: *"this email is so [confusing] I can't even see what they
+  // want from me… What exactly is the exception request for? Nicely laid out."* Those emails were
+  // packing every change into one run-on sentence ("Rate markup / YSP — Gold: 0.4% → 0%; Rate
+  // markup / YSP — Silver: 0.4% → 0.5%; Origination points — Standard: 1.25% → 1%; …"), which is
+  // unreadable at exactly the moment somebody has to make an approve/decline decision.
+  // {title, rows:[{label, from, to, note}], note}
+  var changes  = (p.changes && Array.isArray(p.changes.rows) && p.changes.rows.length) ? p.changes : null;
+  // A LIST — the files/items an email is about, one row each, with their own columns. A digest that
+  // says "7 files in your Workflow are overdue" and then makes the reader go and find out WHICH is
+  // not a notification, it is a chore (owner-directed 2026-08-07).
+  // {title, head:[…], rows:[[…]], note, align:[…]}
+  var table    = (p.table && Array.isArray(p.table.rows) && p.table.rows.length) ? p.table : null;
 
   /* ---------------- STATUS PILL ---------------- */
   function pill(b) {
@@ -230,6 +244,94 @@ function render(p) {
       out += '<tr><td style="padding:2px 20px 18px;">' + meter(fx.progress) + '</td></tr>';
     }
     out += '</table>';
+    return out;
+  }
+
+  /* ---------------- CHANGE LEDGER (what is different, and from what) ----------------
+     One row per moved value: the label, then the standard it moved OFF (quiet, struck through)
+     and the value being ASKED FOR (bold, in the accent). The arrow between them is a real text
+     character in its own cell, never a background image or a pseudo-element — Outlook renders
+     neither. Each row is its own table row with a hairline above, so a long label wraps under
+     itself instead of pushing the values off the card. */
+  function changeBox(c) {
+    var t = tone(c.tone || 'gold');
+    var rows = c.rows.filter(function (r) { return r && r.label; });
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
+      '<tr><td style="padding:16px 20px 6px;">';
+    out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 4px;">' +
+      esc(c.title || 'What is being changed') + '</div>';
+    if (c.subtitle) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.5;color:' + BRAND.muted + ';margin:0 0 6px;">' + esc(c.subtitle) + '</div>';
+    }
+    out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows.map(function (r, i) {
+      var bt = i === 0 ? '' : 'border-top:1px solid ' + BRAND.line + ';';
+      var hasFrom = r.from != null && r.from !== '';
+      var hasTo = r.to != null && r.to !== '';
+      var valueCells = '';
+      if (hasFrom || hasTo) {
+        valueCells =
+          '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:5px 0 0;"><tr>' +
+            (hasFrom
+              ? '<td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.soft2 + ';text-decoration:line-through;white-space:nowrap;">' + esc(r.from) + '</td>' +
+                '<td style="padding:0 9px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.soft2 + ';">&rarr;</td>'
+              : '') +
+            (hasTo
+              ? '<td style="font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:' + t.fg + ';white-space:nowrap;">' + esc(r.to) + '</td>'
+              : '') +
+          '</tr></table>';
+      }
+      return '<tr><td style="' + bt + 'padding:11px 0;">' +
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;color:' + BRAND.ink + ';font-weight:600;">' + esc(r.label) + '</div>' +
+        valueCells +
+        (r.note ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';margin:5px 0 0;">' + esc(r.note) + '</div>' : '') +
+      '</td></tr>';
+    }).join('') + '</table>';
+    out += '</td></tr>';
+    if (c.note) {
+      out += '<tr><td style="padding:0 20px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';">' + esc(c.note) + '</td></tr>';
+    } else {
+      out += '<tr><td style="padding:0 20px 10px;font-size:0;line-height:0;">&nbsp;</td></tr>';
+    }
+    out += '</table>';
+    return out;
+  }
+
+  /* ---------------- LIST TABLE (the items this email is actually about) ----------------
+     A plain bordered table. Deliberately NOT scrollable and NOT more than a handful of columns:
+     an email body is ~520px of usable width on a phone, so a caller that needs six columns should
+     be sending three and a link. The first column carries the identity (the property, the file) at
+     full ink; the rest are secondary. Long cells WRAP — never `nowrap`, which is what makes a
+     table push a phone body sideways. */
+  function listTable(tb) {
+    var head = Array.isArray(tb.head) ? tb.head : [];
+    var align = Array.isArray(tb.align) ? tb.align : [];
+    var cellAlign = function (i) { return align[i] === 'right' ? 'right' : 'left'; };
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
+      '<tr><td style="padding:16px 18px 14px;">';
+    if (tb.title) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 10px;">' + esc(tb.title) + '</div>';
+    }
+    out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">';
+    if (head.length) {
+      out += '<tr>' + head.map(function (h, i) {
+        return '<td align="' + cellAlign(i) + '" style="padding:0 8px 7px 0;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:' + BRAND.muted + ';border-bottom:1px solid ' + BRAND.line + ';">' + esc(h) + '</td>';
+      }).join('') + '</tr>';
+    }
+    out += tb.rows.map(function (r) {
+      var cells = Array.isArray(r) ? r : [r];
+      return '<tr>' + cells.map(function (v, i) {
+        var first = i === 0;
+        return '<td align="' + cellAlign(i) + '" valign="top" style="padding:10px 8px 10px 0;border-top:1px solid ' + BRAND.line + ';' +
+          'font-family:Arial,Helvetica,sans-serif;font-size:' + (first ? '13px' : '12.5px') + ';line-height:1.45;' +
+          'color:' + (first ? BRAND.ink : BRAND.muted) + ';font-weight:' + (first ? '700' : '400') + ';">' +
+          esc(v == null ? '' : v) + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    out += '</table>';
+    if (tb.note) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';margin:12px 0 0;">' + esc(tb.note) + '</div>';
+    }
+    out += '</td></tr></table>';
     return out;
   }
 
@@ -472,6 +574,8 @@ function render(p) {
   var heroHtml     = hero ? heroBand(hero) : '';
   var figuresHtml  = figures ? figureBand(figures) : '';
   var factsHtml    = facts ? factsBox(facts) : '';
+  var changesHtml  = changes ? changeBox(changes) : '';
+  var tableHtml    = table ? listTable(table) : '';
   var sections = Array.isArray(p.sections) ? p.sections.filter(function (s) { return s && (s.title || s.body); }) : [];
   var sectionsHtml = sections.length ? sectionBlocks(sections) : '';
   var stepsHtml    = steps.length ? stepper(steps) : '';
@@ -507,7 +611,7 @@ function render(p) {
             'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(heading) + '</h1>' +
           // figures then facts, both ABOVE the generic file meta: the money is the answer, the
           // draw's own details are the supporting read, and the file identity block is reference.
-          greetHtml + body + figuresHtml + factsHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
+          greetHtml + body + figuresHtml + factsHtml + changesHtml + tableHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
@@ -579,6 +683,33 @@ function render(p) {
     if (facts.progress && facts.progress.total > 0 && facts.progress.label) {
       t.push(facts.progress.label + ': ' + Math.round((facts.progress.done / facts.progress.total) * 100) + '%');
     }
+    t.push('');
+  }
+  // The change ledger and the list table MUST survive text/plain — on an approval email the
+  // ledger IS the decision, and a reader on a plaintext client would otherwise be asked to
+  // approve something the email never states. Same defect the callout had.
+  if (changes) {
+    t.push(String(changes.title || 'What is being changed').toUpperCase());
+    if (changes.subtitle) t.push(changes.subtitle);
+    changes.rows.forEach(function (r) {
+      if (!r || !r.label) return;
+      var from = (r.from != null && r.from !== '') ? String(r.from) : null;
+      var to = (r.to != null && r.to !== '') ? String(r.to) : null;
+      var val = from && to ? (from + ' -> ' + to) : (to || from || '');
+      t.push('  ' + r.label + (val ? ': ' + val : ''));
+      if (r.note) t.push('    ' + r.note);
+    });
+    if (changes.note) t.push(changes.note);
+    t.push('');
+  }
+  if (table) {
+    if (table.title) t.push(String(table.title).toUpperCase());
+    if (Array.isArray(table.head) && table.head.length) t.push('  ' + table.head.join(' | '));
+    table.rows.forEach(function (r) {
+      var cells = Array.isArray(r) ? r : [r];
+      t.push('  ' + cells.map(function (v) { return v == null ? '' : String(v); }).join(' | '));
+    });
+    if (table.note) t.push(table.note);
     t.push('');
   }
   sections.forEach(function (s) {

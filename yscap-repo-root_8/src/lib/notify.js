@@ -147,9 +147,16 @@ function buildEmail(opts, audience) {
     subjectTag: opts.subjectTag || '',
     // A small category eyebrow above the headline for scannability.
     kicker:    opts.kicker || KICKER_OF[opts.type] || '',
-    preheader: opts.body || opts.title,
+    preheader: opts.emailBody || opts.body || opts.title,
     greeting:  opts.greeting || (audience === 'borrower' ? 'Hello,' : ''),
-    intro:     opts.body || '',
+    // `body` is ONE field doing two jobs: it is the in-app notification row's text AND the
+    // email's opening paragraph. Usually that is right. It stops being right when the email
+    // grows a money band and a facts table (owner-directed 2026-08-07), because the one-line
+    // summary that serves the in-app row perfectly — "Gold Standard Program · $523,125 @ 10.00%
+    // · cash to close $78,411 · liquidity $109,799" — is then a worse restatement of the block
+    // directly beneath it. `emailBody` lets a caller say the two things separately; every caller
+    // that does not set it is byte-identical to before.
+    intro:     opts.emailBody || opts.body || '',
     lines:     opts.lines || [],
     meta:      opts.meta || [],
     // Every notification email is genuinely repliable (owner-directed
@@ -180,6 +187,12 @@ function buildEmail(opts, audience) {
     // for draws). Absent on every other email, which renders exactly as before.
     figures:   opts.figures || null,
     facts:     opts.facts || null,
+    // The change ledger (what moved off the standard, from → to) and a list table (the files /
+    // items an email is about). Owner-directed 2026-08-07 — an approval email must SHOW what is
+    // being asked for, and a "7 files are overdue" digest must name the seven. Absent on every
+    // other email, which renders exactly as before.
+    changes:   opts.changes || null,
+    table:     opts.table || null,
     steps:     opts.steps || null,
     progress:  opts.progress || null,
     callout:   opts.callout || null,
@@ -1218,12 +1231,15 @@ async function fileContext(appId, extraMeta = []) {
     const r = await db.query(
       `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
               a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
+              a.lender,
               b.first_name, b.last_name, b.email, b.cell_phone,
               lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
-              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
+              pr.full_name AS proc_name, pr.email AS proc_email
          FROM applications a
          JOIN borrowers b ON b.id=a.borrower_id
          LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active=true
+         LEFT JOIN staff_users pr ON pr.id=a.processor_id AND pr.is_active=true
         WHERE a.id=$1`, [appId]);
     const a = r.rows[0];
     if (!a) return null;
@@ -1251,6 +1267,15 @@ async function fileContext(appId, extraMeta = []) {
       a.arv != null ? { label: 'ARV', value: money(a.arv) } : null,
       a.rehab_budget != null ? { label: 'Rehab budget', value: money(a.rehab_budget) } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+      // WHO IS ON THIS FILE — owner-directed 2026-08-07, on the Workflow hand-off email: *"it
+      // should say in the email who the loan officer on the file is and who the note buyer on the
+      // file is."* A processor picking up a hand-off had no way to tell either from the email, and
+      // both are already on the row this query reads. Added to the STAFF meta block only:
+      // `borrowerMeta` is built separately below and never receives these, so the frozen rule that
+      // a note-buyer / capital-partner name never reaches a borrower surface is structurally kept.
+      a.lo_name ? { label: 'Loan officer', value: [a.lo_name, a.lo_email].filter(Boolean).join(' · ') } : null,
+      a.proc_name ? { label: 'Processor', value: [a.proc_name, a.proc_email].filter(Boolean).join(' · ') } : null,
+      a.lender ? { label: 'Note buyer', value: String(a.lender) } : null,
       ...extraMeta,
     ].filter(Boolean);
     // Borrower-safe identity block: a clean "which file" summary (no internal

@@ -81,7 +81,7 @@ async function buildDrawPacket(appId, drawId) {
   }
   rows.push(['TOTAL', c(rollup.project.budget), c(rollup.project.drawn), c(money.requested_cents), c(money.approved_cents), c(avail(rollup.project)), usedPct(rollup.project)]);
   rows.push([]);
-  rows.push(['\u201CStill available\u201D counts this draw as spent from the moment the inspector approves it. If the draw is amended or declined, that money goes straight back to available.']);
+  rows.push(['\u201CStill available\u201D counts this draw as spent from the moment it is REQUESTED \u2014 the requested amount until the inspector answers, their figure afterwards. If the draw is amended or declined, that money goes straight back to available.']);
   rows.push([]);
   rows.push(['THIS DRAW \u2014 WHAT IS RELEASED, AND WHAT IS NETTED OUT']);
   rows.push(['Requested by the borrower', c(money.requested_cents)]);

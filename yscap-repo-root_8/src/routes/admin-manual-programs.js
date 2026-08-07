@@ -21,6 +21,10 @@ const { requirePermission } = require('../auth');
 const perms = require('../lib/permissions');
 const manualProgram = require('../lib/manual-program');
 const notify = require('../lib/notify');
+const pricing = require('../lib/pricing');
+// The ONE composer for every pricing / exception email — the decision is rendered by the same
+// module that rendered the request (owner-directed 2026-08-07).
+const pricingEmail = require('../lib/email/pricing-email');
 
 /**
  * WHO may decide an escalation (owner-directed 2026-07-27 — "this should be sent
@@ -115,13 +119,37 @@ router.post('/escalations/:id/decide', requirePermission('manage_pricing'), asyn
       { escalationId: row.id, decision, note: note ? String(note).slice(0, 200) : null });
     // Tell the loan team the verdict (best-effort, in-app + email to the file's team).
     try {
-      const ctx = await notify.fileContext(row.application_id, [
-        { label: 'Manual product', value: decision === 'approved' ? 'Approved' : 'Declined' },
-      ]);
+      // SAY WHAT WAS ACTUALLY APPROVED (owner-directed 2026-08-07: *"emails like this should
+      // clearly show what exception was approved, nicely laid out"*). The old copy — "The
+      // manual-review exception on <file> was approved by a super-admin" — told the reader that an
+      // exception existed, not WHICH one, even though the escalation row has carried the full
+      // structured change list (`summary.overrideChanges` / `overrideLines` / `manualReasons`)
+      // since the day it was opened. It is rendered by the SAME composer that built the request,
+      // so the approval and the thing approved can never describe themselves differently.
+      const sum = (row.summary && typeof row.summary === 'object') ? row.summary : {};
+      const ctx = await notify.fileContext(row.application_id, []);
+      const built = pricingEmail.approvalDecidedEmail({
+        kind: sum.kind || 'manual_review',
+        decision,
+        decidedBy: 'a super-admin',
+        note: note ? String(note).slice(0, 500) : null,
+        deal: {
+          loanAmount: sum.totalLoan,
+          noteRate: sum.noteRate != null ? require('../lib/rate-format').fmtRatePct(sum.noteRate) + '%' : null,
+          programLabel: sum.program ? pricing.PROGRAM_LABEL[sum.program] || sum.program : null,
+          productLabel: sum.productLabel,
+          acqLtvPct: sum.acqLtvPct != null ? Number(sum.acqLtvPct) * 100 : null,
+          arvPct: sum.arvPct != null ? Number(sum.arvPct) * 100 : null,
+          ltcPct: sum.ltcPct != null ? Number(sum.ltcPct) * 100 : null,
+          assetMonths: sum.assetMonths,
+        },
+        overrideChanges: sum.overrideChanges || [],
+        overrideLines: sum.overrideLines || [],
+        manualReasons: sum.manualReasons || [],
+      });
       await notify.notifyAppStaff(row.application_id, {
         type: 'manual_escalation_decided',
-        title: decision === 'approved' ? 'Exception approved' : 'Exception declined',
-        body: `The manual-review exception on ${ctx ? ctx.label : 'the file'} was ${decision === 'approved' ? 'approved' : 'declined'} by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}.`,
+        ...built,
         meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
         link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
       });

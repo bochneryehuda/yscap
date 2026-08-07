@@ -2553,6 +2553,9 @@ async function loadFileForPricing(appId) {
 // completeness paths can never drift.
 const { sanitizeStaffOverrides, pricingOverridesEngaged, describeOverrides } = require('../lib/pricing-overrides');
 const pricingSettings = require('../lib/pricing-settings');
+// The ONE composer for every pricing / exception / registration email (owner-directed
+// 2026-08-07). Pure — it decides what these emails SHOW; it never computes a pricing number.
+const pricingEmail = require('../lib/email/pricing-email');
 function sanitizeOverrides(req, raw) {
   return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
 }
@@ -3200,28 +3203,48 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         } catch (_) { /* the escalation is the required record; the register row is additive */ }
       }
       try {
-        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const szn0 = quote.sizing || {};
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
           : overrideOnly ? `${pricing.PROGRAM_LABEL[program]} — pricing override`
           : `${pricing.PROGRAM_LABEL[program]} — manual review`;
+        // The approval email is now BUILT, not written as a sentence (owner-directed 2026-08-07:
+        // *"this email is so [confusing] I can't even see what they want from me … What exactly
+        // is the exception request for?"*). `pricingEmail.approvalRequestEmail` supplies the
+        // headline, the money band, the CHANGE LEDGER (one row per moved value, the company
+        // default struck through) and the deal facts. The file identity still rides in the
+        // enrichment `meta` block, so nothing about WHICH file is lost.
+        //
+        // The two run-on `meta` rows that used to restate the whole override list and the whole
+        // manual-review reason list are GONE: the ledger says both, once, legibly. Repeating them
+        // was the "said it twice, explained it neither time" half of the complaint.
         const ectx = await notify.fileContext(appId, [
           { label: 'Requested product', value: productDesc },
-          { label: 'Loan amount', value: dollars },
-          isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
-          manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
-          overrideLines.length ? { label: 'Changed from the defaults', value: overrideLines.join(' · ') } : null,
-        ].filter(Boolean));
-        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
-        const why = isManual
-          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.${changed}`
-          : overrideOnly
-            ? `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} was priced OFF the company defaults and is waiting for approval in the Escalations box.${changed} The borrower is NOT sent terms, and no term sheet can be sent, until it's approved. Loan amount ${dollars}.`
-            : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.${changed}`;
+        ]);
+        const built = pricingEmail.approvalRequestEmail({
+          kind: escKind,
+          deal: {
+            loanAmount: total,
+            noteRate: quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : null,
+            programLabel: pricing.PROGRAM_LABEL[program],
+            productLabel: productDesc,
+            termMonths: inputs && inputs.term,
+            purchasePrice: szn0.purchasePrice != null ? szn0.purchasePrice : (inputs && inputs.purchasePrice),
+            asIsValue: inputs && inputs.asIsValue,
+            arv: inputs && inputs.arv,
+            rehabBudget: inputs && inputs.rehabBudget,
+            initialAdvance: szn0.initial,
+            rehabHoldback: szn0.rehabHoldback != null ? szn0.rehabHoldback : szn0.holdback,
+            cashToClose: quote.cashToClose,
+            liquidity: quote.liquidity ?? quote.liquidityRequired,
+            downPayment: szn0.downPayment,
+            acqLtvPct: szn0.acqLtvPct, arvPct: szn0.arvPct, ltcPct: szn0.ltcPct,
+            assetMonths: isManual ? assetMonths : null,
+          },
+          overrideChanges, overrideLines, manualReasons,
+        });
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: isManual ? 'Manual product needs approval'
-            : overrideOnly ? 'Pricing override needs approval' : 'Registration needs approval',
-          body: why,
+          ...built,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
         });
@@ -3283,16 +3306,42 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const dollars = '$' + Math.round(total).toLocaleString('en-US');
       const money2 = (n) => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
       const szn = quote.sizing || {};
-      const ctx = await notify.fileContext(appId, [
-        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
-        { label: 'Total loan', value: `${dollars} @ ${pctRate}` },
-        szn.downPayment != null ? { label: 'Down payment', value: money2(szn.downPayment) } : null,
-        quote.cashToClose != null ? { label: 'Cash to close', value: money2(quote.cashToClose) } : null,
-        (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money2(quote.liquidity ?? quote.liquidityRequired) } : null,
-      ].filter(Boolean));
+      // The numbers ARE the message on this one, so they get the money band and a deal table
+      // instead of the old single comma-run under a plain-text "Product registered" headline
+      // (owner-directed 2026-08-07). The file identity keeps riding in the enrichment meta, and
+      // the deal rows that used to be hand-listed here are now built once by the shared composer,
+      // so the register notice, the approval request and the decision email all describe a deal
+      // the same way. `body` is kept as the ONE-LINE summary the in-app notification row shows —
+      // that row has no room for a table, and it is what the notification centre lists.
+      const ctx = await notify.fileContext(appId, []);
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
+      const reg0 = pricingEmail.productRegisteredEmail({
+        needsApproval: needsEscalation,
+        statusNote: quote.status !== 'ELIGIBLE'
+          ? `The engine returned ${String(quote.status).toLowerCase()} on this scenario.` : null,
+        deal: {
+          loanAmount: total,
+          noteRate: quote.noteRate != null ? pctRate : null,
+          programLabel: [quote.programLabel, quote.productLabel].filter(Boolean).join(' — ') || pricing.PROGRAM_LABEL[program],
+          termMonths: inputs && inputs.term,
+          purchasePrice: szn.purchasePrice != null ? szn.purchasePrice : (inputs && inputs.purchasePrice),
+          asIsValue: inputs && inputs.asIsValue,
+          arv: inputs && inputs.arv,
+          rehabBudget: inputs && inputs.rehabBudget,
+          initialAdvance: szn.initial,
+          rehabHoldback: szn.rehabHoldback != null ? szn.rehabHoldback : szn.holdback,
+          cashToClose: quote.cashToClose,
+          liquidity: quote.liquidity ?? quote.liquidityRequired,
+          downPayment: szn.downPayment,
+          acqLtvPct: szn.acqLtvPct, arvPct: szn.arvPct, ltcPct: szn.ltcPct,
+        },
+      });
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'product_registered', title: 'Product registered',   // file identity (loan# · borrower · property) rides in the subject tag — never in the title (no double loan number)
+          type: 'product_registered',
+          ...reg0,
+          // file identity (loan# · borrower · property) rides in the subject tag — never in the
+          // title (no double loan number). `body` stays the in-app one-liner; the email's own
+          // opening sentence is the composer's `intro`.
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
@@ -12763,9 +12812,28 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
     }
     // Notify the recipient it's in their Workflow (best-effort — the hand-off
     // already committed, so a notify hiccup must never fail the submit).
+    // THE LOAN OFFICER IS LOOPED IN, VISIBLY (owner-directed 2026-08-07: *"an email like this
+    // should have more information for the processor, and it should also loop in the loan
+    // officer"*). A VISIBLE Cc, not a Bcc — the point is that the person picking the file up and
+    // the officer who owns it can reply to each other on one thread; a Bcc splits that into two
+    // conversations neither of them knows about. The officer is skipped when THEY are the
+    // recipient (nobody should be Cc'd on their own message), and the whole lookup is
+    // best-effort: a hand-off notification must never fail for want of a Cc address.
+    let loCc = null;
+    try {
+      const lo = (await db.query(
+        `SELECT s.id, s.email FROM applications a
+           JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active = true
+          WHERE a.id = $1`, [appId])).rows[0];
+      if (lo && lo.email && String(lo.id) !== String(toStaffId)) loCc = [lo.email];
+    } catch (_) { /* the hand-off still goes without the officer copied */ }
     await notify.notifyStaff(toStaffId, {
       type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
       body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
+      // The file's own facts — who the loan officer is, who the processor is, who the note buyer
+      // is, and the deal's numbers — ride in the enrichment `meta` block, which now carries all
+      // three (see notify.fileContext). Nothing to hand-list here.
+      cc: loCc || undefined,
       applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
     }).catch(() => {});
     await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
