@@ -74,7 +74,26 @@ async function autoRegisterFromIntake(appId, rawProgram, client) {
       `SELECT 1 FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     if (existing.rows[0]) return { registered: false, reason: 'already_registered' };
 
-    const ar = await c.query(`SELECT * FROM applications WHERE id=$1`, [appId]);
+    /* THE FICO MUST BE JOINED IN — IT IS NOT A COLUMN ON `applications`.
+       A bare `SELECT * FROM applications` leaves `app.fico` undefined, `buildInputs`
+       resolves it to 0, and EVERY engine guards its FICO floor with `fico > 0` — so a
+       zero score does not fail the floor, it SKIPS it. On this door, which is public
+       and unauthenticated, that meant anyone could cause a file to be born carrying a
+       fully-sized, ELIGIBLE, approval-free registration on a program the borrower is
+       flatly ineligible for (Gold priced 7.75% at a 600 score against a 660 floor),
+       with the note buyer stamped and the loan amount written back onto the file.
+       It was also wrong on every auto-registered file, eligible or not: the rate never
+       matched what the applicant was shown or what any other door re-quotes.
+       This is the SAME query both interactive loaders use (`staff.js`,
+       `borrower.js`) — the highest score across the file's borrowers, NULL when
+       neither has one — so all three doors price on one definition. Never load a row
+       for pricing without it. */
+    const ar = await c.query(
+      `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+         FROM applications a
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id = $1`, [appId]);
     const app = ar.rows[0];
     if (!app) return { registered: false, reason: 'no_application' };
 
@@ -89,6 +108,16 @@ async function autoRegisterFromIntake(appId, rawProgram, client) {
     };
     const inputs = pricing.buildInputs(app, exp, {});
     if (inputs.asIsMissing) return { registered: false, reason: 'as_is_missing' };
+
+    /* NO SCORE ⇒ NO AUTOMATIC REGISTRATION. Every engine guards its FICO floor with
+       `fico > 0`, so an absent score is PROVISIONAL pricing (the engines quote at
+       700+ pending a real one) rather than a failed floor. That is exactly right for
+       an interactive what-if, where a human is watching and will pull credit — and
+       exactly wrong here, where nobody is: it would register an ELIGIBLE,
+       approval-free product whose floors were never actually tested. Refusing leaves
+       the file unregistered for a human to price, which is this door's own stated
+       posture: it must never be the lenient one. */
+    if (!(Number(inputs.fico) > 0)) return { registered: false, reason: 'no_fico' };
 
     // The SAME vesting refusal the borrower and staff doors apply — asked through
     // the shared module so this door can never be the lenient one.
