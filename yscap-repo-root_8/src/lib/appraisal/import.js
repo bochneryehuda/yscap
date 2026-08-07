@@ -65,7 +65,14 @@ async function importAppraisal(db, args) {
  */
 async function recordFormatRefusal(db, { applicationId, documentId, importedBy, xml, format, reason }) {
   const fmt = format || {};
-  const kind = fmt.uad36 ? 'uad_3_6' : (fmt.notAnAppraisal ? 'not_appraisal' : 'unreadable');
+  // NOT-AN-APPRAISAL WINS OVER THE VERSION, and the order matters more now than it
+  // did. A file can carry a UAD 3.6 label AND no comparable grid — an iLAD export on
+  // the 3.6 reference model is exactly that shape. Reading the version first filed it
+  // as `uad_3_6`, which said "a real appraisal in a format we cannot read" about a
+  // document that is not an appraisal at all: wrong twice, and it would put a number
+  // in the one bucket that is supposed to mean the reader has a gap. The honest
+  // problem is the document, whichever standard it was written to.
+  const kind = fmt.notAnAppraisal ? 'not_appraisal' : (fmt.uad36 ? 'uad_3_6' : 'unreadable');
   let filename = null;
   if (documentId) {
     try {

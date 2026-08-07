@@ -1,20 +1,21 @@
 /**
- * THE APPRAISALS WE CANNOT READ ARE COUNTED (db/438).
+ * THE APPRAISALS WE CANNOT READ ARE COUNTED (db/438) — and UAD 3.6 is no longer
+ * one of them.
  *
- * UAD 3.6 / MISMO 3.x becomes MANDATORY for Fannie Mae and Freddie Mac appraisals
- * on 2 NOVEMBER 2026, and PILOT reads UAD 2.6. From that date the appraisal desk
- * stops working on new reports: no comparables, no as-is value, no ARV, no
- * findings, nothing into the research warehouse.
+ * UAD 3.6 / MISMO 3.6 becomes MANDATORY for Fannie Mae and Freddie Mac appraisals
+ * on 2 NOVEMBER 2026. This file used to assert that such a report was REFUSED with
+ * a named reason, which was the right posture while PILOT read only UAD 2.6 — and
+ * from that date would have been the answer to every new report. `extract()` now
+ * ROUTES a MISMO 3.x appraisal to `extract36`, so a real 3.6 report IMPORTS and
+ * records no refusal at all. The assertions below were rewritten for that.
  *
- * The parser already recognised the format and refused it honestly. What nothing
- * did was REMEMBER — the refusal was a sentence shown to one officer and then
- * discarded, so "how many did we turn away last month?" had no answer, and that
- * is the only question that says whether the exposure is still theoretical.
- *
- * The three kinds are kept apart deliberately: a real appraisal in a format we
- * cannot read is a different problem from somebody attaching a loan-application
- * export instead of the appraisal, and counting them together buries the number
- * that matters inside the number that does not.
+ * What did NOT change, and is still asserted: the ledger itself, and the fact that
+ * the three kinds are kept apart. Somebody attaching a loan-application export
+ * instead of the appraisal is a different problem with a different answer (no
+ * reader fixes it), and counting the two together buries the number that matters
+ * inside the number that does not. `uad_3_6` is kept — a 3.6 file can still be
+ * refused for an ordinary reason — and it should now read ZERO; a number there
+ * means the READER has a gap, not that the format has arrived.
  *
  * Needs a database. Skips cleanly without DATABASE_URL.
  */
@@ -56,12 +57,6 @@ if (!process.env.DATABASE_URL) {
   }
   ok(ilad === 3, `${ilad} loan-application exports were refused (and the import still returned cleanly)`);
 
-  // A synthetic UAD 3.6 appraisal — the one that matters.
-  const uad36 = `<?xml version="1.0"?><MESSAGE MISMOReferenceModelIdentifier="3.6">
-    <ABOUT_VERSIONS/><DEAL_SETS><DEAL_SET><DEALS><DEAL>
-    <COLLATERALS><COLLATERAL><PROPERTIES><PROPERTY>
-    <SALES_COMPARISON><COMPARABLE_SALE/></SALES_COMPARISON></PROPERTY></PROPERTIES></COLLATERAL></COLLATERALS>
-    </DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;
   // THE ID PRODUCTION ACTUALLY PASSES. `importedBy` is `req.actor.id`, and both
   // import routes sit behind `requireStaff`, so it is a `staff_users` id — the
   // one value the first version of this test never used, which is exactly why a
@@ -71,12 +66,59 @@ if (!process.env.DATABASE_URL) {
     `INSERT INTO staff_users (email, full_name, role, is_active)
      VALUES ($1,'Fmt Staff','admin',true) RETURNING id`,
     [`fmtstaff-${process.pid}@example.test`])).rows[0].id;
-  const r36 = await importAppraisal(db, { applicationId: appId, xml: uad36, importedBy: staffId });
-  ok(!r36.ok && /3\.6|3\.x/.test(r36.error || ''), `a UAD 3.6 file is refused with a named reason`);
+
+  // A UAD 3.6 envelope carrying NO comparable grid — a 3.6-labelled file that is
+  // still not an appraisal. It must be filed under the DOCUMENT problem, never
+  // under the version: `uad_3_6` means "a real appraisal the reader cannot read".
+  const uad36NoGrid = `<?xml version="1.0"?><MESSAGE MISMOReferenceModelIdentifier="3.6">
+    <ABOUT_VERSIONS/><DEAL_SETS><DEAL_SET><DEALS><DEAL>
+    <COLLATERALS><COLLATERAL><PROPERTIES><PROPERTY/></PROPERTIES></COLLATERAL></COLLATERALS>
+    </DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;
+  const rNoGrid = await importAppraisal(db, { applicationId: appId, xml: uad36NoGrid, importedBy: staffId });
+  ok(!rNoGrid.ok && /comparable sales grid/i.test(rNoGrid.error || ''),
+    'a UAD 3.6 envelope with no comparable grid is refused for the DOCUMENT, not the version');
   const asStaff = (await db.query(
     `SELECT count(*)::int n FROM appraisal_format_refusals
       WHERE application_id = $1 AND refused_by = $2`, [appId, staffId])).rows[0].n;
   ok(asStaff === 1, `a refusal by a STAFF user is recorded (${asStaff}) — the id every production route passes`);
+
+  // A REAL UAD 3.6 appraisal — the one that used to be turned away. It IMPORTS now,
+  // and records NOTHING in the refusal ledger.
+  const uad36 = `<?xml version="1.0"?><MESSAGE MISMOReferenceModelIdentifier="3.6.0">
+    <DEAL_SETS><DEAL_SET><DEALS><DEAL><COLLATERALS><COLLATERAL>
+      <SUBJECT_PROPERTY>
+        <ADDRESS><AddressLineText>9 Redesign Way</AddressLineText><CityName>Newark</CityName>
+          <StateCode>NJ</StateCode><PostalCode>07103</PostalCode></ADDRESS>
+        <PROPERTY_DETAIL><PropertyStructureBuiltYear>1978</PropertyStructureBuiltYear>
+          <PropertyDwellingUnitCount>1</PropertyDwellingUnitCount></PROPERTY_DETAIL>
+        <STRUCTURE><STRUCTURE_DETAIL>
+          <GrossLivingAreaSquareFeetNumber>1420</GrossLivingAreaSquareFeetNumber>
+          <TotalBedroomCount>3</TotalBedroomCount></STRUCTURE_DETAIL></STRUCTURE>
+      </SUBJECT_PROPERTY>
+      <SALES_COMPARISON><COMPARABLE_SALE>
+        <ADDRESS><AddressLineText>11 Redesign Way</AddressLineText></ADDRESS>
+        <SalesContractAmount>402000</SalesContractAmount>
+        <ClosedDate>2026-04-11</ClosedDate>
+        <GrossLivingAreaSquareFeetNumber>1400</GrossLivingAreaSquareFeetNumber>
+      </COMPARABLE_SALE></SALES_COMPARISON>
+      <VALUATION><PROPERTY_VALUATION_DETAIL>
+        <PropertyAppraisedValueAmount>410000</PropertyAppraisedValueAmount>
+        <PropertyValuationEffectiveDate>2026-05-02</PropertyValuationEffectiveDate>
+        <AppraisalConditionType>AsIs</AppraisalConditionType>
+      </PROPERTY_VALUATION_DETAIL></VALUATION>
+    </COLLATERAL></COLLATERALS></DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;
+  const before36 = (await db.query(
+    `SELECT count(*)::int n FROM appraisal_format_refusals WHERE application_id=$1`, [appId])).rows[0].n;
+  const r36 = await importAppraisal(db, { applicationId: appId, xml: uad36, importedBy: staffId });
+  ok(r36.ok === true, `a real UAD 3.6 appraisal IMPORTS${r36.ok ? '' : ' — ' + (r36.error || '')}`);
+  const after36 = (await db.query(
+    `SELECT count(*)::int n FROM appraisal_format_refusals WHERE application_id=$1`, [appId])).rows[0].n;
+  ok(after36 === before36, 'and records no refusal — the format is no longer an exposure');
+  const stored36 = (await db.query(
+    `SELECT subject_address, gla, beds FROM appraisals
+      WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+  ok(stored36 && stored36.subject_address === '9 Redesign Way' && Number(stored36.gla) === 1420 && stored36.beds === 3,
+    `and the 3.6 subject actually landed in the appraisals table (${stored36 ? stored36.subject_address : 'no row'})`);
 
   // SCOPED TO THIS FILE'S OWN APPLICATION, never global. The suite shares ONE
   // database, other tests import appraisals, and a global count therefore
@@ -89,23 +131,24 @@ if (!process.env.DATABASE_URL) {
       WHERE application_id = $1 GROUP BY kind ORDER BY kind`, [appId])).rows;
   console.log('  recorded:', JSON.stringify(rows));
   const byKind = Object.fromEntries(rows.map((r) => [r.kind, r.n]));
-  ok((byKind.uad_3_6 || 0) === 1, `the UAD 3.6 refusal is recorded as its OWN kind (${byKind.uad_3_6 || 0})`);
-  ok((byKind.not_appraisal || 0) >= 2,
-    `the wrong-document refusals are recorded SEPARATELY (${byKind.not_appraisal || 0}) — not buried in the number that matters`);
+  ok((byKind.uad_3_6 || 0) === 0,
+    `nothing is filed as an unreadable UAD 3.6 (${byKind.uad_3_6 || 0}) — the reader handles the format now`);
+  ok((byKind.not_appraisal || 0) >= 4,
+    `the wrong-document refusals are recorded SEPARATELY (${byKind.not_appraisal || 0}) — including the 3.6-labelled one, filed for the DOCUMENT rather than the version`);
 
   const counts = await formatRefusalCounts(db);
-  ok(counts.ok && counts.uad36.n >= 1 && counts.notAppraisal.n >= 3,
+  ok(counts.ok && counts.uad36.n === 0 && counts.notAppraisal.n >= 4,
     `the count reads back: ${counts.uad36.n} unreadable-format, ${counts.notAppraisal.n} wrong-document, mandatory from ${counts.mandatoryFrom}`);
-  ok(counts.mandatoryFrom === '2026-11-02' && /2\.6/.test(counts.reads || ''),
-    'and it states the deadline and what we can read, so a reader needs no context');
+  ok(counts.mandatoryFrom === '2026-11-02' && /2\.6/.test(counts.reads || '') && /3\.6/.test(counts.reads || ''),
+    `and it states the deadline and BOTH standards we read (${counts.reads})`);
 
   // AND IT CANNOT HURT THE IMPORT. Drop the table and refuse again: the caller
   // must still get its clean refusal, not a 500.
   await db.query(`ALTER TABLE appraisal_format_refusals RENAME TO appraisal_format_refusals_x`);
   let survived = true; let err = null;
   try {
-    const r2 = await importAppraisal(db, { applicationId: appId, xml: uad36, importedBy: bid });
-    survived = !r2.ok && /3\.6|3\.x/.test(r2.error || '');
+    const r2 = await importAppraisal(db, { applicationId: appId, xml: uad36NoGrid, importedBy: bid });
+    survived = !r2.ok && /comparable sales grid/i.test(r2.error || '');
   } catch (e) { survived = false; err = e.message; }
   if (!survived && err) console.log('     (threw:', err, ')');
   ok(survived, `with the table missing the refusal still comes back clean${err ? ' — threw: ' + err : ''}`);
