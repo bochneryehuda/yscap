@@ -161,6 +161,60 @@ assert(ltcMoved > 0, `D1 an ARV cut moves the LTC ratio too, so both bands re-pr
     'E1 an ADMIN ovrARLTV still wins over the voluntary lever, exactly as it does for LTC');
 }
 
+// ---- H. THE LADDER: one ladder, stepped by real price breaks -------------------
+// Owner-directed: "you should only be able to move it when you get better pricing",
+// and each rung must be the LARGEST loan that earns that better price.
+{
+  let ladders = 0, monoLoan = 0, monoRate = 0, dupKey = 0, notReproducible = 0,
+      arvRungs = 0, ltcRungs = 0, maxFirst = 0, arvBigger = 0;
+  for (const c of CASES) {
+    const L = LIVE.priceLadder(c);
+    if (!L.eligible || !L.rows.length) continue;
+    ladders++;
+    if (!(L.rows[0].isMax && L.rows[0].key === 'max')) maxFirst++;
+    const keys = new Set();
+    for (let i = 0; i < L.rows.length; i++) {
+      const r = L.rows[i];
+      if (keys.has(r.key)) dupKey++;
+      keys.add(r.key);
+      if (r.cut === 'arv') arvRungs++;
+      if (r.cut === 'ltc') ltcRungs++;
+      if (i > 0) {
+        const p = L.rows[i - 1];
+        if (!(r.totalLoan < p.totalLoan - 1e-9)) monoLoan++;      // strictly smaller loan
+        if (!(r.noteRate < p.noteRate - 1e-12)) monoRate++;       // strictly better rate
+      }
+      // Every rung must be REPRODUCIBLE on the file: registering with that rung's own
+      // lever has to land on the same loan and rate, or the sheet promises a structure
+      // the file cannot register.
+      if (r.cut) {
+        const lever = r.cut === 'ltc' ? { targetLTC: Number(r.key.split(':')[1]) }
+                                      : { targetARLTV: Number(r.key.split(':')[1]) };
+        const re = LIVE.evaluate(Object.assign({}, c, lever));
+        if (!re.sizing || Math.abs(re.sizing.totalLoan - r.totalLoan) > 1
+            || Math.abs((re.noteRate || 0) - r.noteRate) > 1e-12) notReproducible++;
+      }
+      // The achieved ARV ratio is reported on every rung, because one cut moves both.
+      if (!(r.arvPct >= 0)) notReproducible++;
+    }
+    // The owner's case: an ARV rung that is a BIGGER loan than the next cost-side rung
+    // below it — the whole reason the value side had to become reachable.
+    for (let i = 0; i < L.rows.length - 1; i++) {
+      if (L.rows[i].cut === 'arv' && L.rows[i + 1].cut === 'ltc') arvBigger++;
+    }
+  }
+  assert(ladders > 100, `H0 the ladder was exercised on ${ladders} priced scenarios`);
+  assert(maxFirst === 0, `H1 the first rung is always the deal's true maximum (violations: ${maxFirst})`);
+  assert(monoLoan === 0, `H2 every step down is strictly a SMALLER loan (violations: ${monoLoan})`);
+  assert(monoRate === 0, `H3 …and strictly a BETTER rate — a rung that buys nothing is never offered (violations: ${monoRate})`);
+  assert(dupKey === 0, `H4 rung keys are unique, so a term sheet can never highlight the wrong row (dupes: ${dupKey})`);
+  assert(notReproducible === 0, `H5 every rung reproduces exactly when registered with its own lever (violations: ${notReproducible})`);
+  assert(ltcRungs > 0 && arvRungs > 0,
+    `H6 BOTH families appear as rungs — ${ltcRungs} cost-side, ${arvRungs} value-side (the value side was unreachable before)`);
+  assert(arvBigger > 0,
+    `H7 the owner's case is real: ${arvBigger} times a value-side rung is a BIGGER loan than the cost-side rung below it`);
+}
+
 // ---- The two engine copies stay identical (the frozen-copies rule) -------------
 {
   const a = fs.readFileSync(path.join(__dirname, '..', 'web/v2/tools/silver-program.js'), 'utf8');

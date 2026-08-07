@@ -1504,52 +1504,104 @@
     return L;
   }
 
-  /* ---------------- pricing ladder (leverage ↔ rate, like the Standard engine) ----------------
-     Buckets are the grid's own LTC band edges, so each rung is a real pricing band. */
-  var LADDER_BUCKETS = LADDER_EDGES_DESC;
+  /* ---------------- THE PRICE LADDER: ONE ladder, stepped by REAL price breaks ----------------
+     Owner-directed 2026-08-06: *"I think we should build one ladder which you can slide
+     down to reduce your loan amount. On the backend, it should automatically calculate
+     whenever you get an ARV cut and whenever you get an LTC cut. You shouldn't be able to
+     move it by $1 — you should only be able to move it when you get better pricing."*
+
+     WHY ONE LADDER AND NOT TWO. EMCAP prices on BOTH frontiers (every block is
+     3 AR x 3 FICO x 6 LTC), and because rateAt() settles on the ACHIEVED ratios, cutting
+     either one moves the other. A borrower does not care WHICH ratio earned the better
+     cell — only that a smaller loan buys a better rate. So the rungs are the UNION of both
+     frontiers, ordered by loan amount, and each one NAMES the cut that produced it.
+
+     WHAT THIS REPLACES, and it was a real defect: the rungs used to be
+     edgesDesc(LTC_EDGES_UP, AR_EDGES_UP) — both families merged into one list — and every
+     one of them was then applied as `targetLTC`. So the ARV edges (0.65 / 0.70) were being
+     used as LOAN-TO-COST caps, producing far smaller loans under a "Leverage (LTC)" label,
+     and the value side was unreachable. Each family now drives its own lever.
+
+     THE TWO RULES THAT MAKE IT USEFUL
+       R1  A rung exists ONLY if the note rate actually improves. Crossing a band that buys
+           the same cell is not an option, it is noise.
+       R2  Each rung is the LARGEST loan that earns that better price (owner-agreed). Walking
+           the priced candidates from the biggest loan down and keeping the first that beats
+           the running-best rate gives exactly that — you never give up more than you must.
+
+     NEVER FABRICATES: a candidate the workbook prices nowhere is skipped, never invented.
+     Every rung is a real evaluate() of the real engine, so a rung can always be reproduced
+     on the file by registering with that same lever. */
+  var LTC_RUNGS_DESC = edgesDesc(LTC_EDGES_UP);   // cost-side frontiers, high -> low
+  var ARV_RUNGS_DESC = edgesDesc(AR_EDGES_UP);    // value-side frontiers, high -> low
+  var LADDER_BUCKETS = LADDER_EDGES_DESC;         // retained: the pre-2026-08-06 rung list
   function priceLadder(input) {
     var full = evaluate(input);
     if (full.status === "INELIGIBLE" || !full.sizing || !(full.sizing.totalLoan > 0)) {
       return { eligible: false, status: full.status, reasons: full.reasons, rows: [] };
     }
-    var maxLtc = full.sizing.ltcPct;
-    var rows = [];
-    // TRUE-MAX top rung. The bucket-skip (`b > maxLtc` → continue) left the top
-    // rung a whole band BELOW the deal's real maximum in 71% of ladders (up to a
-    // $223k gap), so the term sheet's ladder page contradicted its own page 1
-    // (owner-directed 2026-07-30: "everything should tie up… the Max leverage the
-    // loan amounts"). Adopting the Standard engine's ltcBucket semantics
-    // (standard-program.js priceLadder): the FIRST row is the deal's EXACT
-    // maximum sizing — the very numbers evaluate() reports — and the band-edge
-    // rungs below it are the voluntary de-leverage steps.
-    // Its `ltc` is 0 on purpose: that is the ONLY marker that round-trips back
-    // through evaluate() as "no targetLTC", i.e. reproduces this exact maximum.
-    // Any real edge value would re-cap the sizing and could shift the loan.
-    var trueMax = (full.noteRate > 0);
-    if (trueMax) {
-      var fs = full.sizing;
-      rows.push({
-        ltc: 0, targetLtcPct: fs.ltcPct, totalLoan: fs.totalLoan, initialAdvance: fs.acquisition,
-        downPayment: fs.downPayment, rehabHoldback: fs.rehabLoan, noteRate: full.noteRate,
-        monthlyPayment: round2(fs.totalLoan * (full.noteRate / 12)),
-        isMax: true
-      });
-    }
-    for (var i = 0; i < LADDER_BUCKETS.length; i++) {
-      var b = LADDER_BUCKETS[i];
-      // with a true-max rung in place, only rungs strictly BELOW it are steps;
-      // without one (nothing prices at the max) keep the original bucket window.
-      if (trueMax ? (b >= maxLtc - 1e-9) : (b > maxLtc + 1e-4)) continue;
-      var ev = evaluate(assign({}, input, { targetLTC: b }));
+    var fs = full.sizing;
+    var maxLtc = fs.ltcPct;
+    // The ARV denominator the grid classifies on — mirrors arForBand() inside evaluate().
+    var arvDenom = num(input.arv) || num(input.asIsValue) || 0;
+    var arRatioOf = function (s) { return arvDenom > 0 ? (s.totalLoan / arvDenom) : 0; };
+    var rowOf = function (key, cut, lever, ev) {
       var s = ev.sizing || {};
-      if (!(s.totalLoan > 0) || !(ev.noteRate > 0)) continue;
-      if (rows.length && Math.abs(rows[rows.length - 1].totalLoan - s.totalLoan) < 1) continue;   // dedupe identical rungs
-      rows.push({
-        ltc: b, targetLtcPct: s.ltcPct, totalLoan: s.totalLoan, initialAdvance: s.acquisition,
-        downPayment: s.downPayment, rehabHoldback: s.rehabLoan, noteRate: ev.noteRate,
-        monthlyPayment: round2(s.totalLoan * (ev.noteRate / 12)),
+      return {
+        key: key, cut: cut,
+        // `ltc` stays the LEVER value for a cost-side rung and 0 for the maximum — the
+        // markers every existing consumer already reads. A value-side rung carries null
+        // rather than a look-alike number, so nothing can match it by accident; consumers
+        // that must identify a rung use `key` (a value-side and a cost-side rung can
+        // legitimately land on the same LTC).
+        ltc: lever, targetLtcPct: s.ltcPct, arvPct: arRatioOf(s),
+        totalLoan: s.totalLoan, initialAdvance: s.acquisition,
+        downPayment: s.downPayment, rehabHoldback: s.rehabLoan,
+        noteRate: ev.noteRate, monthlyPayment: round2(s.totalLoan * (ev.noteRate / 12)),
         isMax: false
-      });
+      };
+    };
+    var rows = [];
+    var bestRate = Infinity;
+    // The deal's TRUE maximum is always the first rung: the exact numbers evaluate()
+    // reports. Its `ltc` is 0 on purpose — the only marker that round-trips back through
+    // evaluate() as "no lever", reproducing this exact maximum.
+    if (full.noteRate > 0) {
+      var top = rowOf("max", null, 0, full);
+      top.isMax = true;
+      rows.push(top);
+      bestRate = full.noteRate;
+    }
+    // Candidates: every frontier strictly below what this deal already achieves. Each is a
+    // real evaluate() with its OWN lever — never one family's edge applied as the other's.
+    var cands = [], i;
+    for (i = 0; i < LTC_RUNGS_DESC.length; i++) {
+      if (LTC_RUNGS_DESC[i] < maxLtc - 1e-9) cands.push({ cut: "ltc", v: LTC_RUNGS_DESC[i] });
+    }
+    if (arvDenom > 0) {
+      var arNow = arRatioOf(fs);
+      for (i = 0; i < ARV_RUNGS_DESC.length; i++) {
+        if (ARV_RUNGS_DESC[i] < arNow - 1e-9) cands.push({ cut: "arv", v: ARV_RUNGS_DESC[i] });
+      }
+    }
+    var priced = [];
+    for (i = 0; i < cands.length; i++) {
+      var c = cands[i];
+      var over = (c.cut === "ltc") ? { targetLTC: c.v } : { targetARLTV: c.v };
+      var ev = evaluate(assign({}, input, over));
+      var s = ev.sizing || {};
+      if (!(s.totalLoan > 0) || !(ev.noteRate > 0)) continue;      // R5 — never invent a cell
+      priced.push({ cut: c.cut, v: c.v, ev: ev, loan: s.totalLoan, rate: ev.noteRate });
+    }
+    // R2: biggest loan first, so the FIRST candidate to reach a better rate is the largest
+    // loan that earns it. A tie on loan prefers the better rate.
+    priced.sort(function (a, b) { return (b.loan - a.loan) || (a.rate - b.rate); });
+    for (i = 0; i < priced.length; i++) {
+      var p = priced[i];
+      if (!(p.rate < bestRate - 1e-12)) continue;                   // R1 — a rung must BUY something
+      if (rows.length && Math.abs(rows[rows.length - 1].totalLoan - p.loan) < 1) continue;
+      rows.push(rowOf(p.cut + ":" + p.v, p.cut, p.cut === "ltc" ? p.v : null, p.ev));
+      bestRate = p.rate;
     }
     if (rows.length) rows[0].isMax = true;
     return { eligible: true, status: full.status, maxLtc: maxLtc, binding: (full.sizing && full.sizing.binding) || "", maxNoteRate: full.noteRate, rows: rows };
