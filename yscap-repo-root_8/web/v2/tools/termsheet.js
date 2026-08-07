@@ -45,7 +45,13 @@
   // Otherwise an LTC bucket the borrower has dialled down to for a better rate.
   var chosenLTC = null;
   var goldChosenLTC = null;   // admin leverage slider for Gold (targetLTC); Gold rate is flat across leverage
-  var silverChosenLTC = null; // leverage slider for Silver (targetLTC); Silver's grid rate varies by LTC band like Standard
+  // SILVER IS SELECTED BY RUNG KEY, NOT BY A LEVERAGE VALUE. EMCAP prices on the ARV
+  // band AND the LTC band, so its ladder carries two families of rungs and two of them
+  // can legitimately land on the same LTC — a value picks the wrong rung, and applying
+  // it as targetLTC would cut the wrong axis entirely. The key ('ltc:0.875' / 'arv:0.7',
+  // null = the deal's true maximum) says which lever the rung IS, so the selection, the
+  // pricing and the highlighted row on a signable document can never disagree.
+  var silverChosenRung = null;
   var lastDeal = null;   // tracks deal-type changes (to default the ground-up term/reserve once)
   var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" | "manual" = drilled into that program's detail
                               // ("manual" = the admin-priced scenario — prices on the Standard engine with the
@@ -350,6 +356,14 @@
     // in calc()/normalize() as a pure transform of the already-sized structure.
     var oopReq = adminNumRaw("tsOopRehab"); if (oopReq != null && oopReq > 0) o.oopRehab = oopReq;
     if (chk("tsOopRehabMax")) o.oopRehabMax = true;
+    /* A TYPED LOAN AMOUNT (owner-directed 2026-08-06). Read on EVERY program — the box
+       lives in the admin zone, like the out-of-pocket rehab above. It reaches the
+       frozen engines as a voluntary ceiling on the tier's own dollar wall, so it can
+       only ever REDUCE and needs no approval: the same class as a ladder rung. Going
+       ABOVE the maximum is structurally impossible here BY DESIGN — that is what the
+       manual basis (LTV / LTC / ARV) is for, and it already routes to admin approval.
+       Blank/0 sends nothing at all, so an untouched box changes no number anywhere. */
+    var tgtLoan = adminNumRaw("tsTargetLoan"); if (tgtLoan != null && tgtLoan > 0) o.targetLoan = tgtLoan;
     return o;
   }
 
@@ -684,11 +698,24 @@
   // like Standard mechanically: reserve financed + in cost + full-term cap, the
   // same liquidity-to-show months, the same fee stack — only the guideline
   // engine (window.SVP) differs. Returns null when the engine isn't loaded.
+  /* Apply the Silver ladder rung the user picked, as the lever the rung's OWN key
+     names — the cost side (targetLTC) or the value side (targetARLTV). This is the
+     ONE place a rung key becomes an engine input, so no caller can cut the wrong
+     axis. Both levers are voluntary REDUCTIONS in the engine (Math.min against the
+     cap), so a malformed or stale key can only ever fall through to the deal's
+     maximum, never raise a cap. Returns the same object it was handed. */
+  function applySilverRung(inp) {
+    var k = silverChosenRung; if (!k) return inp;
+    var m = /^(ltc|arv):(.+)$/.exec(String(k)); if (!m) return inp;
+    var v = parseFloat(m[2]); if (!(v > 0)) return inp;
+    if (m[1] === "arv") inp.targetARLTV = v; else inp.targetLTC = v;
+    return inp;
+  }
+
   function calcSilver() {
     var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
     if (!SV) return null;
-    var inp = gather();
-    if (silverChosenLTC) inp.targetLTC = silverChosenLTC;
+    var inp = applySilverRung(gather());
     var R = SV.evaluate(inp);
     if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
     var s = R.sizing || {};
@@ -849,7 +876,7 @@
 
     // ---- Silver card ----
     var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
-    var sInp = gather(); if (silverChosenLTC) sInp.targetLTC = silverChosenLTC;
+    var sInp = applySilverRung(gather());
     var S = SV ? SV.evaluate(sInp) : null;
     var silverCard = el("pcardSilver");
     if (!S) {
@@ -1002,10 +1029,15 @@
     var ladder = isGold ? goldLadder() : (isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather()));
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
-    var ltcs = rows.map(function (r) { return r.ltc; });
-    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenLTC : chosenLTC);
-    if (chosen && ltcs.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenLTC = null; else chosenLTC = null; chosen = null; }
-    var effIdx = chosen ? ltcs.indexOf(chosen) : 0;
+    // Silver is keyed on the RUNG, everything else on the LTC value (see silverChosenRung).
+    // The clamp matters on every recompute: a rung is only offered while it still buys a
+    // better rate, so changing a deal input can retire the very rung that was selected —
+    // an unfindable selection falls back to the deal's maximum rather than silently
+    // pricing on a step the ladder no longer offers.
+    var keys = rows.map(function (r) { return isSilver ? r.key : r.ltc; });
+    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenRung : chosenLTC);
+    if (chosen && keys.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenRung = null; else chosenLTC = null; chosen = null; }
+    var effIdx = chosen ? keys.indexOf(chosen) : 0;
     if (effIdx < 0) effIdx = 0;
     var maxV = rows.length - 1, row = rows[effIdx];
     var slider = el("rLevSlider");
@@ -1014,17 +1046,34 @@
     slider.disabled = rows.length <= 1;
     var lv = el("rLevVal"), hint = el("rLevHint");
     var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : (chosenProgram === "manual" ? "\u00b7 Manual" : "\u00b7 Standard"));
+    // On Silver the LOAN is the subject \u2014 the rung may have been earned on the value
+    // side, where the LTC is an OUTCOME rather than the thing that was dialled, so
+    // labelling every step "x% LTC" would name a number the borrower never chose.
     if (effIdx === 0) {
-      lv.textContent = "Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC";
+      lv.textContent = isSilver
+        ? ("Maximum \u00b7 " + YS.fmtUSD(Math.floor(row.totalLoan)))
+        : ("Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC");
       if (rows.length <= 1) {
         hint.innerHTML = isGold
           ? "This deal is already at its maximum leverage \u2014 there's no lower step to issue."
-          : ("This deal is already at its lowest (best-priced) tier" + (ladder.binding ? (" \u2014 leverage is capped by " + ladder.binding) : "") + ", so lowering leverage further won't reduce the rate.");
+          : (isSilver
+            ? ("This deal is already priced at its best available step" + (ladder.binding ? (" \u2014 the loan is capped by " + ladder.binding) : "") + ", so taking a smaller loan won't reduce the rate.")
+            : ("This deal is already at its lowest (best-priced) tier" + (ladder.binding ? (" \u2014 leverage is capped by " + ladder.binding) : "") + ", so lowering leverage further won't reduce the rate."));
       } else {
         hint.innerHTML = isGold
           ? "You're at <b>maximum leverage</b>. Drag left to issue a term sheet with <b>less leverage</b> \u2014 a smaller loan and more cash down. Gold's rate is the same at every step."
-          : "You're at <b>maximum leverage</b> \u2014 the largest loan this deal supports. Drag the slider left to take less leverage and earn a lower rate.";
+          : (isSilver
+            ? "You're at the <b>largest loan this deal supports</b>. Drag the slider left to step down to a smaller loan that prices better \u2014 every step is a real price break, earned on cost or on value."
+            : "You're at <b>maximum leverage</b> \u2014 the largest loan this deal supports. Drag the slider left to take less leverage and earn a lower rate.");
       }
+    } else if (isSilver) {
+      var sMax = rows[0], sDelta = (sMax.noteRate - row.noteRate) * 100;
+      var sSide = row.cut === "arv" ? "Value cut" : "Cost cut";
+      lv.textContent = YS.fmtUSD(Math.floor(row.totalLoan)) + " \u00b7 " + sSide.toLowerCase();
+      hint.innerHTML = "<b>" + sSide + " \u2014 smaller loan, lower rate.</b> The loan is <b>" + YS.fmtUSD(Math.floor(row.totalLoan)) +
+        "</b> at <b>" + fmtRate3(row.noteRate * 100) + "%</b> \u2014 " + sDelta.toFixed(2) + "% below the maximum. Cost (LTC) " +
+        pctLbl(row.targetLtcPct) + ", value (ARV) " + pctLbl(row.arvPct) + ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) +
+        ". Drag right for a bigger loan.";
     } else {
       lv.textContent = pctLbl(row.targetLtcPct) + " LTC";
       if (isGold) {
@@ -1388,10 +1437,20 @@
       }
     }
     var ovrOn = (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null);
-    var chosen = d && d.silver ? silverChosenLTC : (d && d.gold ? goldChosenLTC : chosenLTC);
+    var chosen = d && d.silver ? silverChosenRung : (d && d.gold ? goldChosenLTC : chosenLTC);
+    // A Silver step can be earned on EITHER axis, so ask whether the ceiling moved on
+    // the axis this rung actually cut — testing only the LTC would stay silent about a
+    // value-side step the user deliberately picked, and fall through to the generic
+    // "the program prices a lower band" sentence, which credits the program for the
+    // borrower's own choice.
+    var choseLower = !!chosen && !!eff && !!tier &&
+      ((eff.maxLTC < tier.maxLTC - 1e-9) ||
+       (d && d.silver && eff.maxARLTV < tier.maxARLTV - 1e-9));
     if (ovrOn) out.push("An approved exception sets the leverage basis for this deal, so it is priced on that basis rather than the program maximum.");
-    else if (chosen && eff && tier && eff.maxLTC < tier.maxLTC - 1e-9)
-      out.push("You have chosen to take less leverage than the program allows (the leverage slider), which is what lowered this deal's ceiling.");
+    else if (choseLower)
+      out.push(d && d.silver
+        ? "You have chosen a smaller loan than the program allows (the pricing ladder), which is what lowered this deal's ceiling."
+        : "You have chosen to take less leverage than the program allows (the leverage slider), which is what lowered this deal's ceiling.");
     if (!out.length) out.push("On this deal the program prices a lower leverage band than the tier maximum. The tier maximum itself has not changed.");
     out.push("The program maximum above is set by the tier (your FICO and experience) and does not change when you change the deal — including the interest reserve.");
     return out.join(" ");
@@ -1489,7 +1548,40 @@
     var mOn = el("tsManualOn"); if (mOn) mOn.addEventListener("change", manualVis);   // recompute comes from the form auto-wiring
   }
 
+  /* THE LADDER RUNG SURVIVES A REOPEN (owner-directed 2026-08-07).
+     The chosen rung lives ONLY in the module-scope vars above, which reset to null
+     every time this iframe loads — so reopening a registered file put the slider back
+     at MAXIMUM, and the mandatory post-appraisal re-register (esign/gate.js requires
+     one before a term sheet may issue) then registered that maximum. Measured: a
+     signed $1,794,000 at 8.500% came back as $2,070,000 at 9.125% — +$276,000 and
+     +62.5bps above the paper, with no approval and no record.
+
+     So the portal hands the selection back in a hidden field and it is adopted ONCE.
+     The field is BLANKED on adoption: without that, dragging the slider to maximum
+     would be undone on the next recompute, which is the same class of bug pointing
+     the other way. A rung the current ladder no longer offers is simply not found by
+     renderLeverage's clamp and falls back to the maximum, which is correct. */
+  var ladderPickAdopted = false;
+  function adoptLadderPick() {
+    var e = el("tsLadderPick");
+    if (!e || !e.value) return;
+    var raw = String(e.value).trim();
+    e.value = "";                                   // one-shot: never fight the user
+    ladderPickAdopted = true;
+    if (!raw) return;
+    var m = /^(ltc|arv):(.+)$/.exec(raw);
+    if (m) {                                        // Silver is keyed by rung
+      silverChosenRung = raw;
+      var v = parseFloat(m[2]);
+      if (m[1] === "ltc" && v > 0) { chosenLTC = v; goldChosenLTC = v; }
+      return;
+    }
+    var n = parseFloat(raw);                        // Standard / Gold carry an LTC value
+    if (n > 0) { chosenLTC = n; goldChosenLTC = n; silverChosenRung = "ltc:" + n; }
+  }
+
   function recompute() {
+    adoptLadderPick();
     syncAdminMarkup();
     syncManualOrigHint();          // a blank Manual field hints the Standard value it will use
     updateConditionals();
@@ -2751,7 +2843,9 @@
         y += 92; footer();
       }
 
-      // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
+      // ---------------- FINAL PAGE: the pricing ladder (STANDARD *and* SILVER) ----------------
+      // Silver joined this page on 2026-08-06 and renders its OWN columns below — the
+      // heading said "STANDARD PROGRAM ONLY" for a while after that was no longer true.
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
       // Suppress the ladder on a manual admin exception too — the overridden basis
@@ -2762,12 +2856,28 @@
       if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
-        doc.text("Your pricing at every leverage level", M, y);
+        doc.text(d.silver ? "Your pricing at every step down" : "Your pricing at every leverage level", M, y);
         doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 5.5, M + 42, y + 5.5);   // gold rule under the heading
         y += 16;
-        para("Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
+        /* SILVER READS DIFFERENTLY BECAUSE IT PRICES DIFFERENTLY (owner-directed
+           2026-08-06). EMCAP prices on BOTH the cost ratio and the value ratio, so a
+           step down can be earned on either side and each row must show both — a row
+           that displayed only the LTC would misrepresent what bought the rate. Every
+           row is a REAL price improvement (the ladder never offers a step that buys
+           nothing), and each is the LARGEST loan at that rate. */
+        para(d.silver
+          ? "A smaller loan earns a better rate. Each row below is a real price improvement \u2014 and is the largest loan that earns that rate, so you never give up more than you have to. A step can come from the cost side or the value side; the \u201cStep\u201d column says which, and both ratios are shown because moving one moves the other. The highlighted row is the option you selected."
+          : "Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
         var tW = W - 2 * M;
-        var cols = [
+        var cols = d.silver ? [
+          { t: "Step", w: 0.15, a: "l" },
+          { t: "Loan amount", w: 0.17, a: "r" },
+          { t: "Initial advance", w: 0.17, a: "r" },
+          { t: "Cost (LTC)", w: 0.12, a: "r" },
+          { t: "Value (ARV)", w: 0.12, a: "r" },
+          { t: "Payment / mo", w: 0.14, a: "r" },
+          { t: "Note rate", w: 0.13, a: "r" }
+        ] : [
           { t: "Leverage (LTC)", w: 0.26, a: "l" },
           { t: "Loan amount", w: 0.20, a: "r" },
           { t: "Cash down", w: 0.18, a: "r" },
@@ -2782,19 +2892,32 @@
         var cx = M;
         cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left", charSpace: 0.3 }); cx += w; });
         var ry = hy + 22;
-        // The highlighted rung must be the one THIS program's slider selected —
-        // reading the Standard slider's chosenLTC on a Silver sheet highlighted a
-        // row the borrower never picked (and vice versa). Dispatch exactly like
-        // renderLeverage does. Silver's top rung carries ltc 0 (its "no targetLTC
-        // / true maximum" marker), which is also what an unset slider resolves to.
-        var selLtc = (d.silver ? silverChosenLTC : (d.gold ? goldChosenLTC : chosenLTC)) || lad.rows[0].ltc;
+        /* WHICH ROW IS HIGHLIGHTED IS A CLAIM ON A DOCUMENT THAT GOES OUT FOR
+           SIGNATURE, so it is matched on the rung's own IDENTITY, never on a number
+           two rungs can share. Silver's slider stores the rung KEY, so its selected
+           row is an exact string match (an unset slider = the top rung). Standard
+           and Gold still store an LTC value and are matched numerically, exactly as
+           before. Dispatching by program also matters on its own: reading the
+           Standard slider's chosenLTC on a Silver sheet used to highlight a row the
+           borrower never picked, and vice versa. */
+        var selKey = d.silver ? (silverChosenRung || lad.rows[0].key) : null;
+        var selLtc = d.silver ? null : ((d.gold ? goldChosenLTC : chosenLTC) || lad.rows[0].ltc);
         lad.rows.forEach(function (r, i) {
-          var rowH = 20, isSel = Math.abs(r.ltc - selLtc) < 1e-9;
+          var rowH = 20;
+          var isSel = d.silver
+            ? (r.key === selKey)
+            : (r.ltc == null ? false : Math.abs(r.ltc - selLtc) < 1e-9);
           if (isSel) { doc.setFillColor.apply(doc, GOLD); doc.rect(M, ry, tW, rowH, "F"); }
           else if (i % 2) { doc.setFillColor(244, 240, 231); doc.rect(M, ry, tW, rowH, "F"); }
           doc.setFont("helvetica", isSel ? "bold" : "normal"); doc.setFontSize(8.6);
           doc.setTextColor.apply(doc, isSel ? [20, 27, 34] : DARK);
-          var vals = [
+          var vals = d.silver ? [
+            r.isMax ? "Maximum" : (r.cut === "arv" ? "Value cut" : "Cost cut"),
+            money(Math.floor(r.totalLoan)), money(Math.floor(r.initialAdvance)),
+            pc(r.targetLtcPct), pc(r.arvPct),
+            money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
+            fmtRate3(r.noteRate * 100) + "%"
+          ] : [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
             money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
             fmtRate3(r.noteRate * 100) + "%"
@@ -3363,7 +3486,11 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice"];
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice",
+    // A typed loan amount is the largest number anyone enters in the admin zone, so
+    // it groups like every other money box — 1,207,500 rather than 1207500, which is
+    // genuinely hard to read at a glance and easy to mistype by a factor of ten.
+    "tsTargetLoan"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");
@@ -3428,8 +3555,9 @@
       var maxV = rows.length - 1;
       var idx = maxV - parseInt(slider.value, 10);
       if (idx < 0) idx = 0; if (idx > maxV) idx = maxV;
-      var chosen = (idx === 0) ? null : rows[idx].ltc;             // top of range = max leverage
-      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenLTC = chosen; else chosenLTC = chosen;
+      // Silver stores the rung's KEY (which side the cut is on); the others store the LTC value.
+      var chosen = (idx === 0) ? null : (isSilver ? rows[idx].key : rows[idx].ltc);   // top of range = max leverage
+      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenRung = chosen; else chosenLTC = chosen;
       recompute();
     });
     // Fetch the anti-bot form token at load — by the time a sheet is generated

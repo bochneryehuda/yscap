@@ -450,6 +450,7 @@ export default function Apply() {
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       const overrides = {
         targetLTC: (d.inp && d.inp.targetLTC) || undefined,
+        targetARLTV: (d.inp && d.inp.targetARLTV) || undefined,   // Silver's value-side ladder rung
         irMonths: s.fields.irMonths || 0,
         irAmount: s.fields.irAmount || 0,
         term: s.fields.tsTerm,
