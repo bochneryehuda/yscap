@@ -5,10 +5,11 @@
  *   A. Registering STANDARD stamps the file "Fidelis Investors LLC".
  *   B. Registering GOLD stamps "Blue Lake Capital".
  *   C. A note buyer a HUMAN already set is NEVER overwritten by a register.
- *   D. The stamp is FILL-ONLY across a re-register too (register standard, then
- *      re-register — the buyer stays whatever the file holds).
+ *   D. A buyer somebody set AFTER the registration survives a re-register.
  *   E. The derived buyer is a REAL one: the file can export that buyer's tape,
  *      and the note-buyer-driven conditions engine sees it.
+ *   H. The stamp SELF-CORRECTS on a re-register (owner-directed 2026-08-07) —
+ *      but only ever one of OUR OWN derived labels, so C and D still hold.
  *
  * Manual is covered in the pure suite (it derives nothing, so there is no write
  * to observe here); registering a manual product needs an escalation + asset
@@ -25,6 +26,7 @@ const db = require('../src/db');
 const C = require('../src/lib/crypto');
 const app = require('../src/server');
 const { normNoteBuyer } = require('../src/lib/conditions/field-registry');
+const pricing = require('../src/lib/pricing');
 
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -135,6 +137,104 @@ const SCENARIO = {
     assert(humanCtx.note_buyer_is_fidelis === ctx.note_buyer_is_fidelis
         && humanCtx.note_buyer_is_emcap === ctx.note_buyer_is_emcap,
       'E4 …and its buyer booleans agree too, so every note-buyer rule sees the same file');
+
+    /* ---------- H. THE NOTE BUYER FOLLOWS THE REGISTERED PROGRAM ----------
+       (owner-directed 2026-08-07.) A borrower can self-register and so chooses
+       the program — which chose the buyer. An officer registering the RIGHT
+       program afterwards used to leave the WRONG buyer stamped, because the
+       write was fill-only, and that file could then export NO data tape at all
+       (every one refused for mismatching). It now corrects itself — but ONLY
+       ever one of OUR OWN derived labels, and only when that label disagrees
+       with the program now registered. A name a human (or ClickUp) put there is
+       never ours to change: that is what C2/D2 above pin, and they still pass.
+
+       NOTE this block runs INSIDE the try, before the finally tears the pool
+       down — a suite that appends work after `db.pool.end()` dies on "Cannot
+       use a pool after calling end on the pool" with its assertions never run. */
+    {
+      const NB = require('../src/lib/note-buyer-for-program');
+      const mk = async (lender) => {
+        const bid = (await db.query(
+          `INSERT INTO borrowers (first_name,last_name,email,fico)
+           VALUES ('Follow','Prog',$1,760) RETURNING id`,
+          [`nbfollow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@t.local`])).rows[0].id;
+        const aid = (await db.query(
+          `INSERT INTO applications
+            (borrower_id,loan_type,program,property_type,units,property_address,purchase_price,
+             as_is_value,arv,rehab_budget,rehab_type,term,requested_ir_months,
+             requested_exp_flips,requested_exp_holds,requested_exp_ground,status,lender)
+           VALUES ($1,'Purchase','Fix & Flip w/ Construction','SFR (1 unit)',1,
+             '{"line1":"7 Follow St","city":"Newark","state":"NJ","zip":"07102"}'::jsonb,
+             558000,558000,900000,150000,'Light Rehab','12 Months',0,6,6,6,'file_intake',$2)
+           RETURNING id`, [bid, lender])).rows[0].id;
+        return { bid, aid };
+      };
+      const reg = async (aid, program) => {
+        const inputs = pricing.buildInputs(
+          (await db.query('SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1', [aid])).rows[0],
+          { flips: 6, holds: 6, ground: 6 }, {});
+        const quote = pricing.quoteProgram(program, inputs);
+        const c = await db.pool.connect();
+        try {
+          await c.query('BEGIN');
+          await require('../src/lib/product-registration')
+            .persistProductRegistration(c, { appId: aid, program, inputs, quote, registeredByStaffId: null });
+          await c.query('COMMIT');
+        } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+        return (await db.query('SELECT lender FROM applications WHERE id=$1', [aid])).rows[0].lender;
+      };
+      const clean = async ({ bid, aid }) => {
+        await db.query('DELETE FROM applications WHERE id=$1', [aid]);
+        await db.query('DELETE FROM borrowers WHERE id=$1', [bid]);
+      };
+
+      // 1. The owner's own case: a borrower self-registers Gold, staff then
+      //    register the file as Silver. The buyer must follow the program.
+      let f = await mk(null);
+      const gold = await reg(f.aid, 'gold');
+      assert(gold === NB.noteBuyerForProgram('gold'), `H1 a Gold register stamps ${gold}`);
+      const silver = await reg(f.aid, 'silver');
+      assert(silver === NB.noteBuyerForProgram('silver'),
+        `H2 re-registering as Silver CORRECTS it to ${NB.noteBuyerForProgram('silver')} (got ${silver})`);
+      await clean(f);
+
+      // 2. A name we never derive is a human's (or ClickUp's) — never touched,
+      //    however far the registered program moves.
+      f = await mk('CorrFirst');
+      const kept = await reg(f.aid, 'silver');
+      assert(kept === 'CorrFirst', `H3 a buyer we never derive is left completely alone (got ${kept})`);
+      await clean(f);
+
+      // 3. The correction runs on EVERY pairing, not just the reported one.
+      f = await mk(null);
+      await reg(f.aid, 'gold');
+      const corrected = await reg(f.aid, 'standard');
+      assert(corrected === NB.noteBuyerForProgram('standard'),
+        `H4 a Standard register corrects a Gold stamp to ${NB.noteBuyerForProgram('standard')} (got ${corrected})`);
+      await clean(f);
+
+      // 4. THE LINE THE CORRECTION IS DRAWN ON, and it is not "does this label
+      //    look like one of ours". A file can carry Blue Lake because somebody
+      //    typed it, or because ClickUp pulled it in, with no registration
+      //    behind it at all — and nothing about the TEXT can tell that apart
+      //    from a stamp we wrote. So the correction keys on the PREVIOUS
+      //    REGISTRATION's own derived label: with no prior registration there
+      //    is no evidence the buyer is ours, and it is left alone. Getting this
+      //    backwards would silently overwrite a human's choice on a first
+      //    register, which is exactly what C2 forbids.
+      f = await mk(NB.noteBuyerForProgram('gold'));
+      const unproven = await reg(f.aid, 'standard');
+      assert(unproven === NB.noteBuyerForProgram('gold'),
+        `H4b a matching label with NO registration behind it is a human's, and is left alone (got ${unproven})`);
+      await clean(f);
+
+      // 5. A MANUAL product derives NO buyer, so it may never CLEAR one.
+      f = await mk(NB.noteBuyerForProgram('silver'));
+      const manualKept = await reg(f.aid, 'manual').catch(() => null);
+      assert(manualKept === null || manualKept === NB.noteBuyerForProgram('silver'),
+        `H5 a manual register never clears the stamped buyer (got ${JSON.stringify(manualKept)})`);
+      await clean(f);
+    }
   } catch (e) {
     console.error('FAIL unexpected error:', (e && e.stack) || e);
     failures++;
@@ -147,6 +247,7 @@ const SCENARIO = {
     server.close();
     await db.pool.end().catch(() => {});
   }
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
   process.exit(failures ? 1 : 0);
 })();
