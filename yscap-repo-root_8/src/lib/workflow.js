@@ -562,6 +562,36 @@ async function overdueByRecipient(client = db) {
   return r.rows;
 }
 
+/**
+ * THE OVERDUE FILES THEMSELVES, for one person — so the nudge can NAME them.
+ *
+ * Owner-directed 2026-08-07, on the "7 files in your Workflow are overdue" email: *"emails like
+ * this should have a list of the files and the status of each and every file and whose loan
+ * officer in every single file, nicely designed."* A count with a link is not a notification, it
+ * is a chore: the reader has to go and re-derive what the email already knew.
+ *
+ * Ordered by how far past target each hand-off is (worst first), which is the only order that
+ * makes the top of the list the thing to do next. Carries the hand-off KIND so the digest can
+ * group a draw coordinator's queue separately from a closer's — the owner's *"nicely design every
+ * workflow separately"*.
+ */
+async function overdueItemsFor(staffId, limit = 25, client = db) {
+  const r = await client.query(
+    `SELECT w.id, w.submission_type, w.status AS item_status, w.due_at, w.created_at,
+            a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
+            lo.full_name AS lo_name,
+            EXTRACT(EPOCH FROM (now() - w.due_at)) / 3600.0 AS hours_over
+       FROM workflow_items w
+       JOIN applications a ON a.id = w.application_id AND a.deleted_at IS NULL
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+      WHERE w.to_staff_id = $1
+        AND w.status IN ('open','in_progress')
+        AND w.due_at IS NOT NULL AND now() >= w.due_at
+      ORDER BY w.due_at ASC
+      LIMIT $2`, [staffId, limit]);
+  return r.rows;
+}
+
 // Nav badge + KPI tiles: how many live items are routed to me, by state + type.
 async function queueCounts(staffId, client = db) {
   const r = await client.query(
@@ -680,6 +710,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient, overdueItemsFor,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };
