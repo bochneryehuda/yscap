@@ -41,7 +41,16 @@ export default function StaffBorrowers() {
 
   async function invite(b) {
     setBusy('invite:' + b.id);
-    try { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); await load(); }
+    // A borrower with no file is invitable too — the server sends a plain portal
+    // invitation and they start their own application (owner-directed 2026-08-07).
+    // This button used to dead-end on a 400 that only ONE other screen knew to handle.
+    try {
+      const r = await api.staffBorrowerInvite(b.id);
+      flash(r && r.noFile
+        ? `PILOT invite sent to ${b.email} — they can start an application from the portal.`
+        : `PILOT invite sent to ${b.email}.`);
+      await load();
+    }
     catch (e) { fail(e.message || 'Invite failed'); }
     finally { setBusy(''); }
   }

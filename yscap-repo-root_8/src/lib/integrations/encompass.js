@@ -88,6 +88,9 @@ async function _fetchGuarded(url, init) {
   if (allowedPost && method !== 'POST') {
     throw new Error(`Encompass read-shaped POST endpoint requires POST (got ${method}).`);
   }
+  // Shared-across-processes pacing (lib/api-rate-limit.js, db/482). READ-ONLY still: this
+  // only ever WAITS, and adds no request, method or path of its own.
+  await require('../api-rate-limit').acquire('encompass');
   return fetch(url, init);
 }
 

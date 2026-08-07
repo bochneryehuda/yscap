@@ -252,25 +252,42 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount, offic
 /** Invitation to the borrower on a staff-originated loan file: their loan team
  *  has already opened the file — set up portal access (or sign in) to follow it,
  *  upload documents, and message the team. */
-function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount, officer } = {}) {
+/**
+ * `noFile` — the invitation is a plain portal invite with NO loan file behind it
+ * (owner-directed 2026-08-07: a borrower we already hold a profile for, because they
+ * did a DSCR deal, invited so they can START an RTL loan themselves). The wording has
+ * to change with it: "has opened a loan file for you" is a promise about a file that
+ * does not exist, and it would land the borrower in a portal looking for it. Instead
+ * it says plainly that they can start an application. Absent → byte-identical to the
+ * invitation that has always gone out with a file.
+ */
+function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount, officer, noFile } = {}) {
   const meta = [];
-  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
-  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (!noFile && propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (!noFile && loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   officerMeta(meta, officer);   // #150 — the inviting officer's contact block
+  const who = inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group';
   return render({
     audience: 'borrower',
-    title: 'Your loan file is ready in the portal',
-    subjectTag: fileTag(loanNumber, propertyLabel),
+    title: noFile ? 'You’re invited to the YS Capital borrower portal' : 'Your loan file is ready in the portal',
+    subjectTag: noFile ? '' : fileTag(loanNumber, propertyLabel),
     badge: { text: 'Portal invite', tone: 'teal' },
     replyable: true,
-    preheader: 'Set up secure access to follow your loan with YS Capital Group.',
+    preheader: noFile
+      ? 'Set up secure access and start a loan application with YS Capital Group.'
+      : 'Set up secure access to follow your loan with YS Capital Group.',
     greeting: greet(firstName),
-    intro: (inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group')
-      + ' has opened a loan file for you and invited you to the secure borrower portal.',
+    intro: noFile
+      ? `${who} has invited you to the secure borrower portal, where you can start a loan application whenever you are ready.`
+      : `${who} has opened a loan file for you and invited you to the secure borrower portal.`,
     lines: [
-      hasAccount
-        ? 'Your existing portal account already has access to this file — sign in to review it, upload your documents, and message your loan team.'
-        : 'Set up your access below to review the file, upload your documents, track every milestone through closing, and message your loan team directly. This invitation expires in 14 days.',
+      noFile
+        ? (hasAccount
+          ? 'Sign in below to start a new loan application, upload your documents, and message your loan team.'
+          : 'Set up your access below, then start a loan application whenever you are ready — the portal walks you through it, keeps your documents in one place, and lets you message your loan team directly. This invitation expires in 14 days.')
+        : (hasAccount
+          ? 'Your existing portal account already has access to this file — sign in to review it, upload your documents, and message your loan team.'
+          : 'Set up your access below to review the file, upload your documents, track every milestone through closing, and message your loan team directly. This invitation expires in 14 days.'),
     ],
     meta,
     cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,

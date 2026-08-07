@@ -230,6 +230,9 @@ async function canonicalize(text, { needCoords = false } = {}) {
   try {
     const url = 'https://maps.googleapis.com/maps/api/geocode/json?components=country:US'
       + '&address=' + encodeURIComponent(key) + '&key=' + encodeURIComponent(cfg.googlePlacesKey);
+    // Shared-across-processes pacing (lib/api-rate-limit.js, db/482). Its own bucket, far
+    // above Nominatim's: this backs the live autocomplete and must not crawl.
+    await require('./api-rate-limit').acquire('google_geocode');
     const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const j = r.ok ? await r.json() : null;
     definitive = googleDefinitive(r.ok, j);
