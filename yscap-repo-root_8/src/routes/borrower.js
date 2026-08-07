@@ -2985,10 +2985,28 @@ function trackRecordCols(b) {
    `verification_status = 'pending'` next to `is_verified = true`, which every
    count reads as verified and every screen reads as pending. Staff stamp who and
    when; a new staff-entered line is pending by the column default anyway. */
+/**
+ * The "somebody entered this" stamp every track-record create carries.
+ *
+ * `verification_status` IS SET FOR EVERY KIND (2026-08-07). It used to read
+ * `if (kind === 'borrower')`, so the STAFF door got no status at all — while the comment
+ * at that call site stated it "lands pending review exactly as the borrower's does".
+ * A helper that takes the actor as an argument and then behaves differently per actor is
+ * not a shared rule; it is two rules sharing a function, and this is exactly the gap the
+ * owner reported ("staff are entering track records, since it's coming up as verified").
+ *
+ * `is_verified` is stated explicitly for the same reason: relying on the column default
+ * is right on a plain INSERT and WRONG on the create doors' `ON CONFLICT … DO UPDATE`
+ * branch, where a retried save lands on an existing — possibly already verified — row.
+ * db/485's trigger is the belt behind all of it, for every writer including the imports.
+ */
 function trackRecordEnteredCols(kind) {
-  const cols = { entered_by_kind: kind, entered_at: new Date().toISOString() };
-  if (kind === 'borrower') cols.verification_status = 'pending';
-  return cols;
+  return {
+    entered_by_kind: kind,
+    entered_at: new Date().toISOString(),
+    verification_status: 'pending',
+    is_verified: false,
+  };
 }
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};

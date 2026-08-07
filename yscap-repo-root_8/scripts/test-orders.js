@@ -86,6 +86,76 @@ assert.ok(i.html.includes('01/02/1980'), 'insurance carries borrower DOB');
 assert.ok(i.html.includes('ISAOA/ATIMA'), 'insurance carries the mortgage clause too');
 ok('insurance order email: Builders Risk + DOB + mortgage clause');
 
+/* ---- BOTH coverages are named, in the industry's own terms (owner-directed
+   2026-08-07: "we need builders' risk coverage and vacant property coverage").
+   The vacancy half is the one that has to be named PRECISELY: every standard
+   property form carries a vacancy clause that guts coverage on a vacant building,
+   and the fix has a name — a vacancy permit / vacancy permission endorsement.
+   Asking for "coverage on a vacant property" without naming it is how a binder
+   arrives that reads fine and pays nothing. ---- */
+assert.ok(/Course of Construction/i.test(i.html), 'the Builders Risk ask names Course of Construction');
+assert.ok(/replacement cost/i.test(i.html), 'it asks for replacement cost');
+assert.ok(/renovation and construction work expressly permitted/i.test(i.html),
+  'it states renovations are permitted — without it a property form excludes the work itself');
+assert.ok(/vacancy permit/i.test(i.html) && /vacancy permission endorsement/i.test(i.html),
+  'the vacant-property ask names the vacancy permit / vacancy permission endorsement');
+assert.ok(/vacancy clause/i.test(i.html), 'and says the vacancy clause must not apply');
+assert.ok(/30 days/i.test(i.html), 'it asks for 30 days notice of cancellation to the mortgagee');
+// A TITLE order has no coverage to request and must not grow one.
+assert.ok(!/vacancy permit/i.test(t.html), 'a title order carries no coverage section');
+ok('insurance order names BOTH coverages precisely; title order unaffected');
+
+/* ---- The details the agency kept writing back for (owner-reported 2026-08-07: a
+   live reply asked for the borrower's mailing address, phone, email, closing date,
+   purchase price and rehab cost — all of which PILOT already held). ---- */
+const insFull = orders.buildOrderEmail('insurance', {
+  ...insData,
+  borrowerMailingAddress: '12 Elm St, Beachwood, OH 44122',
+  borrowerPhone: '216-555-0142',
+  expectedClosing: '2026-08-21',
+  purchasePrice: 200000,
+  rehabBudget: 45000,
+}, {});
+assert.ok(insFull.html.includes('12 Elm St, Beachwood, OH 44122'), 'the mailing address is stated');
+assert.ok(/Mailing Address/i.test(insFull.html) && /home address/i.test(insFull.html),
+  'and it is LABELLED as the borrower\'s home address — a policy on a vacant house cannot be mailed to it');
+assert.ok(insFull.html.includes('216-555-0142'), 'the borrower phone is stated');
+assert.ok(insFull.html.includes('ins@example.com') || /Borrower Email/i.test(insFull.html), 'the borrower email row is present');
+assert.ok(insFull.html.includes('August 21, 2026'), 'the estimated closing date is stated in plain English');
+assert.ok(insFull.html.includes('$200,000'), 'the purchase price is stated');
+assert.ok(insFull.html.includes('$45,000'), 'the rehab / construction cost is stated');
+assert.ok(/Named Insured/i.test(insFull.html), 'the entity is labelled the Named Insured');
+ok('the insurance order states every detail the agency asked for');
+
+/* A value we do NOT hold is OMITTED, never printed blank or guessed — a row reading
+   "Purchase Price: —" teaches an agent our numbers are unreliable and invites the
+   very reply this exists to prevent. `insData` carries none of the six. */
+assert.ok(!/Borrower Phone/i.test(i.html), 'no phone on file → no phone row at all');
+assert.ok(!/Estimated Closing Date/i.test(i.html), 'no closing date on file → no date row at all');
+assert.ok(!/Purchase Price/i.test(i.html), 'no price on file → no price row at all');
+assert.ok(!/Rehab \/ Construction Cost/i.test(i.html), 'no rehab budget on file → no rehab row at all');
+assert.ok(!/—/.test(orders.insuranceDetailMeta({}).map((r) => r.value).join('')),
+  'insuranceDetailMeta never emits a placeholder value');
+assert.deepStrictEqual(orders.insuranceDetailMeta({}), [], 'a file with none of the details emits no rows');
+// The date is CALENDAR-STRING formatted — never `new Date('YYYY-MM-DD')`, which
+// shifts a date-only value by the server's timezone (the standing date rule).
+assert.strictEqual(orders.dayText('2026-01-01'), 'January 1, 2026', 'a New Year date does not slip a day');
+assert.strictEqual(orders.dayText('2026-12-31'), 'December 31, 2026', 'a year-end date does not slip a day');
+assert.strictEqual(orders.dayText(null), null, 'no date → nothing to print');
+assert.strictEqual(orders.dayText('nonsense'), null, 'an unreadable date prints nothing, never "Invalid Date"');
+ok('a detail we do not hold is omitted, and dates never slip a day');
+
+/* The same details ride the FOLLOW-UP, which is precisely when an agent is waiting
+   on them — shared helper, so the order and the follow-up can never disagree. */
+const insFollow = orders.buildOrderEmail('insurance', {
+  ...insData, borrowerPhone: '216-555-0142', purchasePrice: 200000,
+}, { followup: true });
+assert.ok(insFollow.html.includes('216-555-0142') && insFollow.html.includes('$200,000'),
+  'the insurance follow-up restates the borrower/deal details');
+const titleFollow = orders.buildOrderEmail('title', { ...base, purchasePrice: 200000 }, { followup: true });
+assert.ok(!titleFollow.html.includes('$200,000'), 'a title follow-up is unaffected');
+ok('the insurance follow-up carries the same details; title is untouched');
+
 /* ---- #18: RCN note buyer swaps the mortgagee clause (order email only) ---- */
 // No note buyer (or any non-RCN buyer) → the standard YS Capital clause.
 assert.deepStrictEqual(orders.mortgageeClauseFor(null), orders.MORTGAGEE_CLAUSE, 'no note buyer → standard clause');

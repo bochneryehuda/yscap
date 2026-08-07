@@ -1169,7 +1169,7 @@ const RB = (function(){
     // sends no officerCode, and the backend routes it to the sales desk.
     const code=person&&person.e?String(person.e).split("@")[0]:"";
     const r=await fetch("/api/leads",{ method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ tool:"rehab_budget", officerCode:code||undefined, name:name||undefined, email:vemail,
+      body:JSON.stringify({ tool:"rehab_budget", officerCode:code||undefined, fromStaffPortal:(window.YS_FROM_STAFF_PORTAL===true?true:undefined), name:name||undefined, email:vemail,
         subject:subj, message:body, attachments:atts,
         payload:{ address:S.address, total:grand(), contingency:contingency(), gcFee:gcFeeAmt(),
           metaRows:[ {label:"Property",value:S.address||""}, {label:"Total scope of work",value:money(grand())},

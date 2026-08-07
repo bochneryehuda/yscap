@@ -762,7 +762,7 @@ const TR=(function(){
       try{ const xls=await exportXlsx(null,{returnFile:true}); if(xls) files.push({filename:fileBase()+".xlsx",contentType:(xls&&xls.type)||"application/octet-stream",dataBase64:await blobToB64(xls)}); }catch(e){}
       const code=person&&person.e?String(person.e).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g,""):"";
       const r=await fetch("/api/leads",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({tool:"track_record",officerCode:code||undefined,name:nm||S.borrower||undefined,email:vemail,phone:vphone||undefined,
+        body:JSON.stringify({tool:"track_record",officerCode:code||undefined,fromStaffPortal:(window.YS_FROM_STAFF_PORTAL===true?true:undefined),name:nm||S.borrower||undefined,email:vemail,phone:vphone||undefined,
           subject:"Track record — "+(nm||S.borrower||"borrower"),
           message:"A borrower shared their real-estate track record from the Track Record tool. The "+(files.length>1?"PDF & Excel are":"PDF is")+" attached. Please review and follow up.",
           attachments:files, payload:{borrower:nm||S.borrower||"", properties:(S.props||[]).length,

@@ -115,12 +115,25 @@ function rateLimited(ip) {
 }
 
 // Contact-less tools (term-sheet generations) can double-fire on a re-render —
-// absorb repeats of the SAME payload from the SAME IP for a few minutes.
+// absorb repeats of the SAME submission from the SAME IP for a few minutes.
 // In-memory like the rate limiter (single-instance service).
 const ANON_SEEN = new Map(); // key -> ts
 const ANON_DEDUP_MS = 10 * 60 * 1000;
-function anonDuplicate(ip, tool, payload) {
-  const key = ip + '|' + tool + '|' + cryptoLib.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex').slice(0, 24);
+/* The fields that make one contact-less submission DIFFERENT from another. It used to
+   hash `payload` alone, which was right when `payload` carried everything — but the
+   deal facts now ride at the TOP LEVEL too (the entity, the property, the figures —
+   see lib/lead-deal-facts.js), so a visitor who priced a SECOND, genuinely different
+   property inside ten minutes had it silently absorbed as a duplicate and got no lead
+   at all. That is the same "they were not added as a lead" complaint one layer down,
+   so the identity of a submission has to include the deal it is about.
+   Still deliberately narrow: a re-render of the SAME deal is still one lead. */
+const ANON_IDENTITY_KEYS = ['payload', 'company', 'borrowerName', 'propertyAddress',
+  'propertyType', 'program', 'loanAmount', 'subject'];
+function anonDuplicate(ip, tool, body) {
+  const b = (body && typeof body === 'object') ? body : {};
+  const ident = {};
+  for (const k of ANON_IDENTITY_KEYS) if (b[k] !== undefined) ident[k] = b[k];
+  const key = ip + '|' + tool + '|' + cryptoLib.createHash('sha256').update(JSON.stringify(ident)).digest('hex').slice(0, 24);
   const now = Date.now();
   if (ANON_SEEN.size > 5000) for (const [k, t] of ANON_SEEN) if (now - t > ANON_DEDUP_MS) ANON_SEEN.delete(k);
   const seen = ANON_SEEN.get(key);
@@ -162,7 +175,7 @@ router.post('/', async (req, res) => {
     if (age == null) return drop('missing/invalid form token');
     if (age < TOKEN_MIN_MS || age > TOKEN_MAX_MS) return drop(`token age ${age}ms out of range`);
     if (!b.payload) return drop('contact-less submission with no payload');
-    if (anonDuplicate(req.ip, tool, b.payload)) {
+    if (anonDuplicate(req.ip, tool, b)) {
       return res.status(201).json({ ok: true, leadId: null, duplicate: true, routedTo: 'the YS Capital Group loan desk' });
     }
   }
@@ -191,13 +204,45 @@ router.post('/', async (req, res) => {
           ORDER BY created_at ASC, id ASC LIMIT 1`, [code]);
       if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; }
     }
+    /* WORK DONE FROM A STAFF LOGIN STAYS WITH THAT PERSON — it is never handed to the
+       queue (owner-directed 2026-08-07: "if somebody is doing something from his
+       login, it should always stay with his information, his name. It should come in
+       as a lead in his system").
+
+       A staff member generated a term sheet in their own portal, emailed it to a
+       lead, and the lead arrived under a DIFFERENT officer's name. The tools are the
+       same static pages the marketing site serves and they read their officer from
+       `window.YSBRAND` (`?lo=`), which the portal never set — so the lead posted with
+       no officer and the round-robin below correctly did its job on what LOOKED like
+       an unowned marketing lead.
+
+       The portal now declares its origin (`fromStaffPortal`, alongside the signed-in
+       staffer's own officerCode — see StaffInvestorSuite / TermSheetStudio). Two
+       rules follow, and the second is the load-bearing one:
+         1. `assigned_via` records it as `staff_portal`, so "why does this lead belong
+            to this person?" is answerable from the row itself (db/484).
+         2. A staff-portal lead is NEVER round-robined. If its officer cannot be
+            resolved at all it falls through to the SALES DESK, which a human works —
+            never to an officer who had nothing to do with it. An unassigned lead is
+            recoverable; a lead silently filed in the wrong person's book is the bug
+            being fixed, and it is the more expensive of the two.
+       The declaration is not a privilege: it can only ever make the lead LESS likely
+       to be auto-assigned, so a spoofed value costs nothing. */
+    const leadAssign = require('../lib/lead-assignment');
+    const fromStaffPortal = b.fromStaffPortal === true || b.fromStaffPortal === 'true';
+    const decision = leadAssign.decideLeadOfficer({ officerId, tool, fromStaffPortal });
+    let assignedVia = decision.assignedVia;
+    if (!officerId && fromStaffPortal) {
+      // Stated to be somebody's own work, but we could not resolve who. Say so —
+      // this is a wiring fault worth seeing, not a lead to hand out.
+      console.warn(`[leads] ${tool} declared a staff-portal origin but its officer code ` +
+        `${code ? `"${code}" did not resolve` : 'was missing'} — routing to the sales desk, NOT the rotation`);
+    }
     // #29 round-robin: with no branded officer, assign the lead to the next loan officer in fair
-    // rotation so it gets an OWNER instead of sitting unowned on the sales desk. A newsletter
-    // subscription is not a loan lead and is never assigned; an empty pool falls through to the
-    // sales-desk / admin routing below, so a lead is never lost.
-    let assignedVia = officerId ? 'lo_link' : null;
-    if (!officerId && tool !== 'subscribe') {
-      const rr = await require('../lib/lead-assignment').pickRoundRobinOfficer();
+    // rotation so it gets an OWNER instead of sitting unowned on the sales desk. An empty pool
+    // falls through to the sales-desk / admin routing below, so a lead is never lost.
+    if (decision.mayRoundRobin) {
+      const rr = await leadAssign.pickRoundRobinOfficer();
       if (rr) { officerRow = rr; officerId = rr.id; assignedVia = 'round_robin'; }
     }
 
@@ -209,14 +254,34 @@ router.post('/', async (req, res) => {
     const fromUrl = String(req.get('referer') || '').slice(0, 300);
     if (fromUrl && payloadObj && typeof payloadObj === 'object' && !Array.isArray(payloadObj) && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
     const payloadJson = (b.payload || fromUrl) ? F.jsonbText(payloadObj) : null;
+    /* THE DEAL THE VISITOR TYPED, ON THE LEAD ROW ITSELF (owner-reported 2026-08-07).
+       A term sheet generated from an officer's own ?lo= link with the LLC, the property
+       and the figures filled in — but no email and no phone — DID create a row (that
+       has been allowed since 2026-07-24). What it could not do is SHOW anything: this
+       INSERT wrote none of the CRM columns the lead screens read, so everything the
+       visitor entered sat in the `payload` jsonb that no screen renders, and the lead
+       appeared in the officer's book as a nameless row with nothing on it — which from
+       his side is indistinguishable from no lead at all.
+       `lead-deal-facts` promotes them, bounded to their columns so a pasted essay or a
+       30-digit number can never turn a public capture into a 500. A submission that
+       sends none of it writes all-NULL and behaves exactly as before. */
+    const leadFacts = require('../lib/lead-deal-facts');
+    const facts = leadFacts.dealFactsFrom(b);
+    // A LEAD WITH NO CONTACT DETAILS STILL NEEDS A NAME, or the officer cannot tell one
+    // anonymous term sheet from the next. The entity/borrower they typed IS the identity
+    // they gave us; failing that, the property. Never invents one.
+    const leadName = name || leadFacts.displayNameFrom(b, facts);
     const ins = await db.query(
-      `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [tool, name, email, phone, code || null, officerId,
-       b.subject ? String(b.subject).slice(0, 240) : `${label} — ${name || email || 'new lead'}`,
+      `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via,
+                          company,property_address,property_type,program,loan_amount)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+      [tool, leadName, email, phone, code || null, officerId,
+       b.subject ? String(b.subject).slice(0, 240) : `${label} — ${leadName || email || 'new lead'}`,
        b.message ? String(b.message).slice(0, 4000) : null,
        payloadJson,
-       req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia]);
+       req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia,
+       facts.company, facts.propertyAddress ? F.jsonbText(facts.propertyAddress) : null,
+       facts.propertyType, facts.program, facts.loanAmount]);
     const leadId = ins.rows[0].id;
 
     // Build a compact summary for the internal notification.
@@ -259,6 +324,51 @@ router.post('/', async (req, res) => {
         };
       })
       .filter(a => a.content.length > 0 && a.content.length < 8 * 1024 * 1024);
+
+    /* THE TERM SHEET IS FILED ON THE LEAD, not only mailed to the officer
+       (owner-directed 2026-08-07: "He can also attach to the lead the term sheet that
+       he generated, and then loan officers can do his research to try to figure out who
+       that person is and try to call him"). Before this, the generated PDF existed only
+       as an attachment on one notification email — so it was in whichever inbox that
+       landed in and nowhere in PILOT; anyone else opening the lead saw no term sheet at
+       all, and a deleted email lost it for good.
+       Written through the SAME `documents.lead_id` shape the staff "Files" panel
+       already lists and downloads, so it needs no new surface, and recorded on the
+       lead's activity feed so the timeline says where it came from.
+       BEST-EFFORT AND LAST: a storage hiccup must never cost us the lead itself, which
+       is already committed above — losing the attachment is recoverable, losing the
+       visitor is not.
+       `source_type='system'` is what records that no human uploaded this, and
+       `uploaded_by_kind` is deliberately left NULL: its CHECK allows only
+       'borrower'/'staff' (db/schema.sql), so writing 'system' there would violate the
+       constraint and the whole filing would fail — a real trap, since the surrounding
+       catch would have swallowed it and the attachment would silently never appear.
+       `visibility='staff_only'`: a lead has no borrower to show it to. */
+    if (atts.length) {
+      try {
+        const storage = require('../lib/storage');
+        const { normalizeBase64String } = require('../lib/upload-bytes');
+        for (const a of atts) {
+          try {
+            const buf = Buffer.from(normalizeBase64String(a.content), 'base64');
+            if (!buf.length) continue;
+            const { ref, provider } = await storage.save(buf, { filename: a.filename });
+            const d = await db.query(
+              `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref,
+                                      source_type, visibility)
+               VALUES ($1,$2,$3,$4,$5,$6,'system','staff_only') RETURNING id`,
+              [leadId, a.filename, a.contentType, buf.length, provider, ref]);
+            await db.query(
+              `INSERT INTO lead_activities (lead_id, activity_type, subject, body, meta)
+               VALUES ($1,'file','Generated on the site',$2,$3)`,
+              [leadId, a.filename, JSON.stringify({ documentId: d.rows[0].id, tool })]);
+          } catch (e) {
+            console.warn(`[leads] could not file "${a.filename}" onto lead ${leadId}: ${e && e.message}`);
+          }
+        }
+      } catch (e) { console.warn('[leads] lead-document filing unavailable:', e && e.message); }
+    }
+
     const notifyOpts = {
       type: 'new_lead',
       // Term-sheet events carry their own descriptive subject ("Term sheet
