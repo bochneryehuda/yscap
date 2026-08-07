@@ -1,18 +1,25 @@
-# Class Valuation — we are on the **V1** Orders API
+# Class Valuation — which guide, and which UAD version
+
+> **"Version 2" means two different things, and that is the whole reason this file
+> exists.** Read this paragraph before changing anything in `src/class/`.
+>
+> 1. **The guide.** Two PDFs exist. The one that governs is
+>    *"Class Orders API Guide"* rev **0.17** (08-03-2026), file
+>    `ClassExternalOrdersAPIGuidev1.pdf`. The other, `ClassOrdersAPIGuide_V2.pdf`,
+>    describes a **different API** on `orders-external.*` hosts and **never mentions
+>    UAD at all**. Nothing is built against it.
+> 2. **The UAD version**, *inside* the governing guide: `POST /orders` is **UAD 2.6**
+>    and `POST /v2/orders` is **UAD 3.6**, on the same hosts and credentials. When
+>    the owner says "version one and version two", this is what they mean —
+>    **both are built**, 2.6 is the default. See the last section.
 
 **Owner-directed 2026-08-07.** The first cut of this integration was built against the
-wrong document. YS Capital is on the **V1 Orders API**; the guide that governs is
-*"Class Orders API Guide"*, rev **0.17**, dated **08-03-2026** (file
-`ClassExternalOrdersAPIGuidev1.pdf`). A separate **V2** document exists
-(`ClassOrdersAPIGuide_V2.pdf`) and describes a **different API** — different hosts,
-different field spellings, different enum lists. **Do not mix them.**
+wrong document (#1). It was rebased onto the governing guide, and then both UAD
+versions (#2) were built.
 
-This file exists because two of the differences are silent: they do not error, they
-just produce a wrong request or a dropped value.
+## The differences that bit — governing guide vs the `orders-external` document
 
-## The differences that bit
-
-| | **V1 — what we send** | V2 — what the other guide says |
+| | **What we send** (governing guide) | The `orders-external` document |
 |---|---|---|
 | Order host (prod) | `https://api.classvaluation.com` | `https://orders-external.classvaluation.com` |
 | Order host (UAT) | `https://api.uat.classvaluation.com` | `https://orders-external.uat.classvaluation.com` |
@@ -73,11 +80,63 @@ Confirmed by reading both documents side by side, so none of this had to be rebu
    `PrimaryResidence | SecondHome | Investment | Other`), and it is what essentially
    every RTL file resolves to. Our other four words are unverified wording.
 
-## UAD 2.6 vs 3.6 — we are on 2.6
+## UAD 2.6 AND 3.6 — both are built; 2.6 is the default
 
-The V1 guide also documents a UAD 3.6 extension reached as `POST /v2/orders`
-(equivalently `POST /orders` with `api-version=2.0`) **on the same host**. Per the
-owner, we stay on UAD 2.6 — plain `POST /orders`. Nothing in `src/class/` targets the
-`/v2/` paths. Note for whenever that changes: UAD 3.6 types `occupancy` as an enum and
-its property-type list carries a real `PUD` value, which would retire the
-PUD → SingleFamily assumption `order-build.js` currently declares.
+**Owner-directed 2026-08-07:** *"we need to build the 3.6 and the 2.6 … it's going to
+shift in the next few months. We want to be ready for both … default to the version
+one with an option to change to version two, which is 3.6."*
+
+Both live in the **same** guide, on the **same** hosts, with the **same** credentials:
+
+| | UAD 2.6 | UAD 3.6 |
+|---|---|---|
+| Path | `POST /orders` | `POST /v2/orders` (or `/orders` + `api-version=2.0`) |
+| Status | **the default** | ready for the shift |
+
+**"Version 2" here means UAD 3.6 — NOT the `orders-external` PDF.** That document
+never mentions UAD at all (checked: zero occurrences). Confusing the two is how the
+wrong hosts got built the first time.
+
+### How to change it
+
+- **For everyone:** set `CLASS_API_VERSION=v2` in Render. It accepts `v1`/`v2`,
+  `1`/`2` or `2.6`/`3.6`, and an unrecognised value falls back to the default rather
+  than throwing — a typo in an env var must never take the desk down.
+- **For one order:** the order screen has a "Which of their forms" row. Picking the
+  newer one previews and sends *that file* on 3.6 and changes nothing for anyone
+  else, which is the point of building both ahead of time.
+
+### What actually differs — all of it silent if got wrong
+
+Everything version-specific lives in `PROFILES` in `src/class/order-build.js`, and
+nothing else in that file branches on the version. These are the traps:
+
+| | UAD 2.6 | UAD 3.6 |
+|---|---|---|
+| Property-type FIELD | `propertyTypeEnum` | **`propertyType`** |
+| Property-type VALUES | 19 values incl. `TownhouseorRowhouse`, `MultiFamily`, `Farm`, the land types | 10 values incl. **`PUD`**, `COOP`, `CondoHotel`, `DetachedCondo` — a different list, not a superset |
+| `contacts` role key | `Type` | **`type`** |
+| `notificationList` keys | `Type` / `Email` | **`type`** / **`email`** |
+| `occupancy` | free-form String | closed enum: `PrimaryResidence`, `SecondHome`, `Investment`, `Other` |
+| Fannie DU number | `caseFileId` | `duReferenceNumber` |
+| Freddie LPA key | `lpaKey` | `lpaKeyReferenceIdentifier` |
+| `purpose` | 21 values | same + `Reverse` |
+| `loanInfo.loanType` | unchanged between the two | unchanged |
+
+A renamed field or a re-cased key is an **unrecognised field, dropped with no error**
+on the other version — so every one of these is asserted in BOTH directions in
+`scripts/test-class-order-build-pure.js`: the right name present *and* the wrong name
+absent. The body is never sent with both spellings "to be safe": the version that
+does not know the other name would reject the whole order rather than ignore a field.
+
+### Where a mapping genuinely changes meaning
+
+- **PUD** is an assumption on 2.6 (filed as SingleFamily, declared) and a **real
+  value** on 3.6 — so on 3.6 it is no longer an assumption at all.
+- **A townhouse** has no 3.6 value (they dropped `TownhouseorRowhouse`), so it files
+  as a PUD *as a declared assumption*.
+- **A 5+ unit building** has no 3.6 value at all. It **blocks** rather than being
+  squeezed into `TwoToFourFamily`.
+- **Occupancy**: `vacant` has no 3.6 value, so it becomes `Other` **and says so**;
+  anything 3.6 cannot express blocks rather than being guessed. On 2.6 the same file
+  is fine, because the field is free text there.

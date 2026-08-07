@@ -257,11 +257,23 @@ for (const [sec, only, title] of [
     `${sec} renders the ${only} order and only that one`);
   ok(new RegExp(`\\{ id: '${sec}',`).test(staff), `${sec} is in the SECTIONS array the rail reads`);
 }
-/* The appraisal order section is the AMC desk (AppraisalScope / CoreLogic), NOT an
-   OrdersPanel-backed email order — so it renders AmcAppraisalPanel rather than an
-   `only=` OrdersPanel. It sits in the Orders room beside the other three. */
+/* The appraisal order section is a vendor DESK, not an OrdersPanel-backed email
+   order — so it renders the vendor panels rather than an `only=` OrdersPanel. It
+   sits in the Orders room beside the other three.
+
+   TWO vendors live in this one section (AppraisalScope / NAN and Class Valuation)
+   and NEITHER is the default — the owner has not picked one. Both are asserted, so
+   a vendor cannot quietly disappear from the screen: an ordering desk that is not
+   rendered is indistinguishable from one that is switched off. */
 ok(/id="sec-order-appraisal"[^>]*title="Appraisal"/.test(staff), 'sec-order-appraisal is rendered, titled "Appraisal"');
-ok(/id="sec-order-appraisal"[\s\S]{0,800}?<AmcAppraisalPanel/.test(staff), 'sec-order-appraisal renders the AMC appraisal desk');
+ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<AmcAppraisalPanel/.test(staff), 'sec-order-appraisal renders the AppraisalScope / NAN desk');
+ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<ClassAppraisalPanel/.test(staff), 'sec-order-appraisal renders the Class Valuation desk too');
+/* Each desk has to say whose it is on its face. Ordering from the wrong company is
+   not a mistake a person can spot afterwards. */
+for (const vendor of ['AppraisalScope / NAN', 'Class Valuation']) {
+  ok(new RegExp(`<VendorHeading>${vendor.replace(/[/]/g, '[/]')}</VendorHeading>`).test(staff),
+    `the ${vendor} desk is labelled with its vendor's name`);
+}
 ok(/\{ id: 'sec-order-appraisal',/.test(staff), 'sec-order-appraisal is in the SECTIONS array the rail reads');
 /* The three open by DEFAULT. Landing in the Orders room and finding three
    collapsed headers is the "go into orders and then see the 3 options" the split

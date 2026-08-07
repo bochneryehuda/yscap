@@ -6,12 +6,17 @@
  * the three switches, the dry-run, the write gate, the token lifecycle, the
  * timeout, the retry rule, and the masking. No route may call `fetch` directly.
  *
- * WHICH GUIDE THIS IS BUILT ON. The **V1 Orders API** ("Class Orders API Guide",
- * rev 0.17, 08-03-2026) — the version YS Capital is on. There is a separate V2
- * document whose base hosts (`orders-external.*`), field spellings and enum lists
- * DIFFER; do not mix the two. Within the V1 guide itself, `POST /v2/orders` is the
- * UAD 3.6 extension (same host, `api-version=2.0`) and is deliberately NOT used —
- * we order on plain `POST /orders`, which is UAD 2.6.
+ * WHICH GUIDE THIS IS BUILT ON. "Class Orders API Guide", rev 0.17, 08-03-2026 —
+ * which documents BOTH versions on the SAME hosts and the SAME credentials:
+ * `POST /orders` is UAD 2.6 and `POST /v2/orders` is UAD 3.6. Both are built
+ * (owner-directed 2026-08-07, ahead of the industry's shift to 3.6); 2.6 is the
+ * default and the order screen can choose per order. Only the PATH and the body
+ * shape differ, which is why the version lives in the builder and arrives here as
+ * `opts.path` — see `createOrder`.
+ *
+ * There is a SEPARATE `ClassOrdersAPIGuide_V2.pdf` describing a different API on
+ * `orders-external.*` hosts, which never mentions UAD at all. It is NOT "version 2"
+ * in the sense used here and nothing in this integration is built against it.
  *
  * AUTH IS ONE CALL, NOT TWO (their guide, p.9). OAuth2 **password grant** —
  * `client_id` + `client_secret` + `username` + `password`, every one marked
@@ -44,6 +49,8 @@
 
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
+// PURE — no database, no network, no cycle back into this module.
+const orderBuild = require('./order-build');
 
 const MAX_TRIES = 3;
 const BASE_BACKOFF_MS = 500;
@@ -103,6 +110,10 @@ function configured() {
     // All four are required by the password grant — there is no partial mode.
     ready: hasClient && hasUser,
     environment: h.environment,
+    // Which UAD version orders go out on by default. Both are built; this is only
+    // the starting point, and the screen can choose per order.
+    apiVersion: orderBuild.profileFor(c.apiVersion).version,
+    uad: orderBuild.profileFor(c.apiVersion).uad,
     hostsConfirmed: h.ordersConfirmed && h.tokenConfirmed,
     // The callback half is independent: ordering works without it, but nothing
     // will tell us the order progressed.
@@ -292,7 +303,13 @@ module.exports = {
     get(`/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'),
   listCallbacks: () => get('/callbacks', undefined, 'callbacks'),
   // WRITES (outbound gate)
-  createOrder: (body, query) => request('POST', '/orders', { body, query, write: true, label: 'createOrder' }),
+  // THE PATH IS THE VERSION. `/orders` is UAD 2.6, `/v2/orders` is UAD 3.6 — same
+  // host, same credentials, a different contract. The BUILDER decides which (it is
+  // the thing that shaped the body to match), and hands its own `path` down here, so
+  // the body and the endpoint can never disagree. Defaulting to `/orders` keeps
+  // every existing caller on 2.6 exactly as before.
+  createOrder: (body, query, opts = {}) =>
+    request('POST', opts.path || '/orders', { body, query, write: true, label: 'createOrder' }),
   addNote: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/notes`, body, { label: 'addNote' }),
   requestRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-revision`, body, { label: 'requestRevision' }),
   requestCancel: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-cancel`, body, { label: 'requestCancel' }),

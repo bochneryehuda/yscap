@@ -538,14 +538,15 @@ const INTEGRATIONS = [
   },
   {
     key: 'class', name: 'Class Valuation (appraisal ordering)', group: 'framework',
-    purpose: 'The SECOND appraisal vendor, alongside AppraisalScope / NAN. Order an appraisal with every field filled in and shown first, then track it and pull the finished report back onto the file. Built against their V1 Orders API; it needs the four Class credentials, then the ordering screen and the callback receiver come with later build phases. Nothing decides between the two vendors — that stays a deliberate choice.',
+    purpose: 'The SECOND appraisal vendor, alongside AppraisalScope / NAN. Order an appraisal with every field filled in and shown first, then track it and pull the finished report back onto the file. BOTH of their form versions are built — UAD 2.6 (the normal one today) and UAD 3.6, ready for the industry shift — and staff can send a single file on the newer one to try it before anything is switched over. It needs the four Class credentials; the callback receiver comes with a later build phase. Nothing decides between the two vendors — that stays a deliberate choice.',
     direction: 'Two-way (planned) — we place orders, they push status back by webhook',
     auth: 'OAuth2 password grant (client id + secret + username + password)',
     // All four are [Required] by their password grant — there is no partial mode, and
     // a portal login on its own is not enough (V1 guide p.9).
     env: [{ name: 'CLASS_CLIENT_ID', required: true }, { name: 'CLASS_CLIENT_SECRET', required: true },
       { name: 'CLASS_USERNAME', required: true }, { name: 'CLASS_PASSWORD', required: true },
-      { name: 'CLASS_ENVIRONMENT', required: false }, { name: 'CLASS_ORG_ID', required: false },
+      { name: 'CLASS_ENVIRONMENT', required: false }, { name: 'CLASS_API_VERSION', required: false },
+      { name: 'CLASS_ORG_ID', required: false },
       { name: 'CLASS_LENDER_ORG_ID', required: false }],
     switches: [{ name: 'CLASS_ENABLED', label: 'Reading + polling' }, { name: 'CLASS_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
     liveProbe: false,
@@ -556,7 +557,7 @@ const INTEGRATIONS = [
         return { configured: false, live: null, detail: `Not connected — the Class Valuation connector is built and off by default. Class still needs to supply ${missing || 'the four credentials'} (CLASS_CLIENT_ID / CLASS_CLIENT_SECRET / CLASS_USERNAME / CLASS_PASSWORD). All four are required by their sign-in; a portal login on its own is not enough.` };
       }
       if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (CLASS_ENABLED) is off, so nothing talks to Class Valuation yet.' };
-      const env = `Pointed at their ${c.environment.toUpperCase()} environment.`;
+      const env = `Pointed at their ${c.environment.toUpperCase()} environment, ordering on the UAD ${c.uad} form by default.`;
       const hosts = c.hostsConfirmed ? '' : ' Their sign-in address for this environment has not been confirmed by Class yet — check it before ordering for real.';
       return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${hosts}` };
     },

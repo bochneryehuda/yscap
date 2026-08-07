@@ -1080,6 +1080,14 @@ module.exports = {
     username:     process.env.CLASS_USERNAME || null,   // the API user, NOT necessarily the portal login
     password:     process.env.CLASS_PASSWORD || null,
 
+    // ---- which UAD version we order on (owner-directed 2026-08-07) ----
+    // 'v1' = UAD 2.6 (POST /orders) — the DEFAULT, and what the industry is on today.
+    // 'v2' = UAD 3.6 (POST /v2/orders) — built and ready for the shift.
+    // Both live on the SAME hosts and the SAME credentials; only the path and the
+    // body shape differ. Staff can also pick the version for ONE order on the screen,
+    // so 3.6 can be tried on a single file before this default is moved.
+    apiVersion: (process.env.CLASS_API_VERSION || 'v1').trim().toLowerCase(),
+
     // ---- hosts (all overridable; see the note above) ----
     // environment: 'uat' (default) | 'test' | 'production'
     environment: (process.env.CLASS_ENVIRONMENT || 'uat').trim().toLowerCase(),

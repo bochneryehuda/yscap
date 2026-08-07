@@ -40,6 +40,7 @@ async function canSeeFile(req, appId) {
 // Only the keys the preview is allowed to override, so a crafted request cannot
 // smuggle an arbitrary field into the vendor body.
 const OVERRIDE_KEYS = new Set([
+  'apiVersion',
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
   'referenceNumber', 'street', 'city', 'state', 'zip', 'dueDate', 'instructions',
 ]);
@@ -55,12 +56,21 @@ function readOverrides(src) {
 // It also hands the screen Class's own closed value lists. The picker MUST come
 // from here rather than a list retyped in a component, or the options a staffer
 // can choose would drift from what the builder is willing to send.
-router.get('/config', async (_req, res) => {
+router.get('/config', async (req, res) => {
+  const cfgd = client.configured();
+  // The screen may ask about a version other than the default — that is how a
+  // staffer looks at what a 3.6 order would carry before anything is switched over.
+  const version = req.query.version || cfgd.apiVersion;
+  const options = orderBuild.screenOptions(version);
   res.json({
-    class: client.configured(),
+    class: cfgd,
     hosts: client.hosts(),
-    enums: orderBuild.ENUMS,
-    occupancySuggestions: orderBuild.OCCUPANCY_SUGGESTIONS,
+    versions: orderBuild.VERSIONS,
+    defaultVersion: cfgd.apiVersion,
+    options,
+    // The 2.6 names, kept so an older screen build keeps working after a deploy.
+    enums: options.enums,
+    occupancySuggestions: options.occupancySuggestions,
   });
 });
 
@@ -114,14 +124,20 @@ router.post('/files/:id/order', async (req, res) => {
   if (!cfgd.ready) return res.status(409).json({ error: 'CLASS_NOT_CONFIGURED', message: 'The Class Valuation credentials are not all set.' });
 
   try {
+    // THE PATH COMES FROM THE PREVIEW, not from the config: the preview is what
+    // shaped this body, so posting it anywhere else would send a 2.6 body to the 3.6
+    // endpoint or the reverse. Those two disagree about field names, so the failure
+    // would be a rejected order at best and a silently dropped field at worst.
     const out = await client.createOrder(preview.body, {
       OrgId: (require('../config').class || {}).orgId || undefined,
       LenderOrgId: (require('../config').class || {}).lenderOrgId || undefined,
-    });
+    }, { path: preview.path });
     if (out && out.__dryrun) {
-      return res.json({ ok: true, dryrun: true, message: 'TEST MODE — the order was built and logged, nothing was sent.', body: preview.body });
+      return res.json({ ok: true, dryrun: true, apiVersion: preview.apiVersion, uad: preview.uad,
+        message: `TEST MODE — a UAD ${preview.uad} order was built and logged, nothing was sent.`, body: preview.body });
     }
-    res.json({ ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId, body: preview.body });
+    res.json({ ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId,
+      apiVersion: preview.apiVersion, uad: preview.uad, body: preview.body });
   } catch (e) {
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
       return res.status(409).json({ error: e.code, message: 'Placing orders with Class Valuation is switched off.' });

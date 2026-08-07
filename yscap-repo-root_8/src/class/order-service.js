@@ -100,7 +100,10 @@ async function loadContext(db, appId) {
 // hand-kept field list) is what guarantees the screen can never fall behind the
 // builder — add a field to order-build and it appears here with no extra work.
 // ---------------------------------------------------------------------------
+// One label per field PATH. Both UAD versions are covered here, so a field that is
+// renamed between them (the property type) still reads in plain English on either.
 const LABELS = {
+  apiVersion: 'Which version of their form',
   productId: 'Product (their form)',
   referenceNumber: 'Our order number',
   'property.street': 'Street',
@@ -121,6 +124,11 @@ const LABELS = {
   dueDate: 'Due date',
   purpose: 'Purpose',
   occupancy: 'Occupancy',
+  propertyType: 'Their property type',        // UAD 3.6 name
+  duReferenceNumber: 'Fannie Mae DU case number',
+  lpaKeyReferenceIdentifier: 'Freddie Mac LPA key',
+  caseFileId: 'GSE case file id',
+  lpaKey: 'Freddie Mac LPA key',
   propertyTypeEnum: 'Their property type',
   instructions: 'Instructions to the appraiser',
   contractPrice: 'Contract price',
@@ -164,7 +172,12 @@ function fieldRows(built) {
 async function buildPreview(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
   if (!ctx) return null;
-  const built = orderBuild.buildOrder(ctx, opts.overrides || {});
+  // The version comes from the system default unless this order chose one. The
+  // BUILDER resolves it (an override wins), and the answer it reports is what the
+  // screen shows and what the send posts to — never re-derived here, or the screen
+  // could describe one version while the order goes out on the other.
+  const cfg = client.configured();
+  const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfg.apiVersion });
   return {
     context: ctx,
     body: built.body,
@@ -174,7 +187,16 @@ async function buildPreview(db, appId, opts = {}) {
     assumptions: built.assumptions,
     overridden: built.overridden,
     canPlace: built.canPlace,
-    config: client.configured(),
+    // Which version this preview IS, and everything the screen needs to offer only
+    // what that version accepts.
+    apiVersion: built.apiVersion,
+    uad: built.uad,
+    versionLabel: built.versionLabel,
+    path: built.path,
+    options: orderBuild.screenOptions(built.apiVersion),
+    versions: orderBuild.VERSIONS,
+    defaultVersion: cfg.apiVersion,
+    config: cfg,
     hosts: client.hosts(),
   };
 }

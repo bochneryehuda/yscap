@@ -44,14 +44,21 @@ const STATE = {
 // The key is the LAST segment of the field path, which is how the builder names
 // its overrides (`property.street` -> `street`).
 const EDITABLE = new Set([
+  'apiVersion',
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
   'referenceNumber', 'street', 'city', 'state', 'zip', 'dueDate', 'instructions',
 ]);
+// The property type is the one field the two UAD versions RENAME (`propertyTypeEnum`
+// on 2.6, `propertyType` on 3.6). Its override key stays the 2.6 name on both, so a
+// staffer's correction keeps applying when the version changes under them.
+const PATH_TO_KEY = { propertyType: 'propertyTypeEnum' };
 const overrideKeyFor = (path) => {
-  const k = String(path || '').split('.').pop();
+  const last = String(path || '').split('.').pop();
+  const k = PATH_TO_KEY[last] || last;
   return EDITABLE.has(k) ? k : null;
 };
-// Which of those are a pick-from-their-list rather than free text.
+// Which of those are a pick-from-their-list rather than free text. `occupancy` is
+// only a list on 3.6 — the server says which, per version.
 const ENUM_FOR = { propertyTypeEnum: 'propertyTypeEnum', purpose: 'purpose', loanType: 'loanType' };
 
 export default function ClassAppraisalPanel({ appId }) {
@@ -120,8 +127,14 @@ export default function ClassAppraisalPanel({ appId }) {
   }, [appId, overrides, load]);
 
   const cfg = config && config.class ? config.class : null;
-  const enums = (config && config.enums) || {};
-  const occSuggestions = (config && config.occupancySuggestions) || [];
+  // The option lists come from the PREVIEW, because the preview knows which UAD
+  // version it was built for. Taking them from the config would offer 2.6's values
+  // on a 3.6 order — two lists that genuinely differ, so the picker would hand the
+  // builder a value that version does not accept.
+  const options = (preview && preview.options) || {};
+  const enums = options.enums || {};
+  const occSuggestions = options.occupancySuggestions || [];
+  const occIsList = !!options.occupancyIsEnum;
 
   const fields = (preview && preview.fields) || [];
   const notable = useMemo(
@@ -144,6 +157,12 @@ export default function ClassAppraisalPanel({ appId }) {
 
       {preview ? (
         <>
+          <VersionRow
+            preview={preview}
+            chosen={overrides.apiVersion}
+            onPick={(v) => setOverride('apiVersion', v)}
+          />
+
           <ProductRow
             preview={preview}
             chosen={overrides.productId}
@@ -177,6 +196,7 @@ export default function ClassAppraisalPanel({ appId }) {
                 field={f}
                 enums={enums}
                 occSuggestions={occSuggestions}
+                occIsList={occIsList}
                 value={overrides[overrideKeyFor(f.path)]}
                 onChange={(v) => { const k = overrideKeyFor(f.path); if (k) setOverride(k, v); }}
               />
@@ -202,6 +222,7 @@ export default function ClassAppraisalPanel({ appId }) {
 
           <PlaceOrder
             cfg={cfg} canPlace={canPlace} busy={busy} onPlace={place}
+            uad={preview.uad}
             derivedCount={fields.filter((f) => f.state === 'derived').length}
           />
         </>
@@ -248,6 +269,50 @@ function ConnectionLine({ cfg, hosts, notOn }) {
       {hosts && hosts.tokenConfirmed === false ? (
         <div style={{ fontSize: 12, color: GOLD, marginTop: 4 }}>
           Their sign-in address for this system is our best guess — worth confirming with Class before a real order.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// WHICH OF CLASS'S TWO FORMS THIS ORDER USES. The industry is moving from UAD 2.6
+// to UAD 3.6, so both are built; 2.6 is the default until that shift happens, and
+// this row lets one file be sent on 3.6 to try it before anything is switched over.
+// It is FIRST on the screen on purpose: the version decides what the rest of the
+// fields even are, so choosing it after filling them in would be backwards.
+function VersionRow({ preview, chosen, onPick }) {
+  const versions = preview.versions || [];
+  const current = preview.apiVersion;
+  const isDefault = !chosen && current === preview.defaultVersion;
+  if (versions.length < 2) return null;
+  return (
+    <div style={{ border: `1px solid ${chosen ? TEAL : LINE}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>Which of their forms</div>
+          <div style={{ color: INK, fontWeight: 600 }}>{preview.versionLabel}</div>
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+            {isDefault
+              ? 'This is the normal one. The industry is moving to the newer form over the next few months — you can try it on this file without changing anything for anyone else.'
+              : 'You picked this for this order only. Everyone else still gets the normal one.'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {versions.map((v) => (
+            <button type="button" key={v.version} onClick={() => onPick(v.version === preview.defaultVersion ? '' : v.version)}
+              style={{
+                border: `1px solid ${current === v.version ? TEAL : LINE}`,
+                background: current === v.version ? '#EAF3F3' : '#fff',
+                color: INK, borderRadius: 8, padding: '5px 10px', fontWeight: 550, cursor: 'pointer',
+              }}>
+              UAD {v.uad}{v.version === preview.defaultVersion ? ' (normal)' : ''}
+            </button>
+          ))}
+        </div>
+      </div>
+      {current !== preview.defaultVersion ? (
+        <div style={{ fontSize: 12, color: GOLD, marginTop: 8 }}>
+          Heads up: this sends the newer form. Some values below are written differently on it — read them before ordering.
         </div>
       ) : null}
     </div>
@@ -329,7 +394,7 @@ function ProductPicker({ onPick }) {
   );
 }
 
-function FieldRow({ field, enums, occSuggestions, value, onChange }) {
+function FieldRow({ field, enums, occSuggestions, occIsList, value, onChange }) {
   const st = STATE[field.state] || STATE.read;
   const key = overrideKeyFor(field.path);
   const enumName = key ? ENUM_FOR[key] : null;
@@ -354,13 +419,21 @@ function FieldRow({ field, enums, occSuggestions, value, onChange }) {
                 {options.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
             ) : key === 'occupancy' ? (
-              <>
-                <input list="class-occ-list" value={value != null ? value : (field.value == null ? '' : String(field.value))}
-                  onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, width: '100%' }} />
-                <datalist id="class-occ-list">
-                  {occSuggestions.map((o) => <option key={o} value={o} />)}
-                </datalist>
-              </>
+              occIsList ? (
+                <select value={value != null ? value : (field.value == null ? '' : String(field.value))}
+                  onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
+                  <option value="">— not set —</option>
+                  {occSuggestions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : (
+                <>
+                  <input list="class-occ-list" value={value != null ? value : (field.value == null ? '' : String(field.value))}
+                    onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, width: '100%' }} />
+                  <datalist id="class-occ-list">
+                    {occSuggestions.map((o) => <option key={o} value={o} />)}
+                  </datalist>
+                </>
+              )
             ) : (
               <input value={value != null ? value : (field.value == null ? '' : String(field.value))}
                 onChange={(e) => onChange(e.target.value)}
@@ -404,7 +477,7 @@ function Contacts({ contacts }) {
   );
 }
 
-function PlaceOrder({ cfg, canPlace, busy, onPlace, derivedCount }) {
+function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
   const on = !!(cfg && cfg.enabled);
   const outbound = !!(cfg && cfg.outbound);
   const dry = !!(cfg && cfg.dryrun);
@@ -425,6 +498,7 @@ function PlaceOrder({ cfg, canPlace, busy, onPlace, derivedCount }) {
       <button className="btn primary" disabled={busy || !!blocked} onClick={onPlace} title={blocked}>
         {busy ? 'Working…' : dry ? 'Build the order (test mode — nothing is sent)' : 'Order this appraisal from Class'}
       </button>
+      <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>Goes out on their {uad} form.</div>
       {blocked ? <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>{blocked}</div> : null}
       {!blocked && !dry ? (
         <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>

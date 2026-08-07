@@ -178,6 +178,35 @@ async function main() {
   ok(httpPv.status === 200 && httpPv.body.canPlace === true, 'the HTTP preview accepts an override from the screen');
   ok(httpPv.body.fields.length === pv2.fields.length, 'and lists exactly the same fields as the service does');
 
+  // ==========================================================================
+  // BOTH UAD VERSIONS, END TO END. 2.6 is the default; 3.6 can be chosen for ONE
+  // order without moving anyone else. The preview and the send must agree about
+  // WHICH — a 2.6 body posted to the 3.6 endpoint (or the reverse) would have its
+  // renamed fields silently dropped.
+  // ==========================================================================
+  const pv26 = await call('GET', `/api/class/files/${appId}/preview?productId=42`);
+  const pv36 = await call('GET', `/api/class/files/${appId}/preview?productId=42&apiVersion=v2`);
+  ok(pv26.body.uad === '2.6' && pv26.body.path === '/orders',
+     'with nothing asked for, the preview is a UAD 2.6 order on /orders');
+  ok(pv36.body.uad === '3.6' && pv36.body.path === '/v2/orders',
+     'choosing the newer form previews a UAD 3.6 order on /v2/orders');
+  ok(pv26.body.body.propertyTypeEnum === 'SingleFamily' && pv26.body.body.propertyType === undefined,
+     'and the 2.6 body carries the 2.6 field name');
+  ok(pv36.body.body.propertyType === 'SingleFamily' && pv36.body.body.propertyTypeEnum === undefined,
+     'while the 3.6 body carries the 3.6 one — never both, never the wrong one');
+  ok(pv36.body.options.occupancyIsEnum === true && pv26.body.options.occupancyIsEnum === false,
+     'the screen is told occupancy is a closed list on 3.6 and free text on 2.6');
+  ok(pv36.body.fields.some((f) => f.path === 'propertyType') &&
+     !pv36.body.fields.some((f) => f.path === 'propertyTypeEnum'),
+     'the 3.6 preview lists the field under the name it will actually be sent as');
+  ok(pv36.body.defaultVersion === 'v1',
+     'and the screen is told 2.6 is still everyone else\'s default');
+
+  // The version rides the same override channel as every other correction, so it is
+  // covered by the same allowlist and shows on the screen as a human choice.
+  ok((pv36.body.overridden || []).includes('apiVersion'),
+     'choosing the version is recorded as a deliberate choice, not a silent switch');
+
   // An override the allowlist does not carry is DROPPED, never passed through.
   const smuggle = await call('GET', `/api/class/files/${appId}/preview?productId=42&amcName=Someone%20Else`);
   ok(smuggle.status === 200 && smuggle.body.body.amcName === undefined,

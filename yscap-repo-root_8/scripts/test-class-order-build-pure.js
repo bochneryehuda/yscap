@@ -159,6 +159,130 @@ console.log('\n--- the screen\'s editable fields match what the server accepts -
      `the two lists are identical (server: ${server}, screen: ${screen})`);
 }
 
+// ===========================================================================
+// UAD 2.6 AND UAD 3.6 — BOTH BUILT, 2.6 THE DEFAULT.
+//
+// Every difference between the two versions fails SILENTLY if it is got wrong: a
+// renamed field, a re-cased key and a value list that gained and lost members are
+// all "unrecognised field, dropped, no error" on the other version. So each one is
+// asserted in BOTH directions — the right name present AND the wrong name absent.
+// ===========================================================================
+console.log('\n--- the two versions are both built, and 2.6 is the default ---');
+ok(ob.DEFAULT_VERSION === 'v1', 'the default is v1 / UAD 2.6 — the owner\'s choice until the industry shifts');
+ok(ob.VERSIONS.length === 2 && ob.VERSIONS.map((v) => v.uad).join(',') === '2.6,3.6',
+   'both versions are offered');
+const v26 = ob.buildOrder(BASE);
+const v36 = ob.buildOrder(BASE, {}, { version: 'v2' });
+ok(v26.uad === '2.6' && v26.path === '/orders', 'with no version asked for, the order is a 2.6 order on /orders');
+ok(v36.uad === '3.6' && v36.path === '/v2/orders', 'asking for v2 builds a 3.6 order on /v2/orders');
+for (const [spelling, want] of [['1', 'v1'], ['2', 'v2'], ['2.6', 'v1'], ['3.6', 'v2'], ['V2', 'v2'],
+                                ['', 'v1'], [null, 'v1'], ['nonsense', 'v1']]) {
+  ok(ob.profileFor(spelling).version === want,
+     `"${spelling}" reads as ${want} (a typo falls back to the default, never throws)`);
+}
+
+console.log('\n--- the property type is RENAMED between them, not just re-valued ---');
+ok(v26.body.propertyTypeEnum === 'SingleFamily' && v26.body.propertyType === undefined,
+   '2.6 sends `propertyTypeEnum` and nothing called `propertyType`');
+ok(v36.body.propertyType === 'SingleFamily' && v36.body.propertyTypeEnum === undefined,
+   '3.6 sends `propertyType` and nothing called `propertyTypeEnum`');
+
+console.log('\n--- PUD: an assumption on 2.6, a real value on 3.6 ---');
+const pud26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'pud' } });
+const pud36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'pud' } }, {}, { version: 'v2' });
+ok(pud26.body.propertyTypeEnum === 'SingleFamily' && pud26.assumptions.some((a) => a.field === 'propertyTypeEnum'),
+   '2.6 has no PUD, so it files as single family AND says so');
+ok(pud36.body.propertyType === 'PUD', '3.6 carries PUD properly');
+ok(!pud36.assumptions.some((a) => a.field === 'propertyType'),
+   '...so on 3.6 it is NOT an assumption — nothing was decided on the file\'s behalf');
+
+console.log('\n--- a value one version has and the other does not ---');
+const big26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'multi_5_plus' } });
+const big36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'multi_5_plus' } }, {}, { version: 'v2' });
+ok(big26.body.propertyTypeEnum === 'MultiFamily' && big26.canPlace === true, '2.6 has MultiFamily for a 5+ unit building');
+ok(big36.body.propertyType === null && big36.canPlace === false,
+   '3.6 has no 5+ value, so it BLOCKS rather than squeezing the building into the 2-4 bucket');
+ok(big36.missing.some((m) => m.field === 'propertyType' && /3\.6/.test(m.why)),
+   'and the refusal names the version that cannot carry it');
+const town36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'townhouse' } }, {}, { version: 'v2' });
+ok(town36.body.propertyType === 'PUD' && town36.assumptions.some((a) => a.field === 'propertyType'),
+   'a townhouse has no 3.6 value either, so it is filed as a PUD as a DECLARED assumption');
+
+console.log('\n--- the contact key is re-cased, and the wrong case is a dropped field ---');
+ok(v26.body.contacts[0].Type === 'Borrower' && v26.body.contacts[0].type === undefined,
+   '2.6 contacts carry `Type`');
+ok(v36.body.contacts[0].type === 'Borrower' && v36.body.contacts[0].Type === undefined,
+   '3.6 contacts carry `type`');
+ok(v36.missing.length === v26.missing.length,
+   'and the borrower-contact check still finds the contact whichever way it is spelled');
+const noBorrower36 = ob.buildOrder({ ...BASE, borrower: null }, {}, { version: 'v2' });
+ok(noBorrower36.missing.some((m) => m.field === 'contacts.Borrower'),
+   'a missing borrower is still caught on 3.6 — the check reads the role, not one spelling');
+
+console.log('\n--- the notification list re-cases BOTH of its keys ---');
+const n26 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] });
+const n36 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] }, {}, { version: 'v2' });
+ok(n26.body.notificationList[0].Type === 'BorrowerInfo' && n26.body.notificationList[0].Email === 'a@b.com',
+   '2.6 uses Type/Email');
+ok(n36.body.notificationList[0].type === 'BorrowerInfo' && n36.body.notificationList[0].email === 'a@b.com',
+   '3.6 uses type/email');
+ok(n36.body.notificationList[0].Type === undefined && n36.body.notificationList[0].Email === undefined,
+   'and 3.6 carries neither of the 2.6 spellings');
+
+console.log('\n--- occupancy: free text on 2.6, a closed list on 3.6 ---');
+ok(v26.body.occupancy === 'Investment' && v36.body.occupancy === 'Investment',
+   'an investment property says Investment on both — the one word their vocabulary confirms');
+const prim36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'primary' } }, {}, { version: 'v2' });
+ok(prim36.body.occupancy === 'PrimaryResidence', '3.6 uses their enum name, not our word');
+const vac26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'vacant' } });
+const vac36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'vacant' } }, {}, { version: 'v2' });
+ok(vac26.body.occupancy === 'Vacant', '2.6 can just say Vacant — the field is free text there');
+ok(vac36.body.occupancy === 'Other' && vac36.assumptions.some((a) => a.field === 'occupancy'),
+   '3.6 has no vacant value, so it says Other and DECLARES it rather than inventing a word');
+const odd36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'squatters' } }, {}, { version: 'v2' });
+ok(odd36.body.occupancy === null && odd36.canPlace === false,
+   'an occupancy 3.6 cannot express BLOCKS rather than being guessed');
+const odd26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'squatters' } });
+ok(odd26.canPlace === true, 'the same file is fine on 2.6, where the field is free text');
+
+console.log('\n--- the GSE reference numbers are renamed on 3.6 ---');
+const gse26 = ob.buildOrder({ ...BASE, caseFileId: 'DU-1', lpaKey: 'LPA-1' });
+const gse36 = ob.buildOrder({ ...BASE, caseFileId: 'DU-1', lpaKey: 'LPA-1' }, {}, { version: 'v2' });
+ok(gse26.body.caseFileId === 'DU-1' && gse26.body.lpaKey === 'LPA-1', '2.6 keeps caseFileId / lpaKey');
+ok(gse36.body.duReferenceNumber === 'DU-1' && gse36.body.lpaKeyReferenceIdentifier === 'LPA-1',
+   '3.6 renames them to duReferenceNumber / lpaKeyReferenceIdentifier');
+ok(gse36.body.caseFileId === undefined && gse36.body.lpaKey === undefined, 'and does not send the old names too');
+ok(v26.body.caseFileId === undefined && v36.body.duReferenceNumber === undefined,
+   'a file with neither sends neither — an RTL deal has no GSE case number');
+
+console.log('\n--- a staffer can send ONE order on the other version ---');
+const chosen = ob.buildOrder(BASE, { apiVersion: 'v2' });
+ok(chosen.uad === '3.6' && chosen.overridden.includes('apiVersion'),
+   'the version can be chosen per order, and the choice is recorded like any other override');
+ok(ob.buildOrder(BASE, { apiVersion: 'v2' }, { version: 'v1' }).uad === '3.6',
+   'and that choice beats the system default rather than the other way round');
+
+console.log('\n--- every value each version can emit is on THAT version\'s list ---');
+for (const [ver, key] of [['v1', 'propertyTypeEnum'], ['v2', 'propertyType']]) {
+  const prof = ob.profileFor(ver);
+  const emit = [...Object.values(prof.propertyType), ...Object.values(prof.propertyTypeAssumed).map(([v]) => v)];
+  for (const v of emit) ok(prof.enums[key].includes(v), `${ver}: property type "${v}" is on their ${prof.uad} list`);
+  for (const v of Object.values(prof.purpose || {})) { /* purpose is shared */ }
+  if (prof.occupancyIsEnum) {
+    const occ = [...Object.values(prof.occupancy), ...Object.values(prof.occupancyAssumed).map(([v]) => v)];
+    for (const v of occ) ok(prof.enums.occupancy.includes(v), `${ver}: occupancy "${v}" is on their ${prof.uad} list`);
+  }
+}
+
+console.log('\n--- the screen is told which shape each version\'s fields are ---');
+const o26 = ob.screenOptions('v1'), o36 = ob.screenOptions('v2');
+ok(o26.occupancyIsEnum === false && o36.occupancyIsEnum === true,
+   'so the screen shows a type-ahead on 2.6 and a dropdown on 3.6 — never a free field dressed as a choice');
+ok(o26.propertyTypeField === 'propertyTypeEnum' && o36.propertyTypeField === 'propertyType',
+   'and knows which field name this version uses');
+ok(o36.enums.propertyType.includes('PUD') && !o26.enums.propertyTypeEnum.includes('PUD'),
+   'the two property-type lists really are different lists, not one superset');
+
 // ---------------------------------------------------------------------------
 console.log('\n--- the client: writes gated, reads not, secrets masked ---');
 process.env.CLASS_ENABLED = '0';
