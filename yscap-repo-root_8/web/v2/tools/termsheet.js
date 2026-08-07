@@ -3128,6 +3128,32 @@
       { label: "Eligibility", value: (d && d.status) || "" }
     ];
   }
+  /* ONE BROWSER SESSION, ONE LOAN OFFICER (owner-directed 2026-08-07).
+     Every submission from this page carries the same opaque id, so the server can hand a repeat
+     visit to the officer it already chose instead of walking the round-robin again — the owner's
+     *"the same term sheet … was on the same browser session and went to a different loan officer
+     … It should go to one loan officer if it's on one browser session."*
+
+     sessionStorage, deliberately, not localStorage: the unit is ONE VISIT. A person who comes back
+     next week is a fresh visitor and the rotation should get its turn. It carries no personal data
+     — it is a random string that means nothing outside this table — and if storage is unavailable
+     (private mode, a locked-down browser) it falls back to a per-page-load id, which still keeps
+     one page's several exports together. */
+  var LEAD_SESSION = (function () {
+    var KEY = "ys_lead_session";
+    var mk = function () {
+      try {
+        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID().replace(/-/g, "");
+      } catch (e) {}
+      return String(Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+    };
+    try {
+      var v = window.sessionStorage.getItem(KEY);
+      if (!v) { v = mk(); window.sessionStorage.setItem(KEY, v); }
+      return v;
+    } catch (e) { return mk(); }
+  })();
+
   var _lastGen = null;   // {leadId, contactToken} \u2192 lets the optional contact ask attach to the same lead
   // fileArg: a Blob (PDF path) OR a ready {dataBase64, filename, contentType}
   // (the Excel path) OR null \u2014 the notification sends with whatever it gets.
@@ -3152,7 +3178,7 @@
         }
         attsP.then(function (atts) {
           return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t,
+            body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t, sessionId: LEAD_SESSION,
               officerCode: code || undefined, subject: subject,
               message: "A visitor generated a " + kind.toLowerCase() + " in the Term Sheet Studio. The exact figures are below" + (atts.length ? " and the PDF is attached." : "."),
               attachments: atts,
@@ -3229,7 +3255,7 @@
       var sbtn = document.getElementById("tsExcSend");
       sbtn.disabled = true; sbtn.textContent = "Sending\u2026";
       fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "term_sheet_exception", officerCode: code || undefined,
+        body: JSON.stringify({ tool: "term_sheet_exception", sessionId: LEAD_SESSION, officerCode: code || undefined,
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
           subject: "Exception request \u2014 " + (sum.subject.replace(/^Manual review request \u2014 /, "")),
           message: sum.body + (extra ? "\n\nVisitor note:\n" + extra : ""),
@@ -3262,7 +3288,7 @@
     var atts = [];
     try { var blob = await exportPdf(null, true); if (blob) atts.push({ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: await blobToB64(blob) }); } catch (e) { /* send without the attachment if the PDF engine failed */ }
     var r = await fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tool: "term_sheet", officerCode: code || undefined, name: summary.borrower || undefined, email: summary.email,
+      body: JSON.stringify({ tool: "term_sheet", sessionId: LEAD_SESSION, officerCode: code || undefined, name: summary.borrower || undefined, email: summary.email,
         subject: "Term sheet request \u2014 " + (summary.borrower || summary.program), message: leadBody(summary),
         attachments: atts, payload: summary }) });
     if (!r.ok) throw new Error("send " + r.status);
