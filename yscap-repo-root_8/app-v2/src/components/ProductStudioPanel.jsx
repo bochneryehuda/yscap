@@ -123,6 +123,13 @@ export function overridesFromSnapshot(snap, mode) {
   const base = {
     ...compact({
       targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+      // THE VALUE-SIDE LEVER MUST TRAVEL WITH THE COST-SIDE ONE. On Silver (EMCAP)
+      // a ladder rung can be earned by giving up ARV leverage instead of cost
+      // leverage, and the two are different engine inputs. Carrying only targetLTC
+      // would register the deal's MAXIMUM loan whenever the borrower picked a
+      // value-side step — the file would price differently from the paper they
+      // signed. compact() drops it when unset, so every other program is unchanged.
+      targetARLTV: d.inp && d.inp.targetARLTV ? d.inp.targetARLTV : null,
       // Interest reserve may instead be an exact dollar amount (owner-directed
       // 2026-07-12) — carried through to the frozen engine, which honors it over
       // months and fits it under the same caps. A BLANK amount is sent as 0 (not
@@ -181,6 +188,14 @@ export function overridesFromSnapshot(snap, mode) {
       // register/quote payload (buildInputs whitelists it); the engine/normalize caps
       // it at the maximum. A blank is dropped by compact() (no exception).
       oopRehab: f.tsOopRehab,
+      // A typed loan amount (owner-directed 2026-08-06). Rides the register/quote
+      // payload exactly like oopRehab above. It reaches the frozen engines as a
+      // voluntary CEILING, so it can only ever reduce and carries no approval —
+      // the way UP is the manual basis keys above, which already escalate. A blank
+      // is dropped by compact(), so an untouched box changes nothing. The borrower
+      // register route's own allowlist never accepts it, so it stays staff-only
+      // even though this panel is shared.
+      targetLoan: f.tsTargetLoan,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,
