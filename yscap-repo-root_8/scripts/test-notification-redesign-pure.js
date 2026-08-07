@@ -354,4 +354,119 @@ ok('an html-looking value in a cell is escaped, never rendered', () => {
   assert.ok(r.html.includes('&lt;script&gt;'));
 });
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   E · THE CLOSING CHAIN — one reply cutter, and a cancellation that is sent
+   Owner: "the reply needs to be above the three dots, and only those three dots should be part of
+   the reply. If not, it is messing everything up terribly." · "add a button … Cancel Closing Prep,
+   which should send them a cancellation email to disregard this file, and then it should stop
+   sending them the updates."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nE · the closing chain');
+
+const replyCut = require('../src/lib/email/reply-cut');
+const fileInbox = require('../src/lib/file-inbox');
+const chat = require('../src/lib/chat');
+const closingPrep = require('../src/lib/closing-prep');
+
+// The owner's REAL reply, verbatim from the reported thread.
+const REAL_REPLY = [
+  'Confirming we are disregarding.',
+  '',
+  'PrivateLenderLaw.com<https://www.privatelenderlaw.com> | 1 (212) LEND-LAW',
+  '',
+  'Allison Glessner',
+  '',
+  '________________________________',
+  '',
+  'From: Yehuda Bochner <Yehuda@yscapgroup.com>',
+  'Sent: Thursday, August 6, 2026 1:14 AM',
+  'Subject: Re: File ready for closing prep',
+  '',
+  'Please ignore this email and close this file.',
+].join('\n');
+
+ok('the owner’s own reply is cut at the quoted history, not carried whole', () => {
+  const out = replyCut.topReply(REAL_REPLY);
+  assert.ok(/^Confirming we are disregarding\./.test(out), out);
+  assert.ok(!/Yehuda Bochner/.test(out), 'the quoted original leaked through');
+  assert.ok(!/Please ignore this email/.test(out), 'the quoted body leaked through');
+});
+
+ok('the file inbox uses the SAME cutter — it had a weaker private copy', () => {
+  assert.strictEqual(fileInbox.topReply(REAL_REPLY), replyCut.topReply(REAL_REPLY));
+});
+
+ok('the marker phrase has ONE definition, shared with the chat', () => {
+  assert.strictEqual(chat.CHAT_REPLY_MARKER_PHRASE, replyCut.REPLY_MARKER_PHRASE);
+  assert.ok(replyCut.REPLY_MARKER.includes(replyCut.REPLY_MARKER_PHRASE));
+});
+
+ok('our own delimiter cuts, wherever the client put its attribution', () => {
+  const s = `Sounds good.\n\n${replyCut.REPLY_MARKER}\n\nPILOT · by YS Capital\n\nFile ready for closing prep`;
+  assert.strictEqual(replyCut.topReply(s), 'Sounds good.');
+});
+
+ok('a Gmail attribution WRAPPED across lines is still cut', () => {
+  const s = 'Will do.\n\nOn Wed, 6 Aug 2026 at 01:14, Yehuda Bochner\n<yehuda@yscapgroup.com> wrote:\n> the original';
+  assert.strictEqual(replyCut.topReply(s), 'Will do.');
+});
+
+ok('a message with no quote at all is returned whole', () => {
+  assert.strictEqual(replyCut.topReply('Just this.'), 'Just this.');
+  assert.strictEqual(replyCut.splitReply('Just this.').trimmed, false);
+});
+
+ok('a message that is ALL quote is kept whole rather than cut to one quoted line', () => {
+  // Every quote pattern needs a preceding newline, so the FIRST "> …" line always reads as fresh
+  // text and the cut lands on the second one. Answering with that single quoted line would be
+  // worse than useless — losing what somebody wrote is not recoverable, keeping some quoted text
+  // is only a nuisance.
+  const s = '> everything they wrote\n> and more';
+  assert.ok(replyCut.topReply(s).length > 0);
+  const r = replyCut.splitReply(s);
+  assert.strictEqual(r.trimmed, false);
+  assert.ok(/and more/.test(r.reply), 'the whole message is kept');
+});
+
+ok('splitReply hands back both halves', () => {
+  const r = replyCut.splitReply(REAL_REPLY);
+  assert.strictEqual(r.trimmed, true);
+  assert.ok(/Confirming we are disregarding/.test(r.reply));
+  assert.ok(/Yehuda Bochner/.test(r.quoted), 'the history must be kept, not discarded');
+});
+
+const cancelEmail = closingPrep.buildCancelEmail(
+  { loanNumber: 'YSCAP258134791', propertyLine: '3091 Patricia Ct, Manchester, NJ', borrowerName: 'MOSES WEIL' },
+  { reason: 'This is a brokered file — it is closing with RCN.', senderName: 'Yehuda Bochner' });
+
+ok('the cancellation says disregard, in the headline', () => {
+  assert.ok(/disregard/i.test(cancelEmail.html));
+  assert.ok(/no longer closing with you/i.test(cancelEmail.text), cancelEmail.text.slice(0, 300));
+});
+
+ok('it promises the updates stop — which is the half that already worked silently', () => {
+  assert.ok(/no more updates/i.test(cancelEmail.text) || /not receive any more updates/i.test(cancelEmail.text));
+  assert.ok(/executed term sheet/i.test(cancelEmail.text));
+  assert.ok(/closing-date/i.test(cancelEmail.text));
+});
+
+ok('it threads on the closing subject rather than arriving as a stray email', () => {
+  assert.ok(cancelEmail.subject.startsWith(closingPrep.CLOSING_PREP_TITLE), cancelEmail.subject);
+});
+
+ok('the typed reason reaches the attorney', () => {
+  assert.ok(/closing with RCN/.test(cancelEmail.text));
+});
+
+ok('and it carries the reply delimiter like every other message on the chain', () => {
+  assert.ok(cancelEmail.text.startsWith(replyCut.REPLY_MARKER), cancelEmail.text.slice(0, 80));
+  assert.ok(cancelEmail.html.includes(replyCut.REPLY_MARKER_PHRASE));
+});
+
+ok('no reason typed → no empty "Why" box', () => {
+  const e = closingPrep.buildCancelEmail({ loanNumber: 'X', propertyLine: 'Y', borrowerName: 'Z' }, {});
+  assert.ok(!/\bWHY\b/.test(e.text), e.text);
+});
+
 console.log(`\n${passed} passed, ${process.exitCode ? 'SOME FAILED' : '0 failed'}`);

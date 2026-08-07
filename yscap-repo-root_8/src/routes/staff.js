@@ -7210,17 +7210,67 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
          ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled', updated_at=now()`,
         [appId]);
     }
+    /* TELL THE ATTORNEY (owner-directed 2026-08-07: *"which should send them a cancellation email
+       to disregard this file, and then it should stop sending them the updates"*).
+
+       The SILENCING half already worked — `attorneyEngaged` reads the 'cancelled' status above as
+       an explicit stand-down, so `mayAnnounce` refuses the executed term sheet, the closing-date
+       updates and the clear-to-close from this moment on. What was missing is that nobody told
+       outside counsel, who were left holding our package and a term sheet.
+
+       It rides the SAME chain, so it lands in the conversation it cancels. Ordered AFTER the
+       status write on purpose: the stand-down is the thing that must be true, and a provider
+       hiccup must never leave a file that looks cancelled on the desk while the automatic updates
+       keep going out. Best-effort for the same reason — the response reports whether it went, so
+       the desk can say "cancelled, but we could not reach them" rather than implying it did. */
+    let notified = { ok: false, reason: 'not_engaged' };
+    if (engaged) {
+      try {
+        const data = await closingPrep.getClosingPrepData(appId);
+        const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
+        const base = data ? closingPrep.recipientsFor(data, {}) : { to: [], cc: [] };
+        const to = last.to.length ? last.to : base.to;
+        const cc = last.cc.length ? last.cc : base.cc;
+        const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+        const senderName = meRow.full_name || meRow.email || '';
+        const reason = String((req.body && req.body.reason) || '').trim().slice(0, 2000);
+        if (data && to.length) {
+          notified = await closingThread.sendOnThread({
+            applicationId: appId, eventKind: 'cancel',
+            // NULL, so a second cancellation can genuinely be sent. Somebody who
+            // cancels twice means it — and the alternative is a silent no-op on the
+            // one message whose whole job is to be received.
+            dedupeKey: null,
+            to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_cancelled',
+            build: ({ address }) => closingPrep.buildCancelEmail(data, { reason, address, senderName }),
+          });
+        } else {
+          notified = { ok: false, reason: to.length ? 'no_file_data' : 'no_recipients' };
+        }
+      } catch (e) {
+        notified = { ok: false, reason: 'send_failed' };
+        console.error('[closing-prep] cancellation email', appId, e && e.message);
+      }
+    }
+
     // Same history the other two orders keep.
     await orderTracking.recordEvent({
       applicationId: appId, orderType: 'attorney', kind: 'cancelled', actorId: req.actor.id,
+      detail: { notified: !!notified.ok, reason: notified.ok ? null : notified.reason },
     });
-    await audit(req, 'closing_prep_cancelled', 'application', appId, {});
+    await audit(req, 'closing_prep_cancelled', 'application', appId, { notified: !!notified.ok });
     // NOT `upd.rows[0].status`. The recovery branch above runs precisely when that
     // row does not exist, so reading through it threw a TypeError into the catch
     // and answered 500 — on the one path that exists to make Cancel reachable when
     // the row was lost, which is the moment it matters most. The status is known
     // either way: this branch only ever writes 'cancelled'.
-    res.json({ ok: true, status: 'cancelled' });
+    res.json({
+      ok: true, status: 'cancelled',
+      // The desk says which of the two things happened, so nobody assumes counsel was told when
+      // they were not.
+      notified: !!notified.ok,
+      notifiedReason: notified.ok ? null : notified.reason,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

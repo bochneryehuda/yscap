@@ -627,7 +627,9 @@ export const api = {
   staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
   staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
   staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
-  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
+  // `reason` rides only on a CANCEL — it goes into the email outside counsel receives. A reopen
+  // emails nobody, so it carries none.
+  staffCancelClosingPrep:   (appId, reopen, reason) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : (reason ? { reason } : {})),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),

@@ -42,7 +42,11 @@ const URGENT_MAX_ATTEMPTS = 10;       // ... for at most 20 minutes
 // thread. CHAT_REPLY_MARKER_PHRASE is the exact token both sides key on — the
 // outbound copy embeds it and inbound-chat.js imports it for the cut, so the two
 // genuinely can't drift apart.
-const CHAT_REPLY_MARKER_PHRASE = 'Reply above this line';
+// ONE definition of the phrase, shared with the closing chain (lib/email/reply-cut.js). The chat's
+// own marker LINE stays its own — it tells the reader their reply posts into the chat — but the
+// TOKEN both the outbound print and the inbound cut key on must exist exactly once, or a reword on
+// one side silently stops the other side cutting.
+const CHAT_REPLY_MARKER_PHRASE = require('./email/reply-cut').REPLY_MARKER_PHRASE;
 const CHAT_REPLY_MARKER = `— — — — —  ${CHAT_REPLY_MARKER_PHRASE} and it posts straight into the chat  — — — — —`;
 
 /* ---------------------------------------------------------------- ensure */
