@@ -248,24 +248,51 @@ console.log('\n7. The paid tool cannot be called by accident');
     'the paid refusal does not depend on the switch or the URL being set');
   ok('the paid refusal is switch-independent — it is about what the caller asked for');
 
-  // A free tool gets past the paid gate and stops on the connection instead —
+  // A free tool gets past the paid gate and stops on the CONNECTION instead —
   // proving the refusal above is about the paid list, not about being unset.
-  // There is no database in this test, which is exactly the point of the next
-  // two assertions: callTool must answer, not throw.
+  // Which connection reason comes back depends on whether a database happens to
+  // be reachable, so this asserts only what is true either way; the two reasons
+  // are told apart deterministically just below.
   const free = await client.callTool('get_contact_status', { personId: 'x' });
   assert.strictEqual(free.ok, false);
   assert.notStrictEqual(free.reason, 'paid_tool_refused', 'a free tool is not blocked by the paid gate');
-  ok('a free tool passes the paid gate');
-
-  // A lookup whose stored authorization cannot be READ must never surface as
-  // "not connected" — that would send somebody to re-approve a connection that
-  // is fine. And it must never throw: the officer sees a sentence, not a 500.
   assert.ok(['store_unreadable', 'not_connected'].includes(free.reason),
     `a free tool stops on the connection, got ${free.reason}`);
-  assert.strictEqual(free.reason, 'store_unreadable',
-    'an unreadable store is reported as unreadable, never as "not connected"');
   assert.ok(typeof free.detail === 'string' && free.detail.length > 0, 'the failure says why in words');
-  ok('an unreadable authorization is answered, not thrown, and is not confused with "not connected"');
+  ok('a free tool passes the paid gate and stops on the connection');
+
+  // "We cannot READ the stored authorization" and "there IS no authorization" are
+  // different facts, and reporting the first as the second sends somebody to
+  // re-approve a connection that is perfectly fine. Pinned by stubbing the
+  // database in the require cache, so it holds with or without a real one — the
+  // first cut asserted the unreadable case outright and only passed in a sandbox
+  // that had no database at all, which is a test of the environment, not the code.
+  const dbPath = require.resolve('../src/db');
+  const realDb = require.cache[dbPath];
+  const stubDb = (query) => { require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { pool: { query } } }; };
+  try {
+    stubDb(async () => { throw new Error('the database is unreachable'); });
+    const unreadable = await oauth.accessToken(null);
+    assert.strictEqual(unreadable.ok, false);
+    assert.strictEqual(unreadable.reason, 'store_unreadable',
+      'a store we cannot read is reported as unreadable, never as "not connected"');
+    assert.ok(/unreachable/.test(unreadable.detail), 'and it says what actually went wrong');
+
+    stubDb(async () => ({ rows: [] }));
+    const absent = await oauth.accessToken(null);
+    assert.strictEqual(absent.reason, 'not_connected',
+      'a readable store with nothing in it IS "not connected"');
+    ok('an unreadable authorization is never confused with an absent one');
+
+    // Same guard one level up: whatever the store does, the lookup answers.
+    stubDb(async () => { throw new Error('the database is unreachable'); });
+    const viaTool = await client.callTool('get_contact_status', { personId: 'x' });
+    assert.strictEqual(viaTool.ok, false, 'the lookup answers rather than throwing');
+    assert.strictEqual(viaTool.reason, 'store_unreadable');
+    ok('a lookup over an unreadable store answers instead of becoming a 500');
+  } finally {
+    if (realDb) require.cache[dbPath] = realDb; else delete require.cache[dbPath];
+  }
 
   assert.strictEqual((await client.callTool('')).reason, 'no_tool');
   ok('an empty tool name is refused');
