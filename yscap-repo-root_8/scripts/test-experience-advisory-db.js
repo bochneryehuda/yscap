@@ -51,7 +51,7 @@ async function attach(appId, code) {
 async function addVerifiedFlip(borId) {
   // A completed flip whose SALE date is inside the frozen 3-year exit window, VERIFIED.
   const ins = await db.query(
-    // Verification is a SEPARATE UPDATE, as production does it — db/481's guard forbids
+    // Verification is a SEPARATE UPDATE, as production does it — db/485's guard forbids
     // a track record from being BORN verified, so asking for it in the INSERT produced an
     // unverified line and these VERIFIED-experience assertions measured zero.
     `INSERT INTO track_records (borrower_id, deal_type, sale_date)

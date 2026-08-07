@@ -35,7 +35,7 @@ async function borrower(name) {
     [name, `${tag}_${name}@example.com`])).rows[0].id;
 }
 async function line(borrowerId, oneLine, extra = {}) {
-  // VERIFICATION IS A SEPARATE UPDATE, exactly as production does it. db/481's guard
+  // VERIFICATION IS A SEPARATE UPDATE, exactly as production does it. db/485's guard
   // forbids a track record from being BORN verified — "there should not even be a
   // single thing where somebody entered their track record that should come up as
   // verified" — so a fixture that asked for one in its INSERT silently got an

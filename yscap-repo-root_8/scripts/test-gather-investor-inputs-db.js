@@ -188,7 +188,7 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     // Track record for the borrower: 1 VERIFIED recent flip, 1 UNVERIFIED recent flip,
     // 1 VERIFIED but OLD flip (exited >3y ago → outside the frozen window). Only the first counts.
     // A LINE IS INSERTED PENDING AND THEN VERIFIED BY A REVIEWER — never inserted
-    // verified. db/481's guard forces `is_verified=false` on every INSERT, whatever
+    // verified. db/485's guard forces `is_verified=false` on every INSERT, whatever
     // it asks for ("there should not even be a single thing where somebody entered
     // their track record that should come up as verified"), so a fixture that hands
     // the INSERT a true silently gets an unverified row and the verified count reads

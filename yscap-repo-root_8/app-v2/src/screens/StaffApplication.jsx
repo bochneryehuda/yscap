@@ -54,6 +54,7 @@ import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -5205,6 +5206,7 @@ export default function StaffApplication() {
     'sec-esign': line(...openHere('sec-esign')),
     'sec-order-title': line(nTitleToAssign ? `${plural(nTitleToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
     'sec-order-insurance': line(nInsToAssign ? `${plural(nInsToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-appraisal': line('Order the appraisal directly from the AMC'),
     'sec-order-closing': line(nClosingDocs ? `${plural(nClosingDocs, 'document')} on the closing chain` : 'Nothing on the closing chain yet'),
     // The header badge already carries the file COUNT, so the line must not
     // repeat it — a summary that echoes the badge is noise. It speaks only when
@@ -5249,6 +5251,7 @@ export default function StaffApplication() {
       badge: nTitleToAssign ? `${nTitleToAssign} to assign` : '' },
     { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
       badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
+    { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
     { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
@@ -5962,6 +5965,11 @@ export default function StaffApplication() {
       <Section hidden={!show('sec-order-insurance')} id="sec-order-insurance" summary={summaries['sec-order-insurance']} title="Insurance"
         info="Order insurance from the agent on the file. The order emails them with the borrower, loan officer and processor copied, tracks its own thread, and files the binder and invoice they send back onto the insurance condition for you to classify.">
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="insurance" />
+      </Section>
+
+      <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
+        info="Order the appraisal directly from the AMC (AppraisalScope) with every field filled in and the right form picked automatically. Track its status, message the AMC back and forth, request revisions or dispute the value (ROV) with comps from the Property Research Center, and send documents up. Turns on once the CoreLogic login is set up.">
+      <AmcAppraisalPanel appId={id} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"

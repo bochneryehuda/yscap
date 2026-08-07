@@ -61,11 +61,11 @@ for (const junk of [false, 'false', 0, 1, '', null, undefined, 'yes', {}]) {
 }
 eqv(decideLeadOfficer(), { assignedVia: null, mayRoundRobin: true }, 'no arguments at all → the public default, never a throw');
 
-console.log('\n4. Every value it can return is one the database accepts (db/480)');
+console.log('\n4. Every value it can return is one the database accepts (db/484)');
 {
-  const sql = fs.readFileSync(path.join(__dirname, '../db/480_lead_staff_portal_origin.sql'), 'utf8');
+  const sql = fs.readFileSync(path.join(__dirname, '../db/484_lead_staff_portal_origin.sql'), 'utf8');
   const m = sql.match(/assigned_via IN \(([^)]*)\)/);
-  ok(!!m, 'db/480 declares the assigned_via CHECK');
+  ok(!!m, 'db/484 declares the assigned_via CHECK');
   const allowed = new Set((m ? m[1] : '').split(',').map((s) => s.trim().replace(/^'|'$/g, '')));
   for (const v of ['lo_link', 'round_robin', 'manual', 'staff_portal']) {
     ok(allowed.has(v), `the CHECK accepts '${v}'`);

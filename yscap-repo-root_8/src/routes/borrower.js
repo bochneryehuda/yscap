@@ -1009,6 +1009,13 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  // The Silver ladder's value-side rung. Same class as targetLTC — a voluntary
+  // REDUCTION the studio lets a borrower pick, and one the engine can only ever
+  // apply as a MIN against the cap, so it can never enlarge a loan. It is clamped
+  // to a real ratio: a tampered client sending 5 (i.e. 500%) would simply be
+  // inert, but bounding it keeps a nonsense value out of the persisted inputs.
+  const targetARLTV = Number(raw && raw.targetARLTV);
+  if (isFinite(targetARLTV) && targetARLTV > 0 && targetARLTV <= 1) out.targetARLTV = targetARLTV;
   // An explicit blank clears the reserve: pass '' through so buildInputs resolves
   // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
   // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
@@ -1128,6 +1135,30 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
     // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
+    /* A STAFF-SET LOAN AMOUNT IS STICKY ACROSS A BORROWER RE-REGISTER (owner-directed
+       2026-08-06 typed loan amount). `targetLoan` lives in the studio's ADMIN zone,
+       which is removed from the DOM for a borrower — so their studio cannot show it,
+       cannot restore it, and their allowlist rightly refuses to accept one from the
+       client. The consequence, without this, is a silent way to UNDO an officer's
+       ceiling: staff register a file at a typed $500,000, the borrower opens their
+       own Products & Pricing, sees the deal at its maximum, presses Register, and the
+       file re-registers at the full amount — a bigger loan at a worse rate, with no
+       approval, no escalation and no record that a ceiling was ever removed.
+       So it is carried forward from the file's own last registration, exactly as the
+       per-file markup is (pricing.js) and for exactly the same stated reason: a
+       borrower can never reprice away the basis the file was structured at. STAFF
+       still change it freely — they can see the box, and their own door never runs
+       this. Best-effort: an unreadable prior registration must never block a
+       borrower's register, and it can only ever make the loan SMALLER. */
+    try {
+      // `is_current` is this table's own current-row flag (unique partial index);
+      // there is no superseded_at column. Same predicate experience.js uses.
+      const prior = await db.query(
+        `SELECT inputs FROM product_registrations
+          WHERE application_id = $1 AND is_current LIMIT 1`, [f.app.id]);
+      const prev = Number(prior.rows[0] && prior.rows[0].inputs && prior.rows[0].inputs.targetLoan);
+      if (isFinite(prev) && prev > 0) overrides.targetLoan = prev;
+    } catch (_) { /* never block a register on the sticky read */ }
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     /* A refinance is sized on the as-is value, so with none on file there is no
        denominator and nothing to register (owner-directed 2026-08-02). Same
@@ -2967,7 +2998,7 @@ function trackRecordCols(b) {
  * `is_verified` is stated explicitly for the same reason: relying on the column default
  * is right on a plain INSERT and WRONG on the create doors' `ON CONFLICT … DO UPDATE`
  * branch, where a retried save lands on an existing — possibly already verified — row.
- * db/481's trigger is the belt behind all of it, for every writer including the imports.
+ * db/485's trigger is the belt behind all of it, for every writer including the imports.
  */
 function trackRecordEnteredCols(kind) {
   return {

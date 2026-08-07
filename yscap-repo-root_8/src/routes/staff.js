@@ -10111,7 +10111,7 @@ router.put('/track-records/:id', async (req, res) => {
   // line — that has not changed — but the correction lands PENDING, because the
   // reviewer confirmed the OLD figures and nobody has looked at the new ones. The
   // owner's rule: "Every single detail of a track record you need to click on verify."
-  // db/481's trigger enforces it for every writer including the imports; this door
+  // db/485's trigger enforces it for every writer including the imports; this door
   // states it too so the intent is readable where the edit happens.
   const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;

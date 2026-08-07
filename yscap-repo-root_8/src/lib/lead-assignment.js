@@ -73,7 +73,7 @@ async function pickRoundRobinOfficer(client = db) {
  *
  * @param {{officerId?: string|null, tool?: string, fromStaffPortal?: boolean}} a
  * @returns {{assignedVia: string|null, mayRoundRobin: boolean}}
- *   `assignedVia` is the value for `leads.assigned_via` (db/480) when an officer is
+ *   `assignedVia` is the value for `leads.assigned_via` (db/484) when an officer is
  *   already resolved; null when there is nobody yet. `mayRoundRobin` is whether the
  *   caller may go looking for a rotation owner.
  */

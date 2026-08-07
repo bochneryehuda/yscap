@@ -57,7 +57,7 @@ const loanFor = (first, last, dob, addr, llcName, funded = '2024-03-15') => ({
     // cross-source case the owner named ("don't add it twice"): enrichment must
     // dedupe A against it via the strong canon and NOT re-add it, NOR touch it.
     const clickupA = { formatted_address: '12 Churchill Ln, Brooklyn, NY 11230, USA' };
-    // The verification is a SEPARATE UPDATE, as production does it: db/481's guard
+    // The verification is a SEPARATE UPDATE, as production does it: db/485's guard
     // forbids a track record from being born verified ("there should not even be a
     // single thing where somebody entered their track record that should come up as
     // verified"), so asking for it in the INSERT silently produced an unverified row and

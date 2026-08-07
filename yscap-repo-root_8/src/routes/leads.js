@@ -220,7 +220,7 @@ router.post('/', async (req, res) => {
        staffer's own officerCode — see StaffInvestorSuite / TermSheetStudio). Two
        rules follow, and the second is the load-bearing one:
          1. `assigned_via` records it as `staff_portal`, so "why does this lead belong
-            to this person?" is answerable from the row itself (db/480).
+            to this person?" is answerable from the row itself (db/484).
          2. A staff-portal lead is NEVER round-robined. If its officer cannot be
             resolved at all it falls through to the SALES DESK, which a human works —
             never to an officer who had nothing to do with it. An unassigned lead is

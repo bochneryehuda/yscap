@@ -58,9 +58,9 @@ console.log('\n2. Nothing anywhere inserts a verified track record');
   }
 }
 
-console.log('\n3. The database refuses to be wrong regardless (db/481)');
+console.log('\n3. The database refuses to be wrong regardless (db/485)');
 {
-  const sql = read('../db/481_track_record_always_pending.sql');
+  const sql = read('../db/485_track_record_always_pending.sql');
   ok(/BEFORE INSERT OR UPDATE ON track_records/.test(sql), 'the guard covers INSERT and UPDATE');
   ok(/FOR EACH ROW/.test(sql), 'per row, so a bulk write is covered too');
   ok(/'verified', 'limited'/.test(sql), 'both COUNTING statuses are treated as "claims to be reviewed"');

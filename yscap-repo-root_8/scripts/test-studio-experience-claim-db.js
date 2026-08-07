@@ -97,7 +97,7 @@ const studioState = (v) => ({ v: { propState: 'NJ', dealType: 'Fix & Hold (BRRRR
       for (let i = 0; i < n; i++) {
         holdSeq++;
         const ins = await db.query(
-          // The verification is a SEPARATE UPDATE, as production does it — db/481's guard
+          // The verification is a SEPARATE UPDATE, as production does it — db/485's guard
           // forbids a track record from being BORN verified, so asking for it in the
           // INSERT produced an unverified line and these VERIFIED-experience assertions
           // measured zero. A reviewer's click has always been an UPDATE.
