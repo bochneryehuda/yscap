@@ -38,12 +38,43 @@ never fight over a field.
 There is **no standards dispute** — they implement *different* standards (3.4 loan interchange vs
 2.6/UAD appraisal), each correct for its document. No industry research was needed to pick a "winner."
 
-## Future consolidation (optional, not required)
+## The THIRD surface — UAD 3.6 (2026-08-07), and why it did NOT become a shared core
 
-Both hand-roll a small XML reader (`mismo/xml.js`, `appraisal/xml.js`) and number/`norm` helpers. If a
-third MISMO surface appears, consider a shared `src/lib/mismo-core/` for the tokenizer + normalizers.
-Not worth doing for two callers today. **Do not merge the two modules** — they parse different schemas;
-one parser for both would be more fragile, not less.
+A third MISMO surface has now appeared: **UAD 3.6 / MISMO 3.6**, the redesigned URAR, mandatory for
+GSE delivery from 2 November 2026. It lives in the **appraisal** module — `src/lib/appraisal/xml36.js`
++ `uad36-map.js` + `extract36.js` + `package36.js` — because it is the same DOCUMENT this module
+already owns (the appraisal report), read for the same PURPOSE (a property profile + findings), in
+the same DIRECTION (import only), with the same VOCABULARY (C1–C6, Q1–Q6, condition of appraisal).
+
+| | `src/lib/mismo/` | `src/lib/appraisal/` (2.6) | `src/lib/appraisal/` (3.6) |
+|---|---|---|---|
+| **Standard** | MISMO 3.4 | MISMO 2.6 GSE `VALUATION_RESPONSE` + UAD | MISMO **3.6** `MESSAGE` + UAD 3.6 |
+| **Document** | the loan file (URLA-style) | the appraisal (forms 1004/1025/1073) | the appraisal (**one dynamic URAR**, no form number) |
+| **Direction** | import **and** export | import only | import only |
+| **Entry** | `loadFile`, `exportApplicationXml` | `extract` | `extract` → `extract36` (routed by detected version) |
+
+**The 3.4 reader was NOT reused, and that was deliberate.** `src/lib/mismo/xml.js` is the right
+SHAPE — namespace-agnostic, text-bearing, local-name matching — but wiring the appraisal module into
+the loan-interchange module would cross the boundary this document exists to hold, and it has two
+properties an appraisal reader must not have: it PARSES RECURSIVELY (a deep report can exhaust the
+call stack and abort an import) and it THROWS on malformed input (an appraisal that is 99% readable
+must still import 99%, with the damage reported — never a 500). `xml36.js` is iterative and tolerant
+for exactly those two reasons.
+
+**One rule DID move across, on purpose:** `extract.js#detectMismo`'s comparable-grid test is now
+built from the 3.6 reader's container list, so "is there an appraisal in this file?" has ONE answer —
+the research warehouse's catch (`lib/research/xml-catch.js`) reuses that function as its own
+definition, and a container spelling only one of the two knew about would mean a report the reader
+can read being ignored by the warehouse, or the reverse.
+
+## Future consolidation (still optional, still not required)
+
+All three hand-roll a small XML reader and number/`norm` helpers. A shared `src/lib/mismo-core/` for
+the tokenizer is now arguably worth considering, but the normalizers are NOT shareable: 2.6 packs
+compound values into one attribute (`TotalBathroomCount="2.1"`) where 3.6 states them as separate
+typed data points, so a shared helper would need a "which version am I reading" branch — which is how
+a 2.6 bug fix silently changes a 3.6 answer. **Do not merge the modules** — they parse different
+schemas; one parser for all three would be more fragile, not less.
 
 ## Tests
 
