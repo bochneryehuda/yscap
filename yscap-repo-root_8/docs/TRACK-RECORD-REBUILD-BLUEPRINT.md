@@ -967,6 +967,33 @@ avoid entirely. Use `scope:'count'` to size before paging; `include` aggressivel
 
 **Nothing in this build touches a paid tool** (D13).
 
+> **STATUS after phase 6 (2026-08-09).** All eight are done, and the shape of two
+> of them changed for the better while doing them:
+>
+> · **1, 2 and 5 collapsed into ONE table** — `elementix_calls` (db/503). Every
+>   call is recorded with the staff id who caused it, which makes the spend
+>   attributable (1); the month's PAID calls are counted from it (2); and the
+>   hourly allowance is read from it too, so it spans every instance and survives
+>   a deploy instead of being N × 400 that resets on each release (5).
+> · **THE CLIENT IS THE ONLY WRITER.** `lookups.js` recorded its own calls in the
+>   first cut, which would have double-counted the very number the hourly guard
+>   reads — and the guard would then have throttled at half the real allowance.
+> · **The two caps fail in OPPOSITE directions, deliberately.** The MONEY cap
+>   fails CLOSED: an unreadable count refuses the spend, because the expensive
+>   direction is spending what we cannot count. The hourly guard fails OPEN: an
+>   unreadable ledger there costs at most an overshoot against a limit the vendor
+>   enforces anyway, while refusing would take the feature down over bookkeeping.
+> · **4 is stricter than written.** `allowPaid: true` is not merely replaced, it
+>   is no longer honoured at all — accepting it would leave the weaker door open.
+>   A boolean also cannot answer the two questions a spend has to answer later
+>   (who asked, about whom), which `paidActor` demands in one object.
+> · **3 is enforced by ABSENCE as well as by order.** `submit_contact_enrichment`
+>   is not in `lookups.js` at all — not behind a flag, not behind a permission —
+>   so no argument any caller passes can reach it, and `contactFor()` asks
+>   `get_contact_status` first and returns nothing unless the person is already
+>   unlocked. That is the owner's rule in three independent layers, none trusted
+>   on its own.
+
 ---
 
 ## 8. THE STAFF WORKSPACE

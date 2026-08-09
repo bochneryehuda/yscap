@@ -11226,6 +11226,28 @@ router.get('/track-records/:id/workspace', async (req, res) => {
     res.json(out);
   } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
+/* THE VERIFY BUTTON — read the public records for ONE property, on a click.
+   NOTHING SWEEPS: the vendor's hourly allowance is shared by the whole
+   organization, and a background pass writing to borrowers' records unattended
+   is the shape this rebuild exists to avoid. It writes the MACHINE's columns
+   only and can never verify a line — a person still confirms each check.
+   See src/lib/track-record/verify-run.js. */
+router.post('/track-records/:id/research', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/verify-run').runVerify(req.params.id, {
+      staffId: req.actor.id, force: (req.body || {}).force === true,
+    });
+    // The staff id is on every lookup already (db/503); this is the record that
+    // a PERSON asked, on this property, at this moment.
+    await audit(req, 'track_record_research', 'track_record', req.params.id,
+      { calls: out.calls, cached: out.cached, errors: (out.errors || []).length });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
 router.post('/track-record-pillars/:id/decide', async (req, res) => {
   try {
     const own = await db.query(

@@ -58,7 +58,14 @@ function bucketState() {
   return { now, perSec: secStamps.length, perHour: hourStamps.length };
 }
 
-/** Returns null when there is room, else a plain reason we are holding back. */
+/**
+ * Returns null when there is room, else a plain reason we are holding back.
+ *
+ * IN-MEMORY, and therefore PER-INSTANCE: with N instances the self-cap is really
+ * N × maxPerHour, and it resets to zero on every deploy. `overBudgetShared()` is
+ * the cross-instance version and is what `callTool` uses; this stays as the
+ * cheap local smoothing and as the fallback when the ledger cannot be read.
+ */
 function overBudget() {
   const { perHour } = bucketState();
   const maxHour = Math.max(1, Number(cfg.elementix.maxPerHour) || 400);
@@ -67,6 +74,51 @@ function overBudget() {
          + 'is shared by everyone, so this pauses rather than starving the team. Try again shortly.';
   }
   return null;
+}
+
+/**
+ * The SHARED hourly count, read from the ledger so every instance and every
+ * restart draw from one number — the platform's 1,000/hour belongs to the whole
+ * organization, and a per-process cap that forgets itself is not a cap.
+ *
+ * FAILS OPEN, deliberately, and the asymmetry with the money cap is the point:
+ * an unreadable ledger here costs at most a throughput overshoot against a limit
+ * the vendor enforces anyway, while refusing every lookup would take the feature
+ * down over a bookkeeping hiccup. The MONEY cap fails CLOSED, because there the
+ * expensive direction is spending what we cannot count.
+ */
+async function overBudgetShared() {
+  const local = overBudget();
+  if (local) return local;
+  try {
+    const db = require('../db');
+    const maxHour = Math.max(1, Number(cfg.elementix.maxPerHour) || 400);
+    const r = await db.query(
+      `SELECT count(*)::int AS n FROM elementix_calls WHERE created_at >= now() - interval '1 hour'`);
+    const n = (r.rows[0] && r.rows[0].n) || 0;
+    if (n >= maxHour) {
+      return `PILOT has used its hourly Elementix allowance (${maxHour}) across every instance. The platform `
+           + 'limit of 1,000/hour is shared by everyone, so this pauses rather than starving the team. Try again shortly.';
+    }
+  } catch (_) { /* fails open — see above */ }
+  return null;
+}
+
+/**
+ * Record a call. THE CLIENT IS THE ONLY MODULE THAT TALKS TO ELEMENTIX, so it is
+ * the only one that records — a second writer would double-count the very number
+ * the hourly guard reads. Best-effort for a FREE call: losing a bookkeeping row
+ * must never fail a lookup. (A PAID call is recorded by `recordPaid` BEFORE it
+ * happens, and that one is not best-effort.)
+ */
+async function recordCall(tool, opts, out) {
+  try {
+    const db = require('../db');
+    await db.query(
+      `INSERT INTO elementix_calls (tool, paid, staff_id, ok, detail) VALUES ($1,false,$2::uuid,$3,$4)`,
+      [tool, (opts && opts.staffId) || null, !!(out && out.ok),
+        out && out.ok ? null : String((out && out.detail) || '').slice(0, 300)]);
+  } catch (_) { /* the lookup is the point */ }
 }
 
 async function throttle() {
@@ -179,11 +231,21 @@ async function callTool(name, args = {}, opts = {}) {
   // has to keep. Below this line are a database read, a token refresh and two
   // HTTP calls; any of them can throw, and a research lookup that throws becomes
   // a 500 on the officer's screen instead of a sentence they can act on.
+  let out;
   try {
-    return await callToolInner(name, args, opts);
+    out = await callToolInner(name, args, opts);
   } catch (e) {
-    return { ok: false, reason: 'error', detail: (e && e.message) || 'The Elementix lookup failed.' };
+    out = { ok: false, reason: 'error', detail: (e && e.message) || 'The Elementix lookup failed.' };
   }
+  /* Only a call that actually WENT OUT counts against the hourly allowance. A
+     refusal made before the wire — switched off, not configured, rate-limited,
+     a paid tool with no actor — spent nothing, and counting it would make the
+     guard throttle on its own refusals. A PAID call is already recorded by
+     recordPaid, so it is not recorded twice here. */
+  const wentOut = !['disabled', 'not_configured', 'rate_limited', 'paid_tool_refused',
+    'paid_cap_reached', 'paid_cap_unknown', 'no_tool'].includes(out && out.reason);
+  if (wentOut && !PAID_TOOLS.has(String(name || ''))) recordCall(String(name || ''), opts, out).catch(() => {});
+  return out;
 }
 
 async function callToolInner(name, args, opts) {
@@ -195,9 +257,35 @@ async function callToolInner(name, args, opts) {
   // switch, a URL or a stored token: no configuration state can ever be arranged
   // such that a sweep spends credits, and a caller that forgot `allowPaid` is
   // told exactly that rather than "not configured".
-  if (PAID_TOOLS.has(toolName) && !opts.allowPaid) {
-    return { ok: false, reason: 'paid_tool_refused',
-      detail: `${toolName} spends Elementix credits, so it only runs from a deliberate per-person action.` };
+  if (PAID_TOOLS.has(toolName)) {
+    /* `allowPaid: true` was a BOOLEAN, and a boolean cannot answer the two
+       questions a spend has to answer later: who asked, and for whom. It was
+       also the easiest thing in the world to add to a call site "to make it
+       work". `paidActor` demands a staff id, the person being unlocked and a
+       reason IN THE SAME OBJECT — you cannot satisfy it by accident, and every
+       spend is attributable afterwards. `allowPaid` is deliberately no longer
+       honoured at all: silently accepting it would leave the weaker door open. */
+    const actor = opts.paidActor;
+    if (!actor || !actor.staffId || !actor.personId || !String(actor.reason || '').trim()) {
+      return { ok: false, reason: 'paid_tool_refused',
+        detail: `${toolName} spends Elementix credits, so it only runs from a deliberate per-person action `
+              + 'that records who asked, about whom, and why.' };
+    }
+    /* THE OWNER'S CAP: "I have only 1,000 per month." A counter in process
+       memory forgets itself on every deploy and is per-instance, so the month is
+       counted in the database. FAILS CLOSED — an unreadable count refuses the
+       spend, because the expensive direction is spending money we cannot count. */
+    const spent = await paidThisMonth();
+    if (spent.ok !== true) {
+      return { ok: false, reason: 'paid_cap_unknown',
+        detail: 'PILOT cannot read how many contact look-ups have been used this month, so it will not spend one.' };
+    }
+    const cap = Math.max(0, Number(cfg.elementix.paidPerMonth) || 1000);
+    if (spent.n >= cap) {
+      return { ok: false, reason: 'paid_cap_reached',
+        detail: `The ${cap} contact look-ups for this month are used up (${spent.n}). It resets next month.` };
+    }
+    await recordPaid(toolName, actor);
   }
 
   if (!available()) return { ok: false, reason: 'not_configured', detail: 'ELEMENTIX_URL is not set.' };
@@ -206,7 +294,7 @@ async function callToolInner(name, args, opts) {
       detail: 'Elementix lookups are switched off. Turn them on from the API Health page.' };
   }
 
-  const over = overBudget();
+  const over = await overBudgetShared();
   if (over) return { ok: false, reason: 'rate_limited', detail: over };
 
   if (dryrun()) {
@@ -294,6 +382,10 @@ function payloadOf(result) {
 async function listTools(opts = {}) {
   if (!available()) return { ok: false, reason: 'not_configured' };
   if (!enabled()) return { ok: false, reason: 'disabled' };
+  // A listing is a real request against the organization-wide 1,000/hour, so it
+  // waits its turn like everything else rather than jumping the queue.
+  const overList = overBudget();
+  if (overList) return { ok: false, reason: 'rate_limited', detail: overList };
   const auth = await oauth.accessToken(opts.staffId || null);
   if (!auth.ok) return { ok: false, reason: auth.reason, detail: auth.detail };
   const s = await ensureSession(auth.token, auth.tokenType);
@@ -305,7 +397,42 @@ async function listTools(opts = {}) {
       detail: (res.envelope && res.envelope.error && res.envelope.error.message) || `HTTP ${res.status}` };
   }
   const tools = (res.envelope.result && res.envelope.result.tools) || [];
-  return { ok: true, tools: tools.map((t) => ({ name: t.name, description: t.description, paid: PAID_TOOLS.has(t.name) })) };
+  /* KEEP `inputSchema`. Discarding it made this listing useless for the one
+     thing a listing is for — knowing what a tool takes — so every caller had to
+     go back to the vendor's docs, or guess. */
+  return { ok: true,
+    tools: tools.map((t) => ({
+      name: t.name, description: t.description, inputSchema: t.inputSchema || null,
+      paid: PAID_TOOLS.has(t.name),
+    })) };
+}
+
+/**
+ * How many CREDIT-SPENDING calls this calendar month, across every instance and
+ * surviving every deploy. `{ok:false}` when the count cannot be read, and the
+ * caller must treat that as a refusal — see the paid branch.
+ */
+async function paidThisMonth() {
+  try {
+    const db = require('../db');
+    const r = await db.query(
+      `SELECT count(*)::int AS n FROM elementix_calls
+        WHERE paid AND created_at >= date_trunc('month', now())`);
+    return { ok: true, n: (r.rows[0] && r.rows[0].n) || 0 };
+  } catch (_) { return { ok: false, n: null }; }
+}
+
+/**
+ * Record the spend BEFORE it happens. Deliberately not best-effort and
+ * deliberately not after: a credit spent with no row is a credit nobody can
+ * account for, and if the write fails we would rather refuse the lookup than
+ * lose the count that the cap is built on.
+ */
+async function recordPaid(tool, actor) {
+  const db = require('../db');
+  await db.query(
+    `INSERT INTO elementix_calls (tool, paid, staff_id, subject_id, reason) VALUES ($1,true,$2::uuid,$3,$4)`,
+    [tool, actor.staffId, String(actor.personId).slice(0, 120), String(actor.reason).slice(0, 300)]);
 }
 
 /** How much of our self-imposed allowance is left — for the API Health page. */
@@ -324,8 +451,8 @@ function budget() {
 function resetSession() { session = { id: null, initialized: false, url: null }; }
 
 module.exports = {
-  callTool, listTools, budget,
+  callTool, listTools, budget, paidThisMonth,
   available, enabled, dryrun,
   PAID_TOOLS,
-  _internals: { parseRpcBody, payloadOf, textOf, overBudget, resetSession, bucketState },
+  _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState },
 };

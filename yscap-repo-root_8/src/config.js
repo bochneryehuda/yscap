@@ -535,6 +535,11 @@ module.exports = {
     // At-rest key for the stored tokens; falls back to the SSN key. Changing it
     // does not lose anything dangerous — somebody re-approves once.
     tokenKey:     process.env.ELEMENTIX_TOKEN_KEY || null,
+    // THE OWNER'S MONEY CAP: "I have only 1,000 per month." This is the number
+    // of CREDIT-SPENDING contact look-ups allowed in a calendar month, counted
+    // in the database (db/503) so it survives a deploy and spans every instance.
+    // PILOT never spends one on its own — see src/lib/elementix/lookups.js.
+    paidPerMonth: Math.max(0, Number(process.env.ELEMENTIX_PAID_PER_MONTH || 1000)),
     // Self-cap well under the platform ceiling of 1,000 requests/hour, which is
     // shared by the WHOLE organization across every connected client — every
     // officer's session and every background job draw from the same bucket.
