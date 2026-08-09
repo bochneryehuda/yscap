@@ -151,12 +151,24 @@ function cleanEntityName(name) {
 async function resolveEntityByName(borrowerId, name, fields = {}) {
   const llcName = cleanEntityName(name);
   if (!borrowerId || !llcName) return null;
-  const { id, existed } = await require('./llc').findOrCreateLlc(borrowerId, { ...fields, llcName });
+  const llcLib = require('./llc');
+  const { id, existed } = await llcLib.findOrCreateLlc(borrowerId, { ...fields, llcName });
   // A brand-new entity gets its three document slots immediately, so the
   // borrower has somewhere to upload the moment the name is on the file. An
   // existing entity keeps its own (never rebuilt, never clobbered).
   if (!existed) {
     try { await require('../routes/borrower').generateLlcChecklist(id); } catch (_) { /* best-effort */ }
+  } else if (fields && fields.entityType) {
+    /* WHAT KIND OF COMPANY IT IS, stated on a name the borrower ALREADY has
+       (owner-directed 2026-08-09). `findOrCreateLlc` returns an existing entity
+       untouched by contract, so this is the one place a type can reach it — and
+       llc.confirmEntityType carries the guards that make it safe: it only ever
+       writes an entity nobody has confirmed and that nobody has verified. */
+    try {
+      await llcLib.confirmEntityType(id, fields.entityType, {
+        staffId: fields.staffId || null, entitySubtype: fields.entitySubtype,
+      });
+    } catch (_) { /* best-effort */ }
   }
   return { id, existed };
 }

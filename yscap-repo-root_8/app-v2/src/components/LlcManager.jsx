@@ -4,6 +4,7 @@ import DocPreview from './DocPreview.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { EmailInput } from './FormattedInputs.jsx';
+import { ENTITY_TYPES, describeEntity, entityTypeAssumed, titlesFor, subtypesFor } from '../lib/entityType.js';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -116,13 +117,25 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
         formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
         ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct),
+        // WHAT KIND OF COMPANY (owner-directed 2026-08-09). Blank when nobody has
+        // chosen — db/509 stamped the back book as an LLC without anybody saying
+        // so, and showing that assumption pre-selected would turn it into a fact
+        // the first time somebody pressed Save without looking at it.
+        entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',
+        // Which KIND of partnership or trust. Unlike the type, this is never
+        // assumed by a migration — a value here was always typed by a person.
+        entitySubtype: l.entity_subtype || '',
       });
       setMembers((l.members || []).map(m => ({
         fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
         memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
         ownerLlcId: m.owner_llc_id || null,
+        // Who they are on the signature line, and — for a corporation — what they
+        // hold. STAFF-ONLY: the borrower's editor never renders or sends these.
+        memberTitle: m.member_title || '', shares: m.shares == null ? '' : String(m.shares),
+        certificateNumber: m.certificate_number || '',
       })));
-    }).catch(e => { if (idRef.current === forId) setErr(e.message || 'Could not load this LLC'); });
+    }).catch(e => { if (idRef.current === forId) setErr(e.message || 'Could not load this entity'); });
   };
   useEffect(() => { setLlc(null); setF(null); setMembers(null); setErr(''); load(); /* eslint-disable-next-line */ }, [llcId]);
 
@@ -148,6 +161,17 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         // this borrower's library (renaming the row re-resolves by name).
         ownerLlcId: m.memberKind === 'entity' ? (m.ownerLlcId || undefined) : undefined,
         ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined,
+        /* STAFF-ONLY, and sent as keys rather than values so a blank deliberately
+           CLEARS one. A holding company has no title and holds no certificate —
+           it signs through its own people, recorded on its own row — so an entity
+           owner is skipped entirely. The server ignores these keys on the
+           borrower's door, but not sending them at all is the honest half: the
+           borrower's editor cannot see them, so it must not appear to answer. */
+        ...(staff && m.memberKind !== 'entity' ? {
+          memberTitle: m.memberTitle || '',
+          shares: m.shares === '' ? null : m.shares,
+          certificateNumber: m.certificateNumber || '',
+        } : {}),
       })));
       flash('Ownership saved ✓'); await load(); onChanged && onChanged();
     } catch (e) { setErr(e.message || 'Could not save the members'); }
@@ -183,11 +207,16 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
   }
 
   if (err && !llc) return <div role="alert" className="notice err">{err}</div>;
-  if (!llc || !f) return <p className="muted small">Loading LLC…</p>;
+  if (!llc || !f) return <p className="muted small">Loading entity…</p>;
 
   const readOnly = !!llc.read_only;   // a co-borrower viewing the primary's entity
   const locked = !!llc.is_verified || readOnly;
   const badge = llcBadge(llc);
+  /* WHAT THIS ENTITY IS, as the screen should speak about it. Reads the value
+     being EDITED first so switching the type re-words the owners section
+     immediately, before Save — otherwise picking "Corporation" leaves the page
+     still asking for members and offering an LLC's titles. */
+  const kind = describeEntity({ entity_type: f.entityType || llc.entity_type, entity_subtype: f.entitySubtype || llc.entity_subtype });
   const own = pctNum(f.ownershipPct);
   const ownSet = f.ownershipPct !== '';
   const memberTotal = (members || []).reduce((s, m) => s + pctNum(m.ownershipPct), 0);
@@ -216,23 +245,61 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         </p>
       ) : locked && (
         <p className="muted small" style={{ marginBottom: 10 }}>
-          This LLC is verified — its details, ownership and documents are locked and reused automatically on every loan.
+          This entity is verified — its details, ownership and documents are locked and reused automatically on every loan.
           Ask your loan team if something needs to change.
         </p>
       )}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      {/* NOBODY HAS SAID WHAT THIS COMPANY IS. Everything behaves as an LLC in
+          the meantime (which it usually is), but the documents we ask for and
+          the words on the loan documents both hang off this one answer, so the
+          screen admits it is assuming rather than staying quiet about it. */}
+      {!locked && entityTypeAssumed(llc) && (
+        <p className="muted small" style={{ marginBottom: 8, color: '#4B585C' }}>
+          We have this entity down as an <strong>LLC</strong> because that is what almost every entity here is —
+          nobody has confirmed it. If it is a corporation, a partnership or a trust, set the entity type below and
+          we will ask for the right documents.
+        </p>
+      )}
 
       {/* ---- entity details ---- */}
       <div className="ts-inputs">
         <label style={{ gridColumn: '1 / -1' }}><span>Entity name</span>
           <input className="input" value={f.llcName} disabled={locked} onChange={e => setF({ ...f, llcName: e.target.value })} /></label>
+        {/* WHAT KIND OF COMPANY THIS IS (owner-directed 2026-08-09). It decides
+            which governing document we ask for — a corporation has bylaws and a
+            stock certificate, an LLC an operating agreement — so it sits next to
+            the name rather than buried. Blank until somebody chooses: the whole
+            back book was stamped as an LLC by the migration with nobody saying
+            so, and a pre-selected guess would become a stated fact on the next
+            Save. Saving a type re-labels the entity's document slots. */}
+        <label><span>Entity type</span>
+          <select className="input" value={f.entityType} disabled={locked}
+            onChange={e => setF({ ...f, entityType: e.target.value, entitySubtype: '' })}>
+            <option value="">Select…</option>
+            {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
+          </select></label>
+        {/* WHICH KIND — only a partnership and a trust have one, and it earns its
+            place: a REVOCABLE living trust has no EIN of its own (it uses the
+            grantor's Social Security number) and a GENERAL partnership is filed
+            with no state, so this is what stops us demanding documents that do
+            not exist and leaving the entity permanently unverifiable. It also
+            decides what the loan documents call it. */}
+        {kind.hasSubtypes && (
+          <label><span>What kind of {kind.label.toLowerCase()}?</span>
+            <select className="input" value={f.entitySubtype || ''} disabled={locked}
+              onChange={e => setF({ ...f, entitySubtype: e.target.value })}>
+              <option value="">Select…</option>
+              {subtypesFor(f.entityType || llc.entity_type).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+            </select></label>
+        )}
         <label><span>EIN</span>
           <input className="input" value={f.ein} placeholder="XX-XXXXXXX" disabled={locked} onChange={e => setF({ ...f, ein: e.target.value })} /></label>
-        <label><span>Formation state</span>
+        <label><span>{kind.stateLabel}</span>
           <select className="input" value={f.formationState} disabled={locked} onChange={e => setF({ ...f, formationState: e.target.value })}>
             <option value="">—</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
           </select></label>
-        <label><span>Formation date</span>
+        <label><span>{kind.dateLabel}</span>
           <input className="input" type="date" value={f.formationDate} disabled={locked} onChange={e => setF({ ...f, formationDate: e.target.value })} /></label>
         <label><span>Your ownership %</span>
           <input className="input" type="number" min="0" max="100" value={f.ownershipPct} disabled={locked} onChange={e => setF({ ...f, ownershipPct: e.target.value })} /></label>
@@ -272,7 +339,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
                 Two borrowers on this file
               </div>
               <div className="small muted" style={{ marginTop: 2 }}>
-                Split the LLC 50/50 with {coBorrower.fullName} to start — you can adjust either
+                Split the entity 50/50 with {coBorrower.fullName} to start — you can adjust either
                 percentage after adding.
               </div>
             </div>
@@ -296,14 +363,14 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
           <div style={{ fontWeight: 600 }}>Ownership structure</div>
           <p className="muted small" style={{ marginBottom: 8 }}>
             {needsMembers
-              ? <>You own {own}% — tell us who owns the remaining {Math.max(0, Math.round((100 - own) * 100) / 100)}%. Every member and their percentage, until the total is 100%.</>
-              : <>You own 100%. If this entity is actually owned by <strong>another LLC</strong> (a layered entity), lower your % and add that LLC below as an entity owner — it gets its own section, details and three documents.</>}
+              ? <>You own {own}% — tell us who owns the remaining {Math.max(0, Math.round((100 - own) * 100) / 100)}%. Every {kind.ownerNoun} and their percentage, until the total is 100%.</>
+              : <>You own 100%. If this entity is actually owned by <strong>another entity</strong> (a layered entity), lower your % and add it below as an entity owner — it gets its own section, details and three documents.</>}
           </p>
-          {/* (Co-borrower quick-split moved above the ownership gate so a fresh LLC still surfaces it.) */}
+          {/* (Co-borrower quick-split moved above the ownership gate so a fresh entity still surfaces it.) */}
           {(members || []).map((m, i) => (
             <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
               <input className="input" style={{ flex: 2, minWidth: 160 }}
-                placeholder={m.memberKind === 'entity' ? 'Owning LLC name — e.g. Holdings Group LLC' : 'Member full name'}
+                placeholder={m.memberKind === 'entity' ? 'Owning entity name — e.g. Holdings Group LLC' : `${kind.ownerNoun.charAt(0).toUpperCase()}${kind.ownerNoun.slice(1)} full name`}
                 value={m.fullName} disabled={locked}
                 onChange={e => setMembers(ms => ms.map((x, j) => j === i
                   // Renaming an entity member re-resolves by name — drop the pin.
@@ -316,18 +383,56 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
                   onChange={v => setMembers(ms => ms.map((x, j) => j === i ? { ...x, email: v } : x))} />
               )}
               <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: locked || depth >= MAX_NESTED_DEPTH ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
-                title="Layered entity: this slice is owned by ANOTHER LLC, not a person. Saving opens a full entity section for that LLC — its details, its owners, and its three documents.">
+                title="Layered entity: this slice is owned by ANOTHER COMPANY, not a person. Saving opens a full entity section for it — its details, its owners, and its three documents.">
                 <input type="checkbox" checked={m.memberKind === 'entity'} disabled={locked || (m.memberKind !== 'entity' && depth >= MAX_NESTED_DEPTH)}
                   onChange={e => setMembers(ms => ms.map((x, j) => j === i
                     ? { ...x, memberKind: e.target.checked ? 'entity' : 'person', ownerLlcId: null, email: '' }
                     : x))} />
-                This owner is an entity (LLC)
+                This owner is a company
               </label>
               {!locked && <button className="btn link small" onClick={() => setMembers(ms => ms.filter((_, j) => j !== i))}>Remove</button>}
+              {/* ---- WHO SIGNS, AND AS WHAT — STAFF ONLY (owner-directed 2026-08-09).
+                  The owner asked for this to be "only for the staff side to fill
+                  out", and it belongs there: the title prints under the signature
+                  line on every recorded instrument and DocLab merges it verbatim,
+                  so it is a DROPDOWN and never a text box — "managing member",
+                  "Managing Member" and "MGR" must not all be reachable. The share
+                  count and the certificate number are the CORPORATION's analogue
+                  of the percentage: a corporation issues numbered stock
+                  certificates and the pledge of that ownership has to name the
+                  exact certificate being handed over, the way a mortgage names
+                  the exact property. A company owner is skipped — it holds no
+                  title and no certificate; it signs through its own people, who
+                  are recorded on its own row. ---- */}
+              {staff && m.memberKind !== 'entity' && (
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', width: '100%', paddingLeft: 4 }}>
+                  <select className="input" style={{ flex: 1, minWidth: 180 }} value={m.memberTitle || ''} disabled={locked}
+                    aria-label={`Title for ${m.fullName || 'this owner'}`}
+                    onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, memberTitle: e.target.value } : x))}>
+                    <option value="">Title — not set</option>
+                    {titlesFor(f.entityType || llc.entity_type).map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  {kind.usesShares && (
+                    <>
+                      <input className="input" style={{ width: 130 }} type="number" min="1" step="1" placeholder="Shares"
+                        value={m.shares || ''} disabled={locked} aria-label={`Shares held by ${m.fullName || 'this owner'}`}
+                        onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, shares: e.target.value } : x))} />
+                      <input className="input" style={{ width: 170 }} placeholder="Certificate no."
+                        value={m.certificateNumber || ''} disabled={locked} aria-label={`Stock certificate number for ${m.fullName || 'this owner'}`}
+                        onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, certificateNumber: e.target.value } : x))} />
+                    </>
+                  )}
+                  {!m.memberTitle && (
+                    <span className="muted small" style={{ color: '#4B585C' }}>
+                      A title is needed before the closing package can be drafted.
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!locked && <button className="btn ghost small" onClick={() => setMembers(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '', memberKind: 'person', ownerLlcId: null }])}>+ Add a member</button>}
+            {!locked && <button className="btn ghost small" onClick={() => setMembers(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '', memberKind: 'person', ownerLlcId: null, memberTitle: '', shares: '', certificateNumber: '' }])}>+ Add {kind.ownerNoun === 'member' ? 'a member' : `a ${kind.ownerNoun}`}</button>}
             {!locked && <button className="btn primary small" disabled={busy === 'members'} onClick={saveMembers}>{busy === 'members' ? 'Saving…' : 'Save ownership'}</button>}
             <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
               {Math.abs(total - 100) <= 0.01 ? 'Ownership totals 100% ✓' : total > 100 ? `Over 100% by ${Math.round((total - 100) * 100) / 100}%` : `${remaining}% still unaccounted for`}

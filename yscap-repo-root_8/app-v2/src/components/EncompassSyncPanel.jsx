@@ -21,7 +21,7 @@ const LABELS = {
   ys_loan_number: 'Loan number', property_type: 'Property type', units: '# of units',
   deal_type: 'Deal / project type', exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)',
   vesting_title_role: 'Vesting title role (Officer / Individual · field 4008)',
-  vesting_llc: 'Subject LLC / vesting', capital_provider: 'Note buyer / capital provider',
+  vesting_llc: 'Vesting entity', capital_provider: 'Note buyer / capital provider',
   // Borrower + co-borrower identity + subject address
   id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
   id_phone: 'Phone', id_property_address: 'Property address',

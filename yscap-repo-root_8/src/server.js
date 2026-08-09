@@ -1000,6 +1000,19 @@ if (require.main === module) {
         require('./lib/appraisal/property-category-heal').healAppraisalPropertyCategoriesOnce()
           .then((r) => r && r.looked && console.log('[boot] appraisal property category repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal property category repair failed:', e.message));
+        /* THE ENTITY-DOCUMENT SLOTS SAY WHAT EACH ENTITY IS ACTUALLY ASKED FOR
+           (owner-directed 2026-08-09): a corporation for its bylaws and stock
+           certificate, an LLC for its operating agreement. This runs on every
+           boot ON PURPOSE — db/033 copies the shared template's wording back
+           down onto every one of these items each time it runs, which is right
+           for an LLC and wrong for every other type. Migrations are never
+           edited, and a SQL twin of the wording table would drift from the
+           JavaScript, so the repair calls the same one definition every other
+           caller does. Scoped to non-LLC entities (an LLC's correct wording IS
+           the template's), so it is a no-op for the whole back book. */
+        require('./lib/entity-slot-heal').healEntitySlotWordingOnce()
+          .then((r) => r && r.updated && console.log('[boot] entity slot wording:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] entity slot wording failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));

@@ -736,15 +736,16 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 
             <div class="panel">
                 <h2><span class="panel-num">2</span> Vesting &amp; ownership</h2>
-                <p class="panel-note">Most investors take title to the property in an entity (an LLC). Tell us how you'll hold this one.</p>
+                <p class="panel-note">Most investors take title to the property in an entity. Tell us how you'll hold this one.</p>
                 <label class="toggle-card switch" for="vestEntity" style="cursor:pointer">
-                    <span class="tc-text"><b>Taking title in an entity (LLC / Corp)</b>Leave off to borrow as an individual.</span>
+                    <span class="tc-text"><b>Taking title in an entity</b>An LLC, corporation, partnership or trust. Leave off to borrow as an individual.</span>
                     <span style="display:inline-flex;align-items:center"><input type="checkbox" id="vestEntity"><span class="track"></span></span>
                 </label>
                 <div class="field-rows cond hidden" data-cond="vestEntity" style="margin-top:1rem">
                     <div class="field-rows two-col" style="margin:0">
-                        <div class="field"><label for="eName">Entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
-                        <div class="field"><label for="eType">Entity type</label><div class="input"><select id="eType"><option value="">Select…</option><option>LLC</option><option>Corporation (Inc / S-Corp)</option><option>Limited Partnership</option><option>Other</option></select></div></div>
+                        <div class="field"><label for="eName">Vesting entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
+                        <div class="field"><label for="eType">Entity type <span class="req">*</span></label><div class="input"><select id="eType"><option value="">Select…</option><option value="llc">LLC</option><option value="corporation">Corporation (Inc / S-Corp)</option><option value="partnership">Partnership (LP / LLP / general)</option><option value="trust">Trust</option></select></div><span class="field-err">Select the entity type.</span><div class="hint" id="eTypeHint">A corporation uploads its bylaws and stock certificate where an LLC uploads its operating agreement — so we ask up front.</div></div>
+                        <div class="field hidden" id="eSubtypeField"><label for="eSubtype">What kind?</label><div class="input"><select id="eSubtype"><option value="">Select…</option></select></div><div class="hint">A revocable trust has no EIN of its own and a general partnership is not filed with any state — this tells us what we can and cannot ask you for.</div></div>
                     </div>
                     <div class="field-rows two-col" style="margin:0">
                         <div class="field"><label for="eState">State of formation</label><div class="input"><input id="eState" type="text" placeholder="e.g. NY"></div></div>
@@ -752,7 +753,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                     </div>
                 </div>
                 <div class="cond hidden" data-cond="ownership" style="margin-top:1.1rem">
-                    <div class="subhead">LLC ownership split <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— must total 100%; enter one for two borrowers and we'll balance the other</em></div>
+                    <div class="subhead">Entity ownership split <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— must total 100%; enter one for two borrowers and we'll balance the other</em></div>
                     <div class="own-row" data-own="1"><span class="own-name" data-ownname="1">Primary borrower</span><div class="input"><input id="b1Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
                     <div class="own-row" data-own="2"><span class="own-name" data-ownname="2">Borrower 2</span><div class="input"><input id="b2Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
                     <div class="own-row" data-own="3"><span class="own-name" data-ownname="3">Borrower 3</span><div class="input"><input id="b3Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
@@ -1118,6 +1119,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   var $$ = function (s, c) { return Array.prototype.slice.call((c || document).querySelectorAll(s)); };
   var el  = function (id) { return document.getElementById(id); };
   var val = function (id) { var e = el(id); return e ? String(e.value).trim() : ""; };
+  /* The WORDS a dropdown shows, not the key it sends. The review summary,
+     the PDF and the confirmation email are read by a person, so a select
+     whose value is a stored key ("corporation") must print its label
+     ("Corporation (Inc / S-Corp)"). Falls back to the raw value for a
+     plain text box, so it is safe to use anywhere val() is. */
+  var label = function (id) {
+    var e = el(id);
+    if (!e) return "";
+    if (e.tagName === "SELECT" && e.selectedIndex >= 0) {
+      var o = e.options[e.selectedIndex];
+      return o && o.value ? String(o.text).trim() : "";
+    }
+    return String(e.value).trim();
+  };
   var num = function (id) { return YS.num(id); };
   function digits(s) { return (s || "").replace(/\D/g, ""); }
   // Phone / ZIP boxes accept digits only, pretty-printed as the user types —
@@ -1769,6 +1784,13 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     2: function () {
       var bad = [], n = bCount();
       // vesting/ownership now lives in step 2
+      /* WHICH KIND OF ENTITY IS A REQUIRED ANSWER (owner-directed 2026-08-09) —
+         it decides which governing document we ask for, so leaving it blank
+         means asking a corporation for an operating agreement it does not have.
+         Only asked when they are actually vesting in an entity. */
+      if (el("vestEntity").checked) {
+        var etOk = val("eType") !== ""; setErr("eType", !etOk); if (!etOk) bad.push("eType");
+      } else setErr("eType", false);
       if (el("vestEntity").checked && n > 1) {
         var tot = 0; for (var j = 1; j <= n; j++) tot += num("b" + j + "Own");
         if (Math.abs(tot - 100) > 0.5) { bad.push("ownership"); updateOwnTotal(); }
@@ -1824,8 +1846,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     S.push({ title: "Loan officer", step: 1, items: [
       ["Loan officer", off ? (off.name + (off.title ? " — " + off.title : "")) : "No preference — routed to loan desk"]
     ]});
-    var v = [["Vesting", el("vestEntity").checked ? "Entity (LLC / Corp)" : "Individual"]];
-    if (el("vestEntity").checked) { v.push(["Entity name", val("eName")]); v.push(["Entity type", val("eType")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
+    var v = [["Vesting", el("vestEntity").checked ? (label("eType") || "Entity") : "Individual"]];
+    if (el("vestEntity").checked) { v.push(["Vesting entity name", val("eName")]); v.push(["Entity type", label("eType")]); if (val("eSubtype")) v.push(["Kind", label("eSubtype")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
     S.push({ title: "Vesting", step: 1, items: v });
     for (var i = 1; i <= n; i++) {
       var p = "b" + i, items = [
@@ -2141,11 +2163,46 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       requestedIrAmount: el("finReserve").checked ? val("resAmount") : null,
       expFlips: val("expFlips"), expHolds: val("expBrrrr"), expGround: val("expGround"),
       eName: el("vestEntity").checked ? val("eName") : null,
+      /* WHAT KIND OF ENTITY (owner-directed 2026-08-09). This box has existed
+         since the form shipped and even prints on the review summary, but the
+         answer was never SENT — so every entity arrived assumed to be an LLC and
+         a corporation was asked for an operating agreement it does not have. */
+      eType: el("vestEntity").checked ? val("eType") : null,
+      /* Only a partnership and a trust have a kind, and it is what stops us
+         asking a revocable trust for an EIN it does not have. */
+      eSubtype: el("vestEntity").checked ? val("eSubtype") : null,
       eState: el("vestEntity").checked ? val("eState") : null,
       eEin: el("vestEntity").checked ? val("eEin") : null,
       payload: YS.collectState()
     };
   }
+  /* WHICH KIND OF PARTNERSHIP OR TRUST — only those two have one, so the box
+     appears only when it has something to ask. It is not required: a borrower
+     who does not know can leave it, and the loan team settles it before closing.
+     Kept in step with src/lib/entity-type.js SUBTYPES. */
+  var ENTITY_SUBTYPES = {
+    partnership: [["general", "General partnership"], ["limited", "Limited partnership (LP)"], ["llp", "Limited liability partnership (LLP)"]],
+    trust: [["revocable", "Revocable (living) trust"], ["irrevocable", "Irrevocable trust"]]
+  };
+  function syncEntitySubtype() {
+    var wrap = el("eSubtypeField"), sel = el("eSubtype");
+    if (!wrap || !sel) return;
+    var opts = ENTITY_SUBTYPES[val("eType")] || [];
+    if (!opts.length) { wrap.classList.add("hidden"); sel.value = ""; sel.innerHTML = '<option value="">Select\u2026</option>'; return; }
+    var keep = sel.value;
+    sel.innerHTML = '<option value="">Select\u2026</option>';
+    for (var i = 0; i < opts.length; i++) {
+      var o = document.createElement("option");
+      o.value = opts[i][0]; o.textContent = opts[i][1];
+      sel.appendChild(o);
+    }
+    // A kind only survives a type change if the new type still offers it.
+    sel.value = opts.some(function (x) { return x[0] === keep; }) ? keep : "";
+    wrap.classList.remove("hidden");
+  }
+  if (el("eType")) el("eType").addEventListener("change", syncEntitySubtype);
+  syncEntitySubtype();
+
   function doSubmit() {
     if (!el("consent").checked) {
       el("consentErr").style.display = "block";

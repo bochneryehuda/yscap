@@ -79,6 +79,17 @@ const SWITCHES = [
   { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
   { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
 
+  // DocLab (Private Lender Law) — loan-document drafting. Same three-stage shape as
+  // the AMC and Class: master turns on reading (the token, the template catalogue, a
+  // state's prepayment options, a request's status); OUTBOUND actually puts a loan
+  // request in front of the law firm. TEST MODE is checked FIRST, so leaving it on is
+  // always safe while somebody is verifying a payload.
+  // No `resume` flag: every consumer reads the switch at CALL time, so turning one
+  // back on takes effect immediately with no redeploy.
+  { key: 'DOCLAB_ENABLED', integration: 'doclab', label: 'DocLab loan documents (reading)', dangerous: false, envDefault: () => !!(cfg.doclab && cfg.doclab.enabled) },
+  { key: 'DOCLAB_DRYRUN', integration: 'doclab', label: 'DocLab — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.doclab && cfg.doclab.dryrun) },
+  { key: 'DOCLAB_OUTBOUND_ENABLED', integration: 'doclab', label: 'Send loan document requests to DocLab (write)', dangerous: true, envDefault: () => !!(cfg.doclab && cfg.doclab.outboundEnabled) },
+
   /* THE DOWN-ALERT MONITOR — the only PLATFORM-level switch here, and the only one with
      `integration: null`. It belongs to no single card because it watches all of them, so
      the health registry's `s.integration === entry.key` filter never attaches it to one

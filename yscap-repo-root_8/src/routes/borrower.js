@@ -768,8 +768,12 @@ router.post('/applications/:id/request-draw', async (req, res) => {
 // definition now, shared with every other door that takes a typed entity name
 // (src/lib/vesting.js): it reuses a name the borrower already has, recovers from
 // the unique-index race, and builds a brand-new entity's document slots.
-async function resolveEntityByName(borrowerId, name) {
-  const out = await require('../lib/vesting').resolveEntityByName(borrowerId, name);
+// `fields` carries what the door was told about the entity — today the ENTITY
+// TYPE (LLC / Corporation / Partnership / Trust, owner-directed 2026-08-09). It
+// is only ever used for an entity that is genuinely NEW; a name the borrower
+// already has keeps its own details (see vesting.resolveEntityByName).
+async function resolveEntityByName(borrowerId, name, fields = {}) {
+  const out = await require('../lib/vesting').resolveEntityByName(borrowerId, name, fields);
   return out ? out.id : null;
 }
 
@@ -781,7 +785,7 @@ router.post('/applications', async (req, res) => {
   const numProblem = require('../lib/fields').applicationNumberProblem(b);
   if (numProblem) return res.status(400).json({ error: numProblem });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
-  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName, { entityType: b.entityType }); } catch (_) { /* best-effort */ } }
   // Assignment invariant (mirrors the staff create, #96): the ticked flag is the
   // truth; underlying/fee are hard-nulled off an assignment, and the stored
   // purchase price is the underlying + the (derived) fee so leverage/pricing
@@ -820,6 +824,9 @@ router.post('/applications', async (req, res) => {
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*, l.llc_name, l.is_verified AS llc_verified, l.formation_state AS llc_formation_state,
+            -- What kind of company the file vests in, so the borrower's own screen
+            -- asks for the right governing document by name (owner-directed 2026-08-09).
+            l.entity_type, l.entity_type_confirmed, l.entity_subtype,
             cb.first_name AS co_borrower_first_name, cb.last_name AS co_borrower_last_name,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
@@ -1314,7 +1321,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const typed = String((b2.overrides && b2.overrides.entityName) || b2.entityName || '').trim();
       const cur = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
       if (typed && !cur.llc_id && cur.borrower_id) {
-        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed);
+        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed, { entityType: b2.entityType });
         if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'borrower', actor: null });
       }
     } catch (e) { console.error('[borrower-register] vesting from studio failed:', db.describeError(e)); }
@@ -2064,7 +2071,15 @@ router.post('/llcs', async (req, res) => {
   const { id: llcId, existed } = await llcLib.findOrCreateLlc(me(req), {
     llcName: b.llcName, ein: ein.ein, formationState: b.formationState,
     formationDate: b.formationDate, ownershipPct: b.ownershipPct,
+    entityType: b.entityType,   // LLC / Corporation / Partnership / Trust (owner-directed 2026-08-09)
+    // …and, for a partnership or a trust, WHICH kind — it decides what we may ask
+    // them for (a revocable trust has no EIN; a general partnership no state filing).
+    entitySubtype: b.entitySubtype,
   });
+  /* A type stated on a name the borrower ALREADY has still records — but only
+     while nobody has confirmed one and the entity is not verified. The rules and
+     all three guards live in llc.confirmEntityType. */
+  if (existed) { try { await llcLib.confirmEntityType(llcId, b.entityType, { entitySubtype: b.entitySubtype }); } catch (_) { /* best-effort */ } }
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
@@ -2092,6 +2107,31 @@ router.patch('/llcs/:id', async (req, res) => {
   }
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  /* WHAT KIND OF COMPANY THIS IS (owner-directed 2026-08-09). Written through the
+     ONE rule in llc.js rather than the column map above, because recording a type
+     is three columns plus a re-label of the entity's document slots — a
+     corporation is asked for bylaws and a stock certificate, not an operating
+     agreement. A value we cannot read is REFUSED here rather than silently
+     ignored: the borrower picked something, so answering 200 while storing
+     nothing is the repo's "returned 200 but didn't save" class. */
+  if (b.entityType !== undefined && String(b.entityType || '').trim()) {
+    const ET = require('../lib/entity-type');
+    if (!ET.isRecognized(b.entityType)) {
+      return res.status(400).json({ error: `Pick one of: ${ET.TYPES.map((t) => t.label).join(', ')}.` });
+    }
+    /* The sub-kind is normalized AGAINST the type being saved, so switching a
+       trust to an LLC cannot leave "revocable" behind on a type that has no
+       sub-kind — and an explicit blank CLEARS it, because "I picked the wrong
+       one" has to be undoable. */
+    const sub = ET.normalizeSubtype(ET.normalizeKey(b.entityType), b.entitySubtype) || null;
+    await db.query(
+      `UPDATE llcs SET entity_type=$2, entity_type_confirmed=true, entity_type_set_at=now(),
+                       entity_subtype=$4, updated_at=now()
+        WHERE id=$1 AND borrower_id=$3 AND is_verified=false`,
+      [req.params.id, ET.normalizeKey(b.entityType), me(req), sub]);
+    try { await llcLib.applyEntitySlotWording(req.params.id); } catch (_) { /* wording is cosmetic */ }
+    if (Object.keys(map).every((k) => b[k] === undefined)) return res.json({ ok: true });
+  }
   // WO-6 (F-M11): a mid-typed formation date ('0026-07-15') must not persist as
   // year 26 — normalize it (2-digit year → 2026, garbage → null) like every
   // other typed date field, so the year-0026 class can't corrupt LLC ages.
@@ -4180,7 +4220,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // Only accept an LLC the borrower actually owns.
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   // A typed-but-never-picked entity name still links a real profile LLC.
-  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName, { entityType: b.entityType }); } catch (_) { /* best-effort */ } }
 
   // resolve officer -> null means Lead Capture
   let officerId = null, officerRow = null;
@@ -4451,6 +4491,13 @@ async function generateLlcChecklist(llcId, client = db) {
     if (dup.rows[0]) continue;
     await insertFromTemplate(tpl, { llc_id: llcId }, client);
   }
+  /* NAME THE SLOTS FOR WHAT THIS ENTITY ACTUALLY IS (owner-directed 2026-08-09).
+     The slots were just copied from ONE template, so they all say "operating
+     agreement" — which is a document a corporation does not have. This rewrites
+     them to the entity's own type, and because SharePoint names its folders from
+     the item's label and the TPR export categorises from it, both follow with no
+     second map. Never throws; an LLC is unchanged by it. */
+  try { await require('../lib/llc').applyEntitySlotWording(llcId, client); } catch (_) { /* wording is cosmetic next to the slots existing */ }
 }
 
 // One-shot backfill: apply the RTL condition set + internal checklist to every

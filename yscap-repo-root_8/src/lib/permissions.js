@@ -48,7 +48,7 @@ const CAPABILITIES = [
   // Owner-directed 2026-08-04: loan officers get this too, not only processors/
   // admins. A dedicated capability so it does NOT grant the broader
   // sign_off_conditions power.
-  { key: 'waive_vesting_llc', label: 'Switch vesting to individual (waive LLC)', hint: 'Mark a file as closing in the borrower\'s personal name — waives the LLC condition and adds the Non-Owner-Occupied certification. Loan officers, processors, closers, underwriters and admins hold it.' },
+  { key: 'waive_vesting_llc', label: 'Switch vesting to individual (waive the entity)', hint: 'Mark a file as closing in the borrower\'s personal name — waives the vesting-entity condition and adds the Non-Owner-Occupied certification. Loan officers, processors, closers, underwriters and admins hold it.' },
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
   { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
