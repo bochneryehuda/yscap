@@ -223,6 +223,45 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'elementix', name: 'Elementix (recorded deeds / mortgages)', group: 'data',
+    purpose: 'Looks up recorded deeds and mortgages to research a property, an owner, or a borrower’s claimed track record. Read-only — PILOT never writes anything to Elementix.',
+    direction: 'One-way (read)', auth: 'Sign-in approved once in a browser (no key to buy)',
+    // No required key: the endpoint is signed in to on the seat the owner already
+    // pays for, so a missing CLIENT_ID is normal and must not read as misconfigured.
+    env: [{ name: 'ELEMENTIX_URL', required: false }, { name: 'ELEMENTIX_CLIENT_ID', required: false },
+      { name: 'ELEMENTIX_TOKEN_KEY', required: false }],
+    switches: [{ name: 'ELEMENTIX_ENABLED', label: 'Lookups' }, { name: 'ELEMENTIX_DRYRUN', label: 'Dry run' }],
+    // DELIBERATELY NOT a live probe. Every reach counts against a ceiling of
+    // 1,000 requests/hour that is shared by the WHOLE organization, so probing on
+    // each page load would spend the team's allowance to tell us what the stored
+    // authorization already says. "Can we actually reach it?" is answered on
+    // demand by GET /api/admin/elementix/discover instead.
+    liveProbe: false,
+    async probe() {
+      const oauth = require('../../elementix/oauth');
+      let s;
+      try { s = await oauth.status(); }
+      catch (e) { return { configured: true, live: null, detail: `Could not read the stored connection: ${e && e.message}` }; }
+      if (!s.configured) return { configured: false, live: null, detail: s.detail || 'The Elementix address is not set.' };
+      const on = require('./switches').on('ELEMENTIX_ENABLED');
+      if (!s.connected) {
+        return { configured: true, enabled: on, live: null,
+          detail: 'Not connected yet — somebody has to approve PILOT once in a browser (Connect on this page).' };
+      }
+      // Whether it RENEWS ITSELF is the fact that decides if this keeps working
+      // unattended, so it is the thing worth saying out loud on the status line.
+      const renew = s.selfRenewing
+        ? 'and renews itself, so nobody has to approve again'
+        : 'but did NOT get a renewal token, so somebody will have to approve again when it expires';
+      if (!on) {
+        return { configured: true, enabled: false, live: null,
+          detail: `Connected (${s.scopedTo}-wide) ${renew}. Lookups are switched off, so nothing is being read yet.` };
+      }
+      return { configured: true, enabled: true, live: null,
+        detail: `Connected (${s.scopedTo}-wide) ${renew}.${s.lastError ? ` Last problem: ${s.lastError}` : ''}` };
+    },
+  },
+  {
     key: 'clickup', name: 'ClickUp (pipeline / CRM)', group: 'workflow',
     purpose: 'Keeps loan-file data (status, borrower details, dates) in sync with the team’s ClickUp pipeline.',
     direction: 'Two-way', auth: 'API token',
