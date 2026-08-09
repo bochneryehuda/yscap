@@ -372,12 +372,49 @@ function domAudit(opts) {
     return root;
   };
 
+  // TEXT SCROLLED OUT OF ITS OWN SCROLLER IS NOT ON THE PAGE.
+  // A row inside a `overflow-y:auto` list still reports a rect where it WOULD
+  // be, far below the scroller, while being clipped and painted nowhere. Both
+  // checks below then read whatever really occupies those coordinates — the
+  // page footer — and call it a collision. Measured on the staff chat list:
+  // the list bottom sits 8px ABOVE the footer, so nothing was ever overlapping.
+  // So a leaf is kept only for the part of it that survives every clipping
+  // ancestor.
+  const visibleRect = (el, r) => {
+    let n = el.parentElement, box = { l: r.left, t: r.top, rt: r.right, b: r.bottom }, guard = 0;
+    while (n && n.nodeType === 1 && guard++ < 40) {
+      const cs = info.get(n)?.cs || getComputedStyle(n);
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+        const c = n.getBoundingClientRect();
+        box = { l: Math.max(box.l, c.left), t: Math.max(box.t, c.top),
+                rt: Math.min(box.rt, c.right), b: Math.min(box.b, c.bottom) };
+        if (box.rt <= box.l || box.b <= box.t) return null;
+      }
+      n = n.parentElement;
+    }
+    return box;
+  };
+
   const leaves = [];
   for (const [el, { cs, r }] of info) {
     const own = Array.from(el.childNodes).filter((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
     if (!own.length) continue;
     if (r.width < 8 || r.height < 6) continue;
-    leaves.push({ el, r, cs });
+    const vis = visibleRect(el, r);
+    if (!vis) continue;                                   // clipped away entirely
+    // Mostly clipped counts as clipped: a row peeking one pixel over the edge
+    // of its scroller is not what anyone means by "text on top of text".
+    if ((vis.rt - vis.l) * (vis.b - vis.t) < r.width * r.height * 0.6) continue;
+    // AN INLINE ELEMENT THAT WRAPS HAS ONE RECT PER LINE, AND THE BOUNDING
+    // RECT IS THEIR UNION — a box covering the whole paragraph width and every
+    // line it touches, most of which contains no text of that element at all.
+    // Two wrapped `<b>`s in one paragraph then "overlap 100%" while sitting on
+    // different lines (measured on the API-health page: the paragraphs those
+    // `<b>`s live in are thousands of pixels apart). So overlap is compared on
+    // the LINE boxes, which is where the text actually is.
+    const boxes = Array.from(el.getClientRects())
+      .filter((b) => b.width > 4 && b.height > 4);
+    leaves.push({ el, r, cs, boxes: boxes.length ? boxes : [r] });
     if (leaves.length > 500) break;
   }
   const seen = new Set();
@@ -385,12 +422,18 @@ function domAudit(opts) {
     for (let j = i + 1; j < leaves.length; j++) {
       const A = leaves[i], B = leaves[j];
       if (A.el.contains(B.el) || B.el.contains(A.el)) continue;
-      const w = Math.min(A.r.right, B.r.right) - Math.max(A.r.left, B.r.left);
-      const h = Math.min(A.r.bottom, B.r.bottom) - Math.max(A.r.top, B.r.top);
-      if (w <= 1 || h <= 1) continue;
-      const inter = w * h;
-      const small = Math.min(A.r.width * A.r.height, B.r.width * B.r.height);
-      if (inter < small * 0.35) continue;
+      // Cheap reject on the union rects before the per-line comparison.
+      if (Math.min(A.r.right, B.r.right) - Math.max(A.r.left, B.r.left) <= 1) continue;
+      if (Math.min(A.r.bottom, B.r.bottom) - Math.max(A.r.top, B.r.top) <= 1) continue;
+      let inter = 0, small = Infinity;
+      for (const a of A.boxes) for (const b of B.boxes) {
+        const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (w <= 1 || h <= 1) continue;
+        inter = Math.max(inter, w * h);
+        small = Math.min(small, a.width * a.height, b.width * b.height);
+      }
+      if (!inter || inter < small * 0.35) continue;
       if (stackRoot(A.el) !== stackRoot(B.el)) continue;   // layered, not collided
       // A leaf that is itself lifted out of the flow over its neighbour is a
       // deliberate badge/tooltip, not a collision.
