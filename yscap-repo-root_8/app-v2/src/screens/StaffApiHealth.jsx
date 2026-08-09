@@ -778,7 +778,7 @@ function MirrorBackfillPanel() {
                   ))}
                 </ul>
               ) : (
-                <div style={{ marginTop: 6 }}>e.g. Heter Iska, appraisal photos. Refresh to see the full list.</div>
+                <div style={{ marginTop: 6 }}>Refresh to see the full list.</div>
               )}
             </div>
           )}

@@ -90,7 +90,7 @@ async function scoped() {
   await mkDoc('mirrored', { sharepoint_backed_up_at: new Date(), sharepoint_backup_ref: 'drive!item1' });
   await mkDoc('waiting');                                   // in scope, not yet copied
   await mkDoc('heter', { doc_kind: 'heter_iska_signed', ...settled(R.heterIska) });
-  await mkDoc('photo', { doc_kind: 'appraisal_photo', ...settled(R.appraisalPhoto) });
+  await mkDoc('photo', { doc_kind: 'appraisal_photo', ...settled(R.appraisalPhotoLegacy) });
   await mkDoc('inSystem', { doc_kind: 'something_else', ...settled(R.defaultNeverMirror) });
   await mkDoc('superseded', { doc_kind: 'tpr_export', is_current: false, ...settled(R.superseded) });
   await mkDoc('supersededHeal', { doc_kind: 'tpr_export', is_current: false, ...settled(R.supersededHeal) });
@@ -131,7 +131,7 @@ async function scoped() {
 
   // ── each reason lands in its OWN bucket ───────────────────────────────────
   assert(Number(s.skip_heter_iska) === 1, 'the Heter Iska has its own line');
-  assert(Number(s.skip_appraisal_photos) === 1, 'appraisal photos have their own line');
+  assert(Number(s.skip_appraisal_photos) === 1, 'an older, replaced appraisal-photo set has its own line');
   assert(Number(s.skip_in_system_only) === 1, 'other in-system-only kinds have their own line');
   assert(Number(s.skip_superseded) === 2, 'BOTH superseded wordings (settle pass + stuck-heal) share one line');
   assert(Number(s.skip_duplicate) === 1, 'duplicates group despite the document id in the text');
@@ -147,10 +147,11 @@ async function scoped() {
   assert(sum2 === s2.skipped_not_mirrored, 'the breakdown still adds up with an unknown reason present');
 
   // ── a never-mirror kind between upload and the settle pass is VISIBLE ─────
+  // (the Heter Iska — appraisal photos left the never-mirror set on 2026-08-09)
   // It is excluded from `pending` by NEVER_MIRROR_SQL and has no reason yet, so
   // without `unaccounted` it would sit in none of the buckets and the totals
   // would silently fail to add up.
-  await mkDoc('preSettle', { doc_kind: 'appraisal_photo' });
+  await mkDoc('preSettle', { doc_kind: 'heter_iska_signed' });
   const s3 = await scoped();
   assert(Number(s3.unaccounted) === 1, 'a never-mirror kind awaiting the settle pass is counted, not silently dropped');
 

@@ -768,6 +768,15 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalPhotoKindsOnce()
           .then((r) => r && r.refreshed && console.log('[boot] appraisal photo re-classify:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal photo re-classify failed:', e.message));
+        // Previous-files fix (owner-directed 2026-08-09): appraisal photos used to be a
+        // never-mirror kind, so every set already in PILOT was settled OUT of the mirror
+        // queue and would never reach SharePoint on its own. Copy the CURRENT sets into
+        // their new "Appraisal photos" folder; a superseded set is retired, not copied.
+        // Mirrors first and stamps after, so a failure never re-arms the row as pending
+        // and the backlog SLO can never fire because of this pass. Bounded, self-draining.
+        require('./lib/sharepoint-backup').backfillAppraisalPhotoMirrorOnce()
+          .then((r) => r && r.mirrored && console.log('[boot] appraisal photo mirror backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo mirror backfill failed:', e.message));
         // Previous-files fix: appraisals imported before the As-Is/ARV comp-grid split have every
         // comp stored as 'unknown', so the report shows one mixed grid instead of two. Re-run the
         // extractor on each pre-split appraisal's stored XML and write back the per-comp grid.

@@ -93,12 +93,16 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 //   • heter_iska_signed — owner policy: kept in-system + on DocuSign ONLY (never
 //     leaks; companion to the TPR export denylist + rtl_cond_iska.tpr_exclude).
 //     (DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.3/A.9.)
-//   • appraisal_photo — derived thumbnails auto-extracted from the appraisal PDF
-//     (which IS mirrored); up to ~24 per file, so mirroring them floods the team
-//     site for no gain.
+//
+// appraisal_photo WAS on this list and is NOT any more (owner-directed
+// 2026-08-09). Shown the full list of what the mirror skips and asked which to
+// change, the owner picked the photos — "in their own subfolder". They were
+// excluded because ~24 images per file would flood the category folder sitting
+// next to the actual loan documents; a dedicated `Appraisal photos` folder
+// (categoryPathFor) answers that objection without costing the pictures, which
+// are the one skipped kind a person actually wants to open in the team site.
 const NEVER_MIRROR_REASON = {
   heter_iska_signed: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
-  appraisal_photo: 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)',
 };
 const DEFAULT_NEVER_MIRROR_REASON = 'not mirrored (owner policy: this document kind is kept in-system only)';
 const NEVER_MIRROR_KINDS = new Set(Object.keys(NEVER_MIRROR_REASON));
@@ -142,14 +146,24 @@ const duplicateBytesReason = (id) => `${SKIP_DUPLICATE_PREFIX}${id}`;
 // "not mirrored" — that document IS in SharePoint, just not where we filed it.
 const SKIP_ESIGN_SELFTEST_PREFIX = 'e-sign self-test —';
 const SKIP_HUMAN_PLACED_PREFIX = 'left where a human put it';
+// Appraisal photos were a never-mirror KIND until 2026-08-09. Two reasons must
+// stay recognised so the scoreboard never drops a row into `other`: the LEGACY
+// stamp still on every photo mirrored-nothing before that change (kept verbatim
+// — it is written on rows already in the database and re-typing it here is the
+// only way to keep grouping them), and the reason the back-fill leaves on a
+// SUPERSEDED set, which is deliberately never copied: those are the pictures
+// from an appraisal a later import replaced, so copying them would put two
+// contradictory photo sets of one property in the team site.
+const LEGACY_SKIP_APPRAISAL_PHOTO = 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)';
+const SKIP_REASON_PHOTO_SUPERSEDED = 'an older photo set — a newer appraisal import replaced it, and that newer set is in SharePoint';
 // LIKE-safe prefix match (the prefixes carry no wildcards today; escaped anyway
 // so adding one later can never silently widen a bucket).
 const _sqlPrefix = (col, p) => `${col} LIKE ${_sqlLit(`${String(p).replace(/([%_\\])/g, '\\$1')}%`)}`;
 const SKIP_BUCKETS = [
   { key: 'heter_iska', match: `d.sharepoint_skipped_reason = ${_sqlLit(NEVER_MIRROR_REASON.heter_iska_signed)}`,
     label: 'Heter Iska — kept in PILOT and DocuSign only, by your instruction' },
-  { key: 'appraisal_photos', match: `d.sharepoint_skipped_reason = ${_sqlLit(NEVER_MIRROR_REASON.appraisal_photo)}`,
-    label: 'Appraisal photos — pulled out of the appraisal report (the report itself IS in SharePoint)' },
+  { key: 'appraisal_photos', match: `d.sharepoint_skipped_reason IN (${_sqlLit(LEGACY_SKIP_APPRAISAL_PHOTO)}, ${_sqlLit(SKIP_REASON_PHOTO_SUPERSEDED)})`,
+    label: 'Appraisal photos from an older, replaced appraisal — the current set IS in SharePoint' },
   { key: 'in_system_only', match: `d.sharepoint_skipped_reason = ${_sqlLit(DEFAULT_NEVER_MIRROR_REASON)}`,
     label: 'Other kinds kept inside PILOT only' },
   { key: 'superseded', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_SUPERSEDED_PREFIX),
@@ -453,6 +467,14 @@ function categoryPathFor(row) {
   if (row.doc_kind === 'term_sheet') return ['Term Sheet', 'Unsigned'];
   if (row.doc_kind === 'term_sheet_signed') return ['Term Sheet', 'Signed'];
   if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
+  // The appraisal's own pictures, in their own folder (owner-directed 2026-08-09).
+  // The PARENT is derived, never spelled, so the photos always sit BESIDE the
+  // appraisal report rather than in a folder that could drift away from it if the
+  // category is ever renamed. Note this also hands the photos their own version
+  // stream for free: `categoryFor` is the JOINED path and `stateKeyFor` slugs it,
+  // so a re-import superseding 24 photos can never bump the appraisal REPORT's
+  // Version-N counter — they are two folders, so they must be two streams.
+  if (row.doc_kind === 'appraisal_photo') return [tprCategoryOf(row), 'Appraisal photos'];
   // Draw Management — per-draw folders (owner-directed 2026-08-06): each draw's
   // documents (our PILOT reports, TrustPoint/trinary reports, the inspector's own
   // report, the Sitewire virtual-inspection PDF) file under Draws/Draw N/<source>,
@@ -741,6 +763,94 @@ async function settleNeverMirror() {
       RETURNING d.id`);
   if (lead.rowCount) console.log(`[sp-sync] settled ${lead.rowCount} lead/CRM attachment(s) (not pipeline docs)`);
   return (r.rowCount || 0) + (lead.rowCount || 0);
+}
+
+/**
+ * PREVIOUS AND FUTURE — copy the appraisal photos already on file.
+ *
+ * Owner-directed 2026-08-09. Removing `appraisal_photo` from the never-mirror
+ * set only reaches appraisals imported from now on: every photo already in
+ * PILOT was SETTLED (backed_up_at stamped + a skip reason) precisely so it would
+ * leave the pending population, and a settled row is invisible to the drain
+ * forever. Without this pass the owner's whole back catalogue of property
+ * pictures would never appear, which is the standing "previous AND future" rule.
+ *
+ * IT MIRRORS FIRST AND STAMPS AFTER, and that ordering is the whole design.
+ * The obvious implementation — clear the settle stamps and let the normal drain
+ * pick the rows up — sets `sharepoint_backed_up_at = NULL` on documents created
+ * WEEKS ago, and the backlog SLO measures `min(created_at)` across exactly that
+ * population. So the first boot after this change would report an oldest-pending
+ * age of weeks, breach the SLO, flip the mirror unhealthy and email every admin
+ * — an alarm caused entirely by a deliberate policy change, which is how people
+ * learn to ignore alarms. Calling `mirrorRow` directly on a still-settled row
+ * uploads it and lets `uploadAndRecord` overwrite the stamps on SUCCESS, so a
+ * failure leaves the row exactly as it was: still settled, still invisible to
+ * the SLO, retried on the next boot. The pending/stuck/oldest-pending numbers
+ * never move because of this pass.
+ *
+ * ONLY THE CURRENT SET IS COPIED. A re-imported appraisal retires its
+ * predecessor's photos (`is_current = false`), and copying those too would put
+ * two contradictory photo sets of one property in the team site — so a
+ * superseded set is re-stamped with a reason that says so and stays out.
+ * Nothing is deleted either way; the bytes stay in PILOT.
+ *
+ * Bounded per boot and self-draining (a success clears the skip reason, so the
+ * row leaves the candidate set). Never throws. Off with
+ * SHAREPOINT_PHOTO_BACKFILL_DISABLED=1; batch via SHAREPOINT_PHOTO_BACKFILL_FILES.
+ */
+async function backfillAppraisalPhotoMirrorOnce() {
+  const out = { scanned: 0, mirrored: 0, superseded: 0, failed: 0, skipped: null };
+  if (process.env.SHAREPOINT_PHOTO_BACKFILL_DISABLED === '1') return { ...out, skipped: 'disabled' };
+  if (!enabled()) return { ...out, skipped: 'sync disabled' };
+  const limit = Math.max(1, parseInt(process.env.SHAREPOINT_PHOTO_BACKFILL_FILES || '120', 10) || 120);
+  try {
+    // Retire the superseded sets first — one cheap statement, no uploads, and it
+    // shrinks the candidate set the paid loop below has to walk.
+    const sup = await withTimeout(db.query(
+      `UPDATE documents SET sharepoint_skipped_reason = $1
+        WHERE doc_kind = 'appraisal_photo'
+          AND COALESCE(is_current, true) = false
+          AND sharepoint_backup_ref IS NULL
+          AND sharepoint_skipped_reason IS DISTINCT FROM $1`, [SKIP_REASON_PHOTO_SUPERSEDED]),
+      DB_OP_TIMEOUT_MS, 'photo-backfill supersede stamp timed out');
+    out.superseded = sup.rowCount || 0;
+
+    const { rows } = await withTimeout(db.query(
+      `SELECT id FROM documents
+        WHERE doc_kind = 'appraisal_photo'
+          AND COALESCE(is_current, true) = true
+          AND sharepoint_backup_ref IS NULL          -- not already in SharePoint
+          AND sharepoint_skipped_reason IS NOT NULL  -- settled by the old policy
+          AND storage_ref IS NOT NULL
+        ORDER BY created_at ASC
+        LIMIT $1`, [limit]), DB_OP_TIMEOUT_MS, 'photo-backfill selection timed out');
+    out.scanned = rows.length;
+
+    for (const { id } of rows) {
+      let row;
+      try { row = await enrichedRowById(id); } catch (_) { row = null; }
+      if (!row) { out.failed++; continue; }
+      try {
+        await withTimeout(mirrorRow(row), FORCE_ATTEMPT_TIMEOUT_MS, 'photo mirror timed out');
+        out.mirrored++;
+      } catch (e) {
+        // Deliberately NOT recordFailure: that path is for rows in the live
+        // queue and would re-arm this document as pending, which is the exact
+        // SLO false alarm this pass exists to avoid. The row keeps its settle
+        // stamps and is simply retried on the next boot.
+        out.failed++;
+        console.warn(`[sp-photos] doc ${id}: ${e.message}`);
+      }
+      await sleep(PACING_MS);      // the same polite gap every other upload loop uses
+    }
+  } catch (e) {
+    console.warn('[sp-photos] backfill error:', e.message);
+    return { ...out, skipped: 'error' };
+  }
+  if (out.mirrored || out.superseded || out.failed) {
+    console.log(`[sp-photos] appraisal-photo backfill: ${out.mirrored} copied, ${out.superseded} older set(s) retired, ${out.failed} to retry`);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ versioning
@@ -2757,6 +2867,8 @@ module.exports = {
   // shelf re-filing (owner-directed 2026-08-03) — exported for the admin
   // trigger and the DB test; see lib/sharepoint-shelf.js for the rule.
   refileOnce, refileRow, refileBatch,
+  // Appraisal-photo mirroring back-fill (owner-directed 2026-08-09).
+  backfillAppraisalPhotoMirrorOnce,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   classifyMirrorError, forceAttemptDoc,
   neverAttemptedStrays, pendingBatch, explainExclusion, enrichedRowById,
@@ -2786,7 +2898,8 @@ module.exports = {
     buckets: SKIP_BUCKETS,
     reasons: {
       heterIska: NEVER_MIRROR_REASON.heter_iska_signed,
-      appraisalPhoto: NEVER_MIRROR_REASON.appraisal_photo,
+      appraisalPhotoLegacy: LEGACY_SKIP_APPRAISAL_PHOTO,
+      appraisalPhotoSuperseded: SKIP_REASON_PHOTO_SUPERSEDED,
       defaultNeverMirror: DEFAULT_NEVER_MIRROR_REASON,
       superseded: SKIP_REASON_SUPERSEDED,
       supersededHeal: SKIP_REASON_SUPERSEDED_HEAL,
