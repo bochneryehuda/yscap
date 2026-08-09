@@ -262,8 +262,14 @@ router.get('/files/:id/orders', async (req, res) => {
     `SELECT class_order_row, kind, count(*)::int n FROM class_revisions
       WHERE class_order_row = ANY($1::bigint[]) AND status IN ('requested','sent')
       GROUP BY class_order_row, kind`, [ids])).rows : [];
+  // `process_error` HOLDS THE EXCEPTION'S OWN TEXT ON PURPOSE — it is a delivery WE
+  // could not interpret, and triaging a dead-lettered callback needs the real words;
+  // there is no journal for these. But it must not ride to a browser, so the column is
+  // read and turned into a state here, and the raw text stays in the database and the
+  // log. `failed` is what a screen needs: something went wrong reading this delivery.
   const events = ids.length ? (await db.query(
-    `SELECT id, class_order_row, event_name, received_at, processed_at, process_error
+    `SELECT id, class_order_row, event_name, received_at, processed_at,
+            (process_error IS NOT NULL) AS failed
        FROM class_callback_events WHERE class_order_row = ANY($1::bigint[])
       ORDER BY received_at DESC LIMIT 200`, [ids])).rows : [];
   const attachments = ids.length ? (await db.query(

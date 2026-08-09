@@ -54,6 +54,45 @@ function matchStaged(files, staged) {
 
   const taken = new Set();
 
+  // TWO ANSWERS CANNOT SHARE ONE LINK, and an answer that shares one is placed by
+  // nothing. `retrievalUrl` is the thing actually handed to the appraiser, so two files
+  // pointed at one link IS the mis-file this module exists to prevent — and it is what a
+  // vendor produces when it drops one of our files and answers twice about another (the
+  // count still matches, the spellings still look right, and exactly one of the two names
+  // is a lie). Which of them is the real one is not knowable, so neither is used.
+  //
+  // Marking them TAKEN rather than removing them is deliberate: `answers.length` is what
+  // makes a bare `part<i>` and a position believable, and quietly shrinking it would
+  // change those rules while claiming to change nothing.
+  // …unless they are the SAME answer said twice, which is not a disagreement at all. A
+  // repeated entry — or the identical object appearing twice in the array — carries one
+  // link AND one set of labels, so it describes one document and the first of them is
+  // used. Two entries sharing a link while DISAGREEING about which file they are is the
+  // dangerous shape, and neither of those is used.
+  {
+    const byLink = new Map();
+    for (const s of answers) {
+      const u = s.retrievalUrl == null ? null : String(s.retrievalUrl);
+      if (!u) continue;
+      if (!byLink.has(u)) byLink.set(u, []);
+      byLink.get(u).push(s);
+    }
+    const label = (s) => JSON.stringify([s.name == null ? null : String(s.name),
+      s.fileName == null ? null : String(s.fileName)]);
+    for (const group of byLink.values()) {
+      if (group.length < 2) continue;
+      const agree = group.every((s) => label(s) === label(group[0]));
+      // Agreeing: one answer, said twice — keep the first, ignore the copies.
+      // Disagreeing: one link cannot be two documents, and which is real is unknowable.
+      // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
+      // would take the keeper with it, since they are the same reference.
+      for (let k = agree ? 1 : 0; k < group.length; k++) {
+        if (agree && group[k] === group[0]) continue;
+        taken.add(group[k]);
+      }
+    }
+  }
+
   // ===========================================================================
   // HOW A FILENAME IS COMPARED — EXACT FIRST, MEANING ONLY WHEN IT IS SAFE.
   // ===========================================================================
@@ -181,11 +220,31 @@ function matchStaged(files, staged) {
   // the "these are rewrites" reading is not available — the vendor echoed our own names
   // and possibly reordered them, which is exactly what the labels then say.
   //
-  // AND A SINGLE LIE CANNOT PRODUCE THIS SHAPE. If one answer echoes some OTHER file's
-  // name, that file's own honest answer claims it too — the batch is complete, so that
-  // answer is present — and two claims on one file breaks the matching. Being wrong here
-  // therefore requires EVERY misplaced answer to be lying about its filename, which is
-  // the one thing no rule can defend against.
+  // WHAT IT TAKES TO BE WRONG HERE, stated exactly, because the looser version of this
+  // paragraph claimed more than the code has:
+  //
+  //  • EVERY misplaced answer must be lying about its filename. One liar cannot produce
+  //    this shape on its own — if it echoes some other file's name while that file's own
+  //    answer is present, two answers claim one file and the matching breaks. What it
+  //    does NOT prove is that every file HAS an answer: equal LENGTHS are not coverage,
+  //    and a vendor that drops one file and answers twice about another satisfies the
+  //    count. So the links are checked too — one document cannot be two documents, and
+  //    two answers carrying the SAME `retrievalUrl` are one answer twice.
+  //  • …which for a REWRITE means the vendor's own transform must map our filenames onto
+  //    each other — a cycle among the very names we sent. Lower-casing, upper-casing,
+  //    title-casing, spaces-to-underscores: every one of them is idempotent, so it has no
+  //    cycles, and each collapses "Contract.pdf"/"contract.pdf" onto ONE file or misses
+  //    both. A transform that SWAPPED them (spaces to underscores AND underscores to
+  //    spaces, in one pass) would defeat this, and is not a thing any upload endpoint
+  //    does. This is the assumption, and it is an assumption rather than a proof.
+  //
+  // The alternative — vetoing the line-up when an answer's `part<j>` label disagrees with
+  // the file its name spells — was considered and REJECTED, because it cannot tell the
+  // two apart either: a batch the vendor REORDERED and RENUMBERED presents identically
+  // (labels part0…part(n-1) in position order, each filename naming a different file).
+  // It would refuse that, and a reorder is a shape vendors actually produce while a
+  // name-swapping rewrite is not. It is the same choice pass 2 documents, made the same
+  // way: trust the filename.
   //
   // Exact spelling only: a match of MEANING is what the sibling case turns on, so
   // admitting it would re-open precisely the swap this guards.
@@ -195,7 +254,7 @@ function matchStaged(files, staged) {
     const takenBy = new Array(files.length).fill(-1);
     for (let k = 0; k < answers.length; k++) {
       const s = answers[k];
-      if (!s || s.fileName == null) return null;
+      if (!s || s.fileName == null || taken.has(s)) return null;
       const spelling = exactOf(s.fileName);
       let hit = -1;
       for (let j = 0; j < files.length; j++) {
@@ -207,6 +266,18 @@ function matchStaged(files, staged) {
       if (takenBy[hit] !== -1) return null;   // two answers claim one file
       takenBy[hit] = k; claim[k] = hit;
     }
+    // ONE DOCUMENT CANNOT BE TWO DOCUMENTS. A vendor that dropped a file and answered
+    // twice about another passes the count and the spelling test — one of the two
+    // answers carries a name that is a lie — but both hand back the SAME link, and that
+    // is what says so. Judged only where the links are actually there to compare.
+    const links = answers.map((s) => (s.retrievalUrl == null ? null : String(s.retrievalUrl)));
+    if (links.every((u) => u)) {
+      if (new Set(links).size !== links.length) return null;
+    }
+    // These last two are redundant with the collision test above (with equal counts,
+    // one-to-one and onto are the same thing) and are KEPT deliberately — unlike the
+    // guards deleted from pass 3, each states a real precondition of the rule rather
+    // than describing one the code could never reach.
     return takenBy.every((k) => k !== -1) ? claim : null;
   };
   const lined = exactBijection();
@@ -235,9 +306,20 @@ function matchStaged(files, staged) {
     // ambiguous claim since it was written (`hits.length === 1`); pass 1 simply never
     // asked the question. A filename that identifies this file still settles it, because
     // that is real evidence rather than a tie-break.
-    let hit = cands.length === 1 ? cands[0] : null;
-    if (!hit && cands.length > 1) {
-      const corroborated = cands.filter((s) => identifies(s, i));
+    // THE SAME ANSWER TWICE IS NOT TWO CLAIMANTS. A vendor repeating an entry — or the
+    // identical object appearing twice in the array — carries one link and describes one
+    // document, so counting it as an ambiguity refused a single-file send that had
+    // exactly one unambiguous answer.
+    const seen = new Set();
+    const distinct = cands.filter((s) => {
+      const u = s.retrievalUrl == null ? null : String(s.retrievalUrl);
+      if (u == null) return true;             // nothing to compare — keep it
+      if (seen.has(u)) return false;
+      seen.add(u); return true;
+    });
+    let hit = distinct.length === 1 ? distinct[0] : null;
+    if (!hit && distinct.length > 1) {
+      const corroborated = distinct.filter((s) => identifies(s, i));
       if (corroborated.length === 1) hit = corroborated[0];
     }
     if (hit) { out[i] = hit; taken.add(hit); }

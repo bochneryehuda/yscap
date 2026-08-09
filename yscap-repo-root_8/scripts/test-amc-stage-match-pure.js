@@ -207,31 +207,26 @@ for (const n of [1, 2, 3]) {
               // IDENTIFIABLE means this file's answer carries a name that picks out
               // THIS file and no other — the same question `bestFit` answers.
               const uniqueName = mine.fileName != null && bestFit(mine.fileName) === i;
-              // …OR THE WHOLE BATCH LINES UP, name for name. On files whose names differ
-              // only in case, no single label can pick one out — but a batch where every
-              // answer spells exactly one file, no two spell the same one and every file
-              // is spelled cannot have come from a rewrite (a rewrite is a function of
-              // the name, so it collapses such a pair or misses both), so the labels are
-              // an echo and every file is identifiable.
+              // …OR THE WHOLE BATCH LINES UP, name for name — asked of what the
+              // GENERATOR EMITTED, never re-derived from the files the way the module
+              // does it. The first cut restated the module's own rule here, and a
+              // restated rule cannot judge the rule: it turned this counter into a
+              // demand that the code keep doing exactly what it does, so a genuine
+              // TIGHTENING of pass 0 would have been reported as a regression.
               //
-              // This is the ONE place the oracle restates a rule the module also has,
-              // and it is deliberate and bounded: it feeds the identifiable-but-MISSED
-              // counter only, which can never excuse a mis-file — the never-wrong
-              // assertion above is a separate test over a separate condition. Without
-              // it the sweep would not notice that pass 0 had been deleted.
-              const linedUp = (() => {
-                if (answers.length !== files.length) return false;
-                const by = new Array(files.length).fill(-1);
-                for (let k = 0; k < answers.length; k++) {
-                  const fn = answers[k].fileName;
-                  if (fn == null) return false;
-                  const hits = [];
-                  for (let j = 0; j < files.length; j++) if (files[j].fileName === fn) hits.push(j);
-                  if (hits.length !== 1 || by[hits[0]] !== -1) return false;
-                  by[hits[0]] = k;
-                }
-                return by.every((k) => k !== -1);
-              })();
+              // The honest question is about the answers' honesty, which the generator
+              // knows: every answer echoes ITS OWN file's exact spelling, one answer per
+              // file, all files covered. That is the shape no rewrite and no single lie
+              // can fake — and it is what must place.
+              // …and the names have to be able to tell the files apart at all. Two
+              // files that genuinely SHARE a name are not identifiable by any label,
+              // however honest — an echo of that name is true of both.
+              const distinctNames = new Set(files.map((f) => f.fileName)).size === files.length;
+              const linedUp = distinctNames
+                && answers.length === files.length
+                && new Set(answers.map((a) => a.truth)).size === answers.length
+                && answers.every((a) => a.fileName != null
+                  && a.fileName === files[a.truth].fileName);
               // A part number is only IDENTIFYING while nothing contradicts it: the
               // batch is complete (so the numbering is still ours) and this answer's own
               // filename does not point away from this file. When the two labels
@@ -491,6 +486,60 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
     { fileName: 'ab.pdf', retrievalUrl: 'REWRITTEN' }]);
   ok(got[0] && got[0].retrievalUrl === 'EXACT', 'the exact spelling wins over a rewrite of the same name');
   ok(got[1] === null, 'and the file neither of them named is left alone');
+}
+// TWO ANSWERS CLAIMING THE SAME PART NUMBER IS A COIN FLIP, AND NEITHER HARNESS CAN SEE
+// IT. A mis-file here always means one of the two claimants lied about its `name` — and
+// both the sweep and the fuzzer excuse any placement where a label lied, because no rule
+// can defend against a lie. So this class is structurally invisible to them and is
+// pinned by hand instead. It is not hypothetical: taking the first was what the code did
+// until the twelfth audit, on the one decision where being wrong records a document as
+// delivered that nobody received.
+{
+  const got = matchStaged(F('a.pdf', 'b.pdf', 'c.pdf'), [
+    { name: 'part0', retrievalUrl: 'X' },
+    { name: 'part1', retrievalUrl: 'Y' },
+    { name: 'part0', retrievalUrl: 'Z' }]);
+  ok(got[0] === null, 'two answers claiming part0 settle nothing, so neither is used');
+  ok(got[1] && got[1].retrievalUrl === 'Y', 'and the unambiguous one is still placed');
+  ok(got[2] === null, 'the file nobody claimed is left alone');
+}
+// …unless a FILENAME settles it, which is evidence rather than a tie-break — and the
+// answer order must not matter.
+for (const order of [0, 1]) {
+  const a = { name: 'part0', retrievalUrl: 'GUESS' };
+  const b = { name: 'part0', fileName: 'a.pdf', retrievalUrl: 'RIGHT' };
+  const got = matchStaged(F('a.pdf', 'b.pdf'), order ? [b, a, { name: 'part1', retrievalUrl: 'Y' }]
+    : [a, b, { name: 'part1', retrievalUrl: 'Y' }]);
+  ok(got[0] && got[0].retrievalUrl === 'RIGHT',
+     `the corroborated claimant wins whichever way round they arrive (${order})`);
+}
+// …and TWO corroborated claimants settle nothing either. Both name the same file and
+// carry DIFFERENT links, so they are two documents both claiming to be file 0; the
+// filename is no longer a tie-break because it agrees with both.
+{
+  const got = matchStaged(F('a.pdf', 'b.pdf'), [
+    { name: 'part0', fileName: 'a.pdf', retrievalUrl: 'P' },
+    { name: 'part0', fileName: 'a.pdf', retrievalUrl: 'Q' }]);
+  ok(got[0] === null, 'two answers both corroborated for one file place nothing');
+}
+// ONE LINK CANNOT BE TWO DOCUMENTS. A vendor that drops one of our files and answers
+// TWICE about another passes every count and spelling test — exactly one of the two
+// names is a lie — and the tell is that both hand back the same link. `retrievalUrl` is
+// what actually reaches the appraiser, so two files pointed at one link IS the mis-file.
+{
+  const got = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' },
+    { name: 'part0', fileName: 'B.pdf', retrievalUrl: 'uA' }]);
+  ok(got[0] === null && got[1] === null, 'two answers sharing one link place nothing');
+}
+// …but the SAME answer said twice is one answer, not a disagreement, and must still send.
+{
+  const one = { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' };
+  ok(matchStaged(F('A.pdf'), [one, one])[0] === one, 'a repeated entry is still matched');
+  const copy = matchStaged(F('A.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' },
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' }]);
+  ok(copy[0] && copy[0].retrievalUrl === 'uA', 'and so is an identical copy of one');
 }
 // Junk in, nothing out — never a throw.
 ok(matchStaged(F('a.pdf'), null)[0] === null, 'a non-array answer matches nothing');

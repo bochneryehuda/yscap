@@ -303,8 +303,11 @@ function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 const OURS_RE = /^(?:TEST MODE\b|Not sent —)/;
 
 function failNote(stored) {
-  if (typeof stored !== 'string' && typeof stored !== 'number') return stored == null ? null : { text: 'not sent — you can send it again', bad: true };
-  const t = String(stored).trim();
+  // Only a string is a stored note. `false`, `0`, `{}` and `[]` are not failures with
+  // unrecognised wording — they are the column holding something it never holds, and
+  // turning them into a red "not sent" would invent a failure that did not happen.
+  if (typeof stored !== 'string') return null;
+  const t = stored.trim();
   if (!t) return null;
   if (/^TEST MODE\b/.test(t)) return { text: 'test mode — recorded here, not sent to Class', bad: false };
   // A sentence the server wrote: show it as it is. It already names the state and the

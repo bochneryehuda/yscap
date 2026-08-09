@@ -416,7 +416,13 @@ async function createOrder(db, appId, opts = {}) {
       authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
     } catch (e) {
       const why = session.signInMessage(e, { savedDraft: true });
-      await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`, [order.id, why]);
+      // THE ROW GETS THE STORED FORM, THE PERSON GETS `why`. They are different jobs:
+      // `why` is written for whoever just pressed the button (it says their draft was
+      // saved), while the column is read later by somebody who was not there — and every
+      // stored sentence has to carry the shared opening a panel recognises, or a screen
+      // rendering this column would discard it as a legacy raw exception.
+      await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`,
+        [order.id, storedFailNote(e)]);
       await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: why, staffId: opts.staffId });
       return { ok: false, error: 'not_connected', message: why, order: await getOrder(db, order.id) };
     }

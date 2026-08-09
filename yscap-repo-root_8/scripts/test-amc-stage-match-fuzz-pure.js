@@ -27,7 +27,7 @@
 const assert = require('assert');
 const { matchStaged } = require('../src/amc/stage-match');
 
-let rngState = 20260809;
+let rngState = Number(process.env.STAGE_FUZZ_SEED || 20260809) | 0;
 const rnd = () => { rngState = (rngState * 1103515245 + 12345) & 0x7fffffff; return rngState / 0x7fffffff; };
 const pick = (a) => a[Math.floor(rnd() * a.length) % a.length];
 

@@ -77,6 +77,11 @@ function nackMessage(err, what) {
  */
 const TEST_MODE_PREFIX = 'TEST MODE — ';
 
+// Codes raised by OUR OWN pre-flight checks, before anything is sent. Lower-case by
+// convention here, which is what tells them apart from the transports' SHOUTY gate codes
+// — but the list is explicit as well, because a convention is not a guarantee.
+const LOCAL_REFUSAL = new Set(['class_version_unknown']);
+
 function storedFailNote(e) {
   const code = e && e.code ? String(e.code) : '';
   if (/_NOT_CONFIGURED$/.test(code)) {
@@ -87,10 +92,25 @@ function storedFailNote(e) {
       ? 'Not sent — sending to the appraisal company is switched off. Switch it on, then send it again.'
       : 'Not sent — the appraisal company connection is switched off. Switch it on, then send it again.';
   }
+  // WE NEVER GOT AS FAR AS SENDING IT. Our own pre-flight guards throw before a request
+  // is made — an order whose form version we cannot resolve, a message we could not
+  // build — and reporting those as "could not be reached, you can send it again" is
+  // false twice over and sends somebody to wait out an outage that is not happening.
+  // They are recognised by carrying a code of OUR OWN and no vendor status.
+  const status = Number(e && e.status);
+  if (LOCAL_REFUSAL.has(code) || (code && !/^[A-Z0-9_]+$/.test(code) && !Number.isFinite(status))) {
+    return 'Not sent — something on our side stopped this before it went out. '
+      + 'Sending it again will not help until it is looked at.';
+  }
   // THEIR END TURNED OUR LOGIN AWAY — a different person fixes a credential from a
   // rejected document, so the two must not read alike.
-  const status = Number(e && e.status);
-  if (/_REJECTED$/.test(code) || status === 401 || status === 403) {
+  //
+  // 401 ONLY, NOT 403. `status` is the status of the BUSINESS call, not of the token
+  // call, so a 403 is the vendor answering "not allowed" about the thing we sent — a
+  // closed order, a product our org may not add a form to. Reading it as a credential
+  // problem sends somebody to rotate a perfectly good secret and hides the fact that
+  // they answered at all; it falls through to the refusal branch below, where it belongs.
+  if (/_REJECTED$/.test(code) || status === 401) {
     return 'Not sent — the appraisal company did not accept our login. '
       + 'The connection needs to be checked before this can go.';
   }
@@ -119,8 +139,14 @@ function storedFailNote(e) {
 function storedNackNote(err, what) {
   const d = err && err.description != null ? String(err.description).trim() : '';
   const subject = what || 'it';
-  if (!d) return `The appraisal company would not accept ${subject}.`;
-  return `The appraisal company would not accept ${subject}: ${d.slice(0, 300)}`;
+  // IT CARRIES THE SAME OPENING AS EVERY OTHER STORED SENTENCE, and that opening is a
+  // CONTRACT, not decoration: a panel showing one of these columns tells our wording
+  // from a legacy raw exception by exactly this prefix (see ClassAppraisalPanel's
+  // `failNote`). Without it, a NACK — the one failure carrying the vendor's own
+  // actionable words — would be thrown away and replaced with "you can send it again",
+  // which is the opposite of what to do about a refusal.
+  if (!d) return `Not sent — the appraisal company would not accept ${subject}.`;
+  return `Not sent — the appraisal company would not accept ${subject}: ${d.slice(0, 300)}`;
 }
 
 module.exports = {

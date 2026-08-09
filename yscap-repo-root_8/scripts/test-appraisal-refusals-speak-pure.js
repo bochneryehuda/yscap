@@ -198,6 +198,64 @@ for (const rel of FILES) {
   // with actual exceptions and reads what comes out — the only check that does not care
   // how the sentence was assembled.
   const code = stripComments(src);
+  // `stripComments` preserves every newline, so a line number in the stripped copy is
+  // the same line number in the file — but the INDEX is not, so it must be measured
+  // against the copy the match came from.
+  const lineOfCode = (idx) => code.slice(0, idx).split('\n').length;
+
+  // ---- (2d) …AND THE ONE EXEMPTED COLUMN NEVER LEAVES THE SERVER.
+  // `process_error` is allowed to hold the exception's own text because it is an
+  // internal record. That is only true while nothing SELECTs it into an answer, and it
+  // was not true: the orders route shipped it to the browser in `events`. So the
+  // exemption is paid for here rather than trusted.
+  if (/\bprocess_error\b/.test(code) && /\bres\s*\.\s*json\b/.test(code)) {
+    const selects = code.match(/SELECT[\s\S]{0,400}?FROM/g) || [];
+    for (const sel of selects) {
+      if (/\bprocess_error\b/.test(sel) && !/process_error\s+IS\s+(?:NOT\s+)?NULL/i.test(sel)) {
+        rawText.push(`${rel} — process_error is selected into a response`);
+      }
+    }
+  }
+
+  // ---- (2c) …AND NEITHER DOES A COLUMN.
+  // The two checks above walk `return` statements, so a DATABASE WRITE of the
+  // exception's own text was invisible to them — and a stored column is the WORST place
+  // for it, because it is permanent and one render away from a screen. Four such writes
+  // were found and fixed by hand across three audits, and a fifth
+  // (`class_callback_events.process_error`, selected straight into an API response) was
+  // still there afterwards, in a file this sweep was already reading and passing.
+  //
+  // So the test is turned around: a raw expression is a DEFECT unless it sits somewhere
+  // raw text belongs. Those places are named — the journal, the log, a rethrow — and the
+  // list is short on purpose. Anything else, including a place nobody has thought of
+  // yet, is reported.
+  const ALLOWED = /\b(?:journal|console\.(?:warn|error|log|info)|throw|logger|debug)\b/;
+  const RAW_ANY = /String\(\s*\(?\s*e(?:rr)?\s*(?:\)|&&|\|\||\.(?:message|stack|body)\b)|\be(?:rr)?\.(?:message|stack|body)\b/g;
+  while ((m = RAW_ANY.exec(code))) {
+    // The statement this sits in: back to the previous `;`, bounded so a long function
+    // body cannot reach an unrelated `journal(` and excuse this one.
+    //
+    // A `{` is NOT a boundary, and using one was wrong: `console.warn(\`… ${row.id} …\`,
+    // String(e.message))` opens a brace inside its own template literal, so the scan
+    // started INSIDE the string and never saw the `console.warn` it was looking for —
+    // reporting a log line, which is the one place raw text belongs.
+    const from = Math.max(code.lastIndexOf(';', m.index), m.index - 400, 0);
+    const stmt = code.slice(from, Math.min(code.length, m.index + 200));
+    if (ALLOWED.test(stmt)) continue;
+    // `class_callback_events.process_error` is the ONE column that deliberately keeps
+    // the exception's own text, and it earns that the same way `journal` does: it is a
+    // record of a delivery WE could not interpret, there is no journal for callbacks,
+    // and triaging a dead-lettered one needs the real words. What made it a defect was
+    // that the orders route SELECTed it straight into an API response — so the guarantee
+    // is not "this column is fine", it is "this column never leaves the server", and
+    // that is asserted separately below rather than assumed here.
+    if (/process_error/.test(stmt)) continue;
+    // A wording helper reading the exception in order to CLASSIFY it is the point of
+    // this module — what matters is where the result goes, which (2)/(2b) judge.
+    if (/\b(?:code|status|retryable|description)\b/.test(stmt) && !/\.query\(/.test(stmt)) continue;
+    rawText.push(`${rel}:${lineOfCode(m.index)} — the exception's own text outside the log/journal`);
+  }
+
   const tainted = new Set();
   // A DECLARATION (`const raw = …`), a PLAIN ASSIGNMENT (`s = …`, `s += …`) and a
   // DESTRUCTURE (`const { message } = e`) all park the exception under a local name, and
@@ -227,7 +285,7 @@ for (const rel of FILES) {
     const names = [...tainted].filter((nm) => new RegExp(`\\b${nm}\\b`).test(expr));
     const direct = looksRaw(expr);
     if (names.length || direct) {
-      rawText.push(`${rel}:${lineOf(m.index)} — returned sentence built from `
+      rawText.push(`${rel}:${lineOfCode(m.index)} — returned sentence built from `
         + (names.length ? names.join(', ') : 'the exception') );
     }
   }
@@ -319,17 +377,26 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
     const t = String(out);
     // No fragment of the exception's own message, taken four words at a time — enough
     // to catch a paste, short enough not to trip on an ordinary word.
-    const words = String(e.message).split(/\s+/);
-    for (let i = 0; i + 3 < words.length; i++) {
-      const frag = words.slice(i, i + 4).join(' ');
-      if (frag.length > 8 && t.includes(frag)) { leaked.push(`${where}: ${t}`); return; }
+    // FOUR WORDS AT A TIME catches a paste without tripping on an ordinary word — but it
+    // never runs at all on a message SHORTER than four words, and "fetch failed",
+    // "socket hang up" and "Connection terminated unexpectedly" are exactly that. Those
+    // are matched whole. `code` and `body` are checked too: both are the transport's own
+    // and both were pasted into a screen at some point in this integration's history.
+    const sources = [String(e.message || ''), String(e.code || ''),
+      e.body == null ? '' : JSON.stringify(e.body)];
+    for (const raw of sources) {
+      if (!raw) continue;
+      const words = raw.split(/\s+/);
+      if (words.length < 4) {
+        if (raw.length > 5 && t.includes(raw)) { leaked.push(`${where}: ${t}`); return; }
+        continue;
+      }
+      for (let i = 0; i + 3 < words.length; i++) {
+        const frag = words.slice(i, i + 4).join(' ');
+        if (frag.length > 8 && t.includes(frag)) { leaked.push(`${where}: ${t}`); return; }
+      }
     }
     if (JARGON.test(t)) badEnglish.push(`${where}: ${t}`);
-    // Two sentences must not run together — a full stop or the end, never a capital
-    // letter hard against a word.
-    if (/[a-z] [A-Z][a-z]+ [a-z]/.test(t) && !/[.!?] [A-Z]/.test(t.replace(/[.!?] [A-Z]/g, '. X'))) {
-      // (only a smell; the explicit run-on shape is asserted below)
-    }
   };
   for (const e of THROWN) {
     say('storedFailNote', msgs.storedFailNote(e), e);
@@ -342,6 +409,45 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
   if (badEnglish.length) console.error('  jargon at runtime: ' + badEnglish.join('\n    '));
   ok(badEnglish.length === 0, 'and every sentence they build reads as ordinary English');
 
+  // WHICH SENTENCE COMES OUT IS THE WHOLE POINT, and nothing was asserting it. Three
+  // separate mutations that gutted the routing — deleting the refusal branch, the
+  // credential branch and the switched-off branch — each passed the entire suite,
+  // because a leak scan only ever asks what a sentence does NOT contain. The states are
+  // pinned by name, keyed on the thing a person would do next.
+  const STATE = (t) => (/switched off/.test(t) ? 'switch'
+    : /not set up yet/.test(t) ? 'unconfigured'
+      : /on our side stopped this/.test(t) ? 'never-left'
+        : /did not accept our login/.test(t) ? 'credential'
+          : /would not accept it/.test(t) ? 'refused'
+            : /could not be reached/.test(t) ? 'unreachable' : 'UNKNOWN');
+  const EXPECT = [
+    ['refused',      mk({ m: 'Class addNote refused: Loan number already exists', status: 200, retryable: false })],
+    ['refused',      mk({ m: 'Class order failed: HTTP 400', status: 400, retryable: false })],
+    ['refused',      mk({ m: 'AMC postdocuments -> 403', status: 403, retryable: false })],
+    ['unreachable',  mk({ m: 'Class order failed: HTTP 502', status: 502, retryable: true })],
+    ['credential',   mk({ m: 'Class token failed: HTTP 401', status: 401, retryable: false })],
+    ['credential',   mk({ m: 'AMC DoLogin failed', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' })],
+    ['switch',       mk({ m: 'x', code: 'CLASS_OUTBOUND_DISABLED' })],
+    ['switch',       mk({ m: 'x', code: 'AMC_DISABLED' })],
+    ['unconfigured', mk({ m: 'x', code: 'AMC_NOT_CONFIGURED' })],
+    ['unconfigured', mk({ m: 'x', code: 'CLASS_NOT_CONFIGURED' })],
+    ['never-left',   mk({ m: 'class: the UAD version of this order is unknown', code: 'class_version_unknown' })],
+    ['unreachable',  mk({ m: 'fetch failed' })],
+    ['unreachable',  mk({ m: 'connect ECONNREFUSED 10.0.0.4:443' })],
+    ['unreachable',  mk({ m: 'boom' })],
+  ];
+  const wrongState = [];
+  for (const [want, e] of EXPECT) {
+    const got = STATE(msgs.storedFailNote(e));
+    if (got !== want) wrongState.push(`${e.code || e.status || e.message}: expected ${want}, got ${got}`);
+  }
+  if (wrongState.length) console.error('  wrong state: ' + wrongState.join('\n    '));
+  ok(wrongState.length === 0, 'a stored note names the state the reader has to act on');
+  // A 403 is the vendor answering about what we SENT, not about our login — the status
+  // on both desks is the business call's, never the token call's.
+  ok(STATE(msgs.storedFailNote(mk({ m: 'x', status: 403, retryable: false }))) === 'refused',
+     'and a 403 is their refusal, not a credential problem');
+
   // THE VENDOR'S OWN REFUSAL DOES TRAVEL, and it must not run into our next sentence.
   const rejected = mk({ m: 'AMC DoLogin failed: Invalid credentials', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' });
   const said = session.signInMessage(rejected);
@@ -349,10 +455,12 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
   ok(!/Invalid credentials [A-Z]/.test(said), 'and their words are closed off before ours begin');
 
   // A helper must never answer with nothing — an empty note on a row reads as success.
-  for (const e of THROWN) {
-    ok(String(msgs.storedFailNote(e)).trim().length > 10, 'every stored note is a real sentence');
-    break;
-  }
+  // EVERY exception, not the first — a `break` here left four of the five branches
+  // unexercised, and blanking the fallback to '' passed the whole suite. An empty note
+  // renders as no note at all, which reads as delivered.
+  let empty = 0;
+  for (const e of THROWN) if (String(msgs.storedFailNote(e)).trim().length < 12) empty++;
+  ok(empty === 0, 'every stored note is a real sentence, on every branch');
 }
 
 console.log(`\n[test-appraisal-refusals-speak-pure] ${pass} passed, ${fail} failed`);
