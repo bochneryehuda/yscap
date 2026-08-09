@@ -36,6 +36,24 @@ const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 let fail = 0;
 const ok = (c, m) => { if (c) console.log(`  ok  ${m}`); else { fail++; console.error(`  FAIL ${m}`); } };
 
+/* Cut one function's body out of the file, REFUSING if the anchors have moved.
+   A guard that slices between two anchors goes VACUOUS the moment they reorder:
+   `String.slice` with start > end returns '', and a NEGATIVE assertion against
+   '' PASSES while proving nothing. Section 1's "startRun calls no decide" is
+   exactly that shape, and section 2's anchors really did reorder once (hoisting
+   `const current` above the early return to fix a React hook-order crash moved
+   it above declineTicked). It failed loudly there only because those three
+   assertions happen to be positive — the load-bearing negative one would have
+   gone quiet. So the slice reports a bad anchor pair as a failure instead. */
+function between(from, to) {
+  const a = code.indexOf(from);
+  const b = code.indexOf(to);
+  if (a < 0) { fail++; console.error(`  FAIL anchor missing, guard cannot run: ${from}`); return ''; }
+  if (b < 0) { fail++; console.error(`  FAIL anchor missing, guard cannot run: ${to}`); return ''; }
+  if (b <= a) { fail++; console.error(`  FAIL anchors reordered, guard would be vacuous: ${from} .. ${to}`); return ''; }
+  return code.slice(a, b);
+}
+
 console.log('\n1. There is no bulk import, and the tick imports nothing');
 {
   /* Every `import_new` must be a SINGLE decide on the property being reviewed —
@@ -54,14 +72,14 @@ console.log('\n1. There is no bulk import, and the tick imports nothing');
   /* The tick must only ever build the run. */
   ok(/function startRun\(\)/.test(code) && /setRun\(ids\)/.test(code),
     'ticking builds a REVIEW RUN (startRun sets the list) rather than deciding anything');
-  const startRunBody = code.slice(code.indexOf('function startRun()'), code.indexOf('async function declineTicked'));
+  const startRunBody = between('function startRun()', 'async function declineTicked');
   ok(!/staffDecideCandidate/.test(startRunBody),
     '…and startRun calls no decide at all — the tick genuinely imports nothing');
 }
 
 console.log('\n2. Bulk DECLINE is allowed, and still needs a reason');
 {
-  const d = code.slice(code.indexOf('async function declineTicked'), code.indexOf('const current ='));
+  const d = between('async function declineTicked', 'async function decide(');
   ok(/for \(const id of ids\)/.test(d) && /'decline'/.test(d),
     'declining IS done in bulk — it can only ever withhold credit, never add it');
   ok(/askPrompt/.test(d) && /Add a short reason/.test(d),
@@ -72,7 +90,7 @@ console.log('\n2. Bulk DECLINE is allowed, and still needs a reason');
 
 console.log('\n3. Searching spends money, so it is always a deliberate click');
 {
-  const s = code.slice(code.indexOf('async function search()'), code.indexOf('function toggle('));
+  const s = between('async function search()', 'function toggle(');
   ok(/askConfirm/.test(s) && /allowance/.test(src),
     'the search asks first and says it uses the office\'s shared hourly allowance');
   ok(!/useEffect\([^)]*\)\s*=>\s*\{[^}]*search\(\)/.test(code),

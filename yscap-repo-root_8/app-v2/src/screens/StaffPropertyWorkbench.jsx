@@ -79,6 +79,26 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   }, [borrowerId]);
   useEffect(() => { load(); }, [load]);
 
+  /* EVERY HOOK SITS ABOVE THE FIRST RETURN — and `current` and `openCompare`
+     come with them, deliberately, even though they read better next to the
+     review pane below.
+
+     React counts hooks per render. A hook below the `if (!q)` guard is ONE hook
+     on the first paint (while the list is still loading) and TWO on the next,
+     which is the "Rendered more hooks than during the previous render" CRASH —
+     the whole screen, not a warning. Moving the effect alone is not enough:
+     `current` is a const, so when the guard returns early it is never
+     initialised, and the effect would fire against its dead zone. The effect,
+     the value it reads, and the function it calls travel together. */
+  const current = q && run && run[runAt] ? (q.toReview || []).find((r) => r.id === run[runAt]) : null;
+
+  async function openCompare(id) {
+    try { setCompare(await api.staffCompareCandidate(id)); }
+    catch { setCompare(null); }
+  }
+  useEffect(() => { if (current && current.matchTrackRecordId) openCompare(current.id); else setCompare(null);
+    /* eslint-disable-next-line */ }, [run, runAt]);
+
   if (!q) return null;
   const rows = (q.toReview || []).filter((r) => {
     const t = filter.trim().toLowerCase();
@@ -146,15 +166,6 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
         { title: 'Partly done' });
     }
   }
-
-  const current = run && run[runAt] ? (q.toReview || []).find((r) => r.id === run[runAt]) : null;
-
-  async function openCompare(id) {
-    try { setCompare(await api.staffCompareCandidate(id)); }
-    catch { setCompare(null); }
-  }
-  useEffect(() => { if (current && current.matchTrackRecordId) openCompare(current.id); else setCompare(null);
-    /* eslint-disable-next-line */ }, [run, runAt]);
 
   async function decide(id, action, extra) {
     setBusy(true);
