@@ -140,6 +140,14 @@ export default function StaffEscalations() {
       return ' Note: this file was re-registered after the request went out, so the'
         + ' newer registration still has its own exception waiting for approval.';
     }
+    /* The ONE failure worth breaking the silence for (post-merge audit #6): the
+       decision is recorded, but the file's own pricing history will keep showing it
+       as waiting for approval — the exact record-vs-decision divergence this whole
+       change exists to remove. Silence there hides the one thing it promises. */
+    if (hr && hr.reason === 'error') {
+      return ' The decision is saved, but PILOT could not update the registration’s'
+        + ' record — its pricing history may still read “waiting for approval.”';
+    }
     return '';
   }
 
