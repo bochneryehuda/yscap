@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* API Health (admin / platform_setup).
    One section per external API / integration: is it Live, Configured, Off, or Not connected —
@@ -112,6 +114,147 @@ function SwitchRow({ s, busy, onToggle, onReset }) {
   );
 }
 
+/**
+ * Elementix is the one integration on this page that a human has to APPROVE
+ * rather than key in: PILOT signs in on the seat the company already pays for,
+ * so nothing can be typed into Render to make it work. This is that approval.
+ *
+ * "Check" is offered separately, and deliberately: it answers the question the
+ * vendor's own email did not — whether the sign-in renews itself, so nobody has
+ * to keep re-approving — and it reads the endpoint's published settings without
+ * spending any of the company's shared hourly allowance.
+ */
+function ElementixActions() {
+  const [busy, setBusy] = useState('');
+  const [note, setNote] = useState(null);
+  // The real stored connection, read from OUR OWN database — never inferred from
+  // the status light. The light folds "configured", "switched on" and "connected"
+  // into one word, so a file with the lookups switched OFF reads the same as one
+  // nobody has approved yet, and this panel would offer the wrong button.
+  const [st, setSt] = useState(null);
+  const loc = useLocation();
+
+  const loadStatus = useCallback(async () => {
+    try { setSt(await api.elementixStatus()); }
+    catch (_) { setSt(null); } // the buttons still work; only the wording degrades
+  }, []);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // The approval finishes in Elementix's browser tab, which sends the person back
+  // here with the outcome on the address. Without this the screen would look
+  // exactly as it did before they approved, and they would have no way to tell
+  // whether it worked. Read from the ROUTE (HashRouter keeps the query inside the
+  // hash, so window.location.search is empty here).
+  const callback = React.useMemo(() => {
+    const p = new URLSearchParams(loc.search || '');
+    const outcome = p.get('elementix');
+    if (outcome !== 'connected' && outcome !== 'error') return null;
+    return { ok: outcome === 'connected', message: p.get('message') || '' };
+  }, [loc.search]);
+
+  const connected = !!(st && st.connected);
+
+  async function connect() {
+    setBusy('connect'); setNote(null);
+    try {
+      const r = await api.elementixConnect();
+      if (!r || !r.ok || !r.authorizeUrl) {
+        setNote({ bad: true, text: (r && (r.detail || r.reason)) || 'Could not start the sign-in.' });
+        return;
+      }
+      // Leave the app ON PURPOSE. This has to happen in the address bar so the
+      // person sees Elementix's own sign-in page and can trust what they are
+      // approving; an in-page fetch would hide exactly the thing being consented to.
+      window.location.href = r.authorizeUrl;
+    } catch (e) {
+      setNote({ bad: true, text: e.message || 'Could not start the sign-in.' });
+    } finally { setBusy(''); }
+  }
+
+  async function check() {
+    setBusy('check'); setNote(null);
+    try {
+      const d = await api.elementixDiscover();
+      if (!d || !d.ok) {
+        setNote({ bad: true, text: `Could not read Elementix’s sign-in settings${d && d.detail ? ` — ${d.detail}` : ''}.` });
+        return;
+      }
+      const v = (d.unattended && d.unattended.verdict) || 'unknown';
+      const text = v === 'likely'
+        ? 'Good — Elementix offers the kind of sign-in that keeps itself alive, so this should only need approving once.'
+        : v === 'unlikely'
+          ? 'Heads up — Elementix does not appear to offer a self-renewing sign-in, so someone may have to approve again when it expires.'
+          : 'Elementix does not say either way, so we will know for certain the moment you approve it once.';
+      setNote({ bad: v === 'unlikely', text });
+    } catch (e) {
+      setNote({ bad: true, text: e.message || 'Could not check.' });
+    } finally { setBusy(''); }
+  }
+
+  async function disconnect() {
+    const okToGo = await askConfirm(
+      'Forget the saved Elementix sign-in? Lookups stop working until someone approves it again. Nothing at Elementix is changed or cancelled.',
+      { confirmLabel: 'Forget it', title: 'Disconnect Elementix' });
+    if (!okToGo) return;
+    setBusy('disconnect'); setNote(null);
+    try {
+      await api.elementixDisconnect();
+      setNote({ text: 'Forgotten. Press Connect to approve it again.' });
+      await loadStatus();
+    } catch (e) {
+      setNote({ bad: true, text: e.message || 'Could not disconnect.' });
+    } finally { setBusy(''); }
+  }
+
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid rgba(0,0,0,.06)', paddingTop: 10 }}>
+      {callback && (
+        <div style={{ marginBottom: 10, fontSize: 12.5, fontWeight: 600,
+          color: callback.ok ? '#256168' : '#B4483C',
+          background: callback.ok ? 'rgba(47,127,134,.10)' : '#F6E7E4',
+          border: '1px solid rgba(0,0,0,.06)', borderRadius: 8, padding: '9px 11px' }}>
+          {callback.ok
+            ? `Connected. ${callback.message || 'PILOT can now read Elementix on the company seat.'}`
+            : `That did not go through${callback.message ? ` — ${callback.message}` : ''}. Nothing was saved; press Connect to try again.`}
+        </div>
+      )}
+      <div style={{ fontSize: 12.5, color: '#4B585C', marginBottom: 8 }}>
+        {connected
+          ? (st.selfRenewing
+            ? `Approved for the whole company. PILOT keeps itself signed in from here — nobody has to approve again.${st.lastError ? ` Last problem: ${st.lastError}` : ''}`
+            : `Approved for the whole company, but Elementix did not hand over a renewal pass — somebody will have to press Connect again when this sign-in runs out.${st.lastError ? ` Last problem: ${st.lastError}` : ''}`)
+          : 'This one is approved once in a browser instead of set up with a key: press Connect, sign in to Elementix as you normally would, and allow PILOT to read. It uses the seat you already pay for.'}
+      </div>
+      <div className="act-bar">
+        <div className="act-group">
+          <button className={`btn ${connected ? 'soft' : 'primary'} small`} disabled={!!busy} onClick={connect}>
+            {busy === 'connect' ? 'Opening…' : (connected ? 'Approve again' : 'Connect')}
+          </button>
+          <button className="btn soft small" disabled={!!busy} onClick={check}
+            title="Reads Elementix’s published sign-in settings. Costs nothing and spends none of the shared hourly allowance.">
+            {busy === 'check' ? 'Checking…' : 'Check it stays signed in'}
+          </button>
+        </div>
+        {connected && (
+          <>
+            <span className="act-sep" />
+            <div className="act-group">
+              <button className="btn ghost small" disabled={!!busy} onClick={disconnect}>
+                {busy === 'disconnect' ? 'Working…' : 'Disconnect'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      {note && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: note.bad ? '#B4483C' : '#256168',
+          background: note.bad ? '#F6E7E4' : 'rgba(47,127,134,.10)', border: '1px solid rgba(0,0,0,.06)',
+          borderRadius: 8, padding: '7px 10px' }}>{note.text}</div>
+      )}
+    </div>
+  );
+}
+
 function Card({ it, onTest, testing, onToggle, onReset, switchBusy }) {
   const missingRequired = (it.env || []).filter((e) => e.required && !e.set);
   const runtimeSwitches = (it.switches || []);
@@ -140,6 +283,8 @@ function Card({ it, onTest, testing, onToggle, onReset, switchBusy }) {
       )}
       <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: 8 }}>{it.purpose}</div>
       {it.detail && <div style={{ fontSize: 12.5, marginBottom: 10 }}>{it.detail}</div>}
+
+      {it.key === 'elementix' && <ElementixActions />}
 
       {(it.env && it.env.length > 0) && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: (runtimeSwitches.length || displaySwitches.length) ? 8 : 0 }}>
