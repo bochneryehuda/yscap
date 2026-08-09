@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
@@ -1058,7 +1058,7 @@ function PortalDrawsCard({ appId }) {
               )}
               {['submitted', 'entered', 'approved'].includes(pr.status) && (
                 <button className="btn btn-sm ghost" disabled={busy}
-                  onClick={() => { const reason = window.prompt('Cancel this draw request? Add a short reason (the borrower sees it if they submitted it):'); if (reason !== null) act(() => api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/cancel`, { reason })); }}>Cancel request</button>
+                  onClick={async () => { const reason = await askPrompt('Cancel this draw request? Add a short reason (the borrower sees it if they submitted it):'); if (reason !== null) act(() => api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/cancel`, { reason })); }}>Cancel request</button>
               )}
             </div>
             {apprFor === pr.id && (
@@ -2025,10 +2025,10 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         {DRAW_ACTIONS(isOpen).map((a) => (
           <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
             title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
-            onClick={() => {
+            onClick={async () => {
               let note = null;
               if (a.needsNote) {
-                note = window.prompt(a.prompt, '');
+                note = await askPrompt(a.prompt, { defaultValue: '' });
                 if (note == null) return;                       // cancelled
                 if (String(note).trim().length < 8) { showMessage('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
               }
@@ -2277,7 +2277,7 @@ function FindingStatus({ appId, finding, reload }) {
   const [recording, setRecording] = useState(false);
   const [recErr, setRecErr] = useState('');
   async function recordAgreement() {
-    const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
+    const note = await askPrompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', { defaultValue: '' });
     if (note == null) return;
     if (String(note).trim().length < 8) { showMessage('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
     setRecording(true); setRecErr('');

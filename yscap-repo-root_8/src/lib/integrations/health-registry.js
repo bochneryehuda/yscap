@@ -640,7 +640,14 @@ async function resolveOne(entry, opts) {
   // it has one (a real connection reach); otherwise, and on every page load, run
   // the cheap probe() so probeAll never hammers external services.
   const useTest = opts && opts.live && typeof entry.test === 'function';
-  try { r = useTest ? await entry.test() : await entry.probe(); }
+  /* Run inside the health-probe context so PILOT's OWN rate limiter never holds this call.
+     Six vendor clients pace themselves through `acquire()`, which waits up to a minute when
+     a bucket is empty — and every probe here is wrapped in an 8-second deadline. That
+     mismatch is what reported healthy services as "not reachable" a few times a day
+     (owner-reported 2026-08-09). A probe measures the FAR END; it must never measure our
+     own queue. See api-rate-limit.runAsHealthProbe. */
+  const rate = require('../api-rate-limit');
+  try { r = await rate.runAsHealthProbe(() => (useTest ? entry.test() : entry.probe())); }
   catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
   r = r || {};
   // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
@@ -676,9 +683,44 @@ async function resolveOne(entry, opts) {
   };
 }
 
-// Run every probe in parallel (each already time-boxed + non-throwing) and return the resolved list.
+/* How many probes may be in flight at once.
+   NOT `Promise.all` over all 28. Every probe is a real outbound call — several are full
+   OAuth token exchanges — and firing the lot simultaneously on a single shared-CPU instance
+   made them compete for TLS handshakes, sockets and rate-limit tokens under their own
+   8-second deadline. The slowest of the herd then timed out and reported a healthy vendor
+   as down. Six at a time keeps a full sweep well inside a page load while removing the
+   self-inflicted contention. */
+const PROBE_CONCURRENCY = Math.max(1, parseInt(process.env.HEALTH_PROBE_CONCURRENCY || '6', 10) || 6);
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight, returning the results IN INPUT
+ * ORDER. A fixed pool of workers pulling from a shared cursor — so a slow probe holds one
+ * slot rather than the whole batch, and the sweep finishes in the time of the slowest
+ * BATCH rather than the slowest single call.
+ *
+ * Exported through `_internals` so the pooling itself is unit-testable: `probeAll` calls
+ * the real registry (28 outbound requests), which no test can run.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;                       // claim an index before any await — one owner each
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workers }, worker));
+  return out;
+}
+
+// Run every probe (each already time-boxed + non-throwing) and return the resolved list IN
+// REGISTRY ORDER — the page groups on `group`, but a stable order keeps a diff of two
+// health payloads readable.
 async function probeAll() {
-  return Promise.all(INTEGRATIONS.map((e) => resolveOne(e)));
+  return mapWithConcurrency(INTEGRATIONS, PROBE_CONCURRENCY, (e) => resolveOne(e));
 }
 // Run a single integration by key (the "Test now" button). Returns null for an unknown key.
 async function probeOne(key) {
@@ -687,4 +729,7 @@ async function probeOne(key) {
   return resolveOne(entry, { live: true });
 }
 
-module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet, envPresence } };
+module.exports = {
+  INTEGRATIONS, probeAll, probeOne,
+  _internals: { computeState, envSet, envPresence, mapWithConcurrency, PROBE_CONCURRENCY },
+};

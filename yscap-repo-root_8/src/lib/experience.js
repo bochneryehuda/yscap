@@ -5,17 +5,150 @@ const db = require('../db');
 // FROZEN baseline (#89) — experience window. A completed deal counts toward the
 // borrower's tier / experience ONLY if its exit is within the last 3 years:
 //   · a FLIP exits on its SALE date
-//   · a hold / rental / ground-up-and-held exits on its LEASE (rent) or REFI date
+//   · a hold / rental exits on its LEASE (rent) or REFI date
+//   · a GROUND-UP exits on whichever of those it has — see the amendment below
 // An exit more than 36 months ago, or a future-dated exit, counts toward
 // nothing. This mirrors the frozen track-record tool's qualifies() exactly and
 // must be applied at EVERY server-side experience/tier count so the tier can
 // never be inflated by stale deals. Reuse RECENT_EXIT_SQL — don't re-derive it.
-const EXIT_DATE_SQL =
+
+/* ── THE GROUND-UP AMENDMENT (owner-authorized 2026-08-09) ────────────────────
+   THE OWNER'S WORDS, choosing between three options put to them: a ground-up is
+   finished when the building is done AND they "Sold OR rented/refinanced".
+
+   WHAT WAS WRONG. The base rule sends anything that is not a flip to
+   COALESCE(rent_date, refi_date). A ground-up that was BUILT AND SOLD — the most
+   ordinary ground-up outcome there is — carries a sale date and no rent or refi
+   date, so its exit date was NULL and it counted toward NOTHING. Confirmed both
+   ways before changing anything: exitDateOf({deal_type:'ground-up',
+   sale_date:'2025-06-01'}) returned null, and the same row through EXIT_DATE_SQL
+   on a real database returned NULL. A borrower who built and sold three houses
+   was credited with none of them, while `requested_exp_ground` still priced the
+   loan on the claim.
+
+   THE SYSTEM ALREADY PROMISED THIS RULE. `trackRecordMissing` in routes/borrower.js
+   tells the borrower a ground-up still needs "a completed exit (sale, rent, or
+   refinance)" — so the screen has always said a sale finishes a ground-up, and
+   only the COUNT disagreed. This amendment makes the count agree with the promise
+   the product already makes; it does not introduce a new standard.
+
+   THE SHAPE IS THE PROOF, and it is why this is written as a COALESCE over the
+   OLD EXPRESSION rather than as a rewritten CASE. The new rule returns the old
+   rule's answer WHENEVER THE OLD RULE HAD ONE, by construction — the fallback is
+   only ever reached where the old expression was already NULL, i.e. exactly the
+   rows that counted for nothing. Therefore:
+
+       NO DEAL THAT COUNTS TODAY CAN STOP COUNTING, AND NO COUNTED DEAL'S EXIT
+       DATE CAN MOVE. The change is purely additive.
+
+   That is a property of the expression, not of a test battery, and it is what
+   makes an authorized change to a frozen counting rule safe to ship: a borrower
+   cannot lose a tier, no registered loan can be re-sized downward, and the
+   experience condition cannot reopen on a live file. `scripts/test-ground-up-
+   exit-pure.js` proves it exhaustively over every deal_type × date combination
+   anyway, and the DB half proves the SQL twin agrees row for row.
+
+   A rewritten CASE would NOT have this property. Writing the ground branch as
+   COALESCE(sale_date, rent_date, refi_date) reads more naturally and is wrong: a
+   ground-up that was rented in 2023 and sold in 2025 would move its exit from the
+   rent date to the sale date, and a deal_type spelled "ground-up flip" — which
+   the base rule sends down the flip branch — would move off its sale date
+   entirely. Both can push a deal out of the 36-month window. Do not "simplify"
+   this into a CASE.
+
+   Deliberately NOT changed: the 36-month window, the future-exit rule, the flip
+   rule, the hold rule, and `bucketOf`. Only the ground-up's EXIT DATE moved, and
+   only where it did not have one. */
+const GROUND_SQL =
+  "(lower(coalesce(deal_type,'')) LIKE '%ground%' OR lower(coalesce(deal_type,'')) LIKE '%construction%')";
+/* The rule as it stood before the amendment. Kept as its own constant so the
+   additive property above is visible in the source and provable in a test. */
+const EXIT_DATE_BASE_SQL =
   "(CASE WHEN lower(coalesce(deal_type,'')) LIKE '%flip%' THEN sale_date ELSE COALESCE(rent_date, refi_date) END)";
+const EXIT_DATE_SQL =
+  `COALESCE(${EXIT_DATE_BASE_SQL},`
+  + ` CASE WHEN ${GROUND_SQL} THEN COALESCE(sale_date, rent_date, refi_date) END)`;
+const EXIT_WINDOW_MONTHS = 36;   // frozen; the SQL below and exitCounts() both read it
+/* The window is INTERPOLATED, not restated. It used to be a hardcoded
+   INTERVAL '36 months' beside a constant whose own comment claimed "the SQL
+   below and exitCounts() both read it" — so changing the constant would have
+   moved the JS twin and left the SQL on 36, silently disagreeing about which
+   deals count (audit 2026-08-09). */
 const RECENT_EXIT_SQL =
   `${EXIT_DATE_SQL} IS NOT NULL`
   + ` AND ${EXIT_DATE_SQL} <= CURRENT_DATE`
-  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '36 months')`;
+  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '${EXIT_WINDOW_MONTHS} months')`;
+
+/* ── THE SAME TWO RULES, IN JAVASCRIPT ────────────────────────────────────────
+   EXIT_DATE_SQL and RECENT_EXIT_SQL are the definition, but not every consumer
+   can run SQL: the investor export renders rows it already has in hand. It used
+   to carry its OWN version — `sale_date || refi_date || rent_date`, no deal_type
+   branch, and a 30.44-day "month" — which meant the TPR package's "Recent (3yr)"
+   column disagreed with the counts the sign-off gate uses, on two axes:
+
+     · a hold carrying BOTH a rent date and a refi date exited on a different day
+       in the export than in the count (SQL prefers rent_date; it preferred refi);
+     · an approximated month drifts against calendar months, so deals near the
+       boundary fell on opposite sides.
+
+   These are the JS twins. Anything that needs the rule without a database calls
+   THEM — never a fourth re-derivation. Dates are compared as YYYY-MM-DD strings
+   so a timezone can never move a deal across the boundary. */
+
+/** A date-ish value (pg Date, ISO string, 'YYYY-MM-DD') as 'YYYY-MM-DD', or null. */
+function ymd(v) {
+  if (!v) return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`;
+  }
+  const s = String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+/** Calendar-month subtraction that matches Postgres: 2024-02-29 - 36mo = 2021-02-28. */
+function minusMonths(d, n) {
+  const day = d.getDate();
+  const t = new Date(d.getFullYear(), d.getMonth() - n, 1);
+  const lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  t.setDate(Math.min(day, lastDay));
+  return t;
+}
+
+/** True exactly when GROUND_SQL is — the same two substrings `bucketOf` reads. */
+function isGroundUp(dealType) {
+  const s = String(dealType || '').toLowerCase();
+  return s.indexOf('ground') >= 0 || s.indexOf('construction') >= 0;
+}
+
+/**
+ * JS twin of EXIT_DATE_SQL: a flip exits on its sale, a hold on lease-up or refi,
+ * and a GROUND-UP falls back to whichever completion it has when the base rule
+ * left it with none (owner-authorized 2026-08-09 — see the header).
+ *
+ * The two halves are kept in the same shape as the SQL on purpose: `base` is the
+ * old rule verbatim, and the ground fallback is only consulted when `base` is
+ * null. That is the additive property the header states, expressed identically in
+ * both languages so the twins cannot drift into disagreeing about it.
+ */
+function exitDateOf(row) {
+  if (!row) return null;
+  const flip = String(row.deal_type || '').toLowerCase().includes('flip');
+  const base = ymd(flip ? row.sale_date : (row.rent_date || row.refi_date));
+  if (base) return base;
+  if (!isGroundUp(row.deal_type)) return null;
+  return ymd(row.sale_date) || ymd(row.rent_date) || ymd(row.refi_date);
+}
+
+/** JS twin of RECENT_EXIT_SQL: a completed, non-future exit inside the frozen 36 months. */
+function exitCounts(row, today = new Date()) {
+  const exit = exitDateOf(row);
+  if (!exit) return false;
+  const t = ymd(today);
+  if (!t || exit > t) return false;                       // no exit, or still in the future
+  return exit >= ymd(minusMonths(today, EXIT_WINDOW_MONTHS));
+}
 
 function int(v) {
   const n = parseInt(v, 10);
@@ -316,7 +449,19 @@ async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
       WHERE borrower_id=$1 OR co_borrower_id=$1`,
     [borrowerId]);
   const out = [];
-  for (const row of apps.rows) out.push(await syncExperienceChecklistForApplication(row.id, client));
+  /* PER-FILE, so one file's failure cannot abort its siblings. This loop used
+     to be a bare await: the first application that threw skipped every one
+     after it, and the caller's advisory catch hid that anything was missed —
+     a revoke reported success while a second file's condition was never
+     recomputed (audit 2026-08-09 #2). A failed file is retried by the next
+     recompute; a SKIPPED one was retried by nothing. */
+  for (const row of apps.rows) {
+    try { out.push(await syncExperienceChecklistForApplication(row.id, client)); }
+    catch (e) {
+      console.error('[experience] condition recompute failed for application', row.id, (e && e.message) || e);
+      out.push(null);
+    }
+  }
   return out;
 }
 
@@ -334,4 +479,14 @@ module.exports = {
   syncExperienceChecklistForBorrower,
   RECENT_EXIT_SQL,
   EXIT_DATE_SQL,
+  EXIT_WINDOW_MONTHS,
+  exitDateOf,
+  exitCounts,
+  isGroundUp,
+  /* EXIT_DATE_BASE_SQL is the PRE-AMENDMENT rule. It is exported for exactly one
+     reason: the equivalence test runs it beside EXIT_DATE_SQL on real rows and
+     asserts the new one never disagrees except where the old was NULL. Nothing
+     else may use it — it is the old rule, not a second definition. */
+  EXIT_DATE_BASE_SQL,
+  _internals: { ymd, minusMonths },
 };

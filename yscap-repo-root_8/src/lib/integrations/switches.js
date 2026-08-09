@@ -78,6 +78,23 @@ const SWITCHES = [
   // enrichment, which is a per-person human click and can never be turned on globally.
   { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
   { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
+
+  /* THE DOWN-ALERT MONITOR — the only PLATFORM-level switch here, and the only one with
+     `integration: null`. It belongs to no single card because it watches all of them, so
+     the health registry's `s.integration === entry.key` filter never attaches it to one
+     and the API Health page renders it in its own banner instead. `list()` still carries
+     it, so the existing toggle/reset endpoints, the audit row and the override row all
+     work unchanged.
+
+     ON BY DEFAULT (owner-directed 2026-08-09, "turn on the down alerts"). It was opt-in
+     so we would not call every outside service on a timer unless the owner wanted the
+     alerts — the owner now does. `INTEGRATIONS_MONITOR_ENABLED=0` in the hosting settings
+     still turns it off, and so does this switch, with no redeploy.
+
+     `resume: false` is the truth here and not a copy-paste: monitor.start() arms its timer
+     unconditionally and every tick re-reads this switch, so turning it back on resumes by
+     itself. Claiming otherwise would tell an admin to redeploy when they need not. */
+  { key: 'INTEGRATIONS_MONITOR_ENABLED', integration: null, label: 'Automatic down-alerts (check every service on a timer and email the admins when one stops)', dangerous: false, resume: false, envDefault: () => process.env.INTEGRATIONS_MONITOR_ENABLED !== '0' },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

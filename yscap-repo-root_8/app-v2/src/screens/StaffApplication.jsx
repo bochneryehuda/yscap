@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -15,6 +15,7 @@ import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -1900,7 +1901,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     if (busy) return;
     let reason;
     if (!verified) {
-      reason = window.prompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
+      reason = await askPrompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
       if (reason === null || !reason.trim()) return;   // reason is required (#125)
     } else if (!(await askConfirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`))) return;
     setBusy(llc.id); setErr('');
@@ -2186,7 +2187,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       <button className="btn ghost small" disabled={busy === l.id}
                         title="Flag an internal issue about this entity for the team to review — the borrower is NOT notified"
                         onClick={async () => {
-                          const reason = window.prompt(`Raise an internal issue about "${l.llc_name}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
+                          const reason = await askPrompt(`Raise an internal issue about "${l.llc_name}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                           if (reason == null || !reason.trim()) return;
                           setBusy(l.id); setErr(''); setMsg('');
                           try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — recorded internally for review (the borrower was not notified).`); onChanged && onChanged(); }
@@ -2198,7 +2199,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       <button className="btn ghost small" disabled={busy === l.id}
                         title="Post a borrower-facing condition on THIS loan about this entity — the borrower is notified"
                         onClick={async () => {
-                          const reason = window.prompt(`Post a condition on this loan about the entity "${l.llc_name}" — what does the borrower need to provide?\n\nThe borrower WILL be notified.`);
+                          const reason = await askPrompt(`Post a condition on this loan about the entity "${l.llc_name}" — what does the borrower need to provide?\n\nThe borrower WILL be notified.`);
                           if (reason == null || !reason.trim()) return;
                           setBusy(l.id); setErr(''); setMsg('');
                           try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim(), true); setMsg(`Condition posted about ${l.llc_name} — the borrower was notified.`); onChanged && onChanged(); }
@@ -2545,7 +2546,7 @@ function StaffTrackRecordPanel({ app, role }) {
       return;
     }
     if (action === 'reject') {
-      reason = window.prompt('Why is this document being rejected? The borrower is notified and the line item is un-verified until a new document is accepted.');
+      reason = await askPrompt('Why is this document being rejected? The borrower is notified and the line item is un-verified until a new document is accepted.');
       if (reason == null || !reason.trim()) return;
     }
     setTrBusy(doc.id); setTrMsg('');
@@ -2673,7 +2674,7 @@ function StaffTrackRecordPanel({ app, role }) {
                   <button className="btn ghost small" disabled={trBusy === t.id}
                     title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
                     onClick={async () => {
-                      const label = window.prompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
+                      const label = await askPrompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
                       if (label == null || !label.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
                       try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
@@ -2683,7 +2684,7 @@ function StaffTrackRecordPanel({ app, role }) {
                   <button className="btn ghost small" disabled={trBusy === t.id}
                     title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
                     onClick={async () => {
-                      const reason = window.prompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
+                      const reason = await askPrompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
                       try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
@@ -2693,7 +2694,7 @@ function StaffTrackRecordPanel({ app, role }) {
                   <button className="btn ghost small" disabled={trBusy === t.id}
                     title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
                     onClick={async () => {
-                      const reason = window.prompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
+                      const reason = await askPrompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
                       try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
@@ -2732,6 +2733,22 @@ function StaffTrackRecordPanel({ app, role }) {
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={220}
       />
+      {/* THE PUBLIC-RECORDS WORKBENCH, IN THE LOAN FILE (owner-directed
+          2026-08-09: "the Elementix stuff is still missing from the actual track
+          record within the loan file … merge together, old information lives in
+          one place"). Until now the search button and the staged candidates
+          lived ONLY on the borrower CRM profile — an officer working the FILE
+          had no path to them at all. Same component, same borrower key, so the
+          profile tab and this section can never drift: it is the person's one
+          queue, shown wherever the person's record is worked. It follows the
+          "Whose track record" picker above, so on a co-borrower file it shows
+          the selected person's queue. Searching still costs vendor lookups and
+          still confirms first — mounting it here changes where it is, never
+          what it spends. */}
+      <div style={{ marginTop: 12 }}>
+        <StaffPropertyWorkbench key={`wb-${borrowerId}`} borrowerId={borrowerId}
+          borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
+      </div>
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
           record, then you read what is still left on it. */}
       <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} />
@@ -3232,7 +3249,7 @@ function ManualConditionDelete({ it, appId, onChanged }) {
       if (e && e.status === 403 && e.data && e.data.code === 'needs_delete_request') {
         const who = e.data.creatorName || 'the person who added it';
         if (await askConfirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
-          const reason = window.prompt('Add a short note for them (optional):', '') || '';
+          const reason = await askPrompt('Add a short note for them (optional):', { defaultValue: '' }) || '';
           try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); showMessage(`Asked ${who} to delete it. They'll get a prompt.`); }
           catch (_) { showMessage('Could not send the request.'); }
         }
@@ -4188,7 +4205,7 @@ function StructuralLockBanner({ app, role, onChanged }) {
   const toggle = async (next) => {
     setErr('');
     if (next) {
-      const reason = window.prompt('Unlock this file so its locked loan details can be corrected? Add a short reason (this is logged):', '');
+      const reason = await askPrompt('Unlock this file so its locked loan details can be corrected? Add a short reason (this is logged):', { defaultValue: '' });
       if (reason === null) return;   // cancelled
       setBusy(true);
       try { await api.staffSetStructuralLock(app.id, true, reason || null); onChanged && await onChanged(); }
@@ -4590,7 +4607,7 @@ export default function StaffApplication() {
   // 2026-08-04). Prompts for the reason, files the request; approval (in the
   // Exceptions box) marks the condition waived.
   async function requestWaiver(it) {
-    const reason = window.prompt(
+    const reason = await askPrompt(
       `Ask an admin to waive this condition:\n\n“${(it && it.label) || 'condition'}”\n\n`
       + 'Why should it be waived? (an admin/super-admin will review; if approved, it is marked waived)');
     if (reason == null || !reason.trim()) return;
@@ -4625,12 +4642,12 @@ export default function StaffApplication() {
       return;
     }
     if (action === 'reject') {
-      reason = window.prompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
+      reason = await askPrompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
       if (reason == null || !reason.trim()) return;
     }
     if (action === 'accept_more') {
       // Accept the PDF, keep the condition open, ask for one more document.
-      const note = window.prompt('This document is accepted ✓ — what ELSE is needed to satisfy the condition? The borrower sees this note.');
+      const note = await askPrompt('This document is accepted ✓ — what ELSE is needed to satisfy the condition? The borrower sees this note.');
       if (note == null || !note.trim()) return;   // the note is required — the borrower must be told what else is needed
       action = 'accept';
       opts = { requestMore: true, note: note.trim() };
@@ -4707,7 +4724,7 @@ export default function StaffApplication() {
   }
   const onStaffFile = (e) => uploadStaffFiles(e.target.files, uploadTarget);
   async function archiveApp() {
-    const reason = window.prompt('Archive this file? It leaves the pipeline and stops counting in the dashboard, but is kept in the Archived folder and can be restored anytime. Optional reason:');
+    const reason = await askPrompt('Archive this file? It leaves the pipeline and stops counting in the dashboard, but is kept in the Archived folder and can be restored anytime. Optional reason:');
     if (reason === null) return;
     try { await api.staffArchiveApp(id, reason || undefined); nav('/internal'); }
     catch (e) { setErr(e.message || 'Could not archive'); }
@@ -4719,7 +4736,7 @@ export default function StaffApplication() {
   async function purgeApp() {
     const ok1 = await askConfirm('Delete this file PERMANENTLY? This removes the loan file and every document, condition and message under it, and it will disappear from all figures. This cannot be undone.');
     if (!ok1) return;
-    const typed = window.prompt('This is permanent. Type DELETE to confirm.');
+    const typed = await askPrompt('This is permanent. Type DELETE to confirm.');
     if (typed !== 'DELETE') { if (typed !== null) setErr('Not deleted — you must type DELETE to confirm.'); return; }
     try { await api.staffPurgeApp(id); nav('/internal'); }
     catch (e) { setErr(e.message || 'Could not delete'); }
@@ -4807,7 +4824,7 @@ export default function StaffApplication() {
     finally { setBusyAct(''); }
   }
   async function clearCond(cid) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
-  async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
+  async function waiveCond(cid) { if (busyAct) return; const r = await askPrompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   // Super-admin override on an underwriting condition — the same act, the same
   // words and the same permanent record as on the conditions list above, so
   // "override" means one thing on this screen (owner-directed 2026-07-27).
@@ -6370,7 +6387,7 @@ function TapeExport({ appId }) {
       // everyone else asks a super admin for an exception.
       if (d.code === 'encompass_override_reason_required') {
         // Super admin — allow it inline with a reason.
-        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, '');
+        const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
         if (reason && reason.trim()) { await runExport(tapeKey, name, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
         setBusy(null); return;
       }

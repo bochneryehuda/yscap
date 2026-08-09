@@ -252,14 +252,15 @@ const dateStr = (v) => {
 const DEAL_LABEL = { flip: 'Fix & Flip', 'fix-and-hold': 'Fix & Hold', 'fix_and_hold': 'Fix & Hold', ground_up: 'Ground-Up', 'ground-up': 'Ground-Up', rental: 'Rental', bridge: 'Bridge' };
 const dealLabel = (t) => DEAL_LABEL[t] || (t ? String(t).replace(/_/g, ' ') : '—');
 
-// The frozen 3-year exit window (mirrors track-record.js qualifies()): a
-// completed exit dated within the last 36 months counts toward experience.
+/* The frozen 3-year exit window — ONE definition, in src/lib/experience.js,
+   the module the sign-off gate and every experience count already read.
+   This used to be a private fourth re-derivation (`sale_date || refi_date ||
+   rent_date`, no deal_type branch, a 30.44-day month), so the investor package's
+   "Recent (3yr)" column could disagree with the counts the file was underwritten
+   on. Do not re-implement it here again. */
+const { exitDateOf, exitCounts } = require('./experience');
 function exitInfo(r) {
-  const exit = r.sale_date || r.refi_date || r.rent_date || null;
-  if (!exit) return { exit: null, counts: false };
-  const d = new Date(exit); if (isNaN(d)) return { exit, counts: false };
-  const monthsAgo = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 30.44);
-  return { exit, counts: monthsAgo >= 0 && monthsAgo <= 36 };
+  return { exit: exitDateOf(r), counts: exitCounts(r) };
 }
 
 // ---------------------------------------------------------------- XLSX writer

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /* Data Tapes — the provider-centric export hub. Pick a capital provider, see
    every loan currently assigned to it (the tape can only carry loans set to that
@@ -81,13 +82,13 @@ export default function StaffTapes() {
       // NOBODY may self-override. A super admin can allow it inline with a reason;
       // everyone else asks a super admin for an exception (recorded per file).
       if (d.code === 'encompass_override_reason_required' && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, '');
+        const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
         if (reason && reason.trim()) { setBusyRow(null); await exportRow(loanId, tapeName, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
         setBusyRow(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
         if (d.canRequestException) {
-          const note = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAsk a super admin to allow it — say why the tape needs to go out now:`, '');
+          const note = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAsk a super admin to allow it — say why the tape needs to go out now:`, { defaultValue: '' });
           if (note && note.trim()) {
             try { await api.requestTapeException(loanId, { reasonNote: note.trim() }); setMsg('Sent a request to a super admin. They can allow the tape from the Exceptions box.'); }
             catch (e2) { setErr((e2.data && e2.data.error) || e2.message || 'Could not send the request.'); }
@@ -115,7 +116,7 @@ export default function StaffTapes() {
       // logged reason; everyone else sees which loans still need reconciling or a
       // super-admin exception (requested per file from the loan file).
       if (d.code === 'encompass_override_reason_required' && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nAs a super admin you can allow them — type a short reason (this is logged):`, '');
+        const reason = await askPrompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nAs a super admin you can allow them — type a short reason (this is logged):`, { defaultValue: '' });
         if (reason && reason.trim()) { setBusyBulk(false); await exportBulk(reason.trim()); return; }
         setBusyBulk(false); return;
       }

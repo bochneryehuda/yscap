@@ -158,7 +158,11 @@ const tracking = require(R + '/src/lib/esign/tracking');
   });
 
   ok('Retry / Re-issue has its own way past the check (the panel box drives the FIRST send only)', () => {
-    assert.ok(/const reissueSend = \(e\) =>/.test(panel));
+    // `async` is tolerated: this assertion's subject is that Re-issue has its
+    // OWN send path (its own reason box + its own POST), not how the function
+    // is spelled. It became async when the reason box moved off the browser's
+    // window.prompt onto PILOT's own askPrompt, which returns a promise.
+    assert.ok(/const reissueSend = (?:async )?\(e\) =>/.test(panel));
     assert.ok(/onClick=\{\(\) => reissueSend\(e\)\}/.test(panel));
   });
 

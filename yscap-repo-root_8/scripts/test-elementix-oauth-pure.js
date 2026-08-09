@@ -383,13 +383,38 @@ console.log('\n7. The paid tool cannot be called by accident');
   // simply cannot find the toggle they were told is on that page. This caught the
   // Elementix pair before merge; it is written for EVERY switch so the next one
   // cannot repeat it.
+  /* THE RULE IS "THE OWNER CAN FIND THE TOGGLE", not "the switch names a card". A
+     PLATFORM-level switch (integration: null) governs every integration rather than one,
+     so it deliberately hangs off no card and the API Health page renders it in its own
+     banner. That is a second way to be reachable — not an excuse to be unreachable — so
+     each one is ENUMERATED here (a typo'd integration key must still fail, not silently
+     read as "platform-level") AND the screen is checked for a control that actually
+     renders it. Declaring an exemption without that second half would hand back exactly
+     the invisible-toggle bug this section exists to prevent. */
+  const PLATFORM_SWITCHES = new Map([
+    ['INTEGRATIONS_MONITOR_ENABLED', 'MonitorBanner'],
+  ]);
   const swList = require('../src/lib/integrations/switches').list();
   const registrySrc = require('fs').readFileSync(
     require('path').join(__dirname, '..', 'src', 'lib', 'integrations', 'health-registry.js'), 'utf8');
   const entryKeys = new Set([...registrySrc.matchAll(/^\s*key: '([a-z0-9_]+)',/gm)].map((m) => m[1]));
-  const orphans = swList.filter((s) => !entryKeys.has(s.integration)).map((s) => `${s.key} → ${s.integration}`);
+  const orphans = swList
+    .filter((s) => !entryKeys.has(s.integration) && !(s.integration === null && PLATFORM_SWITCHES.has(s.key)))
+    .map((s) => `${s.key} → ${s.integration}`);
   assert.deepStrictEqual(orphans, [],
     `every switch must hang off a real health-registry entry, else it renders nowhere: ${orphans.join(', ')}`);
+  // …and every platform switch must have somewhere on the page that renders it.
+  {
+    const screenSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'app-v2', 'src', 'screens', 'StaffApiHealth.jsx'), 'utf8');
+    for (const [key, component] of PLATFORM_SWITCHES) {
+      assert.ok(new RegExp(`function ${component}\\b`).test(screenSrc),
+        `${key} is platform-level, so the page needs its ${component} to render it`);
+      assert.ok(/<Toggle\b/.test(screenSrc.slice(screenSrc.indexOf(`function ${component}`))),
+        `${component} must render a real Toggle — a platform switch with no control is the invisible-toggle bug`);
+      assert.ok(new RegExp(`<${component}\\b`).test(screenSrc), `${component} is actually mounted on the page`);
+    }
+  }
   assert.ok(entryKeys.has('elementix'), 'Elementix has its own entry on the API Health page');
   const elx = swList.filter((s) => s.integration === 'elementix').map((s) => s.key);
   assert.deepStrictEqual(elx.sort(), ['ELEMENTIX_DRYRUN', 'ELEMENTIX_ENABLED']);
@@ -401,6 +426,29 @@ console.log('\n7. The paid tool cannot be called by accident');
   // swallows network errors by design, so a throw on its own is invisible — this
   // is what makes an accidental live call to Elementix a FAILURE rather than a
   // silent success.
+  /* ── the RFC 8707 resource is what the resource DECLARES ──────────────────
+     Root cause of the live 2026-08-09 "Could not start an Elementix session":
+     every token request carried our MCP URL as `resource`, while the vendor's
+     own RFC 9728 metadata declares the ORIGIN. A token minted for the wrong
+     audience is rejected at `initialize`, silently, forever. `indicatorOf` is
+     the one reader every wire-send goes through. */
+  {
+    const withStored = O.indicatorOf({
+      resource_url: 'https://app.elementix.com/api/mcp',
+      discovery: { resourceIndicator: 'https://app.elementix.com' },
+    });
+    assert.strictEqual(withStored, 'https://app.elementix.com');
+    ok('a row stored after the fix sends the indicator its discovery recorded');
+
+    const legacy = O.indicatorOf({ resource_url: 'https://app.elementix.com/api/mcp', discovery: {} });
+    assert.strictEqual(legacy, 'https://app.elementix.com');
+    ok('a PRE-fix row falls back to the ORIGIN of its stored URL — verified live as what Elementix declares — so an existing connection self-heals on its next refresh instead of needing a human to reconnect');
+
+    const unparsable = O.indicatorOf({ resource_url: 'not a url', discovery: null });
+    assert.strictEqual(unparsable, 'not a url');
+    ok('an unparsable stored URL degrades to the old behaviour rather than crashing a refresh');
+  }
+
   assert.deepStrictEqual(attemptedCalls, [],
     `this test tried to reach the vendor: ${attemptedCalls.join(', ')}`);
   ok('nothing in this suite called out to Elementix');

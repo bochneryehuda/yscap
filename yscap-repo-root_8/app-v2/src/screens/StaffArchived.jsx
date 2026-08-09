@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { useFlash } from '../components/FlashToast.jsx';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* The Archived folder — files that were archived (soft-removed) leave the
    pipeline and the dashboard figures but are kept here and can be restored, or
@@ -36,7 +36,7 @@ export default function StaffArchived() {
   async function purge(a) {
     if (busy) return;
     if (!(await askConfirm(`Delete ${a.ys_loan_number || 'this file'} PERMANENTLY? This removes the loan file and every document, condition and message under it. It cannot be undone.`))) return;
-    const typed = window.prompt('This is permanent. Type DELETE to confirm.');
+    const typed = await askPrompt('This is permanent. Type DELETE to confirm.');
     if (typed !== 'DELETE') { if (typed !== null) setErr('Not deleted — you must type DELETE to confirm.'); return; }
     setBusy(a.id); setErr('');
     try { await api.staffPurgeApp(a.id); flash(`${a.ys_loan_number || 'File'} deleted permanently.`); await load(); }

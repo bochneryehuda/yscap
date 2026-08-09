@@ -15,7 +15,7 @@
    Pure — no React, no api client, so it can be reasoned about (and reused) on
    its own. */
 
-import { askConfirm } from './dialog.js';
+import { askConfirm, askPrompt } from './dialog.js';
 
 /* UI hint only: hide a button the server would refuse. Never a control — the
    server re-checks the role on every request. */
@@ -35,7 +35,10 @@ export const isCompletion = (body) =>
    (which stamps the hosting provider's hostname on the box). Every call site
    MUST await it: without the await the caller receives a Promise, which is
    truthy, and would clear the condition on a click the super admin never
-   confirmed. `window.prompt` has no branded replacement yet and is unchanged. */
+   confirmed. The reason box is `askPrompt`, PILOT's own, and it answers `null`
+   when the super admin backs out — which is why the check below is `== null`
+   before `.trim()` and not merely falsy: an empty submission and a cancel both
+   abandon the override here, but only one of them is a cancel. */
 export async function askOverride(label, { blocked } = {}) {
   const what = label ? `“${String(label).slice(0, 90)}”` : 'this condition';
   const why = blocked ? `\n\nWhat it is still missing:\n${blocked}` : '';
@@ -44,7 +47,7 @@ export async function askOverride(label, { blocked } = {}) {
     'Only a super admin can do this. The condition is marked complete for the whole file — ' +
     'and your name, the time and your reason are saved on it permanently.',
     { title: 'Clear without what it asks for?', confirmLabel: 'Continue' }))) return null;
-  const reason = window.prompt(
+  const reason = await askPrompt(
     'Why is this condition being cleared without what it asks for? ' +
     '(required — saved on the file and visible to the team)');
   if (reason == null || !reason.trim()) return null;

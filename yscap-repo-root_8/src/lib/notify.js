@@ -1200,17 +1200,38 @@ async function notifyAppStaffThread(appId, opts = {}) {
   return { emailed, recipients: recipients.length, staff };
 }
 
-/** Notify every active admin (used when an application has no loan officer). */
+/**
+ * Notify every active admin (used when an application has no loan officer).
+ *
+ * TWO OPTIONAL NARROWINGS, both additive and both OFF unless a caller asks
+ * (every existing call site is byte-identical without them):
+ *
+ *   opts.emailRoles       — ['super_admin'] etc. An admin OUTSIDE the list keeps
+ *                           the in-app row and loses only the EMAIL. It can only
+ *                           ever narrow: an explicit opts.inAppOnly still wins,
+ *                           and an unrecognized/empty list is ignored entirely
+ *                           (fail toward the status quo, never toward silence).
+ *   opts.skipSharedInbox  — do not copy the NOTIFY_ADMINS shared-inbox list.
+ *
+ * The pair exists for the API-Health down-alerts (owner-directed 2026-08-09:
+ * "no loan officers should receive it"). NOTIFY_ADMINS is a hand-maintained
+ * list of ADDRESSES with no role attached — the one recipient list here that
+ * could contain a loan officer — so an alert type that must never reach one
+ * skips it and emails only the roles it names. The in-app rows are unaffected:
+ * every admin still SEES the alert in PILOT, they just aren't mailed it.
+ */
 async function notifyAdmins(opts) {
   // Enrich once with the file's identity so BOTH the per-admin emails and the
   // shared-inbox copy carry the file tag + detail block (no-op without appId).
   opts = await enrichFileOpts(opts, 'staff');
   const { rows } = await db.query(
-    `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
+    `SELECT id, email, role FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   // Same plural exclusion as notifyAppStaff — an admin who is ALSO on the file, or
   // who IS the order's assignee, was getting two identical emails and two in-app
   // rows from a single escalation, every two days, for as long as it stayed late.
   const exceptMany = new Set((Array.isArray(opts.exceptStaffIds) ? opts.exceptStaffIds : []).map(String));
+  const emailRoles = (Array.isArray(opts.emailRoles) && opts.emailRoles.length)
+    ? new Set(opts.emailRoles.map((r) => String(r))) : null;
   const ids = [];
   for (const a of rows) {
     if (exceptMany.has(String(a.id))) continue;
@@ -1218,14 +1239,19 @@ async function notifyAdmins(opts) {
     // administrator must not stop the escalation reaching the others. The
     // administrators are the LAST rung of every ladder in this system — losing
     // the rest of them to one bad row is losing the escalation entirely.
-    try { ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email })); }
+    const per = { ...opts, emailTo: a.email };
+    delete per.emailRoles; delete per.skipSharedInbox; // routing directives, not per-staff opts
+    // Only ever SET inAppOnly — never clear it — so the STAFF_INAPP_TYPES default
+    // inside notifyStaff keeps working for callers that pass neither option.
+    if (emailRoles && !emailRoles.has(String(a.role))) per.inAppOnly = true;
+    try { ids.push(await notifyStaff(a.id, per)); }
     catch (e) { console.error('[notify] admin fan-out', a.id, (e && e.message) || e); }
   }
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
   // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose
   // email went to the sales desk) must not email this list either — the whole
   // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
-  if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
+  if (cfg.notifyAdmins.length && opts.inAppOnly !== true && opts.skipSharedInbox !== true) {
     const msg = buildEmail(opts, 'staff');
     _track(email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));

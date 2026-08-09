@@ -45,6 +45,18 @@ const SAME_PAIRS = [
   ['21 Homestead Lane Unit 2, Monsey, NY 10952', '21 Homestead Ln #2, Monsey, NY 10952, USA'],
   ['4611 12th Avenue Apt 3L 3L, Brooklyn, NY 11219', '4611 12th Ave, Brooklyn, NY 11219, USA'],
   ['1563 61th St. 4, Brooklyn, NY 11219', '1563 61st St, Brooklyn, NY 11219, USA'],
+  /* A NUMBERED STREET SPELLED AS A WORD (owner-directed 2026-08-09: "the street
+     can be spelled a few different ways"). Found by probing the matcher against
+     the owner's own list rather than by a report: a county clerk writes SECOND
+     STREET, the records vendor returns 2ND ST, and the borrower types 2nd St.
+     Before this they were three different streets — and in the public-records
+     importer a false MISMATCH does not merely fail to match, it stages a
+     DUPLICATE candidate for a property already on the record. Brooklyn and
+     Lakewood are full of numbered streets, so this is routine, not exotic. */
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 South Second Street, Piscataway, New Jersey 08854-1234'],
+  ['30 15th Ave, Brooklyn, NY 11219', '30 Fifteenth Avenue, Brooklyn, NY 11219'],
+  ['8 Twenty First St, Brooklyn, NY 11215', '8 21st St, Brooklyn, NY 11215'],
+  ['8 Twenty-First St, Brooklyn, NY 11215', '8 21 St, Brooklyn, NY 11215'],
   ['4 Basswood dr., Lakewood, NJ 08701', '4 Basswood Dr l, Lakewood, NJ 08701, USA'],
   ['446 Marcy Ave 3A, Brooklyn, NY 11206', '446 Marcy Ave APT 3A, Brooklyn, NY 11206, USA'],
   ['53 Lenox Dr, Lakewood, Lakewood, NJ 08701', '53 Lenox Dr, Lakewood, NJ 08701, USA'],
@@ -110,6 +122,16 @@ const NEVER_SAME = [
   ['12 Oak St, Monsey, NY 10952', '', 'one side blank'],
   ['', '', 'both blank'],
   ['Monsey, NY 10952', 'Monsey, NY 10952', 'no house number on either side — unreadable, never "same"'],
+  /* The other half of the spelled-out-ordinal rule. Widening a matcher is only
+     safe if it is proven not to widen too far, and the dangerous shapes are a
+     word that merely STARTS like a number word and a street NAMED after a
+     number rather than numbered. Over-matching here is worse than the miss it
+     fixes: it would merge two genuinely different properties onto one line. */
+  ['12 Second St, Lakewood, NJ 08701', '12 Third St, Lakewood, NJ 08701', 'Second is not Third'],
+  ['12 Secondary Rd, Lakewood, NJ 08701', '12 2 Rd, Lakewood, NJ 08701', '"Secondary" merely starts like "Second"'],
+  ['12 Twenty Oaks Ln, Lakewood, NJ 08701', '12 20 Oaks Ln, Lakewood, NJ 08701', 'Twenty Oaks is a name, not a number'],
+  ['12 Fortieth Manor, Lakewood, NJ 08701', '12 41 Manor, Lakewood, NJ 08701', 'Fortieth is 40, never 41'],
+  ['12 Twenty-Second St, Brooklyn, NY 11215', '12 21st St, Brooklyn, NY 11215', '22nd is not 21st'],
 ];
 for (const [a, b, why] of NEVER_SAME) ok(!ADDR.sameAddress(a, b), `never collapsed (${why}): "${a}" vs "${b}"`);
 

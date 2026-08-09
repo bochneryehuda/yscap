@@ -15,24 +15,39 @@ import { subscribeDialog, resolveTop } from '../lib/dialog.js';
  */
 export default function AppDialogHost() {
   const [req, setReq] = useState(null);
+  const [text, setText] = useState('');
   const okRef = useRef(null);
+  const fieldRef = useRef(null);
 
   useEffect(() => subscribeDialog(setReq), []);
 
   const answer = useCallback((v) => resolveTop(v), []);
 
-  // Focus the primary button so Enter answers and a screen reader lands on the
-  // action rather than somewhere in the body text.
-  useEffect(() => { if (req && okRef.current) okRef.current.focus(); }, [req && req.id]);
+  // A prompt starts from its default value, re-seeded per request so a queued
+  // second prompt never inherits what was typed into the first.
+  useEffect(() => {
+    if (req && req.kind === 'prompt') setText(req.defaultValue == null ? '' : String(req.defaultValue));
+  }, [req && req.id]);
+
+  // Focus the FIELD on a prompt (they are here to type) and the primary button
+  // otherwise, so Enter answers and a screen reader lands on the action rather
+  // than somewhere in the body text.
+  useEffect(() => {
+    if (!req) return;
+    const el = req.kind === 'prompt' ? fieldRef.current : okRef.current;
+    if (el) { el.focus(); if (req.kind === 'prompt' && el.select) el.select(); }
+  }, [req && req.id]);
 
   // Escape dismisses — cancelling a question, acknowledging a message. Bound
   // while a dialog is up so it can never swallow Escape from anything else.
+  // NOTE a cancelled PROMPT must answer null, never '' — the two mean different
+  // things to the callers (see askPrompt's contract in lib/dialog.js).
   useEffect(() => {
     if (!req) return undefined;
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
       e.stopPropagation();
-      answer(req.kind === 'confirm' ? false : undefined);
+      answer(req.kind === 'confirm' ? false : req.kind === 'prompt' ? null : undefined);
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -40,15 +55,23 @@ export default function AppDialogHost() {
 
   if (!req) return null;
   const isConfirm = req.kind === 'confirm';
-  const isError = req.tone !== 'info';
-  const title = req.title || (isConfirm ? 'Please confirm' : isError ? 'PILOT can’t do that yet' : 'PILOT');
+  const isPrompt = req.kind === 'prompt';
+  const isError = !isPrompt && req.tone !== 'info';
+  const title = req.title
+    || (isPrompt ? 'PILOT needs a note' : isConfirm ? 'Please confirm' : isError ? 'PILOT can’t do that yet' : 'PILOT');
 
   return (
     <div className="cv-modal-back" role="presentation"
       // A message must be READ, so the backdrop dismisses only a question —
       // clicking past an error is how people miss the reason something failed.
-      onMouseDown={(e) => { if (e.target === e.currentTarget && isConfirm) answer(false); }}>
-      <div className="cv-modal app-dialog" role={isConfirm ? 'dialog' : 'alertdialog'}
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (isConfirm) answer(false);
+        // Clicking past a prompt is backing out — null, the cancel answer, so a
+        // half-typed note is never filed as if it had been submitted.
+        else if (isPrompt) answer(null);
+      }}>
+      <div className="cv-modal app-dialog" role={isConfirm || isPrompt ? 'dialog' : 'alertdialog'}
         aria-modal="true" aria-labelledby={`dlg-t-${req.id}`} aria-describedby={`dlg-b-${req.id}`}>
         <div className="app-dialog-head">
           <span className={`app-dialog-mark ${isError && !isConfirm ? 'bad' : ''}`} aria-hidden="true" />
@@ -60,16 +83,33 @@ export default function AppDialogHost() {
         {/* pre-wrap: these messages are written with real line breaks (the
             sign-off refusals are two paragraphs) and must keep them. */}
         <p id={`dlg-b-${req.id}`} className="app-dialog-body">{req.message}</p>
+        {isPrompt && (
+          req.multiline
+            ? (
+              <textarea ref={fieldRef} className="input app-dialog-field" rows={3}
+                value={text} placeholder={req.placeholder || ''}
+                onChange={(e) => setText(e.target.value)} />
+            ) : (
+              <input ref={fieldRef} type="text" className="input app-dialog-field"
+                value={text} placeholder={req.placeholder || ''}
+                onChange={(e) => setText(e.target.value)}
+                // Enter submits a single-line answer, matching the native prompt.
+                // A textarea keeps Enter for new lines, so it submits by button.
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); answer(text); } }} />
+            )
+        )}
         <div className="app-dialog-actions">
-          {isConfirm && (
-            <button type="button" className="btn ghost" onClick={() => answer(false)}>
+          {(isConfirm || isPrompt) && (
+            <button type="button" className="btn ghost" onClick={() => answer(isPrompt ? null : false)}>
               {req.cancelLabel || 'Cancel'}
             </button>
           )}
           <button type="button" ref={okRef}
             className={`btn ${req.danger ? '' : 'primary'}`}
-            onClick={() => answer(isConfirm ? true : undefined)}>
-            {req.confirmLabel || (isConfirm ? 'Yes, continue' : 'OK')}
+            // A prompt answers with the TEXT — `''` if they submitted nothing,
+            // which is a different answer from the `null` that Cancel gives.
+            onClick={() => answer(isPrompt ? text : isConfirm ? true : undefined)}>
+            {req.confirmLabel || (isPrompt ? 'Save' : isConfirm ? 'Yes, continue' : 'OK')}
           </button>
         </div>
       </div>

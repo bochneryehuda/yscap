@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -9,6 +9,7 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
@@ -446,13 +447,36 @@ function Entities({ id }) {
 function TrackRecord({ id }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerTrackRecords(id), [id]);
   const [busy, setBusy] = useState('');
+  /* TWO DIFFERENT "VERIFY"s, kept apart on purpose (owner-directed 2026-08-09:
+     "I thought that button is to verify the details in Elementix. If that's
+     not the button, then we should do a separate button for that"). CHECK THE
+     RECORDS reads the county's own records for this one property and works on
+     ANY line — no exit date needed, because it verifies whatever facts exist
+     (they owned it, what they paid). VERIFY is the final sign-off that makes
+     the deal COUNT toward the tier, and it stays gated on a completed
+     in-window exit — a "verified" line that counts toward nothing is the
+     misleading state that gate exists to prevent. */
+  async function research(t) {
+    setBusy(t.id);
+    try {
+      const out = await api.staffResearchTrackRecord(t.id);
+      const errs = (out.errors || []).map((e) => e.detail || e.reason).filter(Boolean);
+      await showMessage(
+        (out.summary || 'The records were checked.')
+        + (errs.length ? `\n\n${errs.join('\n')}` : '')
+        + '\n\nOpen the Track record workspace to see each check and the evidence.',
+        { title: 'Public records check' });
+      reload();
+    } catch (e) { showMessage((e && e.message) || 'Could not check the records'); }
+    finally { setBusy(''); }
+  }
   async function verify(t) {
     setBusy(t.id);
     try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { showMessage(e.message || 'Could not verify'); }
     finally { setBusy(''); }
   }
   async function revoke(t) {
-    const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
+    const reason = await askPrompt('Revoke this project’s verification. The borrower is notified with this reason:');
     if (reason == null) return;                       // cancelled
     if (!reason.trim()) { showMessage('A reason is required to revoke verification.'); return; }
     setBusy(t.id);
@@ -462,9 +486,21 @@ function TrackRecord({ id }) {
   }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
-  if (!rows.length) return <div className="panel"><Empty t="No track-record entries." /></div>;
+  /* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the case
+     where searching the public records is most useful, and hiding it behind
+     "no entries" would put the tool out of reach exactly when it is needed. */
+  if (!rows.length) {
+    return (
+      <>
+        <StaffPropertyWorkbench borrowerId={id} />
+        <div className="panel"><Empty t="No track-record entries." /></div>
+      </>
+    );
+  }
   return (
-    <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
+    <>
+    <StaffPropertyWorkbench borrowerId={id} />
+    <div className="panel" style={{ padding: 0, overflowX: 'auto', marginTop: 14 }}>
       <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ textAlign: 'left' }}>
           {['Property', 'Type', 'Entity', 'Purchase', 'Sale/Value', 'Verified', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
@@ -478,14 +514,26 @@ function TrackRecord({ id }) {
               <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
               <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
               <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>
-              <td style={{ padding: '10px 12px' }}>{t.is_verified
-                ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
-                : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}>Verify</button>}</td>
+              <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                <button className="btn soft small" disabled={busy === t.id} onClick={() => research(t)}
+                  title="Read the county’s public records for this property — works on any line, fills the three checks, never marks it verified by itself.">
+                  Check the records</button>
+                {' '}
+                <Link className="btn soft small" to="/internal/approvals?tab=track-record"
+                  title="Open this borrower’s full track-record workspace — every check, the documents, and the actions.">
+                  Open</Link>
+                {' '}
+                {t.is_verified
+                  ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
+                  : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}
+                    title="The final sign-off: makes this deal count toward experience. Needs a completed exit within 3 years.">Verify</button>}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 

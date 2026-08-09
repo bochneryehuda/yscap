@@ -7,7 +7,7 @@ import TermSheetStudio, {
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
 import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -659,7 +659,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }
       return;
     }
-    const pw = window.prompt('Admin mode — enter the pricing admin password:');
+    const pw = await askPrompt('Admin mode — enter the pricing admin password:');
     if (pw == null) return;
     if (await checkAdminPassword(pw)) {
       setAdminKey(pw);
@@ -1184,9 +1184,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         // the term sheet anyway by typing a reason (logged). Retry after this
         // register fully settles (the submit gate is released in `finally`).
         const n = (e.data.openFields && e.data.openFields.length) || '';
-        const reason = (typeof window !== 'undefined' && window.prompt)
-          ? window.prompt(`Encompass has ${n} field(s) that don’t match this file. To issue the term sheet anyway, type the reason for the override:`)
-          : null;
+        // The old feature-detect around window.prompt is gone: askPrompt is our
+        // own module and is always there, falling back to the browser itself
+        // when no dialog host is mounted.
+        const reason = await askPrompt(
+          `Encompass has ${n} field(s) that don’t match this file. To issue the term sheet anyway, type the reason for the override:`,
+          { title: 'Override the Encompass check', confirmLabel: 'Issue anyway' });
         if (reason && reason.trim()) { const rr = reason.trim(); setTimeout(() => register({ ...opts, encompassOverrideReason: rr }), 0); }
         else setErr(e.data.error || 'Encompass has unmatched fields — provide an override reason to issue the term sheet.');
       } else if (e.status === 422 && e.data && e.data.code === 'encompass_findings_open') {

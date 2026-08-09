@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
   agingHours, agingLevel, agingLabel,
@@ -79,7 +80,7 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     finally { setBusy(false); }
   }
   async function voidEnv() {
-    const reason = window.prompt('Cancel (void) this package — the signer can no longer sign it. Reason (required):');
+    const reason = await askPrompt('Cancel (void) this package — the signer can no longer sign it. Reason (required):');
     if (!reason || !reason.trim()) return;
     setBusy(true); setActErr('');
     try { await api.post(`/api/staff/esign/${e.id}/void`, { reason: reason.trim() }); if (onReload) onReload(); }

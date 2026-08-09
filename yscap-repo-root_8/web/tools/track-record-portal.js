@@ -60,7 +60,15 @@
     var kind = (dt.indexOf("hold") >= 0 || dt.indexOf("rental") >= 0) ? "hold" : "flip";
     if (dt.indexOf("ground") >= 0) kind = (r.sale_price || r.sale_date) ? "flip" : "hold";
     return {
-      id: r.id, kind: kind,
+      /* `kind` IS A VIEW, NOT THE DEAL TYPE — see the long note on the V2 copy
+         (web/v2/tools/track-record-portal.js). In short: this tool shows a
+         property as flip OR hold while the data has three real types, so the
+         line above assigns a kind the user never chose. `_kind0` records the
+         kind the row LOADED as, so the save can tell a kind the USER switched
+         from one this function assigned — without it, merely opening a ground-up
+         and pressing save wiped its rent/refi dates and carried an aged-out deal
+         back inside the 36-month experience window. */
+      id: r.id, kind: kind, _kind0: kind,
       address: a.street || a.line1 || a.oneLine || "", city: a.city || "", state: a.state || "", zip: a.zip || "",
       entity: r.entity_name || "", ownedPersonally: !!r.owned_personally, propType: r.property_type || "", seller: "",
       purchasePrice: nstr(r.purchase_price), purchaseDate: dstr(r.purchase_date), rehab: nstr(r.rehab_amount),
@@ -78,14 +86,24 @@
       street: p.address || "", city: p.city || "", state: p.state || "", zip: p.zip || "",
       oneLine: [p.address, [p.city, p.state].filter(Boolean).join(", "), p.zip].filter(function (x) { return x && String(x).trim(); }).join(", "),
     };
+    /* Same three rules as the V2 copy, and for the same reasons — read the notes
+       there. (1) `switched` is the one question: did the USER move the toggle?
+       (2) a label this tool only DISPLAYED is never rewritten, which is what
+       stops 'new construction' becoming 'flip'; (3) a field the current view
+       does not show keeps what the row held, instead of being blanked. */
+    var switched = !p.id || (p._kind0 && p.kind !== p._kind0);
     var dealType = p.kind === "hold" ? "fix-and-hold" : "flip";
-    if (p._dealType && /ground/i.test(p._dealType)) dealType = p._dealType;   // keep ground-up labelling
+    if (p._dealType && !switched) dealType = p._dealType;
+    var keep = function (mine, stored) { return switched ? "" : (mine || stored || ""); };
     var out = {
       dealType: dealType, propertyAddress: addr,
       purchasePrice: p.purchasePrice || "", purchaseDate: p.purchaseDate || "", rehabAmount: p.rehab || "",
-      salePrice: p.kind === "flip" ? (p.salePrice || "") : "", saleDate: p.kind === "flip" ? (p.saleDate || "") : "",
-      rentAmount: p.kind === "hold" ? (p.rent || "") : "", rentDate: p.kind === "hold" ? (p.rentDate || "") : "",
-      refiAmount: p.kind === "hold" ? (p.refiAmount || "") : "", refiDate: p.kind === "hold" ? (p.refiDate || "") : "",
+      salePrice: p.kind === "flip" ? (p.salePrice || "") : keep("", p.salePrice),
+      saleDate: p.kind === "flip" ? (p.saleDate || "") : keep("", p.saleDate),
+      rentAmount: p.kind === "hold" ? (p.rent || "") : keep("", p.rent),
+      rentDate: p.kind === "hold" ? (p.rentDate || "") : keep("", p.rentDate),
+      refiAmount: p.kind === "hold" ? (p.refiAmount || "") : keep("", p.refiAmount),
+      refiDate: p.kind === "hold" ? (p.refiDate || "") : keep("", p.refiDate),
       currentValue: p.currentValue || "", notes: p.notes || "",
       propertyType: p.propType || "", entityName: p.ownedPersonally ? "" : (p.entity || ""),
       ownedPersonally: !!p.ownedPersonally,

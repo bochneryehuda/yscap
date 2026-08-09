@@ -8487,16 +8487,32 @@ async function signOffGate(itemId, actor) {
      This runs BEFORE the claimed-experience check on purpose: a duplicated line
      or the file's own subject property sitting on the record is wrong whether or
      not this particular deal is priced on experience, and it is the same list of
-     evidence either way. It FAILS OPEN on a read error — see the module. */
-  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(app.id);
+     evidence either way. It FAILS OPEN on a read error — see the module.
+
+     `item.application_id`, NOT `app.id`: the SELECT above does not fetch `id`, so
+     `app.id` was `undefined`, bound as NULL, matched no borrower, and this gate
+     silently never fired — every open finding was invisible to the sign-off while
+     the Track record section went on displaying it. */
+  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(item.application_id);
   if (trkBlock) return trkBlock;
-  // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
-  // the file (nothing to verify for the chosen structure), it may be signed off
-  // freely; it only becomes gated once experience is claimed on the application /
-  // term sheet / product.
+  // isExp — the experience REMINDER slot (#97). When NO experience is required
+  // for the chosen structure, it may be signed off freely.
+  //
+  // "REQUIRED" IS THE REGISTRATION'S NUMBER FIRST, THE FILE'S CLAIM SECOND —
+  // and the order of these two lines is the whole guard. It used to be
+  // `if (claimed === 0) return null;` BEFORE consulting the registration, so
+  // lowering `requested_exp_*` to zero (an ordinary edit, reachable through the
+  // details door and the studio's explicit claim) signed off a condition whose
+  // CURRENT REGISTRATION still priced the loan on three flips — proven
+  // end-to-end by the 2026-08-09 audit: gate returned null, the PATCH stamped
+  // sign-off, zero deals verified, while registeredExperienceNeed still said
+  // {flips:3}. The registration going stale reopens Products & Pricing, but the
+  // experience condition — the one the owner said must not clear until the
+  // deals are verified — stayed cleared. Asking `need` FIRST means a lowered
+  // claim only relaxes the gate once the product is RE-REGISTERED on it.
   const claim = require('../lib/experience').requestedFromApp(app);
-  const claimed = claim.flips + claim.holds + claim.ground;
-  if (claimed === 0) return null;
+  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
+  if (need.flips + need.holds + need.ground === 0) return null;
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
        FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
@@ -8516,8 +8532,8 @@ async function signOffGate(itemId, actor) {
   // to go register a product rather than to verify the ten deals
   // (owner-directed 2026-08-06: "the condition should require verifying 10 —
   // you should not be able to sign it off till you verify 10"). A REGISTERED
-  // file is unaffected: the registration still governs.
-  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
+  // file is unaffected: the registration still governs. (`need` is computed
+  // ABOVE the zero-claim early-return — that ordering is the 2026-08-09 fix.)
   const short = [];
   if (v.flips < need.flips) short.push(`${need.flips - v.flips} more flip${need.flips - v.flips === 1 ? '' : 's'}`);
   if (v.holds < need.holds) short.push(`${need.holds - v.holds} more hold${need.holds - v.holds === 1 ? '' : 's'}`);
@@ -10890,6 +10906,131 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (_) { /* best-effort */ }
   res.json({ ok: true, verified: false, revokedChildren });
 });
+
+/* ── CHECK A: DOES THIS BORROWER CONTROL THIS ENTITY? ───────────────────────
+   Owner-directed 2026-08-09. Ownership is TWO independent questions, and this
+   route answers the first one ONCE per entity:
+
+     CHECK A — does the borrower CONTROL this entity?  (here)
+     CHECK B — did that entity own THIS property?      (per track-record line)
+
+   So ten properties across two entities is two of these plus ten small
+   per-line confirmations — "if we verify ownership of these two LLCs, then all
+   the ownership of all the properties is verified."
+
+   IT IS NOT `llcs.is_verified`, and the two must not be collapsed. That flag
+   means "this entity's four document slots are complete" and it signs off the
+   entity CONDITION on every vesting loan file. Check A is a statement about a
+   PERSON's relationship to the company, it lives on `llc_borrowers` (so two
+   borrowers on one entity are answered separately), and it drives the TRACK
+   RECORD. An entity can be document-complete without anyone having confirmed
+   who runs it, and one borrower's control says nothing about a co-borrower's.
+
+   Authority mirrors the entity verify route exactly: verifying is a
+   `sign_off_conditions` call because it carries evidence onto the track record,
+   revoking is open to any reviewer on the file but REQUIRES a reason. */
+router.post('/llcs/:id/ownership-check', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id, llc_name FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+
+  const b = req.body || {};
+  /* WHOSE control is being confirmed. Defaults to the entity's own borrower, but
+     an entity can be linked to several people (llc_borrowers is many-to-many),
+     and each answers Check A for themselves. */
+  const borrowerId = b.borrowerId || own.rows[0].borrower_id;
+  if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+
+  const verified = b.verified !== false;
+  if (verified && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({
+      error: 'Only a processor can confirm control of an entity — it carries ownership evidence onto every property that entity held.' });
+  }
+  if (!verified && !String(b.reason || '').trim()) {
+    return res.status(400).json({ error: 'a reason is required to revoke — it removes the ownership evidence from every property this entity carried' });
+  }
+  if (verified && !String(b.evidenceKind || '').trim()) {
+    /* WHAT PROVED IT is not optional. "Verified" with no stated basis is the
+       thing this whole rebuild exists to stop — a reviewer months later has to
+       be able to see WHY, not just THAT. */
+    return res.status(400).json({
+      error: 'say what proves it: the operating agreement, a Secretary of State officer listing, a signature on a deed, or a K-1' });
+  }
+
+  const link = await db.query(
+    `INSERT INTO llc_borrowers (llc_id, borrower_id) VALUES ($1,$2)
+     ON CONFLICT DO NOTHING RETURNING llc_id`, [req.params.id, borrowerId]).catch(() => null);
+  if (link) { /* linked or already there — either is fine */ }
+
+  const evidence = verified ? {
+    kind: String(b.evidenceKind).slice(0, 40),
+    documentId: b.documentId || null,
+    sosTitle: b.sosTitle ? String(b.sosTitle).slice(0, 120) : null,
+    signerName: b.signerName ? String(b.signerName).slice(0, 160) : null,
+    note: b.note ? String(b.note).slice(0, 500) : null,
+    recordedAt: new Date().toISOString(),
+  } : null;
+
+  await db.query(
+    `UPDATE llc_borrowers
+        SET ownership_verified=$3,
+            ownership_verified_at = CASE WHEN $3 THEN now() ELSE NULL END,
+            ownership_verified_by = CASE WHEN $3 THEN $4::uuid ELSE NULL END,
+            ownership_evidence    = CASE WHEN $3 THEN $5::jsonb ELSE NULL END,
+            held_from = COALESCE($6::date, held_from),
+            held_to   = COALESCE($7::date, held_to)
+      WHERE llc_id=$1 AND borrower_id=$2`,
+    [req.params.id, borrowerId, verified, req.actor.id,
+      evidence ? JSON.stringify(evidence) : null,
+      require('../lib/fields').normalizeTypedDate(b.heldFrom),
+      require('../lib/fields').normalizeTypedDate(b.heldTo)]);
+
+  await audit(req, verified ? 'llc_ownership_verified' : 'llc_ownership_revoked', 'llc', req.params.id,
+    { borrowerId, evidenceKind: verified ? evidence.kind : null, reason: b.reason || null });
+
+  /* THE CARRY. This is the whole point — one answer here reaches every property
+     the entity held. Best-effort: it never throws, and a fan-out failure must
+     not undo the reviewer's decision, which is already committed above. */
+  const carry = await require('../lib/track-record-ownership')
+    .syncEntityToTrackRecords(req.params.id, {
+      checkB: (row) => (row.satisfied_by_llc_id || b.assumeCheckB ? { proved: true, confidence: 'likely' } : null),
+    });
+
+  res.json({ ok: true, verified, carry });
+});
+
+/* The properties this entity holds, with each line's ownership pillar — so the
+   entity screen can show "ownership carried from this entity" per property
+   rather than making somebody open ten track records to find out. */
+router.get('/llcs/:id/track-records', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+
+  const rows = (await db.query(
+    `SELECT t.id, t.property_address, t.deal_type, t.purchase_date, t.counts_from, t.hold_days,
+            t.is_verified, t.verification_status, t.entity_name,
+            p.auto_verdict, p.auto_grade, p.auto_evidence, p.human_verdict, p.satisfied_by_llc_id
+       FROM track_records t
+       LEFT JOIN track_record_pillars p
+              ON p.track_record_id = t.id AND p.pillar = 'ownership'
+      WHERE t.llc_id = $1
+      ORDER BY t.counts_from DESC NULLS LAST, t.created_at DESC`, [req.params.id])).rows;
+
+  const check = (await db.query(
+    `SELECT borrower_id, ownership_verified, ownership_verified_at, ownership_evidence, held_from, held_to
+       FROM llc_borrowers WHERE llc_id=$1`, [req.params.id])).rows;
+
+  res.json({
+    ok: true,
+    checkA: check,
+    properties: rows.map((r) => ({
+      ...r,
+      carried: String(r.satisfied_by_llc_id || '') === String(req.params.id),
+      ownershipMessage: (r.auto_evidence && r.auto_evidence.message) || null,
+    })),
+  });
+});
+
 // Verification statuses mirror the static Track Record tool: pending review,
 // documentation required, verified (with docs), limited (public record only).
 // 'verified' and 'limited' both count toward the borrower's experience tier.
@@ -10942,6 +11083,26 @@ router.post('/track-records/:id/verify', async (req, res) => {
   if (isRevoke && !reason) {
     return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
   }
+  /* D16 — THE ORPHAN. Setting a line to "needs documents" used to write ONE
+     column and stop: no condition, no borrower task, no notification, no gate.
+     It is also the only per-line control in the embedded tool, so it is what
+     staff actually reach for — which meant the most-used button in the whole
+     workflow asked nobody for anything.
+     There is now NO WAY to mark a line as needing a document that does not
+     create a real request. A typed `docType` posts the connected condition
+     (§5.2, works with or without a loan file); a plain `reason` still posts one
+     the old way; neither, and the click is refused with a message that says
+     what to do rather than silently doing nothing. */
+  if (status === 'docs' && !isRevoke) {
+    const b = req.body || {};
+    const hasAsk = !!b.docType || !!String(b.reason || b.label || '').trim();
+    if (!hasAsk) {
+      return res.status(400).json({
+        error: 'Say which document you need. Marking a project "needs documents" on its own asks the borrower for nothing.',
+        code: 'doc_request_required',
+      });
+    }
+  }
   await db.query(
     `UPDATE track_records
         SET verification_status=$3,
@@ -10969,10 +11130,40 @@ router.post('/track-records/:id/verify', async (req, res) => {
   } else {
     await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   }
+  // The other half of D16: the status write is now ACCOMPANIED by the real ask.
+  // It runs AFTER the column write so the line is already in the right state
+  // when the borrower's email lands, and it is best-effort in ONE direction
+  // only — the request failing is reported, never swallowed, but it can never
+  // roll back a status the reviewer already saw succeed.
+  let request = null; let requestError = null;
+  if (status === 'docs' && !isRevoke) {
+    const b = req.body || {};
+    try {
+      if (b.docType) {
+        request = await require('../lib/track-record/doc-request').requestDocument({
+          trackRecordId: req.params.id, borrowerId: tr.rows[0].borrower_id,
+          appId: b.applicationId || null, slug: b.docType, pillar: b.pillar,
+          llcId: b.llcId, customLabel: b.customLabel, internalNote: b.internalNote,
+          actorId: req.actor.id,
+        });
+      } else if (b.applicationId) {
+        const name = addressLabel(tr.rows[0].property_address) || 'a past project';
+        request = await raiseEntityIssue({
+          appId: b.applicationId, entityKind: 'track_record', entityId: req.params.id,
+          entityName: name, reason: String(b.reason || b.label || '').trim(),
+          actorId: req.actor.id, requestKind: 'doc_request' });
+      } else {
+        requestError = 'Nothing was asked for — open the project from a loan file, or pick a document type.';
+      }
+      if (request) await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { via: 'verify', docType: b.docType || null });
+    } catch (e) {
+      requestError = e.status ? e.message : 'the document request could not be posted';
+    }
+  }
   // Live cross-user refresh (#112): the borrower + other staff see the new
   // verification badge / revoke on the line item immediately.
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
-  res.json({ ok: true, status, revoked: isRevoke });
+  res.json({ ok: true, status, revoked: isRevoke, request, requestError });
 });
 
 // ---------------- raise an issue against a track-record line item / an LLC ----------------
@@ -11010,27 +11201,315 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
 // chokepoint as raise-issue (one condition tagged with the line item), but the
 // wording/notification is a document request, and the borrower can satisfy it
 // by uploading either on the condition or straight on the line item.
+/* ── THE TRACK-RECORD WORKSPACE ─────────────────────────────────────────────
+   ONE screen, replacing the two stacked track records the back office had.
+   Every verdict, refusal and next step comes from `pillar-actions` — the same
+   pure module the React screen reads — so a button the server would refuse can
+   never be offered. See src/lib/track-record/workspace.js. */
+router.get('/track-record-workspace', async (req, res) => {
+  try {
+    const W = require('../lib/track-record/workspace');
+    // The caller's own scope, never a second definition of who may see whom.
+    const p = [];
+    let scopeSql = null;
+    /* `b` is the BORROWERS alias in the workspace query — this helper takes a
+       table alias, not a column (it reaches for `<alias>.id` and
+       `<alias>.primary_officer_id`), and it is the ONE definition of who may
+       see whom. Never re-inline it. */
+    if (!can(req.actor, 'see_all_files')) { p.push(req.actor.id); scopeSql = VISIBLE_BORROWER_SQL('b', `$${p.length}`); }
+    res.json(await W.loadQueue({
+      visibleBorrowerSql: scopeSql, params: p,
+      limit: Number(req.query.limit) || 40,
+      filter: req.query.filter === 'all' ? 'all' : 'open',
+      staffId: req.actor.id,
+    }));
+  } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+router.get('/track-records/:id/workspace', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/workspace').loadLine(req.params.id, {
+      role: req.actor.role, canSignOff: can(req.actor, 'sign_off_conditions'),
+    });
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+/* ── THE IMPORTER (blueprint §9.1–9.3) ──────────────────────────────────────
+   Search the public records, STAGE what comes back, and let a person bring
+   properties on ONE AT A TIME. Nothing found ever lands on the track record by
+   itself: a staged candidate is in a DIFFERENT TABLE, so it is invisible to
+   every experience count, and promoting it still lands `pending`.
+   See src/lib/track-record/importer.js. */
+router.post('/borrowers/:id/track-record-search', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/importer').runSearch({
+      borrowerId: req.params.id, staffId: req.actor.id, states: (req.body || {}).states,
+    });
+    await audit(req, 'track_record_search', 'borrower', req.params.id,
+      { found: out.found, staged: out.staged, skipped: out.skipped, apiCalls: out.apiCalls });
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.get('/borrowers/:id/track-record-candidates', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/track-record/importer')
+      .loadQueue(req.params.id, null, { viewerStaffId: req.actor.id }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* CLAIM / RELEASE — advisory only. Starting a review run says "I am on these"
+   so a colleague opening the same borrower is not re-reading the same deeds;
+   it can never refuse anybody's decision (see track-record/claims.js). */
+router.post('/borrowers/:id/track-record-candidates/claim', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const CLAIMS = require('../lib/track-record/claims');
+    const b = req.body || {};
+    /* THE BORROWER FROM THE PATH IS PASSED DOWN AND RE-ASSERTED ON EVERY ROW.
+       `canSeeBorrower` proves you may look at THIS borrower's queue; it says
+       nothing about the ids in the body, which are a guessable bigserial. See
+       the header of track-record/claims.js. */
+    const out = b.release === true
+      ? { released: await CLAIMS.releaseClaims(b.ids, req.actor.id, req.params.id) }
+      : await CLAIMS.claimForReview(b.ids, req.actor.id, req.params.id);
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* The candidate id is a bigint; a path id that cannot be one ('abc', 20+
+   digits) would raise 22P02/22003 at the bind and read as a 500. It is simply
+   an id that matches nothing: 404. */
+const CANDIDATE_ID_RE = /^\d{1,18}$/;
+router.get('/track-record-candidates/:id/compare', async (req, res) => {
+  try {
+    if (!CANDIDATE_ID_RE.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/track-record/importer').compareCandidate(req.params.id));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/decide', async (req, res) => {
+  try {
+    if (!CANDIDATE_ID_RE.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/importer').decideCandidate(req.params.id, {
+      action: b.action, staffId: req.actor.id, note: b.note, snoozeDays: b.snoozeDays,
+      dealType: b.dealType, confirmReopen: b.confirmReopen === true,
+    });
+    await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,
+      { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields, why: e.why }); }
+});
+
+/* THE VERIFY BUTTON — read the public records for ONE property, on a click.
+   NOTHING SWEEPS: the vendor's hourly allowance is shared by the whole
+   organization, and a background pass writing to borrowers' records unattended
+   is the shape this rebuild exists to avoid. It writes the MACHINE's columns
+   only and can never verify a line — a person still confirms each check.
+   See src/lib/track-record/verify-run.js. */
+router.post('/track-records/:id/research', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/verify-run').runVerify(req.params.id, {
+      staffId: req.actor.id, force: (req.body || {}).force === true,
+    });
+    // The staff id is on every lookup already (db/503); this is the record that
+    // a PERSON asked, on this property, at this moment.
+    await audit(req, 'track_record_research', 'track_record', req.params.id,
+      { calls: out.calls, cached: out.cached, errors: (out.errors || []).length });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-pillars/:id/decide', async (req, res) => {
+  try {
+    const own = await db.query(
+      `SELECT t.borrower_id FROM track_record_pillars p JOIN track_records t ON t.id=p.track_record_id WHERE p.id=$1`,
+      [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/workspace').decidePillar(req.params.id, {
+      verdict: b.verdict, note: b.note, staffId: req.actor.id,
+      role: req.actor.role, canSignOff: can(req.actor, 'sign_off_conditions'),
+    });
+    await audit(req, 'track_record_pillar_decided', 'track_record', out.trackRecordId,
+      { pillarId: req.params.id, verdict: b.verdict || null });
+    require('../lib/events').publishTrackRecordUpdate(out.borrowerId, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* Bulk is for the boring case ONLY, and THE SERVER is what refuses the rest —
+   the blueprint is explicit that this may not be a UI-only guard. */
+router.post('/track-records/:id/pillars/bulk-confirm', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/workspace').bulkConfirm(req.params.id, {
+      staffId: req.actor.id, role: req.actor.role,
+      canSignOff: can(req.actor, 'sign_off_conditions'), note: (req.body || {}).note,
+    });
+    await audit(req, 'track_record_pillars_bulk_confirmed', 'track_record', req.params.id, { confirmed: out.confirmed });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code || undefined }); }
+});
+
+// THE VOCABULARY IS SERVER-FED, so the picker can never offer a type the server
+// would refuse (the 2026-08-02 "a value we OFFER is a value we accept" rule).
+router.get('/track-record-doc-types', (_req, res) => {
+  const DR = require('../lib/track-record/doc-request');
+  res.json({ docTypes: DR.DOC_TYPES, pillars: DR.PILLARS });
+});
+// A live preview of the exact sentence the borrower will read, BEFORE posting.
+// Pure — it writes nothing, so a staffer may try wordings freely.
+router.post('/track-records/:id/request-doc/preview', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const DR = require('../lib/track-record/doc-request');
+    const tr = await db.query(`SELECT borrower_id, property_address, entity_name FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
+    if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    let entityName = String(b.entityName || tr.rows[0].entity_name || '').trim();
+    if (b.llcId && !entityName) {
+      const l = await db.query(`SELECT llc_name FROM llcs WHERE id=$1`, [b.llcId]);
+      entityName = (l.rows[0] && l.rows[0].llc_name) || '';
+    }
+    res.json(DR.buildRequest({
+      trackRecordId: req.params.id, slug: b.docType, pillar: b.pillar,
+      entityName, llcId: b.llcId, customLabel: b.customLabel,
+      propertyLabel: DR.addressLabel(tr.rows[0].property_address),
+    }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
 router.post('/track-records/:id/request-doc', async (req, res) => {
   try {
     const b = req.body || {};
-    const appId = b.applicationId;
-    if (!appId) return res.status(400).json({ error: 'applicationId is required — request the document from within a loan file' });
-    const ask = String(b.label || b.reason || '').trim();
-    if (!ask) return res.status(400).json({ error: 'say which document you need' });
+    const appId = b.applicationId || null;
     const tr = await db.query(`SELECT borrower_id, property_address FROM track_records WHERE id=$1`, [req.params.id]);
     if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    if (appId && !(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+
+    /* THE TYPED PATH. `docType` is what tells the two apart — the old free-text
+       button sends only a label, and it must keep working (it is the control
+       staff actually use today), so the untyped ask still goes through
+       raiseEntityIssue exactly as before. A typed ask is connected three ways:
+       the property, the company and the pillar it is meant to move.
+
+       NO LOAN FILE IS NEEDED for the typed path (§5.4): an operating agreement
+       is a fact about the borrower, so the request lives on their profile and
+       migrates onto their next file. The untyped path still requires one,
+       because raiseEntityIssue builds a condition ON a file. */
+    if (b.docType) {
+      const DR = require('../lib/track-record/doc-request');
+      const out = await DR.requestDocument({
+        trackRecordId: req.params.id, borrowerId: tr.rows[0].borrower_id, appId,
+        slug: b.docType, pillar: b.pillar, llcId: b.llcId, entityName: b.entityName,
+        customLabel: b.customLabel, internalNote: b.internalNote, actorId: req.actor.id,
+      });
+      await audit(req, 'request_track_record_doc', 'track_record', req.params.id,
+        { applicationId: appId, docType: b.docType, pillar: out.pillar, scope: out.scope, reused: out.reused });
+      require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+      return res.json({ ok: true, ...out });
+    }
+
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — request the document from within a loan file, or pick a document type' });
+    const ask = String(b.label || b.reason || '').trim();
+    if (!ask) return res.status(400).json({ error: 'say which document you need' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
     const out = await raiseEntityIssue({
       appId, entityKind: 'track_record', entityId: req.params.id, entityName: name,
       reason: ask, actorId: req.actor.id, requestKind: 'doc_request',
     });
-    // A fresh ask reopens the line's doc state (an open 'issue' stays issue).
-    await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','received','satisfied')`, [req.params.id]);
+    if (String(b.internalNote || '').trim()) {
+      try {
+        await require('../lib/track-record/notes').addNote({
+          subjectKind: 'condition', subjectId: out.itemId, borrowerId: tr.rows[0].borrower_id,
+          body: b.internalNote, authorId: req.actor.id });
+      } catch (_) { /* a note must never lose the request */ }
+    }
+    /* `docs_status` is DERIVED by db/502's trigger from the conditions on the
+       line, so it is already 'requested' by the time we get here — the old
+       hand-written UPDATE is gone rather than left as a second writer. */
     await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { applicationId: appId, label: ask.slice(0, 500) });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+/* ── INTERNAL NOTES, at all five levels (owner-directed: "internal notes on
+   everything"). STAFF-ONLY: every read and write is scoped through
+   `canSeeBorrowerId`, and there is deliberately no borrower-facing route.
+   The borrower's side of the same conversation is the condition's own
+   `issue_reason`, which is a different field on purpose. */
+const NOTE_OWNER_SQL = {
+  property: 'SELECT borrower_id FROM track_records WHERE id=$1',
+  entity: 'SELECT borrower_id FROM llcs WHERE id=$1',
+  condition: 'SELECT COALESCE(ci.borrower_id, a.borrower_id) AS borrower_id FROM checklist_items ci LEFT JOIN applications a ON a.id = ci.application_id WHERE ci.id=$1',
+  pillar: 'SELECT t.borrower_id FROM track_record_pillars p JOIN track_records t ON t.id = p.track_record_id WHERE p.id=$1',
+  candidate: 'SELECT borrower_id FROM track_record_candidates WHERE id=$1',
+};
+async function noteSubjectBorrower(kind, id) {
+  const sql = NOTE_OWNER_SQL[kind];
+  if (!sql || !id) return null;
+  try { const r = await db.query(sql, [id]); return (r.rows[0] && r.rows[0].borrower_id) || null; }
+  catch (_) { return null; }   // an unreadable subject is never someone you may see
+}
+router.get('/track-record-notes', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const kind = String(req.query.subjectKind || '');
+    const id = String(req.query.subjectId || '');
+    if (!N.SUBJECTS.includes(kind)) return res.status(400).json({ error: 'what is this note about?' });
+    const borrowerId = await noteSubjectBorrower(kind, id);
+    if (!borrowerId) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+    res.json({ notes: await N.readNotes(kind, id) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-notes', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const b = req.body || {};
+    const kind = String(b.subjectKind || '');
+    if (!N.SUBJECTS.includes(kind)) return res.status(400).json({ error: 'what is this note about?' });
+    const borrowerId = await noteSubjectBorrower(kind, b.subjectId);
+    if (!borrowerId) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+    const out = await N.addNote({ subjectKind: kind, subjectId: b.subjectId, borrowerId, body: b.body, authorId: req.actor.id });
+    await audit(req, 'track_record_note_added', kind, String(b.subjectId), { borrowerId });
+    res.status(201).json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-notes/:id/retract', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const own = await db.query(`SELECT borrower_id FROM track_record_notes WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await N.retractNote(req.params.id, req.actor.id);
+    if (!out) return res.status(409).json({ error: 'that note was already withdrawn' });
+    await audit(req, 'track_record_note_retracted', 'note', req.params.id, {});
+    res.json({ ok: true });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.get('/borrowers/:id/track-record-notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    res.json({ notes: await require('../lib/track-record/notes').readBorrowerNotes(req.params.id) });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 router.post('/llcs/:id/raise-issue', async (req, res) => {
