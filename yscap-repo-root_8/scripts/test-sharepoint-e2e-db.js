@@ -152,15 +152,26 @@ sp.uploadNew = async (driveId, parentId, name, bytes) => {
   const recL = await backup.reconciliation();
   ok('lead/CRM attachment does not count in the pending backlog', true /* settled → excluded from pending by backed_up_at */ && recL.pending != null);
 
-  // === 2026-07-20 root fix: an appraisal_photo (a never-mirror KIND) is settled-
-  // skipped too, so it never sits "(not yet attempted)" as permanent SLO noise.
-  // Regression guard for the NEVER_MIRROR_SQL-vs-settle-set divergence.
-  const photoDoc = await mkStoredDoc('appraisal-photo-1.png', 'PNGBYTES', { doc_kind: 'appraisal_photo', content_type: 'image/png', created_at: "now() - interval '7 hours'" });
+  // === 2026-07-20 root fix: a never-mirror KIND is settled-skipped, so it never
+  // sits "(not yet attempted)" as permanent SLO noise. Regression guard for the
+  // NEVER_MIRROR_SQL-vs-settle-set divergence. The example is the Heter Iska —
+  // appraisal photos USED to be the case here and are mirrored as of 2026-08-09
+  // (owner-directed), so the guard now rides the one kind still on that list.
+  const iskaDoc = await mkStoredDoc('HeterIska-signed.pdf', 'ISKABYTES', { doc_kind: 'heter_iska_signed', content_type: 'application/pdf', created_at: "now() - interval '7 hours'" });
   await backup.runOnce({ limit: 50 });   // settleNeverMirror settles never-mirror kinds inside runOnce
-  const ps = (await db.query(`SELECT sharepoint_backed_up_at AS done, sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [photoDoc])).rows[0];
-  ok('appraisal photo is settled-skipped (never mirrored, never uploaded)', !!ps.done && !ps.ref && /appraisal|thumbnail/i.test(String(ps.why)));
+  const is = (await db.query(`SELECT sharepoint_backed_up_at AS done, sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [iskaDoc])).rows[0];
+  ok('a never-mirror kind is settled-skipped (never mirrored, never uploaded)', !!is.done && !is.ref && /heter|never mirrored/i.test(String(is.why)));
   const stuck = await backup.stuckDocuments(50);
-  ok('appraisal photo does NOT appear as a stuck "(not yet attempted)" document', !stuck.some((s) => String(s.id) === String(photoDoc)));
+  ok('a never-mirror kind does NOT appear as a stuck "(not yet attempted)" document', !stuck.some((s) => String(s.id) === String(iskaDoc)));
+
+  // === owner-directed 2026-08-09: appraisal photos ARE mirrored now, into their
+  // own folder. The inverse of the guard above, so the suite proves the policy
+  // change rather than losing the coverage that used to sit here.
+  const photoDoc = await mkStoredDoc('appraisal-photo-1.png', 'PNGBYTES', { doc_kind: 'appraisal_photo', content_type: 'image/png', created_at: "now() - interval '7 hours'" });
+  await backup.runOnce({ limit: 50 });
+  const ps = (await db.query(`SELECT sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [photoDoc])).rows[0];
+  ok('an appraisal photo is mirrored, not skipped', !!ps.ref && ps.why == null);
+  ok('and it files into its own "Appraisal photos" folder', backup.categoryFor({ doc_kind: 'appraisal_photo' }) === 'Appraisal/Appraisal photos');
 
   // === A-Z audit #3: a "needs a human" verdict makes the mirror NOT healthy ===
   await db.query(
