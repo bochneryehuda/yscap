@@ -44,6 +44,46 @@ const monitor = require('../src/lib/integrations/monitor');
   console.log('  ok - pure transition logic (down / no-repeat / recover / intentional-states-quiet)');
 }
 
+/* ---- PURE: what the API Health page is told about the monitor itself ----
+   The page renders "down for 3 days" and "nothing is watching between visits" from
+   these two, so both are pinned here rather than left to the screen to re-derive. */
+{
+  const env = { ...process.env };
+  const set = (on, mins) => {
+    if (on == null) delete process.env.INTEGRATIONS_MONITOR_ENABLED; else process.env.INTEGRATIONS_MONITOR_ENABLED = on;
+    if (mins == null) delete process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN; else process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN = mins;
+  };
+  try {
+    // describe() must read the SAME env vars start() reads, so the page can never
+    // advertise a schedule the monitor is not running.
+    set(null, null);
+    assert.deepStrictEqual(monitor.describe(), { enabled: false, intervalMin: 15 }, 'unset = off, 15 min');
+    set('1', '30');
+    assert.deepStrictEqual(monitor.describe(), { enabled: true, intervalMin: 30 }, 'env values are honoured');
+    // Anything under the 5-minute floor is clamped, and junk falls back — the page must
+    // never print "checking every 0 minutes".
+    set('1', '1');
+    assert.strictEqual(monitor.describe().intervalMin, 5, 'interval is clamped to the 5-minute floor');
+    set('1', 'nonsense');
+    assert.strictEqual(monitor.describe().intervalMin, 15, 'unparseable interval falls back to 15');
+    // Only an exact '1' turns it on — start() refuses everything else, so describe() must too.
+    for (const v of ['0', 'true', 'yes', '']) { set(v, '15'); assert.strictEqual(monitor.describe().enabled, false, `"${v}" does not enable`); }
+  } finally { process.env = env; }
+
+  // downSinceFor: the row supplies HOW LONG, the live probe decides WHETHER.
+  const ROW = { down_since: '2026-07-18T09:00:00.000Z' };
+  assert.strictEqual(monitor.downSinceFor('unreachable', ROW), ROW.down_since, 'still down → the stored since-when shows');
+  // THE POINT OF THE FUNCTION: the monitor sweeps on a timer, so a service that recovered
+  // five minutes ago still has yesterday's down_since in the table. Printing it beside a
+  // green light is a page contradicting itself.
+  for (const st of ['live', 'configured', 'disabled', 'not_configured', 'framework', 'planned']) {
+    assert.strictEqual(monitor.downSinceFor(st, ROW), null, `a stale row is dropped once the probe says ${st}`);
+  }
+  assert.strictEqual(monitor.downSinceFor('unreachable', undefined), null, 'no row (monitor never ran) → null, never a guess');
+  assert.strictEqual(monitor.downSinceFor('unreachable', { down_since: null }), null, 'a row with no timestamp → null');
+  console.log('  ok - describe() + downSinceFor() (the two facts the API Health page renders)');
+}
+
 // ---- DB end-to-end: runOnce persists state + fires exactly one alert on a down transition ----
 (async () => {
   if (!process.env.DATABASE_URL) { console.log('SKIP test-integrations-monitor DB half (no DATABASE_URL)'); console.log('test-integrations-monitor: transition logic pass'); return; }

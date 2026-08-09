@@ -87,19 +87,53 @@ async function runOnce(deps = {}) {
   return { checked: results.length, alerts };
 }
 
+/**
+ * WHAT THIS MONITOR IS DOING RIGHT NOW — for the API Health page, which has to be able
+ * to say whether anything is WATCHING these services between visits. "Every service is
+ * green" means something quite different when nobody is checking except the person who
+ * happens to open the page, so the screen states it rather than implying coverage it
+ * does not have. Reads the SAME two env vars `start()` reads, in ONE place, so the page
+ * can never describe a schedule the monitor is not actually running.
+ */
+function describe() {
+  return { enabled: process.env.INTEGRATIONS_MONITOR_ENABLED === '1', intervalMin: intervalMinutes() };
+}
+function intervalMinutes() {
+  return Math.max(5, parseInt(process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN || '15', 10) || 15);
+}
+
+/**
+ * "Since when?" for the API Health page — the stored `down_since` from THIS monitor's own
+ * row, but ONLY while the CURRENT probe still agrees the service is unreachable.
+ *
+ * This monitor is opt-in and sweeps on a timer, so its row lags reality by up to an
+ * interval: a service that came back five minutes ago still has yesterday's `down_since`
+ * sitting in the table. Reading the column on its own would print "down for 3 days" beside
+ * a green light — a page that contradicts itself, which is worse than one that says
+ * nothing. The live probe is the authority on WHETHER; the row is only consulted for
+ * HOW LONG. Returns null rather than a guess.
+ */
+function downSinceFor(currentState, row) {
+  if (!isDownState(currentState)) return null;
+  return (row && row.down_since) || null;
+}
+
 let started = false;
 function start() {
   if (started) return;
-  if (process.env.INTEGRATIONS_MONITOR_ENABLED !== '1') {
+  if (!describe().enabled) {
     console.log('[integrations-monitor] disabled (set INTEGRATIONS_MONITOR_ENABLED=1 to turn on down-alerts)');
     return;
   }
   started = true;
-  const mins = Math.max(5, parseInt(process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN || '15', 10) || 15);
+  const mins = intervalMinutes();
   // Boot pass shortly after startup, then every `mins` minutes (unref so it never holds the process open).
   setTimeout(() => runOnce().catch((e) => console.error('[integrations-monitor] boot', e && e.message)), 120000);
   setInterval(() => runOnce().catch((e) => console.error('[integrations-monitor] tick', e && e.message)), mins * 60 * 1000).unref();
   console.log(`[integrations-monitor] down-alerts started (every ${mins} min)`);
 }
 
-module.exports = { start, runOnce, evaluateTransitions, _internals: { isDownState, sendAlert } };
+module.exports = {
+  start, runOnce, evaluateTransitions, describe, downSinceFor,
+  _internals: { isDownState, sendAlert, intervalMinutes },
+};
