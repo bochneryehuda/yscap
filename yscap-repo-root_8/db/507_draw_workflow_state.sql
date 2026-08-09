@@ -1,5 +1,5 @@
 -- ============================================================================
--- 495_draw_workflow_state.sql — the three decisions a draw makes that were never
+-- 507_draw_workflow_state.sql — the three decisions a draw makes that were never
 -- written down (owner-directed 2026-08-09).
 --
 -- All three are gaps found by reading the code, and all three are the same shape:

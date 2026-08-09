@@ -153,20 +153,27 @@ console.log('\nD. the processing queue — what is waiting on us');
 
 console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a decision');
 
+/* THE SCREEN CHANGED, THE REQUIREMENTS DID NOT. `StaffTrackRecordReviews` was
+   replaced on 2026-08-09 by `StaffTrackRecordWorkspace` — the owner's "two
+   stacked track records, combine into ONE". Every assertion below is the SAME
+   property re-pointed at the screen that now carries it; none is relaxed. If a
+   future screen replaces this one, do the same rather than deleting a line. */
 {
-  const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordReviews.jsx');
+  const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordWorkspace.jsx');
   const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
   const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
-  ok(/staffTrackRecordReviews\(\)/.test(screen), 'the screen reads the queue');
+  ok(/staffTrackRecordWorkspace\(/.test(screen), 'the screen reads the queue');
   ok(/staffVerifyTrackRecord\(/.test(screen), '…and sets a verdict through the ONE audited verify route');
-  ok(/staffRequestTrackRecordDoc\(/.test(screen), '…and can ask for the documentation that is missing');
+  ok(/staffRequestTrackRecordDoc/.test(screen), '…and can ask for the documentation that is missing');
   // The refusals here are real underwriting rules (no exit, a stale exit, not a
   // processor) and each names the way forward — summarising them loses that.
   ok(/e && e\.message/.test(screen), '…and shows the server\'s own refusal wording, never a summary');
-  ok(/mayVerify/.test(screen) && /sign_off_conditions/.test(screen),
-    'verifying is offered only to a processor — the same rule the route enforces');
-  ok(/StaffTrackRecordReviews/.test(hub) && /'track-record'/.test(hub),
+  ok(/maySignOff/.test(screen) && /sign_off_conditions/.test(screen),
+    'verifying is offered only to somebody with sign-off — the same rule the route enforces');
+  ok(/StaffTrackRecordWorkspace/.test(hub) && /'track-record'/.test(hub),
     'it is a TAB of the Approvals hub, not another top-level nav link');
+  ok(!/StaffTrackRecordReviews/.test(hub),
+    '…and the screen it replaced is not mounted alongside it — two of them is the complaint this rebuild started from');
   ok(/staffTrackRecordReviewsCount/.test(hub) && /staffTrackRecordReviewsCount/.test(layout),
     'both the tab badge and the one Approvals nav badge count it');
   ok(/\+ trReviewCount/.test(layout), '…so the nav badge total includes what is waiting here');
