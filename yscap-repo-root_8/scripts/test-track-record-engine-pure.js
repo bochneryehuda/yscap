@@ -193,12 +193,28 @@ console.log('\n6. The exit — a sale, a real refinance, and the two things that
   ok(cousin.auto_verdict === 'proved' && cousin.auto_evidence.relatedPartyExit === true,
     '…but selling to a related party IS a sale — flagged, not denied (the ladder is what punishes it)');
 
+  /* THE FIXTURE IS THE SHAPE'S OWN FIELDS — `grantees`/`date`/`isCurrent`,
+     exactly what shapes.ownership() produces. The first version of this case
+     used `owners`/`asOf`, names NO real row carries, so the suite passed while
+     the check was permanently dark against live data (a fixture invented by
+     whoever wrote the reader can only ratify their guess — the shapes module's
+     own lesson, re-learned one layer up on 2026-08-09). */
   const still = byPillar(C.computeChecks(LINE, {
     ...RECS, deeds: [RECS.deeds[0]],
-    currentOwner: { addresses: [ONE_LINE], owners: ['Bishop Street Holdings LLC'], asOf: '2026-07-01' },
+    currentOwner: { addresses: [ONE_LINE], grantees: ['Bishop Street Holdings LLC'],
+      people: [], date: '2024-11-02', isCurrent: true },
   }, CTX, TODAY)).exit;
   ok(still.auto_verdict === 'contradicted',
-    'claiming a sale while the record still shows them as owner AFTER that date is a real contradiction');
+    'claiming a sale while the county STILL shows them as the current owner is a real contradiction');
+  /* Inside the recording-lag window it is NOT — a sale recorded three weeks
+     late must never be painted as a false claim. */
+  const lag = byPillar(C.computeChecks({ ...LINE, sale_date: '2026-07-20' }, {
+    ...RECS, deeds: [RECS.deeds[0]],
+    currentOwner: { addresses: [ONE_LINE], grantees: ['Bishop Street Holdings LLC'],
+      people: [], date: '2024-11-02', isCurrent: true },
+  }, CTX, TODAY)).exit;
+  ok(lag.auto_verdict !== 'contradicted',
+    'a fresh exit the county may simply not have recorded yet is NOT called a contradiction');
 
   const hold = { deal_type: 'hold', purchase_date: '2024-02-01', refi_date: '2025-04-01', property_address: ADDR };
   const refi = (termMonths, isExtension) => byPillar(C.computeChecks(hold, {

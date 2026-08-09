@@ -130,7 +130,7 @@ DocLab yet** — there are no credentials.
 | `src/doclab/field-map.js` | Where every variable comes from in PILOT — and, for the ones nothing feeds yet, exactly what is missing |
 | `src/doclab/payload.js` | Builds the request. Pure. Never fabricates a value |
 | `src/doclab/client.js` | The guarded transport. Three switches, dry-run, token lifecycle, retries |
-| `db/505_doclab.sql` | Requests, their event history, and the cached template/prepayment catalogues |
+| `db/509_doclab.sql` | Requests, their event history, and the cached template/prepayment catalogues |
 | Config, switches, API-Health card | Off by default, flippable without a deploy |
 | 3 test suites, 59 checks | In `npm test` |
 

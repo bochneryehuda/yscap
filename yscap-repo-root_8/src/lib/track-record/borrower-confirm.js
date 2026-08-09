@@ -54,6 +54,18 @@ const SAFE_FIELDS = [
 
 const ANSWERS = ['mine', 'not_mine'];
 
+/* `track_record_candidates.id` is a bigint. A path id that is not a plausible
+   bigint ('abc', 20 digits, an injection probe) used to reach the bind and
+   raise 22P02/22003, which the route's catch turns into 500 "server error" —
+   reads as "PILOT is broken" instead of "no such property". The column decides
+   (the repo's number-bounds rule); this door answers 404 like any other id
+   that matches nothing. */
+const GOOD_ID = /^\d{1,18}$/;
+function assertId(candidateId) {
+  if (GOOD_ID.test(String(candidateId == null ? '' : candidateId).trim())) return;
+  const e = new Error('not found'); e.status = 404; throw e;
+}
+
 /**
  * The borrower's queue, and honest progress.
  *
@@ -139,13 +151,37 @@ async function loadForBorrower(borrowerId, client) {
  * The candidate is settled as `merged` so nobody is asked twice, and staff use
  * the side-by-side to fill blanks deliberately.
  */
-async function answerCandidate(candidateId, { borrowerId, answer, dealType, note }, client) {
-  const db = client || require('../../db');
-  const a = str(answer);
+async function answerCandidate(candidateId, opts, client) {
+  assertId(candidateId);
+  const a = str(opts && opts.answer);
   if (!ANSWERS.includes(a)) { const e = new Error('that is not one of the answers'); e.status = 400; throw e; }
+  if (client) return answerLocked(client, candidateId, opts, a);
 
+  /* ONE ANSWER PER PROPERTY, AND THAT IS A LOCK — the same defect the staff
+     door had (see `importer.decideCandidate`). Reading the status and then
+     writing let two taps of one button both pass the check and write two
+     track-record lines for one property; driven concurrently, three taps
+     produced three lines. A phone on a flaky connection retries by itself, so
+     this is not a contrived race — and the duplicate lands on the record that
+     prices the loan. The transaction also means the line and the candidate's
+     settlement commit together or not at all. */
+  const conn = await require('../../db').getClient();
+  try {
+    await conn.query('BEGIN');
+    const out = await answerLocked(conn, candidateId, opts, a);
+    await conn.query('COMMIT');
+    return out;
+  } catch (e) {
+    await conn.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+async function answerLocked(db, candidateId, { borrowerId, dealType, note }, a) {
   const c = (await db.query(
-    `SELECT * FROM track_record_candidates WHERE id=$1 AND borrower_id=$2`,
+    `SELECT * FROM track_record_candidates WHERE id=$1 AND borrower_id=$2 FOR UPDATE`,
     [candidateId, borrowerId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
   if (c.status !== 'staged') {
@@ -185,17 +221,58 @@ async function answerCandidate(candidateId, { borrowerId, answer, dealType, note
  * Take an answer back.
  *
  * Undoing a "yes" removes the line it created — but ONLY a line that is still
- * exactly as this module left it. The moment anybody has touched it (verified
- * it, attached a document, edited a figure) it is theirs and is never deleted;
- * the answer is reopened and the line is left for a human. Same discipline as
- * `entity-adopt`'s pristine check and `track-record-findings.removeLine`, and
- * for the same reason: `documents.track_record_id` CASCADES, so deleting a line
- * somebody has worked would take their evidence with it.
+ * EXACTLY as this module left it, and "exactly" is enforced literally: every
+ * figure still equal to what the candidate staged, the import's own note text
+ * untouched, no officer note, no verification activity of any kind, no
+ * document, no condition. The first cut checked five of those and an audit
+ * proved the gap the hard way: lines carrying an officer's fraud note
+ * ("seller is the borrower's brother"), a `docs_status` a staffer had moved,
+ * a `verification_status` of 'limited' — one of the two statuses db/485's own
+ * counting function treats as verified — were all DELETED by a borrower's
+ * undo. The moment anybody has touched the line it is theirs; the pristine
+ * test must be the FULL definition of untouched, the same discipline as
+ * `encompass/enrich.js`'s PRISTINE_ENRICHMENT_ROW, and for the same reason:
+ * `documents.track_record_id` CASCADES, so deleting a worked line takes the
+ * evidence with it.
+ *
+ * AND THE ANSWER ONLY REOPENS WHEN THE LINE ACTUALLY WENT. The old shape reset
+ * the candidate to `staged` unconditionally — so when the line was KEPT
+ * (because staff had worked it), the question came back with its link to the
+ * surviving line erased, and answering "mine" again wrote a SECOND line for
+ * the same property: two clicks, a duplicate on the record that prices the
+ * loan, exactly the state db/418 exists to clean up. Now: line removed →
+ * question reopens; line kept → the answer STANDS and the borrower is told
+ * the team has it — the same sentence the screen already shows.
+ *
+ * Runs in one transaction with the candidate locked, like `answerCandidate` —
+ * two concurrent undos used to each report a different story about the same
+ * line ("removed" and "kept it for you" at once).
  */
-async function undoAnswer(candidateId, { borrowerId }, client) {
-  const db = client || require('../../db');
+async function undoAnswer(candidateId, opts, client) {
+  assertId(candidateId);
+  if (client) return undoLocked(client, candidateId, opts);
+  const conn = await require('../../db').getClient();
+  try {
+    await conn.query('BEGIN');
+    const out = await undoLocked(conn, candidateId, opts);
+    await conn.query('COMMIT');
+    return out;
+  } catch (e) {
+    await conn.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+/* The import's own notes text — the pristine test requires it verbatim, so an
+   edited note (even a non-material one) reads as "worked". Pinned to the
+   string `importer.importNew` writes for a borrower's confirm. */
+const IMPORT_NOTE = 'The borrower confirmed this one from the public records.';
+
+async function undoLocked(db, candidateId, { borrowerId }) {
   const c = (await db.query(
-    `SELECT * FROM track_record_candidates WHERE id=$1 AND borrower_id=$2`,
+    `SELECT * FROM track_record_candidates WHERE id=$1 AND borrower_id=$2 FOR UPDATE`,
     [candidateId, borrowerId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
   if (c.status === 'staged') return { ok: true, status: 'staged', changed: false };
@@ -212,14 +289,48 @@ async function undoAnswer(candidateId, { borrowerId }, client) {
     const r = await db.query(
       `DELETE FROM track_records t
         WHERE t.id=$1 AND t.borrower_id=$2
+          /* Untouched, in FULL: no verification activity of any kind… */
           AND t.is_verified = false
+          AND t.verification_status = 'pending'
+          AND t.verified_by IS NULL
+          AND t.verified_at IS NULL
+          AND COALESCE(t.docs_status, 'outstanding') = 'outstanding'
+          /* …no human words on it… */
+          AND t.lo_notes IS NULL
+          AND t.notes = $3
+          /* …every figure still exactly what the candidate staged (a staffer
+             re-typing a price is work, whether or not a trigger calls it
+             material)… */
+          AND t.purchase_price IS NOT DISTINCT FROM $4::numeric
+          AND t.purchase_date  IS NOT DISTINCT FROM $5::date
+          AND t.sale_price     IS NOT DISTINCT FROM $6::numeric
+          AND t.sale_date      IS NOT DISTINCT FROM $7::date
+          AND t.rent_amount    IS NOT DISTINCT FROM $8::numeric
+          AND t.rent_date      IS NOT DISTINCT FROM $9::date
+          AND t.refi_amount    IS NOT DISTINCT FROM $10::numeric
+          AND t.refi_date      IS NOT DISTINCT FROM $11::date
+          /* …still the row this module wrote, with nothing hanging off it. */
           AND t.origin = 'public_records'
           AND t.entered_by_kind = 'borrower'
           AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.track_record_id = t.id)
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.track_record_id = t.id)
-        RETURNING id`, [c.imported_track_record_id, borrowerId]);
+        RETURNING id`,
+      [c.imported_track_record_id, borrowerId, IMPORT_NOTE,
+        c.purchase_price, c.purchase_date, c.sale_price, c.sale_date,
+        c.rent_amount, c.rent_date, c.refi_amount, c.refi_date]);
     lineRemoved = r.rows.length > 0;
-    lineKept = !lineRemoved;
+    if (!lineRemoved) {
+      /* Removed already by a staffer, or worked? A line that no longer exists
+         has nothing to keep — the question simply reopens. */
+      const still = (await db.query(
+        `SELECT 1 FROM track_records WHERE id=$1`, [c.imported_track_record_id])).rows[0];
+      if (still) lineKept = true; else lineRemoved = true;
+    }
+  }
+
+  if (lineKept) {
+    /* THE ANSWER STANDS. Reopening here is what minted duplicate lines. */
+    return { ok: true, status: c.status, changed: false, lineRemoved: false, lineKept: true };
   }
 
   await db.query(
@@ -228,7 +339,7 @@ async function undoAnswer(candidateId, { borrowerId }, client) {
             decided_by_borrower=NULL, decided_by_kind=NULL, decided_at=NULL, resolution_note=NULL
       WHERE id=$1`, [candidateId]);
 
-  return { ok: true, status: 'staged', changed: true, lineRemoved, lineKept };
+  return { ok: true, status: 'staged', changed: true, lineRemoved, lineKept: false };
 }
 
 module.exports = {

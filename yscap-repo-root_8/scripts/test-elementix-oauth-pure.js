@@ -426,6 +426,29 @@ console.log('\n7. The paid tool cannot be called by accident');
   // swallows network errors by design, so a throw on its own is invisible — this
   // is what makes an accidental live call to Elementix a FAILURE rather than a
   // silent success.
+  /* ── the RFC 8707 resource is what the resource DECLARES ──────────────────
+     Root cause of the live 2026-08-09 "Could not start an Elementix session":
+     every token request carried our MCP URL as `resource`, while the vendor's
+     own RFC 9728 metadata declares the ORIGIN. A token minted for the wrong
+     audience is rejected at `initialize`, silently, forever. `indicatorOf` is
+     the one reader every wire-send goes through. */
+  {
+    const withStored = O.indicatorOf({
+      resource_url: 'https://app.elementix.com/api/mcp',
+      discovery: { resourceIndicator: 'https://app.elementix.com' },
+    });
+    assert.strictEqual(withStored, 'https://app.elementix.com');
+    ok('a row stored after the fix sends the indicator its discovery recorded');
+
+    const legacy = O.indicatorOf({ resource_url: 'https://app.elementix.com/api/mcp', discovery: {} });
+    assert.strictEqual(legacy, 'https://app.elementix.com');
+    ok('a PRE-fix row falls back to the ORIGIN of its stored URL — verified live as what Elementix declares — so an existing connection self-heals on its next refresh instead of needing a human to reconnect');
+
+    const unparsable = O.indicatorOf({ resource_url: 'not a url', discovery: null });
+    assert.strictEqual(unparsable, 'not a url');
+    ok('an unparsable stored URL degrades to the old behaviour rather than crashing a refresh');
+  }
+
   assert.deepStrictEqual(attemptedCalls, [],
     `this test tried to reach the vendor: ${attemptedCalls.join(', ')}`);
   ok('nothing in this suite called out to Elementix');

@@ -202,6 +202,59 @@ console.log('\n6. The entity-first sequence degrades instead of lying');
   const amb = await (L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', ...NO_DB }));
   ok(amb.ambiguousEntity === true && amb.entity === null,
     'TWO equally good companies is a human question — neither is picked, which is how somebody else\'s deeds stay off this record');
+
+// ═══════ DRY-RUN IS A REFUSAL, NEVER AN EMPTY COUNTY (owner-reported 2026-08-09)
+console.log('\n5. A dry run never reads as "the county has nothing"');
+  reset();
+  reply = () => ({ ok: true, dryRun: true, data: null });
+  const dr = await L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', ...NO_DB });
+  ok(dr.searched === false, 'a dry run never counts as having searched');
+  ok((dr.errors || []).some((e) => e.reason === 'dry_run'),
+    'the dry run is RECORDED as the reason — with the switch on, the screen said "the county does not publish online" about a search that never left the building');
+  ok((dr.errors || []).every((e) => /dry-run/i.test(e.detail || '')),
+    '…and the message tells the person which switch to flip');
+
+// ═══════ THE PERSON ROUTE — exact name or nothing
+console.log('\n6. A person is matched by their EXACT name, never a near one');
+  reset();
+  reply = (name) => {
+    if (name === 'match_person') return { ok: true, data: { status: 'none', match: null } };
+    if (name === 'search') return { ok: true, data: { results: [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'FRANKY PEREIRA', entityType: 'person' },
+    ] } };
+    return { ok: true, data: { data: [] } };
+  };
+  const near = await L.researchPerson({ personName: 'Frank Pereira', state: 'NJ', ...NO_DB });
+  ok(near.person === null && near.searched === false,
+    'FRANKY is not FRANK — a near-name is refused, verified against the live vendor returning exactly this shape');
+
+  reset();
+  reply = (name) => {
+    if (name === 'match_person') return { ok: true, data: { status: 'none', match: null } };
+    if (name === 'search') return { ok: true, data: { results: [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'KAMARA PATRICK', entityType: 'person' },
+    ] } };
+    if (name === 'get_person_deeds') return { ok: true, data: { data: [
+      { id: 'd1', recordingDate: '2025-01-10', totalConsideration: 300000, isGrantee: true,
+        grantees: ['PATRICK KAMARA'], grantors: ['A SELLER'],
+        addresses: [{ id: 'x', addressFull: '1 PERSONAL WAY, LAKEWOOD, NJ 08701' }] },
+    ], nextPage: 2 } };
+    if (name === 'get_person_mortgages') return { ok: true, data: { data: [
+      { id: 'm1', recordingDate: '2025-06-02', mortgageAmount: '210000.00', isRefinance: true,
+        borrowerNames: ['PATRICK KAMARA'],
+        propertyAddresses: [{ id: 'x', addressFull: '1 PERSONAL WAY, LAKEWOOD, NJ 08701' }] },
+    ] } };
+    return { ok: true, data: { data: [] } };
+  };
+  const person = await L.researchPerson({ personName: 'Patrick Kamara', state: 'NJ', ...NO_DB });
+  ok(!!person.person, 'the county\'s reversed spelling ("KAMARA PATRICK") still matches — word-for-word, order-blind');
+  ok(person.deeds.length === 1 && person.deeds[0].date === '2025-01-10',
+    'their personal-name deed comes back normalised');
+  ok(person.mortgages.length === 1 && person.mortgages[0].isRefinance === true
+      && person.mortgages[0].addresses[0] === '1 PERSONAL WAY, LAKEWOOD, NJ 08701',
+    'a person-route mortgage reads its propertyAddresses spelling — the live person tools\' field name');
+  ok(person.truncated.some((t) => t.list === 'deeds'),
+    'a vendor "nextPage" is REPORTED — a short answer must never pass as a complete one');
 }
 
   console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  no skip trace is reachable, a phone number is shown only when already paid for, and nothing is guessed');

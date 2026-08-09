@@ -327,14 +327,24 @@ async function callToolInner(name, args, opts) {
 
   if (unauthorized || sessionGone) {
     session = { id: null, initialized: false, url: null };
-    const again = await oauth.accessToken(opts.staffId || null);
+    /* forceRefresh, because the rejection IS the evidence the held token is
+       bad — without it this "retry with a freshly refreshed token" handed back
+       the same cached token and the retry proved nothing. */
+    const again = await oauth.accessToken(opts.staffId || null, { forceRefresh: true });
     if (!again.ok) return { ok: false, reason: again.reason, detail: again.detail };
     out = await attempt(again.token, again.tokenType);
   }
 
   if (out.transport && !out.transport.ok) {
+    /* NAME THE STEP AND THE REASON. The bare "Could not start an Elementix
+       session." told the owner nothing across four failing companies — an
+       unauthorized initialize and an unreachable host need two different
+       humans. */
     return { ok: false, reason: out.transport.reason || 'transport',
-      detail: out.transport.detail || 'Could not start an Elementix session.' };
+      detail: out.transport.detail
+        || (out.transport.reason === 'unauthorized'
+          ? 'Elementix rejected our sign-in at the session handshake (the stored authorization looks bad). Reconnect from the API Health page.'
+          : 'Could not start an Elementix session.') };
   }
 
   const res = out.res;

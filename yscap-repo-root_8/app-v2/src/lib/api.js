@@ -640,6 +640,12 @@ export const api = {
   staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
+  /* CHECK THE RECORDS — the per-line public-records research (verify-run.js).
+     This is the button the owner expected "Verify" to be (2026-08-09): it reads
+     the county's own records for THIS property and fills the three pillars; it
+     never marks the line verified — a person still does that, and the final
+     verify stays gated on a completed in-window exit. */
+  staffResearchTrackRecord:  (id, force) => req('POST', `/api/staff/track-records/${id}/research`, force ? { force: true } : {}),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
   staffRaiseTrackRecordIssue: (id, applicationId, reason, postCondition) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
