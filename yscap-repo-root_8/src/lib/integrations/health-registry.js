@@ -223,6 +223,53 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'doclab', name: 'DocLab (Private Lender Law) — loan documents', group: 'workflow',
+    purpose: 'Drafts the closing loan documents — note, mortgage or deed of trust, guaranty, loan agreement. The API form of the closing-prep package PILOT already emails to the same law firm. RTL only: no DSCR products and no prepayment penalties.',
+    direction: 'Two-way (we submit a loan request, they return the drafted documents)',
+    auth: 'Client id + secret issued by Private Lender Law (a one-hour access token)',
+    env: [
+      { name: 'DOCLAB_BASE_URL', required: true },
+      { name: 'DOCLAB_CLIENT_ID', required: true },
+      { name: 'DOCLAB_CLIENT_SECRET', required: true },
+      { name: 'DOCLAB_ENVIRONMENT', required: false },
+      { name: 'DOCLAB_TEMPLATE_LENDER_NAME', required: false },
+      { name: 'DOCLAB_LENDER_NAME', required: false },
+    ],
+    switches: [
+      { name: 'DOCLAB_ENABLED', label: 'Reading' },
+      { name: 'DOCLAB_DRYRUN', label: 'Test mode' },
+      { name: 'DOCLAB_OUTBOUND_ENABLED', label: 'Sending' },
+    ],
+    // DELIBERATELY NOT a live probe. Reaching DocLab means minting a fresh access
+    // token against a law firm's API on every page load, which is a login attempt,
+    // not a health check — and their token is valid for an hour, so hammering it
+    // teaches us nothing the stored configuration does not already say. "Can we
+    // actually reach it?" is answered on demand by the preflight.
+    liveProbe: false,
+    async probe() {
+      const c = require('../../doclab/client');
+      if (!c.configured()) {
+        return { configured: false, live: null,
+          detail: 'Private Lender Law has not issued us a client id and secret yet, so nothing is connected.' };
+      }
+      const on = c.masterOn();
+      const send = c.outboundOn();
+      const dry = c.dryrunOn();
+      const unconfirmed = c.endpointStatus().filter((e) => !e.confirmed && !e.overridden).length;
+      const env = (require('../../config').doclab || {}).environment || 'unknown';
+      const bits = [];
+      bits.push(on ? `Connected to the ${env} environment.` : 'Switched off.');
+      if (on) bits.push(dry ? 'Test mode is on, so nothing is actually sent.'
+        : (send ? 'Loan document requests can be sent.' : 'Sending is switched off — reading only.'));
+      // The one fact worth surfacing without a network call: several endpoint paths
+      // came through PLL's documentation as images rather than text, so they are the
+      // documented shape with an inferred path. Saying so here is what stops a 404
+      // from being read as a credential problem.
+      if (unconfirmed) bits.push(`${unconfirmed} endpoint ${unconfirmed === 1 ? 'address is' : 'addresses are'} still unconfirmed with Private Lender Law.`);
+      return { configured: true, enabled: on, live: null, detail: bits.join(' ') };
+    },
+  },
+  {
     key: 'elementix', name: 'Elementix (recorded deeds / mortgages)', group: 'data',
     purpose: 'Looks up recorded deeds and mortgages to research a property, an owner, or a borrower’s claimed track record. Read-only — PILOT never writes anything to Elementix.',
     direction: 'One-way (read)', auth: 'Sign-in approved once in a browser (no key to buy)',

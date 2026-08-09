@@ -1368,7 +1368,7 @@ router.post('/applications', async (req, res) => {
       // has and builds the entity's document slots, which the hand-rolled INSERT
       // this replaces did neither of.
       if (vestLlcId) await vesting.setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor });
-      else if (b.entityName) await vesting.setVestingLlcByName(appId, b.entityName, { source: 'staff', actor: req.actor });
+      else if (b.entityName) await vesting.setVestingLlcByName(appId, b.entityName, { source: 'staff', actor: req.actor, fields: { entityType: b.entityType } });
     } catch (e) { console.error('[staff-origination] vesting failed:', db.describeError(e)); }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
@@ -1594,6 +1594,11 @@ router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*, b.first_name,b.last_name,b.middle_name,b.name_suffix,b.full_name,b.name_review_needed,b.name_review_reason,b.email,b.cell_phone,b.fico,
             l.llc_name AS entity_name, l.is_verified AS entity_verified,
+            -- WHAT KIND OF COMPANY the file vests in, and whether anybody actually
+            -- chose it (db/509 stamped the whole back book as an LLC with nobody
+            -- choosing). The file screen needs both: one to word the entity section,
+            -- the other to admit it is assuming rather than state a guess as a fact.
+            l.entity_type, l.entity_type_confirmed, l.entity_subtype,
             cb.first_name AS co_first_name, cb.last_name AS co_last_name,
             cb.middle_name AS co_middle_name, cb.name_suffix AS co_name_suffix, cb.full_name AS co_full_name,
             cb.email AS co_email, cb.cell_phone AS co_cell_phone,
@@ -2356,7 +2361,7 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
         existed = true;
         await vesting.setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true });
       } else {
-        const out = await vesting.setVestingLlcByName(req.params.id, typedName, { source: 'staff', actor: req.actor, force: true });
+        const out = await vesting.setVestingLlcByName(req.params.id, typedName, { source: 'staff', actor: req.actor, force: true, fields: { entityType: b.entityType } });
         if (!out.llcId) return res.status(409).json({ error: 'Could not link that entity to this file. Refresh and try again.' });
         llcId = out.llcId; entityName = out.entityName; existed = out.existed;
       }
@@ -2431,13 +2436,13 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
 
     // WAIVE — file the affidavit (uploaded now, or already on the item), flag the
     // file personal-name, sign the condition off, and flip vesting to Individual.
-    if (!item) return res.status(409).json({ error: 'the LLC condition is not on this file yet' });
+    if (!item) return res.status(409).json({ error: 'the vesting-entity condition is not on this file yet' });
     // An LLC always wins over a personal-name waiver (db/384). A VERIFIED linked
     // entity means the file really vests in that LLC — refuse (remove the LLC
     // first). An unverified linked entity is dropped below with the flag write, so
     // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
     if (app.llc_id && app.llc_verified === true)
-      return res.status(409).json({ error: 'This file vests in a verified LLC. Remove the LLC entity first if it is really being bought in a personal name.' });
+      return res.status(409).json({ error: 'This file vests in a verified entity. Remove the entity first if it is really being bought in a personal name.' });
     let uploadedDocId = null;
     if (b.dataBase64) {
       if (!b.filename) return res.status(400).json({ error: 'filename + dataBase64 required for the affidavit' });
@@ -3214,7 +3219,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const typed = String((b.overrides && b.overrides.entityName) || b.entityName || '').trim();
       if (typed && !f.app.llc_id) {
-        await require('../lib/vesting').setVestingLlcByName(appId, typed, { source: 'staff', actor: req.actor });
+        await require('../lib/vesting').setVestingLlcByName(appId, typed, { source: 'staff', actor: req.actor, fields: { entityType: (b.overrides && b.overrides.entityType) || b.entityType } });
       }
     } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
     finally { if (!released) client.release(); }
@@ -6866,6 +6871,21 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         // says it is an individual. The missing list below is already filtered.
         vestsIndividually: data.vestsIndividually,
         isRefinance: data.transactionType === 'Refinance',
+        /* WHO SIGNS, AND AS WHAT (owner-directed 2026-08-09: "when the closer gets
+           the closing desk, if it's not filled yet they should tell her that she
+           needs to fill it"). A title prints under the signature line on every
+           recorded instrument, so a blank one is real missing work — but it is a
+           NUDGE, never a blocker: `blockers()` deliberately does not read it,
+           because refusing the order would stop the file over something the closer
+           can fix in ten seconds while they are looking at it. */
+        ownersMissingTitles: data.ownersMissingTitles || [],
+        entityTypeConfirmed: data.entityTypeConfirmed,
+        entityKind: data.entityKind ? data.entityKind.label : null,
+        /* A partnership and a trust each come in kinds, and the kind is printed
+           on the instrument — a general partnership and a limited partnership
+           are different legal entities. Another nudge, never a blocker. */
+        entitySubtypeNeeded: !!(data.entityKind && data.entityKind.hasSubtypes && !data.entityKind.subtype),
+        entitySubtypeLabel: data.entityKind ? data.entityKind.subtypeLabel : null,
       },
       deal: closingPrep.dealMeta(data),
       order: {
@@ -10428,7 +10448,10 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   }
   const ein = llcLib.normalizeEin(b.ein);
   if (ein.error) return res.status(400).json({ error: ein.error });
-  const parsed = llcLib.parseMembers(b.members, b.ownershipPct);
+  // STAFF may set each owner's title / share count / certificate number here
+  // (owner-directed 2026-08-09: staff-side only). The entity's own type decides
+  // which titles are offered, so it is passed in.
+  const parsed = llcLib.parseMembers(b.members, b.ownershipPct, { allowOwnerDetails: true, entityType: b.entityType });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   // A name this borrower already has is REUSED, not duplicated or rejected — so
   // adding "123 Main LLC" to a file when the borrower already has that entity
@@ -10436,7 +10459,14 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   const { id: llcId, existed } = await llcLib.findOrCreateLlc(borrowerId, {
     llcName: String(b.llcName).trim(), ein: ein.ein, formationState: b.formationState,
     formationDate: b.formationDate, ownershipPct: b.ownershipPct,
+    entityType: b.entityType,   // LLC / Corporation / Partnership / Trust (owner-directed 2026-08-09)
+    // …and, for a partnership or a trust, WHICH kind — it decides what we may ask
+    // them for (a revocable trust has no EIN; a general partnership no state filing).
+    entitySubtype: b.entitySubtype,
   });
+  // A type stated on a name the borrower already has still records — see
+  // llc.confirmEntityType for the three guards that keep it safe.
+  if (existed) { try { await llcLib.confirmEntityType(llcId, b.entityType, { staffId: req.actor.id, entitySubtype: b.entitySubtype }); } catch (_) { /* best-effort */ } }
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
@@ -10808,10 +10838,36 @@ router.patch('/llcs/:id', async (req, res) => {
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  /* WHAT KIND OF COMPANY THIS IS (owner-directed 2026-08-09). Not in the column
+     map above because recording a type is three columns PLUS a re-label of the
+     entity's document slots — a corporation is asked for bylaws and a stock
+     certificate, never an operating agreement. A value we cannot read is REFUSED
+     rather than silently dropped. */
+  let entityTypeChanged = false;
+  if (b.entityType !== undefined && String(b.entityType || '').trim()) {
+    const ET = require('../lib/entity-type');
+    if (!ET.isRecognized(b.entityType)) {
+      return res.status(400).json({ error: `Pick one of: ${ET.TYPES.map((t) => t.label).join(', ')}.` });
+    }
+    /* The sub-kind is normalized AGAINST the type being saved, so switching a
+       trust to an LLC cannot leave "revocable" behind on a type that has no
+       sub-kind — and an explicit blank CLEARS it, because "I picked the wrong
+       one" has to be undoable. */
+    const sub = ET.normalizeSubtype(ET.normalizeKey(b.entityType), b.entitySubtype) || null;
+    await db.query(
+      `UPDATE llcs SET entity_type=$2, entity_type_confirmed=true, entity_type_set_at=now(),
+                       entity_type_set_by=$3, entity_subtype=$4, updated_at=now()
+        WHERE id=$1 AND is_verified=false`,
+      [req.params.id, ET.normalizeKey(b.entityType), req.actor.id, sub]);
+    try { await llcLib.applyEntitySlotWording(req.params.id); } catch (_) { /* wording is cosmetic */ }
+    await audit(req, 'set_entity_type', 'llc', req.params.id,
+      { entityType: ET.normalizeKey(b.entityType), entitySubtype: sub });
+    entityTypeChanged = true;
+  }
   // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.
   if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
-  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  if (!sets.length) return entityTypeChanged ? res.json({ ok: true }) : res.status(400).json({ error: 'nothing to update' });
   if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
     const p = Number(b.ownershipPct);
     if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
@@ -10828,11 +10884,14 @@ router.patch('/llcs/:id', async (req, res) => {
 // Replace an entity's OTHER members on the borrower's behalf. Same shape/lock
 // as the borrower's PUT /llcs/:id/members.
 router.put('/llcs/:id/members', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id, is_verified, ownership_pct FROM llcs WHERE id=$1`, [req.params.id]);
+  const own = await db.query(`SELECT borrower_id, is_verified, ownership_pct, entity_type FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
-  const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
+  // Staff may set each owner's TITLE (from the fixed list for this entity's
+  // type), and for a corporation the share count + certificate number.
+  const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct,
+    { allowOwnerDetails: true, entityType: own.rows[0].entity_type });
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   try { await llcLib.replaceMembers(req.params.id, parsed.members || [], { borrowerId: own.rows[0].borrower_id }); }
   catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
@@ -10874,7 +10933,7 @@ router.post('/llcs/:id/verify', async (req, res) => {
     await audit(req, 'verify_llc', 'llc', req.params.id);
     try {
       await notify.notifyBorrower(own.rows[0].borrower_id, {
-        type: 'llc_verified', title: 'Your LLC is verified',
+        type: 'llc_verified', title: 'Your entity is verified',
         body: `"${own.rows[0].llc_name}" is fully verified. Its documents and ownership details are on file and will be reused automatically on your loans.`,
         link: '/profile', ctaLabel: 'View your profile' });
     } catch (_) { /* best-effort */ }
@@ -10903,11 +10962,11 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
-      type: 'llc_unverified', title: 'Your LLC needs attention', badge: { text: 'Action needed', tone: 'action' },
+      type: 'llc_unverified', title: 'Your entity needs attention', badge: { text: 'Action needed', tone: 'action' },
       body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
         + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
         + ' Please review the details and documents on your profile.',
-      link: '/profile', ctaLabel: 'Review your LLC' });
+      link: '/profile', ctaLabel: 'Review your entity' });
   } catch (_) { /* best-effort */ }
   res.json({ ok: true, verified: false, revokedChildren });
 });

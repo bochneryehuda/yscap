@@ -173,11 +173,11 @@ const CATALOG = [
     category: 'documents', audience: 'staff', forced: false, default_mode: 'automatic' },
 
   // ─── Entities & track record ──────────────────────────────────────────────
-  { key: 'llc_verified',          label: 'LLC / entity verified',
+  { key: 'llc_verified',          label: 'Entity verified',
     description: "Confirms the borrower's LLC has been fully verified by staff.",
     category: 'documents', audience: 'borrower', forced: false, default_mode: 'automatic' },
-  { key: 'llc_unverified',        label: 'LLC verification revoked',
-    description: "Tells the borrower their LLC verification was revoked and what needs to be fixed.",
+  { key: 'llc_unverified',        label: 'Entity verification revoked',
+    description: "Tells the borrower their entity verification was revoked and what needs to be fixed.",
     category: 'documents', audience: 'borrower', forced: false, default_mode: 'automatic' },
   { key: 'track_record_unverified', label: 'Track record project unverified',
     description: "Tells the borrower a previously-verified project on their track record was revoked, with reason.",

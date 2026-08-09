@@ -1,27 +1,16 @@
 # CSS / layout audit
 
-240 screen-loads across 3 widths (1440, 1280, 390px), 80 screens. **1738 findings**, 28 high.
+240 screen-loads across 3 widths (1440, 1280, 390px), 80 screens. **1769 findings**, 6 high.
 
 | what | count | screens |
 |---|---:|---:|
-| spill | 1 | 1 |
 | clipped | 6 | 1 |
-| covered-text | 13 | 3 |
-| overlap | 8 | 3 |
 | contrast | 70 | 14 |
 | contrast-near | 124 | 15 |
-| tiny-text | 344 | 58 |
-| covered-by-overlay | 289 | 44 |
-| ellipsized | 15 | 4 |
-| tap-target | 868 | 40 |
-
-## spill (1)
-
-
-**staff borrower detail** — phone
-
-- `div > div > div > h1` 6px of text escapes the box (overflow visible)
-  > Maximiliano Bartholomew Featherstonehaugh-Wintersbottom
+| tiny-text | 356 | 58 |
+| covered-by-overlay | 295 | 44 |
+| ellipsized | 36 | 4 |
+| tap-target | 882 | 40 |
 
 ## clipped (6)
 
@@ -36,73 +25,10 @@
   > Ask about no closing cost options Zero points on eligible Fix & Hold renovation loans Defe
 - `section#reviews > div.review-viewport` 11181px of content cut off with no ellipsis
   > ★★★★★Just closed with YS Capital and had a great experience! They offer good rates and min
-- `main#top > section.offer-bar` 4924px of content cut off with no ellipsis
+- `main#top > section.offer-bar` 4925px of content cut off with no ellipsis
   > Ask about no closing cost options Zero points on eligible Fix & Hold renovation loans Defe
 - `section#reviews > div.review-viewport` 12061px of content cut off with no ellipsis
   > ★★★★★Just closed with YS Capital and had a great experience! They offer good rates and min
-
-## covered-text (13)
-
-
-**staff approvals** — desktop, laptop
-
-- `div.esc-primary-field > div.field > div.inp-suffix > span.sfx` painted over by div.esc-primary-field > div.field > div.inp-suffix > input.input — nothing can scroll them apart
-  > months
-- `div.esc-primary-field > div.field > div.inp-suffix > span.sfx` painted over by div.esc-primary-field > div.field > div.inp-suffix > input.input — nothing can scroll them apart
-  > months
-
-**staff research** — phone
-
-- `div > aside > div > label` painted over by div#root > div.app > main.app-main > footer.wrap.app-foot.small — nothing can scroll them apart
-  > Units
-
-**site home** — phone
-
-- `div#navMobile > a` painted over by main#top > section.m-hero.hero — nothing can scroll them apart
-  > Programs
-- `div#navMobile > a` painted over by section.m-hero.hero > div.m-wrap.hero-grid > div > div.kicker.reveal — nothing can scroll them apart
-  > Leverage
-- `div#navMobile > a` painted over by main#top > section.m-hero.hero > div.m-wrap.hero-grid > div — nothing can scroll them apart
-  > Investor Suite
-- `div#navMobile > a` painted over by div.m-wrap.hero-grid > div > h1.hero-title > span.reveal — nothing can scroll them apart
-  > Request a Draw
-- `div#navMobile > a` painted over by div.m-wrap.hero-grid > div > h1.hero-title > span.reveal — nothing can scroll them apart
-  > Process
-- `div#navMobile > a` painted over by main#top > section.m-hero.hero > div.m-wrap.hero-grid > div — nothing can scroll them apart
-  > Team
-- `div#navMobile > a` painted over by section.m-hero.hero > div.m-wrap.hero-grid > div > p.lede.reveal — nothing can scroll them apart
-  > FAQ
-- `div#navMobile > a` painted over by section.m-hero.hero > div.m-wrap.hero-grid > div > p.lede.reveal — nothing can scroll them apart
-  > Contact
-- …and 2 more
-
-## overlap (8)
-
-
-**staff api health** — desktop, laptop, phone
-
-- `div.dd-wrap > div.dd-card > p.ah-purpose > b` overlaps "Retry stuck ones" (div.dd-wrap > div.dd-card > p.ah-purpose > b) by 100%
-  > Copy everything now
-- `div.dd-wrap > div.dd-card > p.ah-purpose > b` overlaps "Retry stuck ones" (div.dd-wrap > div.dd-card > p.ah-purpose > b) by 100%
-  > Copy everything now
-- `div.dd-wrap > div.dd-card > p.ah-purpose > b` overlaps "Retry stuck ones" (div.dd-wrap > div.dd-card > p.ah-purpose > b) by 48%
-  > Copy everything now
-
-**site home** — desktop, laptop, phone
-
-- `div.disclosures > div.disc-grid > p > a` overlaps "SMS Terms & Conditions" (div.disclosures > div.disc-grid > p > a) by 100%
-  > Privacy Policy
-- `div.disclosures > div.disc-grid > p > a` overlaps "SMS Terms & Conditions" (div.disclosures > div.disc-grid > p > a) by 100%
-  > Privacy Policy
-- `div.disclosures > div.disc-grid > p > a` overlaps "SMS Terms & Conditions" (div.disclosures > div.disc-grid > p > a) by 100%
-  > Privacy Policy
-
-**staff pipeline shadow** — phone
-
-- `div.wrap > div.card > div.muted > b` overlaps "(the new pipeline runs in shadow only)" (div.wrap > div.card > div.muted > span.muted) by 100%
-  > V1
-- `div.wrap > div.card > div.muted > span.muted` overlaps "(none)" (div.wrap > div.card > div.muted > b) by 100%
-  > (the new pipeline runs in shadow only)
 
 ## contrast (70)
 
@@ -468,7 +394,7 @@
 - `div#tr-app > section.tr-toolbar > button.tr-btn.primary` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 16px
   > + Add a property
 
-## tiny-text (344)
+## tiny-text (356)
 
 
 **borrower dashboard** — desktop, laptop, phone
@@ -991,18 +917,18 @@
 - `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
   > Admin console
 - `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
+  > GC
+- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
+  > GC
+- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
+  > GC
+- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
+  > GC
+- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
   > AN
 - `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
   > MB
-- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
-  > by YS Capital
-- `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
-  > Admin console
-- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
-  > AN
-- `div.cv-item-main > div.cv-item-top > span.cv-item-avas > span.cv-ava.tiny` 8.5px text
-  > MB
-- …and 3 more
+- …and 15 more
 
 **staff api health** — desktop, laptop, phone
 
@@ -1253,7 +1179,7 @@
   > Loan Size
 - …and 4 more
 
-## covered-by-overlay (289)
+## covered-by-overlay (295)
 
 
 **borrower track record** — desktop, laptop, phone
@@ -1267,14 +1193,14 @@
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > Dashboard
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
-  > Tasks3
+  > Tasks12
+- `div.wrap > nav.nav > a > span.nav-count` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
+  > 12
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > New application
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > Price a loan
-- `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
-  > Profile
-- …and 27 more
+- …and 29 more
 
 **borrower pricing** — desktop, laptop, phone
 
@@ -1287,14 +1213,14 @@
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > Dashboard
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
-  > Tasks3
+  > Tasks12
+- `div.wrap > nav.nav > a > span.nav-count` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
+  > 12
 - `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > New application
 - `header.header > div.wrap > nav.nav > a.active` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
   > Price a loan
-- `header.header > div.wrap > nav.nav > a` sits under div.toolsheet > header.toolsheet-head > div.toolsheet-titles > span.muted.small until you scroll — check it is not the only place this value shows
-  > Profile
-- …and 27 more
+- …and 29 more
 
 **staff queue** — desktop, laptop
 
@@ -1505,7 +1431,7 @@
   > Workflow
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.isuite-full > div.isuite-full-body > div.toolframe.fill > iframe until you scroll — check it is not the only place this value shows
   > Approvals
-- …and 43 more
+- …and 42 more
 
 **staff borrowers** — desktop, laptop
 
@@ -1513,10 +1439,14 @@
   > Notifications
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
   > My settings
+- `tr > td > div.row > button.btn.ghost.small` sits under div#root > div.app > button.chat-fab until you scroll — check it is not the only place this value shows
+  > Invite
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > span.pill until you scroll — check it is not the only place this value shows
   > Borrower view
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
   > Email Center
+- `tr > td > div.row > button.btn.ghost.small` sits under div#root > div.app > button.chat-fab until you scroll — check it is not the only place this value shows
+  > Set password
 
 **staff borrower detail** — desktop, laptop
 
@@ -1647,6 +1577,8 @@
   > Notifications
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
   > My settings
+- `div.ah-tools > div.ah-chips > button.ah-chip > span.ah-chip-n` sits under div#root > div.app > button.chat-fab until you scroll — check it is not the only place this value shows
+  > 23
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > span.pill until you scroll — check it is not the only place this value shows
   > Borrower view
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
@@ -1775,7 +1707,7 @@
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
   > Email Center
 
-## ellipsized (15)
+## ellipsized (36)
 
 
 **borrower file** — desktop, laptop, phone
@@ -1793,18 +1725,23 @@
 
 **staff chat** — desktop, laptop, phone
 
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 45px past its box (…)
+  > 1 Gate St bwkpq, Lakewood, NJ 08701
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 39px past its box (…)
+  > 1 Gate St 50etg, Lakewood, NJ 08701
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 39px past its box (…)
+  > 1 Gate St 3zqrg, Lakewood, NJ 08701
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 38px past its box (…)
+  > 1 Gate St i20en, Lakewood, NJ 08701
 - `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 188px past its box (…)
   > Saint Petersburg Beach, FL · YSCAP-CSSAUDIT-LONG
 - `button.cv-item > div.cv-item-main > div.cv-item-top > span.cv-item-name` 81px past its box (…)
   > Borrower — Featherstonehaugh-Wintersbottom
-- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 188px past its box (…)
-  > Saint Petersburg Beach, FL · YSCAP-CSSAUDIT-LONG
-- `button.cv-item > div.cv-item-main > div.cv-item-top > span.cv-item-name` 81px past its box (…)
-  > Borrower — Featherstonehaugh-Wintersbottom
-- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 192px past its box (…)
-  > Saint Petersburg Beach, FL · YSCAP-CSSAUDIT-LONG
-- `button.cv-item > div.cv-item-main > div.cv-item-top > span.cv-item-name` 99px past its box (…)
-  > Borrower — Featherstonehaugh-Wintersbottom
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 45px past its box (…)
+  > 1 Gate St bwkpq, Lakewood, NJ 08701
+- `div.cv-list-scroll > div.cv-group > div.cv-group-head > span.muted.small.cv-group-addr` 39px past its box (…)
+  > 1 Gate St 50etg, Lakewood, NJ 08701
+- …and 10 more
 
 **borrower tasks** — phone
 
@@ -1814,13 +1751,24 @@
   > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
 - `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
   > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
+  > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
+  > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
+  > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
+  > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- `li > button.an-item.doc > span.an-main > span.an-file` 309px past its box (…)
+  > 12345 Northwest Kensington-Montgomery Boulevard Southeast, Building C, Saint Petersburg Be
+- …and 4 more
 
 **borrower pricing** — phone
 
 - `div.toolsheet > header.toolsheet-head > div.toolsheet-titles > strong` 55px past its box (…)
   > Price a loan
 
-## tap-target (868)
+## tap-target (882)
 
 
 **borrower sign-in** — desktop, laptop, phone
@@ -1853,7 +1801,7 @@
 - `section.auth-form-panel > div.auth-form-top > span > a.auth-help` 68×21px (min 24×24)
   > Need help?
 
-**assistant sign-in** — desktop, laptop, phone
+**assistant accept invite** — desktop, laptop, phone
 
 - `section.auth-form-panel > div.auth-form-top > span > a.auth-help` 98×21px (min 24×24)
   > ← Back to home
@@ -2034,14 +1982,12 @@
 - `header.header > div.wrap > nav.nav > a.bell` 17×30px (min 24×24)
   > 🔔
 
-**staff file** — desktop, laptop, phone
+**staff file** — desktop, laptop
 
-- `section#sec-overview > div.panel > div.row > button.ts-badge.warn` 296×18px (min 24×24)
-  > 5 to clear before CTC — see what’s left →
-- `section#sec-overview > div.panel > div.row > button.ts-badge.warn` 296×18px (min 24×24)
-  > 5 to clear before CTC — see what’s left →
-- `section#sec-overview > div.panel > div.row > button.ts-badge.warn` 296×18px (min 24×24)
-  > 5 to clear before CTC — see what’s left →
+- `section#sec-overview > div.panel > div.row > button.ts-badge.warn` 302×18px (min 24×24)
+  > 20 to clear before CTC — see what’s left →
+- `section#sec-overview > div.panel > div.row > button.ts-badge.warn` 302×18px (min 24×24)
+  > 20 to clear before CTC — see what’s left →
 
 **staff AI center** — desktop, laptop, phone
 
@@ -2054,8 +2000,20 @@
 
 **staff borrowers** — desktop, laptop
 
+- `tr > td > span.off > a.lead` 66×22px (min 24×24)
+  > Gate Case
+- `tr > td > span.off > a.lead` 76×22px (min 24×24)
+  > Partial Case
+- `tr > td > span.off > a.lead` 52×22px (min 24×24)
+  > Az Fixes
 - `tr > td > span.off > a.lead` 45×22px (min 24×24)
   > Ana Ng
+- `tr > td > span.off > a.lead` 66×22px (min 24×24)
+  > Gate Case
+- `tr > td > span.off > a.lead` 76×22px (min 24×24)
+  > Partial Case
+- `tr > td > span.off > a.lead` 52×22px (min 24×24)
+  > Az Fixes
 - `tr > td > span.off > a.lead` 45×22px (min 24×24)
   > Ana Ng
 
@@ -2097,7 +2055,7 @@
   > FAQ
 - `header#nav > div.nav-inner > nav.nav-links > a` 53×24px (min 24×24)
   > Contact
-- …and 104 more
+- …and 113 more
 
 **site investor suite** — desktop, laptop
 

@@ -135,6 +135,90 @@
     "nextPage": 2
   },
 
+  "search_entity": {
+    "_note": "search {query:'MW Trading LLC', entityFilter:'entity'} — captured live 2026-08-09. Envelope is {results, resultLimit:20}, NOT paginated. THE SAME NAME IS TWO ENTITIES IN TWO STATES (NJ and CA) — this is why match_entity requires a state, and why the no-state fallback must answer 'ambiguous' with the states named rather than pick. 'MW TRADING GROUP LLC' rides along in the same response: a near name is a DIFFERENT company and the exact-name filter must drop it. `highlightedName` carries HTML <mark> tags — never display it raw.",
+    "results": [
+      {
+        "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+        "name": "MW TRADING LLC",
+        "entityType": "entity",
+        "searchText": "MW TRADING LLC",
+        "weight_percentile": 99.70334642190276,
+        "score": 33066773000000,
+        "highlightedName": "<mark>MW TRADING LLC</mark>",
+        "entityTypeValue": "COMPANY",
+        "state": "NJ",
+        "mortgageCount": 16,
+        "entityDeedCount": 19,
+        "entitySatisfactionCount": 10,
+        "entityOwnershipCount": 5,
+        "_url": "https://app.elementix.com/entity/172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+      },
+      {
+        "id": "cd86b073-1a99-5610-bcf4-f3d51b8379bf",
+        "name": "MW TRADING LLC",
+        "entityType": "entity",
+        "searchText": "MW TRADING LLC",
+        "weight_percentile": 96.14822924003626,
+        "score": 30801830000000,
+        "highlightedName": "<mark>MW TRADING LLC</mark>",
+        "entityTypeValue": "COMPANY",
+        "state": "CA",
+        "mortgageCount": 3,
+        "entityDeedCount": 2,
+        "entitySatisfactionCount": 1,
+        "entityOwnershipCount": 0,
+        "_url": "https://app.elementix.com/entity/cd86b073-1a99-5610-bcf4-f3d51b8379bf"
+      },
+      {
+        "id": "33c550ec-b07f-56c8-a189-4a277d41d741",
+        "name": "MW TRADING GROUP LLC",
+        "entityType": "entity",
+        "searchText": "MW TRADING GROUP LLC",
+        "weight_percentile": 55.39380809339492,
+        "score": 3492977800000,
+        "highlightedName": "MW TRADING GROUP LLC",
+        "entityTypeValue": "COMPANY",
+        "state": "FL",
+        "mortgageCount": 0,
+        "entityDeedCount": 1,
+        "entitySatisfactionCount": 0,
+        "entityOwnershipCount": 0,
+        "_url": "https://app.elementix.com/entity/33c550ec-b07f-56c8-a189-4a277d41d741"
+      }
+    ],
+    "resultLimit": 20
+  },
+
+  "search_entity_state_filtered": {
+    "_note": "The SAME query with state:'NJ' — captured live 2026-08-09 immediately after the one above. Exactly the one NJ company comes back (the CA twin and the FL near-name are both gone), which is what makes a per-state pull deterministic.",
+    "results": [
+      {
+        "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+        "name": "MW TRADING LLC",
+        "entityType": "entity",
+        "searchText": "MW TRADING LLC",
+        "weight_percentile": 99.70334642190276,
+        "score": 33066773000000,
+        "highlightedName": "<mark>MW TRADING LLC</mark>",
+        "entityTypeValue": "COMPANY",
+        "state": "NJ",
+        "mortgageCount": 16,
+        "entityDeedCount": 19,
+        "entitySatisfactionCount": 10,
+        "entityOwnershipCount": 5,
+        "_url": "https://app.elementix.com/entity/172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+      }
+    ],
+    "resultLimit": 20
+  },
+
+  "_state_required": {
+    "_note": "PROVEN LIVE 2026-08-09 (the owner's own failed search): match_entity AND match_person called without `state` are refused whole — 'MCP error -32602: Input validation error … path: [state] … expected string, received undefined' — and the refused call still spends a slot of the shared hourly allowance. Entities and persons are keyed (name, state). The request contracts live in src/lib/elementix/request-contracts.json.",
+    "required_by": ["match_entity", "match_person"],
+    "no_state_alternative": "search with entityFilter 'entity'/'person' (state optional there)"
+  },
+
   "_documented_not_captured": {
     "_note": "Recorded in docs/research/elementix/04-connector-verification.md §14 from a live call by the verification research pass, but NOT re-captured here by hand. A reader for one of these must be proven against a fresh capture before it is trusted.",
     "get_address_ownership_row_keys": [

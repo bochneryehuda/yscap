@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { ENTITY_TYPES, describeEntity, titlesFor, subtypesFor, hasSubtypes } from '../lib/entityType.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
@@ -443,7 +444,7 @@ const APP_COMPLETENESS_FIELDS = (app) => [
      still saves through the personal-name door — a second button on the same
      editor, never a value typed into the name box. */
   { key: 'entity_name',
-    label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
+    label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Vesting entity name',
     ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
     type: 'entity', placeholder: 'Acme Holdings LLC',
     postEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting-llc'),
@@ -451,10 +452,10 @@ const APP_COMPLETENESS_FIELDS = (app) => [
     // The second answer, offered beside the name box by CompletenessPanel.
     altEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting/personal-name'),
     altBody: () => ({}),
-    altLabel: 'No LLC — an individual',
+    altLabel: 'No entity — an individual',
     altNote: 'Saved — this file closes in the borrower’s own name. The signed non-owner-occupied affidavit is now asked for on its own condition.',
     altBlocked: app.vesting_individual_blocked || '',
-    hint: 'The LLC taking title — type the name, or say it closes in the borrower’s own name.' },
+    hint: 'The entity taking title — type the name, or say it closes in the borrower’s own name.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -669,7 +670,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />
                   : f.type === 'entity'
                   ? <input className="input" style={{ maxWidth: 260 }} autoFocus list={entListId}
-                      type="text" maxLength={160} placeholder={f.placeholder || 'LLC name…'} value={val}
+                      type="text" maxLength={160} placeholder={f.placeholder || 'Entity name…'} value={val}
                       onChange={(e) => setVal(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />
                   : <input className="input" style={{ maxWidth: 170 }} autoFocus
@@ -1774,8 +1775,8 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   );
 }
 
-/* Every LLC of this borrower — the staff review surface for the LLC section.
-   The file's vesting entity is expanded first; each LLC shows its details,
+/* Every ENTITY of this borrower — the staff review surface for the entity section.
+   The file's vesting entity is expanded first; each one shows its details,
    full ownership structure, and the three document slots with per-document
    Accept / Reject, plus the whole-LLC "Mark verified" sign-off. Verifying an
    entity auto-satisfies the LLC condition on every open file it vests;
@@ -1802,19 +1803,26 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   const [em, setEm] = useState(null);           // members [{fullName, ownershipPct, email}]
   const [showCreate, setShowCreate] = useState(false);
   // #57 — the file's vesting entity is the focus; other borrower entities stay
-  // collapsed behind this toggle so staff verify just the LLC on this property.
+  // collapsed behind this toggle so staff verify just the entity on this property.
   const [showOthers, setShowOthers] = useState(false);
-  const blankCreate = { llcName: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
+  const blankCreate = { llcName: '', entityType: '', entitySubtype: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
   const [cf, setCf] = useState(blankCreate);
   function beginEdit(l) {
     setEditId(l.id); setErr('');
     setEf({ llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
       formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
-      ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct) });
+      ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct),
+      // Blank until somebody CHOSE one — db/509 stamped the back book as an LLC
+      // with nobody saying so, and pre-selecting that assumption would turn it
+      // into a stated fact the first time anyone pressed Save.
+      entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',
+      entitySubtype: l.entity_subtype || '' });
     setEm((l.members || []).map(m => ({
       fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
       memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
       ownerLlcId: m.owner_llc_id || null,
+      memberTitle: m.member_title || '', shares: m.shares == null ? '' : String(m.shares),
+      certificateNumber: m.certificate_number || '',
     })));
   }
   async function saveEdit(l) {
@@ -1828,7 +1836,15 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
         email: m.memberKind === 'entity' ? undefined : (m.email.trim() || undefined),
         memberKind: m.memberKind === 'entity' ? 'entity' : 'person',
         ownerLlcId: m.memberKind === 'entity' ? (m.ownerLlcId || undefined) : undefined,
-        ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined })));
+        ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined,
+        /* Who signs and as what. A company owner holds no title and no
+           certificate — it signs through its own people, recorded on its own
+           row — so it is skipped. Sent as keys so a blank deliberately clears. */
+        ...(m.memberKind !== 'entity' ? {
+          memberTitle: m.memberTitle || '',
+          shares: m.shares === '' ? null : m.shares,
+          certificateNumber: m.certificateNumber || '',
+        } : {}) })));
       flash('Entity saved ✓ — the borrower sees the same details.');
       setEditId(null); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the entity'); }
@@ -1837,16 +1853,20 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   const entityGate = useSubmitGate();
   async function createEntity() {
     if (!cf.llcName.trim()) { setErr('Entity name is required'); return; }
+    // WHICH KIND (owner-directed 2026-08-09) — it decides which governing
+    // document the borrower is asked for, so it is not optional at creation.
+    if (!cf.entityType) { setErr('Pick what kind of entity it is — it decides which documents we ask for.'); return; }
     if (!entityGate.enter()) return;       // a create is already in flight (double-click)
     setBusy('create'); setErr('');
     try {
       const created = await api.staffCreateLlc(app.borrower_id, {
-        llcName: cf.llcName.trim(), ein: cf.ein || undefined, formationState: cf.formationState || undefined,
+        llcName: cf.llcName.trim(), entityType: cf.entityType, entitySubtype: cf.entitySubtype || undefined,
+        ein: cf.ein || undefined, formationState: cf.formationState || undefined,
         formationDate: cf.formationDate || undefined, ownershipPct: cf.ownershipPct === '' ? undefined : Number(cf.ownershipPct) });
       // The verify list is now scoped to the vesting + track-record entities, so a
       // brand-new entity would not appear unless it's linked. When the file has no
       // vesting entity yet, the one just created here IS the file's vesting entity —
-      // link it so it shows (and drives the LLC condition). If one already exists,
+      // link it so it shows (and drives the entity condition). If one already exists,
       // leave it: this was a plain library add and will surface once tied to a deal.
       let linkedNow = false;
       if (!app.llc_id && created && created.llcId) {
@@ -1902,17 +1922,17 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     if (busy) return;
     let reason;
     if (!verified) {
-      reason = await askPrompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
+      reason = await askPrompt('Revoke verification of this entity? The entity condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
       if (reason === null || !reason.trim()) return;   // reason is required (#125)
-    } else if (!(await askConfirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`))) return;
+    } else if (!(await askConfirm(`Mark "${llc.llc_name}" as verified? The entity condition on every open file vesting in it is satisfied and signed off automatically.`))) return;
     setBusy(llc.id); setErr('');
     try {
       await api.staffVerifyLlc(llc.id, verified ? { verified: true } : { verified: false, reason: reason || undefined });
-      flash(verified ? 'LLC verified ✓ — linked files updated.' : 'Verification revoked — linked files reopened.');
+      flash(verified ? 'Entity verified ✓ — linked files updated.' : 'Verification revoked — linked files reopened.');
       await load(); onChanged && await onChanged();
     } catch (e) {
       if (e.status === 409 && e.data && e.data.missing) setErr(`Not ready to verify: ${e.data.missing.join(' · ')}`);
-      else setErr(e.message || 'Could not update the LLC');
+      else setErr(e.message || 'Could not update the entity');
     } finally { setBusy(''); }
   }
 
@@ -1926,14 +1946,14 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     <div className="panel" style={{ marginTop: 18 }}>
       <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-        <h3>Vesting entity (LLC)</h3>
+        <h3>Vesting entity</h3>
         <div className="spacer" />
         <span className="muted small">{llcs ? `${llcs.length} entit${llcs.length === 1 ? 'y' : 'ies'}` : ''}</span>
         <button className="btn ghost small" onClick={() => { setShowCreate(v => !v); setErr(''); }}>{showCreate ? 'Cancel' : '+ Add entity'}</button>
       </div>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        The LLC taking title on this property. Confirm its details, ownership (to 100%) and the three
-        documents, then mark it verified — that satisfies the internal LLC condition on this and every
+        The entity taking title on this property. Confirm its details, ownership (to 100%) and the three
+        documents, then mark it verified — that satisfies the internal entity condition on this and every
         future file it vests. This is the borrower's reusable entity, so anything you enter mirrors their
         profile. Only this file's entities are shown — the vesting entity plus any entities from the
         borrower's track record; unrelated entities on the borrower are not listed here.
@@ -1946,6 +1966,25 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
           <div className="ts-inputs">
             <label style={{ gridColumn: '1 / -1' }}><span>Entity name *</span>
               <input className="input" value={cf.llcName} onChange={e => setCf({ ...cf, llcName: e.target.value })} placeholder="Acme Holdings LLC" /></label>
+            {/* WHAT KIND OF COMPANY (owner-directed 2026-08-09). A corporation is
+                asked for bylaws and a stock certificate where an LLC is asked for
+                an operating agreement, and the loan documents need to know whether
+                its owners hold a percentage or shares. */}
+            <label><span>Entity type *</span>
+              <select className="input" value={cf.entityType} onChange={e => setCf({ ...cf, entityType: e.target.value, entitySubtype: '' })}>
+                <option value="">Select…</option>
+                {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
+              </select></label>
+            {/* Only a partnership and a trust have a kind, and it decides what we
+                may ask them for — a revocable trust has no EIN of its own, a
+                general partnership no state filing. */}
+            {hasSubtypes(cf.entityType) && (
+              <label><span>What kind?</span>
+                <select className="input" value={cf.entitySubtype} onChange={e => setCf({ ...cf, entitySubtype: e.target.value })}>
+                  <option value="">Select…</option>
+                  {subtypesFor(cf.entityType).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+                </select></label>
+            )}
             <label><span>EIN</span>
               <input className="input" value={cf.ein} placeholder="XX-XXXXXXX" onChange={e => setCf({ ...cf, ein: e.target.value })} /></label>
             <label><span>Formation state</span>
@@ -1967,7 +2006,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
               /* An individual purchase has no entity BY DEFINITION, so telling
                  the officer to go and create one is the one instruction that
                  must never appear here (owner-reported 2026-08-03). */
-              ? 'This file closes as an individual — title goes in the borrower’s own name, so there is no entity to verify. Switch it back to an LLC on the entity condition below if that is wrong.'
+              ? 'This file closes as an individual — title goes in the borrower’s own name, so there is no entity to verify. Switch it back to an entity on the entity condition below if that is wrong.'
               : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
         : (() => {
           // #57 — render JUST the vesting entity for THIS file up top; the file's
@@ -1994,7 +2033,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   </div>
                 </div>
                 <span className={`ts-badge ${l.is_verified ? 'ok' : (l.missing || []).length ? 'warn' : 'ok'}`}>
-                  {l.is_verified ? 'Verified LLC ✓' : (l.missing || []).length ? 'Unverified' : 'Ready to verify'}
+                  {l.is_verified ? 'Verified ✓' : (l.missing || []).length ? 'Unverified' : 'Ready to verify'}
                 </span>
                 {(l.completeness || {}).gs_expired &&
                   <span className="ts-badge warn" style={{ marginLeft: 6 }} title="The Certificate of Good Standing on file is more than 30 days old — upload a current one. The entity stays verified.">Good standing expired</span>}
@@ -2023,13 +2062,31 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                               <input className="input" type="date" value={ef.formationDate} onChange={e => setEf({ ...ef, formationDate: e.target.value })} /></label>
                             <label><span>Borrower ownership %</span>
                               <input className="input" type="number" min="0" max="100" value={ef.ownershipPct} onChange={e => setEf({ ...ef, ownershipPct: e.target.value })} /></label>
+                            {/* WHAT KIND OF COMPANY (owner-directed 2026-08-09) — it
+                                decides which governing document the borrower is asked
+                                for and which titles the owners below may hold. */}
+                            <label><span>Entity type</span>
+                              <select className="input" value={ef.entityType || ''} onChange={e => setEf({ ...ef, entityType: e.target.value, entitySubtype: '' })}>
+                                <option value="">Not confirmed — treated as an LLC</option>
+                                {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
+                              </select></label>
+                            {hasSubtypes(ef.entityType) && (
+                              <label><span>What kind?</span>
+                                <select className="input" value={ef.entitySubtype || ''} onChange={e => setEf({ ...ef, entitySubtype: e.target.value })}>
+                                  <option value="">Not stated</option>
+                                  {subtypesFor(ef.entityType).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+                                </select></label>
+                            )}
                           </div>
-                          <div style={{ fontWeight: 600, marginTop: 12 }}>Other members</div>
-                          <p className="muted small" style={{ marginBottom: 6 }}>Everyone besides the borrower, until ownership totals 100%.</p>
+                          <div style={{ fontWeight: 600, marginTop: 12 }}>Other owners</div>
+                          <p className="muted small" style={{ marginBottom: 6 }}>
+                            Everyone besides the borrower, until ownership totals 100%. Each one needs a TITLE — it prints
+                            under their signature on the recorded documents, so the closing package cannot be drafted without it.
+                          </p>
                           {(em || []).map((m, i) => (
                             <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
                               <input className="input" style={{ flex: 2, minWidth: 150 }}
-                                placeholder={m.memberKind === 'entity' ? 'Owning LLC name' : 'Member full name'} value={m.fullName}
+                                placeholder={m.memberKind === 'entity' ? 'Owning entity name' : 'Owner full name'} value={m.fullName}
                                 onChange={e => setEm(ms => ms.map((x, j) => j === i
                                   ? { ...x, fullName: e.target.value, ...(x.memberKind === 'entity' ? { ownerLlcId: null } : {}) }
                                   : x))} />
@@ -2040,18 +2097,47 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                                   onChange={v => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: v } : x))} />
                               )}
                               <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                                title="Layered entity: this slice is owned by ANOTHER LLC, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
+                                title="Layered entity: this slice is owned by ANOTHER COMPANY, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
                                 <input type="checkbox" checked={m.memberKind === 'entity'}
                                   onChange={e => setEm(ms => ms.map((x, j) => j === i
                                     ? { ...x, memberKind: e.target.checked ? 'entity' : 'person', ownerLlcId: null, email: '' }
                                     : x))} />
-                                Entity (LLC)
+                                A company
                               </label>
                               <button className="btn link small" onClick={() => setEm(ms => ms.filter((_, j) => j !== i))}>Remove</button>
+                              {/* WHO SIGNS, AND AS WHAT (owner-directed 2026-08-09).
+                                  A DROPDOWN, never a text box: this value prints under
+                                  a signature line on a recorded instrument and the
+                                  document engine merges it verbatim, so "managing
+                                  member", "Managing Member" and "MGR" must not all be
+                                  reachable. Shares and the certificate number are the
+                                  corporation's analogue of the percentage — a pledge of
+                                  shares has to name the exact certificate handed over,
+                                  the way a mortgage names the exact property. */}
+                              {m.memberKind !== 'entity' && (
+                                <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', width: '100%', paddingLeft: 4 }}>
+                                  <select className="input" style={{ flex: 1, minWidth: 170 }} value={m.memberTitle || ''}
+                                    aria-label={`Title for ${m.fullName || 'this owner'}`}
+                                    onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, memberTitle: e.target.value } : x))}>
+                                    <option value="">Title — not set</option>
+                                    {titlesFor(ef.entityType || l.entity_type).map(t => <option key={t} value={t}>{t}</option>)}
+                                  </select>
+                                  {describeEntity({ entity_type: ef.entityType || l.entity_type }).usesShares && (
+                                    <>
+                                      <input className="input" style={{ width: 120 }} type="number" min="1" step="1" placeholder="Shares"
+                                        value={m.shares || ''} aria-label={`Shares held by ${m.fullName || 'this owner'}`}
+                                        onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, shares: e.target.value } : x))} />
+                                      <input className="input" style={{ width: 160 }} placeholder="Certificate no."
+                                        value={m.certificateNumber || ''} aria-label={`Stock certificate number for ${m.fullName || 'this owner'}`}
+                                        onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, certificateNumber: e.target.value } : x))} />
+                                    </>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           ))}
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-                            <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>
+                            <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '', memberTitle: '', shares: '', certificateNumber: '' }])}>+ Add an owner</button>
                             {/* #102 — one click adds the file's co-borrower to the ownership
                                 structure with their details pre-filled; just enter their %. */}
                             {app.co_borrower_id && (() => {
@@ -2060,7 +2146,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                               return coName && !already ? (
                                 <button className="btn ghost small"
                                   title="Add the file's co-borrower as an additional owner — their info is filled automatically; enter their ownership %"
-                                  onClick={() => setEm(ms => [...(ms || []), { fullName: coName, ownershipPct: '', email: app.co_email || '' }])}>
+                                  onClick={() => setEm(ms => [...(ms || []), { fullName: coName, ownershipPct: '', email: app.co_email || '', memberTitle: '', shares: '', certificateNumber: '' }])}>
                                   + Add co-borrower ({coName}) as owner
                                 </button>
                               ) : null;
@@ -2127,7 +2213,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                         {toggleable && (
                           <button className="btn link small" disabled={!!busy}
                             title={s.is_required === false
-                              ? 'Optional (default) — click to make it REQUIRED: it will gate this LLC\'s verification'
+                              ? 'Optional (default) — click to make it REQUIRED: it will gate this entity\'s verification'
                               : 'Required — click to make it optional again'}
                             onClick={async () => {
                               setBusy(s.item_id); setErr('');
@@ -2179,7 +2265,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       : (completer
                           ? <button className="btn primary small" disabled={busy === l.id || (l.missing || []).length > 0}
                               title={(l.missing || []).length ? l.missing.join(' · ') : 'All requirements met'}
-                              onClick={() => setVerified(l, true)}>{busy === l.id ? '…' : 'Mark LLC verified'}</button>
+                              onClick={() => setVerified(l, true)}>{busy === l.id ? '…' : 'Mark entity verified'}</button>
                           : <span className="muted small">Verifying is the processor's sign-off — you can reject documents or raise an issue.</span>)}
                     {!l.is_verified && completer && (l.missing || []).length > 0 && (
                       <span className="muted small">Outstanding: {l.missing.slice(0, 4).join(' · ')}{l.missing.length > 4 ? ` · +${l.missing.length - 4} more` : ''}</span>

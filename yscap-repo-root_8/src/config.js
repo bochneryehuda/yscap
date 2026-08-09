@@ -1142,4 +1142,55 @@ module.exports = {
 
     timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
   },
+
+  // ---- DocLab (Private Lender Law) — loan-document drafting. RTL ONLY. ----
+  // The API form of the closing-prep step lib/closing-prep.js already emails to
+  // TeamAG@privatelenderlaw.com. Research + the field map: docs/doclab/.
+  //
+  // THE SANDBOX AND PRODUCTION SHARE A BASE URL (their API Setup page) — the
+  // CREDENTIAL is the only thing that decides which one you reach. So `environment`
+  // is a label WE set and stamp on every stored request; it is never inferred from
+  // the URL, because the URL cannot tell you.
+  doclab: {
+    enabled:         process.env.DOCLAB_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.DOCLAB_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.DOCLAB_DRYRUN === '1',            // build + log, send nothing
+
+    baseUrl:      (process.env.DOCLAB_BASE_URL || '').trim().replace(/\/+$/, '') || null,
+    // Render env ONLY, never committed. PLL issues these per environment.
+    clientId:     process.env.DOCLAB_CLIENT_ID || null,
+    clientSecret: process.env.DOCLAB_CLIENT_SECRET || null,
+    scope:        process.env.DOCLAB_SCOPE || null,
+    // 'sandbox' | 'production' — a label, recorded on every request. Defaults to
+    // sandbox so an unlabelled deployment can never claim its documents were real.
+    environment:  (process.env.DOCLAB_ENVIRONMENT || 'sandbox').trim().toLowerCase(),
+    timeoutMs:    Math.max(1000, parseInt(process.env.DOCLAB_TIMEOUT_MS || '45000', 10) || 45000),
+
+    // The SignalR hub for real-time status pushes. Long-polling GET /request/{id}
+    // is the documented fallback and is what the poller will use first.
+    notificationHubUrl: (process.env.DOCLAB_NOTIFICATION_HUB_URL || 'https://api.privatelenderlaw.ai/notificationHub').trim(),
+
+    // ---- the two "lender" names, which are NOT the same thing ----
+    // The name our TEMPLATES are filed under at PLL — a routing key, not a party.
+    templateLenderName: (process.env.DOCLAB_TEMPLATE_LENDER_NAME || '').trim() || null,
+    // The entity that MAKES the loan and is named on the note and the mortgage.
+    // NEVER applications.lender — that is the note buyer and must not reach a
+    // borrower-facing document. See src/doclab/field-map.js.
+    lenderName:      (process.env.DOCLAB_LENDER_NAME || '').trim() || null,
+    lenderAddress:   (process.env.DOCLAB_LENDER_ADDRESS || '').trim() || null,
+    lenderCity:      (process.env.DOCLAB_LENDER_CITY || '').trim() || null,
+    lenderState:     (process.env.DOCLAB_LENDER_STATE || '').trim() || null,
+    lenderTownAndState: (process.env.DOCLAB_LENDER_TOWN_AND_STATE || '').trim() || null,
+    lenderOrgType:   (process.env.DOCLAB_LENDER_ORG_TYPE || '').trim() || null,
+    servicerName:    (process.env.DOCLAB_SERVICER_NAME || '').trim() || null,
+    servicerAddress: (process.env.DOCLAB_SERVICER_ADDRESS || '').trim() || null,
+    // Which state's law governs. A legal choice, so it is configured, never
+    // inferred from the property.
+    governingLaw:    (process.env.DOCLAB_GOVERNING_LAW || '').trim() || null,
+
+    // Skip the separate approve / generate-PDF calls. Both default OFF so the first
+    // live packages get a human beat before documents are drafted.
+    autoApprove:    process.env.DOCLAB_AUTO_APPROVE === '1',
+    autoApprovePdf: process.env.DOCLAB_AUTO_APPROVE_PDF === '1',
+  },
 };

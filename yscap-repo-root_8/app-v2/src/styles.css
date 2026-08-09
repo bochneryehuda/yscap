@@ -57,7 +57,14 @@ button,a,.btn,select,summary,[role=button]{-webkit-tap-highlight-color:transpare
    width-only cap distorts the page aspect ratio (squished PDFs). */
 img,video,svg{max-width:100%}
 a{color:var(--teal-br);text-decoration:none} a:hover{text-decoration:underline}
-h1,h2,h3{font-family:var(--serif);font-weight:600;line-height:1.2;margin:0}
+/* A heading here usually renders somebody's NAME or a property ADDRESS, and a
+   single unbreakable 30-character surname ("Featherstonehaugh-Wintersbottom")
+   has nowhere to wrap on a phone — it runs straight out of the card. `anywhere`
+   rather than `break-word` on purpose: it also lets the heading's min-content
+   width shrink, so one long word can no longer widen the layout viewport past
+   720px and switch the mobile breakpoints off (the trap in CLAUDE.md). It only
+   ever breaks a word that would not otherwise fit. */
+h1,h2,h3{font-family:var(--serif);font-weight:600;line-height:1.2;margin:0;overflow-wrap:anywhere}
 h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .muted{color:var(--muted)} .small{font-size:13px}
 .gold-rule{height:3px;background:var(--gold);border-radius:3px}

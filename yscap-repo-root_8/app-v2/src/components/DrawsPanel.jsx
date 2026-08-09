@@ -316,7 +316,7 @@ export default function DrawsPanel({ appId }) {
 // for a new entity lives in the operating-agreement block right below the card.
 const WIRE_KIND = {
   borrower_personal: { label: 'Borrower’s account', tone: 'on' },
-  subject_llc: { label: 'Subject LLC account', tone: 'on' },
+  subject_llc: { label: 'Subject entity account', tone: 'on' },
   // A known entity of the borrower (on their profile / library) — not the file's linked
   // subject LLC, but not an unknown third party either, so no operating agreement is needed.
   known_entity: { label: 'Borrower’s entity', tone: 'on' },

@@ -98,7 +98,7 @@ export default function Layout({ children }) {
             <NavLink to="/pricing" title="Price a loan and save scenarios — build a term sheet from your own numbers">Price a loan</NavLink>
             <NavLink to="/profile">Profile</NavLink>
             {!isAssistant && <NavLink to="/helpers" title="Give someone their own login to help with your loan">Helpers</NavLink>}
-            <NavLink to="/entities" title="Your LLCs — set up once, verified, reused on every loan">Entities</NavLink>
+            <NavLink to="/entities" title="Your entities — set up once, verified, reused on every loan">Entities</NavLink>
             <NavLink to="/track-record" title="Your investment experience — one record, linked to every file">Track record</NavLink>
             <NavLink to="/settings/notifications" title="Notification settings">Alerts</NavLink>
             <Link to="/dashboard" className="bell" title="Notifications"
