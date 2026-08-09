@@ -146,6 +146,45 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
   ok(got[2] && got[2].retrievalUrl === 'URL-photo', 'the photo by its filename, despite the wrong part number');
   ok(got[1] === null, 'and the refused SOW is left unmatched');
 }
+// A SANITIZED filename echo is not disagreement. An upload endpoint routinely rewrites
+// the name it was handed (spaces to underscores, a case change, a prefix), and reading
+// that as a contradiction VETOED the part number we assigned ourselves — so the file was
+// refused and the desk told the operator the appraisal company had not answered for it,
+// which was the opposite of the truth. This is the eighth audit's finding.
+{
+  const files = F('Scope of Work.pdf', 'Contract.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'Scope_of_Work.pdf', retrievalUrl: 'URL-sow' },
+    { name: 'part1', fileName: 'Contract.pdf', retrievalUrl: 'URL-contract' },
+  ]);
+  ok(got[0] && got[0].retrievalUrl === 'URL-sow',
+     'a vendor-rewritten filename does not overrule the part number we assigned');
+  ok(got[1] && got[1].retrievalUrl === 'URL-contract', 'and the untouched one still matches');
+}
+// The same rewrite on a SHORT answer set, which never reaches the position pass at all —
+// so this is the case the pass-1 rule alone has to carry. The vendor refused part1 and
+// rewrote the two names it kept; both survivors are still identifiable by their numbers.
+{
+  const files = F('a.pdf', 'b.pdf', 'c.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'a_1.pdf', retrievalUrl: 'URL-a' },
+    { name: 'part2', fileName: 'c_1.pdf', retrievalUrl: 'URL-c' },
+  ]);
+  ok(got[0] && got[0].retrievalUrl === 'URL-a',
+     'a rewritten filename does not veto a part number in a short batch either');
+  ok(got[2] && got[2].retrievalUrl === 'URL-c', 'nor for the second survivor');
+  ok(got[1] === null, 'and the refused part stays unmatched');
+}
+// …but a filename naming one of our OTHER files IS disagreement, and still wins.
+{
+  const files = F('a.pdf', 'b.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'b.pdf', retrievalUrl: 'URL-b' },
+    { name: 'part1', fileName: 'a.pdf', retrievalUrl: 'URL-a' },
+  ]);
+  ok(got[0] && got[0].retrievalUrl === 'URL-a', 'a swapped batch is placed by filename');
+  ok(got[1] && got[1].retrievalUrl === 'URL-b', 'not by the part number it contradicts');
+}
 // A name that names a DIFFERENT part is evidence against position, never for it.
 {
   const files = F('a.pdf', 'b.pdf');

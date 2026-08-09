@@ -83,15 +83,33 @@ function matchStaged(files, staged) {
   const claimedOnce = (fn) => answers.filter((s) => s.fileName != null
     && String(s.fileName) === fn).length === 1;
 
+  // A FILENAME THAT MATCHES NONE OF OUR FILES IS NOT EVIDENCE ABOUT ANY OF THEM.
+  // An upload endpoint routinely SANITIZES the name it was given — spaces to
+  // underscores, a case change, a uniquifying prefix — so "Scope of Work.pdf" comes
+  // back as "Scope_of_Work.pdf". Read as disagreement, that echo VETOED the `part<i>`
+  // label WE ourselves assigned (client.js appends the parts as 'part'+i), so the
+  // document was refused, reported as "the appraisal company did not answer for this
+  // file", and re-refused on every poll. It only ever CONTRADICTS when it names one of
+  // our OTHER files exactly — which is the renumbering case, and pass 2 then places it
+  // correctly. Anything else is a rename we cannot interpret, and an uninterpretable
+  // label must not outvote one we wrote.
+  const namesAnotherFile = (i, fn) => fn !== nameOf(files[i])
+    && files.some((f) => nameOf(f) === fn);
+
   // ---- pass 1: the part name, corroborated ---------------------------------
   for (let i = 0; i < files.length; i++) {
     const want = 'part' + i;
-    const hit = answers.find((s) => !taken.has(s) && s.name === want
-      // A bare part name is believable only when nothing was dropped; a corroborating
-      // filename earns it otherwise — but only a filename that actually identifies.
-      && (s.fileName == null || !discriminates(i)
-        ? barePartNamesTrusted
-        : String(s.fileName) === nameOf(files[i])));
+    const hit = answers.find((s) => {
+      if (taken.has(s) || s.name !== want) return false;
+      const fn = s.fileName == null ? null : String(s.fileName);
+      // The filename AGREES and actually identifies: the strongest evidence there is,
+      // and it stands even in a batch whose numbering is otherwise untrustworthy.
+      if (fn != null && discriminates(i) && fn === nameOf(files[i])) return true;
+      // It names one of our OTHER files: this answer is about that file, not this one.
+      if (fn != null && namesAnotherFile(i, fn)) return false;
+      // Otherwise the part name stands alone, and is trusted on the usual terms.
+      return barePartNamesTrusted;
+    });
     if (hit) { out[i] = hit; taken.add(hit); }
   }
 
@@ -126,13 +144,21 @@ function matchStaged(files, staged) {
       // part and a present `fileName` did not identify this file: both are evidence
       // against position, not for it.
       if (at.name != null && at.name !== 'part' + i) continue;
-      if (at.fileName != null && String(at.fileName) !== nameOf(files[i])) continue;
+      // Kept in the same shape as pass 1 so the two read alike, though `usable` below is
+      // what actually enforces filename agreement here — this line only ever fires on a
+      // name belonging to one of our other files, which pass 2 has already placed.
+      if (at.fileName != null && namesAnotherFile(i, String(at.fileName))) continue;
       // With nothing USABLE to check, position is a guess — unless the vendor labels
       // nothing at all (see above), or there is only one file, where there is nothing
       // to confuse it with. A filename that two of our files share is not usable: it
       // agrees with both, so agreeing proves nothing.
+      // A filename only CORROBORATES position when it actually matches this file — a
+      // vendor-sanitized name is not disproof (above) but it is not proof either, so a
+      // batch labelled only with names we cannot recognise is refused like an
+      // unlabelled one.
       const usable = at.name != null
-        || (at.fileName != null && discriminates(i) && claimedOnce(String(at.fileName)));
+        || (at.fileName != null && discriminates(i)
+          && String(at.fileName) === nameOf(files[i]) && claimedOnce(String(at.fileName)));
       if (!usable && files.length > 1) continue;
       out[i] = at; taken.add(at);
     }

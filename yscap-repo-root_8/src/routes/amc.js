@@ -29,6 +29,9 @@ const revisions = require('../amc/revisions');
 const rov = require('../amc/rov');
 const amcDocuments = require('../amc/documents');
 const appraisalCard = require('../lib/appraisal-card');
+// A bigint row id is not a parseInt — see src/lib/bigint-id.js. The Class desk hit
+// exactly this and was hardened; this desk is its twin and must not drift.
+const { bigintId } = require('../lib/bigint-id');
 
 router.use(requireAuth, requireStaff);
 
@@ -84,11 +87,19 @@ router.post('/files/:id/order', async (req, res) => {
   } catch (e) {
     // Anything unexpected here used to reach the global handler and come back as the
     // generic "Something went wrong on our end", which tells the person at the desk
-    // nothing about a connection that is simply not set up yet. Say what happened.
-    console.warn('[amc] order failed:', e && e.message);
+    // nothing about a connection that is simply not set up yet.
+    //
+    // BUT THE EXCEPTION'S OWN TEXT NEVER GOES TO THE SCREEN. It is written for us, not
+    // for them: a Postgres error code, "AMC DoLogin -> 401", a URL, a stack-adjacent
+    // sentence. A non-developer reading that learns nothing and cannot act on it, and
+    // it is the same class of leak the Class desk removed in this very change (its
+    // route no longer relays the vendor's body). The log line carries the detail; the
+    // person gets a plain sentence and the one thing they can actually do.
+    console.warn('[amc] order failed:', (e && e.stack) || e);
     return res.status(502).json({
       ok: false, error: 'order_failed',
-      message: 'The appraisal order could not be completed: ' + String((e && e.message) || 'unknown error').slice(0, 200),
+      message: 'The appraisal order could not be completed. Nothing was sent. '
+        + 'Please try again, and if it keeps happening let the team know.',
     });
   }
   if (!out.ok) return res.status(out.error === 'file_not_found' ? 404 : 400).json(out);
@@ -104,8 +115,8 @@ router.get('/files/:id/orders', async (req, res) => {
 
 // One order (file-scoped via its own application_id).
 router.get('/orders/:orderId', async (req, res) => {
-  const id = parseInt(req.params.orderId, 10);
-  if (!Number.isInteger(id)) return res.status(404).json({ error: 'not found' });
+  const id = bigintId(req.params.orderId);
+  if (!id) return res.status(404).json({ error: 'not found' });
   const order = await orderService.getOrder(db, id);
   if (!order) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeFile(req, order.application_id))) return res.status(403).json({ error: 'forbidden' });
@@ -133,8 +144,8 @@ router.post('/files/:id/card', async (req, res) => {
 // Load an order and confirm the caller may see its file. Returns the order, or null
 // (after sending the response).
 async function orderScoped(req, res) {
-  const id = parseInt(req.params.orderId, 10);
-  if (!Number.isInteger(id)) { res.status(404).json({ error: 'not found' }); return null; }
+  const id = bigintId(req.params.orderId);
+  if (!id) { res.status(404).json({ error: 'not found' }); return null; }
   const order = await orderService.getOrder(db, id);
   if (!order) { res.status(404).json({ error: 'not found' }); return null; }
   if (!(await canSeeFile(req, order.application_id))) { res.status(403).json({ error: 'forbidden' }); return null; }
@@ -169,8 +180,8 @@ router.post('/orders/:orderId/comments', async (req, res) => {
 router.post('/orders/:orderId/comments/:commentId/read', async (req, res) => {
   const order = await orderScoped(req, res);
   if (!order) return;
-  const cid = parseInt(req.params.commentId, 10);
-  if (!Number.isInteger(cid)) return res.status(404).json({ error: 'not found' });
+  const cid = bigintId(req.params.commentId);
+  if (!cid) return res.status(404).json({ error: 'not found' });
   const flipped = await comments.markRead(db, order.id, cid);
   res.json({ ok: true, updated: flipped });
 });

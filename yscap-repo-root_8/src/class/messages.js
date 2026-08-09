@@ -105,7 +105,12 @@ const whenTs = require('./callbacks')._internals.when;
 async function syncNotes(orderRowId) {
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
-  if (!client.configured().enabled) return { ok: false, error: 'disabled' };
+  // Every refusal carries plain words as well as its code: the desk renders
+  // `message`, and a bare code reaches the screen as the literal word 'disabled'.
+  if (!client.configured().enabled) {
+    return { ok: false, error: 'disabled',
+      message: 'The appraisal company connection is switched off, so nothing was fetched.' };
+  }
   try {
     const out = await client.notes(order.class_order_id);
     // Accept BOTH envelope shapes and BOTH id spellings, exactly as the callback
@@ -163,7 +168,10 @@ async function syncNotes(orderRowId) {
 async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, note: noteText, supporting, staffId } = {}) {
   const wanted = kind === 'rov' ? 'rov' : 'revision';
   const { reasons: clean, problems } = reasons.normalizeReasons(raw, { kind: wanted });
-  if (problems.length) return { ok: false, error: 'bad_reasons', problems };
+  if (problems.length) {
+    return { ok: false, error: 'bad_reasons', problems,
+      message: 'Please fix these before sending: ' + problems.map((x) => (x && x.why) || x).join('; ') };
+  }
 
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
@@ -202,7 +210,10 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
 /** Ask Class to cancel the order. Same reason vocabulary, its own endpoint. */
 async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId } = {}) {
   const { reasons: clean, problems } = reasons.normalizeReasons(raw, { kind: 'cancel' });
-  if (problems.length) return { ok: false, error: 'bad_reasons', problems };
+  if (problems.length) {
+    return { ok: false, error: 'bad_reasons', problems,
+      message: 'Please fix these before sending: ' + problems.map((x) => (x && x.why) || x).join('; ') };
+  }
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
 

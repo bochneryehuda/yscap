@@ -368,7 +368,7 @@ async function applyAck(db, orderId, ack, resp) {
  */
 async function createOrder(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
-  if (!ctx) return { ok: false, error: 'file_not_found' };
+  if (!ctx) return { ok: false, error: 'file_not_found', message: 'That loan file could not be found.' };
   const rules = await formRules(db);
   const deal = orderBuild.dealShapeFor(ctx);
   const chosen = formSelect.chooseForm(deal, rules);
@@ -465,6 +465,39 @@ async function createOrder(db, appId, opts = {}) {
 // ---------------------------------------------------------------------------
 // Reads.
 // ---------------------------------------------------------------------------
+/**
+ * NAME THE FORM ON EVERY ORDER, INCLUDING THE ONES ALREADY ON DISK.
+ *
+ * `form_description` is written when an order is CREATED (or when the vendor's answer
+ * carries a name). The owner's report — "it says only the form number, we need to see
+ * the full form name" — is about orders that were placed BEFORE the name was stored, so
+ * on those the column is NULL and the screen falls back to "Form 56634" exactly as it
+ * did the day it was reported. A backfill cannot fix it either: the names live in the
+ * vendor's per-tenant catalog, so the answer is only knowable at read time.
+ *
+ * So it is resolved on READ, through the SAME `formNameFor` the preview and the order
+ * builder use — one definition, so the list, the detail and the order we would place
+ * can never name the same form differently. FILL-ONLY: a stored description (the
+ * vendor's own wording, or what we recorded when it was placed) always wins. Never
+ * throws — an unreachable catalog just leaves the number showing, as before.
+ */
+async function nameOrders(db, rows) {
+  const filled = (v) => !!(v == null ? '' : String(v).trim());
+  const need = rows.filter((o) => o && !filled(o.form_description) && filled(o.product_code));
+  if (!need.length) return rows;
+  try {
+    const [forms, rules] = await Promise.all([
+      formCatalog(db, (cfg.amc && cfg.amc.subdomain) || ''),
+      formRules(db),
+    ]);
+    for (const o of need) {
+      const name = formNameFor(o.product_code, forms, rules);
+      if (name) o.form_description = name;
+    }
+  } catch (_) { /* the number still shows; naming is a nicety, never a failure */ }
+  return rows;
+}
+
 async function listOrders(db, appId) {
   const r = await db.query(
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
@@ -472,12 +505,13 @@ async function listOrders(db, appId) {
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, created_at, ordered_at, completed_at, last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
-  return r.rows;
+  return nameOrders(db, r.rows);
 }
 
 async function getOrder(db, orderId) {
   const r = await db.query(`SELECT * FROM amc_orders WHERE id = $1`, [orderId]);
-  return r.rows[0] || null;
+  if (!r.rows[0]) return null;
+  return (await nameOrders(db, [r.rows[0]]))[0];
 }
 
 module.exports = {

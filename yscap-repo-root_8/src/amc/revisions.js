@@ -35,7 +35,7 @@ async function insertRevision(dbh, orderId, { kind, body, amcRevisionId, status,
 // journals the write. Never throws for an expected refusal.
 async function postRevision(dbh, order, { staffId, kind, body, rovDetail }, deps = {}) {
   const text = String(body || '').trim();
-  if (!text) return { ok: false, error: 'empty' };
+  if (!text) return { ok: false, error: 'empty', message: 'Say what needs changing before sending it.' };
   const transport = deps.transport || client;
   const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
   let authCtx;

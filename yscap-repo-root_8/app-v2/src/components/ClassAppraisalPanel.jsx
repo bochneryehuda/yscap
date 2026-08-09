@@ -273,6 +273,11 @@ const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleStr
 // on the very screen this branch first put a property-access person on.
 function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 
+// The form's NAME on an order, or null. The server fills it in on read for orders
+// placed before it was stored, so this is deliberately not a second place that decides
+// what a form is called — it only asks whether we have a name to show.
+function titleOf(o) { const t = o && o.product_title; return t ? String(t) : null; }
+
 function refusal(out) {
   if (!out) return '';
   if (Array.isArray(out.missing) && out.missing.length) {
@@ -308,12 +313,21 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
                         order and sent to this screen, and then nothing rendered it, so
                         the list said only "Class order 12345" and never which report
                         was actually bought. */}
-                    {o.product_title || (o.product_id ? `Their form #${o.product_id}` : 'Form not recorded')}
+                    {/* A title is stored when the order is PLACED, so every order placed
+                        before that existed has none — which is the exact "it says only
+                        the form number" the owner reported. The catalogue is already
+                        loaded on this screen for the form picker, so name it from there
+                        rather than leave the number standing alone; and when nothing can
+                        name it, lead with the ORDER, which is what a person identifies
+                        it by, instead of demoting the order beneath a bare number. */}
+                    {titleOf(o) || (o.class_order_id ? `Class order ${o.class_order_id}` : 'Order not yet placed')}
                     {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
                   </div>
                   <div style={{ fontSize: 12, color: MUTED }}>
-                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
-                    {o.product_title && o.product_id ? ` · their form #${o.product_id}` : ''}
+                    {titleOf(o)
+                      ? (o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class')
+                      : (o.product_id ? `Their form #${o.product_id}` : 'Form not recorded')}
+                    {titleOf(o) && o.product_id ? ` · their form #${o.product_id}` : ''}
                   </div>
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {/* Which form version this order is on. It is on the row rather than

@@ -105,7 +105,12 @@ router.get('/products', async (req, res) => {
   } catch (e) {
     // Never relay the vendor's status — a 401 from Class would sign the STAFFER
     // out of PILOT (the repo's session chokepoint documents this class).
-    res.status(502).json({ available: false, error: e.code || 'lookup_failed', detail: e.message });
+    // A PLAIN SENTENCE, not a code and not the vendor's wording. The panel reads
+    // `message`; with only an `error` code it falls back to `e.message`, which
+    // api.js sets to the CODE — so the desk showed the literal word 'lookup_failed'.
+    console.warn('[class] product lookup failed:', e && e.message);
+    res.status(502).json({ available: false, error: e.code || 'lookup_failed',
+      message: 'The list of appraisal forms could not be loaded just now. Please try again in a moment.' });
   }
 });
 
@@ -219,7 +224,9 @@ router.post('/files/:id/order', async (req, res) => {
     // trace. Those belong in the server log, which is where they go; the browser gets
     // our own sentence, the same discipline /products already follows.
     console.warn('[class] order failed:', e && e.message, e && e.body ? JSON.stringify(e.body).slice(0, 500) : '');
-    res.status(502).json({ error: e.code || 'order_failed', detail: e.message });
+    res.status(502).json({ error: e.code || 'order_failed',
+      message: 'The appraisal order could not be placed. Nothing was sent. '
+        + 'Please try again, and if it keeps happening let the team know.' });
   }
 });
 
@@ -237,6 +244,7 @@ router.get('/files/:id/orders', async (req, res) => {
             dryrun, last_event_at, last_error, placed_at, created_at
        FROM class_orders WHERE application_id = $1
       ORDER BY created_at DESC`, [appId]);
+  await nameClassOrders(r.rows);
   const ids = r.rows.map((o) => o.id);
   // Unread counts per order, so the file screen can badge a waiting reply without
   // fetching every thread.
@@ -277,13 +285,36 @@ router.get('/files/:id/orders', async (req, res) => {
 // strips none of them — so trimming first meant the value that PASSED the check was
 // not the value that reached the bind. There is exactly one spelling of an order id
 // here: digits, nothing around them. Anything else is not an order of ours.
-const MAX_BIGINT = 9223372036854775807n;
-function bigintId(v) {
-  const s = String(v == null ? '' : v);
-  if (!/^[0-9]{1,19}$/.test(s)) return null;
-  const n = BigInt(s);
-  return n > 0n && n <= MAX_BIGINT ? s : null;
+// This rule is now SHARED with the AMC desk, which had the parseInt version of exactly
+// this bug — see src/lib/bigint-id.js.
+const { bigintId } = require('../lib/bigint-id');
+
+// NAME THE FORM ON ORDERS PLACED BEFORE THE NAME WAS STORED.
+// `class_orders.product_title` is written at order time, so every order older than that
+// carries only a number — the owner's "it says only the form number" report, which is
+// true on THIS desk too. Their catalogue is the only place the name lives, so it is
+// resolved on read, best-effort, and ONLY when a row actually needs it (a healthy file
+// never makes the call). `client.products` caches for minutes, so this is at most one
+// request per process per cache window, and a failure just leaves the number showing.
+async function nameClassOrders(rows) {
+  const need = rows.filter((o) => o && !o.product_title && o.product_id != null);
+  if (!need.length || !client.configured().enabled) return rows;
+  try {
+    const r = await client.products({ limit: 200 });
+    const byId = new Map();
+    for (const p of (r && r.products) || []) {
+      const id = p && (p.id != null ? p.id : p.productId);
+      const nm = p && (p.title || p.name || p.productName || p.description);
+      if (id != null && nm) byId.set(String(id), String(nm).trim());
+    }
+    for (const o of need) {
+      const nm = byId.get(String(o.product_id));
+      if (nm) o.product_title = nm;
+    }
+  } catch (_) { /* the number still shows; naming is a nicety, never a failure */ }
+  return rows;
 }
+
 
 // Returns the SANITIZED id when the order is on this file, else null. It returns the
 // id rather than a boolean on purpose: every handler below then passes THAT value

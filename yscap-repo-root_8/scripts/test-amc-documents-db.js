@@ -197,6 +197,30 @@ function makeDeps() {
     const retry = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [rejectedId] }, makeDeps());
     ok(retry.ok && retry.uploaded.length === 1, 'and the retry actually sends it');
 
+    // "WE COULD NOT PLACE THEIR ANSWER" IS A DIFFERENT THING FROM "THEY REFUSED IT",
+    // and the two must not share a reason code (eighth audit). Here the vendor accepted
+    // the file and answered with a link — but labelled the answer with nothing our
+    // matcher can tie to this file, so we decline to guess. Calling that
+    // `stage_rejected` puts it on the vendor's side of the poller's log every five
+    // minutes and sends whoever reads it to ask the appraisal company about a document
+    // the appraisal company already took.
+    const unplaceableId = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'unplaceable.pdf','application/pdf','ref-unp','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const unpDeps = makeDeps();
+    // A well-formed, successful answer — carrying a vendor identifier that names no
+    // part of ours and a filename belonging to no file we sent.
+    unpDeps.postDocuments = async () => ([{
+      name: 'vendor-doc-90210', fileName: 'something-else.pdf',
+      uploadStatus: 'Success', retrievalUrl: 'https://example.invalid/doc/1',
+    }]);
+    const unp = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [unplaceableId] }, unpDeps);
+    const unpSkip = (unp.skipped || []).find((s) => String(s.documentId) === String(unplaceableId));
+    ok(unpSkip && unpSkip.reason === 'unmatched_answer',
+      'an answer we cannot place carries its own reason, not the vendor-refusal one');
+    ok(unpSkip && !/would not accept|refus/i.test(String(unpSkip.detail || '')),
+      'and its wording does not blame the appraisal company');
+
     // ONE BAD FILE MUST NOT TAKE THE GOOD ONES WITH IT — and the join between the
     // vendor's answer and our metadata is by NAME, never by array position.
     const goodA = (await c.query(

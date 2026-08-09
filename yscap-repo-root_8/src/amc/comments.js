@@ -31,7 +31,7 @@ async function insertComment(dbh, orderId, { direction, body, authorName, staffI
 // and journals the write. Never throws for an expected refusal.
 async function postComment(dbh, order, { staffId, staffName, body }, deps = {}) {
   const text = String(body || '').trim();
-  if (!text) return { ok: false, error: 'empty' };
+  if (!text) return { ok: false, error: 'empty', message: 'Type a message before sending it.' };
   const transport = deps.transport || client;
   const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
   let authCtx;

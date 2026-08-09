@@ -73,6 +73,17 @@ async function run(result) {
      'a storage failure is not reported as the appraisal company refusing');
   ok(/contract\.pdf/.test(out) && /could not be read/.test(out), 'and it still names the file and the reason');
 
+  // "WE COULD NOT PLACE THEIR ANSWER" IS NOT "THEY REFUSED IT" (eighth audit). The
+  // upload succeeded and they answered; our matcher declined to guess which answer went
+  // with which file. Reporting that as a refusal sends ops to the appraisal company to
+  // ask about a document the appraisal company already took.
+  out = await run({ ok: true, uploaded: 1, skipped: [
+    { documentId: 'd1', filename: 'sow.pdf', reason: 'unmatched_answer',
+      detail: 'we could not tell which of their answers was about this file' }] });
+  ok(/could not send/.test(out) && !/would not accept/.test(out),
+     'an answer we could not place is not reported as the appraisal company refusing');
+  ok(/sow\.pdf/.test(out), 'and it still names the file');
+
   out = await run({ ok: true, uploaded: 1, skipped: [
     { documentId: 'd1', filename: 'a.pdf', reason: 'stage_rejected', detail: 'virus scan' },
     { documentId: 'd2', filename: 'b.pdf', reason: 'empty', detail: 'the stored copy is empty' }] });

@@ -38,6 +38,12 @@ const REASON_TEXT = {
   read_failed: 'the stored copy could not be read',
   empty: 'the stored copy is empty',
   stage_rejected: 'the appraisal company would not accept it',
+  // NOT the same thing as a refusal, and it must never be worded as one. The upload
+  // call succeeded and the appraisal company answered — we could not tell WHICH of
+  // their answers was about this file, so we refused to guess rather than risk filing
+  // one document's link under another's name. Blaming them sends whoever reads it to
+  // the wrong party, and this is the answer they see on every poll until it clears.
+  unmatched_answer: 'we could not tell which of their answers was about this file',
 };
 const reasonText = (r) => REASON_TEXT[r] || r || 'it could not be sent';
 
@@ -107,7 +113,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
   }
   const ids = (documentIds || []).filter(Boolean);
-  if (!ids.length) return { ok: false, error: 'no_documents' };
+  if (!ids.length) return { ok: false, error: 'no_documents', message: 'Pick at least one document to send.' };
 
   const rows = (await dbh.query(
     `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.doc_kind, d.llc_id,
@@ -199,11 +205,16 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
       // The reason must not contradict itself: a missing link with a "Success" status
       // is not a refusal the vendor stated, it is an answer we cannot use.
       const stated = st && REFUSED.test(String(st.uploadStatus || '')) ? String(st.uploadStatus) : null;
+      // WHOSE PROBLEM IT IS DECIDES WHO HAS TO ACT, so the two are separate reasons.
+      // No staged entry at all means the MATCHER declined to place one of their answers
+      // on this file — ours to work out, not a refusal they made. Only an entry they
+      // actually returned can carry `stage_rejected`.
+      const reason = st ? 'stage_rejected' : 'unmatched_answer';
       skipped.push({ documentId: specs[i].documentId,
         filename: specs[i].filename,
-        reason: 'stage_rejected',
+        reason,
         detail: stated || (st && st.errorTraceID)
-          || (st ? 'the appraisal company returned no link for this file' : 'the appraisal company did not answer for this file') });
+          || (st ? 'the appraisal company returned no link for this file' : reasonText('unmatched_answer')) });
       continue;
     }
     sendable.push({ ...specs[i], staged: st });
