@@ -214,6 +214,36 @@ const found = (name) => {
     ok((await lines()).length === 2, 'no second line was created — a match joins the one already there');
   }
 
+  console.log('\n5c. A ZERO RESULT SAYS WHOSE LIMITATION IT IS');
+  {
+    /* A search runs ONLY under the companies on the profile. A borrower with
+       none gets a zero, and read as "we searched and found no history" that is
+       a finding against them produced by a gap in OUR data — the D3 class,
+       where a coverage gap was painted as a failed verification. */
+    const bare = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('No','Entities',$1) RETURNING id`,
+      [`${tag}_ne@example.com`])).rows[0].id;
+    reply = found;
+    const out = await IMP.runSearch({ borrowerId: bare, staffId: staff.id });
+    ok(out.found === 0 && out.nothingToSearch === true,
+      'a borrower with NO companies returns nothing, and says the search could not run');
+    ok(/no companies on their profile/.test(out.summary) && /Add the company/.test(out.summary),
+      '…in a sentence that names OUR gap and what to do about it, not a verdict on the borrower');
+    ok(Array.isArray(out.searchedUnder) && out.searchedUnder.length === 0,
+      '…and reports that it searched under nothing, rather than leaving a screen to infer it');
+    ok(out.apiCalls === 0, '…and spends nothing — there was nothing to look under');
+
+    // And a real search names what it looked under.
+    const withEnt = await IMP.runSearch({ borrowerId, staffId: staff.id });
+    ok(withEnt.searchedUnder.includes('MW Trading LLC'),
+      'a real search NAMES the companies it looked under');
+    ok(withEnt.nothingToSearch === false, '…and does not claim it could not run');
+    ok(!/does not publish/.test(withEnt.summary) || withEnt.found === 0,
+      '…and only offers the "county does not publish" explanation when it genuinely found nothing');
+    await db.query('DELETE FROM track_record_searches WHERE borrower_id=$1', [bare]).catch(() => {});
+    await db.query('DELETE FROM borrowers WHERE id=$1', [bare]).catch(() => {});
+  }
+
   console.log('\n5b. ALL THREE match bands are reachable — "we are not sure" has somewhere to live');
   {
     /* db/496's CHECK has always allowed 'exact' | 'near' | 'none', and stageOne

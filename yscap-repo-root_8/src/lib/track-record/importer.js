@@ -299,7 +299,30 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       WHERE id=$1`,
     [search.id, found, staged, skips.length, JSON.stringify(skips), apiCalls]);
 
-  return { ok: true, searchId: search.id, found, staged, skipped: skips.length, skips, apiCalls };
+  /* WHAT WAS SEARCHED, ALWAYS — because "we found nothing" and "we had nothing
+     to look under" are completely different sentences, and only one of them is
+     about the borrower.
+     A search runs ONLY under the companies on the profile, so a borrower with
+     none gets a zero and, without this, the reason sits inside `skips` where a
+     screen has to go looking for it. Read as "we searched and this person has no
+     history", that is a finding against them produced by a gap in OUR data — the
+     same class as D3, where a coverage gap was painted as a failed verification.
+     The caller can now say which companies were searched, or that there were
+     none to search, without interpreting anything. */
+  const nothingToSearch = entityNames.length === 0;
+  return {
+    ok: true,
+    searchId: search.id,
+    found, staged, skipped: skips.length, skips, apiCalls,
+    searchedUnder: entityNames,
+    nothingToSearch,
+    /* One plain sentence, decided HERE so two screens cannot word it two ways. */
+    summary: nothingToSearch
+      ? 'We could not search: this borrower has no companies on their profile yet, and a public-records search runs under a company name. Add the company they buy under and run it again.'
+      : (found === 0
+        ? `We searched the public records under ${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
+        : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}${staged === found ? '' : ` — ${staged} new`}.`),
+  };
 }
 
 /**
