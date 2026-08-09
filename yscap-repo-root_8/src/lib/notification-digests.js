@@ -913,7 +913,11 @@ async function drawFindingsAwaitingBorrowerOnce() {
     // LIMIT slot — delivered_at never advances, so without it the most-stuck files starve the queue
     // (the exact defect the ORDER BY + notThrottled were added to prevent).
     `WITH due AS (
-       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
+       -- one_draw is the draw to decorate the nudge with, and it is meaningful ONLY when this
+       -- file has exactly one result waiting: with two, a single draw's figures would headline
+       -- one of them and quietly misrepresent the other.
+       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest,
+              CASE WHEN count(*) = 1 THEN min(f.sitewire_draw_id) END AS one_draw
          FROM draw_findings f
          JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
@@ -927,7 +931,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
      -- nudges = how many borrower reminders were already sent THIS delivered episode (since the
      -- oldest currently-delivered finding). Stamps from a prior, already-accepted draw are before
      -- that oldest delivery, so a new delivery always starts the borrower over with a fresh CAP.
-     SELECT d.application_id, d.n, d.oldest,
+     SELECT d.application_id, d.n, d.oldest, d.one_draw,
             (SELECT count(*) FROM audit_log l
                WHERE l.entity_type='application' AND l.action='${DIGEST_ACTION.DRAW_FINDINGS_REMINDER}'
                  AND l.entity_id=d.application_id AND l.created_at >= d.oldest)::int AS nudges
@@ -941,10 +945,20 @@ async function drawFindingsAwaitingBorrowerOnce() {
       if (r.nudges < CAP) {
         // Still under the cap: nudge the BORROWER, at most once per `waitHours` (the atomic gate).
         if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
+        // The nudge carries the money it is nudging about (draw rule 15) — the amount waiting on
+        // their confirmation is the whole reason to open it. Only when ONE result is waiting; with
+        // several there is no single headline figure, so the reminder stays a plain reminder.
+        let blocks = null;
+        if (r.n === 1 && r.one_draw != null) {
+          blocks = await require('../sitewire/draw-email-blocks')
+            .drawEmailBlocks(db, r.application_id, { sitewireDrawId: Number(r.one_draw), borrower: true });
+        }
         await notify.notifyAppBorrowers(r.application_id, {
           type: 'draw_findings',
           title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
           badge: { text: 'Action needed', tone: 'action' },
+          figures: (blocks && blocks.figures) || null,
+          facts: (blocks && blocks.facts) || null,
           body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
           callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
           applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
