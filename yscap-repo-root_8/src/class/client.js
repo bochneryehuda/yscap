@@ -52,6 +52,19 @@ const switches = require('../lib/integrations/switches');
 // PURE — no database, no network, no cycle back into this module.
 const orderBuild = require('./order-build');
 
+// A version-specific READ must be told which version; it may never fall back. The
+// caller that knows is the stored order row (`class_orders.api_version`), and when
+// THAT is unknown the documented behaviour is to decline the call, not to guess.
+function requireVersion(opts) {
+  const v = opts && opts.version;
+  if (v !== 'v1' && v !== 'v2') {
+    const e = new Error('class: the UAD version of this order is unknown, so it cannot be read — reading it on the wrong version answers in the other vocabulary and finds nothing');
+    e.code = 'class_version_unknown';
+    throw e;
+  }
+  return orderBuild.profileFor(v);
+}
+
 const MAX_TRIES = 3;
 const BASE_BACKOFF_MS = 500;
 const TOKEN_SKEW_SEC = 60;          // renew a minute early rather than race the expiry
@@ -298,9 +311,15 @@ module.exports = {
   // anything keyed on a field name would quietly find nothing. So the version is
   // REQUIRED to be passed by whoever knows it (the stored order row), and the default
   // here is only for a caller that genuinely has no order in hand.
+  // ...and "REQUIRED" is enforced rather than described. `profileFor` falls back to v1
+  // for anything it does not recognise — which is right for the BUILDER (a new order
+  // has to go somewhere, and the default version is the honest choice) and exactly
+  // wrong for a READ of an order that already exists on one specific version. An
+  // omitted version here would silently read a 3.6 order through the 2.6 vocabulary
+  // and find nothing, which is the failure this whole file is arranged around.
   order: (orderId, opts = {}) =>
-    get(`${orderBuild.profileFor(opts.version).path}/${encodeURIComponent(orderId)}`, undefined, 'order'),
-  orders: (query, opts = {}) => get(orderBuild.profileFor(opts.version).path, query, 'orders'),
+    get(`${requireVersion(opts).path}/${encodeURIComponent(orderId)}`, undefined, 'order'),
+  orders: (query, opts = {}) => get(requireVersion(opts).path, query, 'orders'),
   // THE V1 GUIDE CONTRADICTS ITSELF ON THIS ONE PATH: its order-completion walkthrough
   // (p.7, added in the newest revision) says `GET /orders/{orderId}/attachments`, while
   // the older Attachments reference section (p.14) writes `GET /{orderId}/attachments`

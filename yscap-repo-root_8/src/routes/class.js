@@ -47,6 +47,15 @@ const OVERRIDE_KEYS = new Set([
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
   'referenceNumber', 'street', 'city', 'state', 'zip', 'dueDate', 'instructions',
 ]);
+// Their registration reply is documented as a list of event names, but the shape is
+// not guaranteed. Concatenating an OBJECT would append it as one element and write
+// the literal "[object Object]" into class_callback_registrations as an event name.
+function asNameList(v) {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' || typeof x === 'number');
+  if (v && typeof v === 'object') return Object.keys(v);
+  return [];
+}
+
 function readOverrides(src) {
   const out = {};
   for (const [k, v] of Object.entries(src || {})) if (OVERRIDE_KEYS.has(k) && v != null && v !== '') out[k] = v;
@@ -179,8 +188,18 @@ router.post('/files/:id/order', async (req, res) => {
       class_order_id: out && out.orderId != null ? String(out.orderId) : null,
       transaction_id: out && out.transactionId != null ? String(out.transactionId) : null,
     });
-    res.json({ ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId,
-      apiVersion: preview.apiVersion, uad: preview.uad, body: preview.body });
+    res.json({
+      ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId,
+      apiVersion: preview.apiVersion, uad: preview.uad, body: preview.body,
+      // AN UNRECORDED ORDER IS NOT A SUCCESS, even though the appraisal really was
+      // ordered. With no row, nothing links their callbacks back to this file: the
+      // order proceeds at Class and PILOT never hears about it again. Saying so is
+      // the difference between a problem somebody can fix in a minute and one that
+      // surfaces weeks later as "the appraisal never came back".
+      recorded: !!orderRowId,
+      warning: orderRowId ? undefined
+        : 'The order WAS placed with Class, but PILOT could not record it — its updates will not reach this file. Tell an administrator, with the order number above.',
+    });
   } catch (e) {
     await finish({ status: 'error', last_error: String((e && e.message) || e).slice(0, 500) });
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
@@ -380,7 +399,7 @@ router.post('/callback-setup/register', requirePermission('platform_setup'), asy
     });
     const added = (out && (out.callbacksAdded || out.CallbacksAdded)) || {};
     const names = Array.isArray(added) ? added : Object.keys(added || {});
-    for (const ev of names.concat((out && out.callbacksExisting) || [])) {
+    for (const ev of names.concat(asNameList(out && out.callbacksExisting))) {
       await db.query(
         `INSERT INTO class_callback_registrations (event_name, callback_url, auth_mode, registered_by)
          VALUES ($1,$2,'BasicAuth',$3)

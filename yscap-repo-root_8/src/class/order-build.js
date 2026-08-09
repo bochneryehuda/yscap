@@ -271,6 +271,48 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     return derived;
   };
 
+  /**
+   * The same, for a field whose value must be one of THIS version's published values.
+   *
+   * A typed value is never taken on trust, because the two vocabularies overlap in
+   * shape and not in content: `TownhouseorRowhouse` and `Vacant` are perfectly legal
+   * UAD 2.6 values and are simply not on the 3.6 list. Switching the version on the
+   * screen merges into the overrides already chosen, so without this check a value
+   * picked under one version rides straight into the other — and an unrecognised
+   * value is DROPPED BY CLASS WITH NO ERROR, which is the exact silent failure the
+   * whole profile table exists to prevent. The appraiser gets an order with no
+   * property type, and nothing anywhere says so.
+   *
+   * An unusable value is REFUSED, not corrected: it goes to `missing` (so `canPlace`
+   * is false) and the field is left unset, so a wrong value can never be sent. The
+   * message names the version, because "Townhouse is not a valid property type" reads
+   * as nonsense to someone who just picked it off a list that offered it.
+   */
+  const rejected = new Set();
+  const pickEnum = (key, derived, enumName, fieldPath) => {
+    const allowed = (profile.enums && profile.enums[enumName]) || null;
+    const has = Object.prototype.hasOwnProperty.call(overrides, key)
+      && overrides[key] != null && overrides[key] !== '';
+    if (!has) return derived;
+    const v = overrides[key];
+    // Only a single scalar can be a value from a list — a repeated query parameter
+    // arrives as an array and is not one of them.
+    if (allowed && !(typeof v === 'string' && allowed.includes(v))) {
+      overridden.push(key);
+      // Recorded so the ordinary "this field has no value" check below does not
+      // report the same field a SECOND time with a vaguer reason. The specific
+      // message — "that value is not on this version's list" — is the useful one.
+      rejected.add(fieldPath);
+      missing.push({
+        field: fieldPath,
+        why: `"${typeof v === 'string' ? v : JSON.stringify(v)}" is not one of the values UAD ${profile.uad} accepts for this field — pick one from the list on the order screen`,
+      });
+      return null;
+    }
+    overridden.push(key);
+    return v;
+  };
+
   const p = ctx.property || {};
   const loan = ctx.loan || {};
 
@@ -288,15 +330,15 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     propertyType = val;
     assumptions.push({ field: ptField, value: val, why });
   }
-  propertyType = pick('propertyTypeEnum', propertyType);
-  if (!propertyType) {
+  propertyType = pickEnum('propertyTypeEnum', propertyType, ptField, ptField);
+  if (!propertyType && !rejected.has(ptField)) {
     missing.push({ field: ptField, why: `UAD ${profile.uad} has no value matching the property type "${p.category || '(blank)'}" — pick one on the order screen` });
   }
 
   // ---- purpose + loan type -------------------------------------------------
   const lKey = norm(loan.loanType);
-  let purpose = pick('purpose', PURPOSE[lKey] || null);
-  if (!purpose) missing.push({ field: 'purpose', why: `no Class purpose matches the loan type "${loan.loanType || '(blank)'}"` });
+  let purpose = pickEnum('purpose', PURPOSE[lKey] || null, 'purpose', 'purpose');
+  if (!purpose && !rejected.has('purpose')) missing.push({ field: 'purpose', why: `no Class purpose matches the loan type "${loan.loanType || '(blank)'}"` });
 
   let loanType = LOAN_TYPE[lKey] || null;
   if (!loanType && lKey) {
@@ -304,7 +346,7 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     assumptions.push({ field: 'loanInfo.loanType', value: 'Other',
       why: `Class has no "${loan.loanType}" value — the deal's nature is carried in purpose="${purpose || '?'}" instead` });
   }
-  loanType = pick('loanType', loanType);
+  loanType = pickEnum('loanType', loanType, 'loanType', 'loanInfo.loanType');
 
   // ---- occupancy -----------------------------------------------------------
   // Free text on 2.6, a closed enum on 3.6 — so on 3.6 a word with no exact value
@@ -317,8 +359,11 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     occupancy = val;
     assumptions.push({ field: 'occupancy', value: val, why });
   }
-  occupancy = pick('occupancy', occupancy);
-  if (!occupancy && profile.occupancyIsEnum && oKey) {
+  // 2.6 takes free text here, so only 3.6's closed list is validated.
+  occupancy = profile.occupancyIsEnum
+    ? pickEnum('occupancy', occupancy, 'occupancy', 'occupancy')
+    : pick('occupancy', occupancy);
+  if (!occupancy && profile.occupancyIsEnum && oKey && !rejected.has('occupancy')) {
     missing.push({ field: 'occupancy', why: `UAD ${profile.uad} has no occupancy value matching "${p.occupancy}" — pick one on the order screen` });
   }
 

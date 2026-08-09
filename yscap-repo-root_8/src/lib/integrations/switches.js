@@ -66,7 +66,10 @@ const SWITCHES = [
   // Class Valuation — the SECOND appraisal vendor. Its own switches on purpose:
   // the two vendors are turned on and off independently, and one being live must
   // never imply anything about the other. Same three-stage shape as the AMC.
-  { key: 'CLASS_ENABLED', integration: 'class', label: 'Order appraisals from Class Valuation (reading)', dangerous: false, resume: true, envDefault: () => !!(cfg.class && cfg.class.enabled) },
+  // No `resume` flag: both consumers (the poller and the client) read the switch at
+  // CALL time, so turning it back on takes effect immediately. Claiming otherwise
+  // would tell an admin a redeploy is needed when it is not.
+  { key: 'CLASS_ENABLED', integration: 'class', label: 'Order appraisals from Class Valuation (reading)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.enabled) },
   { key: 'CLASS_DRYRUN', integration: 'class', label: 'Class Valuation orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.dryrun) },
   { key: 'CLASS_OUTBOUND_ENABLED', integration: 'class', label: 'Place appraisal orders with Class Valuation (write)', dangerous: true, envDefault: () => !!(cfg.class && cfg.class.outboundEnabled) },
 

@@ -23,7 +23,6 @@
 
 const orderBuild = require('./order-build');
 const client = require('./client');
-const { displayName } = require('../lib/person-name');
 
 function addrParts(v) {
   const a = (v && typeof v === 'object') ? v : {};
@@ -135,11 +134,25 @@ const LABELS = {
   dateOfContract: 'Contract date',
 };
 
+// A body field whose NAME differs by version, mapped back to the ONE key the screen
+// and the builder use for its override. The override key stays `propertyTypeEnum` on
+// both versions deliberately (so a staffer's correction keeps applying when the
+// default moves) — which means that on 3.6, where the body key is `propertyType`,
+// neither the key nor the path matches and a value a human typed rendered as "From
+// the file" on the one screen whose entire job is showing where a value came from.
+const OVERRIDE_KEY_FOR_PATH = {
+  propertyType: 'propertyTypeEnum',
+  propertyTypeEnum: 'propertyTypeEnum',
+};
+
 function fieldRows(built) {
   const rows = [];
   const derived = new Map((built.assumptions || []).map((a) => [a.field, a]));
   const missing = new Map((built.missing || []).map((m) => [m.field, m]));
   const overridden = new Set(built.overridden || []);
+  const wasOverridden = (k, path) =>
+    overridden.has(k) || overridden.has(path)
+    || overridden.has(OVERRIDE_KEY_FOR_PATH[path]) || overridden.has(OVERRIDE_KEY_FOR_PATH[k]);
 
   const walk = (obj, prefix) => {
     for (const [k, v] of Object.entries(obj || {})) {
@@ -152,7 +165,7 @@ function fieldRows(built) {
         path,
         label: LABELS[path] || path,
         value: v,
-        state: m ? 'missing' : overridden.has(k) || overridden.has(path) ? 'overridden' : d ? 'derived' : 'read',
+        state: m ? 'missing' : wasOverridden(k, path) ? 'overridden' : d ? 'derived' : 'read',
         why: (m && m.why) || (d && d.why) || null,
       });
     }

@@ -317,5 +317,68 @@ const raw = client._internals.readBody(Buffer.from('<html>Blocked by proxy</html
 ok(raw.raw && /Blocked by proxy/.test(raw.raw),
    'a non-JSON reply is kept, so a blocked firewall never reads as a bad credential');
 
+// =========================================================================
+// A TYPED VALUE IS CHECKED AGAINST THE VERSION ACTUALLY BEING SENT.
+//
+// Found by the pre-merge correctness audit. The two vocabularies overlap in shape
+// and not in content, and the order screen MERGES overrides when the version toggle
+// is pressed — so a value picked under 2.6 rode straight into a 3.6 order, with
+// canPlace:true and nothing said. Class drops an unrecognised value with no error,
+// so the appraiser would have been dispatched with no property type at all. Every
+// assertion below fails on the code as it was written.
+console.log('\n--- a value from the other version is refused, not sent ---');
+
+const encCtx = {
+  referenceNumber: 'YSCAP-ENUM', productId: 4,
+  property: { category: 'sfr', occupancy: 'investment' },
+  loan: { loanType: 'fix_and_flip' },
+};
+const fieldsOf = (b) => b.missing.map((m) => m.field);
+
+// The exact click sequence: pick 2.6 values, then flip the toggle to 3.6.
+const carried = ob.buildOrder(encCtx,
+  { propertyTypeEnum: 'TownhouseorRowhouse', occupancy: 'Vacant', apiVersion: 'v2' }, {});
+ok(carried.apiVersion === 'v2' && carried.path === '/v2/orders', 'the 3.6 toggle still selects the 3.6 endpoint');
+ok(carried.body.propertyType == null,
+   'a UAD 2.6 property type is NOT sent to the 3.6 endpoint — Class would drop it in silence');
+ok(carried.body.occupancy == null, 'nor is a 2.6 occupancy value');
+ok(carried.canPlace === false, 'and the order cannot be placed while it carries them');
+ok(fieldsOf(carried).includes('propertyType') && fieldsOf(carried).includes('occupancy'),
+   'both are named on the screen, by the field name THIS version uses');
+ok(fieldsOf(carried).filter((f) => f === 'propertyType').length === 1,
+   'and each is reported exactly once — the specific reason, not a vaguer duplicate');
+ok(/UAD 3\.6/.test(carried.missing.find((m) => m.field === 'propertyType').why),
+   'the reason names the version, because the value was legal on the list they picked it from');
+
+// The same guard on 2.6, whose property-type list lives under a different key —
+// getting that key wrong silently disabled validation on the default version.
+const junk26 = ob.buildOrder(encCtx, { propertyTypeEnum: 'NotAThing', purpose: 'Nope' }, { version: 'v1' });
+ok(junk26.body.propertyTypeEnum == null && junk26.body.purpose == null,
+   'invented values are refused on 2.6 as well, not only on 3.6');
+ok(junk26.canPlace === false, 'and they block the order');
+
+// A repeated query parameter arrives as an array; an array is not a value from a list.
+const arrayed = ob.buildOrder(encCtx, { propertyTypeEnum: ['SingleFamily', 'Condominium'] }, {});
+ok(arrayed.canPlace === false && arrayed.body.propertyTypeEnum == null,
+   'a repeated parameter (an array) is refused rather than sent as JSON');
+
+// ...and the legitimate case is untouched on BOTH versions, or the guard would be
+// worse than the bug — nobody could correct a field by hand.
+for (const [v, ovr, key] of [
+  ['v1', { propertyTypeEnum: 'Condominium' }, 'propertyTypeEnum'],
+  ['v2', { propertyTypeEnum: 'Condominium', occupancy: 'Investment' }, 'propertyType'],
+]) {
+  const good = ob.buildOrder(encCtx, ovr, { version: v });
+  const enumFields = ['propertyType', 'propertyTypeEnum', 'occupancy', 'purpose', 'loanInfo.loanType'];
+  ok(good.body[key] === 'Condominium' && !fieldsOf(good).some((f) => enumFields.includes(f)),
+     `a valid ${v === 'v1' ? '2.6' : '3.6'} value typed by a human is still accepted and still sent`);
+  ok(good.overridden.includes('propertyTypeEnum'), `and is still reported as overridden on ${v}`);
+}
+
+// Free-text occupancy on 2.6 must NOT be validated — it is not a closed list there.
+const freeText = ob.buildOrder(encCtx, { occupancy: 'Tenant occupied, rent roll attached' }, { version: 'v1' });
+ok(freeText.body.occupancy === 'Tenant occupied, rent roll attached',
+   'UAD 2.6 occupancy is free text, so a typed sentence is still sent verbatim');
+
 console.log(`\ntest-class-order-build-pure: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

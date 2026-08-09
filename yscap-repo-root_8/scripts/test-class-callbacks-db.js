@@ -153,12 +153,22 @@ async function main() {
      'each order remembers the exact path it was placed on, so a follow-up cannot be sent to the wrong one');
 
   // The refusal, against a REAL row this time.
+  //
+  // UNKNOWN IS REPRESENTABLE, and it has to be. db/490 originally declared the column
+  // NOT NULL DEFAULT 'v1', which meant an order back-filled without a version — the
+  // case the code explicitly anticipates, an order placed by hand in the Class portal
+  // — was silently stamped 2.6 and became indistinguishable from one really placed on
+  // 2.6. That made `versionOf`'s `known:false` branch unreachable for any stored row,
+  // so the refusal it guards could never fire. db/492 drops the default and the NOT
+  // NULL; every order PILOT places still writes the column explicitly.
   const legacy = await mkOrder('v1', '2.6', '/orders', `cls-legacy-${tag}`, 'LEGACY-' + tag);
-  await db.query(`UPDATE class_orders SET api_version = NULL WHERE id = $1`, [legacy])
-    .catch(() => { /* NOT NULL — see the assertion below */ });
+  await db.query(`UPDATE class_orders SET api_version = NULL WHERE id = $1`, [legacy]);
   const legacyRow = (await db.query('SELECT * FROM class_orders WHERE id = $1', [legacy])).rows[0];
-  ok(legacyRow.api_version === 'v1',
-     'the column REFUSES to go null — an order with no recorded version cannot be created by accident');
+  ok(legacyRow.api_version === null,
+     'an order whose version we genuinely do not know can SAY so — it is never stamped 2.6 by a default');
+  ok(cb.versionOf(legacyRow).known === false,
+     'and it reads as unknown, so the follow-up refusal below is reachable at all');
+  await db.query(`UPDATE class_orders SET api_version = 'v1' WHERE id = $1`, [legacy]);
   const refused = await cb.refreshOrder({ id: legacy, class_order_id: 'x', api_version: 'v3' });
   ok(refused.ok === false && refused.reason === 'version_unknown',
      'and an unrecognised recorded version refuses a follow-up rather than guessing a path');
@@ -372,6 +382,96 @@ async function main() {
      'but a real retry of the same oversize body still collapses — dedupe is not lost to the fix');
 
   await db.query('DELETE FROM class_callback_events WHERE event_name LIKE $1', [`%${tag}`]);
+
+  // =========================================================================
+  // ONE DELIVERY WE CANNOT INTERPRET MUST NOT HOLD UP THE ONES BEHIND IT.
+  // Found by the pre-merge correctness audit and reproduced against the real
+  // receiver: a failing row kept `processed_at IS NULL` and stayed FIRST in
+  // `ORDER BY received_at`, so it sat at the head of every batch forever. The
+  // receiver drains at limit 25 — 25 of these and nothing live is processed.
+  console.log('\n--- a delivery we cannot interpret steps out of the queue ---');
+
+  // A `data` array containing a null element — the exact payload that threw.
+  await post({ eventName: 'NewAttachments', orderId: `cls26-${tag}`, data: [null] }, { Authorization: basic });
+  const poison = (await db.query(
+    `SELECT id FROM class_callback_events WHERE event_name='NewAttachments' AND class_order_id=$1`,
+    [`cls26-${tag}`])).rows[0];
+  ok(!!poison, 'the malformed delivery is stored, as every delivery must be');
+
+  // It no longer throws at all — a null element is simply not an attachment.
+  const d1 = await cb.drain({ limit: 25 });
+  const after1 = (await db.query(
+    'SELECT processed_at, attempts, dead_at FROM class_callback_events WHERE id=$1', [poison.id])).rows[0];
+  ok(after1.processed_at != null,
+     'a null element in the attachment list is skipped, not thrown on — the event processes normally');
+  ok(d1.failed === 0, 'and the drain reports no failure');
+
+  // A genuinely unprocessable row (an amount past what the column can hold used to
+  // be one) must still not block. Force a failure directly to prove the mechanism.
+  const stuck = (await db.query(
+    `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+     VALUES ('StatusChanged', $1, $2::jsonb, $3) RETURNING id`,
+    [`cls26-${tag}`, JSON.stringify({ data: { StatusName: 'Completed' } }), `poison-${tag}`])).rows[0].id;
+  // Simulate repeated failures the way processEvent records them.
+  await db.query(
+    `UPDATE class_callback_events SET attempts=2, process_error='forced', next_attempt_at = now() + interval '1 hour'
+      WHERE id=$1`, [stuck]);
+
+  const live = (await db.query(
+    `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+     VALUES ('StatusChanged', $1, $2::jsonb, $3) RETURNING id`,
+    [`cls26-${tag}`, JSON.stringify({ data: { StatusName: 'Completed' } }), `live-${tag}`])).rows[0].id;
+
+  await cb.drain({ limit: 1 });   // limit 1 — the backed-off row must not be the one taken
+  const liveRow = (await db.query('SELECT processed_at FROM class_callback_events WHERE id=$1', [live])).rows[0];
+  ok(liveRow.processed_at != null,
+     'a NEW delivery is processed even at limit 1, because a backed-off failure is no longer first in the queue');
+
+  // Given up on after MAX_ATTEMPTS — kept, never deleted, and answerable.
+  await db.query(
+    `UPDATE class_callback_events SET attempts=$2, dead_at=now(), process_error='forced'
+      WHERE id=$1`, [stuck, cb._internals.MAX_ATTEMPTS]);
+  const dl = await cb.deadLetter({ limit: 50 });
+  ok(dl.some((r) => String(r.id) === String(stuck)),
+     'a delivery we gave up on is still in the table and still answerable — never deleted');
+  const d2 = await cb.drain({ limit: 25 });
+  ok(d2.failed === 0, 'and it is out of the rotation, so it can never fail a drain again');
+
+  ok(cb._internals.backoffSeconds(1) < cb._internals.backoffSeconds(3),
+     'the wait grows with each attempt, so a transient failure retries soon and a hopeless one backs off');
+
+  // Money past what the column can hold is DROPPED, not stored as exponent notation
+  // (which Postgres refuses, failing the whole event forever).
+  ok(cb._internals.money(1e30) === null, 'an amount too large to store is dropped rather than poisoning the row');
+  ok(cb._internals.money(299) === 29900, 'and an ordinary fee still converts to cents');
+
+  // =========================================================================
+  // OUR REFERENCE IS THE LOAN NUMBER, SO IT NAMES THE FILE — NEVER THE ORDER.
+  console.log('\n--- a reference-only event is never applied to a guess ---');
+
+  // Both orders on this file share 'YSCAP<tag>'? No — order36 carries its own ref.
+  // Give the 3.6 order the SAME reference as the 2.6 one, which is what really
+  // happens: reference_number is applications.ys_loan_number for every order.
+  await db.query('UPDATE class_orders SET reference_number=$2 WHERE id=$1', [order36, 'YSCAP' + tag]);
+  await db.query('UPDATE class_orders SET status=$2 WHERE id=$1', [order26, 'ordered']);
+  await db.query('UPDATE class_orders SET status=$2 WHERE id=$1', [order36, 'ordered']);
+
+  const ambiguous = await cb.findOrder(null, { referenceNumber: 'YSCAP' + tag });
+  ok(ambiguous === null,
+     'with two live orders sharing one loan number, a reference-only event matches NEITHER — it is never applied to a guess');
+
+  // Once one is finished, the live one is unambiguous and the event lands correctly.
+  await db.query(`UPDATE class_orders SET status='completed' WHERE id=$1`, [order26]);
+  const resolved = await cb.findOrder(null, { referenceNumber: 'YSCAP' + tag });
+  ok(resolved && String(resolved.id) === String(order36),
+     'and once only one order can still receive events, it resolves to that one');
+
+  // Their own order id always wins and is never ambiguous.
+  const byId = await cb.findOrder(null, { classOrderId: `cls26-${tag}`, referenceNumber: 'YSCAP' + tag });
+  ok(byId && String(byId.id) === String(order26),
+     "their order id still wins outright — it identifies the order, unlike our reference");
+
+  await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
 
   // ---- cleanup ------------------------------------------------------------
   server.close();

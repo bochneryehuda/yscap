@@ -70,7 +70,23 @@ function when(v) {
   const d = new Date(s);
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }
-const money = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) : null; };
+// Retry policy for a delivery we could not interpret. Six attempts over roughly two
+// hours: long enough that a transient failure (a database blip, a lock) recovers on
+// its own, short enough that a genuinely malformed payload stops being asked about.
+const MAX_ATTEMPTS = 6;
+const backoffSeconds = (attempt) => Math.min(3600, 30 * Math.pow(2, Math.max(0, attempt - 1)));
+
+// Cents, as a bigint the column can actually hold. A number past that range does not
+// merely round badly — it serialises in exponent notation ("1e+32"), Postgres refuses
+// it, and the whole event fails and is retried forever. An amount we cannot store is
+// not an amount we can believe, so it is dropped rather than clamped to a wrong figure.
+const MAX_CENTS = 9007199254740991;   // Number.MAX_SAFE_INTEGER, well inside bigint
+const money = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const c = Math.round(n * 100);
+  return Number.isSafeInteger(c) && Math.abs(c) <= MAX_CENTS ? c : null;
+};
 
 /**
  * Find the order an event belongs to. Their id first (exact, and unique once we have
@@ -87,11 +103,25 @@ async function findOrder(dbc, { classOrderId, referenceNumber }) {
     if (r.rows[0]) return r.rows[0];
   }
   if (referenceNumber) {
-    // Newest first: a file can be re-ordered, and the live order is the recent one.
+    // OUR reference is the file's LOAN NUMBER, so it is shared by EVERY Class order on
+    // that file — it identifies the file, never the order. Taking the newest was wrong
+    // in the ordinary case rather than an edge one: re-order a file and the first
+    // order's completion lands on the second, which may be on the other UAD version.
+    //
+    // So a reference-only match is used only when it is UNAMBIGUOUS. Orders that can
+    // still receive events are preferred, because a completed or cancelled order is
+    // not what a live event is about; if that still leaves more than one, we refuse
+    // and the event is kept UNMATCHED. An unmatched event is visible and recoverable
+    // (their id arrives on a later event, and refreshOrder can be run by hand); an
+    // event applied to the WRONG order is silent and corrupts two orders at once.
     const r = await q.query(
-      `SELECT * FROM class_orders WHERE reference_number = $1
-        ORDER BY placed_at DESC NULLS LAST, created_at DESC LIMIT 1`, [String(referenceNumber)]);
-    if (r.rows[0]) return r.rows[0];
+      `SELECT * FROM class_orders WHERE reference_number = $1`, [String(referenceNumber)]);
+    if (r.rows.length === 1) return r.rows[0];
+    if (r.rows.length > 1) {
+      const live = r.rows.filter((o) => o.status !== 'completed' && o.status !== 'cancelled');
+      if (live.length === 1) return live[0];
+      return null;   // genuinely ambiguous — never guess which order they meant
+    }
   }
   return null;
 }
@@ -179,6 +209,7 @@ function attachmentsFrom(payload) {
   const d = payload && payload.data;
   const list = Array.isArray(d) ? d : (d && typeof d === 'object' ? [d] : []);
   return list
+    .filter((a) => a && typeof a === 'object')   // a null/scalar element is not an attachment
     .map((a) => ({
       name: text(a.name || a.Name),
       contentType: text(a.contentType || a.ContentType),
@@ -197,6 +228,7 @@ function notesFrom(payload) {
   const d = payload && payload.data;
   const list = Array.isArray(d) ? d : (d && typeof d === 'object' ? [d] : []);
   return list
+    .filter((n) => n && typeof n === 'object')   // a null/scalar element is not a note
     .map((n) => ({
       noteId: text(n.noteId || n.NoteId || n.id || n.Id),
       content: text(n.content || n.Content),
@@ -271,9 +303,29 @@ async function processEvent(row, { dbc } = {}) {
       [row.id, order ? order.id : null, order ? order.application_id : null]);
     return { ok: true, matched: !!order, version: versionOf(order) };
   } catch (e) {
-    await q.query('UPDATE class_callback_events SET process_error = $2 WHERE id = $1',
-      [row.id, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: (e && e.message) || String(e) };
+    // A FAILURE MUST STEP OUT OF THE QUEUE. Recording the error alone left the row
+    // `processed_at IS NULL` and first in `ORDER BY received_at`, so one delivery we
+    // could not interpret sat at the head of every batch forever — and the receiver
+    // drains at limit 25, so 25 of them and nothing live is processed by anything but
+    // the poller. Backing off is what keeps one bad payload from being an outage.
+    const attempt = Number(row.attempts || 0) + 1;
+    const dead = attempt >= MAX_ATTEMPTS;
+    await q.query(
+      `UPDATE class_callback_events
+          SET process_error   = $2,
+              attempts        = $3,
+              next_attempt_at = now() + ($4 || ' seconds')::interval,
+              dead_at         = CASE WHEN $5 THEN now() ELSE NULL END
+        WHERE id = $1`,
+      [row.id, String((e && e.message) || e).slice(0, 500), attempt, String(backoffSeconds(attempt)), dead],
+    ).catch(() => {});
+    if (dead) {
+      // Given up on, never deleted — the delivery is still evidence, and it stays
+      // queryable. Said out loud because nothing else will say it.
+      console.warn(`[class] callback ${row.id} (${row.event_name}) given up after ${attempt} attempts:`,
+        String((e && e.message) || e).slice(0, 200));
+    }
+    return { ok: false, error: (e && e.message) || String(e), attempts: attempt, dead };
   }
 }
 
@@ -283,21 +335,41 @@ async function processEvent(row, { dbc } = {}) {
  * malformed delivery.
  */
 async function drain({ limit = 100 } = {}) {
-  let done = 0, failed = 0;
+  let done = 0, failed = 0, dead = 0;
   try {
+    // A row that is due, oldest first — with a never-tried row (NULL next_attempt_at)
+    // always ahead of a retry, so live traffic is never queued behind a failure.
+    // `dead_at IS NULL` takes a given-up delivery out of the rotation for good; it is
+    // still in the table, and `deadLetter()` is how a human sees it.
     const r = await db.query(
       `SELECT * FROM class_callback_events
         WHERE processed_at IS NULL
-        ORDER BY received_at ASC
+          AND dead_at IS NULL
+          AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+        ORDER BY next_attempt_at ASC NULLS FIRST, received_at ASC
         LIMIT $1`, [Math.max(1, Math.min(500, limit))]);
     for (const row of r.rows) {
       const out = await processEvent(row);
-      if (out.ok) done++; else failed++;
+      if (out.ok) done++; else { failed++; if (out.dead) dead++; }
     }
   } catch (e) {
     console.warn('[class] callback drain failed:', e && e.message);
   }
-  return { processed: done, failed };
+  return { processed: done, failed, dead };
+}
+
+/**
+ * The deliveries we gave up on. There is no screen for these yet; this is what makes
+ * them answerable at all, and it is why a dead row is flagged rather than deleted.
+ */
+async function deadLetter({ limit = 50 } = {}) {
+  const r = await db.query(
+    `SELECT id, event_name, class_order_id, reference_number, attempts, process_error, received_at, dead_at
+       FROM class_callback_events
+      WHERE dead_at IS NOT NULL
+      ORDER BY dead_at DESC
+      LIMIT $1`, [Math.max(1, Math.min(500, limit))]);
+  return r.rows;
 }
 
 /**
@@ -326,6 +398,6 @@ async function refreshOrder(order) {
 module.exports = {
   EVENTS, STATUS,
   findOrder, versionOf, changesFor, attachmentsFrom, notesFrom,
-  processEvent, drain, refreshOrder,
-  _internals: { when, money, text },
+  processEvent, drain, deadLetter, refreshOrder,
+  _internals: { when, money, text, backoffSeconds, MAX_ATTEMPTS },
 };

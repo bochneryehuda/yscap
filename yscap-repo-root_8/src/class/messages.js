@@ -98,18 +98,28 @@ async function syncNotes(orderRowId) {
   if (!client.configured().enabled) return { ok: false, error: 'disabled' };
   try {
     const out = await client.notes(order.class_order_id);
-    const list = Array.isArray(out && out.data) ? out.data : [];
+    // Accept BOTH envelope shapes and BOTH id spellings, exactly as the callback
+    // reader does. Their NewNotes callback spells it `noteId`, and `client.addNote`
+    // reads that spelling back — so reading only `id` here left `class_note_id` NULL,
+    // and the partial unique index (`WHERE class_note_id IS NOT NULL`) then does not
+    // apply: `ON CONFLICT DO NOTHING` never fires and EVERY "check for replies" click
+    // re-inserts the whole thread with null content. Betting on one shape is the same
+    // mistake in the other direction: a bare array would report "0 added" forever and
+    // their messages would never appear.
+    const list = Array.isArray(out) ? out
+      : (Array.isArray(out && out.data) ? out.data : []);
     let added = 0;
     for (const n of list) {
-      const id = text(n.id);
-      const dir = text(n.direction) === 'FromClient' ? 'FromClient' : 'ToClient';
+      if (!n || typeof n !== 'object') continue;
+      const id = text(n.noteId || n.NoteId || n.id || n.Id);
+      const dir = text(n.direction || n.Direction) === 'FromClient' ? 'FromClient' : 'ToClient';
       const r = await db.query(
         `INSERT INTO class_notes (class_order_row, application_id, class_note_id, direction, content, vendor_created_at,
                                   sent_at)
          VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $4 = 'FromClient' THEN now() ELSE NULL END)
          ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING
          RETURNING id`,
-        [order.id, order.application_id, id, dir, text(n.content), text(n.created)]);
+        [order.id, order.application_id, id, dir, text(n.content || n.Content), text(n.created || n.Created)]);
       if (r.rowCount) added++;
     }
     return { ok: true, added, total: list.length };
@@ -176,7 +186,14 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
   const rowId = ins.rows[0].id;
   try {
     const out = await client.requestCancel(order.class_order_id, { reasons: clean });
-    if (out && out.__dryrun) return { ok: true, dryrun: true, id: rowId };
+    if (out && out.__dryrun) {
+      // Returning early left the row `status='requested'` with no marker, so the file
+      // badged a live cancellation request at Class that was never sent. Marked the
+      // same way requestRevision marks its own dry run — the two must read alike.
+      await db.query(`UPDATE class_revisions SET last_error=$2 WHERE id=$1`,
+        [rowId, 'TEST MODE — recorded here, not sent to Class.']).catch(() => {});
+      return { ok: true, dryrun: true, id: rowId };
+    }
     await db.query(`UPDATE class_revisions SET status='sent', sent_at=now(), vendor_response=$2::jsonb WHERE id=$1`,
       [rowId, JSON.stringify(out || {})]);
     // NOT marked cancelled here. Asking is not the same as them agreeing — the order
