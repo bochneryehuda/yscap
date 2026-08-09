@@ -503,6 +503,16 @@ async function releaseApprovalHold(escalation, client = db) {
      no action at all. Best-effort: if the follow-up read fails, say the vague thing
      rather than invent the specific one. */
   try {
+    /* Which of the two is it? Ask whether the named registration belongs to this
+       file at all, because "superseded" is the wrong story for "that registration
+       is another file's" (post-merge audit #7) — the refusal is right either way,
+       but a future debugger reading `superseded` would go looking for a re-register
+       that never happened. Production cannot produce a cross-file escalation (both
+       doors record the row they just inserted for the same appId), so this is a
+       label for a corrupt row, not a live path. */
+    const own = (await client.query(
+      `SELECT 1 FROM product_registrations WHERE id=$1 AND application_id=$2`, [regId, appId])).rows[0];
+    if (!own) return { released: false, reason: 'registration_not_on_this_file' };
     const newer = (await client.query(
       `SELECT id FROM product_registrations
         WHERE application_id=$1 AND is_current AND COALESCE(needs_approval,false) AND id <> $2
@@ -530,15 +540,36 @@ async function decideEscalation(id, decision, staffId, note, client = db) {
      only production caller today passes no client — the pool, autocommit — but the
      accept-counter path is transactional and is the obvious next caller. */
   if (row && status === 'approved') {
-    const inTx = client !== db;
-    try {
-      if (inTx) await client.query('SAVEPOINT release_approval_hold');
-      row.holdRelease = await releaseApprovalHold(row, client);
-      if (inTx) await client.query('RELEASE SAVEPOINT release_approval_hold');
-    } catch (e) {
+    /* WHETHER WE ARE IN A TRANSACTION IS ASKED OF POSTGRES, NOT GUESSED FROM THE
+       ARGUMENT (post-merge audit #4). `client !== db` only says "not the pool
+       module" — hand it a caller-owned pool client that has NOT issued BEGIN and
+       the SAVEPOINT itself raises 25P01, which the catch below then treats as a
+       failed release: the approval succeeds, the stamp silently stays set, and the
+       only trace is a console.warn. So TRY the savepoint and read the answer: it
+       succeeded (we are in a transaction, and we now have a rollback point), or it
+       came back 25P01 (autocommit — there is nothing to protect and nothing to
+       roll back to). Any other error is a real problem and skips the release. */
+    let savepoint = false;
+    let setupError = null;
+    if (client !== db) {
+      try { await client.query('SAVEPOINT release_approval_hold'); savepoint = true; }
+      catch (e) { if (e && e.code !== '25P01') setupError = e; }
+    }
+    if (setupError) {
       row.holdRelease = { released: false, reason: 'error' };
-      if (inTx) { try { await client.query('ROLLBACK TO SAVEPOINT release_approval_hold'); } catch (_) { /* nothing left to save */ } }
-      console.warn('[manual-program] approval stamp release failed:', db.describeError ? db.describeError(e) : e.message);
+      console.warn('[manual-program] approval stamp release skipped:', db.describeError ? db.describeError(setupError) : setupError.message);
+    } else {
+      try {
+        row.holdRelease = await releaseApprovalHold(row, client);
+        if (savepoint) await client.query('RELEASE SAVEPOINT release_approval_hold');
+      } catch (e) {
+        row.holdRelease = { released: false, reason: 'error' };
+        // The rollback is what keeps the caller's transaction usable: without it a
+        // swallowed error leaves it ABORTED (25P02) and its COMMIT silently becomes
+        // a rollback, losing the decision this function just recorded.
+        if (savepoint) { try { await client.query('ROLLBACK TO SAVEPOINT release_approval_hold'); } catch (_) { /* nothing left to save */ } }
+        console.warn('[manual-program] approval stamp release failed:', db.describeError ? db.describeError(e) : e.message);
+      }
     }
   }
   return row;

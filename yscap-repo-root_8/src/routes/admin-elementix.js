@@ -102,28 +102,15 @@ router.get('/connect', async (req, res) => {
   }
 });
 
-/**
- * Elementix redirects a BROWSER here, so this one answers with a redirect back
- * into the portal rather than JSON.
+/*
+ * The RETURN leg (`GET /callback`) is deliberately NOT here — it lives in
+ * `admin-elementix-callback.js`, mounted PUBLICLY ahead of this router.
+ * Elementix sends the person back by redirecting their browser, which cannot
+ * carry the portal's token, so a route behind this file's staff gate could never
+ * run: the owner completed the sign-in and got "unauthenticated" instead of a
+ * connection (2026-08-09). Its credential is the single-use `state` plus PKCE.
+ * Do NOT re-add a `/callback` route to this file.
  */
-router.get('/callback', async (req, res) => {
-  const { code, state, error, error_description: errDesc } = req.query || {};
-  if (error) {
-    await audit(req, 'elementix_connect_denied', { error: String(error) });
-    return res.redirect(portalReturn(false, errDesc || error));
-  }
-  try {
-    const out = await oauth.completeConnect({ code, state });
-    if (!out.ok) {
-      await audit(req, 'elementix_connect_failed', { reason: out.reason });
-      return res.redirect(portalReturn(false, out.detail || out.reason));
-    }
-    await audit(req, 'elementix_connected', { selfRenewing: out.selfRenewing });
-    res.redirect(portalReturn(true, out.detail));
-  } catch (e) {
-    res.redirect(portalReturn(false, e.message));
-  }
-});
 
 router.post('/disconnect', async (req, res) => {
   try {
