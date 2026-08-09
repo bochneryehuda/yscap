@@ -254,7 +254,10 @@ const notesFor = async (app, kind) => (await db.query(
     ok('order marked entered by the decision', oDone.status === 'entered');
     const tDone = (await wfItems(B.app)).find((i) => i.submission_type === 'trinity_inspection_order');
     ok('Trinity task completed by the decision', tDone && tDone.status === 'returned');
-    ok('borrower told about the approval', (await notesFor(B.app, 'borrower')).some((n) => /reviewed/i.test(n.title)));
+    // The wording is stage-accurate now (draw rule 15): the INSPECTOR approved an amount, and the
+    // release has not happened yet — so the title says so and the amount is the headline figure,
+    // not a clause buried in a sentence.
+    ok('borrower told about the approval', (await notesFor(B.app, 'borrower')).some((n) => /approved/i.test(n.title)));
     await cleanup(B.app, B.bor, B.lo);
   }
 
