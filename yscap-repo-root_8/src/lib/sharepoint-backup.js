@@ -117,6 +117,56 @@ const NEVER_MIRROR_REASON_CASE = `CASE d.doc_kind ${Object.entries(NEVER_MIRROR_
 const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN (${[...NEVER_MIRROR_KINDS].map(_sqlLit).join(',')})
   AND NOT (d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
            AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL))`;
+
+// ------------------------------------------- why a document is NOT in SharePoint
+// Owner-reported 2026-08-09: the scoreboard read "2,655 total / 1,755 in
+// SharePoint" with one grey line of small print naming TWO example reasons for a
+// gap of 900 — a third of the library. The mirror was whole (nothing waiting,
+// nothing stuck, and 1,755 + 900 = 2,655 exactly), but the screen gave no way to
+// SEE that, so a correct number read as 900 missing documents.
+//
+// These constants are the reasons this file writes, and SKIP_BUCKETS groups them
+// for the scoreboard — ONE table, so the writer and the grouper can never drift
+// and a new reason gets its own line for free. Anything a bucket does not
+// recognise lands in `other`, which the screen SHOWS rather than folding into a
+// friendly label — an unexplained skip has to be visible, not rounded off.
+const SKIP_SUPERSEDED_PREFIX = 'superseded before mirror — ';
+const SKIP_REASON_SUPERSEDED   = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this autosaved snapshot mirrors instead`;
+const SKIP_REASON_SUPERSEDED_HEAL = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this snapshot mirrors instead (stuck-heal)`;
+const SKIP_REASON_LEAD = 'not mirrored — a lead/CRM attachment, not a pipeline document';
+const SKIP_DUPLICATE_PREFIX = 'duplicate bytes — identical to already-mirrored document ';
+const duplicateBytesReason = (id) => `${SKIP_DUPLICATE_PREFIX}${id}`;
+// Written by lib/esign/webhook.js (an app-less DocuSign self-test document has no
+// loan file to file under), and by refileRow below when a human has moved our own
+// mirrored copy. The human-moved one is matched so it can never be counted as
+// "not mirrored" — that document IS in SharePoint, just not where we filed it.
+const SKIP_ESIGN_SELFTEST_PREFIX = 'e-sign self-test —';
+const SKIP_HUMAN_PLACED_PREFIX = 'left where a human put it';
+// LIKE-safe prefix match (the prefixes carry no wildcards today; escaped anyway
+// so adding one later can never silently widen a bucket).
+const _sqlPrefix = (col, p) => `${col} LIKE ${_sqlLit(`${String(p).replace(/([%_\\])/g, '\\$1')}%`)}`;
+const SKIP_BUCKETS = [
+  { key: 'heter_iska', match: `d.sharepoint_skipped_reason = ${_sqlLit(NEVER_MIRROR_REASON.heter_iska_signed)}`,
+    label: 'Heter Iska — kept in PILOT and DocuSign only, by your instruction' },
+  { key: 'appraisal_photos', match: `d.sharepoint_skipped_reason = ${_sqlLit(NEVER_MIRROR_REASON.appraisal_photo)}`,
+    label: 'Appraisal photos — pulled out of the appraisal report (the report itself IS in SharePoint)' },
+  { key: 'in_system_only', match: `d.sharepoint_skipped_reason = ${_sqlLit(DEFAULT_NEVER_MIRROR_REASON)}`,
+    label: 'Other kinds kept inside PILOT only' },
+  { key: 'superseded', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_SUPERSEDED_PREFIX),
+    label: 'Older auto-saves of a tool that was edited again — the newest copy IS in SharePoint' },
+  { key: 'duplicate', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_DUPLICATE_PREFIX),
+    label: 'Exact duplicates — the identical file is already in SharePoint' },
+  { key: 'lead', match: `d.sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LEAD)}`,
+    label: 'Lead / CRM attachments — not a loan-file document' },
+  { key: 'esign_selftest', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_ESIGN_SELFTEST_PREFIX),
+    label: 'DocuSign test documents — no loan file to file them under' },
+];
+// A document the shelf sweep left alone because a person moved or renamed our
+// copy carries BOTH a mirror ref and a skip reason, so it must never be counted
+// in the "not mirrored" pile — it IS in SharePoint. Every count below is
+// therefore scoped to `sharepoint_backup_ref IS NULL`.
+const SKIP_NOT_MIRRORED_SQL = `(d.sharepoint_skipped_reason IS NOT NULL AND d.sharepoint_backup_ref IS NULL)`;
+const SKIP_OTHER_SQL = `(${SKIP_NOT_MIRRORED_SQL} AND NOT (${SKIP_BUCKETS.map((b) => b.match).join(' OR ')}))`;
 function snapshotSettleSec() {
   const v = parseInt(process.env.SHAREPOINT_SNAPSHOT_SETTLE_SEC || '600', 10);
   return Number.isFinite(v) && v >= 10 ? v : 600;
@@ -636,7 +686,7 @@ async function settleSupersededSnapshots() {
   const r = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
-        sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this autosaved snapshot mirrors instead',
+        sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_SUPERSEDED)},
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND COALESCE(d.is_current, true) = false
@@ -682,7 +732,7 @@ async function settleNeverMirror() {
   const lead = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
-        sharepoint_skipped_reason = 'not mirrored — a lead/CRM attachment, not a pipeline document',
+        sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LEAD)},
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
@@ -1051,7 +1101,7 @@ async function mirrorRowInner(row, scopeKey) {
           sharepoint_backup_error = NULL
         WHERE id = $1`,
       [row.id, contentSha, dup.sharepoint_web_url || null,
-       `duplicate bytes — identical to already-mirrored document ${dup.id}`]);
+       duplicateBytesReason(dup.id)]);
     try {
       await require('./sync-review').closeStaleReviews({
         taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
@@ -1710,7 +1760,7 @@ async function refileRow(row) {
               sharepoint_skipped_reason=$3
         WHERE id=$1`,
       [row.id, shelf.key,
-       `left where a human put it — not re-filed to "${shelf.folder || 'the category folder'}" (${String(e.message).slice(0, 120)})`]);
+       `${SKIP_HUMAN_PLACED_PREFIX} — not re-filed to "${shelf.folder || 'the category folder'}" (${String(e.message).slice(0, 120)})`]);
     return 'skipped:human';
   }
 }
@@ -2166,6 +2216,22 @@ async function reconciliation() {
         count(*) FILTER (WHERE storage_ref IS NOT NULL)::int                                            AS total_docs,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)::int                                  AS mirrored,
         count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)::int                              AS skipped,
+        -- The "not mirrored on purpose" pile, and WHY — so the gap between
+        -- "total" and "in SharePoint" reads as an answer instead of a mystery.
+        -- Scoped to backup_ref IS NULL: a copy a human moved carries a skip
+        -- reason too, and that document IS in SharePoint (owner-reported
+        -- 2026-08-09). Same single scan — these are FILTERs, not a second query.
+        count(*) FILTER (WHERE ${SKIP_NOT_MIRRORED_SQL})::int                                            AS skipped_not_mirrored,
+        ${SKIP_BUCKETS.map((b) => `count(*) FILTER (WHERE ${SKIP_NOT_MIRRORED_SQL} AND ${b.match})::int AS skip_${b.key}`).join(',\n        ')},
+        count(*) FILTER (WHERE ${SKIP_OTHER_SQL})::int                                                   AS skip_other,
+        -- Belt to that suspender: a document with bytes that is in NONE of the
+        -- four buckets (mirrored / skipped / waiting / stuck). Normally 0; a
+        -- never-mirror kind sits here for the seconds between upload and the
+        -- settle pass. Surfaced so the scoreboard can never show a silent gap.
+        count(*) FILTER (WHERE storage_ref IS NOT NULL
+                          AND sharepoint_backup_ref IS NULL
+                          AND sharepoint_skipped_reason IS NULL
+                          AND NOT (sharepoint_backed_up_at IS NULL AND ${NEVER_MIRROR_SQL}))::int        AS unaccounted,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
                           AND ${NEVER_MIRROR_SQL})::int                                                  AS pending,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
@@ -2190,6 +2256,18 @@ async function reconciliation() {
       FROM documents d`,
     [MAX_ATTEMPTS]);
   const r = rows[0];
+  // The "not mirrored on purpose" pile, itemised in plain language. Only
+  // non-empty lines, biggest first — and `other` is ALWAYS shown when non-zero,
+  // deliberately unlabelled, because a skip nothing recognises is exactly the
+  // thing a person needs to see rather than have summarised at them.
+  const skippedBreakdown = SKIP_BUCKETS
+    .map((b) => ({ key: b.key, label: b.label, count: Number(r[`skip_${b.key}`] || 0) }))
+    .filter((b) => b.count > 0)
+    .sort((a, b) => b.count - a.count);
+  if (Number(r.skip_other || 0) > 0) {
+    skippedBreakdown.push({ key: 'other', count: Number(r.skip_other),
+      label: 'Not recognised — worth a look (open the document mirror report)' });
+  }
   const oldestHrs = r.oldest_pending_secs != null ? Math.round(r.oldest_pending_secs / 360) / 10 : null;
   const thresholdHrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
   const backlogBreached = oldestHrs != null && oldestHrs > thresholdHrs;
@@ -2243,6 +2321,7 @@ async function reconciliation() {
     + (r.item_missing || 0) + (r.local_missing || 0);
   return {
     ...r,
+    skipped_breakdown: skippedBreakdown,
     oldest_pending_hours: oldestHrs,
     needs_attention: needsAttention,
     slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
@@ -2395,7 +2474,7 @@ async function escalateStuckDocs() {
       // Self-heal: settle the superseded snapshot exactly like the settle pass.
       await db.query(
         `UPDATE documents SET sharepoint_backed_up_at = now(),
-            sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this snapshot mirrors instead (stuck-heal)',
+            sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_SUPERSEDED_HEAL)},
             sharepoint_backup_error = NULL
           WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [d.id]);
       settled++;
@@ -2696,4 +2775,25 @@ module.exports = {
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
   categoryPathFor, scopeKeyFor, stateKeyFor,
+  // The scoreboard's own predicates + the exact reason strings the writers use.
+  // Exported so scripts/test-sharepoint-scoreboard-db.js asserts against the SAME
+  // SQL the report runs — a test that re-typed these would prove nothing about
+  // the real query, and the drift it would hide is the whole bug class here.
+  _scoreboardSql: {
+    notMirrored: SKIP_NOT_MIRRORED_SQL,
+    other: SKIP_OTHER_SQL,
+    neverMirror: NEVER_MIRROR_SQL,
+    buckets: SKIP_BUCKETS,
+    reasons: {
+      heterIska: NEVER_MIRROR_REASON.heter_iska_signed,
+      appraisalPhoto: NEVER_MIRROR_REASON.appraisal_photo,
+      defaultNeverMirror: DEFAULT_NEVER_MIRROR_REASON,
+      superseded: SKIP_REASON_SUPERSEDED,
+      supersededHeal: SKIP_REASON_SUPERSEDED_HEAL,
+      duplicate: duplicateBytesReason,
+      lead: SKIP_REASON_LEAD,
+      esignSelfTest: 'e-sign self-test — no loan file to mirror under',   // lib/esign/webhook.js
+      humanPlaced: SKIP_HUMAN_PLACED_PREFIX,
+    },
+  },
 };

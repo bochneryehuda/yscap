@@ -110,9 +110,15 @@ assert(!/sp\.remove\(|deleteReplacedCorruptMirror/.test(
   backup.slice(backup.indexOf('async function refileBatch'), backup.indexOf('async function verifyOnce'))),
   'the entire re-filing path contains no delete of any kind');
 
-// A human's arrangement wins, permanently.
-assert(/humanIntervened[\s\S]{0,400}left where a human put it/.test(backup),
+// A human's arrangement wins, permanently. The note is written from the SHARED
+// SKIP_HUMAN_PLACED_PREFIX (2026-08-09) so the mirror scoreboard recognises it
+// and never counts that copy as "not mirrored on purpose" — it IS in SharePoint,
+// just not where we filed it. Both halves are pinned: that the writer uses the
+// shared constant, and that the constant still says it in plain words.
+assert(/humanIntervened[\s\S]{0,400}SKIP_HUMAN_PLACED_PREFIX/.test(backup),
   'a copy a human moved or renamed is left alone and recorded, never forced');
+assert(/const SKIP_HUMAN_PLACED_PREFIX = 'left where a human put it'/.test(backup),
+  'and the note still says, in plain words, that a person put it there');
 
 // The retired machinery must not creep back: it MIGRATED the live set into an
 // ever-deeper Version-N folder and left the category folder empty.
