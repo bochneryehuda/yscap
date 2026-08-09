@@ -138,9 +138,23 @@ console.log('\n5b. D5 — a merge carries figures into the keeper, so the keeper
   ok(Array.isArray(carryCols) && carryCols.length > 0, 'CARRY_COLS is exported so the two lists can be compared');
 
   /* The guard's material list, read out of the MIGRATION rather than restated
-     here — a copy in the test would agree with itself forever. */
-  const sql = read('../db/493_track_record_verify_guard_same_place.sql');
-  const guard = sql.slice(sql.indexOf('IF addr_restated'), sql.indexOf('THEN\n    NEW.is_verified := false'));
+     here — a copy in the test would agree with itself forever.
+
+     READ THE HIGHEST-NUMBERED FILE THAT DEFINES THE GUARD, not a fixed name. The
+     guard has now been redefined three times (db/485 -> db/493 -> db/500), and a
+     hard-coded filename would quietly go stale the next time — and because the
+     slice below yields '' on a miss, a stale name makes this assertion pass while
+     comparing against nothing. */
+  const dbDir = path.join(__dirname, '..', 'db');
+  const guardFile = fs.readdirSync(dbDir)
+    .filter((f) => /^\d+_.*\.sql$/.test(f)
+      && fs.readFileSync(path.join(dbDir, f), 'utf8').includes('FUNCTION track_record_verify_guard'))
+    .sort().pop();
+  ok(!!guardFile, 'a migration defining track_record_verify_guard exists');
+  const sql = fs.readFileSync(path.join(dbDir, guardFile), 'utf8');
+  const start = sql.indexOf('  IF ');
+  const guard = sql.slice(start, sql.indexOf('THEN\n    NEW.is_verified := false'));
+  ok(start >= 0 && guard.length > 0, `the material list is readable out of ${guardFile}`);
   const material = new Set([...guard.matchAll(/NEW\.(\w+)\s+IS DISTINCT FROM/g)].map((m) => m[1]));
   ok(material.size >= 15, `the guard still watches ${material.size} named columns (plus the address)`);
 
