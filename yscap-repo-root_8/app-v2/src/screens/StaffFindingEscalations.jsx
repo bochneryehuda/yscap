@@ -7,6 +7,7 @@ import DocPreview from '../components/DocPreview.jsx';
 // escalations screen called something else. See lib/findings-vocab.js.
 import { FINDING_SEVERITY as SEV } from '../lib/findings-vocab.js';
 import { fullNameOf } from '../lib/personName.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12;
  * reworked into a full action desk 2026-07-26).
@@ -128,7 +129,7 @@ export default function StaffFindingEscalations() {
   // An action that needs a note (post a condition / request a document / grant an exception /
   // decline / severity correction) or a corrected VALUE (fix the file) opens an inline input
   // first — exactly like the finding card on the file.
-  function clickAction(row, a) {
+  async function clickAction(row, a) {
     if (a.needs === 'value') {
       const suggested = row.doc_value != null ? String(row.doc_value) : (row.file_value != null ? String(row.file_value) : '');
       setPending((p) => ({ ...p, [row.id]: { ...a, text: suggested } }));
@@ -138,13 +139,13 @@ export default function StaffFindingEscalations() {
       setPending((p) => ({ ...p, [row.id]: { ...a, text: notes[row.id] || '' } }));
       return;
     }
-    if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    if (a.key === 'decline' && !(await askConfirm('Decline this file on this finding?'))) return;
     applyAction(row, a.key);
   }
-  function confirmPending(row) {
+  async function confirmPending(row) {
     const p = pending[row.id];
     if (!p || !String(p.text || '').trim()) return;
-    if (p.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    if (p.key === 'decline' && !(await askConfirm('Decline this file on this finding?'))) return;
     applyAction(row, p.key, p.needs === 'value' ? { value: p.text } : { note: p.text });
   }
 

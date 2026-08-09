@@ -10,6 +10,7 @@ import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
 import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import InviteApplicant from '../components/InviteApplicant.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -542,7 +543,7 @@ export default function StaffNewFile() {
         // (owner-directed 2026-07-26). Confirming keeps the two people as
         // SEPARATE profiles that happen to share an address; nothing is merged.
         if (e1.data && e1.data.sharedEmail && e1.data.sharedEmail.canShare
-            && window.confirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
+            && await askConfirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
           r = await api.staffCreateFile({ ...body, allowSharedEmail: true });
         } else throw e1;
       }

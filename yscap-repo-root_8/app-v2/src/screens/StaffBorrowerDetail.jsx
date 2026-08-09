@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -278,7 +278,7 @@ function ContactBook({ b, onChanged }) {
     catch (e) {
       setErr(e.message || 'Could not make that the primary');
       if (e.data && e.data.sharedEmail && e.data.sharedEmail.canShare
-          && window.confirm(`${e.message}\n\nKeep both people on this email address?`)) {
+          && await askConfirm(`${e.message}\n\nKeep both people on this email address?`)) {
         return promote(c, true);
       }
     } finally { setBusy(''); }
@@ -904,7 +904,7 @@ function Notes({ id }) {
     finally { setBusy(false); gate.leave(); }
   }
   async function del(n) {
-    if (!window.confirm('Delete this note?')) return;
+    if (!(await askConfirm('Delete this note?'))) return;
     try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { showMessage(e.message || 'Could not delete'); }
   }
   return (

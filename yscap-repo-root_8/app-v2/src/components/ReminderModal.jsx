@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { EmailInput } from './FormattedInputs.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * Reminders + task management (#93) — the popup behind a file's "Remind" button.
@@ -146,7 +147,7 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
     catch (e) { setErr(e.message || 'Update failed'); }
   }
   async function del(rid) {
-    if (!window.confirm('Delete this reminder?')) return;
+    if (!(await askConfirm('Delete this reminder?'))) return;
     try { await api.staffDeleteReminder(appId, rid); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Delete failed'); }
   }

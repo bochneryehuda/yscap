@@ -9,6 +9,7 @@ import NearbyComps from '../components/NearbyComps.jsx';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
 import { uadWords } from '../lib/uadWords.js';
 import ResearchNav from '../components/ResearchNav.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -431,8 +432,8 @@ function MaybeSameHouse({ propertyId, onMerged }) {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
               <button className="btn ghost small" disabled={!!busy}
                 title="Everything the other row knows moves onto this page, and that row is removed."
-                onClick={() => {
-                  if (!window.confirm(`Join these into ONE house, keeping this page?\n\n${otherAddr}\nwill be removed and everything it knows moves here. This cannot be undone.`)) return;
+                onClick={async () => {
+                  if (!(await askConfirm(`Join these into ONE house, keeping this page?\n\n${otherAddr}\nwill be removed and everything it knows moves here. This cannot be undone.`))) return;
                   act(`m${key}`, () => api.researchMergeProps(
                     { survivor_id: propertyId, merged_id: otherId, cause: r.cause }), onMerged);
                 }}>
@@ -440,8 +441,8 @@ function MaybeSameHouse({ propertyId, onMerged }) {
               </button>
               <button className="btn ghost small" disabled={!!busy}
                 title="Everything this page knows moves onto the other row, and this page is removed."
-                onClick={() => {
-                  if (!window.confirm(`Join these into ONE house, keeping the other row?\n\nThis page will be removed and everything it knows moves to ${otherAddr}. This cannot be undone.`)) return;
+                onClick={async () => {
+                  if (!(await askConfirm(`Join these into ONE house, keeping the other row?\n\nThis page will be removed and everything it knows moves to ${otherAddr}. This cannot be undone.`))) return;
                   act(`o${key}`, () => api.researchMergeProps(
                     { survivor_id: otherId, merged_id: propertyId, cause: r.cause }), onMerged);
                 }}>

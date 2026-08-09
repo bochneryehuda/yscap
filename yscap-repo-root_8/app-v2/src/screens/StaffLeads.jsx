@@ -5,6 +5,7 @@ import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { fmtDay } from '../lib/dates.js';
 import { useFlash } from '../components/FlashToast.jsx';
 import { useAuth } from '../lib/auth.jsx';
+import { askConfirm } from '../lib/dialog.js';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
   TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
@@ -145,7 +146,7 @@ export default function StaffLeads() {
           {sourceF && ['admin', 'super_admin'].includes(actor?.role) && (
             <button className="btn ghost small" onClick={async () => {
               const label = TOOL_LABEL[sourceF] || sourceF;
-              if (!window.confirm(`Archive ALL open "${label}" leads? Converted leads are never touched.`)) return;
+              if (!(await askConfirm(`Archive ALL open "${label}" leads? Converted leads are never touched.`))) return;
               try {
                 const key = TOOL_LABEL[sourceF] ? { tool: sourceF } : { source: sourceF };
                 const r = await api.staffLeadsBulkArchive(key);

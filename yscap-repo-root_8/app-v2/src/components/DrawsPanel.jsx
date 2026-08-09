@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
@@ -236,7 +236,7 @@ export default function DrawsPanel({ appId }) {
                     Whole-project report
                   </button>
                   <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
-                    onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                    onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                     Borrower copy
                   </button>
                 </div>
@@ -503,7 +503,7 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
   const state = (link && link.lifecycle_state) || 'active';
   const at = link && link.lifecycle_at;
   async function set(next, confirmText) {
-    if (!window.confirm(confirmText)) return;
+    if (!(await askConfirm(confirmText))) return;
     setBusy(next); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/lifecycle`, { state: next });
@@ -590,7 +590,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
     finally { setBusy(''); }
   }
-  const confirmApply = (question, changes, key, done) => { if (!window.confirm(question)) return; apply(changes, key, done); };
+  const confirmApply = async (question, changes, key, done) => { if (!(await askConfirm(question))) return; apply(changes, key, done); };
 
   if (loading) return <div className="dd-card" style={{ marginTop: 12 }}>Loading Sitewire settings…</div>;
   if (!d) return null;
@@ -738,7 +738,7 @@ function ResetDrawControl({ appId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   async function reset() {
-    if (!window.confirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.')) return;
+    if (!(await askConfirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.'))) return;
     setBusy(true); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, {});
@@ -2056,7 +2056,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
             onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
           <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-            onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+            onClick={async () => { if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
           {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
         </span>
       </div>
@@ -2098,13 +2098,13 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     const manual = p.funding_mode === 'manual';
     let ok;
     if (manual) {
-      ok = window.confirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+      ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
     } else {
       const who = p.to.join(', ');
       const modeLine = p.funding_mode === 'reimbursement'
         ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
         : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
-      ok = window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
+      ok = await askConfirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
     }
     if (!ok) return;
     setBusy(true); setErr(''); setMsg('');

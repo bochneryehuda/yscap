@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
 import DocPreview from './DocPreview.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -342,7 +343,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
   };
 
   const cancel = async (reopen) => {
-    if (!reopen && !window.confirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.')) return;
+    if (!reopen && !(await askConfirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.'))) return;
     setBusy('cancel'); setMsg(null);
     try { await api.staffCancelClosingPrep(appId, reopen); reload(); }
     catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }

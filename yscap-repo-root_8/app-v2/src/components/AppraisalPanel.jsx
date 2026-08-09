@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { fmtDate } from '../lib/dates.js';
 // Severity words + colours: ONE shared map. Three screens each kept a private copy
@@ -1299,7 +1299,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
 
   const [undoing, setUndoing] = useState(false);
   const undoImport = async () => {
-    if (!window.confirm('Remove this appraisal? This clears its findings and the imported appraisal data and restores the file to what it was before the import — so you can upload the correct appraisal fresh. This cannot be undone.')) return;
+    if (!(await askConfirm('Remove this appraisal? This clears its findings and the imported appraisal data and restores the file to what it was before the import — so you can upload the correct appraisal fresh. This cannot be undone.'))) return;
     setUndoing(true); setErr('');
     try {
       await api.appraisalUndoImport(appId);
