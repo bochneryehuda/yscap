@@ -278,7 +278,7 @@ function FatalAiChip({ count, days }) {
   return (
     <span title={`${n} open fatal AI finding${n === 1 ? '' : 's'} on this file${age >= 1 ? ` — oldest ${Math.floor(age)} day${age >= 2 ? 's' : ''} old` : ''}`}
       style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 8,
-        background: bg, color: '#fff', fontSize: 10, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
+        background: bg, color: '#fff', fontSize: 11, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
       AI {label}
     </span>
   );
@@ -295,7 +295,7 @@ function RiskScoreChip({ score }) {
   return (
     <span title={`AI risk score ${n} on this file (${critical ? 'critical' : 'elevated'})`}
       style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 8,
-        background: bg, color: '#fff', fontSize: 10, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
+        background: bg, color: '#fff', fontSize: 11, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
       RISK {n} · {label}
     </span>
   );
@@ -314,7 +314,7 @@ function Row({ a }) {
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
           {/* Note buyer / where the file is sold — INTERNAL staff pipeline only
               (this whole screen is staff-gated; the borrower API strips `lender`). */}
-          {a.lender ? <> · <span style={{ color: 'var(--gold)' }}>Note buyer: {a.lender}</span></> : ''}
+          {a.lender ? <> · <span style={{ color: 'var(--gold-ink)' }}>Note buyer: {a.lender}</span></> : ''}
         </div>
       </div>
       <div className="q-prog">{a.program || '—'}</div>

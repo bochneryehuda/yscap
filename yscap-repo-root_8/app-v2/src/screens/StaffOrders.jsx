@@ -65,7 +65,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const tone = o.overdue ? { color: '#B3261E', borderColor: '#B3261E' }
     : o.status === 'completed' ? { color: 'var(--ok)', borderColor: 'var(--ok)' }
     : (o.status === 'documents_in' || o.status === 'ordered') ? { color: 'var(--teal,#2F7F86)', borderColor: 'var(--teal,#2F7F86)' }
-    : { color: 'var(--gold)', borderColor: 'var(--gold)' };
+    : { color: 'var(--gold-ink)', borderColor: 'var(--gold)' };
 
   /* ONE-CLICK CHASE. The whole reason somebody opens this queue is to do something
      about a late order, and the only thing they could do before was open the file
@@ -116,7 +116,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
           owing us something — that is how a queue teaches people to ignore it. */}
       {o.pendingOn === 'us' && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>waiting on us</span>}
       <span className="muted small">{o.assignedName ? `${o.assignedName} has it` : 'nobody assigned'}</span>
-      {o.unassignedDocs > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)' }}>{o.unassignedDocs} to assign</span>}
+      {o.unassignedDocs > 0 && <span className="pill" style={{ color: 'var(--gold-ink)', borderColor: 'var(--gold)' }}>{o.unassignedDocs} to assign</span>}
       {o.unassignedDocs === 0 && o.returnedDocs > 0 && <span className="muted small">{o.returnedDocs} doc{o.returnedDocs === 1 ? '' : 's'} back</span>}
       {o.notes && <span className="small" style={{ color: '#4B585C', fontStyle: 'italic' }}>“{String(o.notes).slice(0, 80)}”</span>}
       {/* A HELD FILE IS SHOWN BUT NOT CHASED. The desk lists it so its returned
@@ -200,7 +200,7 @@ export default function StaffOrders() {
         <h1 style={{ margin: 0 }}>Orders</h1>
         <div className="spacer" />
         {lateCount > 0 && <span className="pill" style={{ color: '#B3261E', borderColor: '#B3261E' }}>{lateCount} file{lateCount === 1 ? '' : 's'} late</span>}
-        {toAssign > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)', marginLeft: 8 }}>{toAssign} document{toAssign === 1 ? '' : 's'} to classify</span>}
+        {toAssign > 0 && <span className="pill" style={{ color: 'var(--gold-ink)', borderColor: 'var(--gold)', marginLeft: 8 }}>{toAssign} document{toAssign === 1 ? '' : 's'} to classify</span>}
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
         Every title, insurance and attorney closing-prep order across your files, the latest first.

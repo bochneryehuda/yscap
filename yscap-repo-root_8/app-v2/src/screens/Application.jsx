@@ -589,7 +589,7 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
             <p className="muted small" style={{ marginBottom: 8 }}>A few details are still missing — tap any to fill it in right here.</p>
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
               {missing.map((f) => f.type === 'address' ? (
-                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)', cursor: 'pointer', background: 'none' }}
                   onClick={() => { setAddrOpen((v) => !v); setEditing(null); setErr(''); }}>+ {f.label}</button>
               ) : editing === f.key ? (
                 <span key={f.key} className="row" style={{ gap: 4, alignItems: 'center' }}>
@@ -611,7 +611,7 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
               ) : f.edit === false ? (
                 <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }}>Missing: {f.label}</span>
               ) : (
-                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)', cursor: 'pointer', background: 'none' }}
                   onClick={() => { setEditing(f.key); setVal(''); setErr(''); }}>+ {f.label}</button>
               ))}
             </div>
@@ -1275,7 +1275,7 @@ export default function Application() {
                         registered-requirement subtitle above hides the hint, so
                         surface the "Still needed" ask here too (#125). */}
                     {assetsItem.hint && /still needed/i.test(assetsItem.hint) && (
-                      <div className="small" style={{ color: 'var(--gold)', marginBottom: 6 }}>
+                      <div className="small" style={{ color: 'var(--gold-ink)', marginBottom: 6 }}>
                         Still needed: {assetsItem.hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}
                       </div>
                     )}

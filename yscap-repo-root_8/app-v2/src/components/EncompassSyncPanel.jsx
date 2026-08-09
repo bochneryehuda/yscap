@@ -115,7 +115,7 @@ function statusOf(f) {
 
 function Pill({ s }) {
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}55`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 11, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}55`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
       {s.text}
     </span>
   );
@@ -125,7 +125,7 @@ function Pill({ s }) {
 function Legend() {
   const item = (fg, bg, title, desc) => (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginBottom: 3 }}>
-      <span style={{ flex: '0 0 auto', fontSize: 10, fontWeight: 800, color: fg, background: bg, border: `1px solid ${fg}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' }}>{title}</span>
+      <span style={{ flex: '0 0 auto', fontSize: 11, fontWeight: 800, color: fg, background: bg, border: `1px solid ${fg}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' }}>{title}</span>
       <span style={{ color: V.muted, fontSize: 11.5 }}>{desc}</span>
     </div>
   );
@@ -165,7 +165,7 @@ function RawTroubleshoot({ appId }) {
     catch (e) { setErr(e && e.message ? e.message : 'Could not load the raw data.'); }
     finally { setBusy(false); }
   }, [appId]);
-  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 10.5, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
+  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 11, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
   const td = { padding: '5px 8px', color: V.ink, fontSize: 11.5, borderBottom: `1px solid ${V.line}`, verticalAlign: 'top' };
   return (
     <div style={{ marginTop: 14, border: `1px solid ${V.line}`, borderRadius: 8, background: V.paper }}>
@@ -492,7 +492,7 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
                   <button onClick={() => onDecide(f.key, 'deny')} disabled={!!busy} style={outBtn(V.crit)}>Deny</button>
                 </span>
               ) : (
-                <span style={{ color: V.amber, fontSize: 10.5, fontWeight: 700 }}>Awaiting super admin</span>
+                <span style={{ color: V.amber, fontSize: 11, fontWeight: 700 }}>Awaiting super admin</span>
               )
             )}
             {/* A granted exception: only a super admin can remove it. */}
@@ -537,7 +537,7 @@ function ComparisonTable({ fields, busy, onReplace, withActions, isSuper = false
           {order.map((g) => (
             <React.Fragment key={g}>
               {withActions && (
-                <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
+                <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
               )}
               {byGroup[g].map((f) => <Row key={f.key} f={f} busy={busy} onReplace={onReplace} withActions={withActions} isSuper={isSuper} onRequestException={onRequestException} onDecide={onDecide} />)}
             </React.Fragment>
