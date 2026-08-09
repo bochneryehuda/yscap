@@ -158,10 +158,15 @@ export default function Login() {
         </div>
 
         {mode === 'login' && (
+          {/* There is a CLIENT sign-in and a STAFF sign-in, and that is all
+              this screen says (owner-directed 2026-08-09). A borrower's helper
+              is a client: they sign in here with their own email and password,
+              and /auth/borrower/login works out that the credentials are a
+              helper's and hands back a helper session. The screen never needs
+              to mention that helpers exist, and the separate link + separate
+              screen that used to sit here were the whole complaint. */}
           <div className="auth-foot">
             <button className="btn link small muted" onClick={() => nav('/verify')}>Verify email</button>
-            <span className="auth-foot-sep" aria-hidden="true">·</span>
-            <button className="btn link small muted" onClick={() => nav('/assistant/login')}>Helper sign in</button>
             <span className="auth-foot-sep" aria-hidden="true">·</span>
             <button className="btn link small muted" onClick={() => nav('/internal/login')}>Staff sign in</button>
           </div>

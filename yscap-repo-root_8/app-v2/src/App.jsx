@@ -13,7 +13,6 @@ import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
 import AssistantAccept from './screens/AssistantAccept.jsx';
-import AssistantLogin from './screens/AssistantLogin.jsx';
 import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
@@ -155,7 +154,11 @@ export default function App() {
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
           <Route path="/assistant/accept" element={<AssistantAccept />} />
-          <Route path="/assistant/login" element={<AssistantLogin />} />
+          {/* A borrower's helper signs in on the ONE client login screen — the
+              server recognizes their credentials there (owner-directed
+              2026-08-09). The separate helper sign-in screen is gone; this
+              redirect keeps an old bookmark or a saved link working. */}
+          <Route path="/assistant/login" element={<Navigate to="/login" replace />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />

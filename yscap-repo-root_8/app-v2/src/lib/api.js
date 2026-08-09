@@ -319,10 +319,13 @@ export const api = {
   // Staff side: send a term sheet built in the Investor Suite to a borrower.
   sendTermSheetOffer: (b) => req('POST', '/api/staff/term-sheet-offers', b),
   termSheetOffersSent: () => req('GET', '/api/staff/term-sheet-offers'),
-  // Borrower HELPER (assistant) login — a standing second login a borrower
-  // authorized (can do everything but see personal info / sign). Its own creds.
+  // Borrower HELPER (assistant) — a standing second login a borrower authorized
+  // (can do everything but see personal info / sign). Its own credentials, but
+  // NOT its own sign-in screen: a helper signs in through `login` above, on the
+  // one client login page, and the server hands back a helper session
+  // (owner-directed 2026-08-09). `assistantAccept` is the one-time
+  // set-your-password step from the invite email.
   assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),
-  assistantLogin:     (email, password) => req('POST', '/auth/assistant/login', { email, password }),
   assistantLogout:    () => req('POST', '/auth/assistant/logout'),
   // Borrower self-service: manage the helpers on my own account.
   assistantsList:     () => req('GET', '/api/borrower/assistants'),
