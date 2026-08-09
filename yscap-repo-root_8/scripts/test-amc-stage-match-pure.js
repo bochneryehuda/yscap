@@ -589,6 +589,41 @@ for (const order of [0, 1]) {
     { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' }]);
   ok(copy[0] && copy[0].retrievalUrl === 'uA', 'and so is an identical copy of one');
 }
+// A LINK IS READ THE SAME WAY THE SENDER READS IT. `documents.js` accepts a link with
+// `String(retrievalUrl).trim()` and ships the result as the URL the appraiser fetches, so
+// a NUMERIC link is a real link and a padded one is the same link. Reading only exact
+// strings here made the two modules disagree and handed two files one document.
+{
+  const num = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 9001 },
+    { name: 'part1', fileName: 'B.pdf', retrievalUrl: 9001 }]);
+  ok(num[0] === null && num[1] === null, 'two files are never given one NUMERIC link');
+  const ok2 = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 9001 },
+    { name: 'part1', fileName: 'B.pdf', retrievalUrl: 9002 }]);
+  ok(ok2[0] && ok2[1], 'and two distinct numeric links still send');
+  const padded = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: '  u  ' },
+    { name: 'part1', fileName: 'B.pdf', retrievalUrl: 'u' }]);
+  ok(padded[0] === null && padded[1] === null, 'nor one link written twice with different padding');
+}
+// TWO ENTRIES THAT CROSS-CLAIM ARE NOT AGREEING. They share a link, so one of them is a
+// lie — and folding "which file does this point at?" into one sorted list made
+// `part1 "A.pdf"` and `part0 "B.pdf"` both read as "0,1", unanimous, so one was kept and
+// placed on a coin flip. The two claims are compared apart.
+{
+  const got = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: 'part1', fileName: 'A.pdf', retrievalUrl: 'uSHARED' },
+    { name: 'part0', fileName: 'B.pdf', retrievalUrl: 'uSHARED' }]);
+  ok(got[0] === null && got[1] === null, 'two entries that cross-claim one link place nothing');
+}
+// The SAME OBJECT twice with NO link at all is still one answer — there is no link to
+// de-duplicate on, so identity is the only thing that says so.
+{
+  const one = { name: 'part0' };
+  const got = matchStaged(F('A.pdf'), [one, one]);
+  ok(got[0] === one, 'a repeated entry with no link is still one answer, and still matched');
+}
 // Junk in, nothing out — never a throw.
 ok(matchStaged(F('a.pdf'), null)[0] === null, 'a non-array answer matches nothing');
 ok(matchStaged(F('a.pdf'), [null, undefined])[0] === null, 'null entries are ignored');

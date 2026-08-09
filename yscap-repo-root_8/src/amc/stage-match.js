@@ -63,10 +63,18 @@ function matchStaged(files, staged) {
   // every one of them, which would read as one shared link and stop the whole batch
   // sending — and on an object with no usable `toString` it throws, in a module whose
   // contract is that junk in gives nothing out and never an exception.
+  // …AND IT HAS TO READ A LINK THE SAME WAY THE SENDER DOES. `documents.js` accepts a
+  // link with `String(s.retrievalUrl).trim()` and ships whatever that yields as
+  // `objectURL`, so a NUMERIC link is a real link to it. Reading only strings here made
+  // the two modules disagree: the shared-link guard could not see a numeric duplicate,
+  // and two files were handed one document's link — measured at 1,364 violations over
+  // 445,421 shapes. Objects are still excluded, because `String({})` is
+  // "[object Object]" for every one of them and treating that as one shared link would
+  // stop a whole batch sending; `okStage` refuses those too.
   const linkOf = (s) => {
     const v = s && s.retrievalUrl;
-    if (typeof v !== 'string') return null;
-    const t = v.trim();
+    if (typeof v !== 'string' && typeof v !== 'number') return null;
+    const t = String(v).trim();
     return t || null;
   };
 
@@ -180,105 +188,25 @@ function matchStaged(files, staged) {
     && named.every((n) => n >= 0 && n < answers.length);
   const barePartNamesTrusted = sameLength || !looksRenumbered;
 
-  // ---- pass 0: the whole batch lines up, name for name ---------------------
+  // ---- pass 0 was here, and was DELETED --------------------------------------
   //
-  // EXCLUSIVITY IS RIGHT ABOUT ONE ANSWER AND WRONG ABOUT A WHOLE BATCH, and left on
-  // its own it threw away an ordinary case permanently rather than for one retry. On a
-  // loan carrying "Contract.pdf" and "contract.pdf", a vendor that simply echoes both
-  // names back — in order, nothing renumbered, nothing rewritten — was refused outright,
-  // because each name also matches its sibling in MEANING. The vendor answers the same
-  // way every time, so "it costs a retry" was false there: it costs the document.
+  // It placed by exact filename when the whole batch formed a perfect one-to-one match.
+  // Two audits later it had grown the corroboration rule it needed to be safe (on files
+  // that differ only by what a rewrite changes, the part number had to agree with the
+  // spelling) — and with that rule it stopped doing anything at all. Measured against a
+  // copy with the pass disabled: over an EXHAUSTIVE 134,400-case space of two files and
+  // two answers across every label, filename and link combination, it changed the answer
+  // 8 times, and every one of those needed a zero-padded `part00`, which our own client
+  // never sends (`src/amc/client.js` emits `part${i}`). Passes 1 and 2 already place
+  // every shape it was written for: an in-order echo through the part number, and a
+  // REORDERED echo of distinct names through the filename.
   //
-  // What settles it is the SHAPE OF THE WHOLE ANSWER, which one answer cannot show. A
-  // rewrite is a FUNCTION of the name, so it cannot map two names onto each other's
-  // spellings: apply any lower-casing, upper-casing or title-casing to both files above
-  // and the two answers either collapse onto ONE file or land on NEITHER. So when every
-  // answer names exactly one file, no two name the same one, and every file is named,
-  // the "these are rewrites" reading is not available — the vendor echoed our own names
-  // and possibly reordered them, which is exactly what the labels then say.
-  //
-  // WHAT IT TAKES TO BE WRONG HERE, stated exactly, because the looser version of this
-  // paragraph claimed more than the code has:
-  //
-  //  • EVERY misplaced answer must be lying about its filename. One liar cannot produce
-  //    this shape on its own — if it echoes some other file's name while that file's own
-  //    answer is present, two answers claim one file and the matching breaks. What it
-  //    does NOT prove is that every file HAS an answer: equal LENGTHS are not coverage,
-  //    and a vendor that drops one file and answers twice about another satisfies the
-  //    count. So the links are checked too — one document cannot be two documents, and
-  //    two answers carrying the SAME `retrievalUrl` are one answer twice.
-  //  • …which for a REWRITE means the vendor's own transform must map our filenames onto
-  //    each other — a cycle among the very names we sent. Lower-casing, upper-casing,
-  //    title-casing, spaces-to-underscores: every one of them is idempotent, so it has no
-  //    cycles, and each collapses "Contract.pdf"/"contract.pdf" onto ONE file or misses
-  //    both. A transform that SWAPPED them (spaces to underscores AND underscores to
-  //    spaces, in one pass) would defeat this, and is not a thing any upload endpoint
-  //    does. This is the assumption, and it is an assumption rather than a proof.
-  //
-  // The alternative — vetoing the line-up when an answer's `part<j>` label disagrees with
-  // the file its name spells — was considered and REJECTED, because it cannot tell the
-  // two apart either: a batch the vendor REORDERED and RENUMBERED presents identically
-  // (labels part0…part(n-1) in position order, each filename naming a different file).
-  // It would refuse that, and a reorder is a shape vendors actually produce while a
-  // name-swapping rewrite is not. It is the same choice pass 2 documents, made the same
-  // way: trust the filename.
-  //
-  // Exact spelling only: a match of MEANING is what the sibling case turns on, so
-  // admitting it would re-open precisely the swap this guards.
-  const exactBijection = () => {
-    if (!answers.length || answers.length !== files.length) return null;
-    const claim = new Array(answers.length).fill(-1);
-    const takenBy = new Array(files.length).fill(-1);
-    for (let k = 0; k < answers.length; k++) {
-      const s = answers[k];
-      if (!s || s.fileName == null || taken.has(s)) return null;
-      const spelling = exactOf(s.fileName);
-      let hit = -1;
-      for (let j = 0; j < files.length; j++) {
-        if (fileExact[j] == null || fileExact[j] !== spelling) continue;
-        if (hit !== -1) return null;          // two files share this name — it names neither
-        hit = j;
-      }
-      if (hit === -1) return null;            // names none of our files
-      if (takenBy[hit] !== -1) return null;   // two answers claim one file
-      takenBy[hit] = k; claim[k] = hit;
-    }
-    // …AND WHERE TWO OF OUR FILES CAN BE REWRITTEN INTO EACH OTHER, THE SPELLING IS NOT
-    // ENOUGH ON ITS OWN. The paragraph above claimed a single liar could not produce this
-    // shape, because the file it names has its own answer claiming it too. That is only
-    // true when the honest sibling echoes its name UNCHANGED. It does not have to:
-    //
-    //     files   : CONTRACT.PDF        , Contract.pdf
-    //     answers : part0 "Contract.pdf"   ← a lie (or a title-cased rewrite)
-    //               part1 "CONTRACT.PDF"   ← file 1's OWN name, upper-cased. Honest.
-    //
-    // The honest answer's rewrite lands on file 0's exact spelling, so it never collides
-    // with the liar, the line-up closes, and the two documents are swapped — with both
-    // part numbers TRUTHFUL and the batch in its original order. One lie was enough.
-    //
-    // So for a file that some sibling could be rewritten into (they share a normalized
-    // key), the part number has to CORROBORATE the spelling. Where the names cannot be
-    // confused for one another no rewrite can permute them, and the filename still stands
-    // alone — which is what keeps an ordinary reordered echo working.
-    //
-    // The cost is real and is the right way round: a colliding pair whose numbering was
-    // ALSO renumbered is refused, because at that point nothing in the answer is
-    // trustworthy about which file is which.
-    for (let k = 0; k < answers.length; k++) {
-      const i = claim[k];
-      const risky = fileKey[i] != null && countKey(fileKey[i]) > 1;
-      if (!risky) continue;
-      const said = partIndex(answers[k]);
-      if (said !== i) return null;   // absent, malformed or disagreeing — all unproven
-    }
-    // A LINK-UNIQUENESS TEST USED TO SIT HERE and could never fire: the pre-guard above
-    // has already marked every duplicate-link answer TAKEN, and the `taken.has(s)` test
-    // at the top of this loop refuses on the first one. Both were kept "belt and
-    // braces", and each hid the other — removing either alone left every test green.
-    // The rule this commit applies to pass 3 applies here too, so the unreachable half
-    // is gone and the one that carries the weight is pinned by a named test.
-    return takenBy.every((k) => k !== -1) ? claim : null;
-  };
+  // A hundred lines of intricate reasoning that cannot fire is worse than none — it
+  // reads as a safety net, and the next person to "fix" one of its conditions changes
+  // behaviour without knowing it. That is the rule this module applied to pass 3, and it
+  // applies here. The SHARED-LINK pre-guard above is separate and stays: it is what
+  // stops two files being given one document's link.
+
   // TWO ANSWERS CANNOT SHARE ONE LINK, and an answer that shares one is placed by
   // nothing. `retrievalUrl` is the thing actually handed to the appraiser, so two files
   // pointed at one link IS the mis-file this module exists to prevent — and it is what a
@@ -307,19 +235,30 @@ function matchStaged(files, staged) {
     // strings made an entry that merely OMITS a field "disagree" with its twin, so both
     // were discarded even though they carry the same link and are therefore provably the
     // same document; and it coerced `name`, which throws on an object with no `toString`.
+    // WHICH FILE an entry claims, kept as TWO separate claims. Folding the filename's
+    // fit and the part number into one sorted list made two entries that CROSS-claim
+    // read as agreeing — `part1 "A.pdf"` and `part0 "B.pdf"` both flatten to "0,1" — so
+    // one of them was kept and placed on a coin flip. They are compared apart, and a
+    // claim nobody made (`null`) contradicts nothing.
     const claimsOf = (s) => {
-      const out = [];
-      for (let j = 0; j < files.length; j++) if (strengthFor(s, j) > 0) out.push(j);
-      const n = partIndex(s);
-      if (n != null && !out.includes(n)) out.push(n);
-      return out.sort().join(',');
+      const byName = [];
+      for (let j = 0; j < files.length; j++) if (strengthFor(s, j) > 0) byName.push(j);
+      return { name: byName.length ? byName.join(',') : null, part: partIndex(s) };
     };
+    const claimsAgree = (a, b) => (a.name == null || b.name == null || a.name === b.name)
+      && (a.part == null || b.part == null || a.part === b.part);
     for (const group of byLink.values()) {
       if (group.length < 2) continue;
-      // A group agrees when no two members point at DIFFERENT files. An entry that
-      // says nothing (no filename, no part number) contradicts nobody.
-      const said = group.map(claimsOf).filter((c) => c !== '');
-      const agree = said.every((c) => c === said[0]);
+      // A group agrees when NO TWO MEMBERS point at different files. An entry that says
+      // nothing contradicts nobody, so it is compared rather than filtered out — the
+      // filter made a silent entry vanish and let the remaining pair look unanimous.
+      const said = group.map(claimsOf);
+      let agree = true;
+      for (let a = 0; agree && a < said.length; a++) {
+        for (let b = a + 1; b < said.length; b++) {
+          if (!claimsAgree(said[a], said[b])) { agree = false; break; }
+        }
+      }
       // Agreeing: one answer, said twice — keep the first, ignore the copies.
       // Disagreeing: one link cannot be two documents, and which is real is unknowable.
       // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
@@ -329,12 +268,6 @@ function matchStaged(files, staged) {
         taken.add(group[k]);
       }
     }
-  }
-
-  const lined = exactBijection();
-  if (lined) {
-    for (let k = 0; k < answers.length; k++) { out[lined[k]] = answers[k]; taken.add(answers[k]); }
-    return out;
   }
 
   // ---- pass 1: the part name, corroborated ---------------------------------

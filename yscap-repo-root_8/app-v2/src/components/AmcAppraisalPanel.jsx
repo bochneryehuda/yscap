@@ -14,6 +14,7 @@ import { moneyNum } from '../lib/money';
  */
 
 const INK = '#141B22', MUTED = '#4B585C', LINE = '#E7E1D4', GOLD = '#AE8746', TEAL = '#2F7F86';
+const BAD = '#B4453B';
 
 const STATUS_LABEL = {
   draft: 'Draft', placing: 'Placing…', ordered: 'Ordered', in_process: 'In process',
@@ -47,6 +48,30 @@ function formLabel(name, code) {
   return code ? ('Form #' + code) : 'auto-select pending';
 }
 function fmtDate(d) { if (!d) return '—'; try { return new Date(d).toLocaleDateString('en-US'); } catch (_) { return String(d); } }
+
+// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT — the AMC sibling of the same
+// rule on the Class desk, and the reason it exists here at all is that this panel had NO
+// reading of `last_error` while the server was carefully writing plain sentences into it.
+//
+// The openings are a CONTRACT the server owns (`src/lib/appraisal-messages.js`): anything
+// starting one of them is our wording and is shown as written; anything else is a row
+// from before that contract and is the exception's own text, so it is translated. The
+// test the other way round — recognising computer-ish text and showing the rest — is
+// fail-OPEN and put a vendor's raw refusal on the Class desk once already.
+const AMC_OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
+
+function orderNote(stored) {
+  if (typeof stored !== 'string') return null;
+  const t = stored.trim();
+  if (!t) return null;
+  if (/^TEST MODE\b/.test(t)) return { text: 'test mode — built here, not sent', bad: false };
+  // `Sent — …` means they HAVE it and only our note of that failed; painting it red
+  // would tell somebody to send it again, which is the one thing that must not happen.
+  if (/^Sent —/.test(t)) return { text: t.replace(/^Sent — /, 'sent — '), bad: false };
+  if (AMC_OURS_RE.test(t)) return { text: t.replace(/^(Not sent|Could not be read) — /, (x) => x.toLowerCase()), bad: true };
+  if (/switched off|disabled/i.test(t)) return { text: 'not sent — the connection is switched off', bad: true };
+  return { text: 'not sent — you can try again', bad: true };
+}
 
 export default function AmcAppraisalPanel({ appId }) {
   const [config, setConfig] = useState(null);
@@ -131,6 +156,17 @@ export default function AmcAppraisalPanel({ appId }) {
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {o.cdg_order_number ? ('AMC #' + o.cdg_order_number + ' · ') : ''}Ordered {fmtDate(o.ordered_at || o.created_at)}{o.dryrun ? ' · test' : ''}
                   </div>
+                  {/* WHAT WENT WRONG, IN WORDS. `amc_orders.last_error` has been written
+                      since this desk was built — by the order path, the status poll and
+                      the document read — and shipped to this screen by `listOrders`, and
+                      nothing ever rendered it: an order sat on a red "error" pill that
+                      said only "error". The server now stores a plain sentence there
+                      (`src/lib/appraisal-messages`), so it is shown as written. */}
+                  {orderNote(o.last_error) ? (
+                    <div style={{ fontSize: 12, color: orderNote(o.last_error).bad ? BAD : MUTED, marginTop: 2 }}>
+                      {orderNote(o.last_error).text}
+                    </div>
+                  ) : null}
                 </div>
                 <span style={{ color: TEAL, fontSize: 13 }}>{selected === o.id ? 'Hide' : 'Open'}</span>
               </div>

@@ -152,6 +152,10 @@ function httpError(label, status, body, retryAfterSec) {
   if (retryAfterSec) e.retryAfterSec = retryAfterSec;
   return e;
 }
+// A failure of the CREDENTIAL rather than of the thing we sent. Tagged where it is
+// raised, because that is the only place that knows which call it was.
+function credentialError(e) { e.code = 'CLASS_TOKEN_REJECTED'; return e; }
+
 function gateError(code, message) { const e = new Error(`${code}: ${message}`); e.code = code; return e; }
 
 async function fetchWithTimeout(url, opts, timeoutMs) {
@@ -206,9 +210,14 @@ async function getAccessToken() {
       body: form.toString(),
     }, c.timeoutMs);
     const data = readBody(buf);
-    if (!res.ok) throw httpError('token', res.status, data);
+    // A CREDENTIAL FAILURE SAYS SO ITSELF. It used to be inferred downstream from the
+    // status — and the status of a TOKEN call means something entirely different from
+    // the status of an order call: OAuth2 answers a wrong client secret with 400
+    // invalid_client, which read as "the appraisal company would not accept the order.
+    // Sending the same thing again will not help." Nothing about the order was wrong.
+    if (!res.ok) throw credentialError(httpError('token', res.status, data));
     const tok = data && data.access_token;
-    if (!tok) throw httpError('token', res.status, data);   // 200 with no token is still a failure
+    if (!tok) throw credentialError(httpError('token', res.status, data));   // 200 with no token is still a failure
     const ttl = Math.max(60, parseInt(data.expires_in, 10) || 3600);
     _token = { value: tok, expiresAtMs: Date.now() + ttl * 1000 };
     return tok;

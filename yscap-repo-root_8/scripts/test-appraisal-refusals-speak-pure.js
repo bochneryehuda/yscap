@@ -92,14 +92,40 @@ function objectAt(src, openIdx) {
 // and the scan below would fail on CORRECT source — and the natural "fix" for that is to
 // weaken the scan, which is how a guard stops guarding. `objectAt` has skipped comments
 // since it was written; the taint scan must too.
+// Is a `/` here the start of a REGEX, or a division/comment? It is a regex only when
+// what precedes it cannot end an expression.
+function inRegexPosition(sofar) {
+  const t = sofar.replace(/\s+$/, '');
+  if (!t) return true;
+  const last = t[t.length - 1];
+  if (/[)\]}\w$'"`]/.test(last)) return false;   // a value ended — this is division
+  return true;
+}
+
 function stripComments(src) {
   let out = '';
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
-    if (c === '/' && src[i + 1] === '/') {
+    // A REGEX LITERAL IS NOT A COMMENT. `/^https?:\/\//` ends in `\` `/` `/`, which read
+    // as the start of a line comment and threw away the rest of the line — or, with no
+    // trailing newline, the rest of the FILE. Every check downstream then scanned a
+    // truncated copy and passed. A `/` that follows a value cannot start a regex, so the
+    // previous non-space character decides which it is.
+    if (c === '/' && src[i + 1] === '/' && !inRegexPosition(out)) {
       const nl = src.indexOf('\n', i);
       if (nl < 0) break;
       out += '\n'; i = nl; continue;                    // keep the line count honest
+    }
+    if (c === '/' && inRegexPosition(out)) {             // a regex literal — copied whole
+      out += c;
+      for (i++; i < src.length; i++) {
+        out += src[i];
+        if (src[i] === '\\') { i++; out += src[i]; continue; }
+        if (src[i] === '[') { for (i++; i < src.length && src[i] !== ']'; i++) { out += src[i]; if (src[i] === '\\') { i++; out += src[i]; } } out += src[i]; continue; }
+        if (src[i] === '/') break;
+        if (src[i] === '\n') break;                      // not a regex after all
+      }
+      continue;
     }
     if (c === '/' && src[i + 1] === '*') {
       const end = src.indexOf('*/', i + 2);
@@ -248,7 +274,27 @@ for (const rel of FILES) {
   // `process_error` excused a raw value bound to a different column, and naming
   // `status` excused `res.status(502).json({ detail: String(e.message) })` — the literal
   // defect this file exists to prevent. Naming the sinks is narrower AND stricter.
-  const SINK = /\.query\(|\.json\(|\.push\(|\bres\s*\.|sendMail|notify\w*\(/;
+  // The list is deliberately generous — a sink nobody thought of is the whole failure
+  // mode here. `Object.assign` and `JSON.stringify` were both used to smuggle raw text
+  // past the first version of this check.
+  const SINK_BASE = /\.query\(|\.json\(|\.send\(|\.push\(|\bres\s*\.|sendMail|notify\w*\(|Object\.assign\(|JSON\.stringify\(/;
+  // …AND A LOCAL HELPER THAT WRITES IS A SINK TOO. Moving the `db.query` one function
+  // along — `function store(id, t) { return db.query(…, [id, t]); }` and then
+  // `store(id, String(e.message))` — hid the same defect behind one indirection. So a
+  // function in this file whose own body reaches a sink makes CALLS to it sinks. One
+  // level deep, which is what these modules actually do; a deeper chain is beyond a
+  // regex sweep, and the runtime check at the end of this file is what covers that.
+  const writers = new Set();
+  const FN_RE = /(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\())/g;
+  let fm;
+  while ((fm = FN_RE.exec(code))) {
+    const nm = fm[1] || fm[2];
+    if (!nm) continue;
+    if (SINK_BASE.test(code.slice(fm.index, fm.index + 600))) writers.add(nm);
+  }
+  const SINK = writers.size
+    ? new RegExp(SINK_BASE.source + '|\\b(?:' + [...writers].join('|') + ')\\s*\\(')
+    : SINK_BASE;
   // THE EXCEPTION IS WHATEVER THE `catch` CALLED IT. Hard-coding `e|err` let
   // `catch (netErr)` — which src/class/client.js already uses — escape every check here,
   // and so did `ex`, `error` and `e2`. Taking the names from the file's own `catch`
@@ -277,7 +323,15 @@ for (const rel of FILES) {
       // whole purpose is telling an egress proxy's plain-text refusal from a rejected
       // credential, which look identical without it, and it is an admin diagnostic, not
       // a desk. Narrow on purpose — the `raw:` key, in that file only.
-      if (rel === 'src/amc/preflight.js' && /\braw\s*:/.test(stmt)) continue;
+      // …and the same two carve-outs (2b) makes, for the same reason: the `raw:` key,
+      // and `classify()` itself, which reads the body BECAUSE that is the diagnosis.
+      // Scoped to that function, never to the whole file.
+      if (rel === 'src/amc/preflight.js') {
+        if (/\braw\s*:/.test(stmt)) continue;
+        const fnAt = code.lastIndexOf('function classify', m.index);
+        const nextFn = fnAt === -1 ? -1 : code.indexOf('\nfunction ', fnAt + 1);
+        if (fnAt !== -1 && (nextFn === -1 || m.index < nextFn)) continue;
+      }
       // …and the ONE column that deliberately keeps the raw words, for the same reason:
       // `class_callback_events.process_error` records a delivery WE could not interpret,
       // there is no journal for callbacks, and triaging a dead-lettered one needs the
@@ -285,10 +339,20 @@ for (const rel of FILES) {
       // statement that merely mentions it — `SET process_error=$2, public_note=$3` with
       // the raw text in `$3` must still be reported. And the guarantee is not "this
       // column is fine", it is "this column never leaves the server", which (2d) asserts.
-      if (/process_error\s*=\s*\$2\b/.test(stmt) && /\$2\b/.test(stmt)) {
-        const args = stmt.slice(stmt.lastIndexOf('['));
-        const parts = args.replace(/^\[/, '').split(',');
-        if (parts[1] && new RegExp(String(m[0]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(parts[1])) continue;
+      // …and the exemption is for THIS OCCURRENCE, not for every raw expression in a
+      // statement that happens to bind one of them to that column. Binding the SAME
+      // expression to `$2` AND to a public `$3` was waved through by the looser form —
+      // the very case the paragraph above promises is still reported.
+      if (/process_error\s*=\s*\$2\b/.test(stmt)) {
+        const argsAt = stmt.lastIndexOf('[');
+        if (argsAt !== -1) {
+          const parts = stmt.slice(argsAt + 1).split(',');
+          // Where does `$2`'s argument sit, in offsets within `stmt`?
+          let at = argsAt + 1;
+          const spans = parts.map((piece) => { const from = at; at += piece.length + 1; return [from, at - 1]; });
+          const here = m.index - from;   // the match, relative to the statement slice
+          if (spans[1] && here >= spans[1][0] && here < spans[1][1]) continue;
+        }
       }
       rawText.push(rel + ':' + lineOfCode(m.index) + " — the exception's own text handed to a sink");
     }
@@ -318,10 +382,15 @@ for (const rel of FILES) {
     // `let s = 'Could not sign in'; s += ' (' + e.message + ')'; return s;` is one
     // refactor away from the defect this exists to catch.
     // `src/amc/preflight.js` `classify()` is the API-health screen's whole purpose: it
-    // exists to turn a transport failure into a diagnosis for an ADMIN, and telling an
-    // egress proxy's plain-text refusal from a rejected credential needs the body. It is
-    // never a desk, and it is the same exemption (2c) gives that file's `raw:` key.
-    if (rel === 'src/amc/preflight.js') continue;
+    // turns a transport failure into a diagnosis for an ADMIN, and telling an egress
+    // proxy's plain-text refusal from a rejected credential needs the body. It is never
+    // a desk. SCOPED TO THAT FUNCTION, not to the file — exempting the whole file let a
+    // desk-facing wording helper live there untouched, exempt purely by address.
+    if (rel === 'src/amc/preflight.js') {
+      const fnAt = code.lastIndexOf('function classify', m.index);
+      const nextFn = fnAt === -1 ? -1 : code.indexOf('\nfunction ', fnAt + 1);
+      if (fnAt !== -1 && (nextFn === -1 || m.index < nextFn)) continue;
+    }
     const bare = expr.trim();
     const bareTainted = /^[A-Za-z_$][\w$]*$/.test(bare) && tainted.has(bare);
     if (!/['"`]/.test(expr) && !bareTainted) continue;
@@ -331,12 +400,20 @@ for (const rel of FILES) {
       rawText.push(`${rel}:${lineOfCode(m.index)} — returned sentence built from ${bare}`);
       continue;
     }
-    // BUILT INTO the sentence, not merely mentioned. A helper that TESTS the exception's
-    // text to choose a branch (`return msg ? 'Could not be reached.' : '…'`) leaks
-    // nothing, and flagging it would push the wording back toward saying less. So the
-    // name has to be concatenated in, or interpolated into a template.
+    // BUILT INTO the sentence, OR HANDED OVER AS A FIELD. A helper that TESTS the
+    // exception's text to choose a branch (`return msg ? 'Could not be reached.' : '…'`)
+    // leaks nothing. But requiring CONCATENATION was fail-open on the shape both desks
+    // actually use: `return { ok:false, message:'The order could not be sent.', detail:
+    // raw }` puts the exception's own words on a returned object under a key check (2)
+    // never looks at — and `AmcAppraisalPanel` renders `skipped[].detail` on screen. So a
+    // tainted name assigned to ANY property, or passed as an argument, counts too.
     const names = [...tainted].filter((nm) => new RegExp(
-      `\\+\\s*${nm}\\b|\\b${nm}\\s*(?:\\.[\\w$]+\\s*\\([^)]*\\)\\s*)?\\+|\\$\\{[^}]*\\b${nm}\\b`).test(expr));
+      `\\+\\s*${nm}\\b`                          // concatenated in
+      + `|\\b${nm}\\s*(?:\\.[\\w$]+\\s*\\([^)]*\\)\\s*)?\\+`  // …or concatenating
+      + `|\\$\\{[^}]*\\b${nm}\\b`                 // interpolated
+      + `|[\\w$]+\\s*:\\s*${nm}\\s*[,}]`          // handed over as a property value
+      + `|[(,]\\s*${nm}\\s*[,)]`                  // …or as an argument
+    ).test(expr));
     const direct = looksRaw(expr);
     if (names.length || direct) {
       rawText.push(`${rel}:${lineOfCode(m.index)} — returned sentence built from `
@@ -360,10 +437,14 @@ const JARGON = /\b(?:HTTP|[45]\d\d\b|endpoint|payload|null|undefined|NaN|stack t
 const shouty = [];
 for (const rel of FILES) {
   const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  const re = /message:\s*'([^']{4,})'/g;
-  let m;
-  while ((m = re.exec(src))) {
-    if (JARGON.test(m[1])) shouty.push(`${rel} — ${m[1].slice(0, 70)}`);
+  // SINGLE-QUOTED **AND** TEMPLATE messages. Reading only `'…'` left the shape these
+  // routes already use — `` message: `… ${status} …` `` — never scanned at all.
+  for (const re of [/message:\s*'([^']{4,})'/g, /message:\s*`([^`]{4,})`/g,
+    /message:\s*"([^"]{4,})"/g]) {
+    let m;
+    while ((m = re.exec(src))) {
+      if (JARGON.test(m[1])) shouty.push(`${rel} — ${m[1].slice(0, 70)}`);
+    }
   }
 }
 if (shouty.length) console.error('  jargon: ' + shouty.join('\n    '));
@@ -501,6 +582,46 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
   // on both desks is the business call's, never the token call's.
   ok(STATE(msgs.storedFailNote(mk({ m: 'x', status: 403, retryable: false }))) === 'refused',
      'and a 403 is their refusal, not a credential problem');
+
+  // THE VERB MATCHES WHAT WAS ASKED FOR — the rule this file's own subject module states
+  // in its header, and the one nothing was checking. A status poll and a document read
+  // SEND NOTHING, so "Not sent" on the row a person reads later is a plain untruth;
+  // reverting the `reading` option, or applying it always, both passed the whole suite.
+  {
+    const nack = { description: 'Order not found' };
+    const read = msgs.storedNackNote(nack, 'a status check on the order', { reading: true });
+    const sent = msgs.storedNackNote(nack, 'the order');
+    ok(/^Could not be read —/.test(read), 'a read that was refused does not claim anything was sent');
+    ok(/^Not sent —/.test(sent), 'and a send that was refused says so');
+    ok(read !== sent, 'the two are not the same sentence');
+    ok(read.includes('Order not found') && sent.includes('Order not found'),
+       'and both still carry the appraisal company’s own reason');
+    ok(/refusal/.test(msgs.storedNackNote({}, 'the order')),
+       'a refusal with no reason given still reads as a refusal');
+    // The VERB on the live message too — the same rule, the other helper.
+    const e = Object.assign(new Error('x'), { code: 'AMC_DISABLED' });
+    ok(/could not be fetched/.test(msgs.sendFailMessage(e, 'The replies', { reading: true })),
+       'a button that only reads never reports that nothing was sent');
+    ok(/could not be sent/.test(msgs.sendFailMessage(e, 'The order')),
+       'and a button that sends says sent');
+  }
+  // EVERY STORED SENTENCE OPENS THE WAY THE PANELS EXPECT. `ClassAppraisalPanel` tells
+  // our wording from a legacy raw exception by its opening; a helper that grows a new
+  // one without the panel knowing has its sentence thrown away and replaced.
+  {
+    const OPENINGS = /^(?:TEST MODE —|Not sent —|Could not be read —|Sent —)/;
+    const samples = [
+      msgs.storedFailNote(Object.assign(new Error('x'), { code: 'AMC_DISABLED' })),
+      msgs.storedFailNote(new Error('fetch failed')),
+      msgs.storedNackNote({ description: 'd' }, 'the order'),
+      msgs.storedNackNote({ description: 'd' }, 'a read', { reading: true }),
+      msgs.SENT_NOT_RECORDED,
+      msgs.TEST_MODE_PREFIX + 'written here.',
+    ];
+    const stray = samples.filter((t) => !OPENINGS.test(t));
+    if (stray.length) console.error('  unknown opening: ' + stray.join('\n    '));
+    ok(stray.length === 0, 'every stored sentence opens with one the panels recognise');
+  }
 
   // THE VENDOR'S OWN REFUSAL DOES TRAVEL, and it must not run into our next sentence.
   const rejected = mk({ m: 'AMC DoLogin failed: Invalid credentials', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' });

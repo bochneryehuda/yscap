@@ -112,11 +112,19 @@ function storedFailNote(e) {
   // THEIR END TURNED OUR LOGIN AWAY — a different person fixes a credential from a
   // rejected document, so the two must not read alike.
   //
-  // 401 ONLY, NOT 403. `status` is the status of the BUSINESS call, not of the token
-  // call, so a 403 is the vendor answering "not allowed" about the thing we sent — a
-  // closed order, a product our org may not add a form to. Reading it as a credential
-  // problem sends somebody to rotate a perfectly good secret and hides the fact that
-  // they answered at all; it falls through to the refusal branch below, where it belongs.
+  // THE CREDENTIAL FAILURE TAGS ITSELF, at the throw site. Inferring it from `status`
+  // was wrong in both directions, on a premise that was simply false: the comment here
+  // used to claim `status` was always the BUSINESS call's, and both transports in fact
+  // put the TOKEN call's status on the error. So a wrong Class secret — OAuth2 answers
+  // 400 invalid_client — read as "the appraisal company would not accept it, sending the
+  // same thing again will not help", about an order that was never sent; and the AMC
+  // desk said the opposite for the identical cause.
+  //
+  // A 403 is NOT read as a credential problem: on a business call it is the vendor
+  // answering "not allowed" about the thing we sent (a closed order, a product our org
+  // may not add a form to), and sending somebody to rotate a perfectly good secret hides
+  // that they answered at all. A 401 on a business call still is one — that is the
+  // vendor rejecting the token we presented.
   if (/_REJECTED$/.test(code) || status === 401) {
     return 'Not sent — the appraisal company did not accept our login. '
       + 'The connection needs to be checked before this can go.';
@@ -171,6 +179,17 @@ function storedNackNote(err, what, opts = {}) {
   return `${lead} — the appraisal company answered with a refusal about ${subject}: ${d.slice(0, 300)}`;
 }
 
+/**
+ * IT WENT, AND OUR OWN RECORD OF IT DID NOT. Written when the vendor accepted something
+ * and the receipt write then failed — a lock timeout, a dropped connection. The row would
+ * otherwise sit with no `sent_at` and no error, which every screen reads as "still
+ * sending", forever, on a message that was delivered. The one thing that must not happen
+ * next is somebody pressing Send again.
+ */
+const SENT_NOT_RECORDED = 'Sent — the appraisal company accepted this, but PILOT could not '
+  + 'record that it went. Do NOT send it again.';
+
 module.exports = {
-  sendFailMessage, nackMessage, storedFailNote, storedNackNote, TEST_MODE_PREFIX,
+  sendFailMessage, nackMessage, storedFailNote, storedNackNote,
+  TEST_MODE_PREFIX, SENT_NOT_RECORDED,
 };

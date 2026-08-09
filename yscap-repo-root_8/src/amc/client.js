@@ -112,9 +112,11 @@ async function getAccessToken() {
     // the call — a corporate proxy, an egress allowlist — answers text/plain, and that
     // sentence is the difference between "your secret is wrong" and "your firewall is".
     let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }
-    if (!res.ok) throw httpError('GetToken', res.status, undefined, data);
+    // TAGGED AS A CREDENTIAL FAILURE — the sibling of the Class desk's, and for the same
+    // reason: the status of a TOKEN call is not evidence about the thing we sent.
+    if (!res.ok) { const e = httpError('GetToken', res.status, undefined, data); e.code = 'AMC_TOKEN_REJECTED'; throw e; }
     const token = data.accessToken || data.access_token;
-    if (!token) throw new Error('AMC GetToken returned no accessToken');
+    if (!token) { const e = new Error('AMC GetToken returned no accessToken'); e.code = 'AMC_TOKEN_REJECTED'; throw e; }
     const ttl = Number(data.expiresIn || data.expires_in || 3600);
     _tok = { value: token, exp: Date.now() + Math.max(30, ttl - 60) * 1000 };
     return token;
@@ -167,7 +169,11 @@ async function post(baseUrl, message, opts = {}) {
       const headers = await authHeaders({ 'Content-Type': 'application/json' });
       ({ res, buf } = await fetchWithTimeout(url, { method: 'POST', headers, body: payload }, TIMEOUT_MS));
     } catch (netErr) {
-      netErr.retryable = true; lastErr = netErr;
+      // …but never over an error that already SAID what it was. `authHeaders()` runs
+      // inside this try, so a gate refusal (AMC_DISABLED) or a rejected credential was
+      // being restamped as a retryable network blip and looped three times with backoff.
+      if (!netErr.code) netErr.retryable = true;
+      lastErr = netErr;
       if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;
     }

@@ -38,7 +38,7 @@ const client = require('./client');
 const reasons = require('./revision-reasons');
 // The SAME wording both desks use — see src/lib/appraisal-messages.js. Four hand-typed
 // copies lived here, and one of them told a READ path that nothing had been sent.
-const { sendFailMessage, storedFailNote, TEST_MODE_PREFIX } = require('../lib/appraisal-messages');
+const { sendFailMessage, storedFailNote, TEST_MODE_PREFIX, SENT_NOT_RECORDED } = require('../lib/appraisal-messages');
 
 const text = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
 
@@ -86,7 +86,13 @@ async function note(orderRowId, content, { staffId } = {}) {
     // The send succeeded; that is the answer, whatever happens to our own bookkeeping.
     await db.query('UPDATE class_notes SET sent_at = now(), send_error = NULL, class_note_id = $2 WHERE id = $1',
       [rowId, out && out.noteId != null ? String(out.noteId) : null])
-      .catch((dbErr) => { console.error('[class] note sent but not recorded:', rowId, dbErr && dbErr.message); });
+      .catch(async (dbErr) => {
+        console.error('[class] note sent but not recorded:', rowId, dbErr && dbErr.message);
+        // …and the ROW has to say so, or it reads as "sending…" for ever on a message
+        // Class already has, and somebody sends it twice.
+        await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED])
+          .catch(() => {});
+      });
     return { ok: true, id: rowId, noteId: out && out.noteId };
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
@@ -207,10 +213,19 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
         [rowId, 'requested', TEST_MODE_PREFIX + 'recorded here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId, kind: recordedKind, reasons: clean };
     }
+    // THE RECEIPT IS WRITTEN OUTSIDE THE SEND'S OWN CATCH — the same rule as `note()`
+    // above, and the reason it is repeated here rather than left to the one that got it:
+    // a database hiccup on this line used to fall into the catch below, which marks the
+    // row `status='error'` and writes "you can send it again" about a revision request
+    // Class has already accepted. Sending it again asks the appraiser twice.
     await db.query(
       `UPDATE class_revisions SET status = 'sent', sent_at = now(), transaction_id = $2, vendor_response = $3::jsonb,
               last_error = NULL WHERE id = $1`,
-      [rowId, out && out.transactionId != null ? String(out.transactionId) : null, JSON.stringify(out || {})]);
+      [rowId, out && out.transactionId != null ? String(out.transactionId) : null, JSON.stringify(out || {})])
+      .catch(async (dbErr) => {
+        console.error('[class] revision sent but not recorded:', rowId, dbErr && dbErr.message);
+        await db.query('UPDATE class_revisions SET last_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED]).catch(() => {});
+      });
     return { ok: true, id: rowId, kind: recordedKind, reasons: clean, transactionId: out && out.transactionId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
@@ -244,8 +259,13 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
         [rowId, TEST_MODE_PREFIX + 'recorded here, not sent to Class.']).catch(() => {});
       return { ok: true, dryrun: true, id: rowId };
     }
+    // Outside the catch, for the reason above: they accepted the cancellation request.
     await db.query(`UPDATE class_revisions SET status='sent', sent_at=now(), vendor_response=$2::jsonb WHERE id=$1`,
-      [rowId, JSON.stringify(out || {})]);
+      [rowId, JSON.stringify(out || {})])
+      .catch(async (dbErr) => {
+        console.error('[class] cancel sent but not recorded:', rowId, dbErr && dbErr.message);
+        await db.query('UPDATE class_revisions SET last_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED]).catch(() => {});
+      });
     // NOT marked cancelled here. Asking is not the same as them agreeing — the order
     // moves when their StatusChanged callback says Cancelled.
     return { ok: true, id: rowId };

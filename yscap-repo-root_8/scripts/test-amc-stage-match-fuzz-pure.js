@@ -77,7 +77,21 @@ for (let iter = 0; iter < ITERS; iter++) {
   const answers = keep.map((truth, pos) => {
     // `truth` is the file this answer is really about. `nameHonest`/`fnHonest` record
     // whether the label EMITTED points at that file — decided here, never re-derived.
-    const a = { truth, retrievalUrl: 'url-' + truth, uploadStatus: 'Success' };
+    // THE LINK IS PART OF THE ALPHABET. Every answer used to carry `'url-' + truth`, and
+    // `truth` is drawn from DISTINCT file indices — so no two answers ever shared a link,
+    // none was ever numeric, empty or absent, and the shared-link guard, `linkOf` and
+    // pass 1's de-duplication were never once exercised. A generator that cannot produce
+    // the input a rule reads proves nothing about that rule, however many cases it runs.
+    const a = { truth, uploadStatus: 'Success' };
+    switch (Math.floor(rnd() * 8)) {
+      case 0: a.retrievalUrl = 'url-shared'; break;          // the same link twice
+      case 1: a.retrievalUrl = 4200 + truth; break;          // a NUMERIC link
+      case 2: a.retrievalUrl = 4200; break;                  // the same numeric link
+      case 3: a.retrievalUrl = ''; break;                    // present but empty
+      case 4: a.retrievalUrl = '  '; break;                  // whitespace
+      case 5: break;                                         // absent
+      default: a.retrievalUrl = 'url-' + truth; break;       // its own
+    }
     switch (Math.floor(rnd() * 6)) {
       case 0: a.name = 'part' + truth; a.nameHonest = true; break;
       case 1: a.name = 'part' + pos; a.nameHonest = pos === truth; break;
@@ -125,7 +139,8 @@ for (let iter = 0; iter < ITERS; iter++) {
   cases++;
   shapes.add(JSON.stringify([files.map((f) => f.fileName),
     answers.map((a) => [a.name === undefined ? '\u0000' : a.name,
-      a.fileName === undefined ? '\u0000' : a.fileName, a.truth])]));
+      a.fileName === undefined ? '\u0000' : a.fileName,
+      a.retrievalUrl === undefined ? '\u0000' : String(a.retrievalUrl), a.truth])]));
   const got = matchStaged(files, answers);
 
   // (1) NEVER WRONG — judged only where the evidence, taken at face value, pointed at
@@ -142,11 +157,23 @@ for (let iter = 0; iter < ITERS; iter++) {
       }
     }
   }
-  // (2) ONE ANSWER, ONE DOCUMENT — absolute, in every shape.
+  // (2) ONE ANSWER, ONE DOCUMENT — absolute, in every shape. Judged on the LINK as well
+  // as on object identity: the link is the thing actually handed to the appraiser, so
+  // two files pointed at one link IS the mis-file, and testing object identity alone
+  // could not see it (two DIFFERENT answer objects can carry the same link).
   const used = got.filter(Boolean);
   if (new Set(used).size !== used.length) {
     shared++;
-    if (bad.length < 6) bad.push({ shared: true, files: files.map((f) => f.fileName) });
+    if (bad.length < 6) bad.push({ shared: 'object', files: files.map((f) => f.fileName) });
+  }
+  const links = used.map((s) => (s.retrievalUrl == null ? null : String(s.retrievalUrl).trim()))
+    .filter((u) => u);
+  if (new Set(links).size !== links.length) {
+    shared++;
+    if (bad.length < 6) {
+      bad.push({ shared: 'link', files: files.map((f) => f.fileName),
+        answers: answers.map((x) => ({ t: x.truth, name: x.name, fn: x.fileName, u: x.retrievalUrl })) });
+    }
   }
 }
 

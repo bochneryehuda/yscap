@@ -302,7 +302,7 @@ function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 // might take, which it cannot.
 // The openings the server owns. `Could not be read — ` is the same contract for a poll
 // or a document read, where "Not sent" would be a plain untruth.
-const OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —)/;
+const OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
 
 function failNote(stored) {
   // Only a string is a stored note. `false`, `0`, `{}` and `[]` are not failures with
@@ -314,6 +314,10 @@ function failNote(stored) {
   if (/^TEST MODE\b/.test(t)) return { text: 'test mode — recorded here, not sent to Class', bad: false };
   // A sentence the server wrote: show it as it is. It already names the state and the
   // next step, and re-deciding either here would be a second place for them to live.
+  // `Sent — …` is not a failure: the appraisal company HAS it, only our own note of that
+  // failed. Painting it red would tell somebody to send it again, which is the one thing
+  // that must not happen.
+  if (/^Sent —/.test(t)) return { text: t.replace(/^Sent — /, 'sent — '), bad: false };
   if (OURS_RE.test(t)) return { text: t.replace(/^(Not sent|Could not be read) — /, (x) => x.toLowerCase()), bad: true };
   // Anything else is a row written before that contract existed, so it is the
   // exception's own text. The one distinction a person can act on is a switch of ours.
