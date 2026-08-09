@@ -266,9 +266,54 @@ ratio.
 
 ## 3. DATA MODEL
 
-Migrations start at **db/490**.
+### 3.0 THE LIVE DATABASE IS THE ONE WE BUILD ON — HARD RULE
 
-### 3.1 `track_record_pillars` — db/490
+*Owner-directed 2026-08-09: "make sure that everything is rebuilding with the same database that we
+already have, so our current database should not get lost and everything should be brought into the
+new system."*
+
+There is **no second database, no cut-over, and no import**. This is the same `track_records`,
+`llcs`, `llc_members`, `documents` and `checklist_items` the company has been using, added to in
+place. Every existing line, every entity, every uploaded document and every sign-off stays exactly
+where it is and keeps its own id, so nothing has to be moved and nothing can be left behind.
+
+The five rules that make that true, and none of them may be relaxed:
+
+1. **ADD-ONLY SCHEMA.** Every migration below is a `CREATE TABLE` for something that does not exist
+   yet, or an `ALTER TABLE ... ADD COLUMN` with a DEFAULT. There is **no `DROP TABLE`, no
+   `DROP COLUMN`, no `TRUNCATE`, no rename of an existing table or column, and no `DELETE` of a
+   track-record line** anywhere in this plan. A column that turns out to be wrong is left unused,
+   not dropped — dropping it destroys whatever was written into it.
+2. **THE OLD ROWS ARE THE STARTING STATE, NOT A SPECIAL CASE.** The backfill writes ONE
+   `track_record_pillars` row per existing line at `auto_verdict = NULL`, which reads as *"nobody has
+   checked this yet"* — never as a failure and never as a pass. So the day this ships, the workspace
+   shows the whole existing book with its three pillars simply not yet answered, and the team works
+   them down. A line nobody ever gets to is unchanged, not lost.
+3. **AN EXISTING VERIFICATION SURVIVES** (owner-directed, §4.2a). A line already marked verified
+   stays verified. `pillars_met` is added to db/485's material list going forward, but the backfill
+   itself must run with the verify guard suspended and audited (§4.2a) — otherwise writing the first
+   pillar row would knock the entire existing book back to pending, which is the exact loss this rule
+   exists to prevent.
+4. **NOTHING IS RE-DERIVED OVER A HUMAN'S ANSWER.** Every new column is filled only where it is
+   blank (`COALESCE`, `IS DISTINCT FROM` guards). A figure, deal type, entity or address a person
+   typed is read, never rewritten — the D2 defect in Phase 0 was exactly this mistake, and it was
+   silently churning live files.
+5. **EVERY BACKFILL IS BOUNDED, RESUMABLE AND AUDITED.** It runs a slice at a time from a durable
+   marker, records what it touched, and can be stopped. A pass that cannot be stopped halfway is a
+   pass that cannot be corrected halfway.
+
+**Backups are the floor under all of this, and they already exist**: nightly `pg_dump` into
+Cloudflare R2, encrypted with a key the vendor never sees, plus a weekly drill that actually restores
+it (`docs/DATABASE-BACKUP-AND-RESTORE.md`). Before the first backfill of §4.2a runs against
+production, confirm `/api/health` reports a recent `backup.lastVerifiedAt` — a restorable backup
+taken *that week*, not merely a backup job that ran.
+
+### 3.1 Migrations
+
+Phase 0 took **db/490** (the verify-guard same-place fix + the `verification_status` constraint), so
+the rebuild's own migrations start at **db/491**.
+
+### 3.2 `track_record_pillars` — db/491
 
 ```sql
 CREATE TABLE track_record_pillars (
@@ -307,7 +352,7 @@ problem needs — **resolution** (right parcel and entity), **validation** (genu
 **verification** (this deed's grantee is *our* borrower's entity). Floors: ownership and recency
 require `strong`; the exit pillar may take `fair` with corroboration.
 
-### 3.2 Entity tables — db/491
+### 3.3 Entity tables — db/492
 
 See §4 for the reasoning. Three additions, all extending structures that already exist.
 
@@ -350,7 +395,7 @@ ALTER TABLE llcs
   ADD COLUMN internal_notes text;  -- staff-only, per entity
 ```
 
-### 3.3 `track_record_candidates` + `track_record_searches` — db/492
+### 3.4 `track_record_candidates` + `track_record_searches` — db/493
 
 The staging area, modelled on `sync_review_queue` (db/108) whose partial-unique-open index is what
 makes a producer safe to re-run, with the multi-producer `source` column db/328 had to add later.
@@ -409,11 +454,11 @@ CREATE TABLE track_record_searches (
 creates a `track_records` row, which db/485 then forces to `pending`. **Two gates, not one.**
 `track_record_searches` is also the **per-lookup audit trail that does not exist today.**
 
-### 3.4 `elementix_address_links` — db/493
+### 3.5 `elementix_address_links` — db/494
 
 Never stamp a vendor id on `track_records` — one property legitimately maps to many rows, and a vendor
 id on the claim row makes the claim look corroborated. The repo's shape for this is a link table
-(`sitewire_property_links`, db/131). Columns as in §3.2's entity analogue, keyed
+(`sitewire_property_links`, db/131). Columns as in §3.3's entity analogue, keyed
 `(track_record_id, elementix_address_id)`, carrying `match_evidence` (both keys, both parsed parts,
 which rule fired) and `key_snapshot` for drift detection.
 
@@ -422,7 +467,7 @@ definitive answer** — `status:'none'` also means "several candidates were equa
 `address_canon_cache` already learned that caching a non-definitive answer marks real properties
 unresolvable forever.
 
-### 3.5 Changes to `track_records` — db/494
+### 3.6 Changes to `track_records` — db/495
 
 ```sql
 ALTER TABLE track_records
@@ -434,7 +479,7 @@ ALTER TABLE track_records
 `pillars_met` is maintained by a trigger over `track_record_pillars` and **is added to db/485's
 material-column list**, so a pillar change re-opens verification exactly as a figure change does.
 
-### 3.6 Findings — extending db/418
+### 3.7 Findings — extending db/418
 
 | Code | Severity | Actions | Gates? |
 |---|---|---|---|
@@ -669,7 +714,7 @@ absence is never silently indistinguishable from failure.
 
 ### 4.5 Ownership as of a date
 
-`llc_borrowers.held_from` / `held_to` (§3.2) close a real hole: a property held by an LLC the borrower
+`llc_borrowers.held_from` / `held_to` (§3.3) close a real hole: a property held by an LLC the borrower
 joined *afterwards* currently looks identical to one they always owned. The ownership carry requires
 the property's holding period to fall inside the borrower's membership window; outside it, the pillar
 gets `auto_verdict='contradicted'` with a plain explanation, not silence.
@@ -1114,7 +1159,7 @@ Each phase ships independently and leaves the system working.
 | Phase | What | Why here |
 |---|---|---|
 | **0** | **The defects** (§10) | Highest value per line. The findings gate has never worked and ClickUp is churning live files |
-| **1** | **Schema** — db/490–494 | Pillars, entity columns, candidates, searches, links. Backfill one pillar row per line at `auto_verdict = NULL`. Nothing visible changes |
+| **1** | **Schema** — db/491–495 | Pillars, entity columns, candidates, searches, links. Backfill one pillar row per line at `auto_verdict = NULL`. Nothing visible changes |
 | **2** | **The entity spine** (§4.2–4.6) | Before the workspace, because ownership is the pillar most work hangs off. Promote typed names at the chokepoint, `syncEntityToTrackRecords`, membership dates, the entity screen. **The backfill decision is owner-gated** |
 | **3** | **The pure engine** (§6) | `checks.js`, `scoring.js`, `match.js`, `counterparty.js`. All pure, tested offline against fixtures from the live probing. No UI, no vendor calls |
 | **4** | **The document workflow** (§5) | Close the orphan, type the ask, wire internal notes at all five levels, allow borrower-scoped requests. Independently valuable even if nothing else shipped |
