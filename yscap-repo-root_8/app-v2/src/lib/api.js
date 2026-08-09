@@ -602,6 +602,15 @@ export const api = {
   staffTrackRecordLine: (id) => req('GET', `/api/staff/track-records/${id}/workspace`),
   staffDecidePillar: (pillarId, body) => req('POST', `/api/staff/track-record-pillars/${pillarId}/decide`, body),
   staffBulkConfirmPillars: (id, body) => req('POST', `/api/staff/track-records/${id}/pillars/bulk-confirm`, body || {}),
+  /* THE IMPORTER (phases 7 + 9). Four routes that have existed since phase 7
+     with no client and no screen. Searching SPENDS the office's shared hourly
+     allowance, so it is only ever a deliberate click — never a page load. */
+  staffTrackRecordSearch: (borrowerId, body) =>
+    req('POST', `/api/staff/borrowers/${borrowerId}/track-record-search`, body || {}),
+  staffTrackRecordCandidates: (borrowerId) =>
+    req('GET', `/api/staff/borrowers/${borrowerId}/track-record-candidates`),
+  staffCompareCandidate: (id) => req('GET', `/api/staff/track-record-candidates/${id}/compare`),
+  staffDecideCandidate: (id, body) => req('POST', `/api/staff/track-record-candidates/${id}/decide`, body),
   staffTrackRecordDocTypes: () => req('GET', '/api/staff/track-record-doc-types'),
   staffRequestTrackRecordDocTyped: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc`, body),
   staffTrackRecordRequestPreview: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc/preview`, body),
