@@ -393,6 +393,19 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     `SELECT id, NULLIF(TRIM(COALESCE(full_name,'')),'') AS name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
   if (!b) { const e = new Error('borrower not found'); e.status = 404; throw e; }
 
+  /* THE STATES ARE THE PERSON'S PICK (owner-directed 2026-08-09: "make a
+     drop-down to select which states we want to pull in — we should be able
+     to pull each and every state separately for that person"). The records
+     service keys entities AND persons by (name, state), so a state is not a
+     nicety: without one the exact matchers cannot run at all and a name held
+     in two states is refused as ambiguous. Junk entries are dropped rather
+     than sent as a filter that silently returns nothing; the cap is REPORTED
+     below, never silent. */
+  const stateList = [...new Set((Array.isArray(states) ? states : [])
+    .map((s) => str(s).toUpperCase()).filter((s) => /^[A-Z]{2}$/.test(s)))];
+  const STATE_CAP = 12;
+  const cappedStates = stateList.slice(0, STATE_CAP);
+
   /* `formation_state`, not `state` — the state an LLC was REGISTERED in, which
      is the one the records service filters on. There is no `state` column on
      `llcs` at all, and a search sent with an undefined filter quietly returns
@@ -403,7 +416,7 @@ async function runSearch({ borrowerId, staffId, states }, client) {
 
   const search = (await db.query(
     `INSERT INTO track_record_searches (borrower_id, run_by, query) VALUES ($1,$2::uuid,$3::jsonb) RETURNING id`,
-    [borrowerId, staffId || null, JSON.stringify({ names: b.name ? [b.name] : [], entities: entityNames, states: states || [] })])).rows[0];
+    [borrowerId, staffId || null, JSON.stringify({ names: b.name ? [b.name] : [], entities: entityNames, states: cappedStates })])).rows[0];
 
   let found = 0; let staged = 0; let apiCalls = 0;
   let searchedAny = false;
@@ -411,6 +424,10 @@ async function runSearch({ borrowerId, staffId, states }, client) {
   if (!entityNames.length) {
     skips.push({ reason: 'no_entities',
       why: 'This borrower has no companies on their profile — only their personal name was searched. Add the company they buy under for the full picture.' });
+  }
+  if (stateList.length > STATE_CAP) {
+    skips.push({ reason: 'too_many_states',
+      why: `Only the first ${STATE_CAP} states were searched (${cappedStates.join(', ')}) — each state spends part of the office's shared hourly allowance. Run the rest in a second search.` });
   }
   /* The names a PERSONAL-NAME deed can match against — the borrower plus their
      companies, so a deed granted to "Moses Weil" is theirs the same way one
@@ -445,20 +462,44 @@ async function runSearch({ borrowerId, staffId, states }, client) {
   };
 
   for (const ent of entities) {
-    const research = await lookups.researchProperty({
-      entityName: ent.llc_name, state: ent.formation_state || (states && states[0]) || '',
-      borrowerNames: b.name ? [b.name] : [], staffId, db,
-    });
-    apiCalls += research.calls || 0;
-    searchedAny = searchedAny || research.searched === true;
-    for (const e of (research.errors || [])) {
-      skips.push({ entity: ent.llc_name, reason: e.reason, why: e.detail || 'The records service could not answer.' });
+    /* WHICH STATES TO ASK ABOUT THIS COMPANY: the state it was registered in,
+       PLUS every state the person picked — the records service keys entities
+       by (name, state), so the same LLC name in another state is a DIFFERENT
+       record, and a company that bought in two states has two. No formation
+       state and no picks → ONE no-state search; searchEntity's fuzzy fallback
+       answers it, or names the states it found so the person can pick. */
+    const entStates = [...new Set([
+      ...(/^[A-Za-z]{2}$/.test(str(ent.formation_state)) ? [str(ent.formation_state).toUpperCase()] : []),
+      ...cappedStates,
+    ])];
+    if (!entStates.length) entStates.push('');
+    for (const st of entStates) {
+      const research = await lookups.researchProperty({
+        entityName: ent.llc_name, state: st,
+        borrowerNames: b.name ? [b.name] : [], staffId, db,
+      });
+      apiCalls += research.calls || 0;
+      searchedAny = searchedAny || research.searched === true;
+      for (const e of (research.errors || [])) {
+        skips.push({ entity: ent.llc_name, state: st || null, reason: e.reason, why: e.detail || 'The records service could not answer.' });
+      }
+      /* AMBIGUITY IS A SKIP WITH A WAY OUT, never silence. The entity route
+         used to drop this on the floor: several equally-good companies →
+         nothing staged and nothing said. The no-state form names the states
+         the name was found in, which is exactly the drop-down's job. */
+      if (research.ambiguousEntity) {
+        const stFound = (research.entityStatesFound || []).join(', ');
+        skips.push({ entity: ent.llc_name, state: st || null, reason: 'ambiguous_entity',
+          why: st
+            ? `The records hold more than one "${ent.llc_name}" in ${st} and picking one would be a guess — this company was skipped there.`
+            : `"${ent.llc_name}" is on record in more than one state${stFound ? ` (${stFound})` : ''}. Pick the state(s) to search in the drop-down and run it again, so the right company is read.` });
+      }
+      noteTruncation(research, ent.llc_name);
+      const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
+      for (const s of theirSkips) skips.push({ entity: ent.llc_name, ...s });
+      found += candidates.length;
+      await stageAll(candidates, ent.id, ent.llc_name);
     }
-    noteTruncation(research, ent.llc_name);
-    const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
-    for (const s of theirSkips) skips.push({ entity: ent.llc_name, ...s });
-    found += candidates.length;
-    await stageAll(candidates, ent.id, ent.llc_name);
   }
 
   /* ═══ THE BORROWER'S OWN NAME IS SEARCHED TOO (owner-directed 2026-08-09:
@@ -471,26 +512,35 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      review — a personal-name candidate has no proposed entity, so the line it
      becomes is owned personally unless the reviewer says otherwise. */
   if (b.name) {
-    const research = await lookups.researchPerson({
-      personName: b.name, state: (states && states[0]) || '', staffId, db,
-    });
-    apiCalls += research.calls || 0;
-    searchedAny = searchedAny || research.searched === true;
-    for (const e of (research.errors || [])) {
-      skips.push({ entity: b.name, reason: e.reason, why: e.detail || 'The records service could not answer.' });
+    /* One pull per picked state — persons are keyed (name, state) too, so a
+       state makes the exact matcher usable and splits "more than one Yehuda
+       Bochner" into per-state questions a person can actually answer. No
+       picks → one no-state pass through the fuzzy route, as before. */
+    const personStates = cappedStates.length ? cappedStates : [''];
+    for (const st of personStates) {
+      const research = await lookups.researchPerson({
+        personName: b.name, state: st, staffId, db,
+      });
+      apiCalls += research.calls || 0;
+      searchedAny = searchedAny || research.searched === true;
+      for (const e of (research.errors || [])) {
+        skips.push({ entity: b.name, state: st || null, reason: e.reason, why: e.detail || 'The records service could not answer.' });
+      }
+      if (research.tooCommon) {
+        skips.push({ entity: b.name, state: st || null, reason: 'name_too_common',
+          why: `"${b.name}" is too common a name for the records to identify one person — the personal-name half of the search was skipped rather than guessed.` });
+      } else if (research.ambiguousPerson) {
+        skips.push({ entity: b.name, state: st || null, reason: 'ambiguous_person',
+          why: st
+            ? `The records hold more than one "${b.name}" in ${st} and picking one would be a guess — the personal-name search was skipped there.`
+            : `The records hold more than one "${b.name}" and picking one would be a guess — pick the state(s) to search in the drop-down and run it again.` });
+      }
+      noteTruncation(research, b.name);
+      const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
+      for (const s of theirSkips) skips.push({ entity: b.name, ...s });
+      found += candidates.length;
+      await stageAll(candidates, null, b.name);
     }
-    if (research.tooCommon) {
-      skips.push({ entity: b.name, reason: 'name_too_common',
-        why: `"${b.name}" is too common a name for the records to identify one person — the personal-name half of the search was skipped rather than guessed.` });
-    } else if (research.ambiguousPerson) {
-      skips.push({ entity: b.name, reason: 'ambiguous_person',
-        why: `The records hold more than one "${b.name}" and picking one would be a guess — the personal-name half of the search was skipped.` });
-    }
-    noteTruncation(research, b.name);
-    const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
-    for (const s of theirSkips) skips.push({ entity: b.name, ...s });
-    found += candidates.length;
-    await stageAll(candidates, null, b.name);
   }
 
   await db.query(
@@ -520,14 +570,16 @@ async function runSearch({ borrowerId, staffId, states }, client) {
           'initialize_failed', 'not_connected', 'reapproval_needed', 'store_unreadable',
           'no_response', 'unreadable_response', 'tool_error'].includes(s.reason)) ? 'failed' : null)
     : null;
-  const underText = entityNames.length
+  const underText = (entityNames.length
     ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
-    : (b.name || 'nothing');
+    : (b.name || 'nothing'))
+    + (cappedStates.length ? ` in ${cappedStates.join(', ')}` : '');
   return {
     ok: true,
     searchId: search.id,
     found, staged, skipped: skips.length, skips, apiCalls,
     searchedUnder,
+    statesSearched: cappedStates,
     nothingToSearch,
     vendorProblem,
     /* One plain sentence, decided HERE so two screens cannot word it two ways. */

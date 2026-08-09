@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { fmtDay } from '../lib/dates.js';
+import { US_STATES } from '../components/LlcManager.jsx';
 
 /**
  * THE BULK PROPERTY WORKBENCH (blueprint §9.5, owner-directed 2026-08-09)
@@ -85,6 +86,13 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   const [run, setRun] = useState(null);      // the review run: ids, in order
   const [runAt, setRunAt] = useState(0);     // where we are in it
   const [compare, setCompare] = useState(null);
+  /* WHICH STATES TO PULL (owner-directed 2026-08-09: "make a drop-down to
+     select which states we want to pull in — we should be able to pull each
+     and every state separately for that person"). The records service files
+     companies AND people BY STATE, so a picked state makes the exact matchers
+     usable; none picked is the general search, which can only answer "found
+     in more than one state — pick one". */
+  const [pickStates, setPickStates] = useState(() => new Set());
   /* THE BUDGET METER (mega-workspace phase F): what a search costs is visible
      BEFORE the button is pressed — lookups this hour against the office's
      shared hourly allowance, and paid contact credits this month against the
@@ -136,12 +144,15 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      click and never a page load, and the button says what it will do. */
   async function search() {
     if (busy) return;
+    const states = [...pickStates];
     if (!(await askConfirm(
-      'This looks the borrower up in the public records. It uses part of the office\'s hourly lookup allowance, which is shared with everyone.',
+      'This looks the borrower up in the public records'
+      + (states.length ? `, state by state (${states.join(', ')})` : '')
+      + '. It uses part of the office\'s hourly lookup allowance, which is shared with everyone.',
       { confirmLabel: 'Search the records', cancelLabel: 'Not now' }))) return;
     setBusy(true); setSearchMsg(null);
     try {
-      const out = await api.staffTrackRecordSearch(borrowerId, {});
+      const out = await api.staffTrackRecordSearch(borrowerId, { states });
       /* The SERVER decides this sentence — two screens must not word "we found
          nothing" two different ways, and only one of the readings is about the
          borrower. */
@@ -156,6 +167,9 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
 
   function toggle(id) {
     setTicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }
+  function toggleState(code) {
+    setPickStates((s) => { const n = new Set(s); if (n.has(code)) n.delete(code); else n.add(code); return n; });
   }
   function tickAllShown() {
     setTicked((s) => { const n = new Set(s); rows.forEach((r) => n.add(r.id)); return n; });
@@ -247,7 +261,36 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
         <span style={{ color: MUTED, fontSize: 14 }}>
           {borrowerName ? `for ${borrowerName}` : ''}
         </span>
-        <button type="button" className="btn ghost" onClick={search} disabled={busy} style={{ marginLeft: 'auto' }}>
+        <details style={{ position: 'relative', marginLeft: 'auto' }}>
+          <summary className="btn ghost" style={{ listStyle: 'none', cursor: 'pointer', userSelect: 'none' }}>
+            {pickStates.size ? `States: ${[...pickStates].join(', ')}` : 'States: any'} ▾
+          </summary>
+          <div style={{
+            position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 30, background: '#FFFFFF',
+            border: '1px solid #EAE4D7', borderRadius: 10, boxShadow: '0 8px 24px rgba(20,27,34,.12)',
+            padding: 12, width: 'min(340px, 90vw)',
+          }}>
+            <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>
+              The public records file companies and people <strong>by state</strong>. Pick the state(s) you
+              believe this borrower holds property in — each one is pulled separately. Nothing picked =
+              a general search, which can only say “found in more than one state”.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+              {US_STATES.map((s) => (
+                <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: INK, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={pickStates.has(s)} onChange={() => toggleState(s)} />{s}
+                </label>
+              ))}
+            </div>
+            {pickStates.size ? (
+              <button type="button" className="btn ghost" style={{ marginTop: 8, fontSize: 13 }}
+                onClick={() => setPickStates(new Set())}>
+                Clear — search without a state
+              </button>
+            ) : null}
+          </div>
+        </details>
+        <button type="button" className="btn ghost" onClick={search} disabled={busy}>
           {busy ? 'Working…' : 'Search the records'}
         </button>
       </div>
@@ -274,7 +317,12 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
           {searchMsg.text}
           {searchMsg.skips && searchMsg.skips.length ? (
             <ul style={{ margin: '8px 0 0 18px', padding: 0, color: MUTED }}>
-              {searchMsg.skips.slice(0, 8).map((s, i) => <li key={i}>{s.address ? `${s.address} — ` : ''}{s.why}</li>)}
+              {searchMsg.skips.slice(0, 8).map((s, i) => (
+                <li key={i}>
+                  {s.address ? `${s.address} — ` : (s.entity ? `${s.entity}${s.state ? ` (${s.state})` : ''} — ` : '')}
+                  {s.why}
+                </li>
+              ))}
             </ul>
           ) : null}
         </div>

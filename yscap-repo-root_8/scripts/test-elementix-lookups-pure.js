@@ -114,6 +114,7 @@ console.log('\n3. entity vs company, and a money string that is not a number');
 {
   reset();
   await (L.searchEntity('MW Trading LLC', 'nj', NO_DB));
+  ok(calls[0].name === 'match_entity', 'with a state, the deterministic one-or-nothing matcher runs');
   /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity`. The old assertion
      pinned a parameter the tool does not have — a guess about the vendor,
      written down as a requirement, and then guarded by a test, which is how a
@@ -124,10 +125,38 @@ console.log('\n3. entity vs company, and a money string that is not a number');
     'match_entity is NOT sent entityFilter — that parameter belongs to `search`, and this tool only matches entities');
   ok(calls[0].args.state === 'NJ', '…and the state is upper-cased for the filter');
 
+  /* NO USABLE STATE → THE VENDOR'S OWN NO-STATE ROUTE, never a call it would
+     refuse. match_entity REQUIRES the state — the owner's real search sent
+     five no-state matches and got five raw "-32602 … [state] … received
+     undefined" refusals on the screen, each one still spending a slot of the
+     shared allowance. A full state NAME is still never guessed into a code;
+     it now means "no state", and `search` answers. The reply here is the LIVE
+     capture (fixtures rule): the same LLC name really is one entity in NJ and
+     another in CA, with a near name riding along. */
+  const FIXTURES = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/elementix-shapes.json'), 'utf8'));
   reset();
-  await (L.searchEntity('MW Trading LLC', 'New Jersey', NO_DB));
-  ok(calls[0].args.state === undefined,
-    'a full state NAME is dropped rather than guessed — a wrong filter value returns nothing, silently');
+  reply = (name) => (name === 'search' ? { ok: true, data: FIXTURES.search_entity } : { ok: true, data: {} });
+  const noSt = await L.searchEntity('MW Trading LLC', 'New Jersey', NO_DB);
+  ok(calls.length === 1 && calls[0].name === 'search'
+      && calls[0].args.entityFilter === 'entity' && calls[0].args.state === undefined,
+    'no usable state → `search` with entityFilter:entity — match_entity is never sent a request the vendor refuses');
+  ok(noSt.ok === true && noSt.ambiguous === true && (noSt.data || []).length === 2,
+    'the LIVE two-state capture: the same name in NJ and CA is TWO records — one-or-nothing refuses to pick');
+  ok((noSt.statesFound || []).join(',') === 'NJ,CA',
+    '…and the states are NAMED, so the screen can ask the person to pick one instead of only saying "ambiguous"');
+  ok(!(noSt.data || []).some((r) => /GROUP/.test(r.name || '')),
+    '…and "MW TRADING GROUP LLC" from the same live response is dropped — a near name is a different company');
+
+  /* The entity name discipline: suffix/punctuation-blind, ORDER-PRESERVING —
+     a company is not a person, and "Trading MW" is a different name. */
+  const NI = L._internals;
+  ok(NI.sameEntityName('MW Trading, L.L.C.', 'MW TRADING LLC'), 'suffix + punctuation variants match');
+  ok(NI.sameEntityName('MW Trading', 'MW TRADING LLC'), 'a missing suffix still matches');
+  ok(!NI.sameEntityName('Trading MW LLC', 'MW TRADING LLC'), 'word ORDER is preserved — reversed words are a different company');
+  ok(!NI.sameEntityName('MW Trading Group LLC', 'MW Trading LLC'), 'an extra word is a different company');
+  ok(!NI.sameEntityName('', 'MW TRADING LLC'), 'an empty name never matches anything');
+  ok(NI.sameEntityName('LLC', 'LLC'),
+    'a name that IS a bare suffix is not stripped to nothing — the last word survives');
 
   ok(L.money('$1,240,000') === 1240000, 'currentExposure parses out of a display string');
   ok(L.money('1.2M') === 1200000 && L.money('750k') === 750000, '…including the short forms');
@@ -161,10 +190,39 @@ console.log('\n5. Every id is validated before a call goes out');
   }
   ok(true, 'a junk id is refused with nothing sent, on every wrapper');
 
+  /* THE VENDOR TAKES {type, id} — both required, and the parameter is `id`,
+     never `documentId`. The old shape here matched neither rule, so this
+     wrapper could never have completed a call; the type comes free on every
+     transaction row. */
   reset();
-  await (L.document(UUID, NO_DB));
+  const noType = await (L.document(UUID, NO_DB));
+  ok(noType.ok === false && noType.reason === 'bad_args' && calls.length === 0,
+    'a document fetch WITHOUT its type is refused before the wire — the vendor requires the type with the id');
+
+  reset();
+  await (L.document(UUID, { ...NO_DB, type: 'deed' }));
+  ok(calls[0].args.type === 'deed' && calls[0].args.id === UUID && calls[0].args.documentId === undefined,
+    'a document request is {type, id} — never the old {documentId} the vendor refused whole');
   ok(calls[0].args.include === 'signers',
     'a document is fetched with include:signers — a tenth the size, and the signers are what the identity gate reads');
+
+  /* COVERAGE: state is an ARRAY and there is NO county parameter — the county
+     is picked out of the state's rows HERE. */
+  reset();
+  reply = () => ({ ok: true, data: { data: [
+    { countyName: 'Ocean County', state: 'NJ', entityCombinedCoveragePct: 82 },
+    { countyName: 'Bergen County', state: 'NJ', entityCombinedCoveragePct: 91 },
+  ] } });
+  const cov = await (L.coverage({ state: 'NJ', county: 'Ocean' }, NO_DB));
+  ok(calls[0].args.state && Array.isArray(calls[0].args.state) && calls[0].args.state[0] === 'NJ'
+      && calls[0].args.county === undefined,
+    'coverage sends state as the ARRAY the vendor takes, and never a county parameter it does not have');
+  ok(cov.ok === true && cov.data.length === 1 && cov.data[0].countyName === 'Ocean County',
+    '…and the county question is answered client-side from the state\'s rows');
+  reset();
+  const covNoSt = await (L.coverage({ county: 'Ocean' }, NO_DB));
+  ok(covNoSt.ok === false && covNoSt.reason === 'bad_args' && calls.length === 0,
+    'a county with no state is refused plainly — there is no request that could answer it');
 
   reset();
   await (L.entityDeeds(UUID, { ...NO_DB, countOnly: true }));
@@ -227,6 +285,20 @@ console.log('\n6. A person is matched by their EXACT name, never a near one');
   const near = await L.researchPerson({ personName: 'Frank Pereira', state: 'NJ', ...NO_DB });
   ok(near.person === null && near.searched === false,
     'FRANKY is not FRANK — a near-name is refused, verified against the live vendor returning exactly this shape');
+  ok(calls.some((c) => c.name === 'match_person' && c.args.state === 'NJ'),
+    'with a state, the exact matcher is tried first — persons are keyed (name, state)');
+
+  /* WITHOUT a state, match_person is never sent: the vendor requires the
+     state and refuses the call whole (-32602), and the refusal used to be
+     swallowed silently here — one spent lookup per person search that could
+     never succeed. */
+  reset();
+  reply = (name) => (name === 'search' ? { ok: true, data: { results: [] } } : { ok: true, data: {} });
+  await L.researchPerson({ personName: 'Patrick Kamara', ...NO_DB });
+  ok(!calls.some((c) => c.name === 'match_person'),
+    'with NO state, match_person is never sent — a call the vendor must refuse is not worth a slot of the allowance');
+  ok(calls.some((c) => c.name === 'search' && c.args.entityFilter === 'person' && c.args.state === undefined),
+    '…the fuzzy person route answers instead, with no state filter');
 
   reset();
   reply = (name) => {
