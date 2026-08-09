@@ -695,14 +695,14 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
               // from where it IS edited — it used to be a dead grey pill naming a
               // panel that had no such control (owner-reported 2026-07-27).
               (f.goTo || f.goTab) ? (
-                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)', cursor: 'pointer', background: 'none' }}
                   onClick={() => { if (f.goTab) requestAppDetailTab(f.goTab); if (f.goTo) goToSection(f.goTo); }}
                   title={f.hint}>+ {f.label} →</button>
               ) : (
                 <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
               )
             ) : (
-              <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+              <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)', cursor: 'pointer', background: 'none' }}
                 onClick={() => start(f)} title={f.hint || 'Click to enter it now'}>+ {f.label}</button>
             ))}
           </div>
@@ -997,7 +997,7 @@ function Badge({ children, tone, title }) {
   // `title` is optional — a collapsed row can carry the full story (e.g. why a
   // condition was cleared by override) in a hover without widening the line.
   return <span className="pill" title={title || undefined}
-    style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : undefined}>{children}</span>;
+    style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold-ink)' } : undefined}>{children}</span>;
 }
 
 /* PILOT ADVISORY stamp (owner-directed 2026-07-24). PILOT lays an advisory ON TOP
@@ -2085,7 +2085,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       <span key={m.id} className="muted small">
                         {m.full_name}: {m.ownership_pct}%
                         {m.member_kind === 'entity' && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--teal)', color: 'var(--teal)' }} title={`Layered entity${m.owner_is_verified ? ' — verified' : ' — must be verified before this one'}`}>entity{m.owner_is_verified ? ' ✓' : ''}</span>}
-                        {m.member_kind !== 'entity' && Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
+                        {m.member_kind !== 'entity' && Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>≥20% — guarantor likely required</span>}
                       </span>
                     ))}
                     <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
@@ -2104,7 +2104,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       notes.push('Verified over a year ago — re-verification recommended (fresh Good Standing certificate)');
                     return notes.length ? (
                       <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                        {notes.map((n, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{n}</span>)}
+                        {notes.map((n, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>{n}</span>)}
                       </div>
                     ) : null;
                   })()}
@@ -2144,7 +2144,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                         </span>
                         {s.document_id ? (
                           <>
-                            <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : { borderColor: 'var(--gold)', color: 'var(--gold)' }}>
+                            <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : { borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>
                               {rs === 'accepted' ? 'accepted' : rs === 'rejected' ? 'rejected' : 'pending'}
                             </span>
                             {s.reviewed_by_name && <span className="muted small">by {s.reviewed_by_name}</span>}
@@ -3683,7 +3683,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       partner — derived from the rule, staff-only. */}
                   {it.note_buyer_mark && <span style={{ marginLeft: 8 }}><NoteBuyerMark it={it} /></span>}
                   {it.origin_kind === 'auto' && (
-                    <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
+                    <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
                   {/* Delete a manually-added condition (owner-directed 2026-08-04). */}
@@ -3868,7 +3868,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
             )}
             {it.borrower_hint && /still needed/i.test(it.borrower_hint) && (
-              <div className="small" style={{ color: 'var(--gold)', paddingLeft: 20 }}>Requested from borrower: {it.borrower_hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}</div>
+              <div className="small" style={{ color: 'var(--gold-ink)', paddingLeft: 20 }}>Requested from borrower: {it.borrower_hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}</div>
             )}
             <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (
@@ -5484,7 +5484,7 @@ export default function StaffApplication() {
           borrowerName={fullNameOf(app)} />
         {canDelete && (app.deleted_at
           ? <span className="row" style={{ gap: 8, flex: 'none' }}>
-              <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }} title="This file is archived">Archived</span>
+              <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }} title="This file is archived">Archived</span>
               <button className="btn link small" onClick={restoreApp} title="Restore this file to the pipeline">Restore</button>
               <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={purgeApp} title="Delete permanently — cannot be undone">Delete permanently</button>
             </span>
@@ -6340,7 +6340,7 @@ function TprExport({ appId }) {
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
               <span className="muted small">Would ship empty:</span>
-              {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{m}</span>)}
+              {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>{m}</span>)}
             </div>
           )}
         </>
@@ -6508,7 +6508,7 @@ function TapeExport({ appId }) {
       )}
       {msg && <p className="small" role="status" style={{ color: 'var(--teal)', fontWeight: 600 }}>✓ {msg}</p>}
       {!state ? <p className="muted small">Loading…</p> : state.error ? (
-        <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
+        <p className="muted small" style={{ color: 'var(--gold-ink)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
       ) : (state.tapes || []).length === 0 ? (
         <p className="muted small">No tapes configured yet.</p>
       ) : (
@@ -6524,7 +6524,7 @@ function TapeExport({ appId }) {
                   {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
                 </button>
               ) : (
-                <span className="row small" style={{ gap: 6, alignItems: 'center', color: 'var(--gold)', flexWrap: 'wrap' }}>
+                <span className="row small" style={{ gap: 6, alignItems: 'center', color: 'var(--gold-ink)', flexWrap: 'wrap' }}>
                   <button className="btn small" disabled title={t.reason}>Export the {t.name} tape</button>
                   <span>{t.reason || `This loan isn't set to ${t.name}.`}</span>
                   <button type="button" onClick={() => goToSection('sec-overview')}

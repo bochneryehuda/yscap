@@ -171,7 +171,7 @@ function DrawStepper({ finding, releasedAt }) {
                 {s.done ? '✓' : (s.warn ? '!' : i + 1)}
               </span>
               <span className="small" style={{ marginTop: 5, textAlign: 'center', color: (s.done || s.active || s.warn) ? 'var(--text)' : 'var(--text-muted)', fontWeight: (s.active || s.warn) ? 700 : 500, lineHeight: 1.15 }}>{s.label}</span>
-              {day && <span style={{ marginTop: 2, fontSize: 10, textAlign: 'center', color: 'var(--text-muted)', lineHeight: 1.1 }}>{day}</span>}
+              {day && <span style={{ marginTop: 2, fontSize: 11, textAlign: 'center', color: 'var(--text-muted)', lineHeight: 1.1 }}>{day}</span>}
             </div>
             {i < steps.length - 1 && <span style={{ flex: '1 1 18px', minWidth: 18, height: 2, background: steps[i + 1].done || steps[i].done ? 'var(--teal)' : 'var(--line)', marginTop: 10 }} />}
           </React.Fragment>
@@ -461,7 +461,7 @@ function FindingCard({ finding, appId, onChanged, money }) {
                             <span key={i} style={{ position: 'relative', display: 'inline-block' }}>
                               <img src={m.preview} alt="" style={{ width: 30, height: 30, objectFit: 'cover', borderRadius: 5, border: '1px solid var(--line)', verticalAlign: 'middle' }} />
                               <button type="button" title="Remove" onClick={() => setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: ((s[l.id] || {}).media || []).filter((_, j) => j !== i) } }))}
-                                style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: 999, border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 10, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                                style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: 999, border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 11, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
                             </span>
                           ))}
                         </span>

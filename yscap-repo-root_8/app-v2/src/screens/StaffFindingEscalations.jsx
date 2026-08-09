@@ -215,7 +215,7 @@ export default function StaffFindingEscalations() {
                     {r.property_address ? ` · ${fmtAddr(r.property_address)}` : ''}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: sev.fg, background: sev.bg, padding: '2px 7px', borderRadius: 6 }}>{sev.label}</span>
+                    <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: sev.fg, background: sev.bg, padding: '2px 7px', borderRadius: 6 }}>{sev.label}</span>
                     <strong style={{ fontSize: 14 }}>{r.title || r.code || 'Finding'}</strong>
                   </div>
                   {(r.doc_value != null || r.file_value != null) && (
