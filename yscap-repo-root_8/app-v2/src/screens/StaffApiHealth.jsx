@@ -567,12 +567,23 @@ function MirrorBackfillPanel() {
   const n = (v) => (v == null ? '—' : Number(v).toLocaleString());
   const waiting = recon ? Number(recon.pending || 0) : 0;
   const stuck = recon ? Number(recon.exhausted || 0) : 0;
-  const skipped = recon ? Number(recon.skipped || 0) : 0;
+  // The deliberately-not-copied pile. `skipped_not_mirrored` excludes a copy a
+  // person moved in SharePoint (it carries a skip reason but IS in there);
+  // fall back to the older `skipped` so a cached bundle still shows a number.
+  const skipped = recon ? Number(recon.skipped_not_mirrored ?? recon.skipped ?? 0) : 0;
+  const breakdown = (recon && Array.isArray(recon.skipped_breakdown)) ? recon.skipped_breakdown : null;
+  const unaccounted = recon ? Number(recon.unaccounted || 0) : 0;
   const oldestHrs = recon ? recon.oldest_pending_hours : null;
   const allClear = recon && waiting === 0 && stuck === 0;
+  // "Not copied on purpose" sits directly beside "In SharePoint" so the two
+  // numbers that explain the total read together (owner-reported 2026-08-09:
+  // "2,655 total / 1,755 in SharePoint … why are not all documents in
+  // SharePoint?"). The gap was never missing documents — it was this pile, named
+  // once in grey small print. A third of the library deserves its own tile.
   const tiles = recon ? [
     { label: 'Total documents', value: n(recon.total_docs), tone: null },
     { label: 'In SharePoint', value: n(recon.mirrored), tone: 'good' },
+    { label: 'Not copied on purpose', value: n(skipped), tone: null },
     { label: 'Waiting to copy', value: n(recon.pending), tone: waiting > 0 ? 'warn' : null },
     { label: 'Stuck', value: n(recon.exhausted), tone: stuck > 0 ? 'bad' : null },
   ] : [];
@@ -615,8 +626,45 @@ function MirrorBackfillPanel() {
               {allClear
                 ? '✓ Everything saved is in SharePoint — nothing waiting, nothing stuck.'
                 : `${waiting > 0 ? `${n(waiting)} waiting${oldestHrs != null ? ` (oldest ${oldestHrs}h)` : ''}. ` : ''}${stuck > 0 ? `${n(stuck)} stuck — use “Retry stuck ones” below.` : ''}`}
-              {skipped > 0 && <span style={{ color: '#8A939A' }}> · {n(skipped)} not mirrored on purpose (e.g. Heter Iska, appraisal photos).</span>}
             </div>
+
+            {/* The gap, spelled out. Every document with a copy saved is either in
+                SharePoint, on this list, waiting, or stuck — so the two big numbers
+                on the tiles above always add up, and you can see exactly why. */}
+            {skipped > 0 && (
+              <div style={{ marginTop: 12, border: '1px solid var(--line,#E7E1D3)', borderRadius: 10,
+                background: 'var(--surface-soft,#FAF8F3)', padding: '11px 13px' }}>
+                <div style={{ fontSize: 12.5, color: '#141B22', fontWeight: 700 }}>
+                  Why {n(skipped)} of them are not copied
+                </div>
+                <div style={{ fontSize: 12, color: '#4B585C', margin: '3px 0 0' }}>
+                  These are on purpose — nothing is lost, every one is still saved inside PILOT.
+                  {' '}{n(recon.mirrored)} in SharePoint + {n(skipped)} here = {n(recon.total_docs)} saved.
+                </div>
+                {breakdown ? (
+                  <ul style={{ margin: '9px 0 0', padding: 0, listStyle: 'none' }}>
+                    {breakdown.map((b) => (
+                      <li key={b.key} style={{ display: 'flex', gap: 10, alignItems: 'baseline',
+                        padding: '4px 0', borderTop: '1px solid var(--line,#EFEAE0)' }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#141B22',
+                          minWidth: 54, textAlign: 'right', flexShrink: 0 }}>{n(b.count)}</span>
+                        <span style={{ fontSize: 12, color: b.key === 'other' ? '#B7791F' : '#4B585C' }}>{b.label}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#8A939A', marginTop: 6 }}>
+                    e.g. Heter Iska, appraisal photos. Refresh to see the full list.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {unaccounted > 0 && (
+              <div style={{ marginTop: 10, fontSize: 12.5, color: '#B7791F' }}>
+                {n(unaccounted)} just saved and not sorted yet — check back in a minute.
+              </div>
+            )}
           </>
         ) : null}
 
