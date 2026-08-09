@@ -48,6 +48,19 @@
  * and `include` aggressively: `get_document({include:'signers'})` is about a
  * tenth the size of the whole document and carries the one field we want.
  *
+ * ═══ THE REQUEST CONTRACT IS CHECKED BEFORE THE WIRE ═══════════════════════
+ * `request-contracts.json` records how every request must look — transcribed
+ * from the live MCP connector's own schemas (owner-directed 2026-08-09). The
+ * vendor answers a malformed request with a raw "-32602 Invalid arguments"
+ * that reached the owner's screen, and the refused call still spends a slot of
+ * the shared hourly allowance — so `call()` refuses a request OUR code shaped
+ * wrongly before anything is sent, with a plain sentence, at zero cost. The
+ * two rules that have already bitten: `match_entity` AND `match_person`
+ * require a STATE (records are keyed name+state — the same name in another
+ * state is a different record, proven live: "MW TRADING LLC" is one entity in
+ * NJ and another in CA), and for a no-state lookup the vendor's own guidance
+ * is `search`, which takes an optional state filter.
+ *
  * ═══ NEVER THROWS ══════════════════════════════════════════════════════════
  * The client's contract, kept: every function returns `{ok:true, data}` or
  * `{ok:false, reason, detail}`. A research lookup that throws becomes a 500 on
@@ -56,6 +69,7 @@
 
 const client = require('../../elementix/client');
 const SHAPES = require('./shapes');
+const CONTRACTS = require('./request-contracts.json');
 
 /**
  * THE CLOSED SET. A tool not named here cannot be called through this module.
@@ -134,6 +148,56 @@ const nameTooCommon = (row) => {
 const bad = (reason, detail) => ({ ok: false, reason, detail });
 
 /**
+ * Does this request look the way the vendor's schema says it must? Answers a
+ * plain sentence, or null when it conforms. Judged from request-contracts.json
+ * so the rule lives in ONE reviewable place; a tool with no recorded contract
+ * is not judged (the vendor will answer for itself).
+ */
+function contractProblem(tool, args) {
+  const c = CONTRACTS.tools && CONTRACTS.tools[tool];
+  if (!c) return null;
+  const a = args || {};
+  for (const req of (c.required || [])) {
+    const v = a[req];
+    if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) {
+      return `the records service requires "${req}" on ${tool} and this request has none`;
+    }
+  }
+  for (const [k, v] of Object.entries(a)) {
+    if (v === undefined) continue;
+    const p = c.params && c.params[k];
+    if (!p) return `${tool} does not take a parameter called "${k}"`;
+    const t = typeProblem(p, v);
+    if (t) return `${tool}'s "${k}" ${t}`;
+  }
+  return null;
+}
+
+function typeProblem(p, v) {
+  if (p.enum) return p.enum.includes(v) ? null : `must be one of ${p.enum.join(', ')}`;
+  switch (p.type) {
+    case 'string': {
+      if (typeof v !== 'string') return 'must be text';
+      if (p.minLength && v.length < p.minLength) return `must be at least ${p.minLength} characters`;
+      if (p.maxLength && v.length > p.maxLength) return `must be at most ${p.maxLength} characters`;
+      return null;
+    }
+    case 'state': return /^[A-Z]{2}$/.test(String(v)) ? null : 'must be a 2-letter state code';
+    case 'uuid': return isUuid(v) ? null : 'must be an id from a search result';
+    case 'int': case 'number': {
+      const n = Number(v);
+      if (!Number.isFinite(n) || (p.type === 'int' && !Number.isInteger(n))) return 'must be a number';
+      if (p.min != null && n < p.min) return `must be at least ${p.min}`;
+      if (p.max != null && n > p.max) return `must be at most ${p.max}`;
+      return null;
+    }
+    case 'boolean': return typeof v === 'boolean' ? null : 'must be true or false';
+    case 'string[]': return Array.isArray(v) ? null : 'must be a list';
+    default: return null;
+  }
+}
+
+/**
  * Every call from this module goes through here: the closed set, then the
  * client, then the ledger. `opts.staffId` is required for the ledger to be worth
  * anything — Elementix sees one company account, so without it nobody can
@@ -148,6 +212,13 @@ async function call(tool, args, opts = {}) {
   if (!TOOLS.has(name)) {
     return bad('unknown_tool', `${name || 'that lookup'} is not one this module may call.`);
   }
+  /* THE CONTRACT, BEFORE THE WIRE. A request the vendor would refuse is
+     refused HERE instead — same reason code as every other unusable-input
+     refusal, a sentence instead of the vendor's raw "-32602 Invalid
+     arguments", and no slot of the shared hourly allowance spent on a call
+     that could never succeed. */
+  const malformed = contractProblem(name, args);
+  if (malformed) return bad('bad_args', `Not sent: ${malformed}.`);
   let out;
   try {
     out = await client.callTool(name, args || {}, { staffId: opts.staffId || null });
@@ -176,42 +247,122 @@ async function call(tool, args, opts = {}) {
 /* ── the wrappers ─────────────────────────────────────────────────────────── */
 
 /**
+ * HOW AN ENTITY NAME IS COMPARED when the deterministic matcher cannot run:
+ * case/punctuation-blind and corporate-suffix-blind ("LLC" ≡ "L.L.C." ≡
+ * nothing — the same variants match_entity's own normalizer strips) but
+ * ORDER-PRESERVING, because "MW TRADING" and "TRADING MW" are two different
+ * companies, unlike a person's name, which counties reverse routinely
+ * (`samePersonName` sorts; this must not). Under-matching is the safe
+ * direction: a miss is a skip a human can act on, an over-match is somebody
+ * else's deeds on this borrower's record — so jurisdictional boilerplate
+ * ("A DELAWARE LLC") is deliberately NOT stripped.
+ */
+/* A trailing corporate form is stripped for the compare, but its FAMILY is
+   remembered: "MW Trading" ≡ "MW Trading LLC" (the vendor's own with-or-
+   without behavior), while "MW Trading INC" vs "MW Trading LLC" — two names
+   BOTH stating a form, and different kinds of company — never match (audit
+   2026-08-09: collapsing the forms entirely could stage a same-base-name
+   stranger's corporation). CO/COMPANY/LTD are form-neutral in practice and
+   decide nothing. '&' reads as AND so "S & G" ≡ "S AND G" — the same words,
+   two spellings. */
+const ENTITY_SUFFIX_FAMILY = {
+  LLC: 'llc', PLLC: 'llc',
+  INC: 'corp', CORP: 'corp', CORPORATION: 'corp', INCORPORATED: 'corp',
+  LP: 'partnership', LLP: 'partnership',
+  CO: null, COMPANY: null, LTD: null, LIMITED: null, PC: null,
+};
+function entityNameParts(v) {
+  const words = str(v).toUpperCase().replace(/&/g, ' AND ').replace(/[.,'’`]/g, '')
+    .replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+  let family = null;
+  while (words.length > 1 && Object.prototype.hasOwnProperty.call(ENTITY_SUFFIX_FAMILY, words[words.length - 1])) {
+    family = ENTITY_SUFFIX_FAMILY[words.pop()] || family;
+  }
+  return { key: words.join(' '), family };
+}
+const entityNameKey = (v) => entityNameParts(v).key;
+function sameEntityName(a, b) {
+  const pa = entityNameParts(a); const pb = entityNameParts(b);
+  if (!pa.key || pa.key !== pb.key) return false;
+  if (pa.family && pb.family && pa.family !== pb.family) return false;
+  return true;
+}
+
+/**
  * Find the ENTITY (a state-registered LLC or similar), never the rolled-up
  * parent COMPANY. The two are different object types and only an entity uuid
  * works with `get_entity_*` — see the header.
+ *
+ * WITH a state: `match_entity`, the deterministic one-or-nothing matcher.
+ * The state is REQUIRED there — the vendor keys entities by (name, state),
+ * and the same LLC name really is two different records in two states
+ * (proven live 2026-08-09: "MW TRADING LLC" is one entity in NJ and another
+ * in CA). Calling it without one is refused outright, which is exactly what
+ * broke the owner's search on every company with no formation state on file.
+ *
+ * WITHOUT one: the vendor's own guidance for that case — `search` with
+ * entityFilter:'entity' — kept only where the row's name IS ours (the live
+ * capture returns "MW TRADING GROUP LLC" beside "MW TRADING LLC", and a near
+ * name is a different company), same one-or-nothing rule. Several states
+ * holding the same name come back `ambiguous` with `statesFound` naming
+ * them, so the screen can ask the person to pick a state instead of
+ * guessing.
  */
 async function searchEntity(name, state, opts = {}) {
   const n = str(name);
   if (!n) return bad('bad_args', 'Say which company to look for.');
-  /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity` — it is not a
-     parameter of this tool and sending it is at best ignored. The entity-vs-
-     company distinction the header warns about is real and still matters on
-     `search`; here the tool only ever matches entities. */
-  const args = { name: n };
   const st = stateCode(state);
-  if (st) args.state = st;
-  const out = await call('match_entity', args, opts);
-  if (!out.ok) return out;
-  const rows = rowsOf(out.data);
-  /* THE NAME IS `originalName`/`normalizedName`, NEVER `name`. A caller reading
-     `.name` gets undefined and the promotion chokepoint then has nothing to
-     match the borrower's typed company against. Normalised to `name` here so no
-     consumer has to know. */
-  const status = str(out.data && out.data.status);
-  return {
-    ok: true,
-    data: rows.map((r) => ({
+
+  if (st) {
+    /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity` — it is not a
+       parameter of this tool. The entity-vs-company distinction the header
+       warns about still matters on `search`; here the tool only ever matches
+       entities. */
+    const out = await call('match_entity', { name: n, state: st }, opts);
+    if (!out.ok) return out;
+    const rows = rowsOf(out.data);
+    /* THE NAME IS `originalName`/`normalizedName`, NEVER `name`. A caller
+       reading `.name` gets undefined and the promotion chokepoint then has
+       nothing to match the borrower's typed company against. Normalised to
+       `name` here so no consumer has to know. */
+    const status = str(out.data && out.data.status);
+    return {
+      ok: true,
+      data: rows.map((r) => ({
+        ...r,
+        name: str(r.name) || str(r.normalizedName) || str(r.originalName) || null,
+        _nameCommonness: nameCommonness(r),
+        _tooCommon: nameTooCommon(r),
+      })),
+      /* The vendor states its own confidence. An `exact` single hit is not
+         ambiguous however many rows come back; anything else with more than one
+         row is a human question, and picking the first is how somebody else's
+         deeds land on this borrower's record. */
+      matchStatus: status || null,
+      ambiguous: rows.length > 1 && status !== 'exact',
+    };
+  }
+
+  const found = await call('search', { query: n, entityFilter: 'entity' }, opts);
+  if (!found.ok) return found;
+  const rows = rowsOf(found.data)
+    /* An entity row can itself be a PERSON (a recorded party); this route is
+       for companies. Dropped only on an explicit PERSON so a renamed vendor
+       field can never silently empty the whole fallback. */
+    .filter((r) => str(r.entityTypeValue).toUpperCase() !== 'PERSON')
+    .filter((r) => sameEntityName(str(r.name) || str(r.searchText), n))
+    .map((r) => ({
       ...r,
-      name: str(r.name) || str(r.normalizedName) || str(r.originalName) || null,
+      name: str(r.name) || str(r.searchText) || null,
       _nameCommonness: nameCommonness(r),
       _tooCommon: nameTooCommon(r),
-    })),
-    /* The vendor states its own confidence. An `exact` single hit is not
-       ambiguous however many rows come back; anything else with more than one
-       row is a human question, and picking the first is how somebody else's
-       deeds land on this borrower's record. */
-    matchStatus: status || null,
-    ambiguous: rows.length > 1 && status !== 'exact',
+    }));
+  return {
+    ok: true,
+    data: rows,
+    matchStatus: null,
+    ambiguous: rows.length > 1,
+    statesFound: [...new Set(rows.map((r) => stateCode(r.state)).filter(Boolean))],
   };
 }
 
@@ -265,14 +416,23 @@ async function searchPerson(name, state, opts = {}) {
   const n = str(name);
   if (!n) return bad('bad_args', 'Say whose name to look for.');
   const st = stateCode(state);
+  let calls = 0;
 
-  const exact = await call('match_person', st ? { name: n, state: st } : { name: n }, opts);
-  let calls = 1;
-  if (exact.ok) {
-    const hit = exact.data && exact.data.match;
-    const id = hit && (hit.id || hit.personId || hit.uuid);
-    if (isUuid(id)) {
-      return { ok: true, calls, data: [{ ...hit, id, name: str(hit.name) || str(hit.normalizedName) || n }] };
+  /* `match_person` REQUIRES the state — persons are keyed (name, state)
+     exactly like entities. It used to be called without one anyway: the
+     vendor refused it (-32602), the refusal was swallowed by the `exact.ok`
+     test below, and one slot of the shared hourly allowance was spent on a
+     call that could never succeed — on EVERY no-state person search. With no
+     state it is simply skipped and the fuzzy route answers. */
+  if (st) {
+    const exact = await call('match_person', { name: n, state: st }, opts);
+    calls += 1;
+    if (exact.ok) {
+      const hit = exact.data && exact.data.match;
+      const id = hit && (hit.id || hit.personId || hit.uuid);
+      if (isUuid(id)) {
+        return { ok: true, calls, data: [{ ...hit, id, name: str(hit.name) || str(hit.normalizedName) || n }] };
+      }
     }
   }
 
@@ -307,7 +467,7 @@ async function researchPerson({ personName, state, staffId, db }, opts = {}) {
     ok: true, calls: 0, errors: [], searched: false, truncated: [],
     deeds: [], mortgages: [], person: null, ambiguousPerson: false, tooCommon: false,
   };
-  const note = (step, r) => { out.calls += (r && r.calls) || 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
+  const note = (step, r) => { out.calls += stepCost(r); if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
 
   const p = note('match_person', await searchPerson(personName, state, o));
   if (p.ok) {
@@ -367,20 +527,50 @@ async function addressTransactions(addressId, opts = {}) {
  * A recorded instrument. `include:'signers'` by default — about a tenth the
  * size of the whole document, and the signers are the one field the identity
  * gate (A1, "the borrower personally signed it") is built on.
+ *
+ * THE TYPE IS REQUIRED WITH THE ID, and the parameter is `id` — the vendor's
+ * schema takes {type, id, include} and refuses anything else whole. The old
+ * shape here ({documentId}) matched neither rule, so this wrapper could never
+ * have completed a call. Every transaction row already states its own `type`
+ * (deed / mortgage / satisfaction / …), so the caller always has it.
  */
+/* Read from the contract, not restated — two lists that must move together
+   is one list too many (audit 2026-08-09). */
+const DOCUMENT_TYPES = (CONTRACTS.tools.get_document.params.type.enum || []).slice();
 async function document(documentId, opts = {}) {
   if (!isUuid(documentId)) return bad('bad_args', 'That is not a document id from a transaction.');
-  return call('get_document', { documentId, include: opts.include || 'signers' }, opts);
+  const type = str(opts.type).toLowerCase();
+  if (!DOCUMENT_TYPES.includes(type)) {
+    return bad('bad_args',
+      'Say what kind of recorded document it is (the row\'s own `type`: deed, mortgage, satisfaction, …) — the records service requires the type with the id.');
+  }
+  return call('get_document', { type, id: documentId, include: opts.include || 'signers' }, opts);
 }
 
-/** How complete are this county's records? Feeds the thin-coverage penalty, so
- *  an absence in a badly-covered county is not read as an absence of fact. */
+/**
+ * How complete are this county's records? Feeds the thin-coverage penalty, so
+ * an absence in a badly-covered county is not read as an absence of fact.
+ *
+ * The vendor's coverage listing filters by STATE ONLY — `state` is an ARRAY
+ * of codes and there is NO county parameter — so the county question is
+ * answered by reading the state's rows (well past the biggest state's 254
+ * counties) and picking the county HERE, never by sending a filter the
+ * vendor would refuse.
+ */
 async function coverage(where, opts = {}) {
-  const args = {};
-  if (str(where && where.county)) args.county = str(where.county);
-  if (stateCode(where && where.state)) args.state = stateCode(where.state);
-  if (!Object.keys(args).length) return bad('bad_args', 'Say which county or state.');
-  return call('get_coverage', args, opts);
+  const st = stateCode(where && where.state);
+  const county = str(where && where.county);
+  if (!st) return bad('bad_args', 'Say which state — the coverage listing is filtered by state.');
+  const out = await call('get_coverage', { state: [st], perPage: 300 }, opts);
+  if (!out.ok || !county) return out;
+  const want = county.toLowerCase().replace(/\s+county$/, '').trim();
+  return {
+    ok: true,
+    data: rowsOf(out.data).filter((r) => {
+      const nm = str(r.countyName || r.county || r.countyState).toLowerCase();
+      return !!want && nm.includes(want);
+    }),
+  };
 }
 
 /**
@@ -456,6 +646,15 @@ function rowsOf(d) {
   return [];
 }
 
+/** What a research step actually SPENT. A `bad_args` refusal never reached the
+ *  wire — the wrapper guards and the contract preflight both refuse before
+ *  sending — so counting it would overstate `track_record_searches.api_calls`
+ *  on exactly the passes the preflight exists to make free (audit 2026-08-09).
+ *  A result that states its own `calls` is believed; anything else that went
+ *  out is 1. */
+const stepCost = (r) => (r && typeof r.calls === 'number' ? r.calls
+  : (r && r.ok === false && r.reason === 'bad_args' ? 0 : 1));
+
 /** `scope:'count'` sizes a result before paging it — the difference between one
  *  cheap call and twenty expensive ones. */
 function pageArgs(opts = {}) {
@@ -498,13 +697,17 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
     deeds: [], mortgages: [], satisfactions: [], ownerships: [], currentOwner: null, coverage: null,
     entity: null, people: [], ambiguousEntity: false, tooCommon: false,
   };
-  const note = (step, r) => { out.calls += 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
+  const note = (step, r) => { out.calls += stepCost(r); if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
 
   if (str(entityName)) {
     const e = note('match_entity', await searchEntity(entityName, state, o));
     if (e.ok) {
       const rows = e.data || [];
       out.ambiguousEntity = !!e.ambiguous;
+      /* Which states hold this name — only ever set by the no-state fallback,
+         and it is what lets the screen say "pick NJ or CA" instead of only
+         "ambiguous". */
+      if (Array.isArray(e.statesFound) && e.statesFound.length) out.entityStatesFound = e.statesFound;
       out.tooCommon = rows.some((r) => r._tooCommon);
       // ONE candidate or nothing. Several equally good candidates is a human
       // question, and picking the first is exactly how somebody else's deeds
@@ -604,5 +807,6 @@ module.exports = {
   TOOLS,
   FORBIDDEN,
   NAME_COMMONNESS_REFUSE_AT,
-  _internals: { stateCode, isUuid, pageArgs },
+  DOCUMENT_TYPES,
+  _internals: { stateCode, isUuid, pageArgs, contractProblem, entityNameKey, sameEntityName },
 };
