@@ -204,14 +204,23 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
       setRunAt((n) => n + 1);
       await load();
     } catch (e) {
-      if (e && e.code === 'would_reopen_verification') {
+      /* THE CODE LIVES ON `e.data.code` — api.js sets `err.status` and
+         `err.data`, never a bare `err.code`. Reading `e.code` here made BOTH
+         branches unreachable (proven over real HTTP): the server's 409 said
+         "Confirm if that is what you want" and the screen showed it in a box
+         with one OK button — "Join it to the line we have" was a dead end on
+         every verified line. Every other call site in app-v2 reads
+         `e.data.code`; this one now does too. */
+      const code = (e && (e.code || (e.data && e.data.code))) || null;
+      if (code === 'would_reopen_verification') {
         if (await askConfirm(e.message, { confirmLabel: 'Yes, reopen it', cancelLabel: 'Leave it alone' })) {
           try { await api.staffDecideCandidate(id, { action, ...(extra || {}), confirmReopen: true });
             setRunAt((n) => n + 1); await load(); }
           catch (e2) { await showMessage((e2 && e2.message) || 'That did not save.'); }
         }
-      } else if (e && e.code === 'deal_type_needed') {
-        await showMessage(`${e.message}\n\n${e.why || ''}`.trim(), { title: 'What kind of deal was it?' });
+      } else if (code === 'deal_type_needed' || code === 'deal_type_unrecognized') {
+        const why = (e && (e.why || (e.data && e.data.why))) || '';
+        await showMessage(`${e.message}\n\n${why}`.trim(), { title: 'What kind of deal was it?' });
       } else {
         await showMessage((e && e.message) || 'That did not save.', { title: 'Not saved' });
       }

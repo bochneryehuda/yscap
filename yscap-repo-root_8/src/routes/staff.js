@@ -11296,7 +11296,7 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
       { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });
     require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json(out);
-  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields, why: e.why }); }
 });
 
 /* THE VERIFY BUTTON — read the public records for ONE property, on a click.
