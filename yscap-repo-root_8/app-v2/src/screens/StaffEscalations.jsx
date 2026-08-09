@@ -126,11 +126,31 @@ export default function StaffEscalations() {
     finally { setBusy(false); }
   }
 
+  /* SAY THE ONE THING THAT NEEDS ANOTHER PERSON'S ACTION — AND NOTHING ELSE.
+     Deciding the exception is what releases the term sheet (the issuance gate keys
+     on the OPEN request, not on the stored stamp), so there is nothing to announce
+     in the ordinary case and no reason to send anybody back to Products & Pricing.
+     A first cut here did exactly that, which would have manufactured the very
+     back-and-forth this work was meant to remove. The single case worth a word is
+     `superseded`: the file was re-registered after this request went out, so a
+     NEWER registration is carrying its own outstanding request that somebody still
+     has to approve. Every other outcome is silent on purpose. */
+  function holdReleaseText(hr) {
+    if (hr && hr.reason === 'superseded') {
+      return ' Note: this file was re-registered after the request went out, so the'
+        + ' newer registration still has its own exception waiting for approval.';
+    }
+    return '';
+  }
+
   async function decide(id, decision) {
     setBusy(true);
     try {
-      await api.decideManualEscalation(id, decision, notes[id] || '');
-      flash(true, `Exception ${decision === 'approved' ? 'approved — the borrower will be sent their terms' : 'declined'}.`);
+      const res = await api.decideManualEscalation(id, decision, notes[id] || '');
+      const hr = res && res.escalation ? res.escalation.holdRelease : null;
+      flash(true, decision === 'approved'
+        ? `Exception approved — the borrower will be sent their terms.${holdReleaseText(hr)}`
+        : 'Exception declined.');
       await loadEscalations();
     } catch (e) { flash(false, e.message || 'could not record the decision'); }
     finally { setBusy(false); }
