@@ -449,6 +449,44 @@ console.log('\n7. The paid tool cannot be called by accident');
     ok('an unparsable stored URL degrades to the old behaviour rather than crashing a refresh');
   }
 
+  /* ═══ THE AUTHORIZATION SCHEME IS CANONICAL `Bearer` ON THE WIRE ═══
+     ROOT CAUSE of the live "Elementix rejected our sign-in at the session
+     handshake" (owner-reported 2026-08-09, AFTER the resource-indicator fix):
+     Elementix's token endpoint answers `token_type: "bearer"` in lowercase,
+     the client forwarded it verbatim, and the endpoint refuses the lowercase
+     scheme as "No authorization provided". Verified live with the stored
+     production token: `bearer oat_…` → 401, the identical token as
+     `Bearer oat_…` → 200 with the full MCP handshake. RFC 9110 makes the
+     scheme case-insensitive, so canonicalizing is also correct against every
+     compliant server. Reconnecting can never cure it — the vendor spells it
+     lowercase on every grant and refresh — so the WIRE is where it is fixed. */
+  {
+    assert.strictEqual(C.bearerScheme('bearer'), 'Bearer');
+    ok('the exact lowercase spelling Elementix issues goes on the wire as canonical Bearer');
+    assert.strictEqual(C.bearerScheme('Bearer'), 'Bearer');
+    assert.strictEqual(C.bearerScheme('BEARER'), 'Bearer');
+    assert.strictEqual(C.bearerScheme(' bearer '), 'Bearer');
+    ok('every case/whitespace variant of Bearer canonicalizes');
+    assert.strictEqual(C.bearerScheme(''), 'Bearer');
+    assert.strictEqual(C.bearerScheme(null), 'Bearer');
+    assert.strictEqual(C.bearerScheme(undefined), 'Bearer');
+    ok('a missing token type defaults to Bearer, as before');
+    assert.strictEqual(C.bearerScheme('DPoP'), 'DPoP');
+    ok('a genuinely different scheme passes through verbatim — this is a spelling fix, not a scheme override');
+
+    // The normalizer only helps if the header is actually composed through it.
+    // `post()` is the ONE place the Authorization header is built, so pin the
+    // wiring at the source: a refactor that reverts to forwarding the stored
+    // token_type verbatim must fail here, not in production at the handshake.
+    const clientSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'src', 'elementix', 'client.js'), 'utf8');
+    assert.ok(/authorization: `\$\{bearerScheme\(tokenType\)\} \$\{token\}`/.test(clientSrc),
+      'client.js composes the Authorization header through bearerScheme()');
+    assert.ok(!/authorization: `\$\{tokenType \|\| 'Bearer'\}/.test(clientSrc),
+      'the verbatim token_type forwarding is gone from the wire');
+    ok('the wire composes its header through the normalizer (source-pinned)');
+  }
+
   assert.deepStrictEqual(attemptedCalls, [],
     `this test tried to reach the vendor: ${attemptedCalls.join(', ')}`);
   ok('nothing in this suite called out to Elementix');
