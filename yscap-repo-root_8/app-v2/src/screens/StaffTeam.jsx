@@ -440,7 +440,7 @@ export default function StaffTeam() {
                               onChange={e => togglePermission(s, cap.key, e.target.checked)} />
                             <span>
                               {cap.label}
-                              {overridden && <span className="pill" style={{ marginLeft: 6, fontSize: 10, borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>{eff.has(cap.key) ? 'granted' : 'revoked'}</span>}
+                              {overridden && <span className="pill" style={{ marginLeft: 6, fontSize: 11, borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>{eff.has(cap.key) ? 'granted' : 'revoked'}</span>}
                               {!overridden && isDefault && <span className="muted" style={{ marginLeft: 6, fontSize: 10 }}>(default)</span>}
                             </span>
                           </label>

@@ -34,7 +34,7 @@ body{ line-height:1.6; }
 .rb-wrap{ max-width:1080px; margin:0 auto; padding:0 1.5rem 5rem; }
 .rb-hero{ text-align:center; padding:2.4rem 1.5rem 1.4rem; }
 .rb-hero h1{ font-family:var(--font-d); font-weight:600; font-size:clamp(2rem,4vw,3rem); color:var(--ivory); line-height:1.04; }
-.rb-hero .tm{ font-size:.5em; vertical-align:super; color:var(--teal); }
+.rb-hero .tm{ font-size:.5em; vertical-align:super; color:var(--teal-br); }
 .rb-hero .tool-tagline{ color:var(--gold-ink); font-style:italic; margin-top:.4rem; }
 .rb-hero p.intro{ color:var(--muted-2); max-width:620px; margin:.8rem auto 0; line-height:1.6; }
 
@@ -52,7 +52,7 @@ body{ line-height:1.6; }
 .rb-card{ background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r); padding:1.6rem 1.5rem; margin-top:1.4rem; }
 .rb-card h2{ font-family:var(--font-d); font-weight:600; color:var(--ivory); font-size:1.4rem; }
 .rb-card .sub{ color:var(--muted-2); margin-top:.3rem; font-size:.92rem; line-height:1.5; }
-.rb-sec-title{ font-size:.72rem; text-transform:uppercase; letter-spacing:.16em; color:var(--teal); font-weight:700; margin:1.5rem 0 .8rem; }
+.rb-sec-title{ font-size:.72rem; text-transform:uppercase; letter-spacing:.16em; color:var(--teal-br); font-weight:700; margin:1.5rem 0 .8rem; }
 
 .rb-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:1rem 1.3rem; }
 .rb-grid.one{ grid-template-columns:1fr; }

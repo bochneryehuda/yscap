@@ -134,7 +134,7 @@ export default function FileNotificationOverrides({ applicationId, isMyFile }) {
                       <tr key={o.notif_key} style={{ borderBottom: '1px solid var(--line)' }}>
                         <td style={{ padding: 6 }}>{entry ? entry.label : o.notif_key}</td>
                         <td style={{ padding: 6, textAlign: 'right' }}>
-                          <span className="ec-pill ec-pill-muted" style={{ fontSize: 10, marginRight: 6 }}>
+                          <span className="ec-pill ec-pill-muted" style={{ fontSize: 11, marginRight: 6 }}>
                             {!o.enabled ? 'Off' : o.mode === 'manual' ? 'Manual' : 'Automatic'}
                           </span>
                           <button className="btn ghost small" onClick={() => clearPerKey(o.notif_key)}>Clear</button>

@@ -119,7 +119,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
     font-family:var(--font-d); font-weight:500; letter-spacing:-.01em; line-height:1.04;
     font-size:clamp(2.4rem,6vw,4.4rem);
 }
-.suite-hero h1 em{ font-style:italic; color:var(--teal); }
+.suite-hero h1 em{ font-style:italic; color:var(--teal-br); }
 .suite-tag{ font-family:var(--font-d); font-style:italic; color:var(--muted); font-size:clamp(1.1rem,2vw,1.4rem); margin-top:1rem; }
 .suite-sub{ color:var(--muted); max-width:62ch; margin:1.3rem auto 0; font-size:1.05rem; }
 .suite-note{ color:var(--muted-2); font-size:.85rem; margin-top:1.4rem; }
@@ -152,7 +152,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 .tool-hero{ max-width:var(--maxw); margin:0 auto; padding:3.5rem 1.5rem 1.5rem; }
 .tool-hero .suite-eyebrow{ margin-bottom:1rem; }
 .tool-hero h1{ font-family:var(--font-d); font-weight:500; font-size:clamp(2rem,4vw,3rem); letter-spacing:-.01em; }
-.tool-hero h1 .tm{ font-size:.5em; color:var(--teal); vertical-align:super; }
+.tool-hero h1 .tm{ font-size:.5em; color:var(--teal-br); vertical-align:super; }
 .tool-hero .tool-tagline{ font-family:var(--font-d); font-style:italic; color:var(--muted); margin-top:.6rem; font-size:1.05rem; }
 .tool-hero .tool-intro{ color:var(--muted); max-width:64ch; margin-top:1rem; }
 .fill-hint{
@@ -280,7 +280,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 .sf-inner{ max-width:var(--maxw); margin:0 auto; }
 .sf-top{ display:flex; align-items:center; gap:1.2rem; flex-wrap:wrap; }
 .sf-top img.logo{ height:30px; width:auto; }
-.sf-top .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--teal); }
+.sf-top .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--teal-br); }
 .sf-top .sf-marks{ margin-left:auto; display:flex; gap:1.1rem; }
 .sf-top .sf-marks img{ height:58px; width:auto; opacity:.9; }
 /* Compliance marks (Equal Housing Lender / NMLS) are light line-art, so on the

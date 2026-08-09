@@ -492,7 +492,7 @@ textarea{min-height:90px;resize:vertical}
 .step.done{color:var(--ok)}
 .bell{position:relative;cursor:pointer;color:var(--muted)} .bell:hover{color:var(--ivory)}
 .badge{position:absolute;top:-6px;right:-8px;background:var(--gold-ink);color:var(--on-accent);
-  font-size:10px;font-weight:700;border-radius:999px;padding:1px 5px}
+  font-size:11px;font-weight:700;border-radius:999px;padding:1px 5px}
 .timeline{list-style:none;margin:0;padding:0}
 .timeline li{padding:8px 0 8px 20px;position:relative;color:var(--muted);font-size:14px}
 .timeline li::before{content:'';position:absolute;left:0;top:13px;width:8px;height:8px;border-radius:50%;
@@ -782,7 +782,7 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ts-readonly output{background:var(--ink-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:34px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
 .ts-admin-panel.portal{margin:14px 0 10px;border:1px solid var(--teal-dp);border-radius:10px;background:rgba(127,169,176,.06);padding:14px}
 .ts-admin-head{display:flex;align-items:center;gap:8px;font-family:var(--serif);font-size:16px;font-weight:600;margin-bottom:2px}
-.ts-admin-badge{font-family:var(--sans);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;background:var(--teal);color:var(--on-accent);border-radius:999px;padding:2px 7px}
+.ts-admin-badge{font-family:var(--sans);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;background:var(--teal);color:var(--on-accent);border-radius:999px;padding:2px 7px}
 .ts-admin-group{color:var(--teal-br);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin:12px 0 7px}
 .ts-admin-check{display:flex;align-items:flex-start;gap:8px;color:var(--ivory);font-size:13px;line-height:1.4;margin:0}
 .ts-admin-check input{margin-top:3px;flex:none}
@@ -934,7 +934,7 @@ a.checkitem:hover{transform:translateY(-1px)}
 .snap-term-v.gold{color:var(--gold-ink)}
 .snap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px 18px}
 .snap-cell{display:flex;flex-direction:column;gap:1px;min-width:0}
-.snap-k{color:var(--muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.snap-k{color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 .snap-v{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis}
 
 .tl-closing{margin-top:6px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
@@ -1070,8 +1070,8 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .msg-time{font-size:11px}
   .msg-from{font-size:11.5px}
   .snap-k{font-size:11px}
-  .addr-foot{font-size:10.8px}
-  .badge{font-size:10.5px}
+  .addr-foot{font-size:11px}
+  .badge{font-size:11px}
   /* entity (LLC) rows: action cluster drops below the name */
   .ent-row{flex-wrap:wrap}
   .studio-foot{position:static;padding:6px 0}
@@ -1151,7 +1151,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   transition:color .12s ease,background .12s ease,box-shadow .12s ease}
 .comm-tab:hover{color:var(--text,var(--ivory))}
 .comm-tab.active{color:var(--on-accent,#fff);background:var(--gold-ink);box-shadow:0 1px 4px rgba(0,0,0,.14)}
-.file-nav-group{padding:12px 12px 4px;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);opacity:.75}
+.file-nav-group{padding:12px 12px 4px;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);opacity:.75}
 .file-nav ol li:first-child.file-nav-group{padding-top:4px}
 .file-nav a{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;
   color:var(--muted);font-size:13.5px;font-weight:500;border-left:2px solid transparent}
@@ -1193,7 +1193,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
    exactly like the info eyes across the static tools */
 .info-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
   width:16px;height:16px;flex:none;border-radius:50%;border:1px solid var(--teal-dp);
-  color:var(--teal-br);font-size:10.5px;font-weight:700;font-family:var(--sans);
+  color:var(--teal-br);font-size:11px;font-weight:700;font-family:var(--sans);
   font-style:normal;cursor:help;vertical-align:middle;user-select:none}
 .info-tip-bubble{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
   width:min(290px,72vw);background:var(--ink-3);color:var(--ivory);border:1px solid var(--teal-dp);
@@ -1382,7 +1382,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 
 /* avatars + presence */
 .cv-ava{width:26px;height:26px;border-radius:50%;background:var(--ink-3);border:1px solid var(--line);
-  display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;
+  display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
   color:var(--teal-br);flex:none;position:relative}
 .cv-ava.small{width:22px;height:22px;font-size:9.5px}
 .cv-ava.tiny{width:18px;height:18px;font-size:8.5px}
@@ -1433,7 +1433,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .cv-quote span{display:block;font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cv-tick{color:var(--muted)}
 .cv-tick.read,.cv-tick.partread{color:var(--teal-br)}
-.cv-partial{font-size:10px}
+.cv-partial{font-size:11px}
 .cv-fail{color:var(--danger)}
 .cv-readmarks{display:flex;justify-content:flex-end;gap:2px;margin:3px 4px 0;transition:all .25s ease}
 .cv-readmarks .cv-ava.tiny{margin-left:-4px;border-color:var(--teal-dp)}
@@ -2072,7 +2072,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .lp-step.current::before{background:linear-gradient(90deg,var(--teal),var(--gold))}
 .lp-step.current .lp-dot{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px var(--gold-soft)}
 .lp-step.current .lp-label{color:var(--gold-ink);font-weight:700}
-@media (max-width:720px){.lp-label{font-size:9.5px}.lp-dot{width:12px;height:12px}}
+@media (max-width:720px){.lp-label{font-size:11px}.lp-dot{width:12px;height:12px}}
 
 /* ---- progress bar (ds.css) ---- */
 .prog-bar{height:6px;border-radius:100px;background:var(--surface-soft);overflow:hidden}
@@ -2201,7 +2201,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .app .tbl-vendors tr:hover td{background:transparent}
   .app .tbl-vendors td{border-bottom:1px solid var(--surface-soft);padding:11px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;text-align:right}
   .app .tbl-vendors td:last-child{border-bottom:0}
-  .app .tbl-vendors td::before{content:attr(data-label);text-align:left;flex:none;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--text-muted);padding-top:3px}
+  .app .tbl-vendors td::before{content:attr(data-label);text-align:left;flex:none;font-size:11px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--text-muted);padding-top:3px}
   .app .tbl-vendors td.actc{justify-content:flex-end}
   .app .tbl-vendors td.actc::before{content:""}
   .app .co{justify-content:flex-end}
@@ -2350,7 +2350,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .msg-from{font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--text-muted);opacity:1;margin-bottom:3px}
 .cv-bubble.me .msg-from{color:rgba(255,255,255,.82)}
 .msg-body{font-size:14.5px;line-height:1.5}
-.msg-time{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;margin-top:4px}
+.msg-time{font-size:11px;opacity:.72;font-variant-numeric:tabular-nums;margin-top:4px}
 
 /* ---- read markers align to the crest radius ---- */
 .cv-readmarks .cv-ava.tiny{border-color:var(--primary-border)}
@@ -2390,7 +2390,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cv-item-name{font-weight:600}
 .cv-item.unread .cv-item-name{font-weight:700}
 .cv-eye{flex:none;width:6px;height:6px;border-radius:50%;background:var(--gold);display:inline-block}
-.cv-muted-tag{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface-soft);
+.cv-muted-tag{font-size:11px;font-weight:600;color:var(--text-muted);background:var(--surface-soft);
   border:1px solid var(--border);border-radius:100px;padding:1px 8px}
 
 /* ---- empty pane crest (replaces the 💬 glyph) ---- */
@@ -2410,7 +2410,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
      beside the address + status, the way the blueprint file header reads. — */
 .shell .file-top{gap:16px}
 .shell .file-top-amt{display:flex;flex-direction:column;align-items:flex-end;flex:none;line-height:1.15}
-.shell .file-top-amt .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-muted);font-weight:700}
+.shell .file-top-amt .k{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-muted);font-weight:700}
 .shell .file-top-amt .ln-amount{font-size:22px}
 @media(max-width:720px){.shell .file-top-amt{align-items:flex-start}.shell .file-top-amt .k{display:none}}
 
@@ -2511,7 +2511,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    ===================================================================== */
 
 /* Task priority pills (StaffTasks) — derived from each task's existing due_date */
-.app .pri{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+.app .pri{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
   padding:3px 9px;border-radius:100px;border:1px solid var(--border);color:var(--text-muted);
   background:var(--surface);white-space:nowrap;flex:none}
 .app .pri.pri-high{color:var(--danger);border-color:transparent;background:var(--danger-soft)}
@@ -2521,7 +2521,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* Audit sensitive-row emphasis (StaffAuditLog) — rows whose existing category is PII */
 .app .audit-row.sensitive{background:var(--danger-soft);box-shadow:inset 3px 0 0 var(--danger);
   padding-left:12px;border-radius:0 6px 6px 0}
-.app .pii-tag{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+.app .pii-tag{margin-left:8px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
   color:var(--danger);background:var(--surface);border:1px solid var(--danger);border-radius:100px;
   padding:1px 8px;vertical-align:middle}
 
@@ -3466,7 +3466,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .esc-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .esc-metric{display:inline-flex;flex-direction:column;gap:1px;background:var(--surface-soft);
   border:1px solid var(--line);border-radius:9px;padding:7px 13px;min-width:84px}
-.esc-metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.esc-metric .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
 .esc-metric .v{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
 
 /* small pill tags (min interest / accrual) */
@@ -4104,7 +4104,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .act-group{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* The eyebrow is used INSIDE a cluster and on its own above a block, so it must not be
    scoped to a child combinator (that silently left the standalone ones unstyled). */
-.act-label{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+.act-label{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
   color:var(--text-soft);font-weight:700;white-space:nowrap}
 .act-group > .act-label{margin-right:2px}
 /* a hairline between clusters so the eye can find the seam */
@@ -4192,7 +4192,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .dd-payout{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-top:12px;
   padding:12px 14px;border:1px solid var(--primary-border);border-radius:var(--radius);
   background:var(--primary-soft)}
-.dd-payout-k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+.dd-payout-k{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
   color:var(--primary-hover);font-weight:700}
 .dd-payout-v{font-family:var(--serif);font-size:26px;line-height:1.1;font-weight:600;
   color:var(--text);font-variant-numeric:tabular-nums;margin-top:3px}
@@ -4216,7 +4216,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
           mask:linear-gradient(#000,#000) center/13px 13px no-repeat;
   box-shadow:inset 0 0 0 99px var(--gold,#AE8746)}
 .app-dialog-mark.bad{background:#b04a3f;box-shadow:inset 0 0 0 99px #b04a3f}
-.app-dialog-kicker{margin:0;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+.app-dialog-kicker{margin:0;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
   font-weight:700;color:#4B585C}
 .app-dialog-title{margin:1px 0 0;font-size:17px;line-height:1.25;color:#141B22}
 /* pre-wrap: these messages carry real line breaks (a sign-off refusal is two
@@ -4299,7 +4299,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 /* Staff-only figures (our buy rate and margin) carry a quiet gold edge so nobody
    reads one out to a borrower by accident. */
 .sos-internal{border-left:2px solid var(--gold,#AE8746);padding-left:9px;margin-left:-11px}
-.sos-internal-tag{display:inline-block;margin-left:6px;font-size:9.5px;font-weight:700;
+.sos-internal-tag{display:inline-block;margin-left:6px;font-size:11px;font-weight:700;
   letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#AE8746);vertical-align:1px}
 
 /* =====================================================================
@@ -4332,7 +4332,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 /* ---- tone system: one place decides what each status LOOKS like ---- */
 .ah-t-live{--ah-fg:#1F6A4E;--ah-bg:var(--success-soft);--ah-br:#BFDACD}
 .ah-t-info{--ah-fg:var(--teal-br);--ah-bg:var(--primary-soft);--ah-br:var(--primary-border)}
-.ah-t-warn{--ah-fg:#8A6110;--ah-bg:var(--warning-soft);--ah-br:#E6D3A8}
+.ah-t-warn{--ah-fg:#7A560E;--ah-bg:var(--warning-soft);--ah-br:#E6D3A8}
 .ah-t-bad{--ah-fg:#8E2320;--ah-bg:var(--danger-soft);--ah-br:#E4C2BE}
 .ah-t-mute{--ah-fg:var(--text-muted);--ah-bg:var(--surface-soft);--ah-br:var(--border)}
 
@@ -4432,7 +4432,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .ah-pill.ah-t-live .ah-dot{animation:ah-pulse 2.4s ease-in-out infinite}
 @keyframes ah-pulse{0%,100%{box-shadow:0 0 0 0 rgba(46,122,94,.45)}50%{box-shadow:0 0 0 4px rgba(46,122,94,0)}}
 @media(prefers-reduced-motion:reduce){.ah-pill.ah-t-live .ah-dot{animation:none}}
-.ah-tag{display:inline-flex;align-items:center;font-size:9.5px;font-weight:800;letter-spacing:.05em;
+.ah-tag{display:inline-flex;align-items:center;font-size:11px;font-weight:800;letter-spacing:.05em;
   text-transform:uppercase;padding:2px 7px;border-radius:999px;
   color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br)}
 
