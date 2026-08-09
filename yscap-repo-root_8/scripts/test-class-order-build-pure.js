@@ -47,6 +47,10 @@ ok(r.body.contacts[0].Type === 'Borrower' && r.body.contacts[0].primaryContact =
    'the borrower is the primary contact');
 ok(r.body.contacts[0].contactMethods.some((m) => m.type === 'Email' && m.value === 'ada@example.com'),
    'their email rides as a contact method');
+// PINNED, because a "simplification" to `company || last` would otherwise pass every
+// suite while quietly replacing a real person's surname with a company name.
+ok(r.body.contacts[0].firstName === 'Ada' && r.body.contacts[0].lastName === 'Reyes',
+   'a named person keeps their own first and last name');
 
 // ---------------------------------------------------------------------------
 console.log('\n--- a DERIVED value is declared, never silent ---');

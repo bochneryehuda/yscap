@@ -210,8 +210,7 @@ async function syncOne(dbh, order) {
   catch (e) { console.error('[amc] revision sync failed for order', order.id, (e && e.message) || e); }
   // Auto-upload the corrected SOW / the contract when they change or arrive (deduped on
   // documents.id, gated by AMC_OUTBOUND_ENABLED). Best-effort — never breaks the poll.
-  try { await require('./documents').autoUploadForOrder(dbh, order); }
-  catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+  await autoUploadStep(dbh, order);
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }
@@ -256,4 +255,27 @@ module.exports = {
   start, pollOpenOrdersOnce, syncOne, ingestDocuments,
   applyStatusResponse, recordStatusEvent, statusDedupeKey,
   looksXml, looksPdf, OPEN_STATUSES,
+  _internals: { autoUploadStep },
 };
+
+// Extracted so it is testable: what the poller does with the upload's ANSWER is the
+// whole point, and a step whose result is discarded can only be proven by calling it.
+async function autoUploadStep(dbh, order) {
+  try {
+    const up = await require('./documents').autoUploadForOrder(dbh, order);
+    // A REFUSAL ON THIS PATH HAS NOBODY LOOKING AT IT. The desk shows what the
+    // appraisal company would not take when a person presses Send; this is the
+    // poller doing the same thing unattended, and its return value was discarded —
+    // so the scope of work being rejected produced a successful-looking tick, no
+    // row, and not one word anywhere. It is the batch where silence costs most.
+    const held = ((up && up.skipped) || []).filter((x) => x && x.reason !== 'already_uploaded');
+    if (held.length) {
+      console.warn('[amc] the appraisal company would not accept', held.length,
+        'document(s) on order', order.id + ':',
+        held.map((x) => `${x.filename || x.documentId} (${x.detail || x.reason})`).join('; '));
+    }
+    if (up && up.ok === false && up.error && up.error !== 'nothing_to_upload') {
+      console.warn('[amc] auto document upload refused for order', order.id + ':', up.message || up.error);
+    }
+  } catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+}

@@ -273,6 +273,62 @@ function makeDeps() {
       `SELECT retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`, [order.id, docC]);
     ok(nmRow.rows[0].retrieval_url === 'https://amc/by-name/named-echo.pdf', 'and it gets its own link');
 
+    // =====================================================================
+    // THE PART NAME IS CHECKED TOO. A vendor that REFUSES one file, omits it, and
+    // RE-INDEXES the rest returns `part1` for what was our `part2` — so an unchecked
+    // `name` match hands the scope of work the photo's link and name, marks it
+    // delivered, and greys it out so nobody can retry. Exactly the mis-file the
+    // positional fallback was hardened against, through the branch that was trusted.
+    // =====================================================================
+    const mk = async (fn) => (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,$2,'application/pdf',$3,'contract',true) RETURNING id`, [appId, fn, 'ref-' + fn])).rows[0].id;
+    const dContract = await mk('contract.pdf');
+    const dSow = await mk('sow.pdf');
+    const dPhoto = await mk('photo.pdf');
+
+    const reindex = makeDeps();
+    const reindexSent = [];
+    // The SOW is refused and DROPPED; the two survivors are renumbered part0/part1.
+    reindex.postDocuments = async (files) => files
+      .filter((f) => f.fileName !== 'sow.pdf')
+      .map((f, i) => ({ name: 'part' + i, fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: 'URL-' + f.fileName }));
+    reindex.transport = { write: async (built) => { reindexSent.push(built); return { message: {} }; } };
+    const ri = await docs.uploadToOrder(c, order,
+      { staffId: null, documentIds: [dContract, dSow, dPhoto] }, reindex);
+
+    const riWire = reindexSent.length ? (reindexSent[0].message.products[0].embeddedFiles || []) : [];
+    ok(!riWire.some((f) => /sow/i.test(f.objectName || '')),
+      'the refused file is not sent at all');
+    ok(riWire.filter((f) => /photo/i.test(f.objectURL || '')).length <= 1,
+      'and no other document is sent twice under one link');
+    ok((ri.skipped || []).some((s) => String(s.documentId) === String(dSow)),
+      'the refused one is named as held back');
+    const sowRow = await c.query(
+      `SELECT count(*)::int n FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`, [order.id, dSow]);
+    ok(sowRow.rows[0].n === 0, 'no row claims the refused document was delivered');
+    const riRows = await c.query(
+      `SELECT document_id, retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id = ANY($2::uuid[])`,
+      [order.id, [dContract, dPhoto]]);
+    ok(riRows.rows.every((r) => (String(r.document_id) === String(dContract) ? /contract/ : /photo/).test(r.retrieval_url)),
+      'and the two that did go each carry their OWN link');
+
+    // A `name` and a `fileName` that disagree: the filename wins, never the position.
+    const dX = await mk('x-one.pdf');
+    const dY = await mk('x-two.pdf');
+    const crossed = makeDeps();
+    crossed.postDocuments = async (files) => [
+      { name: 'part0', fileName: files[1].fileName, uploadStatus: 'Success', retrievalUrl: 'URL-' + files[1].fileName },
+      { name: 'part1', fileName: files[0].fileName, uploadStatus: 'Success', retrievalUrl: 'URL-' + files[0].fileName },
+    ];
+    await docs.uploadToOrder(c, order, { staffId: null, documentIds: [dX, dY] }, crossed);
+    const cr = await c.query(
+      `SELECT document_id, retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id = ANY($2::uuid[])`,
+      [order.id, [dX, dY]]);
+    ok(cr.rows.length === 2 && cr.rows.every((r) =>
+      (String(r.document_id) === String(dX) ? /x-one/ : /x-two/).test(r.retrieval_url)),
+      'a part name that contradicts the filename never crosses two documents');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

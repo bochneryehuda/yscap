@@ -251,6 +251,11 @@ function contact(profile, type, person, { primary = false } = {}) {
   // it properly as a legal entity. It goes in the surname field, which is where a
   // company lands in a name-only schema; it is never SPLIT into a fake first and last.
   const company = text(person.company);
+  // ONLY when there is no person at all. With a name on the contact, their schema has
+  // nowhere for a company to go — and appending it to the surname would invent a person
+  // called "Bob Keystone Realty". So a named contact's company is deliberately dropped
+  // here while the AMC carries it as a legal entity: the one difference between the two
+  // desks that is the VENDOR's shape, not our drift. Revisit if Class adds a company field.
   const lastOrCompany = last || (!first ? company : null);
   if (!first && !lastOrCompany && !methods.length) return null;
   return {

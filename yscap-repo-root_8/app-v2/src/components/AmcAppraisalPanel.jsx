@@ -557,10 +557,12 @@ function Documents({ appId, orderId, onChange }) {
   const ids = Object.keys(pick).filter((k) => pick[k]);
   const send = async () => {
     if (!ids.length) return;
-    setBusy(true); setErr(''); setNotice('');
+    // The held-back list belongs to THIS attempt — clearing the banners but leaving it
+    // showed the previous attempt's refusals beside a fresh error.
+    setBusy(true); setErr(''); setNotice(''); setSkipped([]);
     try {
       const o = await api.amcUploadDocs(orderId, ids);
-      if (!o.ok) { setErr(refusal(o) || 'Could not upload.'); }
+      if (!o.ok) { setErr(refusal(o) || 'Could not upload.'); setSkipped(heldBack(o)); }
       else {
         setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.');
         // A PARTIAL REFUSAL IS STILL A REFUSAL. The appraisal company answers per file,
@@ -570,7 +572,7 @@ function Documents({ appId, orderId, onChange }) {
         setSkipped(heldBack(o));
         setPick({}); await load(); if (onChange) onChange();
       }
-    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not upload.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not upload.'); setSkipped(heldBack(e.data)); }
     setBusy(false);
   };
   return (

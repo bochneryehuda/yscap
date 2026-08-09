@@ -31,6 +31,15 @@ const CAT_SOW = 'Scope of Work';
 const CAT_CONTRACT = 'Contract & Assignment';
 
 // The AMC embeddedFiles.documentType for a document's category.
+// A skip reason in words a person can act on. The code alone is for us.
+const REASON_TEXT = {
+  already_uploaded: 'already sent to this order',
+  read_failed: 'the stored copy could not be read',
+  empty: 'the stored copy is empty',
+  stage_rejected: 'the appraisal company would not accept it',
+};
+const reasonText = (r) => REASON_TEXT[r] || r || 'it could not be sent';
+
 function docTypeForCategory(cat) {
   if (cat === CAT_CONTRACT) return 'Sales Contract';
   if (cat === CAT_SOW) return 'Scope of Work';
@@ -129,15 +138,23 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   const specs = [];   // parallel metadata
   const skipped = [];
   for (const d of rows) {
-    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, reason: 'already_uploaded' }); continue; }
+    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'already_uploaded' }); continue; }
     let bytes;
     try { bytes = await readStorage(d.storage_ref); }
-    catch (_) { skipped.push({ documentId: d.id, reason: 'read_failed' }); continue; }
-    if (!bytes || !bytes.length) { skipped.push({ documentId: d.id, reason: 'empty' }); continue; }
+    catch (_) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'read_failed' }); continue; }
+    if (!bytes || !bytes.length) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'empty' }); continue; }
     files.push({ fileName: d.filename || 'document', contentType: d.content_type || 'application/octet-stream', bytes });
     specs.push({ documentId: d.id, filename: d.filename, category: categoryOf(d) });
   }
-  if (!files.length) return { ok: false, error: 'nothing_to_upload', skipped };
+  if (!files.length) {
+    // THE SIBLING OF THE STAGING REFUSAL, and it needs the same treatment: a bare
+    // `nothing_to_upload` reaches the desk as the CODE, which is for us, with no
+    // filenames — on a path where every picked document failed to be read.
+    return { ok: false, error: 'nothing_to_upload', skipped,
+      message: skipped.length
+        ? 'Nothing could be sent: ' + skipped.map((x) => `${x.filename || 'a file'} — ${reasonText(x.reason)}`).join('; ')
+        : 'There was nothing to send.' };
+  }
 
   // Stage the bytes → getdocument retrieval URLs.
   let staged;
@@ -159,11 +176,25 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   // comes back in the order we sent it is exactly how one document's bytes end up
   // filed under another's name. `name` is the `part<i>` the client itself assigned, so
   // it is the reliable key; `fileName` is the fallback.
+  // Each staged answer belongs to exactly ONE file. Without this, a vendor that drops
+  // a rejected part and RE-INDEXES the rest hands the same answer to two documents —
+  // one of them gets a duplicate of its neighbour's bytes and the other is recorded as
+  // delivered having never been sent.
+  const claimed = new Set();
+  const claim = (s) => { if (!s || claimed.has(s)) return null; claimed.add(s); return s; };
   const stagedFor = (i) => {
-    const byPart = staged.find((s) => s && s.name === 'part' + i);
-    if (byPart) return byPart;
-    const byName = staged.filter((s) => s && s.fileName === files[i].fileName);
-    if (byName.length === 1) return byName[0];
+    // THE PART NAME IS CHECKED TOO, not trusted. It is the most reliable key we have,
+    // which is exactly why an unchecked match is dangerous: a vendor that refuses one
+    // file, omits it, and re-indexes the rest returns `part1` for what was our
+    // `part2` — and the scope of work is then sent under the photo's name and link,
+    // marked delivered, with the picker greying it out so nobody can retry it. A
+    // `fileName` that disagrees means this answer is about a different file, so we
+    // fall THROUGH (never return null here) and let the filename match rescue it.
+    const byPart = staged.find((s) => s && !claimed.has(s) && s.name === 'part' + i
+      && (!s.fileName || s.fileName === files[i].fileName));
+    if (byPart) return claim(byPart);
+    const byName = staged.filter((s) => s && !claimed.has(s) && s.fileName === files[i].fileName);
+    if (byName.length === 1) return claim(byName[0]);
     // THE POSITIONAL FALLBACK IS THE LAST RESORT, AND IT IS CHECKED. Taking
     // `staged[i]` on faith is precisely how one document's bytes are sent under
     // another's name — reproduced: with the vendor's answers reordered, the purchase
@@ -174,17 +205,19 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     // honest outcome is to refuse it rather than to guess which document it belongs to.
     if (staged.length !== files.length) return null;
     const at = staged[i];
-    if (!at) return null;
+    if (!at || claimed.has(at)) return null;
     // A disagreeing filename means this answer is not about this file.
     if (at.fileName && at.fileName !== files[i].fileName) return null;
-    // AND WITH NO IDENTIFYING FIELD AT ALL, POSITION IS NOT EVIDENCE — it is the
-    // assumption this whole function exists to remove. On a SINGLE file there is
-    // nothing to confuse it with, so position is certain; on a batch it is a guess,
+    // AND WITH NOTHING USABLE TO MATCH ON, POSITION IS NOT EVIDENCE — it is the
+    // assumption this whole function exists to remove. (What reaches here is an
+    // answer whose `name` is absent or names a different part AND whose `fileName` is
+    // absent or matched no single file.) On a SINGLE file there is nothing to confuse
+    // it with, so position is certain; on a batch it is a guess,
     // and guessing wrong sends one document's bytes under another's name. Refusing
     // costs a retry; guessing costs a document that everything then reports as
     // delivered.
     if (!at.fileName && !at.name && files.length > 1) return null;
-    return at;
+    return claim(at);
   };
   // A DENYLIST, DELIBERATELY, NOT AN ALLOWLIST. The vendor's success word is not
   // documented (the only shape in this repo is our own dry-run stub's 'Success'), so an
