@@ -425,7 +425,14 @@
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var liquidity = cashToClose + reserves;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
-    var displayCost = basisPrice + num("construction") + financedIRr;
+    // TOTAL COST goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's own acqDenom (min(price, as-is) on a
+    // purchase, the as-is value on a refi). basisPrice stays the REAL price shown as
+    // "Purchase price"; only the total-cost/LTC basis drops to the as-is value when it
+    // is lower. Falls back to basisPrice if the deal did not size. Byte-identical when
+    // the as-is value is >= the price (acqDenom === basisPrice).
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
+    var displayCost = costAcq + num("construction") + financedIRr;
 
     return {
       R: R, inp: inp, eff: (inp.loanType === "Purchase" ? effPurchase() : num("asIs")), basisPrice: basisPrice,
@@ -484,6 +491,9 @@
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, gold: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -494,7 +504,7 @@
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
@@ -794,14 +804,26 @@
     return "<strong>You're at Tier " + tierNum + "</strong> \u2014 " + count + " " + unit + " project" + (count === 1 ? "" : "s") + " on file. Just " + need + " more completed project" + (need === 1 ? "" : "s") + " reaches Tier " + (tierNum - 1) + ", with more leverage and a lower rate.";
   }
 
-  /* ---- Admin pricing controls (soft, client-side gate; reveals two fields on the same page) ---- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — see note; change = new hash.
-  function cyrb53(str, seed) {
-    seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-    for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  /* ---- Admin pricing controls (password checked SERVER-SIDE; reveals the fields on this page) ----
+     See the same block in web/v2/tools/termsheet.js. The password and the check
+     both moved to POST /api/pricing-admin/unlock; same password, still no login
+     required. V1 is frozen at /v1 but shipped the plaintext password in a comment
+     exactly like V2 did, so it is fixed here too. */
+  function checkAdminPassword(pw, cb) {
+    var done = false;
+    var finish = function (ok) { if (!done) { done = true; cb(ok); } };
+    try {
+      var timer = setTimeout(function () { finish(false); }, 12000);
+      fetch("/api/pricing-admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: String(pw == null ? "" : pw) })
+      }).then(function (r) {
+        return r.ok ? r.json().catch(function () { return null; }) : null;
+      }).then(function (d) {
+        clearTimeout(timer); finish(!!(d && d.ok === true));
+      }).catch(function () { clearTimeout(timer); finish(false); });
+    } catch (e) { finish(false); }
   }
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
@@ -897,10 +919,18 @@
         pw = el("tsAdminPw"), go = el("tsAdminGo"), err = el("tsAdminErr"), hide = el("tsAdminHide");
     if (!trig) return;
     function openLock() { if (lock) lock.hidden = false; if (panel) panel.hidden = true; trig.setAttribute("aria-expanded", "true"); if (err) err.hidden = true; if (pw) { pw.value = ""; pw.focus(); } }
+    var checking = false;   // one request at a time (the unlock route is rate-limited)
     function attempt() {
-      if (!pw) return;
-      if (cyrb53(pw.value, 0) === ADMIN_HASH) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
-      else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      if (!pw || checking) return;
+      checking = true;
+      if (go) { go.disabled = true; }
+      if (err) err.hidden = true;
+      checkAdminPassword(pw.value, function (ok) {
+        checking = false;
+        if (go) { go.disabled = false; }
+        if (ok) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
+        else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      });
     }
     function setVal(id, v) { var e = el(id); if (e) e.value = v; }
     function manualVis() {
@@ -1205,17 +1235,44 @@
 
   /* ===================== PDF (branded, signable) ===================== */
   function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+  /* ---------- OUR OWN COPY FIRST, the outside hosts only as a backup -------
+     Owner-directed 2026-08-03. These two loaders reached for a CDN and NOTHING
+     ELSE — so a jsdelivr/unpkg outage, or an officer whose corporate network
+     blocks public file hosts, lost the term sheet PDF, the proof-of-funds
+     letter AND the Excel export in one go, on a browser that was plainly
+     online and already talking to us. The vendored copies have been sitting in
+     tools/vendor/ the whole time; the Scope of Work and Track Record tools
+     have always tried them first. This makes the term sheet behave the same.
+     If the page loaded, the engine loads — no second host has to be up.
+     Versions are unchanged: vendor/jspdf.umd.min.js IS the pinned 2.5.1, and
+     vendor/xlsx.bundle.js is the same xlsx-js-style 1.2.0 build the other two
+     tools already load in production. termsheet.js uses no autoTable, so
+     jsPDF alone is enough here.                                            */
+  async function loadFirst(srcs, ready, what) {
+    if (ready()) return;
+    for (var i = 0; i < srcs.length; i++) {
+      // A source that 404s AND one that loads but defines nothing both fall
+      // through to the next — only "the library is actually here" stops us.
+      try { await loadScript(srcs[i]); } catch (e) { continue; }
+      if (ready()) return;
+    }
+    throw new Error(what + " failed to load");
+  }
+  var haveJsPDF = function () { return !!(window.jspdf && window.jspdf.jsPDF); };
+  var haveXLSX = function () { return !!(window.XLSX && window.XLSX.utils); };
   async function ensurePDF() {
-    if (window.jspdf && window.jspdf.jsPDF) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    catch (e) { await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    if (!(window.jspdf && window.jspdf.jsPDF)) throw new Error("pdf library failed to load");
+    await loadFirst([
+      "vendor/jspdf.umd.min.js",                                        // ours
+      "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+      "https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"
+    ], haveJsPDF, "pdf library");
   }
   async function ensureXLSX() {
-    if (window.XLSX && window.XLSX.utils) return;
-    try { await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    catch (e) { await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    if (!(window.XLSX && window.XLSX.utils)) throw new Error("spreadsheet library failed to load");
+    await loadFirst([
+      "vendor/xlsx.bundle.js",                                          // ours
+      "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js",
+      "https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
+    ], haveXLSX, "spreadsheet library");
   }
   // Visible deal summary for the Excel export: inputs + both programs' headline results.
   function xlsxSections() {
@@ -1349,7 +1406,7 @@
       wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
       X.writeFile(wb, fileStem() + ".xlsx");
       flash("Excel exported.");
-    } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
+    } catch (e) { flash("Excel export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team."); }
     finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
   }
   async function importXlsx(input) {
@@ -1372,6 +1429,43 @@
   }
   function logoData() { try { if (!window.RB_LOGO) return null; return { dataURI: "data:image/png;base64," + window.RB_LOGO.b64, w: window.RB_LOGO.w, h: window.RB_LOGO.h }; } catch (e) { return null; } }
   function pdfSafe(s) { return String(s == null ? "" : s).replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\u2022/g, "*").replace(/\u2192/g, "->").replace(/[^\x00-\xFF]/g, ""); }
+  /* ---------- a value that must fit a fixed slot, never silently lost -------
+     Owner-directed 2026-08-03, alongside the Scope of Work address fix. The
+     proof-of-funds summary box and the derivation page each wrapped a value to
+     its slot and then drew ONLY vlines[0] \u2014 so a long property line lost its
+     city / state / ZIP with nothing on the page to say so. Same family as the
+     SOW overlap (a value that does not fit its slot), different symptom: the
+     tail was dropped rather than painted over the neighbour.
+     The value now STACKS: the break is taken at the FIRST comma (the street /
+     city-state-ZIP seam), after shrinking a half point at a time so most
+     addresses still fit on one line. Capped at TWO lines and ellipsis-clamped
+     past that, because both surfaces are fixed-height pages \u2014 an unbounded
+     grow would push the signature block (or the next section) off the sheet,
+     and a visible "..." still beats a silent drop.
+     A value that ALREADY FITS comes back unchanged at its original size, so
+     every term sheet that lays out correctly today is byte-for-byte unchanged.
+     Byte-identical in web/tools and web/v2/tools (guarded by
+     scripts/test-termsheet-slot-fit-pure.js).                              */
+  function fitSlotLines(doc, val, maxW, font, style, size, minSize, maxLines) {
+    var set = function (s) { doc.setFont(font, style); doc.setFontSize(s); };
+    var fs = size; set(fs);
+    if (doc.getTextWidth(val) <= maxW) return { fs: fs, lines: [val] };
+    var c = val.indexOf(",");
+    var parts = c > 0 ? [val.slice(0, c).trim(), val.slice(c + 1).trim()] : [val];
+    var tooWide = function () { for (var i = 0; i < parts.length; i++) if (doc.getTextWidth(parts[i]) > maxW) return true; return false; };
+    while (fs > minSize && tooWide()) { fs -= 0.5; set(fs); }
+    var lines = [];
+    for (var p = 0; p < parts.length; p++) doc.splitTextToSize(parts[p], maxW).forEach(function (w) { lines.push(w); });
+    var cap = maxLines || 2;
+    if (lines.length > cap) lines = lines.slice(0, cap - 1).concat([lines.slice(cap - 1).join(" ")]);
+    for (var k = 0; k < lines.length; k++) {                    // a run with no break point can still overflow
+      if (doc.getTextWidth(lines[k]) <= maxW) continue;
+      var t = lines[k];
+      while (t.length > 1 && doc.getTextWidth(t + "...") > maxW) t = t.slice(0, -1);
+      lines[k] = t + "...";
+    }
+    return { fs: fs, lines: lines };
+  }
   function flash(msg) {
     var t = el("ts-toast"); if (!t) { t = document.createElement("div"); t.id = "ts-toast"; t.className = "ys-toast"; document.body.appendChild(t); }
     t.textContent = msg; t.classList.add("show"); clearTimeout(flash._t); flash._t = setTimeout(function () { t.classList.remove("show"); }, 2800);
@@ -1770,7 +1864,7 @@
       doc.save(fileStem() + ".pdf");
       flash("Term sheet downloaded.");
     } catch (e) {
-      flash("Term sheet export needs an internet connection (loads the PDF engine).");
+      flash("Term sheet export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
   function pctp(x) { return (Math.round(x * 1000) / 10) + "%"; }
@@ -1882,7 +1976,12 @@
         ["Leverage on this financing", leverageLine(d, isBridge)],
         ["Indicative term", (d.term || 12) + " months, interest-only"]
       ];
-      var boxH = headH + rows.length * rowH + 8;
+      // Measure every value BEFORE the box is drawn: a row needing a second
+      // line makes the BOX taller, instead of having its tail dropped.
+      var POF_VLH = 10.5;                                       // a stacked value line
+      var vfit = rows.map(function (rw) { return fitSlotLines(doc, pdfSafe(rw[1]), boxW - 26 - 200, "helvetica", "bold", 8.5, 7.5, 2); });
+      var rowAdv = vfit.map(function (f) { return rowH + (f.lines.length - 1) * POF_VLH; });
+      var boxH = headH + rowAdv.reduce(function (a, b) { return a + b; }, 0) + 8;
       doc.setFillColor.apply(doc, SOFT); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.9);
       doc.roundedRect(boxX, y, boxW, boxH, 4, 4, "FD");
       doc.setFillColor.apply(doc, TEAL); doc.roundedRect(boxX, y, boxW, headH, 4, 4, "F"); doc.rect(boxX, y + 12, boxW, headH - 12, "F");
@@ -1892,11 +1991,13 @@
       for (var r = 0; r < rows.length; r++) {
         doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor.apply(doc, GRAY);
         doc.text(pdfSafe(rows[r][0]), boxX + 13, yy);
-        doc.setFont("helvetica", "bold"); doc.setTextColor.apply(doc, DARK);
-        var vlines = doc.splitTextToSize(pdfSafe(rows[r][1]), boxW - 26 - 200);
-        doc.text(vlines[0] || "", boxX + boxW - 13, yy, { align: "right" });
-        if (r < rows.length - 1) { doc.setDrawColor(231, 228, 219); doc.setLineWidth(0.5); doc.line(boxX + 13, yy + 5.5, boxX + boxW - 13, yy + 5.5); }
-        yy += rowH;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vfit[r].fs); doc.setTextColor.apply(doc, DARK);
+        // Drawn line by line at our OWN spacing, so the divider below sits where
+        // we measured it (jsPDF's own multi-line spacing is font-size derived).
+        (function (f, base) { f.lines.forEach(function (ln, k) { doc.text(ln, boxX + boxW - 13, base + k * POF_VLH, { align: "right" }); }); })(vfit[r], yy);
+        var lastLine = yy + (vfit[r].lines.length - 1) * POF_VLH;   // divider under the LAST line
+        if (r < rows.length - 1) { doc.setDrawColor(231, 228, 219); doc.setLineWidth(0.5); doc.line(boxX + 13, lastLine + 5.5, boxX + boxW - 13, lastLine + 5.5); }
+        yy += rowAdv[r];
       }
       y = y + boxH + 20;
 
@@ -1931,7 +2032,7 @@
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
       flash("Proof-of-funds letter downloaded.");
     } catch (e) {
-      flash("Letter export needs an internet connection (loads the PDF engine).");
+      flash("Letter export failed. Refresh the page and try again \u2014 if it keeps happening, tell the team.");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
 
@@ -2042,13 +2143,15 @@
       for (var r = 0; r < rows.length; r++) {
         if (!rows[r]) continue;
         var kind = rows[r][2] || "", isTot = kind === "tot", isSub = kind === "sub";
+        // Measure the value FIRST so a row that needs a second line grows.
+        var vf = fitSlotLines(doc, pdfSafe(rows[r][1]), (W - 2 * M) * 0.56, "helvetica", "bold", isSub ? 8 : 8.9, 7.5, 2);
+        var vExtra = (vf.lines.length - 1) * 11;
         if (isTot) { doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
         doc.setFont("helvetica", isTot ? "bold" : "normal"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isSub ? GRAY : (isTot ? DARK : BODY));
         doc.text(pdfSafe(rows[r][0]), M + (isSub ? 12 : 0), y);
-        doc.setFont("helvetica", "bold"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isTot ? TEAL : DARK);
-        var vlines = doc.splitTextToSize(pdfSafe(rows[r][1]), (W - 2 * M) * 0.56);
-        doc.text(vlines[0] || "", W - M, y, { align: "right" });
-        y += isSub ? 12.5 : 14.5;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vf.fs); doc.setTextColor.apply(doc, isTot ? TEAL : DARK);
+        (function (f, base) { f.lines.forEach(function (ln, k) { doc.text(ln, W - M, base + k * 11, { align: "right" }); }); })(vf, y);
+        y += (isSub ? 12.5 : 14.5) + vExtra;
       }
       y += 9;
     }

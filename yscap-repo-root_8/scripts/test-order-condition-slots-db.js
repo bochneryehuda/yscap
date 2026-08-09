@@ -212,8 +212,24 @@ const b64 = PDF.toString('base64');
       `SELECT id FROM documents WHERE checklist_item_id=$1 ORDER BY created_at ASC`, [cond.id])).rows;
     await db.query(`UPDATE documents SET slot_label=$2 WHERE id=$1`, [docs[0].id, slots.find((s) => /binder/i.test(s))]);
     await db.query(`UPDATE documents SET slot_label=$2 WHERE id=$1`, [docs[1].id, slots.find((s) => /invoice/i.test(s))]);
+
+    // LABELLING A SLOT IS NOT REVIEWING WHAT IS IN IT (owner-directed
+    // 2026-08-03). An order return arrives from the vendor by email and is
+    // filed 'pending', exactly like any other document somebody sends us — and
+    // this is the very condition the owner reported: a previous carrier's
+    // never-accepted binder filled the "binder" slot, so the gate passed and the
+    // whole set shipped to the investor and to the closing attorney. So the
+    // labels alone must NOT clear it…
+    const early = await call('PATCH', `/api/staff/checklist/${cond.id}`, { status: 'satisfied' }, jwtProc);
+    assert(early.status === 422 && /waiting for a decision/i.test((early.body || {}).error || ''),
+      'the labelled-but-unaccepted returns do NOT clear the condition');
+
+    // …and once a human has actually accepted both, it clears normally.
+    for (const d of docs.slice(0, 2)) {
+      await call('POST', `/api/staff/documents/${d.id}/review`, { action: 'accept' }, jwtProc);
+    }
     const r = await call('PATCH', `/api/staff/checklist/${cond.id}`, { status: 'satisfied' }, jwtProc);
-    assert(r.status === 200, `with both derived labels in place the insurance condition can be completed (${r.status} ${JSON.stringify(r.body)})`);
+    assert(r.status === 200, `with both derived labels ACCEPTED the insurance condition can be completed (${r.status} ${JSON.stringify(r.body)})`);
     const st = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [cond.id])).rows[0].status;
     assert(st === 'satisfied', 'and it really is satisfied');
   }

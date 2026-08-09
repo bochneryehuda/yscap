@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
-import ActionNeeded from '../components/ActionNeeded.jsx';
 import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
@@ -85,9 +84,9 @@ export default function Dashboard() {
     }).catch(() => {});
   }, []);
 
-  // "What you still need to do" now loads in ONE call via the <ActionNeeded> card
-  // (GET /api/borrower/action-items) instead of a checklist fetch per file, so it
-  // paints instantly at the top — see the component below.
+  // "What you still need to do" lives on its own /tasks screen now (owner-directed
+  // second wave — the task list moved off the home page). The home keeps only a
+  // pointer: the "to complete" tile in the strip below links straight to /tasks.
 
   const [creating, setCreating] = useState(false);
   async function newApplication() {
@@ -208,9 +207,9 @@ export default function Dashboard() {
         <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       {msg && <div className="notice ok">{msg}</div>}
 
-      {/* Lead with what the borrower must DO right now — signatures, fixes, documents
-          — pulled cross-file in one call so it paints immediately on login (#39). */}
-      <ActionNeeded />
+      {/* The task list moved off the home page into its own Tasks section
+          (owner-directed second wave). The home is now a clean loans view; the
+          "to complete" tile in the strip below links straight to /tasks. */}
 
       {drawConfirm && (
         <div className="cv-modal-back" onClick={() => setDrawConfirm(null)}>
@@ -234,9 +233,12 @@ export default function Dashboard() {
       {apps && apps.length > 0 && (
         <div className="next-strip">
           {outstanding > 0 ? (
-            <div className="next-item warn">
+            <div className="next-item warn next-clickable" role="button" tabIndex={0}
+              onClick={() => nav('/tasks')}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nav('/tasks'); } }}
+              title="Open your tasks">
               <span className="ni-n">{outstanding}</span>
-              <span className="ni-l">document{outstanding === 1 ? '' : 's'} & item{outstanding === 1 ? '' : 's'} to complete across your files</span>
+              <span className="ni-l">document{outstanding === 1 ? '' : 's'} & item{outstanding === 1 ? '' : 's'} to complete — open your tasks →</span>
             </div>
           ) : (
             <div className="next-item ok"><span className="ni-l">✓ You're all caught up — nothing outstanding right now.</span></div>

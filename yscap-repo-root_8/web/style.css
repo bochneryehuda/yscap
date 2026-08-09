@@ -853,3 +853,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible{
 .lo-role{ color:var(--muted,#9aa4a8); font-size:.74rem; }
 .lo-contact{ display:flex; gap:1rem; flex-wrap:wrap; align-items:center; }
 .lo-contact a{ color:var(--teal-br,#5bb0a8); text-decoration:none; font-size:.82rem; font-weight:600; white-space:nowrap; }
+/* Mounted INSIDE a position:fixed header (the home page + the legal pages,
+   whose header is `.nav`). It spans the header's full width, sits flush under
+   the nav row, and needs an opaque fill of its own because the nav above it is
+   translucent + blurred — brand.js pushes the page down by its height. */
+.lo-bar-fixed{ border-top:1px solid var(--line-2,rgba(255,255,255,.075)); }

@@ -63,6 +63,10 @@ async function call(path, { method = 'GET', body, query } = {}) {
   }
   const attempt = async () => {
     await throttle();
+    // …and the SHARED budget on top: `throttle()` above is per-process, so two processes
+    // paced themselves independently against one vendor key — the same hole ClickUp
+    // phoned about (lib/api-rate-limit.js, db/482).
+    await require('../lib/api-rate-limit').acquire('trustpoint');
     const res = await fetch(url, {
       method,
       headers: {

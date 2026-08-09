@@ -5,8 +5,15 @@
  *   • per-draw report  — one draw: schedule of values, per-line approved/not-approved, inspector notes,
  *                        and the inspector's photos embedded (never expiring — read from PILOT storage);
  *   • whole-project    — cumulative construction progress across every draw + all inspections;
- *   • borrower-safe    — the same, with every capital-partner name scrubbed, lender fee/net stripped, and
- *                        photo GPS removed (a borrower must never see our margin or a note-buyer name).
+ *   • borrower-safe    — the same, with every capital-partner name scrubbed and photo GPS removed.
+ *                        THE DRAW PROCESSING FEE IS SHOWN TO THE BORROWER (owner-directed 2026-08-03:
+ *                        "yes add the fee to the borrower report too" — SUPERSEDES the earlier
+ *                        "lender fee/net stripped" rule for THIS fee only). It comes out of the
+ *                        borrower's own approved amount and decides what actually wires, so hiding it
+ *                        left them reconciling a number nobody had explained. What stays hidden is
+ *                        unchanged and is a different thing entirely: the capital-partner / note-buyer
+ *                        name, and OUR fee income across the project (the "Our draw fees on this
+ *                        project" band — charged vs expected — which is our margin, not their money).
  *
  * The builder (`buildDrawReport`) is a PURE renderer over already-loaded data (app header, rollup,
  * draw sections with photo BYTES) so it unit-tests with no DB and no network. The DB/storage side
@@ -23,6 +30,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { pdfSafe, fit } = require('../lib/esign/application-pdf');
 const { scrubText } = require('../lib/borrower-safe');
+const APPROVAL = require('./approval');   // PURE — the one definition of the approval ladder + the netting wording
 // DB / storage / rollup are required lazily inside the DB-side functions only, so the PURE builder path
 // (and its unit test) never touches the database or trips the "DATABASE_URL not set" boot log.
 const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); } };
@@ -139,33 +147,95 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   }
 
   /**
-   * THE MONEY ANSWER, FIRST (owner-directed 2026-07-27). The report used to open with the
-   * property/loan header and bury "how much was approved" partway down the second band — so the
-   * one question the borrower opens this PDF to answer was the hardest thing on the page to find.
-   * A per-draw report now leads with a single panel: what was approved, of what was requested,
-   * how much was not, and what it means. Everything else follows underneath, unchanged.
+   * THE MONEY ANSWER, FIRST (owner-directed 2026-07-27), AND IT IS TWO NUMBERS (owner-directed
+   * 2026-08-03: "enhance our own report and the borrower's report to include and pick a number for a
+   * released amount — how much is going to be released after this draw, which includes the fees
+   * netted out").
+   *
+   * The panel used to lead with ONE figure, what was approved, and the release was a sentence
+   * underneath and a row further down. But "approved" and "what actually moves" are two different
+   * questions and the second one is the one everybody opens the PDF to answer — the borrower wants
+   * to know what lands in their account, and the desk wants to know what to wire. So the hero now
+   * carries BOTH, side by side: the approval on the left, THE RELEASE on the right, each a headline
+   * number in its own right, with the deduction named underneath the release so the gap between the
+   * two is never a mystery.
    */
   function moneyHero(s) {
     const req = Number(s.requested_cents || 0);
     const appr = Number(s.approved_cents || 0);
     const notAppr = s.not_approved_cents != null ? Number(s.not_approved_cents) : Math.max(0, req - appr);
     const full = notAppr <= 0 && req > 0;
-    const H0 = 96;
+    // WHOSE approval is this number? Until we press Final approve it is the INSPECTOR'S — the
+    // proposal the borrower is being asked to accept — and the report must say so rather than
+    // print a confident $0 (owner-directed 2026-08-03: "the report should show what the inspector
+    // approved… even though he didn't click on final approve yet").
+    const finalDone = !!s.final_approved_cents || s.approval_stage === 'final_approved' || s.approval_stage === 'released';
+    const heroLabel = finalDone
+      ? (s.released ? 'RELEASED' : 'FINAL APPROVED FOR RELEASE')
+      : 'APPROVED BY THE INSPECTOR';
+
+    // ---- the release side ----
+    const fee = Number(s.fee_cents || 0);
+    const retain = Number(s.retainage_held_cents || 0);
+    const net = s.net_release_cents != null ? Number(s.net_release_cents) : null;
+    const showRelease = net != null;
+    const relLabel = s.released
+      ? (borrower ? 'RELEASED TO YOU' : 'RELEASED')
+      : (borrower ? 'TO BE RELEASED TO YOU' : 'TO BE RELEASED AFTER THIS DRAW');
+    // Name the deduction that produced the gap. With nothing deducted, say so rather than leave the
+    // reader wondering why two identical numbers are printed twice.
+    const deductions = [];
+    if (fee > 0) deductions.push(usd(fee) + ' draw fee');
+    if (retain > 0) deductions.push(usd(retain) + ' retainage held');
+    const relSub = deductions.length
+      ? 'after the ' + deductions.join(' and ')
+      : 'nothing is deducted from this draw';
+
+    const stageLine = finalDone
+      ? (s.released ? 'This draw has been released.' : 'Final approved — ready to release.')
+      : (borrower
+        ? 'This is what the inspector approved. Accept it and your loan team releases the draw.'
+        : 'This is the INSPECTOR\u2019S approval. It still needs the borrower\u2019s acceptance, the capital partner\u2019s review and our final approval before the money is released.');
+    const meaning = [
+      stageLine,
+      notAppr > 0
+        ? (borrower
+          ? 'Anything not approved stays in your budget for a future draw once that work is complete.'
+          : 'Not approved this inspection: ' + usd(notAppr) + ' — it stays in the budget for a future draw.')
+        : '',
+      borrower ? '' : 'Status: ' + (s.approval_label || STATUS_LABEL(s.status, false)) + '.',
+    ].filter(Boolean).join(' ');
+
+    // Size the panel to its own content — the meaning wraps, and a fixed height used to let a long
+    // one spill past the panel's own background.
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8);
+    const mLines = doc.splitTextToSize(pdfSafe(meaning), W - 2 * M - 36);
+    const H0 = 86 + mLines.length * 10.5;
     brk(H0 + 10);
     doc.setFillColor(246, 243, 236); doc.roundedRect(M, y, W - 2 * M, H0, 4, 4, 'F');
     doc.setFillColor.apply(doc, full ? TEAL : GOLD); doc.roundedRect(M, y, 4.5, H0, 2, 2, 'F');
 
+    // LEFT — the approval
     doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
-    doc.text(pdfSafe('APPROVED FOR RELEASE'), M + 18, y + 20);
-    // the headline number, as large as the panel allows
-    doc.setFont('times', 'bold'); doc.setFontSize(34); doc.setTextColor.apply(doc, full ? TEAL : DARK);
-    doc.text(pdfSafe(usd(appr)), M + 18, y + 52);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor.apply(doc, GRAY);
-    doc.text(pdfSafe('of ' + usd(req) + ' requested'), M + 18, y + 70);
+    doc.text(pdfSafe(heroLabel), M + 18, y + 20);
+    doc.setFont('times', 'bold'); doc.setFontSize(showRelease ? 27 : 34); doc.setTextColor.apply(doc, full ? TEAL : DARK);
+    doc.text(pdfSafe(usd(appr)), M + 18, y + 50);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY);
+    doc.text(pdfSafe('of ' + usd(req) + ' requested'), M + 18, y + 66);
 
-    // the right-hand rail: what was held back, and the plain-language meaning
+    // RIGHT — THE RELEASE, picked out as its own headline number
     const rx = W - M - 18;
-    if (notAppr > 0) {
+    if (showRelease) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe(relLabel), rx, y + 20, { align: 'right' });
+      doc.setFont('times', 'bold'); doc.setFontSize(27); doc.setTextColor.apply(doc, TEAL);
+      doc.text(pdfSafe(usd(net)), rx, y + 50, { align: 'right' });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe(relSub), rx, y + 66, { align: 'right' });
+      if (!s.released && fee > 0 && s.fee_projected) {
+        doc.setFontSize(7); doc.text(pdfSafe('(standard draw fee for this file)'), rx, y + 77, { align: 'right' });
+      }
+    } else if (notAppr > 0) {
       doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
       doc.text(pdfSafe('NOT APPROVED THIS INSPECTION'), rx, y + 20, { align: 'right' });
       doc.setFont('times', 'bold'); doc.setFontSize(18); doc.setTextColor.apply(doc, BAD);
@@ -174,15 +244,34 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, TEAL);
       doc.text(pdfSafe('Everything requested was approved'), rx, y + 30, { align: 'right' });
     }
-    const meaning = borrower
-      ? (notAppr > 0
-        ? 'The lines below show what the inspector approved on each item. Anything not approved stays\nin your budget for a future draw once that work is complete.'
-        : 'The lines below show what the inspector approved on each item.')
-      : ((s.net_release_cents != null ? 'Net release ' + usd(s.net_release_cents) + (s.fee_cents != null ? ' (after the ' + usd(s.fee_cents) + ' draw fee)' : '') + '. ' : '') +
-         'Status: ' + STATUS_LABEL(s.status, false) + '.');
+
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8); doc.setTextColor.apply(doc, [70, 78, 82]);
-    doc.text(pdfSafe(meaning), M + 18, y + 84, { maxWidth: W - 2 * M - 36 });
+    doc.text(mLines, M + 18, y + (showRelease && !s.released && fee > 0 && s.fee_projected ? 92 : 84));
     y += H0 + 14;
+  }
+
+  /**
+   * A WHOLE-PROJECT report has no single draw for a hero to be about, but the same question still
+   * needs an answer at the project level: how much has actually reached the borrower, and how much
+   * is still coming once the open draws are released (owner-directed 2026-08-03).
+   */
+  function releaseSummary() {
+    const n = (v) => Number(v || 0) || 0;
+    let releasedC = 0, pendingC = 0, feesC = 0;
+    for (const s of sections) {
+      const net = s.net_release_cents != null ? n(s.net_release_cents) : null;
+      if (net == null) continue;
+      if (s.released) releasedC += net; else pendingC += net;
+      feesC += n(s.fee_cents);
+    }
+    if (releasedC <= 0 && pendingC <= 0) return;
+    band('Money released');
+    kv('Released to the borrower so far', usd(releasedC), { accent: true });
+    if (pendingC > 0) kv('Still to be released on the open draw(s)', usd(pendingC));
+    if (!borrower && feesC > 0) kv('Draw fees netted out of those releases', '-' + usd(feesC));
+    para(borrower
+      ? 'These are the amounts paid out to you after the draw fee on each draw. Anything approved but not yet released is waiting on the final approval.'
+      : 'Release figures are net of the draw processing fee (and any retainage). A draw with no recorded release shows its projected net.', 7.6, GRAY);
   }
 
   header();
@@ -211,11 +300,18 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     const p = rollup.project;
     // headline tiles row
     brk(52);
+    // "Remaining" used to be budget − RELEASED, so a $25,000 draw sitting at inspector-approved left
+    // the whole $220,000 showing as still available. The tiles now show what is genuinely free.
+    const committed = p.committed != null ? p.committed : p.drawn;
+    const available = p.available != null ? p.available : p.remaining;
     const tiles = [
       ['Budget', usd(p.budget)],
-      ['Drawn to date', usd(p.drawn)],
-      ['Remaining', usd(p.remaining)],
-      ['Complete', pctStr(p.pct_complete)],
+      ['Released', usd(p.drawn)],
+      // Owner-directed 2026-08-07: a draw counts against the budget from the moment it is
+      // REQUESTED, not from the moment the inspector answers — so this tile can no longer be
+      // called "approved". It is everything in flight.
+      ['Committed on draws in flight', usd(Math.max(0, committed - p.drawn))],
+      ['Still available', usd(available)],
     ];
     const tw = (W - 2 * M - 3 * 8) / 4;
     tiles.forEach((t, i) => {
@@ -235,36 +331,45 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     // Every budget line is listed either way — a line with no activity this draw shows "—", so a
     // reader can see what was NOT drawn against just as clearly as what was.
     const drawLines = (scope !== 'project' && sections[0] && Array.isArray(sections[0].lines)) ? sections[0].lines : [];
-    // Match on the line NAME — the inspection finding and the budget line are the same SOW line,
-    // and the name is the only key both sides carry (Sitewire binds its job items by name too).
+    // Match an inspected line to its BUDGET line by the CROSSWALK KEY, with the name as a fallback.
+    // Our Scope of Work keeps ONE "Roof" line; Sitewire keeps one job item per unit ("Unit 1 - Roof"),
+    // so a name match could never join the two — which is why the budget row read "—" for requested
+    // and approved while four unbudgeted "Unit N - Roof" rows hung underneath it (owner-reported
+    // 2026-08-03). `sow_line_key` is the same key the rollup and the Excel packet already join on.
     const activity = new Map();
+    const nameKey = (v) => 'n:' + String(v || '').trim().toLowerCase();
+    const lineKey = (v) => 'k:' + String(v || '');
     for (const l of drawLines) {
-      const key = String(l.name || '').trim().toLowerCase();
+      const key = l.sow_line_key ? lineKey(l.sow_line_key) : (l.name ? nameKey(l.name) : null);
       if (!key) continue;
       const prev = activity.get(key) || { req: 0, appr: 0 };
       activity.set(key, { req: prev.req + (Number(l.requested_cents) || 0), appr: prev.appr + (Number(l.approved_cents) || 0) });
     }
     const withDraw = activity.size > 0;
     const cols = withDraw ? [
-      { t: 'Line item', w: 0.26, a: 'left' },
-      { t: 'Budget', w: 0.126, a: 'right' },
-      { t: 'Drawn', w: 0.126, a: 'right' },
-      { t: 'Requested', w: 0.132, a: 'right' },
-      { t: 'Approved', w: 0.132, a: 'right' },
-      { t: 'Remaining', w: 0.132, a: 'right' },
-      { t: '% done', w: 0.092, a: 'right' },
+      { t: 'Line item', w: 0.24, a: 'left' },
+      { t: 'Budget', w: 0.12, a: 'right' },
+      { t: 'Released', w: 0.12, a: 'right' },
+      { t: 'Requested', w: 0.128, a: 'right' },
+      { t: 'Approved', w: 0.128, a: 'right' },
+      { t: 'Available', w: 0.13, a: 'right' },
+      { t: '% used', w: 0.134, a: 'right' },
     ] : [
       { t: 'Line item', w: 0.34, a: 'left' },
       { t: 'Budget', w: 0.16, a: 'right' },
-      { t: 'Drawn', w: 0.16, a: 'right' },
-      { t: 'Remaining', w: 0.18, a: 'right' },
-      { t: '% done', w: 0.16, a: 'right' },
+      { t: 'Released', w: 0.16, a: 'right' },
+      { t: 'Available', w: 0.18, a: 'right' },
+      { t: '% used', w: 0.16, a: 'right' },
     ];
-    // one row builder for both shapes — the draw columns slot in only when we have them
-    const actFor = (label) => activity.get(String(label || '').trim().toLowerCase()) || null;
-    const row = (label, budgeted, drawn, remaining, pct, act) => (withDraw
-      ? [label, usd(budgeted), usd(drawn), act ? usd(act.req) : '—', act ? usd(act.appr) : '—', usd(remaining), pctStr(pct)]
-      : [label, usd(budgeted), usd(drawn), usd(remaining), pctStr(pct)]);
+    // one row builder for both shapes — the draw columns slot in only when we have them.
+    // AVAILABLE / % USED count a draw that is inspector-approved but not yet FINALLY approved as
+    // spent (the rollup's `available` / `pct_committed`) — owner-directed 2026-08-03: "we should
+    // treat a draw that is not fully approved, even if it's halfway approved, as if it is approved…
+    // we can still decline it, and everything goes back to fully available."
+    const actFor = (line) => activity.get(lineKey(line && line.sow_line_key)) || activity.get(nameKey(line && line.label)) || null;
+    const row = (label, budgeted, drawn, available, pct, act) => (withDraw
+      ? [label, usd(budgeted), usd(drawn), act ? usd(act.req) : '—', act ? usd(act.appr) : '—', usd(available), pctStr(pct)]
+      : [label, usd(budgeted), usd(drawn), usd(available), pctStr(pct)]);
     const iw = W - 2 * M;
     function rowCells(cells, isHead) {
       brk(15);
@@ -285,22 +390,26 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     }
     rowCells(cols.map((c) => c.t), true);
     const seen = new Set();
+    // `available` / `pct_committed` are only on a rollup built by the current code — fall back to the
+    // released-only figures rather than printing a blank on an older cached shape.
+    const avail = (l) => (l.available != null ? l.available : l.remaining);
+    const usedPct = (l) => (l.pct_committed != null ? l.pct_committed : l.pct_complete);
     const shown = rollup.lines.filter((l) => l.kind === 'line');
     for (const l of shown) {
-      const act = actFor(l.label);
-      if (act) seen.add(String(l.label || '').trim().toLowerCase());
-      rowCells(row(clean(l.label), l.budgeted, l.drawn, l.remaining, l.pct_complete, act));
+      const act = actFor(l);
+      if (act) { seen.add(lineKey(l.sow_line_key)); seen.add(nameKey(l.label)); }
+      rowCells(row(clean(l.label), l.budgeted, l.drawn, avail(l), usedPct(l), act));
     }
     for (const l of rollup.lines.filter((l) => l.kind === 'contingency' || l.kind === 'gc')) {
       const label = l.kind === 'gc' ? 'General conditions' : 'Contingency';
-      const act = actFor(l.label) || actFor(label);
-      if (act) seen.add(String((actFor(l.label) ? l.label : label) || '').trim().toLowerCase());
-      rowCells(row(label, l.budgeted, l.drawn, l.remaining, l.pct_complete, act));
+      const act = actFor(l) || activity.get(nameKey(label)) || null;
+      if (act) { seen.add(lineKey(l.sow_line_key)); seen.add(nameKey(l.label)); seen.add(nameKey(label)); }
+      rowCells(row(label, l.budgeted, l.drawn, avail(l), usedPct(l), act));
     }
     // An inspected line that is not on the budget rollup must never vanish from the table — it is
     // exactly the case a reader would ask about (work drawn against something not budgeted).
     for (const l of drawLines) {
-      const key = String(l.name || '').trim().toLowerCase();
+      const key = l.sow_line_key ? lineKey(l.sow_line_key) : (l.name ? nameKey(l.name) : null);
       if (!key || seen.has(key)) continue;
       seen.add(key);
       const act = activity.get(key);
@@ -318,8 +427,33 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     const sum = (k) => [...activity.values()].reduce((s, a) => s + a[k], 0);
     const s0 = sections[0] || {};
     const totReq = s0.requested_cents != null ? Number(s0.requested_cents) : sum('req');
+    // The draw's `approved_cents` is now the INSPECTOR-approved total (approval.drawMoney), so the
+    // Total row can no longer disagree with the per-line "Approved" column above it — the old total
+    // read Sitewire's final-approval field and printed $0 under a column of real approvals.
     const totAppr = s0.approved_cents != null ? Number(s0.approved_cents) : sum('appr');
-    rowCells(row('Total', p.budget, p.drawn, p.remaining, p.pct_complete, withDraw ? { req: totReq, appr: totAppr } : null));
+    rowCells(row('Total', p.budget, p.drawn,
+      p.available != null ? p.available : p.remaining,
+      p.pct_committed != null ? p.pct_committed : p.pct_complete,
+      withDraw ? { req: totReq, appr: totAppr } : null));
+  }
+
+  // ---- MONEY RELEASED (whole-project reports only — a per-draw report answers it in the hero) ----
+  if (scope === 'project') releaseSummary();
+
+  // ---- OUR FEES ON THIS PROJECT, kept separately from the borrower's money ----
+  // Owner-directed 2026-08-03: "it should keep track separately of our fees for this project."
+  // Staff copy only — a borrower report never shows our fee income (frozen borrower-safe rule).
+  if (!borrower && rollup && rollup.fees && Number(rollup.fees.total_cents) > 0) {
+    band('Our draw fees on this project');
+    if (rollup.fees.per_draw_cents != null) {
+      kv('Fee per draw', usd(rollup.fees.per_draw_cents)
+        + (rollup.fees.fee_kind ? ' (' + rollup.fees.fee_kind + ' inspection)' : '')
+        + (rollup.fees.overridden ? ' — custom fee set for this file' : ''));
+    }
+    kv('Charged so far (on recorded releases)', usd(rollup.fees.charged_cents), { accent: true });
+    if (Number(rollup.fees.projected_cents) > 0) kv('Expected on draws not yet released', usd(rollup.fees.projected_cents));
+    kv('Total for this project', usd(rollup.fees.total_cents));
+    para('These fees are netted out of each draw before the borrower is paid — they are our income on this file, not part of the construction budget.', 7.6, GRAY);
   }
 
   // ---- Per-draw inspection sections ----
@@ -335,17 +469,43 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
         kv('Approved', usd(s.approved_cents), { accent: true });
         if (Number(s.not_approved_cents) > 0) kv('Not approved (this inspection)', usd(s.not_approved_cents));
       }
+      // WHAT ACTUALLY REACHES THE BORROWER (owner-directed 2026-08-03). The fee comes out of their
+      // approved amount, so they are shown the same arithmetic we are: approved, less the fee, equals
+      // the wire. Our fee income ACROSS the project stays staff-only — that is our margin, not a
+      // deduction from this draw.
+      if (Number(s.fee_cents) > 0 || s.net_release_cents != null) {
+        kv('Approved on this draw', usd(s.approved_cents));
+        if (Number(s.fee_cents) > 0) kv('Less: draw processing fee', '-' + usd(s.fee_cents));
+        if (Number(s.retainage_held_cents) > 0) kv('Less: retainage held until completion', '-' + usd(s.retainage_held_cents));
+        if (s.net_release_cents != null) kv('Amount wired to you', usd(s.net_release_cents), { accent: true });
+        if (Number(s.fee_cents) > 0) {
+          para('The draw processing fee is the standard fee for handling and inspecting a draw on your loan. '
+            + 'It is taken out of the approved amount, so the figure above is what reaches your account'
+            + (s.fee_projected ? ' — it is confirmed when the funds are sent.' : '.'), 7.4, GRAY);
+        }
+      }
       kv('Status', STATUS_LABEL(s.status, true));
     } else {
       if (!heroShown) {
         kv('Requested', usd(s.requested_cents));
-        kv('Approved', usd(s.approved_cents), { accent: true });
+        kv('Approved by the inspector', usd(s.approved_cents), { accent: true });
         if (Number(s.not_approved_cents) > 0) kv('Not approved', usd(s.not_approved_cents));
       }
-      if (s.fee_cents != null) kv('Draw fee', usd(s.fee_cents));
-      if (s.net_release_cents != null) kv('Net release', usd(s.net_release_cents), { accent: true });
+      // THE RELEASE BREAKDOWN, spelled out (owner-directed 2026-08-03: "clearly on the report, why
+      // it's being netted and what exactly is being netted"). Every deduction gets its own line and
+      // the arithmetic is shown, so the release amount can never look like the whole approval again.
+      kv('Final approved (by us)', Number(s.final_approved_cents) > 0 ? usd(s.final_approved_cents) : 'not yet — awaiting final approval');
+      if (Number(s.fee_cents) > 0) kv('Less: draw processing fee' + (s.fee_projected ? ' (standard for this file)' : ''), '-' + usd(s.fee_cents));
+      if (Number(s.retainage_held_cents) > 0) kv('Less: retainage held', '-' + usd(s.retainage_held_cents));
+      if (s.net_release_cents != null) kv('Net release to the borrower', usd(s.net_release_cents), { accent: true });
+      if (Number(s.fee_cents) > 0) {
+        para('Our draw processing fee is deducted from the approved amount — the borrower receives the net. '
+          + (s.fee_projected
+            ? 'This is this file\u2019s standard draw fee; it becomes the final charged fee when the release is recorded.'
+            : 'This is the fee recorded on the release.'), 7.4, GRAY);
+      }
       kv('Release date', s.release_date ? String(s.release_date).slice(0, 10) : (s.released ? '(released)' : ''));
-      kv('Status', STATUS_LABEL(s.status, false));
+      kv('Status', s.approval_label || STATUS_LABEL(s.status, false));
     }
 
     const lines = Array.isArray(s.lines) ? s.lines : [];
@@ -487,7 +647,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
     let lines = [];
     if (f) {
       const rows = (await lazy.db.query(
-        `SELECT id, sitewire_request_id, sitewire_job_item_id, name, requested_cents, approved_cents, not_approved_cents, inspector_comments
+        `SELECT id, sitewire_request_id, sitewire_job_item_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments
            FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows;
       // durable archived photos for this draw, grouped by request id (kind='image' only)
       const media = (await lazy.db.query(
@@ -500,6 +660,14 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
       }
       lines = rows.map((r) => ({
         name: r.name,
+        // The crosswalk key is how an inspected line finds its BUDGET line. Our Scope of Work keeps
+        // one line ("Roof") while Sitewire keeps one job item per unit ("Unit 1 - Roof"), so matching
+        // the two by NAME — as this report used to — could never line them up: the budget row showed
+        // "—" for requested and approved while four "Unit N - Roof" rows dangled underneath it as
+        // work drawn against nothing budgeted (owner-reported 2026-08-03). The name stays as the
+        // fallback for a line that predates the crosswalk.
+        sow_line_key: r.sow_line_key || null,
+        unit_index: r.unit_index,
         inspector_comments: r.inspector_comments,
         requested_cents: r.requested_cents,
         approved_cents: r.approved_cents,
@@ -518,9 +686,18 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
       number: d.number != null ? d.number : null,
       status: d.status || (f && f.status) || null,
       requested_cents: d.requested_cents || 0,
+      // `approved_cents` is the INSPECTOR-approved amount (the approval ladder's answer) — the number
+      // the borrower is being asked to accept. `final_approved_cents` is 0 until we press Final
+      // approve. Printing the final figure as "approved" is what put "$0 APPROVED FOR RELEASE" at the
+      // top of a report whose every line said "Appr $6,250" (owner-reported 2026-08-03).
       approved_cents: d.approved_cents || 0,
+      final_approved_cents: d.final_approved_cents || 0,
       not_approved_cents: d.not_approved_cents || 0,
+      approval_stage: d.approval_stage || null,
+      approval_label: d.approval_label || null,
       fee_cents: d.fee_cents != null ? d.fee_cents : null,
+      fee_projected: !!d.fee_projected,
+      retainage_held_cents: d.retainage_held_cents || 0,
       net_release_cents: d.net_release_cents != null ? d.net_release_cents : null,
       released: !!d.released,
       release_date: d.release_date || null,
@@ -611,7 +788,11 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
          (application_id, borrower_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
           source_type, visibility, is_current, review_status)
-       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
+       -- BORN ACCEPTED — a report PILOT generated from data it already holds, not
+       -- a human upload waiting on review (owner-directed 2026-08-03; see
+       -- lib/document-acceptance.js, and the same treatment given to the
+       -- Trustpoint inspection reports and the tool exports).
+       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'accepted')
        RETURNING id`,
       [appId, borrowerId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility]);
     // Supersede ONLY prior versions of the SAME report identity (same scope + mode + draw + loan) — never

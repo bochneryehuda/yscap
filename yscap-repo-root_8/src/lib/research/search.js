@@ -68,6 +68,26 @@ const list = (v) => {
   const arr = (Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim()).filter(Boolean);
   return arr.length ? arr : null;
 };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A list of property ids, or null for "the caller named none".
+ *
+ * An EMPTY ARRAY is deliberately NOT null: it means the caller resolved a filter
+ * and it came back empty, which is an answer. Every id is checked against the uuid
+ * shape before it reaches a bind — a malformed one makes Postgres raise 22P02 and
+ * the route answer 500, and the cap is here because this is the one filter whose
+ * size the caller controls.
+ */
+const uuidList = (v) => {
+  if (v == null || v === '') return null;
+  // ANYTHING SUPPLIED IS A FILTER THAT WAS ASKED FOR, even if nothing usable
+  // survives it. `list(',')` and `list(' ')` return null because every segment
+  // filters out, so the predicate VANISHED and the search answered with the whole
+  // town — the "a filter that cannot run silently widens" class this exists to
+  // close, on the query-string surface rather than the market-area one.
+  const arr = list(v) || [];
+  return arr.filter((x) => UUID_RE.test(x)).slice(0, 20000);
+};
 
 /**
  * A typed phrase → a `to_tsquery` string of AND-ed prefix terms.
@@ -136,6 +156,16 @@ function buildQuery(input = {}) {
     if (terms) where.push(`p.address_tsv @@ to_tsquery('simple', ${P(terms)})`);
     else where.push(`p.display_address ILIKE ${P('%' + q + '%')}`);   // punctuation-only input
   }
+  // ADDRESSES KEPT FOR REVIEW ARE OUT OF THE ORDINARY SEARCH.
+  // A comparable whose address the report left too thin to identify (no house
+  // number, say) is still recorded — the owner wanted nothing dropped — but it is
+  // filed with needs_review=true and kept out of the normal answer so an
+  // unverifiable address never pads a facet-only ("all 3-bed in NJ") result. It
+  // could never match an address search anyway. `include_review` opts back in.
+  // The `hits` CTE in facets() reuses this WHERE, so both the list and the sidebar
+  // counts exclude these together.
+  if (!f.include_review) where.push('COALESCE(p.needs_review, false) = false');
+
   const state = str(f.state);
   if (state) where.push(`p.state = ${P(state.toUpperCase())}`);
   const cities = list(f.city);
@@ -149,8 +179,32 @@ function buildQuery(input = {}) {
   const types = list(f.property_type);
   if (types) where.push(`p.property_type = ANY(${P(types)})`);
   const unitsMin = num(f.units_min), unitsMax = num(f.units_max);
-  if (unitsMin != null) where.push(`p.units >= ${P(unitsMin)}`);
-  if (unitsMax != null) where.push(`p.units <= ${P(unitsMax)}`);
+  // A PROPERTY THAT NEVER STATED ITS UNIT COUNT IS NOT PROVED TO BE THE WRONG
+  // KIND. `units_unknown_ok` keeps it in the answer instead of dropping it
+  // silently — for the comparable search, which bands every result to the
+  // subject's own kind of building, and where an empty answer caused by missing
+  // data is indistinguishable from a town we have never lent in. It is worth
+  // almost nothing and costs almost nothing: measured over the real corpus, ONE
+  // of 767 subject-to-comparable pairs has an unknown unit count, because a house
+  // that was only ever somebody's comparable usually turns up as a SUBJECT
+  // elsewhere and the roll-up fills it in. The screens render an unknown count in
+  // red as "units not stated", so nothing is passed off as known.
+  // ACCEPTS THE SAME THREE SPELLINGS as every sibling on this builder — the
+  // identical hole `has_tax` had forty lines below, written again. It took only
+  // `'1'` and boolean true, so `?units_min=2&units_max=4&units_unknown_ok=true`
+  // silently dropped every unknown-unit comparable: the exact loss the flag
+  // exists to prevent, in the direction that empties a screen. A value we offer
+  // is a value we accept.
+  const unitsUnknownOk = f.units_unknown_ok === true || f.units_unknown_ok === 'true'
+    || f.units_unknown_ok === '1';
+  const unitClauses = [];
+  if (unitsMin != null) unitClauses.push(`p.units >= ${P(unitsMin)}`);
+  if (unitsMax != null) unitClauses.push(`p.units <= ${P(unitsMax)}`);
+  if (unitClauses.length) {
+    where.push(unitsUnknownOk
+      ? `((${unitClauses.join(' AND ')}) OR p.units IS NULL)`
+      : unitClauses.join(' AND '));
+  }
 
   // ---- size / rooms / age -------------------------------------------------
   const ranges = [
@@ -159,6 +213,10 @@ function buildQuery(input = {}) {
     ['year_built', 'p.year_built', f.year_min, f.year_max],
     ['total_rooms', 'p.total_rooms', f.rooms_min, f.rooms_max],
     ['last_sale_price', 'p.last_sale_price', f.price_min, f.price_max],
+    // db/448 — the annual property tax the appraisal stated. Indexed
+    // (idx_properties_tax_amount, partial on NOT NULL) because it is the most
+    // asked-for of the facts that used to stop at `appraisals`.
+    ['property_tax_amount', 'p.property_tax_amount', f.tax_min, f.tax_max],
   ];
   for (const [, col, lo, hi] of ranges) {
     const a = num(lo), b = num(hi);
@@ -170,6 +228,19 @@ function buildQuery(input = {}) {
   const bathsMin = num(f.baths_min), bathsMax = num(f.baths_max);
   if (bathsMin != null) where.push(`p.baths_total >= ${P(bathsMin)}`);
   if (bathsMax != null) where.push(`p.baths_total <= ${P(bathsMax)}`);
+  // The condo PROJECT by name (db/448). Matched case-insensitively against the
+  // same expression `idx_properties_condo_project` indexes, so it stays indexed.
+  if (str(f.condo_project)) where.push(`lower(p.condo_project_name) = lower(${P(str(f.condo_project))})`);
+  // "only ones we know the tax bill for" — a distinct question from a range.
+  // ACCEPTS THE SAME THREE SPELLINGS as every sibling on this builder (`has_sale`,
+  // `has_photos`, `has_unit_mix`, and the `yesNo()` helper below). It used to take
+  // only `'1'` and boolean true, so `?has_tax=true` — the spelling every one of
+  // its neighbours accepts — returned EVERY property, indistinguishable from a
+  // filter that matched everything. A value we offer is a value we accept.
+  if (f.has_tax === true || f.has_tax === 'true' || f.has_tax === '1') {
+    where.push('p.property_tax_amount IS NOT NULL');
+  }
+
   const lotMin = num(f.lot_sqft_min), lotMax = num(f.lot_sqft_max);
   if (lotMin != null) where.push(`p.lot_sqft >= ${P(lotMin)}`);
   if (lotMax != null) where.push(`p.lot_sqft <= ${P(lotMax)}`);
@@ -179,12 +250,29 @@ function buildQuery(input = {}) {
   // so "condition C3 or better" means rank <= 3. A plain string comparison on the
   // text column would silently mean the opposite. `condition_rank` is the
   // generated numeric column, so this stays a simple indexed range.
+  // …AND IT READS THE APPRAISER'S OWN WORDS, NOT ONLY A UAD CODE (db/444).
+  // `condition_rank` is GENERATED from the digits of `condition_uad`, and UAD was
+  // mandated for exactly four forms — the 1025 (2-4 unit) was left out, so its
+  // grid condition is written in words. Measured on the real corpus: 234 of 955
+  // properties carry words only and were invisible to this filter, which for a
+  // 2-4 unit lender is most of the book it actually lends on.
+  // `condition_rank_read` is the resolved answer — the code when there is one,
+  // the reading of the words when there is not — so this filters on ONE column
+  // and cannot COALESCE two the wrong way round. `research/condition-scale.js`
+  // owns the reading and refuses far more than it accepts (a relative word is
+  // about that report's subject, not about the house).
   const condMin = rankOf(CONDITION_SCALE, f.condition_best), condMax = rankOf(CONDITION_SCALE, f.condition_worst);
-  if (condMin != null) where.push(`p.condition_rank >= ${P(condMin)}`);
-  if (condMax != null) where.push(`p.condition_rank <= ${P(condMax)}`);
+  if (condMin != null) where.push(`p.condition_rank_read >= ${P(condMin)}`);
+  if (condMax != null) where.push(`p.condition_rank_read <= ${P(condMax)}`);
+  // …AND SO DOES QUALITY, for exactly the same reason. Leaving this on the
+  // code-only column while the condition filter moved shipped the feature half
+  // wired: the roll-up writes `quality_rank_read`, db/444 indexes it and the
+  // list ships it to the client, and nothing read it. Measured on the real
+  // corpus: "Q4 or better" returns 572 against the code column and 702 against
+  // the reading — 130 properties whose quality the appraiser wrote in words.
   const qualMin = rankOf(QUALITY_SCALE, f.quality_best), qualMax = rankOf(QUALITY_SCALE, f.quality_worst);
-  if (qualMin != null) where.push(`p.quality_rank >= ${P(qualMin)}`);
-  if (qualMax != null) where.push(`p.quality_rank <= ${P(qualMax)}`);
+  if (qualMin != null) where.push(`p.quality_rank_read >= ${P(qualMin)}`);
+  if (qualMax != null) where.push(`p.quality_rank_read <= ${P(qualMax)}`);
   // The explicit-code form stays supported (the facet chips send codes, not ranges).
   const condCodes = list(f.condition);
   if (condCodes) where.push(`p.condition_uad = ANY(${P(condCodes.map((c) => c.toUpperCase()))})`);
@@ -263,14 +351,49 @@ function buildQuery(input = {}) {
   const excludeId = str(f.exclude_property_id);
   if (excludeId) where.push(`p.id <> ${P(excludeId)}`);
 
+  /* AN EXPLICIT SET OF PROPERTIES — how a DRAWN MARKET AREA cuts the search.
+   *
+   * "Is this house inside that shape" is ray casting, and it lives in ONE tested
+   * place (`lib/research/market-area.js`, 68 assertions). Re-implementing it in
+   * SQL to run it here would give this codebase two answers to the same question,
+   * and the wrong one would be invisible: the search still returns houses, they
+   * still look plausible, and nobody can tell that the two on the far side of the
+   * highway were included. So the CALLER resolves the shape to the properties
+   * inside it — bounding box in SQL, exact test in JavaScript — and hands the ids
+   * over.
+   *
+   * IT MUST HAPPEN IN SQL RATHER THAN AFTER, which is why it is a filter here and
+   * not a `.filter()` on the rows. The LIMIT and the `count(*) OVER ()` total both
+   * run inside this query; cutting afterwards leaves the page short and the total
+   * overstated, which is the exact bug the radius refine was written to avoid.
+   *
+   * AN EMPTY SET IS AN ANSWER, NOT AN ABSENT FILTER. A market area that contains
+   * none of our properties must return nothing — dropping the filter because the
+   * list came back empty would answer with the whole town while the screen still
+   * said the search was cut to a neighbourhood, which is the "a filter that
+   * cannot run silently widens" class this whole area exists to close.
+   */
+  const onlyIds = uuidList(f.property_ids);
+  if (onlyIds) {
+    where.push(onlyIds.length
+      ? `p.id = ANY(${P(onlyIds)}::uuid[])`
+      : 'false');   // resolved, and it resolved to nothing
+  }
+
   // ---- radius (no PostGIS) ------------------------------------------------
   // A bounding box on the indexed lat/lng columns does the cutting; the haversine
-  // refine only ever runs on what the box already narrowed to. One degree of
-  // latitude is 69.05 miles everywhere; a degree of LONGITUDE is 69.17 × cos(lat),
-  // which at New Jersey's latitude is only about 52 — so the longitude box has to
-  // be about a third WIDER in degrees than the latitude box to cover the same
-  // miles. Using one delta for both (the usual version of this bug) silently
-  // clips the east-west edges off every radius search.
+  // refine only ever runs on what the box already narrowed to. A degree of
+  // LONGITUDE shrinks by cos(lat) — at New Jersey's latitude it is only about 52
+  // miles against latitude's 69 — so the longitude box has to be about a third
+  // WIDER in degrees than the latitude box to cover the same miles. Using one
+  // delta for both (the usual version of this bug) silently clips the east-west
+  // edges off every radius search.
+  //
+  // BOTH DELTAS ARE DERIVED FROM THE HAVERSINE'S OWN SPHERE, never typed as
+  // ellipsoid constants, and the longitude one is sized on the edge of the box
+  // FURTHEST from the equator rather than on its centre. Both of those are
+  // load-bearing and the reasoning is at the arithmetic below — do not
+  // reintroduce a literal `69.05` / `69.1710` here.
   //
   // IT READS `eff_latitude` / `eff_longitude`, NEVER `latitude` (db/412). Those are
   // the appraiser's own figures, which only some comparables carry and no subject
@@ -280,6 +403,18 @@ function buildQuery(input = {}) {
   let distanceSelect = 'NULL::numeric AS distance_miles';
   const lat = num(f.lat), lng = num(f.lng), radius = num(f.radius_miles);
   let distanceExpr = null;
+  /* A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.
+     Reported by the owner and reproduced exactly: asking for half a mile from a
+     TYPED address — which carries no coordinates — returned 955 properties
+     across NINE STATES with a null distance, because the radius predicate is
+     built inside this lat/lng guard and was simply never added. Anchored on a
+     real position the same half mile returns 9, all in one state, furthest 0.449
+     miles, so the arithmetic was never the problem.
+     That is the worst shape a bug can take here: the screen looks like it
+     answered. Silently dropping the one filter the user actually cared about and
+     handing back the whole country is not a wider search, it is a wrong one — so
+     the caller is TOLD, and `searchProperties` refuses rather than widening. */
+  const radiusUnusable = radius != null && radius > 0 && (lat == null || lng == null);
   if (lat != null && lng != null) {
     const pLat = P(lat), pLng = P(lng);
     distanceExpr =
@@ -290,8 +425,33 @@ function buildQuery(input = {}) {
         )))::numeric`;
     distanceSelect = `${distanceExpr} AS distance_miles`;
     if (radius != null && radius > 0) {
-      const dLat = radius / 69.0546;
-      const dLng = radius / Math.max(1, 69.1710 * Math.cos((lat * Math.PI) / 180));
+      // THE BOX MUST BE A SUPERSET OF THE CIRCLE, AND TWO CONSTANTS MADE IT
+      // SLIGHTLY SMALLER THAN ONE. Being generous costs a few extra rows for the
+      // haversine to reject; being short silently drops real comparables off the
+      // east-west and north-south edges of every radius search, and nothing
+      // anywhere would say so.
+      //   · THE BOX AND THE HAVERSINE MUST USE THE SAME EARTH. The refine measures
+      //     on a SPHERE of radius 3958.7613 miles, where a degree is 69.0932 miles
+      //     — while the box was sized with 69.0546 (a mid-latitude ellipsoid
+      //     average) and 69.1710 (the ellipsoid's equatorial longitude degree,
+      //     off a radius 4.4 miles larger). Both are correct numbers about a
+      //     different planet from the one the distance is measured on, and both
+      //     err the same way: the box comes out smaller than the circle. So the
+      //     constant is DERIVED from the same radius rather than typed, and the
+      //     two can never drift apart again.
+      //   · A degree of LONGITUDE shrinks as you leave the equator, so the box has
+      //     to be sized on the edge FURTHEST from it, not on the centre: at 40.7°N
+      //     with a 10-mile radius, cos(centre) over-states the far edge by 0.24%
+      //     — about 125 feet of missing coverage at the corners.
+      // Plus 0.1% for floating-point slack. `test-research-geo-box-pure.js` proves
+      // containment by walking 360 bearings at a battery of latitudes and radii.
+      const MI_PER_DEG = (2 * Math.PI * 3958.7613) / 360;   // the haversine's own sphere
+      const dLat = (radius / MI_PER_DEG) * 1.001;
+      const worstLat = Math.min(89.9, Math.abs(lat) + dLat);
+      const cosWorst = Math.cos((worstLat * Math.PI) / 180);
+      const dLng = cosWorst <= 0
+        ? 180                              // at the pole every meridian is in range
+        : Math.min(180, (radius / (MI_PER_DEG * cosWorst)) * 1.001);
       where.push(`p.eff_latitude BETWEEN ${P(lat - dLat)} AND ${P(lat + dLat)}`);
       where.push(`p.eff_longitude BETWEEN ${P(lng - dLng)} AND ${P(lng + dLng)}`);
       // THE EXACT CIRCLE IS CUT IN SQL, not in JS afterwards. Filtering the page
@@ -305,33 +465,107 @@ function buildQuery(input = {}) {
       where.push('p.eff_latitude IS NOT NULL AND p.eff_longitude IS NOT NULL');
     }
   }
+  // HOW THE POSITION WAS ESTABLISHED (db/446), as a filter — because a distance
+  // measured from a ZIP centroid is not a worse answer than one measured from a
+  // rooftop, it is a number about a different question. A caller who cares says
+  // which bases it will accept; the default accepts all of them, so no existing
+  // search changes. Named rather than scored on purpose: ranking them on one
+  // scale would invite a threshold nobody can justify, and the honest statement
+  // is the source itself.
+  const geoBasis = list(f.geo_basis);
+  if (geoBasis) where.push(`p.eff_geo_source = ANY(${P(geoBasis)})`);
+  const notGeoBasis = list(f.exclude_geo_basis);
+  // NULL is not a basis to exclude — a property with no position at all is
+  // already excluded by every distance predicate, and `<> ANY` would silently
+  // drop it from a NON-distance search too.
+  if (notGeoBasis) {
+    where.push(`(p.eff_geo_source IS NULL OR NOT (p.eff_geo_source = ANY(${P(notGeoBasis)})))`);
+  }
 
   const sortKey = SORTS[str(f.sort)] ? str(f.sort) : (lat != null && lng != null ? 'distance' : 'recent_sale');
   const limit = Math.min(MAX_LIMIT, Math.max(1, Math.round(num(f.limit) || DEFAULT_LIMIT)));
-  const page = Math.max(1, Math.round(num(f.page) || 1));
+  // CLAMPED, because the offset is interpolated into the SQL rather than bound:
+  // `?page=1e21` stringifies as "2.5e+22" and Postgres answers "bigint out of
+  // range" (or a syntax error for a larger exponent) — a plain 500 from a URL.
+  const page = Math.min(1e6, Math.max(1, Math.trunc(num(f.page) || 1)));
   return {
     where: where.length ? 'WHERE ' + where.join('\n  AND ') : '',
     params, distanceSelect, sort: SORTS[sortKey], sortKey, limit, offset: (page - 1) * limit, page,
+    // Named so a caller cannot mistake "we could not apply your distance" for
+    // "there was no distance to apply".
+    radiusUnusable,
   };
 }
 
 // The columns the result list renders. Explicit, so adding a column to
 // `properties` never silently widens every search payload.
 const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state, p.zip, p.county,
-  p.latitude, p.longitude, p.eff_latitude, p.eff_longitude, p.geo_source, p.property_type, p.property_category, p.units, p.year_built, p.gla,
+  p.latitude, p.longitude, p.eff_latitude, p.eff_longitude, p.geo_source,
+  -- WHERE THE POSITION CAME FROM (db/446). eff_latitude COALESCEs our own lookup
+  -- over the appraiser's own coordinate, and db/412's own comment says the
+  -- latter is "frequently the centre of the ZIP" -- so "0.3 miles away" can be a
+  -- rooftop measurement, a 17-foot-median estimate trilaterated from the
+  -- comparables, or a number with no relationship to the question, all rendered
+  -- in the same font. This column is WHICH, generated from the same columns
+  -- eff_latitude reads so it can never disagree with them.
+  -- (No backticks in here: this is a SQL comment inside a JS template literal,
+  -- and one backtick ends the string. See the note in CLAUDE.md.)
+  p.eff_geo_source, p.property_type, p.property_category, p.units, p.year_built, p.gla,
   p.beds, p.baths_full, p.baths_half, p.baths_text, p.baths_total, p.total_rooms,
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,
+  p.condition_rank_read, p.condition_rank_low, p.condition_rank_high, p.condition_read_source,
+  p.quality_rank_read, p.quality_read_source,
   p.view_rating, p.location_rating,
+  -- WHAT THE PROPERTY LOOKS OUT ON AND WHAT IS DOWNSTAIRS (db/437), by the same
+  -- rule as the block below: these were read, rolled up and then reachable by
+  -- nothing. view_type is the FACT ("Cem", "Comm", a park) beside view_rating,
+  -- which is one appraiser's Beneficial/Neutral/Adverse verdict on it — the
+  -- verdict cannot be re-judged later and the fact can. The below-grade counts are
+  -- deliberately NOT folded into beds / baths_full: those are the ABOVE-grade
+  -- figures the grid states, and the whole reason the form separates them is that
+  -- a basement bedroom is not a bedroom.
+  p.view_type, p.location_type, p.functional_utility, p.basement_exit, p.below_grade_beds,
+  p.below_grade_baths_full, p.below_grade_baths_half,
+  p.below_grade_rec_rooms, p.below_grade_other_rooms,
+  p.below_grade_sqft, p.below_grade_finished_sqft,
   p.sfha, p.fema_flood_zone, p.flood_zone, p.property_rights, p.occupancy_status,
   p.has_adu, p.attic, p.basement_finished_pct, p.lot_shape, p.market_rent, p.unit_mix,
+  -- A FILTER WITHOUT A COLUMN IS HALF A FEATURE: you could search on the tax bill
+  -- and the condo project and get back rows that never said what either was. The
+  -- attachment style rides here for the same reason — db/405 kept it out of
+  -- property_type so it would survive, and a fact nothing can read has not.
+  p.property_tax_amount, p.property_tax_year, p.condo_project_name, p.attachment_type,
+  p.hoa_fee_amount, p.hoa_fee_period, p.heating_type, p.heating_fuel, p.cooling,
+  p.garage_type, p.garage_spaces, p.stories, p.design_style, p.effective_age,
   p.last_sale_price, p.last_sale_date, p.last_sale_type, p.last_sale_status, p.last_list_price,
   p.sale_count, p.subject_count, p.comp_count, p.arv_comp_count, p.asis_comp_count,
-  p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on`;
+  p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on,
+  -- THE PICTURE, so a comp list can show the house rather than a grey box. A
+  -- scalar subquery rather than a join: joining property_photos would multiply
+  -- the property row per photo and corrupt both the LIMIT and every facet count
+  -- (the same trap the arv/asis comp counts are denormalized to avoid). Indexed
+  -- by idx_property_photos_property, and only runs for the rows on the page.
+  (SELECT pp.document_id FROM property_photos pp
+    WHERE pp.property_id = p.id
+    ORDER BY pp.is_primary DESC, pp.sequence NULLS LAST
+    LIMIT 1) AS primary_photo_document_id`;
 
 /** Run a search. Returns { rows, total, page, limit, pages }. */
 async function searchProperties(db, filters = {}) {
   const b = buildQuery(filters);
+  // See `radiusUnusable` in buildQuery: a distance filter with nothing to
+  // measure from cannot be honoured, and answering with every property we hold
+  // is a wrong answer wearing a right one's clothes.
+  if (b.radiusUnusable) {
+    return {
+      rows: [], total: 0, page: b.page, limit: b.limit, pages: 1, sort: b.sortKey,
+      refused: 'radius_without_position',
+      why: 'A distance search needs a position to measure from, and this subject has none — so this '
+        + 'is not a wider search, it is one that cannot be answered. Pick the address from the '
+        + 'suggestions so it carries a position, or search by town instead.',
+    };
+  }
   const sql =
     `SELECT ${LIST_COLUMNS},
             ${b.distanceSelect},
@@ -357,9 +591,20 @@ async function searchProperties(db, filters = {}) {
  */
 async function facets(db, filters = {}) {
   const b = buildQuery(Object.assign({}, filters, { page: 1, limit: 1 }));
+  // EVERY BOUND PARAMETER MUST BE REFERENCED BY THE SQL, or Postgres refuses the
+  // whole statement ("bind message supplies 3 parameters, but prepared statement
+  // requires 1"). With a lat/lng but no positive radius, `buildQuery` binds the
+  // two coordinates for the DISTANCE expression while the WHERE only gets an
+  // `IS NOT NULL` pair — so a facets query built from `b.where` alone left two
+  // placeholders dangling and threw. The route catches that and returns
+  // `facets: null`, so the entire filter sidebar just vanished with no error
+  // anywhere. Carrying the distance select into the CTE references them again.
+  // (Same class as the `viewerScope()` bug CLAUDE.md records.)
+  const dist = b.distanceSelect ? `, ${b.distanceSelect}` : '';
   const sql = `
     WITH hits AS (
-      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.property_type, p.last_sale_price
+      SELECT p.id, p.city, p.state, p.beds, p.condition_uad, p.condition_rank_read,
+             p.property_type, p.last_sale_price${dist}
         FROM properties p
         ${b.where}
     )
@@ -371,6 +616,13 @@ async function facets(db, filters = {}) {
          WHERE beds IS NOT NULL GROUP BY beds ORDER BY beds LIMIT 12) x) AS beds,
       (SELECT json_agg(x) FROM (SELECT condition_uad, count(*)::int AS n FROM hits
          WHERE condition_uad IS NOT NULL GROUP BY condition_uad ORDER BY condition_uad) x) AS conditions,
+      -- HOW MANY OF THE ANSWER THIS LIST CANNOT DESCRIBE. The list groups by the
+      -- UAD code, which a quarter of the warehouse does not have — so without
+      -- this the sidebar reads as though every rated property is in it. Counted,
+      -- not guessed at, and the screen says so.
+      (SELECT count(*)::int FROM hits WHERE condition_uad IS NULL AND condition_rank_read IS NOT NULL)
+        AS conditions_worded,
+      (SELECT count(*)::int FROM hits WHERE condition_rank_read IS NULL) AS conditions_unrated,
       (SELECT json_agg(x) FROM (SELECT property_type, count(*)::int AS n FROM hits
          WHERE property_type IS NOT NULL GROUP BY property_type ORDER BY n DESC LIMIT 20) x) AS property_types,
       (SELECT json_build_object(
@@ -386,7 +638,9 @@ async function facets(db, filters = {}) {
   return {
     total: Number(row.total || 0),
     cities: row.cities || [], beds: row.beds || [],
-    conditions: row.conditions || [], property_types: row.property_types || [],
+    conditions: row.conditions || [],
+    conditions_worded: row.conditions_worded || 0, conditions_unrated: row.conditions_unrated || 0,
+    property_types: row.property_types || [],
     price_bands: row.price_bands || {},
   };
 }

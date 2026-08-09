@@ -1,0 +1,23 @@
+-- 463 — the read-attempt counter that stops the back-book sweep starving.
+--
+-- db/462 gave every document a `research_xml_checked_at` stamp and — deliberately —
+-- does NOT set it when the READ ITSELF failed, so one storage outage can never settle a
+-- real report and drain it out of the sweep permanently.
+--
+-- On its own that rule STARVES THE QUEUE. The work queue is ordered oldest-first, so a
+-- handful of permanently dead documents at the front consume the entire per-boot budget
+-- on every boot, forever, and every real report behind them is never reached. Measured
+-- by a post-merge audit: three unreadable documents and one real appraisal at a budget
+-- of three filed NOTHING across four consecutive boots. And the supply of them is not
+-- hypothetical — `lib/storage.js` falls back to a temp directory when STORAGE_DIR is not
+-- writable, and it says in as many words that those bytes do not survive a deploy. Those
+-- are the OLDEST rows in the table.
+--
+-- So a failed read buys the document a few more tries and then settles. The guarantee
+-- db/462 wanted is preserved exactly: an outage is ONE attempt, not three.
+--
+-- Its own migration rather than an edit to db/462, because that file has already been
+-- applied and `migrate-boot` checksums what it runs — a schema change is always a new
+-- numbered file here.
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS research_xml_attempts smallint NOT NULL DEFAULT 0;

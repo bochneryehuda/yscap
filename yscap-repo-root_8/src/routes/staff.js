@@ -10,6 +10,7 @@ const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
 const email = require('../lib/email');                    // Email Center: send staff replies
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
+const replyCut = require('../lib/email/reply-cut');        // where a reply ends and the quoted history begins
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const { claimOncePerPeriod } = require('../lib/throttle-claim');
@@ -18,6 +19,7 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
+const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -32,7 +34,11 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
-const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
+const portalInvite = require('../lib/portal-invite');
+// EVERYONE ON THIS CONVERSATION, including whoever the other side added — one
+// definition for the title/insurance orders and the closing chain (owner-directed
+// 2026-08-07: "our system is looping them back out").
+const threadParticipants = require('../lib/thread-participants');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1404,11 +1410,23 @@ router.post('/applications', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
-// Invite the file's borrower to the portal (they need not have signed up yet).
-// Issues a borrower invite bound to their email; on acceptance they link to the
-// SAME borrower record (ON CONFLICT email) and immediately see this file. If
-// they already have a login they're simply pointed to sign in.
-async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }) {
+/**
+ * Invite a borrower to the portal (they need not have signed up yet).
+ *
+ * Issues a borrower invite bound to their EMAIL; on acceptance they link to the SAME
+ * borrower record (ON CONFLICT email). If they already have a login they are simply
+ * pointed to sign in.
+ *
+ * `appId` IS OPTIONAL (owner-directed 2026-08-07: "You need to be able to invite the
+ * Borrower, even if it doesn't have any active loans in our system. Just invite this
+ * Borrower so he should be able to create an active loan."). With a file, the invite
+ * names the property and lands them on it. WITHOUT one, it is a plain portal
+ * invitation — which is all the invite ever needed, because `invite_tokens` is keyed
+ * on the email and never on an application; `POST /invite-to-portal` has proved that
+ * since #102. On arrival the borrower starts their own application
+ * (`POST /api/borrower/applications`), which is exactly what the owner asked for.
+ */
+async function inviteBorrowerToFile({ appId = null, borrowerId, email, firstName, req }) {
   const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
   let acceptUrl, token = null;
   if (hasAuth.rows[0]) {
@@ -1421,9 +1439,13 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
       [C.sha256(token), email, req.actor.id]);
     acceptUrl = mail.link('/accept?token=' + token);
   }
-  const meta = await db.query(
-    `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
-            ys_loan_number FROM applications WHERE id=$1`, [appId]);
+  // No file → nothing to name, and no query to run. `rows[0]` is then undefined and
+  // the optional chains below already fall back to "your loan".
+  const meta = appId
+    ? await db.query(
+      `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
+              ys_loan_number FROM applications WHERE id=$1`, [appId])
+    : { rows: [] };
   // #150 — LO branding: the invite arrives FROM the inviting officer (display
   // name) and carries their full contact block, so the client knows exactly
   // who is inviting them — not just "the company."
@@ -1436,8 +1458,14 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     inviter: inv.full_name || null,
     officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
-  await audit(req, 'invite_borrower', 'application', appId, { email });
+    // With no file there is nothing to name, so the email must not promise one.
+    noFile: !appId,
+    // #68 reply reaches the team; #150 From = the officer. With no file there is no
+    // per-file address, so the provider layer's default Reply-To applies.
+  }, { replyTo: appId ? fileReplyTo(appId) : undefined, from: require('../lib/email').fromWithName(inv.full_name) });
+  // Audited against whichever thing this invitation was actually about, so the trail
+  // never points at an application id that does not exist.
+  await audit(req, 'invite_borrower', appId ? 'application' : 'borrower', appId || borrowerId, { email, noFile: !appId });
   // Record that it went out, on the PERSON (lib/portal-invite) — otherwise the
   // file can never say whether anyone has invited them, and the only safe move
   // is to send it again. Note this fires for the already-has-a-login case too:
@@ -1533,9 +1561,9 @@ router.post('/invite-to-portal', async (req, res) => {
       else {
         const name = [first, last].filter(Boolean).join(' ') || email;
         const lr = await db.query(
-          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at)
-           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now()) RETURNING id`,
-          [name, first || null, last || null, email, phone, officerId, req.actor.id]);
+          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at,assigned_via)
+           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now(),$8) RETURNING id`,
+          [name, first || null, last || null, email, phone, officerId, req.actor.id, officerId ? 'manual' : null]);
         leadId = lr.rows[0].id;
         await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Invited to portal',$3)`,
           [leadId, req.actor.id, 'Invited ' + email + ' to the borrower portal']);
@@ -1605,6 +1633,32 @@ router.get('/applications/:id', async (req, res) => {
   fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
   delete fileRow.registered_stale;
   delete fileRow.registered_stale_reason;
+  // Does this file need an estimated monthly rent to be complete? Decided HERE,
+  // with the same two shared helpers `applicationCompleteness` uses, and sent as
+  // a plain boolean (owner-directed 2026-08-03).
+  //
+  // It used to be re-derived in the browser (StaffApplication.jsx `isEmcapBuyer`),
+  // which put a capital partner's name in the one portal bundle every visitor
+  // downloads AND drifted from the server the moment the server was corrected:
+  // the client still compared `=== 'emcap'`, the exact match that 2026-07-30
+  // replaced precisely because the real ClickUp label "EMCAP Financial"
+  // normalizes to `emcapfinancial` and so matched NO live file. The panel was
+  // therefore silently not asking for a rent the submit gate would refuse
+  // without. One definition, on the side that owns it, is the fix for both.
+  fileRow.requires_estimated_rent = conditionRegistry.isEmcapNoteBuyer(fileRow.lender)
+    && conditionRegistry.normStrategy(
+      [fileRow.program, fileRow.loan_type, fileRow.rehab_type].filter(Boolean).join(' ')) === 'fix_hold';
+  /* MAY THIS FILE BE MARKED INDIVIDUAL? Decided HERE, by the one rule the
+     personal-name door enforces (lib/vesting-program-rule), and sent as a plain
+     reason string — so the three places that now offer the choice can grey the
+     control and say WHY before the click, instead of only after a 409. Never
+     re-derive the Blue Lake / Gold test in the browser: that would put a capital
+     partner's name in the bundle every visitor downloads (the `isEmcapBuyer`
+     lesson directly above) and would drift from the door the moment the rule
+     moves. null = allowed. */
+  fileRow.vesting_individual_blocked = require('../lib/vesting-program-rule').markIndividualRefusal({
+    registeredProgram: fileRow.registered_program, noteBuyer: fileRow.lender,
+  });
   res.json(fileRow);
 });
 
@@ -1650,6 +1704,24 @@ router.post('/applications/:id/track-record-findings/:findingId', async (req, re
   }
 });
 
+/* WHAT IS STILL LEFT ON THE TRACK RECORD (owner-directed 2026-08-03: "after the
+   track record there should be the skew of the stuff that still needs to be done
+   … nicely laid out within the file as well"). File-scoped by the same
+   `/applications/:id` middleware; `?borrower=` narrows it to one person on a
+   co-borrower file, and a borrower who is not on the file is ignored rather than
+   honoured, so the query string can never widen the scope. Read-only. */
+router.get('/applications/:id/track-record-todo', async (req, res) => {
+  try {
+    const out = await require('../lib/track-record-todo').trackRecordTodo(req.params.id, {
+      borrowerId: (req.query && req.query.borrower) || null,
+    });
+    res.json(out);
+  } catch (e) {
+    console.warn('[track-record] to-do list failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not work out what is left on the track record' });
+  }
+});
+
 router.get('/applications/:id/usps-verification', async (req, res) => {
   try {
     const row = (await db.query(
@@ -1662,7 +1734,23 @@ router.get('/applications/:id/usps-verification', async (req, res) => {
          LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
         WHERE a.id=$1`, [req.params.id])).rows[0];
     if (!row) return res.status(404).json({ error: 'not found' });
-    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired, ...row });
+    // Does the file's CURRENT address still equal the last USPS result (by meaning)?
+    // `usps_imported_at` is only a "was imported at some point" stamp — a re-spelling
+    // of the same place (the ClickUp pull, the details form, the MISMO import) or a
+    // no-edit super-admin override can leave that stamp standing while property_address
+    // is no longer the USPS form (db/415 deliberately KEEPS the stamp on a same-place
+    // re-spell so the verification does not bounce). So "imported" no longer proves the
+    // USPS address is on the file right now; THIS does — and the screen uses it to
+    // offer a plain re-import instead of a dead "already imported". null = nothing to
+    // compare (no USPS result yet).
+    let addressMatchesVerified = null;
+    try {
+      const ADDR = require('../lib/address');
+      addressMatchesVerified = (row.usps_address && row.property_address)
+        ? !!ADDR.sameAddress(row.property_address, row.usps_address) : null;
+    } catch (_) { addressMatchesVerified = null; }
+    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired,
+      canOverride: adminOverride.mayOverride(req.actor), addressMatchesVerified, ...row });
   } catch (e) {
     console.error('[usps] verification status failed:', db.describeError(e));
     res.status(500).json({ error: 'could not load USPS verification' });
@@ -1694,9 +1782,24 @@ router.post('/applications/:id/usps-verification/check', async (req, res) => {
     }
 
     const out = await uspsVerify.standardize(input, { db, noCache: !!(req.body && req.body.refresh) });
-    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured on this service.' });
-    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again in a little while.' });
-    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now — try again in a moment.' });
+    // A super admin is never stuck on a USPS problem: every failure branch tells
+    // the screen whether the override door (below) is open, so the owner can adopt
+    // the address and move on. And a failure NAMES its reason — the generic "try
+    // again" told a non-developer nothing, so they could not tell a slow USPS
+    // moment from a wrong ZIP from expired keys (owner-reported).
+    const canOverride = adminOverride.mayOverride(req.actor);
+    if (out.status === 'not_configured') {
+      let detail = 'USPS_CLIENT_ID / USPS_CLIENT_SECRET are not set.';
+      try { detail = require('../lib/usps-env').describe().detail || detail; } catch (_) {}
+      return res.status(503).json({ error: 'USPS is not connected on this service, so the address can’t be checked automatically.', detail, code: 'usps_not_configured', canOverride });
+    }
+    if (out.status === 'rate_limited') {
+      return res.status(429).json({ error: 'USPS’s hourly lookup limit is currently reached. Wait a little while and try again.', code: 'usps_rate_limited', retryable: true, canOverride });
+    }
+    if (out.status === 'error') {
+      const ex = uspsVerify.explainError(out.detail);
+      return res.status(502).json({ error: ex.reason, detail: ex.technical, code: 'usps_error', retryable: ex.retryable, canOverride });
+    }
 
     // Preserve an existing import ONLY when the freshly standardized address is the
     // one already imported as the working address (a harmless re-check). Any other
@@ -1744,11 +1847,17 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
       `UPDATE applications
           SET property_address=usps_address, usps_imported_at=now(), updated_at=now()
         WHERE id=$1`, [req.params.id]);
+    // A real import SUPERSEDES any prior super-admin override — so clear the
+    // override_* stamps too (mirroring the db/379/415 reopen trigger). Otherwise a
+    // file that was overridden while USPS was down, then properly re-imported once
+    // USPS recovered, would keep displaying "cleared by super-admin override" with a
+    // stale reason (now reachable because re-import is no longer blocked once stamped).
     const cleared = await client.query(
       `UPDATE checklist_items ci
           SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
               waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
-              updated_at=now()
+              override_by=NULL, override_at=NULL, override_reason=NULL,
+              override_blocked_reason=NULL, updated_at=now()
          FROM checklist_templates t
         WHERE ci.application_id=$1 AND ci.template_id=t.id
           AND t.code='usps_address_verification'
@@ -1776,6 +1885,154 @@ router.post('/applications/:id/usps-verification/import', async (req, res) => {
   } finally { client.release(); }
 });
 
+// SUPER-ADMIN EXCEPTION FOR THE USPS HOLD-BACK (owner-directed 2026-08-05:
+// "the hold-back and the gate for all the orders that need USPS — we should be
+// able to ask a super admin for an exception for it … I shouldn't be stuck").
+//
+// The normal flow is Verify → Import, and Import is the only thing that sets
+// `usps_imported_at` — which is what EVERY gate keyed to USPS reads (the
+// condition sign-off, and the title / insurance / attorney ordering hold-backs).
+// So when USPS keeps erroring, nobody can get past any of those gates, and even
+// the generic super-admin condition override (db/344) only clears the checklist
+// row — it does NOT stamp `usps_imported_at`, so ordering stays blocked. This is
+// the one action that actually lifts the whole hold-back: it adopts the address
+// (the file's current one, or an edited candidate the super admin typed) as the
+// working address, stamps the import, and clears the condition — recording who,
+// why, and what USPS said, exactly like the condition override it is a cousin of.
+//
+// SUPER ADMIN ONLY, reason REQUIRED — the same rule as admin-override, so "who
+// may override" and "a reason is mandatory" have ONE definition, not two.
+router.post('/applications/:id/usps-verification/override', async (req, res) => {
+  if (!adminOverride.mayOverride(req.actor)) {
+    return res.status(403).json({ error: adminOverride.DENIED_MESSAGE });
+  }
+  const reason = adminOverride.normalizeReason(req.body && req.body.overrideReason);
+  if (!reason) return res.status(400).json({ error: adminOverride.REASON_REQUIRED_MESSAGE });
+
+  const ADDR = require('../lib/address');
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const app = (await client.query(
+      `SELECT property_address, usps_address, usps_match FROM applications
+        WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+
+    // Which address becomes the working address? If the super admin typed a
+    // corrected candidate in the dialog (line1 + state present), adopt THAT —
+    // they are saying "this is the right address, use it." Otherwise keep the
+    // file's current address exactly as it is and simply stamp it accepted.
+    //
+    // The dialog PREFILLS the box with the file's current address, so an unedited
+    // override arrives carrying that same address. Adopting it would rewrite
+    // property_address to a rebuilt canonical form (dropping any stored lat/lng,
+    // reading as a change to jsonb) — which reopens an auto-cleared contract
+    // condition (db/292) and fires a no-op ClickUp push. So we adopt ONLY when the
+    // candidate is a genuinely DIFFERENT place than the file already holds, judged
+    // by meaning (ADDR.sameAddress — the same "same place" test db/415 and the
+    // ClickUp inbound guard use), not by spelling.
+    const edit = req.body && req.body.address;
+    const hasEditPayload = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street) && (edit.state);
+    let adopted = app.property_address;
+    let hasEdit = false;   // did we actually adopt a new address?
+    if (hasEditPayload) {
+      const candidate = ADDR.normalizeAddress({
+        line1: edit.line1 || edit.street, unit: edit.unit || edit.secondary || '',
+        city: edit.city || '', state: edit.state || '', zip: edit.zip || edit.zipcode || '', country: 'US',
+      });
+      if (!ADDR.sameAddress(app.property_address, candidate)) { adopted = candidate; hasEdit = true; }
+    }
+    if (!adopted || (typeof adopted === 'object' && !(adopted.line1 || adopted.street || adopted.oneLine))) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'This file has no property address to accept. Type the correct address in the box, then override.' });
+    }
+
+    // What was skipped — recorded on the condition (override_blocked_reason) so
+    // the file can answer "why did this clear without USPS?" long afterwards. The
+    // last USPS result is the honest reason; the caller may pass the exact error
+    // text it just showed the owner, otherwise we describe from the stored status.
+    const lastError = adminOverride.normalizeReason(req.body && req.body.lastError);
+    const stampStatus = String(app.usps_match || '').toLowerCase();
+    const blockedReason = 'USPS did not confirm a deliverable address'
+      + (stampStatus && stampStatus !== 'null' ? ` (last USPS result: ${stampStatus})` : '')
+      + (lastError ? ` — ${lastError.slice(0, 200)}` : '') + '.';
+
+    // STAMP THE IMPORT — and only touch property_address when an edit was actually
+    // typed. Stamping `usps_imported_at` is the whole point: it is the flag the
+    // ordering hold-backs read, so this is what unblocks title / insurance /
+    // attorney too. usps_match / usps_address keep whatever the last real attempt
+    // returned (so preferredFinancingAddress still falls back to property_address
+    // rather than shipping a phantom USPS form).
+    //
+    // WHY THE ADDRESS WRITE IS CONDITIONAL: on the common "USPS is down, my address
+    // is fine" override there is NO edit, and re-writing property_address to a
+    // rebuilt canonical form (which drops any stored lat/lng and reads as a change
+    // to jsonb) would needlessly reopen an auto-cleared contract condition (db/292)
+    // and fire a no-op ClickUp push. A no-edit override leaves the address exactly
+    // as it is — matching the intent above.
+    if (hasEdit) {
+      await client.query(
+        `UPDATE applications
+            SET property_address=$2, usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
+          WHERE id=$1`, [req.params.id, JSON.stringify(adopted)]);
+    } else {
+      await client.query(
+        `UPDATE applications
+            SET usps_imported_at=now(), usps_verified_at=now(), updated_at=now()
+          WHERE id=$1`, [req.params.id]);
+    }
+
+    // Clear the condition WITH the override stamps (db/344) — same shape the
+    // checklist sign-off door uses, so the file reads this as the recorded
+    // super-admin decision it is, not an ordinary sign-off.
+    const cleared = await client.query(
+      `UPDATE checklist_items ci
+          SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+              waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
+              override_by=$2, override_at=now(), override_reason=$3, override_blocked_reason=$4,
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.application_id=$1 AND ci.template_id=t.id
+          AND t.code='usps_address_verification'
+        RETURNING ci.id`, [req.params.id, req.actor.id, reason, blockedReason]);
+    await client.query('COMMIT');
+
+    // Keep the ClickUp card in step ONLY when we actually adopted a new address
+    // (scoped, so it is treated as the deliberate edit it is; no-op-suppressed when
+    // the card already names the same place; best-effort, never blocks the override).
+    if (hasEdit) { try { await enqueueClickupPush(req.params.id, ['property_address']); } catch (_) {} }
+
+    // A super-admin override is a POLICY DECISION: audit it, and land it in the
+    // loan_exceptions register (born approved, record-only) exactly as a condition
+    // override does — which is what puts it on the Exceptions screen, in the EX-n
+    // export, and in the decision certificate. Best-effort, after the write.
+    const note = adminOverride.describe({ label: 'USPS Address Verification', reason, blocked: blockedReason });
+    await audit(req, 'usps_hold_override', 'application', req.params.id, {
+      reason, blockedReason, adoptedEdited: !!hasEdit,
+      address: (adopted && adopted.oneLine) || null,
+      conditionIds: cleared.rows.map((r) => r.id) });
+    try {
+      await loanExceptions.recordConditionOverride({
+        appId: req.params.id, staffId: req.actor.id, note,
+        snapshot: {
+          action: 'usps_hold_override',
+          condition: 'USPS Address Verification',
+          template_code: 'usps_address_verification',
+          adopted_edited_address: !!hasEdit,
+          blocked_reason: blockedReason,
+          at: new Date().toISOString(),
+        },
+      });
+    } catch (e) { try { console.warn('[usps] override register skipped:', db.describeError(e)); } catch (_) {} }
+
+    res.json({ ok: true, override: true, address: adopted, conditionCleared: cleared.rowCount > 0 });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[usps] override failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not override the USPS hold-back' });
+  } finally { client.release(); }
+});
+
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
 // file. Shared by the standalone /co-borrower endpoint AND file creation (#98),
 // so "add a co-borrower while creating the application" runs the exact same
@@ -1793,8 +2050,15 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
     const middle = String(b.middleName || '').trim();
     const suffix = String(b.nameSuffix || '').trim();
     const email = String(b.email || '').trim().toLowerCase();
+    // A co-borrower needs a NAME, not necessarily an email (#22, owner-directed
+    // 2026-08-05: "allow it at intake"). When you're setting up a fresh file you
+    // often have the second borrower's name but not their email yet — the email is
+    // only needed later, to invite them to the portal or to sign, and is filled in
+    // then (the invite button already self-disables until it's on). Storing NULL
+    // (not '') keeps every email-less co-borrower a DISTINCT identity record — an
+    // empty string would collide two different people on the email unique index.
     if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
-    if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
+    const emailVal = email || null;
     // #91/#92: normalize + validate through the single SSN chokepoint — never
     // encrypt a dash-formatted string or store a partial/garbage last4.
     const ssnStore = b.ssn ? C.ssnForStorage(b.ssn) : null;
@@ -1813,7 +2077,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
       // shares this email (family emails are common) — that would grant them
       // access to this file's PII. If the email is on record under a conflicting
       // name, stop and make staff resolve it (same guard the primary paths use).
-      const conflict = await emailAdoptionConflict(email, first, last);
+      const conflict = email ? await emailAdoptionConflict(email, first, last) : null;
       if (conflict) {
         const e = new Error(`That email is already on file for a different borrower (${(conflict.first_name || '').trim()} ${(conflict.last_name || '').trim()}). Use a different email or resolve the match first.`);
         e.status = 409; throw e;
@@ -1837,7 +2101,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
            ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
            updated_at=now()
          RETURNING id`,
-        [first, last, email, b.phone || null,
+        [first, last, emailVal, b.phone || null,
          require('../lib/fields').sanitizeDob(b.dob),   // typed '26' resolves to the real year; garbage never persists
          ssnEnc, ssnLast4, ssnHash, middle, suffix]);
       coId = ins.rows[0].id;
@@ -2115,15 +2379,34 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
 router.post('/applications/:id/vesting/personal-name', async (req, res) => {
   try {
     const b = req.body || {};
-    if (!can(req.actor, 'sign_off_conditions'))
-      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    // Owner-directed 2026-08-04: loan officers may also switch vesting to
+    // individual (waive the LLC condition + populate the Non-Owner-Occupied
+    // certification), via the dedicated waive_vesting_llc capability — not only
+    // processors/admins, and without granting the broader sign_off_conditions power.
+    if (!can(req.actor, 'waive_vesting_llc'))
+      return res.status(403).json({ error: 'You do not have permission to switch this file to an individual (personal-name) vesting.' });
     const app = (await db.query(
-      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, a.lender, l.is_verified AS llc_verified,
+              (SELECT r.program FROM product_registrations r
+                WHERE r.application_id = a.id AND r.is_current LIMIT 1) AS registered_program
          FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
         WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
     if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
       return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
+    /* THE BLUE LAKE GATE, in the direction this door faces (owner-directed
+       2026-08-03). `vesting-program-rule.registrationRefusal` already refuses
+       registering an individual file into Gold; this refuses the mirror move —
+       marking a file individual while it is already on Gold / Blue Lake — so the
+       same forbidden state can't be reached by doing the two steps in the other
+       order. The UNDO branch below is deliberately NOT gated: going back to an
+       LLC is always allowed, and is the fix this refusal points at. */
+    if (b.undo !== true) {
+      const refusal = require('../lib/vesting-program-rule').markIndividualRefusal({
+        registeredProgram: app.registered_program, noteBuyer: app.lender,
+      });
+      if (refusal) return res.status(409).json({ error: refusal, code: 'individual_not_allowed' });
+    }
 
     // The LLC condition must exist so the affidavit has somewhere to hang / to sign off.
     try { await require('../lib/vesting').ensureLlcCondition(req.params.id); } catch (_) {}
@@ -2166,9 +2449,16 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       const filename = safeFilename(b.filename);
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
+        // BORN ACCEPTED, only through THIS door (2026-08-03; see
+        // lib/document-acceptance.js): the staffer is filing this affidavit as the
+        // evidence for the declaration they make in the SAME request, which the
+        // route signs the LLC condition off on right below — so they ARE the
+        // reviewer, and `reviewed_by` records who. Every other staff upload path
+        // still files 'pending' and waits for one.
         `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
-                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type,
+                                review_status,reviewed_by,reviewed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload','accepted',$9,now()) RETURNING id`,
         [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
          provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
       uploadedDocId = r.rows[0].id;
@@ -2290,6 +2580,9 @@ async function loadFileForPricing(appId) {
 // completeness paths can never drift.
 const { sanitizeStaffOverrides, pricingOverridesEngaged, describeOverrides } = require('../lib/pricing-overrides');
 const pricingSettings = require('../lib/pricing-settings');
+// The ONE composer for every pricing / exception / registration email (owner-directed
+// 2026-08-07). Pure — it decides what these emails SHOW; it never computes a pricing number.
+const pricingEmail = require('../lib/email/pricing-email');
 function sanitizeOverrides(req, raw) {
   return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
 }
@@ -2650,7 +2943,29 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const submitException = !!b.submitException;
     const manualReasons = (quote.reasons || [])
       .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
-    if (quote.status === 'MANUAL' && !isManual && !submitException) {
+
+    // EXCEPTION STICKINESS (owner-directed 2026-08-05). Before deciding whether this
+    // registration needs a fresh super-admin approval, check whether an exception was
+    // ALREADY approved for these exact items at these exact values. A re-register that
+    // carries the same approved item(s) — same LTC cap, same 1% origination, same 0.2
+    // markup — must not overwhelm the escalation box with a duplicate approval; only a
+    // CHANGED item, a NEW item, a NEW guideline reason, or (for a manual program) the
+    // loan amount going UP does. The frozen engine's INELIGIBLE/cap checks above are
+    // untouched — this only decides whether a NEW exception is required.
+    const wouldEscalate = manualProgram.needsSuperAdminApproval({
+      program, status: quote.status, pricingOverrides: overrideChanges,
+    });
+    let exceptionCoverage = { covered: false, reason: 'not_evaluated' };
+    if (wouldEscalate) {
+      const approvedGrant = await manualProgram.latestApprovedGrant(appId).catch(() => null);
+      exceptionCoverage = manualProgram.exceptionCoveredByGrant({
+        program, status: quote.status, overrideChanges, loanAmount: total, manualReasons,
+      }, approvedGrant);
+    }
+    // A MANUAL-review scenario that is ALREADY covered by an approved grant (same
+    // reasons, no new item, no manual-program loan increase) does not need to be
+    // re-submitted as an exception — it was already approved for exactly this.
+    if (quote.status === 'MANUAL' && !isManual && !submitException && !exceptionCoverage.covered) {
       return refuse(422, {
         error: 'exception_required',
         code: 'exception_required',
@@ -2666,9 +2981,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // (owner-directed 2026-07-27). A clean ELIGIBLE Standard/Gold registration
     // priced on the company defaults is unaffected (confirms immediately, as
     // before). Shared definition in manual-program.js.
-    const needsEscalation = manualProgram.needsSuperAdminApproval({
-      program, status: quote.status, pricingOverrides: overrideChanges,
-    });
+    //
+    // ...UNLESS the exact same exception was ALREADY approved for this file
+    // (owner-directed 2026-08-05): a re-register of already-approved terms reuses the
+    // standing grant instead of opening a duplicate approval. `exceptionCoverage` was
+    // computed above from the latest approved escalation.
+    const needsEscalation = wouldEscalate && !exceptionCoverage.covered;
+    if (wouldEscalate && exceptionCoverage.covered) {
+      console.log(`[pricing-register] app ${appId}: re-register reuses an approved exception (${exceptionCoverage.reason}) — no new escalation.`);
+    }
     // A pricing-override-only exception (no manual leverage, engine says ELIGIBLE)
     // — the plain-language list the approver, the notification and the audit
     // trail all read. Empty on a clean registration.
@@ -2774,6 +3095,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      // Item 15: the manual GOLD top-tier markup sticks the same way, so a future
+      // quote (staff or borrower self-service) never drops it back to zero. A
+      // blank clears it → the company per-tier default (or historic 0) governs.
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldT1Pct'))
+        await client.query(`UPDATE applications SET file_markup_gold_t1_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldT1Pct)]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
@@ -2818,6 +3144,41 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
+      /* THE STALE CLEAR IS THE LAST WORD ON THIS REGISTRATION — and it has to live
+         HERE, not inside persistProductRegistration (owner-reported 2026-08-07:
+         "even after you re-register, you sign off, and you upload your appraisal …
+         it still says the registration needs to be current. Deal economics has
+         changed … who changed the deal economics?").
+
+         ROOT CAUSE. `persistProductRegistration` already knows its own write-back
+         trips the db/071/072/466 economics trigger, and clears `stale` on the fresh
+         row — its comment says "do it LAST, after the experience sync, so nothing
+         re-flags it". It was not last. THIS ROUTE then writes more watched columns:
+         the four sticky `file_markup_*` values and the typed cash-out. The trigger
+         fires on the markup write and stamps `stale = true` on the very registration
+         that was created a few statements earlier (its UPDATE targets
+         `is_current AND NOT stale`, which the clear had just made true). Reproduced
+         on a real database: a fresh registration goes stale on the next statement,
+         with the GENERIC reason — "deal economics changed" and nothing named,
+         because the markups are not in the trigger's itemized list (db/486 fixes
+         that half). So `esignSendGate` refused the term sheet on
+         `registration_stale` forever: re-registering repeated the sequence, and the
+         trigger's second UPDATE re-opened Products & Pricing, so signing off could
+         not settle it either. Both halves of the report, one cause.
+
+         A MARKUP IS NOT NEWS TO THE REGISTRATION THAT WAS PRICED ON IT. The trigger
+         is right to watch these columns — a markup change after the fact genuinely
+         invalidates a registration — and it stays untouched. What is wrong is a
+         registration marking ITSELF stale over the values it was just priced with.
+
+         Guarded on `AND stale` so it can only ever undo a flag raised inside this
+         transaction, and placed immediately before COMMIT so any post-register file
+         write added later is covered by construction rather than by remembering.
+         THE RULE: anything in this route that writes a watched column on
+         `applications` belongs ABOVE this line. */
+      await client.query(
+        `UPDATE product_registrations SET stale=false, stale_reason=NULL
+          WHERE id=$1 AND stale`, [reg.id]);
       await client.query('COMMIT');
     } catch (e) {
       /* RELEASE THE CONNECTION ON THE WAY OUT — the `finally` below belongs to
@@ -2904,28 +3265,48 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         } catch (_) { /* the escalation is the required record; the register row is additive */ }
       }
       try {
-        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const szn0 = quote.sizing || {};
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
           : overrideOnly ? `${pricing.PROGRAM_LABEL[program]} — pricing override`
           : `${pricing.PROGRAM_LABEL[program]} — manual review`;
+        // The approval email is now BUILT, not written as a sentence (owner-directed 2026-08-07:
+        // *"this email is so [confusing] I can't even see what they want from me … What exactly
+        // is the exception request for?"*). `pricingEmail.approvalRequestEmail` supplies the
+        // headline, the money band, the CHANGE LEDGER (one row per moved value, the company
+        // default struck through) and the deal facts. The file identity still rides in the
+        // enrichment `meta` block, so nothing about WHICH file is lost.
+        //
+        // The two run-on `meta` rows that used to restate the whole override list and the whole
+        // manual-review reason list are GONE: the ledger says both, once, legibly. Repeating them
+        // was the "said it twice, explained it neither time" half of the complaint.
         const ectx = await notify.fileContext(appId, [
           { label: 'Requested product', value: productDesc },
-          { label: 'Loan amount', value: dollars },
-          isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
-          manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
-          overrideLines.length ? { label: 'Changed from the defaults', value: overrideLines.join(' · ') } : null,
-        ].filter(Boolean));
-        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
-        const why = isManual
-          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.${changed}`
-          : overrideOnly
-            ? `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} was priced OFF the company defaults and is waiting for approval in the Escalations box.${changed} The borrower is NOT sent terms, and no term sheet can be sent, until it's approved. Loan amount ${dollars}.`
-            : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.${changed}`;
+        ]);
+        const built = pricingEmail.approvalRequestEmail({
+          kind: escKind,
+          deal: {
+            loanAmount: total,
+            noteRate: quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : null,
+            programLabel: pricing.PROGRAM_LABEL[program],
+            productLabel: productDesc,
+            termMonths: inputs && inputs.term,
+            purchasePrice: szn0.purchasePrice != null ? szn0.purchasePrice : (inputs && inputs.purchasePrice),
+            asIsValue: inputs && inputs.asIsValue,
+            arv: inputs && inputs.arv,
+            rehabBudget: inputs && inputs.rehabBudget,
+            initialAdvance: szn0.initial,
+            rehabHoldback: szn0.rehabHoldback != null ? szn0.rehabHoldback : szn0.holdback,
+            cashToClose: quote.cashToClose,
+            liquidity: quote.liquidity ?? quote.liquidityRequired,
+            downPayment: szn0.downPayment,
+            acqLtvPct: szn0.acqLtvPct, arvPct: szn0.arvPct, ltcPct: szn0.ltcPct,
+            assetMonths: isManual ? assetMonths : null,
+          },
+          overrideChanges, overrideLines, manualReasons,
+        });
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: isManual ? 'Manual product needs approval'
-            : overrideOnly ? 'Pricing override needs approval' : 'Registration needs approval',
-          body: why,
+          ...built,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
         });
@@ -2983,20 +3364,46 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
       const row = t.rows[0] || {};
-      const pctRate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : '—';
+      const pctRate = quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : '—';
       const dollars = '$' + Math.round(total).toLocaleString('en-US');
       const money2 = (n) => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
       const szn = quote.sizing || {};
-      const ctx = await notify.fileContext(appId, [
-        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
-        { label: 'Total loan', value: `${dollars} @ ${pctRate}` },
-        szn.downPayment != null ? { label: 'Down payment', value: money2(szn.downPayment) } : null,
-        quote.cashToClose != null ? { label: 'Cash to close', value: money2(quote.cashToClose) } : null,
-        (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money2(quote.liquidity ?? quote.liquidityRequired) } : null,
-      ].filter(Boolean));
+      // The numbers ARE the message on this one, so they get the money band and a deal table
+      // instead of the old single comma-run under a plain-text "Product registered" headline
+      // (owner-directed 2026-08-07). The file identity keeps riding in the enrichment meta, and
+      // the deal rows that used to be hand-listed here are now built once by the shared composer,
+      // so the register notice, the approval request and the decision email all describe a deal
+      // the same way. `body` is kept as the ONE-LINE summary the in-app notification row shows —
+      // that row has no room for a table, and it is what the notification centre lists.
+      const ctx = await notify.fileContext(appId, []);
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
+      const reg0 = pricingEmail.productRegisteredEmail({
+        needsApproval: needsEscalation,
+        statusNote: quote.status !== 'ELIGIBLE'
+          ? `The engine returned ${String(quote.status).toLowerCase()} on this scenario.` : null,
+        deal: {
+          loanAmount: total,
+          noteRate: quote.noteRate != null ? pctRate : null,
+          programLabel: [quote.programLabel, quote.productLabel].filter(Boolean).join(' — ') || pricing.PROGRAM_LABEL[program],
+          termMonths: inputs && inputs.term,
+          purchasePrice: szn.purchasePrice != null ? szn.purchasePrice : (inputs && inputs.purchasePrice),
+          asIsValue: inputs && inputs.asIsValue,
+          arv: inputs && inputs.arv,
+          rehabBudget: inputs && inputs.rehabBudget,
+          initialAdvance: szn.initial,
+          rehabHoldback: szn.rehabHoldback != null ? szn.rehabHoldback : szn.holdback,
+          cashToClose: quote.cashToClose,
+          liquidity: quote.liquidity ?? quote.liquidityRequired,
+          downPayment: szn.downPayment,
+          acqLtvPct: szn.acqLtvPct, arvPct: szn.arvPct, ltcPct: szn.ltcPct,
+        },
+      });
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'product_registered', title: 'Product registered',   // file identity (loan# · borrower · property) rides in the subject tag — never in the title (no double loan number)
+          type: 'product_registered',
+          ...reg0,
+          // file identity (loan# · borrower · property) rides in the subject tag — never in the
+          // title (no double loan number). `body` stays the in-app one-liner; the email's own
+          // opening sentence is the composer's `intro`.
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
@@ -3030,7 +3437,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // staleness cleared, its pending-approval known — rather than the stale
     // answer the panel fetched before the register. The client sets the studio's
     // provenance from this, exports the PDF, and reports the stamp back on the
-    // upload; the DocuSign send then refuses anything not stamped FINAL.
+    // upload. It labels the studio's own PREVIEW copy and NOTHING ELSE — the
+    // DocuSign sender BUILDS the final sheet itself from the last registration
+    // (esign/term-sheet-pdf.js), so it never refuses on this stamp. The old
+    // refusal was the "you only have the initial one" dead end; do not re-add it.
     // Best-effort: unreadable → initial, which is the honest wording.
     let termSheetFinal = false;
     try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(appId, { db })).final; }
@@ -3205,6 +3615,65 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     // INSERT is a unique violation, i.e. "already pending", not a server error
     // (same mapping as the esign + pricing request routes).
     if (e && e.code === '23505') return res.status(409).json({ error: 'A guaranty-waiver request is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Request a WAIVER of a specific condition (owner-directed 2026-08-04): "any user
+// should be able to request from the admin or super admin an exception to waive any
+// condition. And after the exception is being approved, that condition should be
+// marked as waived." Any staffer on the file may file it (file-scoped by the
+// /applications/:id middleware); an admin/super-admin decides it in the Exceptions
+// box, and APPROVAL marks that one condition waived (admin-exceptions.js).
+router.post('/applications/:id/conditions/:itemId/request-waiver', async (req, res) => {
+  const appId = req.params.id;
+  const itemId = req.params.itemId;
+  try {
+    // The condition must belong to THIS file, and not already be cleared.
+    const ci = (await db.query(
+      `SELECT id, status, label FROM checklist_items WHERE id=$1 AND application_id=$2`, [itemId, appId])).rows[0];
+    if (!ci) return res.status(404).json({ error: 'That condition is not on this file.' });
+    if (ci.status === 'satisfied') return res.status(409).json({ error: 'That condition is already cleared — there is nothing to waive.' });
+
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why this condition should be waived.' });
+
+    // A fresh ask after a denial for the SAME condition links back (re-request chain).
+    const priorList = await loanExceptions.registerForApp(appId);
+    const prior = loanExceptions.presentExpiry((priorList || []).find((r) =>
+      (r.type || r.exception_type) === 'condition_waiver' && String(r.target_checklist_item_id) === String(itemId)) || null);
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestConditionWaiver(client, {
+        appId, checklistItemId: itemId, reasonCode, reasonNote, requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'condition_waiver_request',
+        title: 'Condition waiver needs review',
+        body: `${req.actor.name || 'A team member'} requested waiving “${ci.label || 'a condition'}” on ${ctx ? ctx.label : 'a file'}: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'condition_waiver_requested', 'application', appId,
+      { exceptionId: row.id, checklistItemId: itemId, reasonCode: row.reason_code, note: reasonNote });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the per-condition partial unique index.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A waiver for this condition is already awaiting review.' });
     console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
   }
 });
@@ -3651,10 +4120,29 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
   if (!state) return res.status(400).json({ error: 'state required' });
   const r = await db.query(
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
-      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id`,
+      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id, tool_key`,
     [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
-  res.json({ ok: true, savedAt: new Date().toISOString() });
+  // THE EXPERIENCE TYPED IN THE TERM SHEET STUDIO IS THE FILE'S CLAIM
+  // (owner-directed 2026-08-06: "if they entered any experience on the term
+  // sheet generated, they should feed directly into the file"). This save IS
+  // the moment the studio scenario lands on the file, and it is the one door
+  // both the panel's debounced autosave and its close-flush go through — so
+  // feeding the claim here is what makes the track-record condition require
+  // verifying what the deal was actually priced on, whether or not the officer
+  // ever pressed Register. Best-effort and never able to fail the save; the
+  // whole rule (verbatim-so-it-can-be-lowered, blank-states-nothing, frozen
+  // files refused, fails closed) lives in the module.
+  let experienceClaim = null;
+  if (r.rows[0].tool_key === 'product_pricing') {
+    const fed = await require('../lib/studio-experience-claim')
+      .applyStudioExperienceClaim(req.params.id, state, db);
+    if (fed.written) {
+      experienceClaim = fed.claim;
+      await audit(req, 'studio_experience_claim', 'application', req.params.id, fed.claim);
+    }
+  }
+  res.json({ ok: true, savedAt: new Date().toISOString(), experienceClaim });
 });
 router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const it = await db.query(
@@ -3729,10 +4217,14 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
+      // BORN ACCEPTED — the tool's own generated output, never a human upload
+      // awaiting review (owner-directed 2026-08-03; mirrors the borrower-side
+      // tool-submit path in routes/borrower.js). See lib/document-acceptance.js.
       `INSERT INTO documents
          (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
-          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower',$10) RETURNING id`,
+          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind,
+          review_status,reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower',$10,'accepted',now()) RETURNING id`,
       [req.params.itemId, req.params.id, it.rows[0].borrower_id, a.filename, a.contentType, buf.length,
        provider, ref, req.actor.id, toolKey + '_export']);
     out.push({ id: r.rows[0].id, filename: a.filename });
@@ -3754,6 +4246,12 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            -- Who manually added this condition + any pending "please delete" request,
+            -- so the row can offer Delete (to the adder / an admin) or Ask-to-delete
+            -- (owner-directed 2026-08-04).
+            ci.created_by_id, crb.full_name AS created_by_name,
+            ci.delete_requested_by, drb.full_name AS delete_requested_by_name,
+            ci.delete_requested_at, ci.delete_request_reason,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
             -- PILOT's advisory overlay (owner-directed 2026-07-24): its "ready / not_ready /
             -- agree / dispute" verdict + note on this condition, ON TOP of the human status.
@@ -3793,6 +4291,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
+       LEFT JOIN staff_users crb ON crb.id = ci.created_by_id
+       LEFT JOIN staff_users drb ON drb.id = ci.delete_requested_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
@@ -3804,10 +4304,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // client has no business with a raw rule tree.
   try {
     const { noteBuyerMark } = require('../lib/note-buyer-effects');
+    // Conditions cleared automatically when their DocuSign package is signed
+    // (owner-directed 2026-08-05) — the row gets a stamp so nobody works them by
+    // hand. Derived from the e-sign package definitions so it can never drift.
+    const { isAutoClearedByEsign } = require('../lib/esign/auto-clear');
     for (const row of r.rows) {
       let mark = null;
       try { mark = noteBuyerMark(row.rule_logic); } catch (_) { mark = null; }
       row.note_buyer_mark = mark ? mark.label : null;
+      row.esign_auto = isAutoClearedByEsign(row.template_code);
       delete row.rule_logic;
     }
   } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }
@@ -4018,6 +4523,91 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
   res.status(201).json({ ok: true, itemId });
 });
 
+// ---- Delete / request-delete a MANUALLY-added condition (owner-directed 2026-08-04) ----
+// "If he was the one manually adding the condition, then he should be able to
+//  manually delete the condition. If somebody else manually added it, then he can
+//  request from that person to delete, and that person should get a prompt to delete."
+// Only manual conditions (origin_kind manual_custom / manual_library / exception) are
+// deletable — auto/rules/system conditions are engine-owned and must never be
+// hand-deleted (they clear themselves). documents.checklist_item_id is ON DELETE SET
+// NULL, so a misfiled document is unlinked, never destroyed.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+async function loadManualCondition(appId, itemId) {
+  const r = await db.query(
+    `SELECT ci.id, ci.application_id, ci.origin_kind, ci.created_by_id, ci.created_by_kind,
+            ci.label, ci.delete_requested_by, ci.delete_requested_at,
+            su.full_name AS created_by_name
+       FROM checklist_items ci
+       LEFT JOIN staff_users su ON su.id = ci.created_by_id
+      WHERE ci.id=$1 AND ci.application_id=$2`, [itemId, appId]);
+  return r.rows[0] || null;
+}
+
+router.delete('/applications/:id/conditions/:itemId', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — it cannot be deleted here. It clears itself when the file no longer needs it.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    const isAdmin = req.actor.role === 'super_admin' || req.actor.role === 'admin';
+    if (!isCreator && !isAdmin) {
+      return res.status(403).json({
+        error: `Only ${it.created_by_name || 'the person who added it'} can delete this condition. Use "Ask to delete" to request it.`,
+        code: 'needs_delete_request', creatorName: it.created_by_name || null });
+    }
+    await db.query(`DELETE FROM checklist_items WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    await audit(req, 'delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, byCreator: !!isCreator });
+    // If an admin (not the adder) removed it, tell the adder it's gone.
+    if (!isCreator && it.created_by_id) {
+      try {
+        await notify.notifyStaff(it.created_by_id, {
+          type: 'condition_deleted', title: 'A condition you added was deleted', inAppOnly: true,
+          body: `"${it.label}" was removed by ${req.actor.full_name || 'an admin'}.`,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+      } catch (_) { /* best-effort */ }
+    }
+    res.json({ ok: true, deleted: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/conditions/:itemId/request-delete', async (req, res) => {
+  try {
+    const it = await loadManualCondition(req.params.id, req.params.itemId);
+    if (!it) return res.status(404).json({ error: 'condition not found on this file' });
+    if (!MANUAL_CONDITION_ORIGINS.includes(it.origin_kind)) {
+      return res.status(400).json({ error: 'This condition was added automatically by the system, not by a person — there is nobody to ask.' });
+    }
+    const isCreator = it.created_by_kind === 'staff' && it.created_by_id && String(it.created_by_id) === String(req.actor.id);
+    if (isCreator) return res.status(400).json({ error: 'You added this condition — you can delete it directly.' });
+    if (!it.created_by_id) return res.status(400).json({ error: 'This condition has no recorded owner to ask; an admin can delete it.' });
+    const reason = String((req.body || {}).reason || '').trim().slice(0, 500) || null;
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=$1, delete_requested_at=now(), delete_request_reason=$2 WHERE id=$3 AND application_id=$4`,
+      [req.actor.id, reason, req.params.itemId, req.params.id]);
+    await audit(req, 'request_delete_condition', 'application', req.params.id, { label: it.label, itemId: req.params.itemId, reason });
+    try {
+      await notify.notifyStaff(it.created_by_id, {
+        type: 'condition_delete_requested', title: 'Please delete a condition you added',
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `${req.actor.full_name || 'A teammate'} asked you to delete "${it.label}"${reason ? ` — "${reason}"` : ''}. Open the file to delete it.`,
+        applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, requested: true, creatorName: it.created_by_name || null });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The adder dismisses a delete request without deleting (they disagree).
+router.post('/applications/:id/conditions/:itemId/dismiss-delete-request', async (req, res) => {
+  try {
+    await db.query(
+      `UPDATE checklist_items SET delete_requested_by=NULL, delete_requested_at=NULL, delete_request_reason=NULL
+        WHERE id=$1 AND application_id=$2`, [req.params.itemId, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Re-run the automatic condition rules for this one file.
 router.post('/applications/:id/conditions/reevaluate', async (req, res) => {
   const result = await conditionEngine.evaluateApplication(req.params.id, {
@@ -4073,8 +4663,15 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
-    const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
-    await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
+    const { zip, filename, includedCount, heldBack } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    // The held-back count is on the AUDIT ROW as well as the preview: a ZIP is a
+    // stream of bytes with nowhere to put a note, so this is the only durable
+    // record of "the package went out one document short, and here is why".
+    await audit(req, 'export_tpr', 'application', req.params.id, {
+      bytes: zip.length, includedCount,
+      heldBackForReview: (heldBack || []).length,
+      heldBackFiles: (heldBack || []).slice(0, 25).map((d) => d.filename),
+    });
     // Owner-directed (2026-07-13): every export is also kept on the file and
     // mirrored into SharePoint ("YS portal syncing/TPR Exports", versioned on
     // re-export). Best-effort — a save failure never blocks the download.
@@ -4103,7 +4700,23 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
       [req.params.id])).rows.map(r => r.id);
     const trackDocs = (await tpr.selectTrackRecordDocs(trIds)).length;
     const missing = await tpr.selectTprMissing(req.params.id);
-    res.json({ includedCount: included, trackDocs, missing });
+    // NO SILENT DROPS (owner-directed 2026-08-03). The export now carries only
+    // ACCEPTED documents, so the preview must say out loud what is being held
+    // back and where it is — otherwise the only way to notice a package is one
+    // document short is for the investor to ask. Named, not just counted.
+    const pending = [
+      ...(await tpr.selectTprPending(req.params.id)).map((d) => ({
+        id: d.id, filename: d.filename, requirement: d.item_label || d.slot_label || null,
+      })),
+      ...(await tpr.selectTrackRecordPending(trIds)).map((d) => ({
+        id: d.id, filename: d.filename, requirement: 'REO / track record',
+      })),
+    ];
+    res.json({
+      includedCount: included, trackDocs, missing,
+      pending, pendingCount: pending.length,
+      pendingNote: require('../lib/document-acceptance').heldBackNote(pending.length),
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4485,6 +5098,179 @@ router.post('/applications/:id/credit/reuse', async (req, res) => {
   }
 });
 
+// ── CREDIT IMPORT WAIVER — sign the condition off on a report from ELSEWHERE ──
+// Owner-directed 2026-08-03: "they got a credit report from somewhere else and
+// they don't want to reissue — first the PDF upload slot on the document, then
+// they can request an exception to get the condition signed off without importing
+// credit." The PDF itself rides the ORDINARY staff document door (so it dedupes,
+// reopens the condition's evidence, pushes the condition status to ClickUp,
+// mirrors to SharePoint and lands in the TPR export like every other document);
+// these three routes only own the WAIVER. The rule they bend is enforced in ONE
+// place — lib/credit/waiver.js — which the sign-off gate reads.
+
+// Which credit condition on this file the caller means. A file can carry two
+// (the file-level one and a co-borrower's own, field_key 'cob_credit'), so the
+// item is named explicitly; `scope=co` resolves the co-borrower's for the client.
+async function creditConditionItem(appId, { itemId, scope }) {
+  if (itemId) {
+    const r = await db.query(
+      `SELECT ci.id, ci.field_key FROM checklist_items ci
+         JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.id=$1 AND ci.application_id=$2 AND t.code='rtl_cond_credit'`, [itemId, appId]);
+    return r.rows[0] || null;
+  }
+  const marker = require('../lib/credit/co-condition').CO_CREDIT_MARKER;
+  const co = scope === 'co';
+  const r = await db.query(
+    `SELECT ci.id, ci.field_key FROM checklist_items ci
+       JOIN checklist_templates t ON t.id=ci.template_id
+      WHERE ci.application_id=$1 AND t.code='rtl_cond_credit'
+        AND COALESCE(ci.field_key,'') ${co ? '=' : '<>'} $2
+      ORDER BY ci.created_at LIMIT 1`, [appId, marker]);
+  return r.rows[0] || null;
+}
+
+const LE_CREDIT_REASONS = require('../lib/loan-exceptions').CREDIT_IMPORT_WAIVER_REASONS;
+
+router.get('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const item = await creditConditionItem(req.params.id, {
+      itemId: typeof req.query.itemId === 'string' ? req.query.itemId : null,
+      scope: req.query.scope,
+    });
+    if (!item) return res.json({ itemId: null, waiver: null, exception: null, documents: [], reasons: LE_CREDIT_REASONS });
+    const creditWaiver = require('../lib/credit/waiver');
+    const w = await creditWaiver.loadWaiver(item.id);
+    let exception = null;
+    if (w.exceptionId) {
+      exception = (await db.query(
+        `SELECT id, status, reason_code, reason_note, exception_seq, decided_at, decision_note
+           FROM loan_exceptions WHERE id=$1`, [w.exceptionId])).rows[0] || null;
+    }
+    // The reports a HUMAN filed here — everything the importer did not file itself.
+    // Same predicate the waiver judges on, so the list and the gate can never
+    // describe different documents.
+    const documents = (await db.query(
+      `SELECT id, filename, content_type, size_bytes, created_at,
+              COALESCE(review_status,'pending') AS review_status, slot_label
+         FROM documents
+        WHERE checklist_item_id=$1 AND is_current=true AND ${creditWaiver.UPLOADED_REPORT_SQL('')}
+        ORDER BY created_at`, [item.id])).rows;
+    res.json({
+      itemId: item.id,
+      waiver: w.present ? w : null,
+      exception,
+      documents,
+      reasons: LE_CREDIT_REASONS,
+      canRequest: true,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const LE = require('../lib/loan-exceptions');
+  const reason = String(b.reason || '').trim();
+  if (!LE.isReasonCodeFor('credit_import_waiver', reason)) {
+    return res.status(400).json({ error: 'Pick a reason for signing this off without importing credit.' });
+  }
+  const note = b.note ? String(b.note).slice(0, 2000) : null;
+  if (!note) return res.status(400).json({ error: 'Add a short note explaining where the credit report came from — it goes to an admin for approval.' });
+
+  const app = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+  const item = await creditConditionItem(req.params.id, { itemId: b.itemId, scope: b.scope });
+  if (!item) return res.status(404).json({ error: 'this file has no credit report condition' });
+
+  // THE PDF COMES FIRST — the owner's own order ("first we need to have the PDF
+  // upload slot on the document and THEN they can request an exception"). An
+  // exception with nothing behind it is an exception to clear the condition on
+  // nothing, and it is the reviewing admin who would be left guessing what they
+  // are approving. Accepting it is the reviewer's separate step; the gate then
+  // requires that acceptance before the waiver counts.
+  const uploaded = (await db.query(
+    `SELECT count(*)::int AS n FROM documents
+      WHERE checklist_item_id=$1 AND is_current=true
+        AND ${require('../lib/credit/waiver').UPLOADED_REPORT_SQL('')}`, [item.id])).rows[0];
+  if (!uploaded || !uploaded.n) {
+    return res.status(409).json({ error: 'Upload the credit report PDF on this condition first — an exception is a request to sign off on THAT report, so it has to be on the file before it can be approved.' });
+  }
+
+  const client = await db.getClient();
+  let exceptionRow = null;
+  try {
+    await client.query('BEGIN');
+    exceptionRow = await LE.requestCreditImportWaiver(client, {
+      appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      compensatingFactors: LE.sanitizeCompensatingFactors(b.compensatingFactors),
+    });
+    await client.query(
+      `INSERT INTO credit_import_waivers
+         (checklist_item_id, application_id, reason, note, exception_id, requested_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (checklist_item_id) DO UPDATE SET
+         reason=$3, note=$4, exception_id=$5, requested_by=$6, updated_at=now()`,
+      [item.id, req.params.id, reason, note, exceptionRow ? exceptionRow.id : null, req.actor.id]);
+    // Nudge the condition so it reads "in progress", not outstanding — the same
+    // courtesy the appraisal no-XML waiver does. Never a clear: only the sign-off
+    // gate decides that, and only once the exception is approved.
+    await client.query(
+      `UPDATE checklist_items SET status=CASE WHEN status='outstanding' THEN 'received' ELSE status END, updated_at=now()
+        WHERE id=$1`, [item.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[credit-waiver] save failed:', e && e.message);
+    return res.status(500).json({ error: 'could not save the exception request' });
+  } finally { client.release(); }
+
+  await audit(req, 'credit_import_waiver', 'application', req.params.id,
+    { reason, itemId: item.id, exceptionId: exceptionRow ? exceptionRow.id : null });
+  try {
+    const ctx = await notify.fileContext(req.params.id);
+    await notify.notifyAdmins({
+      type: 'credit_import_exception', title: 'Credit report from elsewhere — exception needs approval',
+      body: `A credit report was uploaded${ctx ? ` on ${ctx.label}` : ''} instead of being imported (reason: ${reason.replace(/_/g, ' ')}). Approving it lets the credit condition be signed off without re-pulling credit. Approve or deny it on the Exceptions screen.`,
+      applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+      meta: ctx ? ctx.meta : undefined,
+    });
+  } catch (_) { /* best-effort */ }
+  res.json({ ok: true, itemId: item.id, exception: exceptionRow ? { id: exceptionRow.id, status: exceptionRow.status } : null });
+});
+
+router.delete('/applications/:id/credit-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const item = await creditConditionItem(req.params.id, {
+      itemId: typeof req.query.itemId === 'string' ? req.query.itemId : null,
+      scope: req.query.scope,
+    });
+    if (!item) return res.status(404).json({ error: 'this file has no credit report condition' });
+    const w = (await db.query(
+      `SELECT exception_id FROM credit_import_waivers WHERE checklist_item_id=$1`, [item.id])).rows[0];
+    if (w && w.exception_id) {
+      // A still-OPEN request is withdrawn. A row an admin already DECIDED is
+      // never rewritten as "withdrawn" — that would erase the fact a decision
+      // was made — so it is CLEARED (archived) with a note instead. Without
+      // this, removing the waiver left an 'approved' credit exception standing
+      // on the register for a file that no longer has one.
+      const LE = require('../lib/loan-exceptions');
+      try {
+        const withdrawn = await LE.withdrawException(w.exception_id, req.actor.id);
+        if (!withdrawn) {
+          await LE.clearException(w.exception_id, req.actor.id,
+            'The credit-import waiver was removed from the file — the condition needs an imported report again.');
+        }
+      } catch (_) { /* best-effort: the waiver row still goes, which is what the gate reads */ }
+    }
+    await db.query(`DELETE FROM credit_import_waivers WHERE checklist_item_id=$1`, [item.id]);
+    await audit(req, 'credit_import_waiver_removed', 'application', req.params.id, { itemId: item.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // The file's AUDIT LOG (staff see everything, including internal).
 // `?requests=1` adds the HTTP request-level layer — one line per call that
 // touched this file. It is opt-in because it is enormous and mostly page
@@ -4508,6 +5294,7 @@ router.get('/applications/:id/activity', async (req, res) => {
 // store (db/185) which src/lib/email-log.js captures every send + reply into; the
 // prior history is backdated in by the boot backfill. Staff-only, file-scoped.
 // ════════════════════════════════════════════════════════════════════════════
+
 
 // Shape one email_messages row for the client (used by the file view + mailbox).
 function emailRowShape(r) {
@@ -4764,7 +5551,20 @@ router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
          FROM application_assignees aa JOIN staff_users su ON su.id=aa.staff_id
         WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
           AND su.email IS NOT NULL AND btrim(su.email)<>''`, [req.params.id]);
-    res.json(r.rows.filter((p) => p.email && p.email !== meEmail));
+    const list = r.rows.filter((p) => p.email && p.email !== meEmail);
+    // Show the draw loop-in (coordinator + draws@ desk + loan officer) as chips too, so the
+    // composer preview matches who the reply will actually Cc on a draw-process file
+    // (owner-directed 2026-08-06 — "so we can see who is looped in"). Empty on a non-draw file.
+    try {
+      const seen = new Set(list.map((p) => p.email));
+      const loopIn = await require('../lib/draw-recipients').drawReplyLoopInDetailed(req.params.id);
+      for (const p of loopIn) {
+        if (!p.email || p.email === meEmail || seen.has(p.email)) continue;
+        seen.add(p.email);
+        list.push({ email: p.email, name: p.name, kind: 'draw' });
+      }
+    } catch (_) { /* preview-only; the send loops them in regardless */ }
+    res.json(list);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4787,6 +5587,18 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
     const out = emailRowShape({ ...row, has_body: true });
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     // Historical/lightweight outbound row → re-render the branded body on demand.
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
@@ -4882,7 +5694,10 @@ router.post('/applications/:id/emails/:msgId/resend', async (req, res) => {
 router.post('/applications/:id/emails/reply', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  const bodyText = String((req.body && req.body.body) || '').trim();
+  // Capped like the follow-up door (which slices to 4000): an uncapped body was
+  // bounded only by the JSON parser's own limit, and it rides straight into an
+  // email template.
+  const bodyText = String((req.body && req.body.body) || '').trim().slice(0, 4000);
   if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
@@ -4909,6 +5724,22 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        /* KEEP EVERYONE THE OTHER SIDE LOOPED IN (owner-directed 2026-08-07, extremely
+           important). `lastRecipients` reads the messages WE sent, so the assistant
+           counsel — or the settlement agent, or the realtor — that the attorney CC'd on
+           their own reply was never a candidate, and every reply PILOT sent quietly
+           removed them from the conversation. Their address WAS captured on the inbound
+           message; nothing read it. Scoped to THIS chain's thread_key so two closings on
+           one file can never cross, and the borrower + any insurance contact are carved
+           out because both are hard rules of this desk that a vendor's Cc must not
+           rewrite (closing-prep.neverLoopIn). */
+        const closingParties = await threadParticipants.replyRecipients({
+          applicationId: appId,
+          msgTypes: ['closing_message', 'attorney_message'],
+          threadKey: thread.thread_key || undefined,
+          to: last.to, cc: last.cc,
+          never: await closingPrep.neverLoopIn(appId),
+        });
         // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
         // (write to closing counsel on this chain) must agree, and a chain row is NOT
         // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
@@ -4923,7 +5754,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const senderName = meRow.full_name || meRow.email || '';
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
-          to: last.to, cc: last.cc, fromName: senderName, staffId: req.actor.id,
+          to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
           msgType: 'closing_followup',
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
@@ -4931,6 +5762,85 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center' });
         return res.json({ ok: true, sent_to: sent.to, cc: sent.cc });
       }
+    }
+
+    // A reply typed in a TITLE or INSURANCE order thread goes TO THE VENDOR — the
+    // title company or the insurance agent — on that order's own thread.
+    //
+    // Exactly the same trap the closing branch above exists to close, and it was
+    // still wide open here: without this, answering a title company's question fell
+    // through to the default fan-out below, which includes the BORROWER. So
+    // lender-to-vendor correspondence went to the borrower, and the vendor — the one
+    // person the message was written for — never received it and went on waiting.
+    // Recipients come from the order's own contact + the CC footing the order was
+    // placed with, never from the request body.
+    if (isOrderKind(String((req.body && req.body.scope) || ''))) {
+      const kind = String(req.body.scope);
+      const row = (await db.query(
+        `SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+      // FAIL CLOSED, like the closing branch. Falling through would send a vendor
+      // reply to the borrower — the exact outcome this branch exists to prevent — so
+      // a scope the file cannot honour is refused, never redirected.
+      if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+        return res.status(400).json({ error: `Place the ${kind} order first — there is no vendor thread to reply on yet.`, code: 'not_ordered' });
+      }
+      const data = await orders.getOrderData(appId);
+      if (!data) return res.status(404).json({ error: 'not found' });
+      if (!data.vendors[kind] || !data.vendors[kind].email) {
+        return res.status(400).json({ error: `The ${kind === 'title' ? 'title company' : 'insurance agent'} contact is missing, so there is no one to reply to.`, code: 'contact' });
+      }
+      // THE SAME ADDRESS GATE THE FOLLOW-UP DOOR USES. A reply re-states the property
+      // details, so two doors to one action (write to this vendor about this order)
+      // must agree — otherwise the Email Center becomes the way around a gate that
+      // exists so a vendor never receives an unverified address.
+      if (data.uspsGate && !data.uspsImported) {
+        return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before writing to the ${kind === 'title' ? 'title company' : 'insurance agent'}, so they never get an unverified address.`, code: 'usps' });
+      }
+      const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
+      const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
+         important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
+         the officer and processor — the vendor's own assistant, whom they CC'd on their
+         reply, is not in that data at all, so every reply removed them.
+         The BORROWER is deliberately NOT added this way: whether the borrower is on an
+         order is governed by the owner-directed ccBorrower setting (off by default),
+         and a vendor's one-off Cc must not turn that into policy. */
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      const { to, cc } = parties;
+      const { replyTo } = base;
+      // Reply on the SAME vendor chain the order was placed on (owner-directed
+      // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
+      const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
+      const sent = await orders.sendOrderMail({
+        appId, kind, data, to, cc, replyTo, built,
+        fromName: meRow.full_name || meRow.email,
+        type: `${kind}_followup`, thread,
+      });
+      if (!sent.ok && !sent.ambiguous) {
+        return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
+      }
+      // A reply IS a follow-up on this order — record it as one so the aging clock
+      // and the desk's "last chased" both reflect that somebody wrote to the vendor,
+      // and advance the thread (lastMessageId) on a confirmed send.
+      await db.query(
+        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+                meta = CASE WHEN $3::text IS NOT NULL
+                         THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                         ELSE meta END,
+                updated_at=now()
+          WHERE application_id=$1 AND order_type=$2`, [appId, kind, sent.messageId || null]);
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+        detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
+      });
+      try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
+      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc });
+      return res.json({ ok: true, sent_to: to, cc });
     }
 
     // Recipient set: an explicit list (validated as file parties) or the default
@@ -4992,14 +5902,26 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       : scopeIn === 'title' ? 'title_message'
       : scopeIn === 'insurance' ? 'insurance_message'
       : 'staff_reply';
+    // On a file that is in a draw process, loop the draw coordinator + loan officer + draws@ desk
+    // in on the reply, VISIBLY on the Cc line (owner-directed 2026-08-06: "everybody that is
+    // receiving this email should be on the CC line, including the loan officer and the draw
+    // coordinator"). Self-gating: empty on a file with no assigned draw coordinator, so a plain
+    // file reply is unchanged. These are all internal YS addresses (no note-buyer name), so it is
+    // borrower-safe. Never the sender or a To recipient. Best-effort.
+    let drawCc = [];
+    try {
+      const loopIn = await require('../lib/draw-recipients').drawReplyLoopIn(appId);
+      drawCc = require('../lib/draw-recipients').replyCcFrom(loopIn, { toEmails, sender: meEmail });
+    } catch (_) { /* best-effort: the reply still sends */ }
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
+      cc: drawCc.length ? drawCc : undefined,
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName || undefined,
       _ctx: { applicationId: appId, type: replyType, audience },
     });
-    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
-    res.json({ ok: true, sent_to: toEmails });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject });
+    res.json({ ok: true, sent_to: toEmails, cc: drawCc });
   } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
 });
 
@@ -5014,11 +5936,76 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
    documents for the team to classify. Uses the orders lib for all email building.
    ═══════════════════════════════════════════════════════════════════════════ */
 const orders = require('../lib/orders');
+const orderTracking = require('../lib/order-tracking');
+const orderSla = require('../lib/order-sla');
 const orderSlots = require('../lib/order-slots');
 const { orderReplyTo } = require('../lib/file-address');
-const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const ORDER_RETURN_KIND = orderSlots.RETURN_DOC_KIND;
 
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
+
+/**
+ * A DEAL THAT IS OVER MUST NOT SEND A VENDOR A NEW ORDER.
+ *
+ * Nothing stopped a title order going out on a file that was declined last month,
+ * withdrawn, or funded and closed — an email to an outside company about a loan
+ * that no longer exists, with the borrower CC'd on the insurance one. `canTouchApp`
+ * answers "may this person act on this file", which is a different question from
+ * "is there anything left to act on".
+ *
+ * FOLLOW-UPS AND REPLIES ARE DELIBERATELY NOT GATED. After funding a vendor still
+ * owes us the final policy and the recorded mortgage, and shutting the team out of
+ * writing to them would be the mistake this guard is meant to avoid — it is the
+ * distinction closing-prep already draws between a finished order and a cancelled
+ * one. Only PLACING a new order is refused.
+ *
+ * There is deliberately NO capability gate beyond file access either. Placing a
+ * title order is ordinary loan-officer work, and gating it would take it away from
+ * the person most likely to be doing it — the same reasoning `entity-adopt`
+ * records for its own button.
+ *
+ * Returns a refusal message, or null when the file is live. Fails OPEN on a read
+ * error: refusing a legitimate order because the database hiccupped is worse.
+ */
+const DEAD_FOR_NEW_ORDERS = ['declined', 'withdrawn', 'cancelled', 'funded'];
+async function deadFileOrderReason(appId) {
+  try {
+    const r = await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    if (!r.rows[0]) return 'This file no longer exists.';
+    const s = String(r.rows[0].status || '').toLowerCase();
+    if (!DEAD_FOR_NEW_ORDERS.includes(s)) return null;
+    return s === 'funded'
+      ? 'This loan has already funded, so a new order should not go out. If the vendor still owes something, use Follow-up on the existing order.'
+      : `This file is ${s}, so an order should not go out to a vendor. Reopen the file first if that is wrong.`;
+  } catch (_) { return null; }
+}
+
+/**
+ * WHO IS ON THIS ORDER'S THREAD — ONE definition (owner-directed 2026-07-31: title
+ * defaults OFF, insurance ON, and a per-order choice always wins).
+ *
+ * Precedence: an explicit choice from the panel checkbox → the choice already
+ * stored on this order (`file_orders.meta.ccBorrower`) → the file's loan officer's
+ * own default. Every door that writes to a vendor must resolve it the SAME way, or
+ * the borrower silently joins or leaves the conversation halfway through it — this
+ * was hand-copied into `place` and `followup`, and a third copy in the Email Center
+ * reply is exactly how those two would have drifted apart.
+ *
+ * Never throws: an unreadable LO setting falls through to the type default.
+ */
+async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
+  if (explicit != null) return !!explicit;
+  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccBorrower != null) return !!storedMeta.ccBorrower;
+  let loCcSetting = false;
+  try {
+    const key = orders.ccBorrowerSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
+    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
+      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
+    }
+  } catch (_) { /* the company default stands (off) */ }
+  return orders.ccBorrowerDefault(kind, loCcSetting);
+}
 
 // The whole Orders section for a file: both orders' state, whether each can be
 // placed (blockers), the vendor on file, and the returned documents waiting to be
@@ -5029,18 +6016,37 @@ router.get('/applications/:id/orders', async (req, res) => {
     const data = await orders.getOrderData(req.params.id);
     if (!data) return res.status(404).json({ error: 'not found' });
     const rows = (await db.query(
-      `SELECT order_type, status, vendor_name, vendor_email, ordered_at, last_followup_at,
-              followup_count, send_count, meta
-         FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
+      `SELECT o.order_type, o.status, o.vendor_name, o.vendor_email, o.ordered_at, o.last_followup_at,
+              o.followup_count, o.send_count, o.meta,
+              o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.completed_at, o.notes,
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email,
+              -- The file's own status, because orderState needs it to know a held
+              -- file is not late. Selected here so the card, the section badge
+              -- and the cross-file desk all feed the SAME function the same
+              -- facts — the desk had this rule and the card did not, and a held
+              -- file read "on time" on one screen and "64 business days late",
+              -- in red, on the other.
+              a.status AS file_status
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id
+         -- ACTIVE ONLY, matching the overdue nudge's own join. Without it the
+         -- card and the desk printed a departed staffer's name while the nudge
+         -- (which filters on is_active) told the team nobody owned the order —
+         -- two surfaces disagreeing about the same row. An assignment to
+         -- somebody who has left now reads as unassigned everywhere, which is
+         -- the truth and is what gets it picked up.
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
+        WHERE o.application_id=$1`, [req.params.id])).rows;
     const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
-    // Whether the borrower is CC'd on each order (owner-directed 2026-07-31:
-    // title defaults OFF; the file's LO's own setting can default it on; a
-    // per-order choice — persisted in file_orders.meta — always wins).
-    let loCcSetting = false;
+    // Whether the borrower is CC'd on each order (owner-directed 2026-08-05: the
+    // COMPANY default is OFF for every order kind; the file's LO's own per-kind
+    // setting can default it on; a per-order choice — persisted in
+    // file_orders.meta — always wins).
+    let loSettings = {};
     try {
       const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [req.params.id]);
       if (lo.rows[0] && lo.rows[0].loan_officer_id) {
-        loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+        loSettings = await require('../lib/lo-settings').getSettings(lo.rows[0].loan_officer_id);
       }
     } catch (_) { /* defaults stand (off) */ }
     const storedCc = (k) => {
@@ -5051,7 +6057,8 @@ router.get('/applications/:id/orders', async (req, res) => {
     const ccEffective = (k) => {
       const stored = storedCc(k);
       if (stored != null) return stored;
-      return orders.ccBorrowerDefault(k, loCcSetting);
+      const key = orders.ccBorrowerSettingKey(k);
+      return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
     };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
@@ -5101,8 +6108,34 @@ router.get('/applications/:id/orders', async (req, res) => {
         conditionSlots: slotSets[k].conditionSlots,
         condition: cond ? { itemId: cond.id, code: cond.code, label: cond.label, status: cond.status } : null,
         returnedDocs: docsFor(k),
+        // THE CLOCK AND THE OWNER (2026-08-03). Computed on the SERVER, once, so
+        // the card, the section badge, the cross-file desk and the aging sweep can
+        // never disagree about whether the same order is late — the discipline the
+        // escalations queue already follows for its own per-row flags.
+        tracking: row ? {
+          ...orderSla.orderState(row, new Date()),
+          assignedTo: row.assigned_to || null,
+          assignedName: row.assigned_name || row.assigned_email || null,
+          firstResponseAt: row.first_response_at || null,
+          completedAt: row.completed_at || null,
+          notes: row.notes || null,
+        } : null,
       };
     };
+    /* THE ATTORNEY ORDER'S CLOCK AND OWNER, so the closing section can show them
+       like the other two. Only the tracking block — the closing card owns its own
+       recipients, package and chain, and duplicating those here would be a second
+       source for them. Null when closing prep has never been sent. */
+    const attorneyRow = orderOf('attorney');
+    const attorneyTracking = attorneyRow ? {
+      ...orderSla.orderState(attorneyRow, new Date()),
+      assignedTo: attorneyRow.assigned_to || null,
+      assignedName: attorneyRow.assigned_name || attorneyRow.assigned_email || null,
+      firstResponseAt: attorneyRow.first_response_at || null,
+      completedAt: attorneyRow.completed_at || null,
+      notes: attorneyRow.notes || null,
+    } : null;
+
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
       const { to, cc, ccBorrower } = orders.recipientsFor(k, data, { ccBorrower: ccEffective(k) });
@@ -5118,6 +6151,10 @@ router.get('/applications/:id/orders', async (req, res) => {
       orders: {
         title: { ...shape('title'), recipients: recipientsPreview('title'), ccBorrower: ccEffective('title') },
         insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'), ccBorrower: ccEffective('insurance') },
+        // Tracking ONLY — everything else about the attorney order comes from its
+        // own closing-prep payload, which owns the recipients, the package and the
+        // chain. `null` until closing prep has actually been sent.
+        attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
       },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -5134,14 +6171,26 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   try {
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
+    // Nothing goes out to an outside vendor about a deal that is over.
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
     const blk = orders.blockers(kind, data);
     if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
     if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
     // The address must be the USPS-verified, imported one before it leaves the building.
     if (blk.includes('usps')) return res.status(422).json({ error: `Import the USPS-verified property address before ordering ${kind === 'title' ? 'title' : 'insurance'}. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — an order sent with an unverified address can go out with the wrong ZIP or unit.`, code: 'usps' });
 
-    const existing = (await db.query(`SELECT status, send_count, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    // `ordered_at` / `ordered_by` are read too so a failed send can put the row
+    // back EXACTLY as it was — see the release below.
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type=$2`,
+      [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
+    // A pre-check, kept so the common case answers fast and with the right wording.
+    // It is NOT the guard — the CLAIM below is (see the transaction), because this
+    // read and the write that followed it were a read-then-write with a whole email
+    // send in between: two clicks (or a double-submit) both read 'not_ordered', both
+    // sent, and the vendor received the order twice.
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
     }
@@ -5150,40 +6199,171 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     // panel checkbox → prior stored choice on this order → the file's LO's own
     // default (title: off unless the officer's setting turns it on; insurance:
     // on). The choice is persisted so follow-ups reuse it.
-    let ccBorrower = null;
-    if (req.body && req.body.ccBorrower != null) ccBorrower = !!req.body.ccBorrower;
-    else if (existing && existing.meta && typeof existing.meta === 'object' && existing.meta.ccBorrower != null) ccBorrower = !!existing.meta.ccBorrower;
-    if (ccBorrower == null) {
-      let loCcSetting = false;
-      try {
-        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
-      } catch (_) { /* off */ }
-      ccBorrower = orders.ccBorrowerDefault(kind, loCcSetting);
-    }
+    const ccBorrower = await ccBorrowerFor(appId, kind, {
+      explicit: req.body && req.body.ccBorrower != null ? req.body.ccBorrower : null,
+      storedMeta: existing && existing.meta,
+    });
 
     const built = orders.buildOrderEmail(kind, data, {});
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
-    await email.sendMail({
-      to, cc,
-      subject: built.subject, html: built.html, text: built.text,
-      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
-      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
-      _ctx: { applicationId: appId, type: `${kind}_order`, audience: 'staff' },
-    });
     const vendor = data.vendors[kind];
-    await db.query(
-      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
-       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
-       ON CONFLICT (application_id, order_type)
-       DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
-                     vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
-                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
-                     meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()`,
-      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
-       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower]);
-    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower });
+
+    // CLAIM FIRST, SEND SECOND — inside ONE transaction, which is what makes an
+    // order exactly-once. Three defects lived in the old "send, then record" shape:
+    //   · a second click while the first send was in flight passed the pre-check
+    //     above and sent the order to the vendor a SECOND time (the claim's
+    //     conditional ON CONFLICT now serializes them — the loser blocks on the
+    //     row, re-reads 'ordered', matches no row and answers 409);
+    //   · a bookkeeping failure AFTER the email went reported "Could not send the
+    //     order", so an operator re-sent one the vendor already had;
+    //   · a send the provider never accepted was still recorded as 'ordered'.
+    // With the claim first, a failed send ROLLS IT BACK, so nothing is recorded that
+    // did not happen and nothing that happened goes unrecorded.
+    // THE CLAIM COMMITS BEFORE THE SEND — and is UNWOUND if the send does not
+    // happen. This is the closing chain's claim → act → settle/release shape
+    // (closing-thread.js), and the send is deliberately OUTSIDE the transaction:
+    // `email.sendMail` captures into the Email Center on a SECOND pool client, so
+    // holding one across the network call means every concurrent place needs two
+    // connections at once — a handful of them starve a pool of ten, the capture
+    // times out, and the order goes out but vanishes from the very screen the
+    // "check before re-sending" advice points at.
+    let claimed = null;
+    let sendRes = null;
+    try {
+      const claim = await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
+         VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
+         ON CONFLICT (application_id, order_type)
+         DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
+                       vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
+                       ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
+                       meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
+           -- THE REAL GUARD, and it is atomic: a second concurrent click blocks on
+           -- this row, re-reads 'ordered' and matches nothing, so it answers 409
+           -- instead of sending the vendor a second copy.
+           --
+           -- A FORCED re-send is a deliberate act and is allowed past — but only
+           -- once every 10 seconds, so a double-click on "force a re-send" is one
+           -- order rather than two. A genuine re-send minutes later is unaffected.
+           WHERE file_orders.status IN ('not_ordered','cancelled')
+              OR ($9::boolean AND COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds')
+         -- ::text, NOT the timestamp itself. Postgres now() is MICROSECOND
+         -- precision and a JS Date is only milliseconds, so a claim token
+         -- round-tripped through one comes back a fraction early and matches
+         -- nothing — the release below then silently did nothing, leaving an order
+         -- recorded as sent that never was.
+         RETURNING id, status, ordered_at::text AS claim_token`,
+        [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+         (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower, !!force]);
+      if (!claim.rows[0]) {
+        // Telling somebody who just pressed "force a re-send" to force a re-send is
+        // the advice-to-do-the-thing-you-just-did trap. A refusal inside the
+        // 10-second window is a double-click, and says so.
+        return res.status(409).json(force
+          ? { error: `That ${kind} order has just gone out — give it a moment before sending it again.`, code: 'too_soon' }
+          : { error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+      }
+      claimed = claim.rows[0];
+      sendRes = await orders.sendOrderMail({
+        appId, kind, data, to, cc, replyTo, built,
+        fromName: meRow.full_name || meRow.email,
+        type: `${kind}_order`,
+      });
+      if (!sendRes.ok && !sendRes.ambiguous) {
+        // NOTHING REACHED THE VENDOR — put the row back EXACTLY as it was, so the
+        // order reads the truth and the next attempt can claim it.
+        //
+        // The PREVIOUS SNAPSHOT, not a rule. Setting `status='not_ordered'` and
+        // decrementing would be wrong on a re-send: the claim overwrote
+        // `ordered_at` with now(), so a failed re-send would leave the order
+        // looking freshly placed — the aging clock reset by a send that never
+        // happened, and the overdue nudge silenced for another three days.
+        //
+        // A COMPARE-AND-SWAP, not a blind revert: it only unwinds the row it can
+        // prove is still exactly the one just claimed (same id, same ordered_at,
+        // still 'ordered'). Anything else means something moved it in between, and
+        // stamping over that would erase real work.
+        await db.query(
+          `UPDATE file_orders
+              SET status = $3, ordered_at = $4, ordered_by = $5, send_count = $6, updated_at = now()
+            WHERE id = $1 AND status = 'ordered' AND ordered_at = $2::timestamptz`,
+          [claimed.id, claimed.claim_token,
+           (existing && existing.status) || 'not_ordered',
+           (existing && existing.ordered_at) || null,
+           (existing && existing.ordered_by) || null,
+           Number((existing && existing.send_count) || 0)])
+          .catch(() => { /* best-effort — the refusal is what matters */ });
+        return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
+      }
+      // The order now has an owner and a history. AFTER the send, because a
+      // failure above releases the claim and these would describe an order that
+      // never went out. An AMBIGUOUS send keeps the claim on purpose: the provider
+      // may well have delivered it, and releasing would invite the re-send that
+      // double-orders.
+      await orderTracking.ensureAssignee(appId, kind);
+      // Anchor the vendor conversation on THIS order's Message-ID (the thread root)
+      // so a later follow-up / Email Center reply lands on the same chain in the
+      // vendor's inbox instead of a new one (owner-directed 2026-08-04). Only on a
+      // CONFIRMED send (an ambiguous send carries no id); best-effort — a missed
+      // stamp just means the follow-up threads by subject, not by header. A re-send
+      // re-anchors the thread, which is correct (the vendor sees a fresh order).
+      if (sendRes.messageId) {
+        await db.query(
+          `UPDATE file_orders
+              SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('rootMessageId', $3::text, 'lastMessageId', $3::text)
+            WHERE application_id=$1 AND order_type=$2`,
+          [appId, kind, sendRes.messageId]).catch(() => {});
+      }
+      /* RE-SENDING A FINISHED ORDER IS A REOPEN, AND IT MUST BE RECORDED AS ONE.
+         The retire sweep leaves an order alone only while a 'reopened' event is
+         NEWER than the last 'completed' one — that is the whole mechanism by which
+         a human's decision survives it. This route recorded 'resent', so a
+         coordinator re-sending a completed title order (the Re-send button IS
+         offered there, because the vendor may still owe the final policy) sent the
+         email, brought the order back to life, and then watched the next digest
+         tick — within half an hour — put it straight back to 'completed'. It fell
+         off the desk, the nudge skipped it, and nobody ever chased that title
+         company again.
+         This is the same defect the closing-prep meta merge fixes for the attorney
+         order; it was live on the two commoner types from the same button. */
+      const wasFinished = !!(existing && existing.status === 'completed');
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: kind,
+        kind: wasFinished ? 'reopened' : (existing && existing.send_count ? 'resent' : 'placed'),
+        actorId: req.actor.id, orderId: claimed.id,
+        detail: {
+          vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null,
+          to: to.length, cc: cc.length, force: !!force, unconfirmed: !!sendRes.ambiguous,
+          ...(wasFinished ? { reopenedBy: 'resend' } : {}),
+        },
+      });
+      // An order being chased must not also carry the date it was finished — the
+      // same reason `reopenOrder` clears it. The claim already set status='ordered'.
+      if (wasFinished) {
+        await db.query(
+          `UPDATE file_orders SET completed_at = NULL, updated_at = now()
+            WHERE id = $1 AND status <> 'completed'`, [claimed.id]).catch(() => {});
+      }
+    } catch (e) {
+      // `sendOrderMail` and `recordEvent` never throw, so reaching here after a
+      // successful send means the BOOKKEEPING failed — which must never be reported
+      // as "could not send", because that is exactly what makes somebody re-send an
+      // order the vendor already has.
+      if (sendRes && (sendRes.ok || sendRes.ambiguous)) {
+        return res.status(500).json({
+          error: 'The order was sent to the vendor, but part of recording it on the file failed. Do NOT re-send — check the Email Center, and tell an administrator.',
+          code: 'recorded_failed', sent_to: to, cc,
+        });
+      }
+      return res.status(500).json({ error: 'Could not send the order.' });
+    }
+    // Audit and the response are AFTER the commit and are best-effort — a failure
+    // here must never report a placed order as failed.
+    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (sendRes.ambiguous) {
+      return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc, ccBorrower });
+    }
     res.json({ ok: true, sent_to: to, cc, ccBorrower });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
@@ -5196,7 +6376,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
   if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(`SELECT status, meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const row = (await db.query(`SELECT status, meta, subject FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
       return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
     }
@@ -5213,29 +6393,52 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // off). An order placed BEFORE this existed has no stored choice — fall to
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
-    const storedCc = row.meta && typeof row.meta === 'object' && row.meta.ccBorrower != null ? !!row.meta.ccBorrower : null;
-    let fuCc = storedCc;
-    if (fuCc == null) {
-      let loCcSetting = false;
-      try {
-        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
-      } catch (_) { /* off */ }
-      fuCc = orders.ccBorrowerDefault(kind, loCcSetting);
-    }
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
-    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
-    await email.sendMail({
-      to, cc,
-      subject: built.subject, html: built.html, text: built.text,
-      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
-      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
-      _ctx: { applicationId: appId, type: `${kind}_followup`, audience: 'staff' },
+    const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    // Same rule as the reply door above: a follow-up must not drop the party the vendor
+    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    const fuParties = await threadParticipants.replyRecipients({
+      applicationId: appId, msgTypes: [`${kind}_message`],
+      to: fuBase.to, cc: fuBase.cc,
+      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
     });
+    const { to, cc } = fuParties;
+    const { replyTo } = fuBase;
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    // THE PROVIDER'S ANSWER DECIDES (orders.sendOrderMail). A bare send recorded a
+    // follow-up the vendor never received whenever email was off or the API key had
+    // rotated — so `last_followup_at` moved, the aging clock reset, and the order
+    // looked chased. On this desk a false "we chased them" is worse than an error.
+    // The follow-up rides the SAME vendor conversation the order was placed on:
+    // reuse the order's subject + reference its Message-ID so it threads in the
+    // vendor's inbox instead of opening a new chain (owner-directed 2026-08-04).
+    const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
+    const sendRes = await orders.sendOrderMail({
+      appId, kind, data, to, cc, replyTo, built,
+      fromName: meRow.full_name || meRow.email,
+      type: `${kind}_followup`, thread,
+    });
+    if (!sendRes.ok && !sendRes.ambiguous) {
+      return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
+    }
+    // An ambiguous send counts: the provider may have delivered it, and NOT
+    // recording it would have the desk telling somebody to chase again immediately.
+    // A confirmed send also ADVANCES the thread (lastMessageId) so the next
+    // follow-up references this message; an ambiguous send carries no id, so the
+    // thread is left pointing at the last confirmed message.
     await db.query(
-      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
-        WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
-    await audit(req, 'order_followup', 'application', appId, { kind, to: to.length });
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+              meta = CASE WHEN $3::text IS NOT NULL
+                       THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
+                       ELSE meta END,
+              updated_at=now()
+        WHERE application_id=$1 AND order_type=$2`, [appId, kind, sendRes.messageId || null]);
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+      detail: { to: to.length, note: note ? note.slice(0, 200) : null, unconfirmed: !!sendRes.ambiguous },
+    });
+    try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* sent either way */ }
+    if (sendRes.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc });
     res.json({ ok: true, sent_to: to, cc });
   } catch (e) { res.status(500).json({ error: 'Could not send the follow-up.' }); }
 });
@@ -5268,6 +6471,214 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
     await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
     res.json({ ok: true, slot });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * WHO IS CHASING THIS ORDER. The default is the file's processor, but ANY active
+ * staff member may be assigned (owner-directed 2026-08-03: "and also any staff
+ * members") — an order nobody owns is exactly the order nobody chases.
+ *
+ * Deliberately NOT gated on a capability beyond file access: the person best
+ * placed to say "I'll take this one" is whoever is looking at the file, and a
+ * permission wall here would leave orders on the person who happened to place
+ * them. Every change is a recorded event, so the answer to "who moved this, and
+ * when?" is on the order itself.
+ */
+router.post('/applications/:id/orders/:kind/assign', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const raw = req.body && req.body.staffId;
+    // An explicit null/'' UNASSIGNS — a real action, not a mistake: an order can
+    // legitimately go back to the team when the person who had it hands it off.
+    const staffId = raw == null || raw === '' ? null : String(raw);
+    if (staffId && !UUID_RE.test(staffId)) return res.status(400).json({ error: 'Pick somebody from the list.' });
+    let who = null;
+    if (staffId) {
+      who = (await db.query(
+        `SELECT id, full_name, email FROM staff_users WHERE id=$1 AND is_active=true`, [staffId])).rows[0];
+      // A deactivated staffer is indistinguishable from nobody, except that it
+      // LOOKS covered — which is worse than an unassigned order.
+      if (!who) return res.status(400).json({ error: 'That person is not an active staff member.' });
+    }
+    const upd = await db.query(
+      `UPDATE file_orders
+          SET assigned_to=$3, assigned_at=CASE WHEN $3::uuid IS NULL THEN NULL ELSE now() END,
+              assigned_by=$4, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2
+      RETURNING id`, [appId, kind, staffId, req.actor.id]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'assigned', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { to: who ? (who.full_name || who.email) : null },
+    });
+    await audit(req, 'order_assigned', 'application', appId, { kind, staffId });
+    res.json({ ok: true, assignedTo: staffId, assignedName: who ? (who.full_name || who.email) : null });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * WHEN THE ANSWER IS EXPECTED. Normally derived (ordered_at + the type's SLA in
+ * business days — order-sla.effectiveDueOn), so nothing had to be back-filled and
+ * the date can never drift out of step with the SLA. This is the OVERRIDE, for
+ * the case the derivation cannot know: the vendor told us Thursday.
+ *
+ * Sending `dueOn: null` drops back to the derived date; `slaDays` moves the whole
+ * clock for this one order instead of pinning a single date.
+ */
+router.post('/applications/:id/orders/:kind/due', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const b = req.body || {};
+    // A date is a 'YYYY-MM-DD' calendar STRING end-to-end (the repo's date rule),
+    // resolved through the shared normalizer so a typed 2-digit year lands as the
+    // real year rather than as literal 0026.
+    let dueOn = null;
+    if (b.dueOn != null && b.dueOn !== '') {
+      dueOn = require('../lib/fields').normalizeTypedDate(b.dueOn);
+      if (!dueOn) return res.status(400).json({ error: 'That date could not be read. Use the date picker.' });
+    }
+    // An explicit blank CLEARS the per-order SLA back to the type default — the
+    // COALESCE shape meant it could be set but never unset. `undefined` (the key
+    // simply absent) leaves it alone, which is what a caller changing only the
+    // date means.
+    const slaGiven = Object.prototype.hasOwnProperty.call(b, 'slaDays');
+    let slaDays = null;
+    if (slaGiven && b.slaDays != null && b.slaDays !== '') {
+      const n = Number(b.slaDays);
+      if (!Number.isFinite(n) || n < 0 || n > 260) return res.status(400).json({ error: 'Give the number of business days to wait, from 0 to 260.' });
+      slaDays = Math.floor(n);
+    }
+    // Likewise the pinned date: only a caller that MENTIONED `dueOn` may clear it.
+    // Sending just a new SLA used to silently wipe a date somebody had agreed with
+    // the vendor.
+    const dueGiven = Object.prototype.hasOwnProperty.call(b, 'dueOn');
+    const upd = await db.query(
+      `UPDATE file_orders
+          SET due_on   = CASE WHEN $5::boolean THEN $3::date ELSE due_on END,
+              sla_days = CASE WHEN $6::boolean THEN $4::int  ELSE sla_days END,
+              updated_at = now()
+        WHERE application_id=$1 AND order_type=$2
+        -- The file's status rides along so the state handed back is the SAME
+        -- state every other surface computes. Without it orderState cannot know
+        -- the file is paused and answers "late" for an order the desk and the card
+        -- both show as not being chased. Harmless only because the panel discards
+        -- this body and refetches — which is exactly the kind of accident that
+        -- stops being harmless the day somebody renders it.
+        RETURNING id, ordered_at, due_on, sla_days, order_type, status,
+                  (SELECT a.status FROM applications a WHERE a.id = file_orders.application_id) AS file_status`,
+      [appId, kind, dueOn, slaDays, dueGiven, slaGiven]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'due_changed', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { dueOn, slaDays },
+    });
+    await audit(req, 'order_due_changed', 'application', appId, { kind, dueOn, slaDays });
+    res.json({ ok: true, state: orderSla.orderState(upd.rows[0], new Date()) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/** A free note about THIS order ("they said Thursday", "wrong parcel, re-sent").
+    Kept on the order rather than in the file's chat: it is about the vendor
+    relationship, and the next person to open this order is who needs it. */
+router.post('/applications/:id/orders/:kind/note', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    // `textColumn` trims, strips a NUL byte (Postgres refuses one in ANY text
+    // column) and caps at the column's own limit — the repo's one door for a
+    // free-text write. The explicit max is this column's, not a guess.
+    const note = require('../lib/fields').textColumn(req.body && req.body.note, 'file_orders_notes', 4000);
+    const upd = await db.query(
+      `UPDATE file_orders SET notes=$3, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING id`, [appId, kind, note]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'note', actorId: req.actor.id,
+      orderId: upd.rows[0].id, detail: { note: note ? String(note).slice(0, 200) : null },
+    });
+    res.json({ ok: true, notes: note });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * MARK AN ORDER FINISHED, by hand.
+ *
+ * The sweep retires an order when its condition is signed off, and that is the
+ * right automatic rule — but it is the ONLY one, so an order whose condition is
+ * never signed off (a funded file where somebody cleared the work another way, a
+ * file whose condition item does not exist at all) had no way to end. It sat on
+ * the desk forever with a live "Chase now" button aimed at a title company on a
+ * loan that closed months ago, and the overdue nudge re-fired at the administrator
+ * tier every two days, permanently. There was no manual completion anywhere in the
+ * system — `completeOrder` takes an actor and nothing ever passed one.
+ *
+ * DELIBERATELY NOT 'cancelled': that is an explicit stand-down which closes the
+ * follow-up and reply doors, and after funding a vendor may still owe the final
+ * policy. 'completed' leaves both doors open.
+ */
+router.post('/applications/:id/orders/:kind/complete', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reason = require('../lib/fields').textColumn(req.body && req.body.reason, 'file_orders_notes', 500)
+      || 'marked finished by hand';
+    const ok = await orderTracking.completeOrder(appId, kind, { actorId: req.actor.id, reason });
+    if (!ok) return res.status(409).json({ error: 'This order is not open, so there is nothing to finish.', code: 'not_open' });
+    await audit(req, 'order_completed_manually', 'application', appId, { orderType: kind, reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/**
+ * HOW THIS VENDOR HAS ACTUALLY PERFORMED — shown where the choice is made.
+ *
+ * File-scoped on purpose: it hangs off the order card, and the numbers are about
+ * OUR orders with that company, which is exactly what somebody about to send them
+ * another one wants to know.
+ */
+router.get('/applications/:id/orders/:kind/vendor-scorecard', async (req, res) => {
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(req.params.id);
+    const vendor = data && data.vendors[kind];
+    if (!vendor || !vendor.id) return res.json({ card: null });
+    const scorecard = require('../lib/vendor-scorecard');
+    // THIS file's order is excluded, so "they are late on N OTHER orders" is true.
+    const card = await scorecard.scorecardFor(vendor.id, { excludeApplicationId: req.params.id });
+    res.json({
+      card,
+      summary: scorecard.summarize(card, { vendorName: vendor.company_name || vendor.contact_name || null }),
+    });
+  } catch (e) { res.json({ card: null }); }   // decoration on a decision — never a blocker
+});
+
+/** Every vendor we have ever ordered from, worst first. */
+router.get('/vendor-scorecards', async (req, res) => {
+  try {
+    const type = ['title_company', 'insurance_agent', 'attorney'].includes(String(req.query.type || ''))
+      ? String(req.query.type) : null;
+    res.json(await require('../lib/vendor-scorecard').vendorLeaderboard({ contactType: type }));
+  } catch (e) { res.json([]); }
+});
+
+/** The order's own timeline — placed, chased, replied, assigned, finished. */
+router.get('/applications/:id/orders/:kind/events', async (req, res) => {
+  const kind = req.params.kind;
+  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  res.json(await orderTracking.listEvents(req.params.id, kind));
 });
 
 /**
@@ -5306,12 +6717,22 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
     if (!c.ok) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
     await db.query(`UPDATE documents SET slot_label=$2 WHERE id=$1`, [doc.id, c.slot]);
     await audit(req, 'condition_doc_slotted', 'application', appId, { templateCode: doc.template_code, slot: c.slot || 'unassigned' });
+    // UPLOAD FIRST, NAME THE SLOT SECOND is the ordinary way people work, and this
+    // route only ever ran an UPDATE — so a document that arrived before db/462, or one
+    // whose earlier catch could not read storage, gets its chance here. Idempotent:
+    // the catch is keyed on the bytes and stands down against a report already filed,
+    // so re-slotting the same document ten times does the work once.
+    require('../lib/research/xml-catch').fireCatchById(doc.id, 'a loan file (document slotted)');
     res.json({ ok: true, slot: c.slot });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Cancel an order (or reopen a cancelled one). Cancelling frees it to be
-// re-ordered from scratch (the place gate treats 'cancelled' like 'not_ordered').
+// Cancel an order, or put a cancelled / completed one back on the desk.
+//
+// Cancelling frees it to be re-ordered from scratch (the place gate treats
+// 'cancelled' like 'not_ordered'). Reopening is NOT the mirror image — it
+// restores the state the order can be PROVEN to have been in, which is why it
+// goes through orderTracking.reopenOrder rather than writing a status here.
 router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
@@ -5319,12 +6740,34 @@ router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
-    const next = reopen ? 'ordered' : 'cancelled';
+    if (reopen) {
+      const v = await orderTracking.reopenOrder(appId, kind, { actorId: req.actor.id });
+      if (v.ok) {
+        await audit(req, 'order_reopened', 'application', appId, { kind, status: v.status });
+        return res.json({ ok: true, status: v.status });
+      }
+      if (v.reason === 'error') {
+        return res.status(500).json({ error: 'Could not reopen that order just now. Try again in a moment.', code: 'reopen_failed' });
+      }
+      // NO ROW AT ALL IS A 404, NOT A 409. Collapsing the two told somebody whose
+      // order does not exist that it "is already open", which is the opposite of
+      // what they need to hear and matches nothing on their screen.
+      const row = (await db.query(
+        `SELECT 1 FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+      if (!row) return res.status(404).json({ error: 'This order has not been created yet.' });
+      return res.status(409).json({
+        error: 'Only a cancelled or finished order can be reopened — this one is already open.',
+        code: 'not_reopenable',
+      });
+    }
     const upd = await db.query(
-      `UPDATE file_orders SET status=$3, updated_at=now()
-        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
+      `UPDATE file_orders SET status='cancelled', updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind]);
     if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
-    await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind, kind: 'cancelled', actorId: req.actor.id,
+    });
+    await audit(req, 'order_cancelled', 'application', appId, { kind });
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -5417,6 +6860,12 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         // Drives whether the card treats a missing assignment as a real gap — a
         // straight purchase has no assignment and must not be nagged for one.
         isAssignment: data.isAssignment,
+        // Vesting / purpose awareness (owner-directed 2026-08-04): an individual
+        // needs no entity documents, and a refinance has no purchase contract —
+        // so the card must not show them as outstanding, and the attorney email
+        // says it is an individual. The missing list below is already filtered.
+        vestsIndividually: data.vestsIndividually,
+        isRefinance: data.transactionType === 'Refinance',
       },
       deal: closingPrep.dealMeta(data),
       order: {
@@ -5439,7 +6888,17 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
           })),
         })),
         counts: pkg.counts,
-        missing: pkg.missing,
+        // Only the documents THIS deal actually needs — a refinance drops the
+        // purchase contract, an individual drops the entity documents, a straight
+        // purchase drops the assignment (owner-directed 2026-08-04). Same helper
+        // the attorney email uses, so the screen and the email never disagree.
+        missing: closingPrep.applicableMissing(pkg.missing, data),
+        // Held back because nobody has accepted them yet (owner-directed
+        // 2026-08-03). NOT attached, and named here so the sender sees it BEFORE
+        // they send — the alternative is an attorney one document short and a
+        // "Not yet on file" line about a document that is sitting on the file.
+        awaiting: pkg.awaiting || [],
+        awaitingNote: docAccept.heldBackNote((pkg.awaiting || []).length),
         termSheetExecuted: pkg.termSheetExecuted,
         insurance: closingPrep.insuranceSlots(pkg.groups.insurance),
         // What ONE email can carry, so the card can say BEFORE the send how many
@@ -5495,6 +6954,36 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
 router.post('/applications/:id/closing-prep/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // Declared at ROUTE scope, not inside the try, so the outer catch can unwind a
+  // claim taken before something threw — packAttachments and recipientsFor both
+  // can, and an unreleased claim erases the order's whole age.
+  let claimToken = null;
+  let claimPrev = null;
+  const releaseClaim = async () => {
+    if (!claimToken) return;
+    const token = claimToken;
+    claimToken = null;                 // once only, whichever path gets here first
+    try {
+      // The token is compared as a TIMESTAMP, not as text. It is CARRIED as text
+      // (see the claim below — a JS Date would truncate Postgres's microseconds),
+      // but `ordered_at::text` renders in the CONNECTION's TimeZone and this
+      // release runs on whichever pooled connection is free, not the one that
+      // claimed. Casting the token back to timestamptz compares the instant
+      // itself, so the release cannot silently match nothing.
+      if (claimPrev) {
+        await db.query(
+          `UPDATE file_orders SET ordered_at = $3::timestamptz, updated_at = now()
+            WHERE application_id=$1 AND order_type='attorney' AND ordered_at = $2::timestamptz`,
+          [appId, token, claimPrev.ordered_at || null]);
+      } else {
+        // There was no row before this attempt — the claim minted it, so remove it
+        // rather than leaving a phantom 'ordered' attorney order nobody placed.
+        await db.query(
+          `DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'
+             AND ordered_at = $2::timestamptz AND COALESCE(send_count,0) = 0`, [appId, token]);
+      }
+    } catch (_) { /* best effort — never turn a send failure into a 500 */ }
+  };
   try {
     const data = await closingPrep.getClosingPrepData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
@@ -5510,10 +6999,54 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
-      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      // `ordered_at` is selected because it is the snapshot the claim below has to
+      // be able to put back — this order's AGE is that column.
+      `SELECT status, ordered_at FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
     if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
       return res.status(409).json({ error: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
+    /* A FORCED RE-SEND IS CLAIMED, NOT CHECKED.
+       Forcing passes no dedupe key to the thread (deliberately — a genuine re-send
+       must be allowed to repeat), which left the biggest email in the system with
+       no protection at all: two clicks, or two tabs, sent the whole package — up to
+       20 MB of the borrower's term sheet, contract, entity documents and ID — to
+       outside counsel twice.
+       The first attempt at this SELECTed "was it sent in the last ten seconds?"
+       and then acted on the answer, which an audit correctly called a lookalike
+       rather than the real thing: `ordered_at` is only written AFTER every part has
+       gone out (seconds later), so two concurrent clicks both read the OLD value,
+       both saw a clear window, and both sent. This is the ATOMIC form its title and
+       insurance siblings use — the row is claimed by moving `ordered_at` FIRST, so
+       the second click matches no row and is refused. A send that then fails leaves
+       the stamp a few seconds early on an order that was already placed, which the
+       next successful send overwrites anyway. */
+    if (force) {
+      // The snapshot to put back if the send does not happen. Read BEFORE the
+      // claim, because the claim overwrites it.
+      claimPrev = existing || null;
+      const claim = await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status, ordered_at, ordered_by, updated_at)
+         VALUES ($1, 'attorney', 'ordered', now(), $2, now())
+         ON CONFLICT (application_id, order_type) DO UPDATE
+            SET ordered_at = now(), updated_at = now()
+          WHERE COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds'
+         -- ::text, never the timestamp: Postgres now() is microsecond precision and
+         -- a JS Date is millisecond, so a token round-tripped through one comes back
+         -- a fraction early and matches nothing — which would make the release below
+         -- silently do nothing.
+         RETURNING id, ordered_at::text AS claim_token`, [appId, req.actor.id]);
+      if (!claim.rows[0]) {
+        return res.status(409).json({ error: 'That closing-prep request has just gone out — give it a moment before sending it again.', code: 'too_soon' });
+      }
+      claimToken = claim.rows[0].claim_token;
+    }
+    /* PUT THE CLOCK BACK when the send does not happen — see releaseClaim above.
+       The claim stamps `ordered_at = now()`, which is what makes it atomic and what
+       makes an unreleased claim dangerous: this order's age IS that column, so a
+       failed re-send left a twelve-day-late order looking freshly placed, dropped
+       it off the desk's Late tab and silenced the overdue nudge for another whole
+       SLA window. Its title/insurance sibling has always unwound this way and its
+       test pins it; only the claim half had been copied across. */
 
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
     const note = String((req.body && req.body.note) || '').trim().slice(0, 4000);
@@ -5549,14 +7082,22 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
     });
     if (!sent.ok) {
+      // Nothing went out, so the clock goes back to what it was.
+      await releaseClaim();
       const msg = sent.reason === 'no_recipient' ? 'There is nowhere to send this.'
         : sent.reason === 'no_thread' ? 'Could not open the closing email chain for this file.'
           : 'Could not send the closing-prep request.';
       return res.status(500).json({ error: msg, code: sent.reason });
     }
     if (sent.skipped) {
+      await releaseClaim();
       return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
+    // THE EMAIL HAS GONE. From here the claim must never be unwound — a throw
+    // further down (a failed part, a bookkeeping error, the response itself) would
+    // otherwise hand the outer catch a release that rewinds the clock on an order
+    // outside counsel has already received.
+    claimToken = null;
 
     // THE REST OF THE PACKAGE, onto the same conversation. Sent AFTER part 1 has
     // landed, so a part can never arrive before the request that explains it — and
@@ -5602,10 +7143,33 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
          ON CONFLICT (application_id, order_type)
          DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
                        subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
-                       send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
+                       send_count=file_orders.send_count+1,
+                       -- MERGED, not replaced — the same shape the title/insurance
+                       -- place route uses. Replacing wiped auto_retired_at, which
+                       -- is closing-prep's once-per-order stamp: the retire sweep
+                       -- skips an order that carries it. So a coordinator pressing
+                       -- "Re-send request" on a finished order (the button IS
+                       -- offered there) sent the whole package, brought the order
+                       -- back to life, and then lost it off the desk again within
+                       -- half an hour when the next sweep re-retired it. Reopen
+                       -- never had this bug — it does not touch meta — so the two
+                       -- ways back to life disagreed.
+                       meta=COALESCE(file_orders.meta,'{}'::jsonb) || EXCLUDED.meta, updated_at=now()`,
         [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
          JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length,
            parts: partCount, partsFailed: partsFailed.length })]);
+      // THE ATTORNEY ORDER IS TRACKED LIKE THE OTHER TWO. Without this it was the
+      // only one of the three with no owner and no history — so it showed "nobody
+      // assigned" on the desk and in the overdue nudge (which could then never
+      // reach the assignee tier), and its timeline was empty while orders placed
+      // BEFORE this shipped had a 'placed' line from db/457's back-fill. Old rows
+      // being better recorded than new ones is the drift these two calls close.
+      await orderTracking.ensureAssignee(appId, 'attorney');
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: 'attorney',
+        kind: force ? 'resent' : 'placed', actorId: req.actor.id,
+        detail: { to: to.length, attached: attach.attached.length, parts: partCount },
+      });
     } catch (e) {
       console.error(`[closing-prep] the request WAS sent for ${appId} but the order row failed to write:`, (e && e.message) || e);
     }
@@ -5639,7 +7203,14 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       skipped: attach.skipped.map((d) => ({ filename: d.filename, reason: d.reason })),
       partsFailed,
     });
-  } catch (e) { res.status(500).json({ error: 'Could not send the closing-prep request.' }); }
+  } catch (e) {
+    // A throw between the claim and the send — packAttachments and recipientsFor
+    // both can — must not leave the order's age erased by a request that sent
+    // nothing. `releaseClaim` is a no-op once the send has succeeded, because the
+    // token is cleared the first time it runs.
+    await releaseClaim();
+    res.status(500).json({ error: 'Could not send the closing-prep request.' });
+  }
 });
 
 // A human follow-up ON THE SAME CHAIN. Never the first contact.
@@ -5697,22 +7268,132 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
     // stop it short of re-sending the whole package. Cancelling is the one action
     // that must always be reachable once an attorney has been written to.
     const engaged = await closingPrep.orderIsLive(appId);
+    /* REOPEN GOES THROUGH THE SHARED RULE, exactly as the title and insurance
+       orders do. Writing 'ordered' here was the same one-way door they had: this
+       order reaches 'completed' on its own (closing-prep.retireClosedOrdersOnce
+       closes it when the deal is over), and the card only offered Reopen for
+       'cancelled' — so an order closed on a file that later came back to life had
+       no way onto the desk. reopenOrder also clears `completed_at`, which a bare
+       status write left behind as a turnaround on an order that is running again. */
+    if (reopen) {
+      const v = await orderTracking.reopenOrder(appId, 'attorney', { actorId: req.actor.id });
+      if (v.ok) {
+        await audit(req, 'closing_prep_reopened', 'application', appId, { status: v.status });
+        return res.json({ ok: true, status: v.status });
+      }
+      if (v.reason === 'error') {
+        return res.status(500).json({ error: 'Could not reopen the closing-prep request just now. Try again in a moment.', code: 'reopen_failed' });
+      }
+      const row = (await db.query(
+        `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+      if (row) {
+        return res.status(409).json({
+          error: 'Only a cancelled or finished closing-prep request can be reopened — this one is already open.',
+          code: 'not_reopenable',
+        });
+      }
+      // No row at all. The row is written AFTER the send, so a DB blip can leave a
+      // file whose request genuinely went out with nothing recorded — the same
+      // recovery the cancel path below needs, and the reason this is an UPSERT.
+      if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status)
+         VALUES ($1,'attorney','ordered')
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status='ordered', updated_at=now()`,
+        [appId]);
+      await orderTracking.recordEvent({
+        applicationId: appId, orderType: 'attorney', kind: 'reopened', actorId: req.actor.id,
+      });
+      await audit(req, 'closing_prep_reopened', 'application', appId, { status: 'ordered', recovered: true });
+      return res.json({ ok: true, status: 'ordered' });
+    }
+    // UPSERT, never a bare UPDATE. The order row is written AFTER the send, so a DB
+    // blip leaves a file whose request genuinely went out with no row — and then
+    // Cancel 404'd ("Closing prep has not been requested yet"), Send answered 409
+    // "already sent", and the chain kept emailing outside counsel with no way to
+    // stop it short of re-sending the whole package. Cancelling is the one action
+    // that must always be reachable once an attorney has been written to.
     const upd = await db.query(
-      `UPDATE file_orders SET status=$2, updated_at=now()
-        WHERE application_id=$1 AND order_type='attorney' RETURNING status`,
-      [appId, reopen ? 'ordered' : 'cancelled']);
+      `UPDATE file_orders SET status='cancelled', updated_at=now()
+        WHERE application_id=$1 AND order_type='attorney' RETURNING status`, [appId]);
     if (!upd.rows[0]) {
       if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
       await db.query(
         `INSERT INTO file_orders (application_id, order_type, status)
-         VALUES ($1,'attorney',$2)
-         ON CONFLICT (application_id, order_type) DO UPDATE SET status=EXCLUDED.status, updated_at=now()`,
-        [appId, reopen ? 'ordered' : 'cancelled']);
+         VALUES ($1,'attorney','cancelled')
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled', updated_at=now()`,
+        [appId]);
     }
-    await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
-    res.json({ ok: true, status: upd.rows[0].status });
+    /* TELL THE ATTORNEY (owner-directed 2026-08-07: *"which should send them a cancellation email
+       to disregard this file, and then it should stop sending them the updates"*).
+
+       The SILENCING half already worked — `attorneyEngaged` reads the 'cancelled' status above as
+       an explicit stand-down, so `mayAnnounce` refuses the executed term sheet, the closing-date
+       updates and the clear-to-close from this moment on. What was missing is that nobody told
+       outside counsel, who were left holding our package and a term sheet.
+
+       It rides the SAME chain, so it lands in the conversation it cancels. Ordered AFTER the
+       status write on purpose: the stand-down is the thing that must be true, and a provider
+       hiccup must never leave a file that looks cancelled on the desk while the automatic updates
+       keep going out. Best-effort for the same reason — the response reports whether it went, so
+       the desk can say "cancelled, but we could not reach them" rather than implying it did. */
+    let notified = { ok: false, reason: 'not_engaged' };
+    if (engaged) {
+      try {
+        const data = await closingPrep.getClosingPrepData(appId);
+        const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
+        const base = data ? closingPrep.recipientsFor(data, {}) : { to: [], cc: [] };
+        const to = last.to.length ? last.to : base.to;
+        const cc = last.cc.length ? last.cc : base.cc;
+        const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+        const senderName = meRow.full_name || meRow.email || '';
+        const reason = String((req.body && req.body.reason) || '').trim().slice(0, 2000);
+        if (data && to.length) {
+          notified = await closingThread.sendOnThread({
+            applicationId: appId, eventKind: 'cancel',
+            // NULL, so a second cancellation can genuinely be sent. Somebody who
+            // cancels twice means it — and the alternative is a silent no-op on the
+            // one message whose whole job is to be received.
+            dedupeKey: null,
+            to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_cancelled',
+            build: ({ address }) => closingPrep.buildCancelEmail(data, { reason, address, senderName }),
+          });
+        } else {
+          notified = { ok: false, reason: to.length ? 'no_file_data' : 'no_recipients' };
+        }
+      } catch (e) {
+        notified = { ok: false, reason: 'send_failed' };
+        console.error('[closing-prep] cancellation email', appId, e && e.message);
+      }
+    }
+
+    // Same history the other two orders keep.
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: 'attorney', kind: 'cancelled', actorId: req.actor.id,
+      detail: { notified: !!notified.ok, reason: notified.ok ? null : notified.reason },
+    });
+    await audit(req, 'closing_prep_cancelled', 'application', appId, { notified: !!notified.ok });
+    // NOT `upd.rows[0].status`. The recovery branch above runs precisely when that
+    // row does not exist, so reading through it threw a TypeError into the catch
+    // and answered 500 — on the one path that exists to make Cancel reachable when
+    // the row was lost, which is the moment it matters most. The status is known
+    // either way: this branch only ever writes 'cancelled'.
+    res.json({
+      ok: true, status: 'cancelled',
+      // The desk says which of the two things happened, so nobody assumes counsel was told when
+      // they were not.
+      notified: !!notified.ok,
+      notifiedReason: notified.ok ? null : notified.reason,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+/* How many order ROWS the desk will read. Rows, not files — a file can carry up
+   to three — so this is roughly 400 files at the extreme. Bounded because an
+   admin loads this for the whole book and every row costs business-day
+   arithmetic; surfaced to the screen because a queue that quietly stops at N
+   reads as "that is everything". */
+const ORDERS_DESK_CAP = 1200;
 
 // GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
 // can see, so a processor can track all orders (and what's waiting to be
@@ -5726,10 +7407,19 @@ router.get('/orders', async (req, res) => {
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
               b.first_name, b.last_name, b.full_name,
               o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
+              o.due_on, o.sla_days, o.assigned_to, o.first_response_at, o.notes,
+              NULLIF(btrim(COALESCE(su.full_name,'')),'') AS assigned_name, su.email AS assigned_email,
               COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
          FROM file_orders o
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
+         -- ACTIVE ONLY, matching the overdue nudge's own join. Without it the
+         -- card and the desk printed a departed staffer's name while the nudge
+         -- (which filters on is_active) told the team nobody owned the order —
+         -- two surfaces disagreeing about the same row. An assignment to
+         -- somebody who has left now reads as unassigned everywhere, which is
+         -- the truth and is what gets it picked up.
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
          LEFT JOIN LATERAL (
            -- "unassigned" means a returned VENDOR document nobody has classified yet
            -- (binder / invoice / commitment). A closing-chain document needs no
@@ -5744,15 +7434,58 @@ router.get('/orders', async (req, res) => {
                                  WHEN 'insurance' THEN 'insurance_order_return'
                                  ELSE 'closing_correspondence' END
          ) dc ON true
-        -- A FINISHED ORDER IS NOT WORK. 'completed' was in the status vocabulary from
-        -- day one but nothing ever wrote it for an attorney order, so every deal that
-        -- ever closed stayed on this desk looking outstanding — which is how a queue
-        -- stops being read. closing-prep.retireClosedOrdersOnce now retires them, and
-        -- this is what makes that visible. Cancelled was already hidden for the same
-        -- reason; the file's own card still shows either state in full.
-        WHERE o.status NOT IN ('cancelled','completed') ${scopeSql}
-        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
-    // Group into one row per file with a title + insurance sub-object.
+        -- WHAT BELONGS ON THIS DESK IS WORK THAT IS STILL OUTSTANDING.
+        --
+        -- · 'cancelled' — an explicit human stand-down. Nothing to do.
+        -- · 'not_ordered' — nothing was ever sent. The only thing that leaves such a
+        --   row behind is the place route RELEASING a claim after a failed send, and
+        --   listing it made a file that failed to order once sit here forever showing
+        --   "not sent · nobody assigned". The file's own card still shows it in full.
+        -- · 'completed' — finished. Nothing ever wrote it for title or insurance, so
+        --   every deal we have ever closed stayed here looking outstanding, which is
+        --   how a queue stops being read. BUT a completed order that has documents
+        --   nobody has classified is still real work: the final policy and the
+        --   recorded mortgage often arrive AFTER the loan funds, and hiding them
+        --   would lose exactly the deliveries the follow-up door is kept open for.
+        -- · A DECLINED or WITHDRAWN file has no work left on it at all, and showing
+        --   one here put a one-click "chase the vendor" button on a dead deal — while
+        --   the overdue sweep already refused to touch it, so the desk and the nudge
+        --   disagreed about the same order.
+        -- · AN ON-HOLD file STAYS, and that is deliberate after two passes at it.
+        --   Excluding it here looked consistent (the nudge skips a held file, the
+        --   scorecard no longer counts one) but this desk answers a DIFFERENT
+        --   question from those two. The nudge asks "what should we chase?" and a
+        --   paused file is not that. The scorecard asks "is this vendor slow?" and
+        --   a wait WE chose is not their fault. The desk asks "what is there?" —
+        --   and hiding a held file also hid its returned documents from the "Needs
+        --   classifying" count, which is not paused work at all, and made an order
+        --   vanish the instant it was placed (the place gate allows a held file).
+        --   It is shown, flagged as held, and the Chase button is withheld.
+        --   FUNDED files stay too: the final policy and the recorded mortgage
+        --   arrive after funding, and that is genuinely outstanding work.
+        WHERE o.status NOT IN ('cancelled','not_ordered')
+          AND (o.status <> 'completed' OR COALESCE(dc.unassigned, 0) > 0)
+          AND a.status NOT IN ('declined','withdrawn')
+          ${scopeSql}
+        -- OLDEST FIRST, and the LATENESS ordering is applied below rather than
+        -- here: "late" is a BUSINESS-day question against a per-order SLA, which
+        -- SQL cannot answer without duplicating order-sla's calendar arithmetic —
+        -- and a second copy of that would eventually disagree with the card and the
+        -- nudge about the same order. This ordering makes the pre-sort stable; the
+        -- real one is by daysLate, computed once, right after.
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at ASC NULLS LAST, o.id
+        -- BOUNDED. This read had no cap at all while two comments above reasoned
+        -- about a capped read being deterministic — an unbounded desk query is the
+        -- one an admin loads for the whole book, and it is why orderState had to
+        -- stop walking a day at a time in the first place. The pre-sort is oldest
+        -- and needs-classifying first, so a truncated page is still the right end
+        -- of the queue, and a truncated page SAYS SO rather than reading as "that
+        -- is everything" (no silent caps).
+        LIMIT ${ORDERS_DESK_CAP + 1}`, params);
+    const capped = r.rows.length > ORDERS_DESK_CAP;
+    if (capped) { r.rows.length = ORDERS_DESK_CAP; console.warn(`[orders] desk read hit its ${ORDERS_DESK_CAP}-row cap`); }
+    const now = new Date();
+    // Group into one row per file, with a sub-object per order kind.
     const byFile = new Map();
     for (const row of r.rows) {
       if (!byFile.has(row.application_id)) {
@@ -5764,13 +7497,48 @@ router.get('/orders', async (req, res) => {
         });
       }
       const f = byFile.get(row.application_id);
+      // THE SAME orderState THE CARD AND THE SWEEP USE. Computed on the server so
+      // the desk can never call an order late that the file screen calls on time.
+      /* A HELD FILE IS NOT LATE, and the rule now lives inside `orderState` (it
+         reads `file_status` off the row this query already selects). Putting held
+         files back on this desk was right — their returned documents belong in
+         "Needs classifying" and an order placed on one must not vanish — but
+         withholding only the Chase button left every other lateness surface
+         running: the red "N days late" pill, `anyOverdue`, the Late tab and its
+         count, and `worstDaysLate`, which is the desk's PRIMARY SORT KEY. A file
+         held for ninety days sorted to the very top of the queue reading "64 days
+         late" beside "not being chased", ahead of every order somebody could
+         actually act on. The clock resumes by itself when the hold lifts —
+         nothing is stored. */
+      const state = orderSla.orderState(row, now);
       f[row.order_type] = {
         status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,
         lastFollowupAt: row.last_followup_at, followupCount: row.followup_count,
         unassignedDocs: row.unassigned_docs, returnedDocs: row.returned_docs,
+        assignedTo: row.assigned_to || null,
+        assignedName: row.assigned_name || row.assigned_email || null,
+        firstResponseAt: row.first_response_at || null,
+        notes: row.notes || null,
+        ...state,
       };
     }
-    res.json([...byFile.values()]);
+    const files = [...byFile.values()];
+    for (const f of files) {
+      const orders_ = ['title', 'insurance', 'attorney'].map((k) => f[k]).filter(Boolean);
+      // The file's headline: how late its WORST order is, and whether anything on
+      // it is waiting to be classified. Both are what somebody scanning this queue
+      // is actually looking for.
+      f.worstDaysLate = orders_.reduce((n, o) => Math.max(n, Number(o.daysLate) || 0), 0);
+      f.anyOverdue = orders_.some((o) => o.overdue);
+      f.toAssign = orders_.reduce((n, o) => n + (Number(o.unassignedDocs) || 0), 0);
+    }
+    // LATEST FIRST — this is a queue of what is going wrong, so the thing going
+    // wrong most should not be on page two. Ties break on the file id so a capped
+    // read is deterministic.
+    files.sort((a, b) => (b.worstDaysLate - a.worstDaysLate)
+      || (b.toAssign - a.toAssign)
+      || String(a.applicationId).localeCompare(String(b.applicationId)));
+    res.json({ files, capped, cap: ORDERS_DESK_CAP });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5883,6 +7651,18 @@ router.get('/emails/:msgId', async (req, res) => {
     const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
@@ -6181,7 +7961,47 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //   rtl_p3_reo      — verified track-record experience must meet the registered
 //                     product's claimed experience (re-register with less, or
 //                     verify more, until they agree).
+/**
+ * NO CONDITION IS SIGNED OFF OVER A DOCUMENT NOBODY HAS DECIDED ON
+ * (owner-directed 2026-08-03, second half of the acceptance rule: "when you sign
+ * off the condition, we should make sure that there are no pending documents.
+ * Every document needs to be either rejected, deleted, or accepted").
+ *
+ * This runs BEFORE every per-condition rule below, because it is true of every
+ * condition regardless of what that condition asks for — including an OPTIONAL
+ * one. Signing off is an attestation that the condition is finished; a document
+ * sitting on it that nobody has looked at is the opposite of finished, and (until
+ * this change) it also rode into the investor package on the strength of that
+ * sign-off. `rejected` / `superseded` are DECIDED, and a deleted document is gone,
+ * so only `pending` blocks — exactly the owner's three ways out.
+ *
+ * The super-admin override (db/344) is still the recorded way through, as on
+ * every other gate: it does not skip this check, it records what it stepped over.
+ *
+ * Fails OPEN on a read error — a database hiccup must never make a condition
+ * permanently unsignable, and the same reasoning is already applied to the
+ * appraisal-findings count and the flood gate.
+ */
+async function pendingDocumentsBlock(itemId) {
+  try {
+    // COUNT and the sample come from ONE query on purpose: taking the count from
+    // a LIMITed row set would report "25 documents" on a condition carrying
+    // thirty, and a refusal that miscounts what it is refusing over is worse
+    // than one that stays vague.
+    const r = await db.query(
+      `SELECT count(*)::int AS n,
+              (array_agg(filename ORDER BY created_at))[1:5] AS names
+         FROM documents
+        WHERE checklist_item_id=$1 AND is_current=true AND ${docAccept.AWAITING_SQL('')}`, [itemId]);
+    const row = r.rows[0] || {};
+    if (!row.n) return null;
+    return docAccept.pendingDocsMsg(row.n, (row.names || []).filter(Boolean));
+  } catch (_) { return null; }
+}
+
 async function signOffGate(itemId, actor) {
+  const pendingBlock = await pendingDocumentsBlock(itemId);
+  if (pendingBlock) return pendingBlock;
   const it = await db.query(
     `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
@@ -6284,6 +8104,19 @@ async function signOffGate(itemId, actor) {
   // their own (marked) condition (the default "pull both" files both reports here,
   // so signing it off attests to both). Report↔borrower is credit_reports.borrower_id.
   if (isCredit) {
+    // THE ONE RECORDED WAY THROUGH (owner-directed 2026-08-03): a current report
+    // obtained ELSEWHERE, uploaded onto this condition and ACCEPTED, with an
+    // admin-approved exception on the register — "the admin should sign off the
+    // condition even if they didn't reissue the credit". Both halves are required
+    // and the shared predicate FAILS CLOSED, so nothing below is weakened for a
+    // file without one: the import rule stands exactly as it did.
+    const creditWaiver = require('../lib/credit/waiver');
+    const waiver = await creditWaiver.loadWaiver(itemId);
+    if (waiver.effective) return null;
+    // A waiver that was asked for but isn't counting yet must SAY WHY. Otherwise
+    // the officer who already requested the exception is told only "import the
+    // credit report", which reads as though the request never happened.
+    const waiverNote = creditWaiver.pendingReason(waiver);
     const af = (await db.query(
       'SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [item.application_id])).rows[0] || {};
     const need = [];
@@ -6306,7 +8139,7 @@ async function signOffGate(itemId, actor) {
       if (!imported) {
         const isCo = af.co_borrower_id && String(bid) === String(af.co_borrower_id);
         const who = isCo ? 'the co-borrower’s ' : (need.length > 1 ? 'the primary borrower’s ' : '');
-        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.`;
+        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.${waiverNote ? ` ${waiverNote}` : ' If the report came from somewhere else and you are not re-pulling it, upload the PDF here and request an exception.'}`;
       }
     }
     return null;
@@ -6314,9 +8147,14 @@ async function signOffGate(itemId, actor) {
 
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
+    // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
+    // test was satisfied by a document nobody had ever opened, which is how a
+    // condition got signed off on a previous policy's paperwork. The pending
+    // check above has already run, so reaching here with documents on the item
+    // means every one of them was rejected — i.e. there is nothing to stand on.
     const has = await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-         AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
+         AND ${docAccept.ACCEPTED_SQL('')} LIMIT 1`, [itemId]);
     if (!has.rows.length) {
       // Government-ID REUSE exception: the photo ID is collected ONCE on the
       // borrower profile and reused across every file (borrower.js). On files
@@ -6327,13 +8165,15 @@ async function signOffGate(itemId, actor) {
       // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
       // reuse rule, which keys off the file's borrower's photo_id_document_id).
       if (code === 'rtl_p1_id' || code === 'gov_id') {
-        // The on-file photo ID must itself be a CURRENT, non-rejected document —
-        // a rejected/superseded ID pointer is not fulfillment (the pointer is only
-        // cleared by FK-on-delete, so reject alone leaves it dangling).
+        // The on-file photo ID must itself be a CURRENT, ACCEPTED document — a
+        // rejected/superseded ID pointer is not fulfillment (the pointer is only
+        // cleared by FK-on-delete, so reject alone leaves it dangling), and
+        // neither is one nobody has reviewed: it is the same document that would
+        // ride into the investor package under the ID folder.
         const pid = await db.query(
           `SELECT 1 FROM borrowers b
              JOIN documents d ON d.id = b.photo_id_document_id
-            WHERE d.is_current AND COALESCE(d.review_status,'') <> 'rejected'
+            WHERE d.is_current AND ${docAccept.ACCEPTED_SQL('d')}
               AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
@@ -6365,22 +8205,39 @@ async function signOffGate(itemId, actor) {
         } catch (_) { /* unreadable → fall through to the document requirement */ }
         return 'Attach the borrower’s Social Security card or a completed SSA-89 before signing this off — or import a credit report whose Social Security number matches the one on file for every borrower, which verifies it on its own.';
       }
+      // "Nothing uploaded" and "everything on it was sent back" are different
+      // problems with different next steps, and telling somebody to upload a
+      // document that is already sitting on the condition is the kind of advice
+      // nobody can act on. (A PENDING document can't be the reason we are here —
+      // the pending check at the top of the gate already refused — so a current
+      // document at this point was rejected.)
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
     }
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
-  // are present on the item (current, non-rejected versions). slot_label carries
-  // the slot key/label, so a case-insensitive substring identifies each slot.
+  // are present on the item AND ACCEPTED. slot_label carries the slot key/label,
+  // so a case-insensitive substring identifies each slot.
+  //
+  // ACCEPTED is the 2026-08-03 fix and this is the exact condition it was
+  // reported on: an insurance condition already carried a PREVIOUS policy's
+  // binder — never accepted, never rejected — so `<> 'rejected'` found a "binder"
+  // slot, the gate passed, the condition was signed off, and every one of those
+  // documents shipped in the TPR export and to the closing attorney. A slot is
+  // filled when somebody has accepted what is in it, not when a file is sitting
+  // in it.
   if (isInsurance || isTitle || isFraud || isAppraisalDocs) {
     const docs = await db.query(
       `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
-        WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [itemId]);
+        WHERE checklist_item_id=$1 AND is_current AND ${docAccept.ACCEPTED_SQL('')}`, [itemId]);
     const slots = docs.rows.map((r) => r.slot);
     const hasSlot = (needle) => slots.some((s) => s.includes(needle));
     if (isInsurance) {
       if (!hasSlot('binder') || !hasSlot('invoice'))
-        return 'Upload BOTH the insurance binder and the insurance invoice before signing off — this condition cannot be completed without both documents.';
+        return 'Upload BOTH the insurance binder and the insurance invoice, and accept each one, before signing off — this condition cannot be completed until both documents are on the file and accepted.';
       return null;
     }
     if (isAppraisalDocs) {
@@ -6637,9 +8494,9 @@ async function signOffGate(itemId, actor) {
   // the file (nothing to verify for the chosen structure), it may be signed off
   // freely; it only becomes gated once experience is claimed on the application /
   // term sheet / product.
-  const claimed = (Number(app.requested_exp_flips) || 0) + (Number(app.requested_exp_holds) || 0) + (Number(app.requested_exp_ground) || 0);
+  const claim = require('../lib/experience').requestedFromApp(app);
+  const claimed = claim.flips + claim.holds + claim.ground;
   if (claimed === 0) return null;
-  if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
        FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
@@ -6649,14 +8506,28 @@ async function signOffGate(itemId, actor) {
     else if (/flip/.test(row.dt)) v.flips += row.n;
     else v.holds += row.n;
   }
-  const inp = reg.inputs || {};
-  const need = { flips: Number(inp.expFlips) || 0, holds: Number(inp.expHolds) || 0, ground: Number(inp.expGround) || 0 };
+  // WHAT MUST BE VERIFIED = the registered product's experience, falling back to
+  // the FILE'S OWN CLAIM when nothing is registered yet — ONE definition, shared
+  // with the condition sync and the track-record to-do list (experience.js), so
+  // the gate can never refuse on a number the condition never showed. This used
+  // to re-inline `reg.inputs` and refuse outright with "Register a product
+  // first", which is a dead end on a condition about the track record: an
+  // officer who generated a term sheet claiming 10 stabilized rentals was told
+  // to go register a product rather than to verify the ten deals
+  // (owner-directed 2026-08-06: "the condition should require verifying 10 —
+  // you should not be able to sign it off till you verify 10"). A REGISTERED
+  // file is unaffected: the registration still governs.
+  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
   const short = [];
   if (v.flips < need.flips) short.push(`${need.flips - v.flips} more flip${need.flips - v.flips === 1 ? '' : 's'}`);
   if (v.holds < need.holds) short.push(`${need.holds - v.holds} more hold${need.holds - v.holds === 1 ? '' : 's'}`);
   if (v.ground < need.ground) short.push(`${need.ground - v.ground} more ground-up`);
   if (short.length) {
-    return `Experience does not match the registered product — it claims ${need.flips} flip(s) / ${need.holds} hold(s) / ${need.ground} ground-up, but only ${v.flips}/${v.holds}/${v.ground} are VERIFIED on the track record. Verify ${short.join(', ')}, or re-register the product with the experience the borrower can prove.`;
+    const basis = reg ? 'the registered product' : 'the term sheet';
+    const fix = reg
+      ? 'or re-register the product with the experience the borrower can prove.'
+      : 'or lower the experience in Products & Pricing to what the borrower can prove.';
+    return `Experience does not match ${basis} — it claims ${need.flips} flip(s) / ${need.holds} hold(s) / ${need.ground} ground-up, but only ${v.flips}/${v.holds}/${v.ground} are VERIFIED on the track record. Verify ${short.join(', ')}, ${fix}`;
   }
   return null;
 }
@@ -7536,9 +9407,37 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
-    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
-    res.json({ ok: true, ...out });
+    /* A BORROWER WITH NO FILE IS STILL INVITABLE (owner-reported 2026-08-07: "we have
+       in our Borrower profiles all the borrowers, even though they didn't take a loan
+       on our system because it was not an RTL loan. If somebody takes a DSCR loan, it
+       takes the information from ClickUp and builds them up a profile. When we tried
+       to invite the Borrower into our system to be able to apply for an RTL loan, it
+       comes up that there are no active loans that you can invite this Borrower to.
+       You need to be able to invite the Borrower, even if it doesn't have any active
+       loans in our system. Just invite this Borrower so he should be able to create an
+       active loan.").
+
+       ROOT CAUSE, and it is the repo's own documented class. This route used to refuse
+       with a 400 + `code:'no_active_file'`, and the 2026-08-04 fix for it was written
+       in ONE SCREEN'S CLICK HANDLER (StaffBorrowerDetail) instead of here. There are
+       FOUR buttons that call this endpoint — the borrowers LIST, the shared
+       BorrowerProfilePanel (mounted on the CRM profile AND on every loan file), the
+       co-borrower invite, and that one detail screen — so three of them still
+       dead-ended, including the two a staffer is most likely to press. A per-screen
+       workaround for a server refusal is a workaround every future screen must
+       remember; the server is the only place it can be fixed once.
+
+       So the refusal is GONE rather than handled: with no file this sends a plain
+       portal invitation. `invite_tokens` is keyed on the EMAIL and never on an
+       application (`POST /invite-to-portal` has relied on that since #102), so nothing
+       had to be invented. And it deliberately does NOT manufacture an empty
+       application the way the old client fallback did — that minted a loan number, a
+       checklist and a ClickUp task for a deal nobody has, to satisfy a check that
+       should not have existed. The owner's words are "so he should be able to create
+       an active loan": the borrower starts it themselves from the portal. */
+    const out = await inviteBorrowerToFile({
+      appId: app ? app.id : null, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, noFile: !app, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -8178,6 +10077,98 @@ router.delete('/borrowers/:id/notes/:nid', async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+/* THE TRACK-RECORD REVIEW QUEUE (owner-directed 2026-08-03: "if the borrower is
+   entering the track record, it should go to the processing queue to review the
+   track record that the borrower imported, and this should be pending review").
+
+   Every deal a person types is self-reported until somebody reads the closing
+   statement / deed / lease behind it, and until db/458 nothing in the system
+   recorded WHO typed a line — so "what is waiting on us?" was a question the
+   data could not answer, and the only way to find a borrower's new deals was to
+   open their profile and look. This is that question, answered.
+
+   SCOPED THE BORROWER WAY (`VISIBLE_BORROWER_SQL`), not the file way: a track
+   record hangs on a PERSON and not on a loan file, and the officer who owns the
+   relationship is exactly who should be reviewing it — the same rule the
+   borrower list, the profile and the Encompass review rows already follow.
+   `seesAllBorrowers` (admins / underwriters / processors) see the whole desk.
+
+   Deliberately BORROWER-ENTERED only. A line PILOT imported from ClickUp or
+   Encompass is stamped 'clickup'/'encompass' and is already labelled unverified
+   wherever it appears; putting the whole automated back-book in a human's queue
+   would bury the handful of deals somebody is actually waiting on. A pre-db/458
+   row has a NULL kind — nobody recorded who typed it — and is likewise left out
+   rather than guessed into somebody's work list. */
+// The queue's ONE definition of what is waiting: a line a BORROWER typed that
+// nobody has verified. Both the list and the badge count read it, so the number
+// on the tab and the number of rows behind it can never disagree.
+const TR_REVIEW_WHERE = "t.entered_by_kind = 'borrower' AND t.is_verified = false";
+
+router.get('/track-record-reviews', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_BORROWER_SQL('b', '$1')}`; }
+    const r = await db.query(
+      `SELECT t.id, t.borrower_id, t.property_address, t.deal_type, t.verification_status,
+              t.entered_at, t.created_at, t.purchase_price, t.sale_price, t.rehab_amount,
+              t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
+              t.docs_status, t.owned_personally,
+              COALESCE(t.entity_name, l.llc_name) AS entity_name,
+              NULLIF(TRIM(b.full_name),'') AS borrower_name,
+              (SELECT count(*)::int FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS doc_count,
+              -- The documents themselves, so a reviewer can OPEN the closing
+              -- statement / deed / lease from the queue instead of navigating to
+              -- the borrower's profile to find out whether one exists at all.
+              (SELECT COALESCE(json_agg(json_build_object(
+                      'id', d.id, 'filename', d.filename, 'slot_label', d.slot_label,
+                      'review_status', d.review_status) ORDER BY d.created_at), '[]'::json)
+                 FROM documents d WHERE d.track_record_id = t.id AND d.is_current) AS docs,
+              -- A LIVE file of this borrower's, for the two actions that need one:
+              -- asking for a document and raising an issue both become a condition
+              -- ON a file. Newest first; null when they have no open file, and the
+              -- screen then says so rather than offering a button that would 400.
+              (SELECT json_agg(x) FROM (
+                 SELECT a.id, a.ys_loan_number, a.property_address
+                   FROM applications a
+                  WHERE (a.borrower_id = t.borrower_id OR a.co_borrower_id = t.borrower_id)
+                    AND a.deleted_at IS NULL
+                    AND a.status NOT IN ('funded','declined','withdrawn','cancelled')
+                  ORDER BY a.created_at DESC LIMIT 5) x) AS files
+         FROM track_records t
+         JOIN borrowers b ON b.id = t.borrower_id
+         LEFT JOIN llcs l ON l.id = t.llc_id
+        WHERE ${TR_REVIEW_WHERE}
+          ${scope}
+        ORDER BY t.entered_at DESC NULLS LAST, t.created_at DESC
+        LIMIT 200`, params);
+    res.json({ pending: r.rows.length, lines: r.rows });
+  } catch (e) {
+    console.warn('[staff] track-record review queue failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load the track-record review queue' });
+  }
+});
+
+/* The badge count — the same question, counted (the `…/count` shape every other
+   Approvals queue uses, polled on the hub's 2-minute cadence). It NEVER errors
+   out to the caller: a badge that 500s would break the whole hub's poll, and a
+   count is the least important thing on the screen. */
+router.get('/track-record-reviews/count', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_BORROWER_SQL('b', '$1')}`; }
+    const r = await db.query(
+      `SELECT count(*)::int AS n
+         FROM track_records t JOIN borrowers b ON b.id = t.borrower_id
+        WHERE ${TR_REVIEW_WHERE} ${scope}`, params);
+    res.json({ pending: (r.rows[0] && r.rows[0].n) || 0 });
+  } catch (e) {
+    console.warn('[staff] track-record review count failed:', db.describeError(e));
+    res.json({ pending: 0 });
+  }
+});
+
 // A borrower's investment track record (experience) — drives the pricing tier.
 router.get('/borrowers/:id/track-records', async (req, res) => {
   try {
@@ -8208,14 +10199,17 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing, trackRecordEnteredCols } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  // A staffer typing a line is still SOMEBODY entering it, so it lands pending
+  // review exactly as the borrower's does (owner-directed 2026-08-03: "anyone
+  // that enters the track record first should be pending review").
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.llcId) {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, req.params.id]);
     if (l.rows[0]) cols.llc_id = b.llcId;
@@ -8256,7 +10250,16 @@ router.put('/track-records/:id', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = trackRecordCols(b);
+  // Same stamp as the create door: whoever last put these figures on the line is
+  // recorded, so "who typed this?" is answerable on an edit and not only on a create.
+  //
+  // AND IT NOW RESETS THE REVIEW (2026-08-07). A staffer may still correct a VERIFIED
+  // line — that has not changed — but the correction lands PENDING, because the
+  // reviewer confirmed the OLD figures and nobody has looked at the new ones. The
+  // owner's rule: "Every single detail of a track record you need to click on verify."
+  // db/485's trigger enforces it for every writer including the imports; this door
+  // states it too so the intent is readable where the edit happens.
+  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {
     if (b.llcId) {
@@ -8927,11 +10930,11 @@ router.post('/track-records/:id/verify', async (req, res) => {
          FROM track_records WHERE id=$1`, [req.params.id]);
     const e = elig.rows[0] || {};
     if (e.no_exit || e.future || e.expired) {
-      const msg = e.no_exit
-        ? 'This project has no completed exit date (a sale date for a flip, or a lease / refinance date for a hold). It can’t be verified toward experience until the exit is recorded — request the exit documents instead.'
-        : e.future
-          ? 'This project’s exit date is in the future — it can’t be verified until the exit has actually closed.'
-          : 'This project’s exit is more than 3 years ago, so it no longer counts toward experience (only exits within the last 36 months count). It can’t be verified toward experience.';
+      // ONE wording, shared with the file's track-record to-do list, which warns
+      // about these BEFORE the click. Two copies would let the panel call a line
+      // ready and the click refuse it in different words.
+      const M = require('../lib/track-record-todo').EXIT_PROBLEM_MSG;
+      const msg = e.no_exit ? M.no_exit : e.future ? M.future_exit : M.exit_expired;
       return res.status(422).json({ error: msg, code: e.no_exit ? 'no_exit_date' : e.future ? 'future_exit' : 'exit_expired' });
     }
   }
@@ -8994,8 +10997,10 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
-    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    // Default = raise an issue INTERNALLY (no borrower email). Only an explicit
+    // postCondition:true posts a borrower-facing condition (owner-directed 2026-08-04).
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_track_record_condition' : 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
@@ -9038,8 +11043,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
     if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
-    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id, postCondition: !!b.postCondition });
+    await audit(req, out.borrowerFacing ? 'post_llc_condition' : 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500), postCondition: !!b.postCondition });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -11011,9 +13016,38 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
     }
     // Notify the recipient it's in their Workflow (best-effort — the hand-off
     // already committed, so a notify hiccup must never fail the submit).
+    // THE LOAN OFFICER IS LOOPED IN, VISIBLY (owner-directed 2026-08-07: *"an email like this
+    // should have more information for the processor, and it should also loop in the loan
+    // officer"*). A VISIBLE Cc, not a Bcc — the point is that the person picking the file up and
+    // the officer who owns it can reply to each other on one thread; a Bcc splits that into two
+    // conversations neither of them knows about. The officer is skipped when THEY are the
+    // recipient (nobody should be Cc'd on their own message), and the whole lookup is
+    // best-effort: a hand-off notification must never fail for want of a Cc address.
+    let loCc = null;
+    let noteBuyerMeta = [];
+    try {
+      const lo = (await db.query(
+        `SELECT s.id, s.email, a.lender FROM applications a
+           LEFT JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active = true
+          WHERE a.id = $1`, [appId])).rows[0];
+      if (lo && lo.email && String(lo.id) !== String(toStaffId)) loCc = [lo.email];
+      // THE NOTE BUYER IS ATTACHED TO *THIS* EMAIL, NOT TO THE SHARED BLOCK (owner-directed
+      // 2026-08-07: *"it should say in the email who the loan officer on the file is and who the
+      // note buyer on the file is"*). It was first added to `notify.fileContext`'s staff meta,
+      // which every staff email on a file inherits — and that broke the investor draw reminders,
+      // which speak of "the investor" on purpose so the desk can forward one without disclosing
+      // who funds the loan. The hand-off is the email the owner named, so the name rides here as
+      // `extraMeta` and nowhere else. STAFF-ONLY by construction: `notifyStaff` never renders
+      // `borrowerMeta`, and this row is not on it.
+      if (lo && lo.lender) noteBuyerMeta = [{ label: 'Note buyer', value: String(lo.lender) }];
+    } catch (_) { /* the hand-off still goes without the officer copied */ }
     await notify.notifyStaff(toStaffId, {
       type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
       body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
+      // The loan officer, the processor and the deal's numbers ride in the shared enrichment `meta`
+      // block (see notify.fileContext); only the note buyer is hand-attached, for the reason above.
+      extraMeta: noteBuyerMeta,
+      cc: loCc || undefined,
       applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
     }).catch(() => {});
     await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
@@ -12207,6 +14241,72 @@ router.get('/leads', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+/* ── EMAIL A TERM SHEET TO A BORROWER (owner-directed 2026-08-07) ───────────────
+   The owner: "Any term sheet generator from the staff's log-in, whenever he finishes
+   building up the term sheet, should have an option to deliver to a borrower via
+   email, with the loan officer's branding, all the terms nicely together with an
+   attached initial term sheet."
+
+   OPEN TO EVERY STAFF ROLE, deliberately: the officer building the sheet is the person
+   who sends it, and the 2026-07-27 rule already opened the studio's whole admin zone
+   to every role because gating it killed the feature for the people who use it. The
+   control is that a manual / off-default scenario carries its APPROVAL through to the
+   registration (lib/term-sheet-offer), exactly as pressing Register on a file does.
+
+   `officerId` is NOT taken from the body — the sender is the officer. Sending on
+   somebody else's behalf would put their name and Reply-To on an email they never saw,
+   which is the class the 2026-08-07 term-sheet attribution work exists to prevent. */
+router.post('/term-sheet-offers', async (req, res) => {
+  const b = req.body || {};
+  const offers = require('../lib/term-sheet-offer');
+  try {
+    const problem = offers.offerProblem({
+      borrowerEmail: b.borrowerEmail, program: b.program, draft: b.draft });
+    if (problem) return res.status(400).json({ error: problem });
+    const created = await offers.createOffer({
+      officerId: req.actor.id, createdBy: req.actor.id,
+      borrowerEmail: b.borrowerEmail, borrowerName: b.borrowerName, borrowerPhone: b.borrowerPhone,
+      draft: b.draft, program: b.program, overrides: b.overrides, termOptions: b.termOptions,
+      isManual: !!b.isManual, quote: b.quote,
+      pdfBase64: b.pdfBase64, pdfFilename: b.pdfFilename,
+    });
+    if (!created.ok) return res.status(400).json({ error: created.problem || 'Could not create the offer.' });
+    const officer = (await db.query(
+      `SELECT id, full_name, email, phone, nmls, title FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || null;
+    // The SEND is separate from the record on purpose: the offer row already exists,
+    // so a provider hiccup is a re-send rather than a rebuilt term sheet.
+    const sent = await offers.sendOfferEmail(created.offer, created.token, { officer, quote: b.quote });
+    await audit(req, 'term_sheet_offer_sent', 'borrower', null, {
+      offerId: created.offer.id, email: created.offer.borrower_email,
+      program: created.offer.program, isManual: !!created.offer.is_manual,
+      attached: sent.attached || 0, ok: !!sent.ok });
+    if (!sent.ok) {
+      return res.status(502).json({ error: 'The terms were saved but the email could not be sent: ' + (sent.problem || 'unknown'),
+        offerId: created.offer.id });
+    }
+    res.json({ ok: true, offerId: created.offer.id, to: created.offer.borrower_email,
+      attached: sent.attached || 0, expiresAt: created.offer.expires_at, skipped: !!sent.skipped });
+  } catch (e) {
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : e.message });
+  }
+});
+
+/* What this officer has sent, and where each one stands. Scoped to the SENDER — an
+   offer carries a borrower's email and their terms, so it is not a shared list. */
+router.get('/term-sheet-offers', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT o.id, o.borrower_email, o.borrower_name, o.program, o.is_manual, o.property_address,
+              o.sent_at, o.send_error, o.opened_at, o.accepted_at, o.expires_at, o.revoked_at,
+              o.application_id, o.register_result, a.ys_loan_number
+         FROM term_sheet_offers o
+         LEFT JOIN applications a ON a.id = o.application_id
+        WHERE o.officer_id = $1
+        ORDER BY o.created_at DESC LIMIT 100`, [req.actor.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // #153 — bulk-archive junk leads (admin). The bot-spam wave imported hundreds
 // of fake "subscribe" leads and the CRM only had a one-by-one PATCH; this
 // archives every non-converted lead matching a tool/source/status filter in
@@ -12290,7 +14390,9 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   const col = (name, val) => { sets.push(`${name}=$${i++}`); vals.push(val); };
   if (b.status !== undefined) { col('status', b.status); if (b.status === 'lost') col('lost_at', new Date().toISOString()); }
-  if (b.officerId !== undefined) col('officer_id', b.officerId || null);
+  // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
+  // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
+  if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
   if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
@@ -12897,9 +14999,21 @@ router.post('/applications/:id/documents', async (req, res) => {
   if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
+    // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
+    // Sheet Studio at registration (that is the ONLY thing that sets this kind
+    // at this door — a human uploading a document never passes docKind). So it
+    // is born ACCEPTED: nobody reviews a sheet the system just drew, and left
+    // pending the acceptance rule would drop it from the TPR export's Term Sheet
+    // folder AND make `closing-prep.blockers` refuse every order on the file for
+    // want of a term sheet. Every other upload through this door stays pending
+    // and waits for a reviewer. Owner-directed 2026-08-03; see
+    // lib/document-acceptance.js.
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15) RETURNING id`,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final,
+                            review_status,reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15,
+             CASE WHEN $12='term_sheet' THEN 'accepted' ELSE 'pending' END,
+             CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
@@ -12999,6 +15113,35 @@ router.post('/applications/:id/documents', async (req, res) => {
 
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+
+  // EVERY APPRAISAL XML FEEDS THE RESEARCH WAREHOUSE, WHEREVER IT WAS FILED
+  // (owner-directed 2026-08-04, db/462). Deliberately OUTSIDE the auto-import block
+  // above: that one is gated on the slot being named /xml/i on the appraisal
+  // condition, which is the right gate for deciding a FILE's official appraisal and
+  // the wrong one for market data. A data file dropped on any other condition, in an
+  // unnamed slot, or on a condition whose appraisal import then failed, still carries
+  // every comparable sale in the report. Fire-and-forget: it never touches the loan
+  // file, never slows the upload, and never fails it.
+  //
+  // …EXCEPT WHEN THE DESK IMPORT ABOVE JUST SUCCEEDED, and that exception is the
+  // whole reason this line has a condition on it. `runAppraisalImport` feeds the
+  // warehouse itself through `desk.fireResearchIngest`, richer — it carries the
+  // photographs. Firing both on the same bytes RACES them: the catch's "is this
+  // already here from a loan file?" read happens before the desk commits, and the
+  // desk's "retire the uploaded copy" runs before the catch commits, so on a report
+  // carrying neither an effective date nor a named appraiser — which has no
+  // fingerprint, so BOTH de-dup guards stand down by design — every property in it
+  // ends up carrying the report TWICE, and no later pass heals it. Reproduced on
+  // real Postgres by a post-merge audit. A FAILED desk import still falls through
+  // here, which is what closes that gap.
+  if (!(apprImport && apprImport.ok)) {
+    require('../lib/research/xml-catch').fireCatch({
+      bytes: buf, filename: b.filename, contentType: b.contentType,
+      documentId: r.rows[0].id,
+      uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
+      why: 'a loan file (staff upload)',
+    });
+  }
 
   // AI classifier auto-hook (R3.13, owner-directed 2026-07-22, HARD RULE — never
   // moves the document itself; never clears/reopens a condition). When the Azure
@@ -13222,6 +15365,23 @@ router.post('/documents/:id/review', async (req, res) => {
         try { await require('../lib/experience').syncExperienceChecklistForBorrower(was.rows[0].borrower_id); } catch (_) {}
         try { await conditionEngine.evaluateBorrowerApplications(was.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_doc_rejected' }); } catch (_) {}
       }
+    }
+
+    // The DRAW WIRE operating-agreement condition (Task 5, owner-directed 2026-08-05): accepting
+    // the agreement OPENS/LINKS the wire-recipient entity on the borrower's profile and saves the
+    // agreement into that entity's own operating-agreement slot — so it is on his record for the
+    // future, exactly as entity-adopt does for the bank-statement case. Best-effort: the document
+    // is accepted either way, the profile link is a follow-on.
+    if (action === 'accept' && !requestMore && doc.checklist_item_id) {
+      try {
+        const drawOa = require('../lib/esign/draw-oa');
+        const oaRes = await drawOa.onAccepted(db, { itemId: doc.checklist_item_id, documentId: doc.id, actorId: req.actor.id });
+        if (oaRes && oaRes.adopted) {
+          await audit(req, 'draw_wire_entity_adopted', 'llc', oaRes.llcId,
+            { applicationId: doc.application_id, entityName: oaRes.entityName, created: oaRes.created, savedToSlot: oaRes.savedToSlot });
+          drawOa.afterAcceptCommit(oaRes.llcId).catch(() => {});
+        }
+      } catch (_) { /* best-effort — the accept stands regardless */ }
     }
 
     // On rejection, tell the borrower what to fix. LLC documents live on the
@@ -14991,9 +17151,37 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       }
     } catch (_) { /* fail OPEN — an Encompass problem must never strand a send */ }
   }
+  // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
+  // (owner-directed 2026-08-04): "the super admin should always be able to override
+  // anything and send if he wants, with a warning." Only a super-admin may force a
+  // sheet not recorded FINAL out for signature, and only with a reason (collected in
+  // the UI). Mirrors the Encompass admin override above. Ignored for a non-term-sheet
+  // package or a blank reason; a NON-super-admin who supplies one is refused — never
+  // silently sent — so this stays the top-authority escape hatch it is meant to be.
+  let termSheetFinalOverride = null;
+  const tsOvrReason = String((req.body && req.body.termSheetFinalOverrideReason) || '').trim();
+  if (TERM_SHEET_ESIGN_PURPOSES.has(purpose) && tsOvrReason) {
+    if (!(req.actor && req.actor.role === 'super_admin')) {
+      return res.status(403).json({ error: 'Only a super admin can override the term-sheet check and send a sheet that is not marked final.', code: 'term_sheet_final_override_denied' });
+    }
+    termSheetFinalOverride = { by: req.actor.id, reason: tsOvrReason };
+  }
   try {
-    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue, termSheetFinalOverride });
     await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
+    // A term-sheet-final override that actually sent is RECORDED (best-effort): an
+    // audit row + a first-class entry in the exception register, so the file answers
+    // "who forced a not-final sheet out, and why?" long after.
+    if (termSheetFinalOverride && out && out.ok) {
+      try { await audit(req, 'esign_term_sheet_final_override', 'application', req.params.id, { purpose, reason: tsOvrReason.slice(0, 500), envelopeRowId: out.envelopeRowId }); } catch (_) { /* audit best-effort */ }
+      try {
+        await require('../lib/loan-exceptions').recordIssuanceOverride({
+          appId: req.params.id, staffId: req.actor && req.actor.id,
+          note: `term_sheet_final override (docusign ${purpose}): ${tsOvrReason.slice(0, 380)}`,
+          snapshot: { kind: 'term_sheet_final_override', purpose },
+        });
+      } catch (_) { /* register write is best-effort */ }
+    }
     // Return the REAL outcome — never a false "Sent for signature." toast. ok mirrors
     // sendPackage's ok (a genuine send / already-sent). Every non-success disposition
     // gets its OWN plain-language reason so staff always know the true state:

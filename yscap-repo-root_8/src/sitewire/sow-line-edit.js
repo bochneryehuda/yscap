@@ -94,10 +94,14 @@ async function regenerateExcel(appId, itemId, borrowerId, state, totalCents, act
       WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true
         AND (content_type LIKE '%spreadsheet%' OR lower(filename) LIKE '%.xlsx')`, [itemId]);
   const r = await db.query(
+    // BORN ACCEPTED — PILOT regenerated this workbook itself; there is no human
+    // upload here for anybody to review, and the TPR export's Scope of Work folder
+    // pulls it by name (owner-directed 2026-08-03, lib/document-acceptance.js).
     `INSERT INTO documents
        (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
-        storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower','rehab_budget_export') RETURNING id`,
+        storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind,
+        review_status,reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower','rehab_budget_export','accepted',now()) RETURNING id`,
     [itemId, appId, borrowerId, filename, contentType, buf.length, provider, ref, actorId]);
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   return { docId: r.rows[0].id, filename, size: buf.length };

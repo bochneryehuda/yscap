@@ -4,6 +4,7 @@ import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 import { fullNameOf } from '../lib/personName.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 // Fallback role list (replaced live by GET /permissions-meta).
 const FALLBACK_ROLES = [
@@ -127,13 +128,19 @@ export default function StaffTeam() {
   const isAdmin = can('manage_team');
   const [rows, setRows] = useState(null);
   const [meta, setMeta] = useState({ roles: FALLBACK_ROLES, capabilities: [], roleDefaults: {} });
+  // `err` is the ADD-FORM's own banner and stays in flow next to that form (it
+  // sits at the top of the page, which is where the user already is). Every
+  // ROW action reports through the toast instead — a banner at the top of the
+  // page shoved the roster and was off-screen anyway. See FlashToast.jsx.
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
+  const { flash, flashErr, toast } = useFlash();
   const [form, setForm] = useState(blankForm());
   const [busy, setBusy] = useState(false);
   const [pwFor, setPwFor] = useState(null);
   const [pwVal, setPwVal] = useState('');
   const [permFor, setPermFor] = useState(null);   // staffer id whose permissions panel is open
+  const [contactFor, setContactFor] = useState(null);   // staffer id whose contact-edit panel is open
+  const [contactVals, setContactVals] = useState({});   // { title, phone, cell, ext } being edited
   const [shareOpen, setShareOpen] = useState(false); // "see specific officers' files" picker expanded
   // Guards the welcome / password-reset email actions — a double-click was
   // sending the same email twice.
@@ -150,7 +157,6 @@ export default function StaffTeam() {
   }, [isAdmin]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   // Roster KPIs — derived from the staff rows already loaded (each carries
   // is_active / has_login / mfa_enabled). No new fetch, pure counts.
@@ -188,18 +194,30 @@ export default function StaffTeam() {
   }
 
   async function patch(id, patchBody, okMsg) {
-    setErr('');
     try { await api.adminUpdateStaff(id, patchBody); if (okMsg) flash(okMsg); await load(); }
-    catch (e) { setErr(e.message); }
+    catch (e) { flashErr(e.message); }
+  }
+  function openContact(s) {
+    setContactFor(contactFor === s.id ? null : s.id);
+    setContactVals({ title: s.title || '', phone: s.phone || '', cell: s.cell || '', ext: s.ext || '' });
+  }
+  async function saveContact(id) {
+    try {
+      await api.adminUpdateStaff(id, {
+        title: contactVals.title.trim(), phone: contactVals.phone.trim(),
+        cell: contactVals.cell.trim(), ext: contactVals.ext.trim(),
+      });
+      setContactFor(null); flash('Contact details updated.');
+      await load();
+    } catch (e) { flashErr(e.message); }
   }
   async function savePassword(id) {
-    setErr('');
     try {
       { const w = passwordProblem(pwVal); if (w) throw new Error(w); }
       await api.adminSetStaffPassword(id, pwVal);
       setPwFor(null); setPwVal(''); flash('Password set. They can log in now.');
       await load();
-    } catch (e) { setErr(e.message); }
+    } catch (e) { flashErr(e.message); }
   }
 
   if (!isAdmin) return <div role="alert" className="notice err">You do not have permission to manage the team.</div>;
@@ -237,13 +255,13 @@ export default function StaffTeam() {
         <div className="page-head-actions">
           <span className="muted small">{rows ? `${rows.length} team members` : ''}</span>
           <button className="btn btn-ghost btn-sm" disabled={mailBusy === 'all'} title="Email a welcome (with set-up link) to everyone who can't log in yet"
-            onClick={async () => { if (mailBusy) return; setMailBusy('all'); setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+            onClick={async () => { if (mailBusy) return; setMailBusy('all'); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
             Send welcome to all
           </button>
         </div>
       </div>
 
-      {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {rows != null && (
@@ -260,8 +278,10 @@ export default function StaffTeam() {
         <div className="panel-h"><h3>Add a team member</h3></div>
         <div className="panel-b">
         <p className="muted small" style={{ marginBottom: 14 }}>
-          They immediately become assignable to files. Sales members marked “Show on site” also
-          appear on the public “select your loan officer” list. Choose how they get login access.
+          They immediately become assignable to files. <b>Anyone</b> marked “Show on site” appears on
+          the public Team page — grouped under Sales &amp; Loan Coordinators or Operations &amp; Back Office
+          by their department — so back-office members can be shown too. Only <b>Sales</b> members also
+          appear in the borrower’s “select your loan officer” list. Choose how they get login access.
         </p>
         <form onSubmit={create} className="grid cols-2" style={{ gap: 12 }}>
           <div className="field"><label>Full name *</label>
@@ -302,6 +322,9 @@ export default function StaffTeam() {
               <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div></div>
           )}
           <div className="field" style={{ alignSelf: 'end' }}>
+            {/* the page-top banner is off-screen by the time you reach this
+                button — repeat the refusal where the click happened */}
+            {err && <div className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
             <button className="btn primary" disabled={busy}>{busy ? 'Adding…' : 'Add team member'}</button>
           </div>
         </form>
@@ -341,6 +364,9 @@ export default function StaffTeam() {
                   <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
                     {permFor === s.id ? 'Hide permissions' : 'Permissions'}
                   </button>
+                  <button className="btn link" onClick={() => openContact(s)} title="Edit title, phone, cell & extension">
+                    {contactFor === s.id ? 'Hide contact' : 'Edit contact'}
+                  </button>
                   <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }} title="Show on public site roster">
                     <input type="checkbox" checked={!!s.site_selectable}
                       onChange={e => patch(s.id, { siteSelectable: e.target.checked }, 'Roster updated.')} /> Site
@@ -357,14 +383,30 @@ export default function StaffTeam() {
                     {s.has_login ? 'Reset password' : 'Set password'}
                   </button>
                   <button className="btn link" disabled={mailBusy === `w${s.id}`} title="Email them their console welcome (sign-in or set-up link)"
-                    onClick={async () => { if (mailBusy) return; setMailBusy(`w${s.id}`); setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`w${s.id}`); try { const r = await api.adminWelcome(s.id); if (r.sent) flash(`Welcome email sent to ${r.email}.`); else flashErr(`Could not deliver to ${r.email} — check the email provider.`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
                     Send welcome
                   </button>
                   <button className="btn link" disabled={mailBusy === `r${s.id}`} title="Email them a link to set a new password"
-                    onClick={async () => { if (mailBusy) return; setMailBusy(`r${s.id}`); setErr(''); try { const r = await api.adminResetStaffEmail(s.id); flash(r.sent ? `Password-reset email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`r${s.id}`); try { const r = await api.adminResetStaffEmail(s.id); if (r.sent) flash(`Password-reset email sent to ${r.email}.`); else flashErr(`Could not deliver to ${r.email} — check the email provider.`); } catch (e) { flashErr(e.message); } finally { setMailBusy(null); } }}>
                     Send password reset
                   </button>
                 </div>
+                {contactFor === s.id && (
+                  <div style={{ width: '100%', marginTop: 8 }}>
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      <input className="input" style={{ maxWidth: 220 }} type="text" placeholder="Title (e.g. Loan Officer)"
+                        value={contactVals.title} onChange={e => setContactVals(v => ({ ...v, title: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 170 }} type="text" placeholder="Direct phone"
+                        value={contactVals.phone} onChange={e => setContactVals(v => ({ ...v, phone: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 170 }} type="text" placeholder="Cell"
+                        value={contactVals.cell} onChange={e => setContactVals(v => ({ ...v, cell: e.target.value }))} />
+                      <input className="input" style={{ maxWidth: 100 }} type="text" placeholder="Ext"
+                        value={contactVals.ext} onChange={e => setContactVals(v => ({ ...v, ext: e.target.value }))} />
+                      <button className="btn primary" onClick={() => saveContact(s.id)}>Save contact</button>
+                      <button className="btn ghost" onClick={() => setContactFor(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
                 {pwFor === s.id && (
                   <div style={{ width: '100%', marginTop: 8 }}>
                     <div className="row" style={{ gap: 8 }}>

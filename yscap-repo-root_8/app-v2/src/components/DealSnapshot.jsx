@@ -3,6 +3,7 @@ import { fullNameOf } from '../lib/personName.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { revealAnchor } from './FileSections.jsx';
 import { dealBasis, seasoningText } from '../lib/dealBasis.js';
+import { fmtRatePctFromPct } from '../lib/rateFormat.js';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -31,13 +32,20 @@ export default function DealSnapshot({ app, gating }) {
   // Which figure this deal is sized on — the as-is value on a refinance, the
   // purchase price on a purchase. One shared reading with the server + engine.
   const basisOf = dealBasis(app);
-  /* The fallback LTC denominator follows the same rule: on a refinance the cost
-     basis the frozen engine uses is `as_is_value + rehab`, not `price + rehab`,
-     so the approximate ratio shown when there is no registered quote was being
-     divided by a number the engine never used (usually 0 + rehab on a refinance,
-     which made the ≈ LTC read absurdly high). A registered quote still wins — its
-     `sizing.ltcPct` is the engine's own — so this only corrects the estimate. */
-  const basis = (Number(basisOf.basis) || 0) + (Number(app.rehab_budget) || 0);
+  /* The fallback LTC denominator follows the frozen engine's cost basis: the
+     acquisition figure is the LOWER of the sizing basis and the as-is value
+     (owner-directed 2026-08-05 — "when the as-is value is below the purchase price,
+     the cost, and the LTC, go by the as-is value"), and on a refinance that basis is
+     the as-is value, not `price + rehab`. Getting this wrong divided the ratio by a
+     number the engine never used (an inflated price, or on a refinance usually
+     0 + rehab, which read absurdly high). A registered quote still wins — its
+     `sizing.ltcPct` is the engine's own — so this only corrects the estimate.
+     basisOf.basis / basisOf.asIsValue are ALREADY numeric (dealBasis runs them
+     through its own money parser), so there is no bare Number() on a money field. */
+  const sizedBasis = basisOf.basis || 0;
+  const asIsBasis = basisOf.asIsValue || 0;
+  const costAcq = (sizedBasis > 0 && asIsBasis > 0) ? Math.min(sizedBasis, asIsBasis) : (sizedBasis || asIsBasis);
+  const basis = costAcq + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
   // Fallback ratios (no registered quote) use simple display math on raw columns —
   // a different basis than the engine's; mark them approximate (owner audit 2026-07-17).
@@ -76,7 +84,7 @@ export default function DealSnapshot({ app, gating }) {
         </div>
         <div className="snap-stat">
           <span className="snap-stat-k">Note rate</span>
-          <span className="snap-stat-v gold">{app.rate_pct != null ? Number(app.rate_pct).toFixed(2) + '%' : '—'}</span>
+          <span className="snap-stat-v gold">{app.rate_pct != null ? fmtRatePctFromPct(app.rate_pct) + '%' : '—'}</span>
         </div>
         {g && (
           // Clickable (owner-directed): the count jumps to the "What's left to
@@ -107,7 +115,7 @@ export default function DealSnapshot({ app, gating }) {
               the row rather than being left behind. On an individual-vested file
               this says so plainly instead of reading as a missing entity. */}
           {app.personal_name_purchase && !app.llc_id
-            ? row('Vesting', <span>Individual&rsquo;s name <span className="ts-badge" style={{ marginLeft: 6 }}>no entity</span></span>)
+            ? row('Vesting', <span>Closing as an individual <span className="ts-badge" style={{ marginLeft: 6 }}>no entity</span></span>)
             : row('Entity', (
               <span>
                 {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
@@ -116,7 +124,17 @@ export default function DealSnapshot({ app, gating }) {
                   : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
               </span>
             ))}
-          {row('FICO', app.fico || '—')}
+          {/* FICO that prices the deal: the borrower's imported credit-report middle
+              score, and the HIGHER of the two on a co-borrower file (owner-directed
+              2026-08-05). A credit import writes each borrower's middle score to their
+              fico, so this reads the real score, not the estimate. */}
+          {row('FICO', (() => {
+            const p = Number(app.fico) || 0;
+            const c = Number(app.co_fico) || 0;
+            const hi = Math.max(p, c);
+            if (!hi) return '—';
+            return (app.co_borrower_id && p && c && p !== c) ? `${hi} (higher of ${p} / ${c})` : String(hi);
+          })())}
           {/* The note buyer at a glance (owner-directed 2026-07-27) — it used to be
               readable only inside the ClickUp panel, so an officer couldn't tell who is
               buying the loan without hunting for it. STAFF-ONLY: this component renders

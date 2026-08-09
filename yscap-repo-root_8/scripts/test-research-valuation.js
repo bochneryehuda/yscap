@@ -304,5 +304,341 @@ function corpus(n, f) {
     'the thresholds the UI shows are the ones the engine tests');
 }
 
+// ---- 4b. THE TIME TREND IS A RATE, AND A RATE NEEDS A SPAN --------------------
+// This used to gate only on HOW MANY dated sales there were, never on how far
+// apart they sat. Sixteen sales bunched into one month passed the count check,
+// and a 4% price gap divided by ONE month became 3.95% A MONTH. The identical
+// readings spread over a year read 0.33%/month — a twelve-fold swing driven
+// entirely by the spacing. `suggestAdjustments` then multiplied it by the months
+// since a comp sold with no ceiling, offering a human +$190,750 on a $400,000
+// comparable as a "suggestion".
+{
+  // Sixteen sales, the newer half 4% dearer, ALL INSIDE ONE MONTH.
+  const bunched = corpus(16, (i) => ({
+    sale_price: i < 8 ? 375000 : 390000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2026-01-05' : '2026-02-05',
+  }));
+  const r = V.deriveMarketRates(bunched, { today: TODAY });
+  ok(r.monthlyMarketChangePct.value === null,
+    'sales bunched into a single month are NOT a market trend, however many of them there are');
+  ok(/cover about/.test(r.monthlyMarketChangePct.why || '')
+    && /about a year of sales/.test(r.monthlyMarketChangePct.why || ''),
+  'and the refusal explains it is the SPACING, not the count');
+  // AND IT NAMES A SPAN THE USER CAN SEE. `monthsApart` is between the two half
+  // MIDPOINTS — roughly half the set's real span — so quoting it told a user who
+  // supplied nine months of sales that they had supplied five.
+  ok(/cover about 1 month/.test(r.monthlyMarketChangePct.why || ''),
+    'quoting the SET\'s span, not the distance between its halves');
+
+  // The same readings spread over two years ARE a trend, and a modest one.
+  const spread = corpus(16, (i) => ({
+    sale_price: i < 8 ? 375000 : 390000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2024-09-05' : '2026-01-05',
+  }));
+  const r2 = V.deriveMarketRates(spread, { today: TODAY });
+  ok(r2.monthlyMarketChangePct.value != null && Math.abs(r2.monthlyMarketChangePct.value) < 1.5,
+    'the SAME price gap spread over two years reads as a small, believable monthly rate');
+
+  // A rate no market moves at is refused even with a long span — the two halves
+  // differ for some reason other than time.
+  const wild = corpus(16, (i) => ({
+    sale_price: i < 8 ? 200000 : 600000, gla: 1500, sale_status: 'closed',
+    sale_date: i < 8 ? '2025-01-05' : '2026-01-05',
+  }));
+  const r3 = V.deriveMarketRates(wild, { today: TODAY });
+  ok(r3.monthlyMarketChangePct.value === null,
+    'a rate faster than a market moves is refused — that is the method failing, not the market');
+  ok(/faster than a market moves/.test(r3.monthlyMarketChangePct.why || ''),
+    'and it says so, instead of returning a confident number');
+
+  // THE DOLLARS ARE CAPPED TOO. A legal rate compounded over a long-ago sale gets
+  // to an absurd figure on its own.
+  const rates = { pricePerSqft: { value: null }, glaAdjustmentPerSqft: { value: null },
+    perBedroom: { value: null }, perBath: { value: null }, perConditionGrade: { value: null },
+    monthlyMarketChangePct: { value: 1.4, basis: 'test' } };
+  const lines = V.suggestAdjustments(
+    { gla: 1500 }, { sale_price: 400000, sale_date: '2022-08-02', gla: 1500 },
+    rates, { today: TODAY });
+  const mc = lines.find((l) => l.key === 'market_conditions');
+  ok(mc && Math.abs(mc.amount) <= 400000 * 0.15,
+    'a time adjustment can never exceed 15% of the sale price, however long ago the comp sold');
+  ok(mc && /held at 15%/.test(mc.note),
+    'and when it is held back it SAYS so, rather than quietly shrinking');
+}
+
+// ---- 4c. A FORCED SALE IS NOT A MARKET PRICE ---------------------------------
+// A bank selling REO, a short sale, an estate or a relocation transacts under a
+// constraint an ordinary buyer and seller do not have. Measured: 8 REO alongside
+// 8 arm's-length dragged the median to $217/sqft. They were neither filtered out
+// NOR selectable, so every derived rate quietly averaged two different markets.
+{
+  const arms = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: 'Arms Length', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const reo = corpus(8, (i) => ({ sale_price: 225000, gla: 1500, sale_status: 'closed',
+    sale_type: 'REO', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const r = V.deriveMarketRates([...reo, ...arms], { today: TODAY });
+  ok(r.pricePerSqft.value === 250,
+    'the price per foot is the ARM\'S-LENGTH market ($250), not a blend of two different markets');
+  ok(r.distressedSetAside === 8, 'and the forced sales are counted, not silently dropped');
+  ok(/forced sale/.test(r.distressedNote || ''), 'with a plain-language note saying what was set aside');
+
+  // AN UNREAD SALE TYPE IS AN ORDINARY SALE. Excluding on a hunch would quietly
+  // shrink the sample, and an unread fact is never a "yes" in this warehouse.
+  const unknown = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: null, sale_date: `2025-0${(i % 9) + 1}-01` }));
+  const r2 = V.deriveMarketRates(unknown, { today: TODAY });
+  ok(r2.distressedSetAside === 0 && r2.pricePerSqft.value === 250,
+    'a sale whose type the report never stated still counts — we do not guess "distressed" from a low price');
+}
+
+// ---- 4d. SIZE IS THE CONFOUND, AND IT IS NOT SUBTLE --------------------------
+// Price per foot runs INVERSELY to size, and more bathrooms come with more house,
+// so the price-per-foot gap between bath groups is mostly measuring SIZE.
+// Multiplied back by the subject's living area that produced a measured $86,940
+// for one bathroom — while the identical confound pointing the other way was
+// correctly refused as "the wrong sign", with a message blaming the sample size.
+{
+  const small = corpus(8, () => ({ sale_price: 300000, gla: 1200, baths_full: 2, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const big = corpus(8, () => ({ sale_price: 480000, gla: 2400, baths_full: 3, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const r = V.deriveMarketRates([...small, ...big], { today: TODAY });
+  ok(r.perBath.valuePerSqft == null && r.perBath.value === null,
+    'a bathroom rate read off groups that differ in SIZE is refused — asserted on the SUCCESS\n     shape (`valuePerSqft`), because `.value` is absent from it and `.value == null` would be\n     true whether the rate was refused or published');
+  ok(/BIGGER houses/.test(r.perBath.why || '') && /measuring the size/.test(r.perBath.why || ''),
+    'and the refusal names the CONFOUND — "get more sales" is the wrong advice for a problem more sales will not fix');
+
+  // Matched for size, the same shape reads normally.
+  const matchedA = corpus(8, () => ({ sale_price: 300000, gla: 1500, baths_full: 2, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const matchedB = corpus(8, () => ({ sale_price: 330000, gla: 1550, baths_full: 3, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  const r2 = V.deriveMarketRates([...matchedA, ...matchedB], { today: TODAY });
+  ok(r2.perBath.valuePerSqft != null, 'two size-matched groups still yield a bathroom rate');
+  ok(r2.perBath.approxDollarsOnTypicalHouse != null,
+    'and it reports what that comes to in DOLLARS on a typical house — the figure a human can sanity-check');
+  ok(r2.perBath.groups.every((g) => g.medianGla != null),
+    'each group publishes its median size, so the confound is visible even when it passes');
+}
+
+// ---- AN ASKING PRICE IS NOT A SALE -------------------------------------------
+// `reconcile` halves a listing's weight, but a half-weighted listing in a small
+// set still carries a lot — a recent, well-matched one was measured at 36% of the
+// total — and it counts in FULL toward the median, the range and the price per
+// foot, which are plain unweighted statistics over the same rows. The value is
+// still produced; the reader is told how much of it is an asking price.
+{
+  const subject = { gla: 1500, beds: 3, baths_full: 2 };
+  const comps = [
+    { sale_price: 400000, gla: 1500, sale_date: '2026-06-01', sale_status: 'closed', adjustedPrice: 400000, grossAdjPct: 5 },
+    { sale_price: 410000, gla: 1500, sale_date: '2026-05-01', sale_status: 'closed', adjustedPrice: 410000, grossAdjPct: 5 },
+    { sale_price: 520000, gla: 1500, sale_date: '2026-07-01', sale_status: 'active', adjustedPrice: 520000, grossAdjPct: 2 },
+  ];
+  const r = V.reconcile(subject, comps, { today: TODAY });
+  ok(typeof r.listingWeightPct === 'number' && r.listingWeightPct > 0,
+    'the answer REPORTS what share of its weight is an asking price rather than a sale');
+  ok(r.listingWeightPct < 100, 'and that share is a percentage of the whole, not a count');
+  const w = V.setWarnings(subject, comps, { today: TODAY });
+  const flag = w.find((x) => x.code === 'listings_in_the_answer');
+  ok(flag && flag.severity === 'warning', 'and a third of the set being unsold raises a warning');
+  ok(flag && /ASKING/.test(flag.text) && /lead the market/.test(flag.text),
+    'which says plainly that an asking price is not what anybody paid');
+
+  // All closed → no flag, and nothing rests on an asking price.
+  const allClosed = comps.map((c) => Object.assign({}, c, { sale_status: 'closed' }));
+  const r2 = V.reconcile(subject, allClosed, { today: TODAY });
+  ok(r2.listingWeightPct === 0, 'a set of closed sales reports a zero share');
+  ok(!V.setWarnings(subject, allClosed, { today: TODAY }).some((x) => x.code === 'listings_in_the_answer'),
+    'and raises no listing warning');
+  // A SWITCHED-OFF listing is not in the answer, so it must not be counted in it.
+  const off = comps.map((c) => (c.sale_status === 'active' ? Object.assign({}, c, { include: false }) : c));
+  ok(V.reconcile(subject, off, { today: TODAY }).listingWeightPct === 0,
+    'a comparable the user switched OFF carries none of the answer');
+}
+
+// ---- A CONFOUNDED STEP COUNTS AGAINST THE READING ---------------------------
+// The first version of the size guard SKIPPED a confounded step and medianed
+// whatever survived — which turned a CORRECT refusal into a confident wrong
+// answer. On the live NJ segment the discarded step was the strongly negative
+// one that used to trigger the "wrong sign" refusal, and the single surviving
+// step then published $23.54/sqft: $35,250 for one bathroom. The guard built to
+// stop "$86,940 for one bathroom" produced $35,250 on the first real market.
+{
+  const mk = (n, gla, baths, price) => corpus(n, () => ({
+    sale_price: price, gla, baths_full: baths, baths_half: 0,
+    sale_status: 'closed', sale_date: '2025-03-01' }));
+  // Two steps: 2→2.5 is size-matched, 2.5→3 is wildly not.
+  const rows = [...mk(8, 1600, 2, 320000), ...mk(8, 1480, 2.5, 310000), ...mk(4, 3152, 3, 700000)];
+  const r = V.deriveMarketRates(rows, { today: TODAY });
+  ok(r.perBath.valuePerSqft == null,
+    'ONE confounded step condemns the whole reading — the rest of the sample is not made trustworthy by dropping it');
+  ok(r.perBath.confoundedSteps >= 1, 'and the refusal reports how many steps were unreadable');
+}
+
+// ---- THE DISTRESSED FILTER MUST MATCH WHAT WE ACTUALLY STORE ----------------
+// `extract.js` whitelists exactly six values and `ingest.js` stores them
+// verbatim: CamelCase, no spaces. A `\b`-anchored pattern could not match
+// `REOSale` at all, so the filter was a no-op on every real row while the test
+// used spellings ("REO", "Arms Length") that nothing in the system writes.
+{
+  for (const stored of ['REOSale', 'EstateSale', 'ShortSale', 'CourtOrderedSale']) {
+    const arms = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+      sale_type: 'ArmsLengthSale', sale_date: `2025-0${(i % 9) + 1}-01` }));
+    const bad = corpus(8, (i) => ({ sale_price: 225000, gla: 1500, sale_status: 'closed',
+      sale_type: stored, sale_date: `2025-0${(i % 9) + 1}-01` }));
+    const r = V.deriveMarketRates([...bad, ...arms], { today: TODAY });
+    ok(r.distressedSetAside === 8, `"${stored}" — the spelling the parser actually stores — is set aside`);
+    ok(r.pricePerSqft.value === 250, `and the rate is the arm's-length market, not a blend (${stored})`);
+  }
+  const clean = corpus(10, (i) => ({ sale_price: 375000, gla: 1500, sale_status: 'closed',
+    sale_type: 'ArmsLengthSale', sale_date: `2025-0${(i % 9) + 1}-01` }));
+  ok(V.deriveMarketRates(clean, { today: TODAY }).distressedSetAside === 0,
+    'and an arm\'s-length sale is never mistaken for a forced one');
+}
+
+
+// ---------------------------------------------------------------------------
+// A MEASURED PEER RATE BEATS THE TRADE CONVENTION (db/441).
+//
+// The GLA adjustment rate was 40% of the average price per foot — a rule of
+// thumb about a national trade habit. `peerGlaRate` is what appraisers in THIS
+// market actually wrote on their grids: each size adjustment divided by the size
+// difference it was made for. Measured over the 152 real reports: 468 usable,
+// ZERO negative, median $40/sq ft.
+//
+// The two are NEVER blended. They are different kinds of claim — what local
+// appraisers did, against a national habit — and an average of them would be
+// neither, with a `basis` that could not honestly describe it.
+// ---------------------------------------------------------------------------
+{
+  const obs = [];
+  for (let i = 0; i < 12; i++) {
+    obs.push({ sale_price: 400000 + i * 1000, gla: 1500 + i * 10, beds: 3, baths_full: 2,
+      baths_half: 0, sale_status: 'closed', sale_type: 'ArmsLengthSale', sale_date: '2026-01-01' });
+  }
+  const rate = (peerGlaRate) => V.deriveMarketRates(obs, { peerGlaRate }).glaAdjustmentPerSqft;
+
+  ok(rate(undefined).source === 'convention',
+    'with no peer rate the trade convention is used, exactly as before');
+  const peer = rate({ ok: true, n: 40, median: 52, q1: 38, q3: 65 });
+  ok(peer.source === 'peer' && peer.value === 52, `a measured peer rate WINS ($${peer.value}/sq ft)`);
+  ok(/actually adjusted/.test(peer.basis),
+    'and its basis says it is what appraisers here actually did, not a rule of thumb');
+  ok(peer.low === 38 && peer.high === 65,
+    'and it carries the real observed spread rather than a fabricated band');
+
+  ok(rate({ ok: false, reason: 'too few' }).source === 'convention',
+    'a REFUSED peer rate falls back to the convention');
+  ok(rate({ ok: true, n: 3, median: 52 }).source === 'convention',
+    'a peer rate under the sample floor does not win — three adjustments is a coincidence');
+  ok(rate({ ok: true, n: 40, median: -10 }).source === 'convention',
+    'a NEGATIVE peer rate is refused: the adjustment pointed the wrong way, which is a misread');
+  ok(rate(null).source === 'convention' && rate({}).source === 'convention',
+    'null and an empty object are both safe');
+
+  const noSales = V.deriveMarketRates([], { peerGlaRate: { ok: true, n: 40, median: 52, q1: 38, q3: 65 } });
+  ok(noSales.glaAdjustmentPerSqft.source === 'peer',
+    'and with no closed sales at all it still stands on its own evidence');
+}
+
+// ---------------------------------------------------------------------------
+// A FOOT OF LIVING AREA IS NOT A FOOT OF BUILDING AREA (db/443)
+// ---------------------------------------------------------------------------
+// Splitting the corpus by which foot each adjustment was measured on was
+// correct, and on its own it STRANDED evidence: measured over our own markets,
+// 8 of the 18 that cleared the sample floor hold their adjustments almost
+// entirely on 1025 grids — Scranton 19, Elizabeth 11, Pittston 10, Roselle 8,
+// every one of them building area — so asking only for living area dropped
+// those towns to the national rule of thumb while we held twenty real local
+// adjustments in each. They are also exactly the 2-4 unit towns.
+{
+  const obs = [];
+  for (let i = 0; i < 12; i++) {
+    obs.push({ sale_price: 400000 + i * 1000, gla: 1500 + i * 10, beds: 3, baths_full: 2,
+      baths_half: 0, sale_status: 'closed', sale_type: 'ArmsLengthSale', sale_date: '2026-01-01' });
+  }
+  const LIVING = { ok: true, n: 290, median: 45, q1: 38.5, q3: 55 };
+  const BUILDING = { ok: true, n: 178, median: 28, q1: 20, q3: 50 };
+  const both = V.deriveMarketRates(obs, { peerGlaRate: LIVING, peerGlaRateGba: BUILDING });
+  const livingOnly = V.deriveMarketRates(obs, { peerGlaRate: LIVING });
+
+  ok(both.glaAdjustmentPerSqft.value === 45 && both.glaAdjustmentPerSqftGba.value === 28,
+    'both rates are carried, each on its own foot');
+  ok(!/building/i.test(both.glaAdjustmentPerSqft.basis) && /building/i.test(both.glaAdjustmentPerSqftGba.basis),
+    'and each SAYS which foot it was measured on, so neither can pass for the other');
+  ok(livingOnly.glaAdjustmentPerSqftGba === null,
+    'a market with no 2-4 unit evidence reports none rather than borrowing the other');
+  ok(V.deriveMarketRates(obs, { peerGlaRate: LIVING, peerGlaRateGba: { ok: true, n: 3, median: 28 } })
+    .glaAdjustmentPerSqftGba === null,
+  'and the sample floor applies to it exactly as it does to the other');
+
+  const subject = { gla: 2400 };
+  const living = { gla: 2000, sale_price: 500000 };
+  const building = { gla: 2000, gla_basis: 'gba', sale_price: 500000 };
+  const glaLine = (comp, rates) => V.suggestAdjustments(subject, comp, rates, { today: '2026-08-01' })
+    .find((l) => l.key === 'gla');
+
+  ok(glaLine(living, both).amount === 18000, 'a 1004 comparable is adjusted at the LIVING-area rate');
+  ok(glaLine(building, both).amount === 11200, 'a 1025 comparable is adjusted at the BUILDING-area rate');
+  ok(glaLine({ gla: 2000, gla_basis: 'GBA', sale_price: 500000 }, both).amount === 11200,
+    'the basis is read case-insensitively');
+  ok(glaLine({ gla: 2000, gla_basis: null, sale_price: 500000 }, both).amount === 18000,
+    'a comparable that does not say which foot it used is living area — what it is on a 1004');
+
+  // THE FALLBACK IS HONEST. A 2-4 unit comp in a market with no building-area
+  // evidence still gets a suggestion — that is what every such comp got before
+  // the two were told apart, so it is not a regression — but the rates differ
+  // materially, and a number carrying somebody else's foot has to say so.
+  const fell = glaLine(building, livingOnly);
+  ok(fell.amount === 18000, 'with no 2-4 unit rate it falls back rather than leaving the line blank');
+  ok(/BUILDING area and the rate is measured on LIVING area/.test(fell.note),
+    '…and the note says the feet do not match, so the number is not quietly believed');
+  ok(!/BUILDING area and the rate is measured on LIVING area/.test(glaLine(building, both).note),
+    'and it says nothing of the sort when the rate DOES match');
+  ok(!/BUILDING area and the rate is measured on LIVING area/.test(glaLine(living, livingOnly).note),
+    'nor on an ordinary living-area comparable');
+
+  // THE SUBJECT'S FOOT COUNTS TOO. Every peer rate is measured as the SUBJECT's
+  // LIVING area minus the comparable's, so a subject stated in gross building
+  // area matches neither rate. Rare — exactly one of the 132 properties we have
+  // lent on is in that state — but applying a rate to a delta it was not
+  // measured from is the thing this split exists to stop.
+  const gbaSubject = { gla: 2400, gla_basis: 'gba' };
+  const fromGbaSubject = V.suggestAdjustments(gbaSubject, building, both, { today: '2026-08-01' })
+    .find((l) => l.key === 'gla');
+  ok(fromGbaSubject && fromGbaSubject.amount === 18000,
+    'a building-area SUBJECT is not adjusted at the 2-4 unit rate — that rate assumes a living-area subject');
+  ok(/property being valued states gross BUILDING area/.test(fromGbaSubject.note),
+    '…and the note says the feet do not match, naming the subject rather than the sale');
+  ok(!/property being valued states gross BUILDING area/.test(glaLine(building, both).note),
+    'an ordinary living-area subject says nothing of the sort');
+
+  ok(glaLine({ gla: 2000, gla_basis: ' GBA ', sale_price: 500000 }, both).amount === 11200,
+    'the basis is trimmed — `property_observations.gla_basis` carries no CHECK constraint');
+  // A RATE OBJECT WITH NO VALUE IS NOT A MATCH. Testing the object rather than a
+  // usable number made a `{value:null}` gba rate swallow the size line entirely
+  // instead of falling back — and the fallback is the whole reason that branch
+  // exists.
+  const hollow = { ...both, glaAdjustmentPerSqftGba: { value: null, why: 'too few' } };
+  const fellFromHollow = glaLine(building, hollow);
+  ok(fellFromHollow && fellFromHollow.amount === 18000,
+    'a 2-4 unit rate that refused falls back to the living-area rate rather than dropping the line');
+  // GUARDED, because this is the assertion that FAILS on the unfixed code: an
+  // unguarded `.note` there throws a TypeError and takes the whole suite down
+  // before the summary line, so the regression it exists to catch reads as a
+  // crashed runner rather than as a failing check.
+  ok(/BUILDING area and the rate is measured on LIVING area/.test((fellFromHollow || {}).note || ''),
+    '…and says so, exactly as a market with no 2-4 unit rate at all does');
+  // AND A RATE OF ZERO IS NOT A MATCH EITHER — the same hole, left half-shut.
+  // `!= null` is true for 0, and 0 is then falsy at the size-line guard, so the
+  // line disappears instead of falling back. `deriveMarketRates` guards
+  // `median > 0` and cannot emit one, but `market_rates` is stored as jsonb and
+  // read back, so the predicate must match the contract, not the producer.
+  const zeroed = { ...both, glaAdjustmentPerSqftGba: { value: 0, n: 9, source: 'peer' } };
+  const fellFromZero = glaLine(building, zeroed);
+  ok(fellFromZero && fellFromZero.amount === 18000,
+    'a stored 2-4 unit rate of $0 falls back too, rather than silently dropping the size line');
+}
+
 console.log(`test-research-valuation: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

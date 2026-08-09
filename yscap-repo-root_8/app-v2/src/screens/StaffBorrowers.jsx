@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 import { fullNameOf } from '../lib/personName.js';
+import { useFlash } from '../components/FlashToast.jsx';
 
 // #83 — the loan officer's book of borrowers. Everyone on a file they run (or,
 // for staff who see all files, everyone), with portal-account state and last
@@ -24,8 +25,11 @@ function ago(iso) {
 
 export default function StaffBorrowers() {
   const [rows, setRows] = useState(null);
+  // Every action here belongs to a ROW, so its result goes to the toast — a
+  // banner at the top of the page moved the list under the cursor and was
+  // off-screen anyway. `err` is left for the page-level load failure.
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
+  const { flash, flashErr: fail, toast } = useFlash();
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState('');         // `${action}:${id}`
   const [pwFor, setPwFor] = useState(null);     // borrower id whose set-password form is open
@@ -34,12 +38,19 @@ export default function StaffBorrowers() {
   const load = () => api.staffBorrowers().then(setRows).catch(e => setErr(e.message || 'Failed to load'));
   useEffect(() => { load(); }, []);
 
-  function flash(t) { setMsg(t); setErr(''); setTimeout(() => setMsg(''), 3500); }
-  function fail(t) { setErr(t); setTimeout(() => setErr(''), 5000); }
 
   async function invite(b) {
     setBusy('invite:' + b.id);
-    try { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); await load(); }
+    // A borrower with no file is invitable too — the server sends a plain portal
+    // invitation and they start their own application (owner-directed 2026-08-07).
+    // This button used to dead-end on a 400 that only ONE other screen knew to handle.
+    try {
+      const r = await api.staffBorrowerInvite(b.id);
+      flash(r && r.noFile
+        ? `PILOT invite sent to ${b.email} — they can start an application from the portal.`
+        : `PILOT invite sent to ${b.email}.`);
+      await load();
+    }
     catch (e) { fail(e.message || 'Invite failed'); }
     finally { setBusy(''); }
   }
@@ -113,7 +124,7 @@ export default function StaffBorrowers() {
           <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280 }} />
         </div>
       </div>
-      {msg && <div className="notice ok">{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {filtered == null ? <p className="muted">Loading…</p>

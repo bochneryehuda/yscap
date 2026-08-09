@@ -21,6 +21,7 @@ const db = require('../db');
 const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
+const APPROVAL = require('../sitewire/approval');   // the ONE wording for what is netted out
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
@@ -96,6 +97,10 @@ router.get('/draws', async (req, res) => {
   try {
     const rows = (await db.query(
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
+              -- The borrower's list must show what the INSPECTOR approved, not Sitewire's
+              -- final-approval field (0 until our last click) — see sitewire/approval.js.
+              COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id),
+                       d.total_approved_cents) AS inspector_approved_cents,
               d.submitted_at, d.approved_at, a.property_address->>'oneLine' AS address,
               (SELECT status FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS findings_status,
               (SELECT id FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS finding_id
@@ -114,16 +119,32 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
     for (const l of rollup.lines) l.label = scrub(l.label);
-    // borrower-safe: loadRollup folds our internal per-draw economics onto each draw (our fee, net
-    // release, fee kind, release date, the released flag). NEVER expose the fee or net wired to the
-    // borrower — strip them from the response even though the UI doesn't render them (they'd still
-    // be visible in the network payload). The borrower keeps requested/approved/status/number.
+    // THE BORROWER SEES WHAT THEY WILL ACTUALLY BE PAID (owner-directed 2026-08-03: "yes add the
+    // released amount to the borrower screen too"). Their own PDF report has shown the draw fee and
+    // the net since the earlier fee ruling; the SCREEN still said only "the inspector approved
+    // $25,000" and never the $24,701 that lands in their account — so the two surfaces disagreed
+    // about the one number they care about most. The per-draw money now rides through.
+    //
+    // TWO THINGS ARE STILL STRIPPED, and they are a different kind of secret:
+    //   · `fee_kind`        — describes OUR fee schedule (which inspection tier priced this draw),
+    //                         not their money. Nothing on their screen needs it.
+    //   · `net_explanation` — the rollup builds the STAFF sentence ("… = $24,701 net release",
+    //                         plus a note about the fee becoming final when the release is
+    //                         recorded). It is replaced below with the BORROWER wording from the
+    //                         same one definition, so their screen and their PDF can never phrase
+    //                         the same deduction differently.
+    // `rollup.fees` — our fee income ACROSS the project — stays deleted below and always will be.
     if (Array.isArray(rollup.draws)) {
       rollup.draws = rollup.draws.map((d) => {
-        const { fee_cents, fee_kind, net_release_cents, released, release_date, ...safe } = d;
+        // `stage_times` carries the with_investor delivery time — the capital-partner step is never
+        // borrower-facing (frozen rule); the borrower sees their own finding-driven stepper instead.
+        const { fee_kind, net_explanation, stage_times, ...safe } = d;
+        safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
         return safe;
       });
     }
+    // Our fee income on this project is never borrower-facing.
+    delete rollup.fees;
     res.json({ rollup });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
@@ -140,7 +161,13 @@ router.get('/draws/:appId/eligibility', async (req, res) => {
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
     const proj = (rollup && rollup.project) || {};
     const budget = Number(proj.budget) || 0;
-    const remaining = Number.isFinite(Number(proj.remaining)) ? Number(proj.remaining) : Math.max(0, budget - (Number(proj.drawn) || 0));
+    // What the borrower may still request = budget minus RELEASED minus what is already approved and
+    // waiting to be released. Reading the released-only `remaining` here would let them ask for money
+    // an inspector has already committed on a draw in flight (owner-directed 2026-08-03: treat a
+    // not-yet-final draw as approved — if it is amended or declined it goes back to available).
+    const remaining = Number.isFinite(Number(proj.available))
+      ? Number(proj.available)
+      : (Number.isFinite(Number(proj.remaining)) ? Number(proj.remaining) : Math.max(0, budget - (Number(proj.drawn) || 0)));
     // project lifecycle: a finished / paid-off project accepts no new draws (Sitewire is deactivated on close).
     const link = (await db.query(
       `SELECT COALESCE(lifecycle_state,'active') AS lifecycle_state FROM sitewire_property_links WHERE application_id=$1 AND matched_by='created' LIMIT 1`, [appId])).rows[0];

@@ -55,6 +55,8 @@
 const db = require('../db');
 const cfg = require('../config');
 const tpl = require('./email/template');
+// The reply delimiter both halves of the chain key on — printed at the TOP of every message we
+// put on the chain, and cut at on the way back in (lib/email/reply-cut.js).
 const storage = require('./storage');
 const closingThread = require('./closing-thread');
 
@@ -87,6 +89,25 @@ const GROUPS = [
 ];
 
 const GROUP_KEYS = GROUPS.map((g) => g.key);
+
+/* Which empty document groups are ACTUALLY missing for THIS deal — the one place
+   that knows a refinance has no purchase contract, a straight purchase has no
+   assignment, and an INDIVIDUAL-vested file has no entity documents (owner-directed
+   2026-08-04). Used by BOTH the attorney email (bodySections) and the card route
+   so the two can never disagree about what is outstanding. A document a deal does
+   not need is not "missing" — it must never block the send screen or be listed to
+   the attorney as awaited. */
+function applicableMissing(missing, data) {
+  const d = data || {};
+  const isRefi = d.transactionType === 'Refinance' || d.isRefinance === true;
+  const individual = d.vestsIndividually === true || !d.entityName;
+  return (missing || []).filter((m) => {
+    if (m.key === 'assignment' && !d.isAssignment) return false;   // purchase, not an assignment
+    if (m.key === 'contract' && isRefi) return false;              // a refinance has no purchase contract
+    if (m.key === 'llc' && individual) return false;               // an individual has no entity documents
+    return true;
+  });
+}
 
 // Belt-and-suspenders on the standing HARD FREEZE: the Heter Iska never leaves the
 // building. `selectTprDocuments` already excludes it five ways; this is a sixth,
@@ -143,13 +164,20 @@ function groupOf(d) {
  * Reach comes from `tpr-export.selectTprDocuments` — the repo's ONE chokepoint for
  * "every current document connected to this file". Reusing it is not laziness, it
  * is how this package inherits, for free: the recursive owning-entity walk, the
- * borrower AND co-borrower profile documents, the current/non-rejected/non-chat
+ * borrower AND co-borrower profile documents, the current/accepted/non-chat
  * filters, the regenerated-artifact exclusions, the expired-good-standing rule, and
  * the Heter Iska freeze. A private query here would drift from all of it.
+ *
+ * That inheritance is also how this package picked up the 2026-08-03 acceptance
+ * rule with no work: a document nobody has accepted is not attached to an email to
+ * an outside law firm. It is REPORTED instead — `awaiting` below is what the card
+ * shows the sender BEFORE they send, in the same place it already tells them what
+ * is missing and what is too big to email.
  */
 async function gatherPackage(applicationId) {
   const tprExport = require('./tpr-export');
   let rows = [];
+  let pendingRows = [];
   // Fail CLOSED (never attach a half-read package) but never fail SILENTLY. An empty
   // result read as "this file has no term sheet", which the card printed as
   // "Generate the term sheet, then send the closing-prep request" — advice nobody
@@ -162,12 +190,30 @@ async function gatherPackage(applicationId) {
     unavailable = true;
     console.error('[closing-prep] could not read the file documents:', (e && e.message) || e);
   }
+  // Held back for review. Its own try/catch: this is a REPORT, and failing to
+  // read it must never turn a sendable package into an unreadable one.
+  try {
+    pendingRows = await tprExport.selectTprPending(applicationId);
+  } catch (e) {
+    console.error('[closing-prep] could not read the pending documents:', (e && e.message) || e);
+  }
 
   const groups = {};
   for (const k of GROUP_KEYS) groups[k] = [];
   for (const d of rows) {
     const key = groupOf(d);
     if (key) groups[key].push(d);
+  }
+
+  // Only the pending documents that WOULD have been in this package — a pending
+  // bank statement is not this email's business and naming it here would read as
+  // "the attorney is waiting on it".
+  const awaiting = [];
+  for (const d of pendingRows) {
+    const key = groupOf(d);
+    if (!key) continue;
+    const g = GROUPS.find((x) => x.key === key);
+    awaiting.push({ id: d.id, filename: d.filename, group: key, groupLabel: g ? g.label : key });
   }
 
   // The term sheet is the one group with an internal preference: the EXECUTED copy
@@ -185,11 +231,24 @@ async function gatherPackage(applicationId) {
     groups,
     ordered,
     unavailable,
+    // Documents on this file's closing-prep groups that nobody has accepted yet.
+    // They are NOT attached (owner-directed 2026-08-03); the card says so, and a
+    // group that is empty ONLY because of them says that too, rather than reading
+    // as "the borrower never sent it".
+    awaiting,
     counts: Object.fromEntries(GROUP_KEYS.map((k) => [k, groups[k].length])),
     // Which of the owner's named document sets are EMPTY. Never a blocker — a
     // straight (non-assignment) purchase legitimately has no assignment — but the
     // sender is told before they send, and the email says so too.
-    missing: GROUPS.filter((g) => !groups[g.key].length).map((g) => ({ key: g.key, label: g.label })),
+    // `awaitingCount` separates the two very different reasons a group is empty:
+    // nobody ever sent it, or it is sitting on the file waiting to be accepted.
+    // The email says the same thing either way ("we will send it on this chain as
+    // soon as we have it" is true both times); the CARD must not, or the sender
+    // goes chasing a borrower for a document that is already in the building.
+    missing: GROUPS.filter((g) => !groups[g.key].length).map((g) => ({
+      key: g.key, label: g.label,
+      awaitingCount: awaiting.filter((a) => a.group === g.key).length,
+    })),
     // Whether the term sheet we hold is the fully executed one.
     termSheetExecuted: groups.term_sheet.some((d) => d.doc_kind === 'term_sheet_signed'),
   };
@@ -490,7 +549,7 @@ async function getClosingPrepData(applicationId) {
             a.loan_amount, a.purchase_price, a.is_assignment, a.underlying_contract_price,
             a.assignment_fee, a.as_is_value, a.arv, a.rehab_budget,
             a.expected_closing, a.est_closing_date,
-            a.loan_officer_id, a.processor_id, a.closer_id, a.llc_id,
+            a.loan_officer_id, a.processor_id, a.closer_id, a.llc_id, a.personal_name_purchase,
             NULLIF(TRIM(b.full_name),'') AS borrower_name, b.email AS borrower_email, b.cell_phone AS borrower_cell,
             NULLIF(TRIM(cb.full_name),'') AS co_borrower_name, cb.email AS co_borrower_email,
             l.llc_name AS entity_name, l.formation_state AS entity_state,
@@ -608,6 +667,15 @@ async function getClosingPrepData(applicationId) {
     entityName: a.entity_name || '',
     entityState: a.entity_state || null,
     hasEntity: !!a.llc_id,
+    /* HOW TITLE VESTS, IN WORDS. A personal-name purchase has no entity by
+       definition, so every "Vesting entity" line here used to be dropped and the
+       closing attorney was told nothing at all about vesting on exactly the
+       files where it is the unusual answer. One shared wording (lib/vesting-label)
+       so the tape, the file screen and this email can never describe the same
+       file differently. */
+    vestsIndividually: require('./vesting-label').isIndividual({
+      llcName: a.entity_name, llcId: a.llc_id, personalNamePurchase: a.personal_name_purchase,
+    }),
     // Prices, exactly as the owner asked: the gross price the borrower pays, and on
     // an assignment the underlying contract price, the fee, and the EFFECTIVE price
     // the loan is sized on.
@@ -735,7 +803,9 @@ function dealMeta(data) {
   add('Property type', [data.propertyType, data.units ? `${data.units} unit${data.units === 1 ? '' : 's'}` : null].filter(Boolean).join(' · '));
   add('Transaction', data.transactionType);
   add(data.borrowerCount > 1 ? `Borrowers (${data.borrowerCount})` : 'Borrower', data.borrowers.join(' & '));
-  add('Vesting entity', data.entityName ? [data.entityName, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ') : null);
+  add('Vesting', data.entityName
+    ? [data.entityName, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ')
+    : (data.vestsIndividually ? 'Closing as an individual — title in the borrower\u2019s own name, no entity' : null));
   if (data.isAssignment) {
     // On an assignment the attorney needs all three numbers to draft correctly.
     add('Underlying contract price', money(data.underlyingPrice));
@@ -805,11 +875,7 @@ function bodySections(data, pkg, attach, address) {
   // these as soon as we have them" — documents that will never exist, and an
   // implication the deal is entity-vested, on an email whose own deal block prints
   // no vesting entity at all. Same for an assignment group on a straight purchase.
-  const missing = (pkg.missing || []).filter((m) => {
-    if (m.key === 'assignment' && !data.isAssignment) return false;
-    if (m.key === 'llc' && !data.entityName) return false;
-    return true;
-  });
+  const missing = applicableMissing(pkg.missing, data);
   if (missing.length) {
     sections.push({
       title: 'Not yet on file',
@@ -944,7 +1010,18 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     officer: officerCard(data),
     files: attach ? attach.attachments.map((a) => a.filename) : [],
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;
@@ -960,8 +1037,11 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
 function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, files = [], senderName = '' } = {}) {
   const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
   return tpl.render({
-    // The SAME title as the order, so every part threads into the one conversation.
+    // The SAME title as the order, so every part threads into the one conversation — but
+    // the HEADLINE says this is a documents part, not a second "File ready for closing
+    // prep" (only part 1 headlines that).
     title: CLOSING_PREP_TITLE,
+    heading: `Closing prep documents — part ${part} of ${of}`,
     subjectTag: `${subjectTagFor(data)} · documents ${part} of ${of}`,
     kicker: `Documents ${part} of ${of}`,
     preheader: `Closing prep documents (${part} of ${of}) for ${data.propertyLine || 'the subject property'}`,
@@ -978,7 +1058,74 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
     officer: officerCard(data),
     files,
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     replyable: true,
+    audience: 'staff',
+  });
+}
+
+/**
+ * STAND DOWN — the cancellation that goes to outside counsel (owner-directed 2026-08-07).
+ *
+ * Cancelling used to be silent: the order row flipped to 'cancelled', every automatic update
+ * stopped, and the attorney — who had our package, our contacts and a term sheet — heard nothing.
+ * The worst version of that is the one the owner had already lived through by hand: a file sent to
+ * counsel by mistake, followed by an email typed from scratch asking them to ignore it.
+ *
+ * WHAT IT HAS TO BE UNMISTAKABLE ABOUT, in this order: stop work, do not draft from what we sent,
+ * and this is not a reflection on them. It rides the SAME chain as the original request (so it
+ * lands in the conversation they already have, under the same subject) and it deliberately does
+ * NOT repeat the deal block — restating the loan on a message telling somebody to drop it reads
+ * as a fresh instruction.
+ *
+ * The `reason` is optional and free text a human typed. It is rendered as the callout because on
+ * this one message the reason is the most useful thing on the page: "closing with RCN as a broker
+ * file" is what stops counsel chasing us about it.
+ */
+function buildCancelEmail(data, { reason = '', address = null, senderName = '' } = {}) {
+  const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+  const note = String(reason || '').trim();
+  return tpl.render({
+    // The SAME subject as the order, so this lands INSIDE the conversation it cancels rather than
+    // arriving as an unrelated email they have to connect up themselves. The headline is what
+    // differs, and it says the whole thing on its own.
+    title: CLOSING_PREP_TITLE,
+    heading: 'Please disregard — this file is no longer closing with you',
+    subjectTag: subjectTagFor(data),
+    kicker: 'Closing prep cancelled',
+    badge: { text: 'Cancelled', tone: 'action' },
+    preheader: `Please disregard the closing prep for ${data.propertyLine || 'this file'}`,
+    greeting: 'Hello,',
+    intro: 'We are standing this file down — please disregard the closing-prep request we sent on this chain '
+      + 'and stop any work in progress on it.',
+    lines: [
+      'Nothing further is needed from you, and you will not receive any more updates on this file from us '
+      + '— no executed term sheet, no closing-date changes, nothing.',
+      'Please do not draft from the documents we sent. If you have already started, let us know and we will '
+      + 'sort out anything outstanding.',
+      'If this file comes back to you we will send a fresh request on a new chain.',
+      '', signOff,
+    ],
+    meta: [
+      { label: 'Loan number', value: data.loanNumber || '(pending)' },
+      { label: 'Property', value: data.propertyLine || '—' },
+      { label: 'Borrower', value: data.borrowerName },
+    ],
+    callout: note ? { title: 'Why', body: note, tone: 'neutral' } : null,
+    officer: officerCard(data),
+    note: 'Reply to this email and it reaches the whole loan team.',
+    replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -987,7 +1134,10 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
 function buildFollowupEmail(data, { note = '', address = null, senderName = '' } = {}) {
   const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
   return tpl.render({
+    // Threads on the chain subject; the headline says it is a follow-up, not a repeat of
+    // the original "File ready for closing prep".
     title: CLOSING_PREP_TITLE,
+    heading: 'Following up on this closing',
     subjectTag: subjectTagFor(data),
     kicker: 'Closing prep',
     preheader: `Following up on closing prep for ${data.propertyLine}`,
@@ -1003,7 +1153,15 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
     callout: chainCallout(address),
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1031,6 +1189,10 @@ function isSizeSkip(reason) { return SIZE_SKIP_REASONS.has(String(reason || ''))
 const AUTO_EVENTS = {
   executed_term_sheet: {
     kicker: 'Executed term sheet',
+    // The big headline says what THIS email is about — not "File ready for closing prep"
+    // (that is the first email's headline only). The subject stays the chain's, so the
+    // message threads; only the H1 changes (owner-directed 2026-08-05).
+    heading: 'Final term sheet is ready',
     // NEVER claim an attachment that is not there, and never claim a REASON that is
     // not the real one. The executed copy can legitimately be withheld — a 4 MB signed
     // package against the Microsoft Graph budget is skipped, not attached — and saying
@@ -1050,11 +1212,13 @@ const AUTO_EVENTS = {
   },
   closing_date: {
     kicker: 'Closing date',
+    heading: 'Estimated closing date on this file changed',
     intro: (d, x) => `The expected closing date for this file is now ${dayText(x.date) || 'updated'}. `
       + `Please let us know right away if that does not work on your end or if anything is outstanding for it.`,
   },
   clear_to_close: {
     kicker: 'Clear to close',
+    heading: 'This file is clear to close',
     intro: (d, x) => `This file is CLEAR TO CLOSE. `
       + `Everything on our side is signed off${x && x.closingDate ? `, and the expected closing date is ${dayText(x.closingDate)}` : ''}. `
       + `Please proceed with the closing package and send us the settlement statement and the closing documents for review when they are ready.`,
@@ -1071,6 +1235,7 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     { label: 'Borrower', value: data.borrowerName },
   ];
   if (data.entityName) meta.push({ label: 'Vesting entity', value: data.entityName });
+  else if (data.vestsIndividually) meta.push({ label: 'Vesting', value: 'Closing as an individual (no entity)' });
   if (eventKind === 'clear_to_close' || eventKind === 'closing_date') {
     const d = dayText(extra.date || extra.closingDate || data.expectedClosing);
     if (d) meta.push({ label: 'Expected closing', value: d });
@@ -1081,8 +1246,12 @@ function buildAutoEmail(eventKind, data, extra = {}) {
   }
   return tpl.render({
     // The SAME title as the order, so the whole chain shares one subject — the
-    // fallback every mail client threads on when a Message-ID is rewritten.
+    // fallback every mail client threads on when a Message-ID is rewritten. The visible
+    // HEADLINE (H1), though, is per-event: only the FIRST email headlines "File ready for
+    // closing prep"; a later update on the chain says what IT is about (owner-directed
+    // 2026-08-05). The subject is untouched, so threading is untouched.
     title: CLOSING_PREP_TITLE,
+    heading: spec.heading || CLOSING_PREP_TITLE,
     subjectTag: subjectTagFor(data),
     kicker: spec.kicker,
     preheader: `${spec.kicker} — ${data.propertyLine || 'closing update'}`,
@@ -1094,7 +1263,15 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     callout: extra.address ? chainCallout(extra.address) : null,
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1393,6 +1570,51 @@ async function markCarriedByOrder(applicationId, thread, pkg) {
   }
 }
 
+/**
+ * ADDRESSES THAT MAY NEVER BE ADDED TO A CLOSING CHAIN, whoever puts them on it.
+ *
+ * `thread-participants` keeps the people the OTHER SIDE looped in (owner-directed
+ * 2026-08-07, extremely important). Two sets of addresses are carved out of that,
+ * because both are HARD RULES of this desk and a vendor's Cc must not be able to
+ * rewrite either:
+ *
+ *  · THE BORROWER (and co-borrower). This chain carries lender-to-counsel
+ *    correspondence — pricing, the whole entity file. `routes/staff.js` documents
+ *    leaking it to the borrower as the exact trap the closing reply branch exists to
+ *    prevent; a party who CC's the borrower once must not make that policy.
+ *  · THE INSURANCE CONTACT. "The insurance contact is never included" — not as a
+ *    recipient, not in the body — and `getClosingPrepData` excludes them in SQL,
+ *    testing BOTH the directory row's type AND the per-file link's own copy. This
+ *    reads them the same way, so it can never be looser than that exclusion.
+ *
+ * Best-effort: an unreadable list returns [] and the caller still sends. A missed
+ * carve-out is caught by the caller's own base list (we never ADD the borrower), so
+ * failing open here cannot leak — it can only fail to suppress a vendor's own Cc.
+ */
+async function neverLoopIn(applicationId) {
+  const out = [];
+  try {
+    const r = await db.query(
+      `SELECT b.email AS borrower_email, cb.email AS co_email
+         FROM applications a
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id = $1`, [applicationId]);
+    if (r.rows[0]) { out.push(r.rows[0].borrower_email, r.rows[0].co_email); }
+  } catch (_) { /* best-effort */ }
+  try {
+    const r = await db.query(
+      `SELECT sc.email
+         FROM application_service_contacts l
+         JOIN service_contacts sc ON sc.id = l.service_contact_id
+        WHERE l.application_id = $1
+          AND (sc.contact_type = ANY($2::text[]) OR COALESCE(l.contact_type,'') = ANY($2::text[]))`,
+      [applicationId, NEVER_SHARE_CONTACT_TYPES]);
+    for (const x of r.rows) out.push(x.email);
+  } catch (_) { /* best-effort */ }
+  return out.filter(Boolean).map((e) => String(e).trim().toLowerCase());
+}
+
 /** The To/Cc the chain was last sent to. */
 async function lastRecipients(threadId) {
   try {
@@ -1432,6 +1654,12 @@ async function retireClosedOrdersOnce({ limit = 500 } = {}) {
     const r = await db.query(
       `UPDATE file_orders o
           SET status = 'completed', updated_at = now(),
+              -- STAMPED LIKE ITS TWO SIBLINGS. order-tracking.completeOrder writes
+              -- completed_at and a timeline line when it retires a title or
+              -- insurance order; this wrote neither, so a finished attorney order
+              -- had a null finish date on the tracking strip and a timeline that
+              -- simply stopped after the last human action. Same fact, same record.
+              completed_at = COALESCE(o.completed_at, now()),
               -- ONCE PER ORDER. A human who deliberately REOPENS a retired order on a
               -- funded file (there is still work with counsel — a payoff letter, the
               -- recorded mortgage) must not watch a sweep close it again half an hour
@@ -1458,8 +1686,21 @@ async function retireClosedOrdersOnce({ limit = 500 } = {}) {
              -- order instead of re-picking an arbitrary slice each tick.
              ORDER BY o2.updated_at ASC, o2.id ASC
              LIMIT ${Math.min(2000, Math.max(1, Number(limit) || 500))})
-      RETURNING o.application_id`);
+      RETURNING o.id, o.application_id, a.status AS file_status`);
     if (r.rows.length) console.log(`[closing-prep] retired ${r.rows.length} attorney order(s) on files whose deal is over`);
+    // The timeline line, best-effort and AFTER the status write — the retirement
+    // is the fact; failing to describe it must never roll one back or throw out of
+    // a boot sweep. `reason` states what actually ended the deal rather than
+    // assuming it funded (this sweep fires on declined and withdrawn files too).
+    for (const row of r.rows) {
+      try {
+        await require('./order-tracking').recordEvent({
+          applicationId: row.application_id, orderType: 'attorney', kind: 'completed',
+          orderId: row.id, actorId: null,
+          detail: { reason: row.file_status === 'funded' ? 'the loan funded' : `the file was ${row.file_status}` },
+        });
+      } catch (_) { /* best effort */ }
+    }
     return r.rows.length;
   } catch (e) {
     console.error('[closing-prep] could not retire closed attorney orders:', (e && e.message) || e);
@@ -1471,11 +1712,11 @@ module.exports = {
   GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS, DEAD_DEAL_STATUSES, DEAD_DEAL_SQL,
   retireClosedOrdersOnce,
   SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES, CONTACT_LABEL, CLOSING_PREP_TITLE,
-  gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
+  gatherPackage, applicableMissing, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
   attachBudgetRawBytes, maxParts, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
-  buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail,
-  announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
+  buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail, buildCancelEmail,
+  announce, lastRecipients, neverLoopIn, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
   isSizeSkip,

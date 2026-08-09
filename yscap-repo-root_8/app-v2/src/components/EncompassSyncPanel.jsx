@@ -19,6 +19,7 @@ import { useAuth } from '../lib/auth.jsx';
 const LABELS = {
   ys_loan_number: 'Loan number', property_type: 'Property type', units: '# of units',
   deal_type: 'Deal / project type', exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)',
+  vesting_title_role: 'Vesting title role (Officer / Individual · field 4008)',
   vesting_llc: 'Subject LLC / vesting', capital_provider: 'Note buyer / capital provider',
   // Borrower + co-borrower identity + subject address
   id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
@@ -102,7 +103,7 @@ function statusOf(f) {
   // NOT APPLICABLE — this field can't exist on this kind of loan (an exit plan on a
   // bridge / ground-up deal). There is nothing to go and enter, and the section does
   // NOT wait on it, so it must not look like an attention-needed "no data" row.
-  if (f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined)) {
+  if (f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) {
     return { fg: V.muted, bg: V.paper, text: "Doesn't apply to this loan" };
   }
   if (f.status === 'incomparable') return { fg: V.amber, bg: V.amberBg, text: 'No data to compare' };
@@ -442,7 +443,7 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
   const s = statusOf(f);
   const canReplace = withActions && f.writable && f.status === 'mismatch' && f.open && f.theirs != null && f.theirs !== '';
   // "Doesn't apply to this loan" fields never block, so they are not escalatable.
-  const naDoesntApply = f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined);
+  const naDoesntApply = f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '');
   const isBlocking = !f.excepted && (f.status === 'mismatch' || (f.status === 'incomparable' && !naDoesntApply));
   const rowBusy = busy === f.key;
   const outBtn = (color) => ({ fontSize: 11, fontWeight: 700, color, background: 'transparent', border: `1px solid ${color}66`, borderRadius: 7, padding: '4px 9px', cursor: rowBusy ? 'default' : 'pointer', whiteSpace: 'nowrap' });

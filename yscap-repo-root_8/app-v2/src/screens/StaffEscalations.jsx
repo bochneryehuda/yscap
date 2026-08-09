@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { fmtRatePct } from '../lib/rateFormat.js';
 
 /* Manual Program admin + the super-admin ESCALATION box (owner-directed
  * 2026-07-20; page redesign 2026-07-26).
@@ -11,8 +12,9 @@ import { fullNameOf } from '../lib/personName.js';
  * ceilings and the REQUIRED default months of assets/liquidity a manual product
  * must show. A manual product is created when a staffer overrides the deal
  * structure (LTV/LTC/ARV) in the Term Sheet Studio — it prices on the Standard
- * (Fidelis) guidelines but carries the manual leverage and ALWAYS requires the
- * flood certificate.
+ * Program guidelines but carries the manual leverage and ALWAYS requires the
+ * flood certificate. (No capital-partner name here: this file compiles into the
+ * one portal bundle every visitor downloads.)
  *
  * BOTTOM — the escalation box: a registration that needs sign-off lands
  * immediately but waits here to be approved or declined. Three kinds arrive
@@ -237,7 +239,7 @@ export default function StaffEscalations() {
             <span className="ic"><Icon name="info" /></span>
             <div>
               A manual product is created when someone overrides the LTV, LTC or ARV in the studio. It follows the
-              Standard (Fidelis) guidelines for everything else, always requires the flood certificate, and must be
+              Standard Program guidelines for everything else, always requires the flood certificate, and must be
               approved below. Set how many months of assets/liquidity a manual product requires before it can be
               registered — this can be raised per file at registration.
             </div>
@@ -377,7 +379,7 @@ export default function StaffEscalations() {
                 <div className="esc-row-sub">
                   {kindLabel}
                   {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
-                  {s.noteRate != null ? ` @ ${(Number(s.noteRate) * 100).toFixed(2)}%` : ''}
+                  {s.noteRate != null ? ` @ ${fmtRatePct(s.noteRate)}%` : ''}
                   {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
                   {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
                 </div>
@@ -440,7 +442,7 @@ export default function StaffEscalations() {
                         {ct.maxAcqLtv != null && <span>as-is LTV {(ct.maxAcqLtv * 100).toFixed(2)}% · </span>}
                         {ct.maxArvLtv != null && <span>ARV LTV {(ct.maxArvLtv * 100).toFixed(2)}% · </span>}
                         {ct.maxLtc    != null && <span>LTC {(ct.maxLtc * 100).toFixed(2)}% · </span>}
-                        {ct.noteRate  != null && <span>rate {(ct.noteRate * 100).toFixed(2)}% · </span>}
+                        {ct.noteRate  != null && <span>rate {fmtRatePct(ct.noteRate)}% · </span>}
                         {ct.origPct   != null && <span>origination {(ct.origPct * 100).toFixed(2)}% · </span>}
                         {ct.loanAmount != null && <span>loan {money(ct.loanAmount)} · </span>}
                       </div>

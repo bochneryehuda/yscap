@@ -33,9 +33,24 @@ const { CO_CREDIT_MARKER } = require('./co-condition');
  * Which borrowers a credit condition covers, and whether each has a complete
  * (report + filed PDF) import. Mirrors staff.js signOffGate's isCredit need[].
  *
- * @returns {Promise<{need:string[], unmetReport:string[], unmetPdf:string[], complete:boolean}>}
+ * `itemId` is optional but SHOULD be passed: it is what lets this read the
+ * condition's credit-import WAIVER (owner-directed 2026-08-03 — a current report
+ * obtained elsewhere, accepted on the condition, with an admin-approved
+ * exception). The gate short-circuits on exactly the same predicate, so passing
+ * the item is what keeps "may this be signed off?" and "does PILOT think it is
+ * complete?" from disagreeing — a PILOT badge reading "not ready" on a condition
+ * the gate will happily clear is the one thing this must never do. Without an
+ * item there is no waiver to find and the strict import rule is reported, which
+ * is the safe answer.
+ *
+ * @returns {Promise<{need:string[], unmetReport:string[], unmetPdf:string[], complete:boolean, waived:boolean}>}
  */
-async function creditCompleteness(client, appId, fieldKey) {
+async function creditCompleteness(client, appId, fieldKey, itemId) {
+  // An APPROVED waiver with an accepted report on the condition IS completeness
+  // for this condition — there is no import to wait for, by an admin's decision.
+  if (itemId && await require('./waiver').creditWaiverActive(itemId, client)) {
+    return { need: [], unmetReport: [], unmetPdf: [], complete: true, waived: true };
+  }
   const af = (await client.query(
     'SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [appId])).rows[0] || {};
 
@@ -82,7 +97,7 @@ async function creditCompleteness(client, appId, fieldKey) {
   }
 
   const complete = need.length > 0 && unmetReport.length === 0 && unmetPdf.length === 0;
-  return { need: need.map(String), unmetReport, unmetPdf, complete };
+  return { need: need.map(String), unmetReport, unmetPdf, complete, waived: false };
 }
 
 /**
@@ -107,14 +122,20 @@ async function maybeAutoSatisfyCredit(client, appId, itemId, fieldKey) {
     if (!item) { out.reason = 'not_credit_condition'; return out; }
     if (item.status === 'satisfied' && item.signed_off_at) { out.reason = 'already_satisfied'; return out; }
 
-    const c = await creditCompleteness(client, appId, item.field_key || fieldKey);
+    const c = await creditCompleteness(client, appId, item.field_key || fieldKey, itemId);
     out.complete = c.complete;
+    out.waived = !!c.waived;
     if (!c.complete) { out.reason = 'incomplete'; return out; }
 
     // Clear it as a SYSTEM sign-off: signed_off_by stays NULL (we never fake a
     // human's name on the file), status=satisfied, an [auto] note that a later
-    // sync will not clobber a hand-typed note over.
-    const note = '[auto] Credit report imported for every borrower on the file (report + PDF on file) — condition cleared.';
+    // sync will not clobber a hand-typed note over. The note says WHICH of the two
+    // ways it cleared — an import, or an approved waiver on a report obtained
+    // elsewhere — because a file that never had a report pulled must never read
+    // as though one was.
+    const note = c.waived
+      ? '[auto] Credit report accepted from another source with an APPROVED exception (no credit was imported here) — condition cleared.'
+      : '[auto] Credit report imported for every borrower on the file (report + PDF on file) — condition cleared.';
     await client.query(
       `UPDATE checklist_items
           SET status='satisfied', signed_off_at=now(), signed_off_by=NULL,

@@ -42,8 +42,13 @@ const { classifyReturnAttachment } = require('./order-return-filter');
 
 const DOC_KIND = 'closing_correspondence';
 // A closing chain genuinely carries big multi-document sends (a full draft package),
-// so this is higher than the Orders desk's 20 — but still bounded.
-const MAX_DOCS_PER_EMAIL = 30;
+// so this is bounded but generous. IT MUST NOT BE BELOW the inbound RETRIEVAL cap
+// (file-inbox.MAX_ATTACH_COUNT): retrieval reports whatever it drops (droppedByCap →
+// "N could not be filed"), but a slice HERE below that number would truncate SILENTLY —
+// re-introducing the very "documents lost with no sign" failure this module exists to
+// prevent. Kept equal to the retrieval cap so retrieval is the single, reported bound
+// (guarded by scripts/test-inbound-attachment-cap.js).
+const MAX_DOCS_PER_EMAIL = 60;
 
 /**
  * IS THIS EXACT DOCUMENT ALREADY ON THIS FILE'S CLOSING CORRESPONDENCE?
@@ -174,6 +179,15 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
          a.contentType || 'application/octet-stream', buf.length, provider, ref, DOC_KIND, sha256 || null]);
       saved += 1;
       names.push(String(a.filename));
+      // An appraisal data file forwarded onto the closing chain feeds the warehouse
+      // like any other (db/462) — warehouse-only, fire-and-forget, and it can neither
+      // affect the chain nor fail this filing.
+      try {
+        require('./research/xml-catch').fireCatch({
+          bytes: buf, filename: a.filename, contentType: a.contentType,
+          why: 'a closing-chain email',
+        });
+      } catch (_) { /* never let the warehouse touch the closing chain */ }
     } catch (e) {
       // A storage or DB failure IS transient and IS recoverable — but only if
       // somebody knows, AND only if the caller is allowed to try again. Swallowed and
@@ -199,6 +213,14 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
         `UPDATE file_orders SET status='documents_in', updated_at=now()
           WHERE application_id=$1 AND order_type='attorney' AND status IN ('ordered','documents_in')`,
         [applicationId]);
+      // AND STAMP THAT THE ATTORNEY ANSWERED, exactly as order-inbox does for a
+      // title or insurance vendor. Nothing on the live path wrote this column for
+      // the attorney order — only db/457's boot back-fill did — so an order
+      // finished and then reopened before the next deploy went back to 'ordered'
+      // and the overdue nudge told the team "we asked the closing attorney N days
+      // ago and nothing has come back" about documents already on the file.
+      // Fill-only and gated on an active status, so it is safe to call every time.
+      await require('./order-tracking').noteFirstResponse(applicationId, 'attorney');
     } catch (_) { /* best-effort — the documents are filed either way */ }
     // IN-APP ONLY. The chain email itself already forwards to every assignee through
     // the normal inbound path, so emailing again about the same message would be the
@@ -214,7 +236,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
           + `They are saved in the file's Closing correspondence.`,
         applicationId,
         subjectTag: ctx ? ctx.subjectTag : '',
-        link: `/internal/app/${applicationId}#sec-orders`,
+        link: `/internal/app/${applicationId}#sec-order-closing`,
         ctaLabel: 'Open the closing chain',
         inAppOnly: true,
       });

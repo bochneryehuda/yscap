@@ -94,48 +94,53 @@ async function main() {
     await db.query(`INSERT INTO checklist_items (id,application_id,label,item_kind,audience,status,tpr_exclude,scope)
                     VALUES ($1,$2,'ISKA','document','staff','received',true,'application')`, [ISKA_CI, APP]);
 
-    const dFraud = await doc('fraud-report.pdf', { application_id: APP, borrower_id: B, checklist_item_id: FRAUD_CI, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
+    const dFraud = await doc('fraud-report.pdf', { application_id: APP, borrower_id: B, checklist_item_id: FRAUD_CI, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
     const dAccepted = await doc('accepted-borrower.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'borrower' });
-    const dLoose = await doc('loose-pending.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'staff_only' });
+    const dLoose = await doc('loose-accepted.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'staff_only' });
     const dRejected = await doc('rejected.pdf', { application_id: APP, borrower_id: B, review_status: 'rejected', is_current: true, source_type: 'staff_upload' });
     const dSuperseded = await doc('superseded.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: false, source_type: 'staff_upload' });
-    const dChat = await doc('chat.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'chat_attachment' });
-    const dIska = await doc('iska.pdf', { application_id: APP, borrower_id: B, checklist_item_id: ISKA_CI, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dVesting = await doc('vesting-llc.pdf', { llc_id: LLC, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dOwnerLlc = await doc('owner-llc.pdf', { llc_id: OWNER_LLC, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dProfile = await doc('photo-id.pdf', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dCoProfile = await doc('co-photo-id.pdf', { borrower_id: CB, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dPriorZip = await doc('TPR_old.zip', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'tpr_export', visibility: 'internal' });
+    const dChat = await doc('chat.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'chat_attachment' });
+    const dIska = await doc('iska.pdf', { application_id: APP, borrower_id: B, checklist_item_id: ISKA_CI, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dVesting = await doc('vesting-llc.pdf', { llc_id: LLC, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dOwnerLlc = await doc('owner-llc.pdf', { llc_id: OWNER_LLC, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dProfile = await doc('photo-id.pdf', { borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dCoProfile = await doc('co-photo-id.pdf', { borrower_id: CB, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dPriorZip = await doc('TPR_old.zip', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'tpr_export', visibility: 'internal' });
+    // The draw-packet Excel is a staff-only construction-draw financials artifact —
+    // it mirrors to SharePoint but must NEVER ship in the investor TPR data-tape
+    // (nor, via the shared selector, the closing-attorney package). doc_kind is in
+    // the NOT-IN exclusion in step with sharepoint-backup.isRegenKind.
+    const dDrawPacket = await doc('pilot-draw-1-packet-YS123-abcdef012345.xlsx', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'draw_packet', visibility: 'staff_only', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     // Scope-of-Work tool exports (branded PDF + Excel + HTML). The main selection
     // drops every '*_export' kind; the PDF + Excel must nonetheless land in the
     // Scope of Work folder, and the HTML must NOT ship (owner-directed 2026-07-30).
-    const dSowPdf = await doc('62 Highland SOW.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/pdf' });
-    const dSowXls = await doc('62 Highland SOW.xlsx', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const dSowHtml = await doc('62 Highland SOW.html', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'text/html' });
-    const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
-    const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
+    const dSowPdf = await doc('62 Highland SOW.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/pdf' });
+    const dSowXls = await doc('62 Highland SOW.xlsx', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const dSowHtml = await doc('62 Highland SOW.html', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'text/html' });
+    const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
+    const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
 
     // ISKA HARD FREEZE — three independent guards. None of these may ship.
-    const dIskaSigned = await doc('signed-document.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska_signed' });
-    const dIskaGen = await doc('Heter Iska.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska' });
-    const dEsignCert = await doc('completion-certificate.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'esign_certificate' });
-    const dLooseIska = await doc('iska copy.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    const dIskaSigned = await doc('signed-document.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska_signed' });
+    const dIskaGen = await doc('Heter Iska.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska' });
+    const dEsignCert = await doc('completion-certificate.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', doc_kind: 'esign_certificate' });
+    const dLooseIska = await doc('iska copy.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
     // Word-boundary guard must NOT over-exclude: "Mariska" contains "iska" mid-word.
-    const dMariska = await doc('Mariska Bank Statement.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    const dMariska = await doc('Mariska Bank Statement.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
 
     // A >30-day-old loose doc and profile doc must STILL ship — the CoGS
     // 30-day exclusion has a NULL template_id (audit finding: it dropped every
     // old loose/profile doc). Age these two rows past the window.
-    const dOldLoose = await doc('old-loose.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
-    const dOldProfile = await doc('old-photo-id.pdf', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    const dOldLoose = await doc('old-loose.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
+    const dOldProfile = await doc('old-photo-id.pdf', { borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
     await db.query(`UPDATE documents SET created_at = now() - interval '45 days' WHERE id=ANY($1::uuid[])`, [[dOldLoose, dOldProfile]]);
 
     const got = new Set((await tpr.selectTprDocuments(APP)).map(d => d.id));
     ok(got.has(dOldLoose), 'INCLUDED: 45-day-old loose doc (CoGS window must not drop NULL-template docs)');
     ok(got.has(dOldProfile), 'INCLUDED: 45-day-old profile doc (photo ID)');
-    ok(got.has(dFraud), 'INCLUDED: fraud report (internal condition, pending review)');
+    ok(got.has(dFraud), 'INCLUDED: fraud report (internal condition, accepted)');
     ok(got.has(dAccepted), 'INCLUDED: accepted borrower-condition doc');
-    ok(got.has(dLoose), 'INCLUDED: loose staff attachment (no condition, pending)');
+    ok(got.has(dLoose), 'INCLUDED: loose staff attachment (no condition)');
     ok(got.has(dVesting), 'INCLUDED: vesting LLC doc');
     ok(got.has(dOwnerLlc), 'INCLUDED: LAYERED owning-entity LLC doc');
     ok(got.has(dProfile), 'INCLUDED: borrower profile doc (photo ID)');
@@ -145,6 +150,7 @@ async function main() {
     ok(!got.has(dChat), 'excluded: chat attachment');
     ok(!got.has(dIska), 'excluded: tpr_exclude item doc (ISKA stays out)');
     ok(!got.has(dPriorZip), 'excluded: prior TPR export zip (no recursion)');
+    ok(!got.has(dDrawPacket), 'excluded: draw-packet Excel (staff-only draw financials never ship to the investor)');
     ok(!got.has(dTrSnap), 'excluded: autosaved track-record snapshot artifact');
     ok(!got.has(dTrDoc), 'excluded from subject set: track-record doc (ships via track section)');
     ok(!got.has(dIskaSigned), 'FREEZE: signed Heter Iska excluded (doc_kind heter_iska_signed)');
@@ -153,8 +159,31 @@ async function main() {
     ok(!got.has(dLooseIska), 'FREEZE: loose file named "iska" excluded (filename word-boundary guard)');
     ok(got.has(dMariska), 'NOT over-excluded: "Mariska…" contains "iska" mid-word but ships');
 
+    /* ─── THE ACCEPTANCE RULE (owner-directed 2026-08-03) ────────────────────
+       Until this, EVERY fixture above was 'pending' and every one of them
+       shipped: the selector asked `<> 'rejected'`, which means "nobody threw
+       this away", and it was taken for "somebody checked this". That is how an
+       insurance condition's PREVIOUS-policy paperwork rode into a note-buyer
+       package and into an email to an outside law firm. So the fixtures are now
+       ACCEPTED — including the ones excluded for other reasons, so the Heter
+       Iska freeze and the chat/regen guards are still genuinely exercised — and
+       these two assertions pin the new rule itself. */
+    const dWaiting = await doc('waiting-for-review.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    const afterWaiting = new Set((await tpr.selectTprDocuments(APP)).map(d => d.id));
+    ok(!afterWaiting.has(dWaiting), 'excluded: a document nobody has ACCEPTED yet (the reported bug)');
+    const heldBack = (await tpr.selectTprPending(APP)).map(d => d.id);
+    ok(heldBack.includes(dWaiting), 'and it is REPORTED as held back — never silently dropped');
+    ok(!heldBack.includes(dRejected), 'a rejected document is decided, not "waiting"');
+    await db.query('DELETE FROM documents WHERE id=$1', [dWaiting]);
+
     const trGot = (await tpr.selectTrackRecordDocs([TR])).map(d => d.id);
     ok(trGot.includes(dTrDoc), 'track section INCLUDES the line-item doc (even internal visibility)');
+    const dTrWaiting = await doc('tr-waiting.pdf', { borrower_id: B, track_record_id: TR, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    ok(!(await tpr.selectTrackRecordDocs([TR])).some(d => d.id === dTrWaiting),
+      'a prior-project document nobody accepted is not evidence the investor is handed');
+    ok((await tpr.selectTrackRecordPending([TR])).some(d => d.id === dTrWaiting),
+      'and the REO half reports its held-back documents too');
+    await db.query('DELETE FROM documents WHERE id=$1', [dTrWaiting]);
 
     // Scope-of-Work exports: the branded PDF + Excel are pulled DIRECTLY (the shared
     // selection drops every '*_export'); the HTML is present but must be filtered.

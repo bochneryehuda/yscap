@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 import { PURPOSE } from '../lib/esign.js';
 
 /* Borrower "Sign now" card (owner-directed: the borrower gets an email AND can
@@ -30,6 +31,7 @@ function Tracker({ pkg }) {
 }
 
 export default function EsignBorrowerCard({ appId }) {
+  const { isAssistant } = useAuth();
   const [packages, setPackages] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
@@ -86,7 +88,12 @@ export default function EsignBorrowerCard({ appId }) {
               {p.yourStatus === 'completed' && <span className="pill ok">Fully signed</span>}
             </div>
             <Tracker pkg={p} />
-            {p.yourStatus === 'sign_now' && (
+            {p.yourStatus === 'sign_now' && isAssistant && (
+              <p className="muted small" style={{ margin: '4px 0 0' }}>
+                This is ready for the borrower’s signature. Signing can only be done by the borrower from their own login.
+              </p>
+            )}
+            {p.yourStatus === 'sign_now' && !isAssistant && (
               <>
                 <p className="muted small" style={{ margin: '4px 0 10px' }}>
                   Review and sign right here — or use the DocuSign email we sent you. You can sign from your phone.

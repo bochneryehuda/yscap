@@ -1,10 +1,13 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { fmtDate } from '../lib/dates.js';
 // Severity words + colours: ONE shared map. Three screens each kept a private copy
 // and had already drifted — this one said "Fatal" for the same finding the
 // escalations screen called something else. See lib/findings-vocab.js.
 import { FINDING_SEVERITY as SEV, severityCount } from '../lib/findings-vocab.js';
+import { uadWords } from '../lib/uadWords.js';
+import VariancePanel from './VariancePanel.jsx';
 
 /* The PILOT property report. Imports the appraisal XML (staff), renders the property profile
    built from it — hero + value story, photo gallery, collateral snapshot, comparable sales — and
@@ -178,7 +181,7 @@ function Finding({ appId, f, onChange, readOnly }) {
   const act = async (action, value) => {
     setBusy(true);
     try { await api.appraisalResolveFinding(appId, f.id, { action, value, note: '' }); onChange && onChange(); }
-    catch (e) { alert(e.message || 'Could not resolve'); }
+    catch (e) { showMessage(e.message || 'Could not resolve'); }
     finally { setBusy(false); }
   };
   const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units'].includes(f.field);
@@ -464,6 +467,9 @@ function human(v) {
     .replace(/(\d+)\s*Percent/i, '$1%').replace(/Percent/i, '%')
     .trim();
 }
+// A stored View/Location value is sometimes still the appraisal's raw UAD cell.
+// The rule, and why the row stays rather than printing it, is in `lib/uadWords`.
+const said = (rating, type) => uadWords(rating, type, human);
 const chip = (label, tone) => (
   <span key={label} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, padding: '2px 9px', borderRadius: 999, marginRight: 6, marginBottom: 6,
     background: tone === 'bad' ? 'rgba(180,72,60,.10)' : tone === 'warn' ? 'rgba(174,135,70,.12)' : tone === 'good' ? 'rgba(63,122,91,.10)' : 'var(--paper,#F6F3EC)',
@@ -767,7 +773,7 @@ function SourceDocs({ a }) {
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (e) { alert(e.message || 'Could not open the document'); }
+    } catch (e) { showMessage(e.message || 'Could not open the document'); }
     finally { setBusy(''); }
   };
   const docs = [];
@@ -792,6 +798,67 @@ function SourceDocs({ a }) {
 
 // One comparable-sales row with an expandable adjustment breakdown (the itemized grid the
 // appraiser applied). `adjustments` is the jsonb list stored at import.
+// WHERE A COMPARABLE'S TYPE AND UNIT COUNT CAME FROM. A MISMO sales grid has no
+// element for either, so this is never "the report says so" by default — and a
+// reviewer deciding whether to trust "1 unit" on a row needs to know whether an
+// appraiser wrote it down or we worked it out. The server decides (see
+// research/comp-identity); this only words it.
+// EVERY VALUE THE SERVER CAN EMIT NEEDS A LINE HERE. `comp-identity.js` also
+// emits the bare `'stated'`, which was missing — so it rendered as the naked
+// word "stated", and inside a compound as "…, and stated".
+const IDENTITY_SOURCE = {
+  subject: 'the report states it for the subject',
+  stated: 'stated on the report',
+  grid: "stated on the appraiser's own grid",
+  form: 'the report form only compares this kind of dwelling',
+  style: 'read from the design style stated',
+  price: 'read from the per-unit pricing stated',
+  records: 'from our own records for this address, not from this report',
+};
+// A PLAIN OBJECT ANSWERS `__proto__` AND `constructor` WITH SOMETHING TRUTHY,
+// which a template literal then renders as "[object Object]". Not reachable from
+// any value the server sends today, and one `hasOwn` is cheaper than relying on
+// that staying true.
+const identityPhrase = (k) => (Object.prototype.hasOwnProperty.call(IDENTITY_SOURCE, k)
+  ? IDENTITY_SOURCE[k] : null);
+// The two facts, in the words used everywhere else in the system, with an
+// unknown SAYING SO — a blank reads as "ordinary", which is the misreading the
+// owner's first requirement exists to prevent.
+function identityLines(c) {
+  const units = c.units != null && c.units !== '' ? Number(c.units) : null;
+  return {
+    type: c.property_type || 'type not stated',
+    units: units != null ? `${units} unit${units === 1 ? '' : 's'}` : 'units not stated',
+    // EACH FACT COLOURS ITSELF. Reddening the whole cell when only one is
+    // missing says the appraiser stated neither, on a row where they plainly
+    // stated one — a real case in the corpus (a 1025 comparable that names the
+    // building type and never counts the doors).
+    typeUnknown: !c.property_type,
+    unitsUnknown: units == null,
+    where: sourceWords(c.identity_source),
+  };
+}
+// A COMPOUND SOURCE STILL HAS TO RENDER, and the row must never vanish because
+// of one. When a comparable's TYPE and COUNT come from two different places the
+// server says so as `"form + records"` — honest, and unknown to the six-key map
+// above, so `IDENTITY_SOURCE[…] || null` returned null and the `ident.where &&`
+// gate below DELETED the whole "Type / units" row. That is the owner's first
+// requirement being erased by the change written to protect it: before, the row
+// read "Multi 2–4 · 3 units — from our own records for this address"; after, it
+// read nothing at all. Split, word each half, and fall back to the raw string
+// rather than to nothing — a source we cannot phrase is still a source.
+function sourceWords(src) {
+  if (!src) return null;
+  const one = identityPhrase(src);
+  if (one) return one;
+  const parts = String(src).split('+').map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 2) return String(src);
+  const said = parts.map((p) => identityPhrase(p) || p);
+  // Two items join with a plain "and" — "A, and B" reads as a truncated list.
+  if (said.length === 2) return `${said[0]} and ${said[1]}`;
+  return `${said.slice(0, -1).join(', ')}, and ${said[said.length - 1]}`;
+}
+
 function CompRow({ c }) {
   const [open, setOpen] = useState(false);
   const adj = Array.isArray(c.adjustments) ? c.adjustments : (() => { try { return JSON.parse(c.adjustments || '[]'); } catch { return []; } })();
@@ -800,9 +867,23 @@ function CompRow({ c }) {
   const distress = c.sale_type && c.sale_type !== 'ArmsLengthSale' ? ({ REOSale: 'REO', EstateSale: 'Estate', ShortSale: 'Short', Listing: 'Listing', CourtOrderedSale: 'Court' }[c.sale_type] || null) : null;
   // Round-6 comp facts (view/location UAD ratings, basement, data source). The row expands when it
   // has adjustments OR any of these facts.
+  const ident = identityLines(c);
   const compFacts = [
-    c.view_rating && ['View', c.view_rating],
-    (c.location_rating || c.location_type) && ['Location', [c.location_rating, c.location_type ? human(c.location_type) : null].filter(Boolean).join(' · ')],
+    // THE ROW IS NEVER GATED ON THE SOURCE. `ident.where &&` deleted it exactly
+    // when a comparable stated NEITHER fact — `identity_source` is null only
+    // when there was nothing to read — which is precisely the row where the
+    // owner's first requirement bites: "there shouldn't be a possibility that
+    // you should see a comparable that doesn't have how many units it is and
+    // what property type it is". `identityLines` always produces words, and an
+    // unknown SAYING SO is the whole point; only the source clause is optional.
+    ['Type / units', `${ident.type} · ${ident.units}${ident.where ? ` — ${ident.where}` : ''}`],
+    // THE THING AND THE VERDICT, like Location on the next line. This showed the
+    // RATING only — so of 769 corpus comparables, all 769 carry a `view_type`
+    // and only 409 carry a rating, and the other 360 rendered NO View row at
+    // all. The exact mirror of the property screen's gap, one line above the
+    // Location row that already gets it right.
+    (c.view_rating || c.view_type) && ['View', said(c.view_rating, c.view_type)],
+    (c.location_rating || c.location_type) && ['Location', said(c.location_rating, c.location_type)],
     c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
     c.data_source && ['Source', c.data_source],
   ].filter(Boolean);
@@ -828,6 +909,16 @@ function CompRow({ c }) {
             <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
           )}
           {hasDetail ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+        {/* THE OWNER'S FIRST REQUIREMENT: no comparable anywhere in the system
+            without its property type and its unit count. This grid showed the
+            address, the distance, the size, the beds, the baths and the price
+            and neither of these, so a three-family could sit in a single-family
+            report's grid with nothing on the screen saying so. */}
+        <td style={td}
+          title={ident.where ? `${ident.type} · ${ident.units} — ${ident.where}` : undefined}>
+          <div style={{ fontWeight: 600, color: ident.typeUnknown ? 'var(--crit,#B4483C)' : undefined }}>{ident.type}</div>
+          <div style={{ fontSize: 11.5, color: ident.unitsUnknown ? 'var(--crit,#B4483C)' : undefined }}>{ident.units}</div>
+        </td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
         <td style={{ ...td, textAlign: 'center' }}>{bdba}</td>
@@ -842,7 +933,7 @@ function CompRow({ c }) {
       {open && hasDetail && (
         <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
           <td />
-          <td colSpan={11} style={{ padding: '4px 10px 12px' }}>
+          <td colSpan={12} style={{ padding: '4px 10px 12px' }}>
             {compFacts.length > 0 && (
               <div style={{ marginBottom: adj.length ? 10 : 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Comparable detail</div>
@@ -879,7 +970,7 @@ function CompHead() {
   return (
     <thead>
       <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
-        <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
+        <th style={th}>#</th><th style={th}>Address</th><th style={th}>Type / units</th><th style={th}>Proximity</th>
         <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>Bd/Ba</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
@@ -932,7 +1023,7 @@ function CompGrid({ title, subtitle, rows, value, tone }) {
         </div>
       )}
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, borderTop: `3px solid ${accent}` }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 880 }}>
           <CompHead />
           <tbody>{rows.map((c) => <CompRow key={c.id} c={c} />)}</tbody>
         </table>
@@ -1365,6 +1456,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
               or answered. Staff only: the borrower's read-only property report shows the appraisal,
               not our internal reconciliation against the loan file. */}
           {!readOnly && <DataComparison comparison={data && data.comparison} />}
+          {/* STAFF ONLY, like the data comparison above it. A borrower's property
+              report must never carry our second-guess of the appraiser's value. */}
+          {!readOnly && <VariancePanel appraisalId={data && data.appraisal && data.appraisal.id} />}
 
           {/* ===== PHOTO GALLERY ===== */}
           {photos.length > 0 ? (
@@ -1428,7 +1522,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
               <KV rows={[
                 ['Lot size', or(a.lot_area), a.lot_dimensions || null],
                 a.lot_shape && ['Lot shape', a.lot_shape],
-                a.view_rating && ['View', a.view_rating],
+                a.view_rating && ['View', said(a.view_rating, null)],
                 // Property rights — surfaced only to FLAG the exception (nearly always FeeSimple).
                 a.property_rights && a.property_rights !== 'FeeSimple' && ['Property rights',
                   <span style={{ color: 'var(--crit,#B4483C)' }}>{human(a.property_rights)}</span>],

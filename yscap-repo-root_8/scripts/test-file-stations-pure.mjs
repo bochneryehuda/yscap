@@ -24,22 +24,26 @@ const { STATIONS, STATION_OF, ANCHOR_SECTION, RETIRED_SECTION, stationOf, resolv
 
 /* ---------------------------------------------- 1. the map itself is sound */
 console.log('1. the room map');
-/* SIXTEEN live sections. `sec-encompass` LEFT this list on 2026-08-03 — the
+/* EIGHTEEN live sections. `sec-encompass` LEFT this list on 2026-08-03 — the
    Encompass comparison is a TAB of Application details, and the shell section
-   that pointed at that tab was the duplicate the owner asked to remove. Its id
-   lives on as a retired ADDRESS (section 1b), never as a section. */
+   that pointed at that tab was the duplicate the owner asked to remove. So did
+   `sec-orders`, on the same day, when the three orders were split into three
+   sections so the rail could list them. Both ids live on as retired ADDRESSES
+   (section 1b), never as sections. */
 const ALL_SECTIONS = [
   'sec-overview', 'sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions',
   'sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track',
-  'sec-documents', 'sec-esign', 'sec-orders', 'sec-closing', 'sec-tapes',
+  'sec-documents', 'sec-esign',
+  'sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-closing',
+  'sec-closing', 'sec-tapes',
   'sec-draws', 'sec-messages',
 ];
-ok(ALL_SECTIONS.length === 16, 'the inventory names 16 sections');
+ok(ALL_SECTIONS.length === 19, 'the inventory names 19 sections');
 const flat = STATIONS.flatMap((s) => s.sections);
 ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
-  'the rooms cover exactly the 16 sections — nothing homeless, nothing invented');
+  'the rooms cover exactly the 19 sections — nothing homeless, nothing invented');
 ok(!flat.includes('sec-encompass'),
   'no room CLAIMS sec-encompass — a retired address is not a section');
 /* EIGHT rooms now. The original promise was seven; the owner then asked for
@@ -48,8 +52,15 @@ ok(!flat.includes('sec-encompass'),
    owner ADDED deliberately. The number is pinned rather than derived so that
    another room can never appear by accident — growing this list is a decision. */
 ok(STATIONS.length === 8, 'eight rooms — the original seven plus the owner-requested Orders');
-ok(STATIONS.some((s) => s.id === 'st-orders' && s.sections.join() === 'sec-orders'),
-  'Orders is its own room, holding sec-orders');
+/* THE RAIL ONLY DRAWS SPOKES FOR A ROOM WITH MORE THAN ONE SECTION
+   (FileSections.jsx), so a one-section Orders room showed nothing at all beneath
+   "Orders" — the owner's report. Three sections is what lights it up, so the
+   COUNT is the load-bearing part of this assertion, not just the names. */
+ok(STATIONS.some((s) => s.id === 'st-orders'
+   && s.sections.join() === 'sec-order-title,sec-order-insurance,sec-order-appraisal,sec-order-closing'),
+  'Orders holds its four order sections, in work order (appraisal beside title/insurance/attorney)');
+ok(STATIONS.find((s) => s.id === 'st-orders').sections.length > 1,
+  'Orders has more than one section — which is what makes the rail show them');
 ok(STATIONS.find((s) => s.id === 'st-signing').sections.join() === 'sec-esign,sec-closing',
   'Signing & Closing is e-signatures THEN closing, with orders gone');
 ok(STATIONS.find((s) => s.id === 'st-review').sections.join()
@@ -76,6 +87,11 @@ for (const [old, to] of Object.entries(RETIRED_SECTION)) {
 }
 ok(RETIRED_SECTION['sec-encompass'] && RETIRED_SECTION['sec-encompass'].appTab === 'encompass',
   'sec-encompass lands on the Encompass TAB, not merely on Application details');
+/* Every "documents came back on the title order" email PILOT has ever sent
+   deep-links to #sec-orders, and those emails do not expire. */
+ok(RETIRED_SECTION['sec-orders'] && RETIRED_SECTION['sec-orders'].section === 'sec-order-title'
+   && stationOf('sec-orders') === 'st-orders',
+  'sec-orders still lands — on the title order, in the Orders room');
 {
   const live = resolveSection('sec-pricing');
   ok(!live.moved && live.id === 'sec-pricing' && live.appTab === null,
@@ -228,6 +244,38 @@ ok(/id="sec-documents"[^>]*title="Documents"/.test(staff),
 ok(/if \(st\.id === 'st-orders'\) badge \+= nOrdersToAssign;/.test(staff)
   && !/'st-signing'\) badge \+= nOrdersToAssign/.test(staff),
   'the orders badge followed sec-orders into the Orders room');
+/* THE THREE ORDER SECTIONS ARE REALLY ON THE PAGE, each fed the ONE order type it
+   is named for. The rail reads the SECTIONS array, so a room whose sections are
+   listed but never rendered gives you three spokes that scroll to nothing. */
+for (const [sec, only, title] of [
+  ['sec-order-title', 'title', 'Title'],
+  ['sec-order-insurance', 'insurance', 'Insurance'],
+  ['sec-order-closing', 'closing', 'Attorney closing prep'],
+]) {
+  ok(new RegExp(`id="${sec}"[^>]*title="${title}"`).test(staff), `${sec} is rendered, titled "${title}"`);
+  ok(new RegExp(`id="${sec}"[\\s\\S]{0,600}?only="${only}"`).test(staff),
+    `${sec} renders the ${only} order and only that one`);
+  ok(new RegExp(`\\{ id: '${sec}',`).test(staff), `${sec} is in the SECTIONS array the rail reads`);
+}
+/* The appraisal order section is the AMC desk (AppraisalScope / CoreLogic), NOT an
+   OrdersPanel-backed email order — so it renders AmcAppraisalPanel rather than an
+   `only=` OrdersPanel. It sits in the Orders room beside the other three. */
+ok(/id="sec-order-appraisal"[^>]*title="Appraisal"/.test(staff), 'sec-order-appraisal is rendered, titled "Appraisal"');
+ok(/id="sec-order-appraisal"[\s\S]{0,800}?<AmcAppraisalPanel/.test(staff), 'sec-order-appraisal renders the AMC appraisal desk');
+ok(/\{ id: 'sec-order-appraisal',/.test(staff), 'sec-order-appraisal is in the SECTIONS array the rail reads');
+/* The three open by DEFAULT. Landing in the Orders room and finding three
+   collapsed headers is the "go into orders and then see the 3 options" the split
+   exists to end, so a defaultOpen={false} here would undo the whole change. */
+ok(!/id="sec-order-(title|insurance|appraisal|closing)"[^>]*defaultOpen=\{false\}/.test(staff),
+  'the order sections open by default — the room shows the work, not the lids');
+/* A DERIVED open-state prop is what slammed the Title section shut on its own
+   "sent to <vendor>" confirmation the instant the order was placed. Comments are
+   stripped first — the fix's own comment quotes the offending line, and a check
+   that its own explanation trips is a check nobody can keep green. */
+const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const ordersPanel = stripComments(read('app-v2/src/components/OrdersPanel.jsx'));
+ok(!/open=\{!isPlaced\(/.test(ordersPanel),
+  'no section takes its open state from whether the order has been placed');
 
 /* ----------------------- 5. the legacy path stays byte-identical elsewhere */
 console.log('5. legacy consumers untouched');

@@ -67,7 +67,11 @@
       i = h.indexOf("?");
       if (i >= 0) { q = h.slice(i + 1); h = h.slice(0, i); }
       var sp; try { sp = new URLSearchParams(q); } catch (e) { sp = new URLSearchParams(); }
-      sp.set("lo", CODE);
+      // An href that ALREADY names an officer wins. The home page's team cards
+      // are built by enhanceHomeCards() as `suite.html?lo=<that officer>`, and
+      // propagateLinks() runs straight after — stamping the CURRENT officer over
+      // them would point every card on the page at the same person.
+      if (!sp.get("lo")) sp.set("lo", CODE);
       return h + "?" + sp.toString() + hash;
     },
     phone: function (o) { return (o && (o.direct || o.cell)) || ""; },
@@ -122,6 +126,7 @@
 
   function injectBar(o) {
     if (document.getElementById("loBar")) return;
+    ensureCallStyles();
     var ph = o.direct || o.cell || "";
     var tel = ph.replace(/[^0-9]/g, "");
     var bar = document.createElement("div");
@@ -136,11 +141,191 @@
         '<span class="lo-contact">' +
           (ph ? '<a href="tel:' + tel + '">' + esc(ph) + '</a>' : '') +
           '<a href="mailto:' + esc(o.email) + '">' + esc(o.email) + '</a>' +
+          // "Request a call" (#28, owner-directed 2026-08-05): a lightweight capture
+          // so a visitor on this officer's branded link can leave their name + phone
+          // WITHOUT hunting for the contact form. It files a `contact` lead attributed
+          // to this officer (officerCode = CODE), which the existing routing emails to
+          // THAT officer and saves to the leads desk. Every branded page carries it.
+          '<button type="button" class="lo-callbtn">Request a call</button>' +
         '</span>' +
       '</div>';
+    var cb = bar.querySelector(".lo-callbtn");
+    if (cb) cb.addEventListener("click", function () { openCallForm(o); });
+    /* ---- where the bar goes -------------------------------------------
+       Three page shapes, and only one of them used to work everywhere:
+
+       (a) a static `.topbar` in normal flow (the tools) -> put the bar right
+           after it. Unchanged.
+       (b) NO .topbar and a header that is `position:fixed` -- the HOME PAGE
+           and the legal pages, whose header is `.nav`. A fixed header is out
+           of the document flow and paints OVER the top of <body>, so the
+           fallback below dropped the bar underneath an opaque nav where
+           nobody could see it. That is why the home page was the one page
+           that never showed the officer (owner-reported 2026-08-03). A fixed
+           header can only carry the bar by HOLDING it, so the bar is mounted
+           inside the header, directly under the nav row and above the mobile
+           menu, and the page is pushed down by the height it added.
+       (c) anything else (a `position:sticky` header, or no header at all) ->
+           the bar goes at the top of <body>. A sticky header does not overlay
+           its own initial position, so the bar is visible there. Unchanged.
+       ------------------------------------------------------------------- */
     var tb = document.querySelector(".topbar");
-    if (tb && tb.parentNode) tb.parentNode.insertBefore(bar, tb.nextSibling);
-    else document.body.insertBefore(bar, document.body.firstChild);
+    if (tb && tb.parentNode) { tb.parentNode.insertBefore(bar, tb.nextSibling); return; }
+
+    var fx = fixedHeader();
+    if (fx) {
+      bar.className = "lo-bar lo-bar-fixed";
+      var firstRow = fx.firstElementChild;
+      fx.insertBefore(bar, firstRow ? firstRow.nextSibling : null);
+      offsetForFixedBar(bar);
+      return;
+    }
+
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+
+  // The page's own header, when it is taken out of the flow (position:fixed).
+  function fixedHeader() {
+    var cands = document.querySelectorAll("header, .nav, .site-header");
+    for (var i = 0; i < cands.length; i++) {
+      var pos = "";
+      try { pos = window.getComputedStyle(cands[i]).position; } catch (e) { pos = ""; }
+      if (pos === "fixed") return cands[i];
+    }
+    return null;
+  }
+
+  // A fixed header that now carries the bar is taller, so everything it paints
+  // over has to move down by exactly that much -- the page content (body
+  // padding) and the landing point of every in-page #anchor (scroll padding).
+  // Measured, never hard-coded: the bar wraps to two lines on a phone, and it
+  // grows again when the web fonts land.
+  function offsetForFixedBar(bar) {
+    var html = document.documentElement;
+    var basePad = 0, baseScroll = 0;
+    try {
+      basePad = parseFloat(window.getComputedStyle(document.body).paddingTop);
+      baseScroll = parseFloat(window.getComputedStyle(html).scrollPaddingTop);
+    } catch (e) {}
+    if (!isFinite(basePad)) basePad = 0;
+    if (!isFinite(baseScroll)) baseScroll = 0;   // "auto" -> 0
+
+    function apply() {
+      var h = bar.offsetHeight || 0;
+      document.body.style.paddingTop = (basePad + h) + "px";
+      html.style.scrollPaddingTop = (baseScroll + h) + "px";
+    }
+    apply();
+    window.addEventListener("resize", apply);
+    window.addEventListener("load", apply);
+    if (window.ResizeObserver) { try { new window.ResizeObserver(apply).observe(bar); } catch (e) {} }
+  }
+
+  // ---- "Request a call" capture (#28) ------------------------------------
+  // Injected once. Light palette to match the marketing site (dark text on
+  // white); the modal is a plain fixed overlay so it works under every header
+  // shape the bar itself handles.
+  function ensureCallStyles() {
+    if (!document.head || document.getElementById("lo-call-styles")) return;
+    var s = document.createElement("style");
+    s.id = "lo-call-styles";
+    s.textContent =
+      ".lo-callbtn{font:inherit;font-weight:600;font-size:13px;cursor:pointer;border:0;border-radius:8px;" +
+      "padding:6px 12px;background:#2F7F86;color:#fff;line-height:1.2;white-space:nowrap}" +
+      ".lo-callbtn:hover{background:#256168}" +
+      ".lo-call-ov{position:fixed;inset:0;z-index:9999;background:rgba(20,27,34,.5);display:flex;" +
+      "align-items:center;justify-content:center;padding:18px}" +
+      ".lo-call-card{background:#fff;color:#141B22;max-width:400px;width:100%;border-radius:14px;" +
+      "box-shadow:0 24px 60px -20px rgba(20,27,34,.5);padding:22px 22px 20px;position:relative;font-family:inherit}" +
+      ".lo-call-card h3{margin:0 0 4px;font-size:19px;color:#141B22}" +
+      ".lo-call-card p.sub{margin:0 0 14px;font-size:13px;color:#4B585C}" +
+      ".lo-call-card label{display:block;font-size:12px;font-weight:600;color:#3A4550;margin:10px 0 4px}" +
+      ".lo-call-card input{width:100%;box-sizing:border-box;font:inherit;font-size:16px;padding:9px 11px;" +
+      "border:1px solid #d9d3c6;border-radius:8px;color:#141B22;background:#fff}" +
+      ".lo-call-card input:focus{outline:2px solid #2F7F86;outline-offset:0;border-color:#2F7F86}" +
+      ".lo-call-hp{position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden}" +
+      ".lo-call-card .go{margin-top:16px;width:100%;font:inherit;font-weight:700;font-size:15px;cursor:pointer;" +
+      "border:0;border-radius:9px;padding:11px;background:#AE8746;color:#fff}" +
+      ".lo-call-card .go:hover{background:#987337}.lo-call-card .go:disabled{opacity:.6;cursor:default}" +
+      ".lo-call-x{position:absolute;top:10px;right:12px;border:0;background:none;font-size:22px;line-height:1;" +
+      "cursor:pointer;color:#4B585C}" +
+      ".lo-call-err{color:#b3261e;font-size:13px;margin-top:10px}" +
+      ".lo-call-ok{color:#141B22;font-size:15px;margin:8px 0 2px}";
+    document.head.appendChild(s);
+  }
+
+  function openCallForm(o) {
+    if (document.querySelector(".lo-call-ov")) return;
+    var ov = document.createElement("div");
+    ov.className = "lo-call-ov";
+    ov.innerHTML =
+      '<div class="lo-call-card" role="dialog" aria-modal="true" aria-label="Request a call">' +
+        '<button type="button" class="lo-call-x" aria-label="Close">×</button>' +
+        '<h3>Have ' + esc(o.name) + ' call you</h3>' +
+        '<p class="sub">Leave your name and number and ' + esc((o.name || "").split(/\s+/)[0] || "your loan officer") + ' will reach out shortly.</p>' +
+        '<div class="lo-call-body">' +
+          '<label for="loCallName">Your name</label>' +
+          '<input id="loCallName" type="text" autocomplete="name" />' +
+          '<label for="loCallPhone">Phone</label>' +
+          '<input id="loCallPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 555-5555" />' +
+          '<label for="loCallEmail">Email <span style="font-weight:400;color:#4B585C">(optional)</span></label>' +
+          '<input id="loCallEmail" type="email" autocomplete="email" />' +
+          // Honeypot — a bot fills it, a human never sees it; leads.js drops any
+          // submission carrying `website`.
+          '<div class="lo-call-hp" aria-hidden="true"><input type="text" id="loCallHp" tabindex="-1" autocomplete="off" /></div>' +
+          '<div class="lo-call-err" style="display:none"></div>' +
+          '<button type="button" class="go">Request a call</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    var card = ov.querySelector(".lo-call-card");
+    var errEl = ov.querySelector(".lo-call-err");
+    var goBtn = ov.querySelector(".go");
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener("keydown", onKey); }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    document.addEventListener("keydown", onKey);
+    ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
+    ov.querySelector(".lo-call-x").addEventListener("click", close);
+    var nameEl = ov.querySelector("#loCallName");
+    if (nameEl) nameEl.focus();
+
+    goBtn.addEventListener("click", function () {
+      var name = (ov.querySelector("#loCallName").value || "").trim();
+      var phone = (ov.querySelector("#loCallPhone").value || "").trim();
+      var email = (ov.querySelector("#loCallEmail").value || "").trim();
+      var hp = (ov.querySelector("#loCallHp").value || "").trim();
+      errEl.style.display = "none";
+      if (phone.replace(/[^0-9]/g, "").length < 7 && !email) {
+        errEl.textContent = "Please enter a phone number (or an email) so we can reach you.";
+        errEl.style.display = "block"; return;
+      }
+      if (!window.fetch) {
+        errEl.textContent = "Please call or email " + ((o.name || "").split(/\s+/)[0] || "us") + " directly.";
+        errEl.style.display = "block"; return;
+      }
+      goBtn.disabled = true; goBtn.textContent = "Sending…";
+      var body = {
+        tool: "contact", name: name, phone: phone, email: email,
+        officerCode: CODE, website: hp,
+        subject: "Call request — " + (o.name || ""),
+        message: "Requested a call from " + (o.name || "their loan officer") + "'s branded page.",
+      };
+      fetch("/api/leads", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }).then(function (r) { return r.ok ? r.json() : Promise.reject(r); }).then(function () {
+        card.querySelector(".lo-call-body").innerHTML =
+          '<p class="lo-call-ok"><strong>Thanks' + (name ? ", " + esc(name.split(/\s+/)[0]) : "") + "!</strong> " +
+          esc((o.name || "").split(/\s+/)[0] || "Your loan officer") + " will reach out shortly.</p>";
+        card.querySelector("h3").textContent = "Request received";
+        card.querySelector("p.sub").style.display = "none";
+        setTimeout(close, 3000);
+      }).catch(function () {
+        goBtn.disabled = false; goBtn.textContent = "Request a call";
+        errEl.textContent = "Sorry — that didn't go through. Please call or email " +
+          (o.name ? (o.name || "").split(/\s+/)[0] : "us") + " directly.";
+        errEl.style.display = "block";
+      });
+    });
   }
 
   function run() {

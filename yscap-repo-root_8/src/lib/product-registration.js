@@ -4,6 +4,7 @@ const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
 const { termWritebackText } = require('./term-text');
 const { sqftForType } = require('./fields');
+const { fmtRatePct } = require('./rate-format');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 // The EXPLICIT experience claim a register carried for one bucket, or null when
@@ -25,10 +26,21 @@ function productName(quote) {
 function assetDetail(quote) {
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
+  // On a REFINANCE the cash to close is the payoff shortfall (payoff + closing
+  // costs − the funds that advance at closing), not a purchase down payment.
+  // On a CASH-OUT refi the loan covers the payoff + closing (cash-to-close is $0),
+  // so the "payoff − advanced" equation would sum negative; state the cash-out.
+  // Rate-and-term reconciles as the payoff shortfall the borrower brings. Must read
+  // the same as liquidity.js.
+  const cashToCloseDetail = quote.refi
+    ? (quote.refi.cashOut > 0
+        ? `Cash to close: ${money(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money(quote.refi.cashOut)} cash out.`
+        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
+    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
-    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${(quote.noteRate * 100).toFixed(2)}%` : ''}.`,
-    `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`,
+    `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${fmtRatePct(quote.noteRate)}%` : ''}.`,
+    cashToCloseDetail,
     `Assets/liquidity to verify: ${money(quote.liquidityRequired || quote.liquidity)} (${money(quote.cashToClose)} cash to close + ${money(quote.reserveRequirement)} reserve requirement).`,
   ];
   if (quote.reserveBasis) lines.push(`Reserve basis: ${quote.reserveBasis}.`);
@@ -413,6 +425,58 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             sqft_pre=$18,
             sqft_post=$19,
             financed_rehab_budget=$23,
+            -- THE PAYOFF THE DEAL WAS PRICED ON (owner-directed 2026-08-07:
+            -- "the payoff on the studio should go into the application where it
+            -- says payoff, and that's basically reduced from his initial loan").
+            -- A refinance pays the existing loan out of the INITIAL ADVANCE, so
+            -- this figure decides cash to close AND its direction: the borrower
+            -- brings the shortfall, or keeps what is left over. The studio's
+            -- payoff box is live and editable, so an officer entering a fresh
+            -- payoff-letter figure quoted one number while the file kept another
+            -- (measured: a $208,410 swing that inverted who pays whom).
+            -- Refinance-only and fill-or-update, never touched on a purchase,
+            -- where there is nothing to pay off and a stale value would be worse
+            -- than none.
+            payoff_amount = CASE WHEN $26::numeric IS NOT NULL THEN $26::numeric
+                                 ELSE payoff_amount END,
+            -- THE REGISTERED PROGRAM CHOOSES THE NOTE BUYER (owner-directed
+            -- 2026-08-06: "Fidelis for the standard, Blue Lake for the gold,
+            -- EMCAP for the silver … whenever it's a manual program you leave it
+            -- untouched"). Derived rather than picked — the Term Sheet Generator
+            -- has no note-buyer field, and the pairing is already the backend's
+            -- own knowledge (tapes/program-provider, the same table the tape
+            -- export gate enforces), so a picker would just be a second place for
+            -- it to disagree. Set HERE because persistProductRegistration is the
+            -- ONE path every register door goes through — staff, borrower,
+            -- marketing intake and accept-counter alike.
+            --
+            -- FILL-ONLY (COALESCE), and that is the whole safety story: a note
+            -- buyer a human typed, or one ClickUp pulled in, is NEVER overwritten
+            -- by a re-register. $24 is NULL for a manual product (and for any
+            -- program outside the pairing), so manual stays the open selection
+            -- the owner asked for. A change here is picked up by the
+            -- evaluateApplication pass every register route already runs, so the
+            -- buyer's conditions attach on their own.
+            -- THE NOTE BUYER FOLLOWS THE REGISTERED PROGRAM (owner-directed
+            -- 2026-08-07). Fill a blank, as before — and additionally CORRECT a
+            -- value this system derived for a DIFFERENT program. A borrower can
+            -- self-register and so choose the program, which chose the buyer; an
+            -- officer registering the right program afterwards left the wrong
+            -- buyer stamped, and that file could then export no data tape at all.
+            -- Narrow on purpose: only one of OUR OWN three derived labels, only
+            -- when it disagrees with the program now registered. A name a human
+            -- typed, one ClickUp fed in, or any partner we do not derive is never
+            -- touched — which is exactly what the fill-only rule protected.
+            -- KNOWN CONSEQUENCE, accepted by the owner: someone who deliberately
+            -- sets Blue Lake on a Silver file will see it corrected on the next
+            -- re-register. Deriving it is the point; the overview card remains the
+            -- place to state something different.
+            lender = CASE
+                       WHEN lender IS NULL THEN $24::text
+                       WHEN $24::text IS NOT NULL AND lender <> $24::text
+                            AND lender = $25::text THEN $24::text
+                       ELSE lender
+                     END,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -447,6 +511,24 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       claimExpVal(claimedExp, 'holds'),
       claimExpVal(claimedExp, 'ground'),
       financedRehab,                                  // $23 — financed rehab (holdback); full budget when no OOP exception
+      // $24 — the note buyer this program implies (NULL on manual/unknown). The
+      // SET clause above fills a blank with it and, together with $25, corrects
+      // one of our own stamps; it can never overwrite a human's choice.
+      require('./note-buyer-for-program').noteBuyerForProgram(program),
+      // $25 — the label the PREVIOUS registration derived. This is what tells one
+      // of OUR OWN stamps from a human's choice, and it satisfies both of the
+      // owner's requirements at once: if the file still shows exactly what the last
+      // registration stamped, it is ours and follows the new program; if it shows
+      // anything else, a human changed it on the overview and it is left alone.
+      // A comparison against "any label we derive" would have been wrong — it would
+      // overwrite an officer who deliberately put EMCAP on a Standard file.
+      (prev && prev.program)
+        ? require('./note-buyer-for-program').noteBuyerForProgram(prev.program) : null,
+      // $26 — the payoff, only on a refinance and only when the deal carried one.
+      // NULL leaves the column untouched (a purchase, or a register that never
+      // saw the field), so this can never wipe a payoff a human recorded.
+      (String(inputs.loanType || '').toLowerCase().indexOf('purchase') < 0 && num(inputs.payoff) > 0)
+        ? Math.round(num(inputs.payoff) * 100) / 100 : null,
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
@@ -513,11 +595,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
  * @param {number} [p.termMonths] loan term in months (from inputs.term)
  * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
  */
-function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions } = {}) {
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut } = {}) {
   quote = quote || {};
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
-  const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
+  const rate = quote.noteRate != null ? fmtRatePct(quote.noteRate) + '%' : null;
   const programLabel = quote.programLabel || 'your program';
   // Term-sheet options (owner-directed 2026-07-22): only surface what applies.
   const to = termOptions && typeof termOptions === 'object' ? termOptions : {};
@@ -547,7 +629,20 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     // borrower funds themselves over construction (0 unless an approved exception).
     num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
-    quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    // On a CASH-OUT refinance the borrower RECEIVES money at closing, so cash-to-close
+    // is $0 and the figure they actually care about is "cash to you". Showing the plain
+    // "Estimated cash to close: $0" told a cash-out borrower nothing (owner-directed
+    // 2026-08-04). `cashOut` is the figure of record — a per-file typed amount if one
+    // was entered, else the structure's implied proceeds (quote.refi.cashOut). It is
+    // >0 only on a cash-out; a rate-and-term keeps the ordinary cash-to-close (the
+    // shortfall the borrower brings).
+    // Show "cash to you" ONLY when the STRUCTURE is a cash-out (funds advanced exceed
+    // payoff + closing). Gating on the figure-of-record alone would let a typed
+    // cash-out entered on a rate-and-term (a real shortfall the borrower BRINGS)
+    // suppress that shortfall — the web tool gates the same line on isCashOut().
+    (quote.refi && quote.refi.cashOut > 0 && num(cashOut) > 0)
+      ? { label: 'Estimated cash to you (paid to you at closing)', value: money(cashOut) }
+      : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null),
     // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower
     // knows the extra cushion is part of what they must show. Hidden when waived.
     num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money(quote.closingBuffer) } : null,
@@ -561,6 +656,49 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     Number(to.deferredOrigPct) > 0 ? { label: 'Deferred origination fee (paid at payoff)', value: Number(to.deferredOrigPct) + '%' } : null,
     officerLine ? { label: 'Your loan officer', value: officerLine } : null,
   ].filter(Boolean);
+  /* ---------------- ESTIMATED CLOSING COSTS ----------------
+     Owner-directed 2026-08-07, on this exact email: *"like this, we need to have added the
+     origination fees, the legal fees, closing costs, underwriting fees, and stuff like that."*
+
+     The email said "the full term sheet, with every estimated closing cost, is in your portal" —
+     i.e. it named the thing the borrower wants and then made them go somewhere else for it. Every
+     one of these figures was ALREADY on the registered quote (`quote.closingCosts`, built by
+     pricing.normalize) and simply never rendered.
+
+     NOTHING IS COMPUTED HERE — each row is a figure off the quote, and the only arithmetic is the
+     TOTAL, which is `closingCosts.dueAtClosing`, also from the quote. The LABELS are copied
+     verbatim from the term-sheet PDF's own closing-cost table (`web/v2/tools/termsheet.js`) so the
+     email and the document the borrower signs can never call the same fee two different things.
+
+     The appraisal is listed SEPARATELY and below the total on purpose: it is paid outside closing
+     (the card on file is charged when it is ordered), so folding it into "due at closing" would
+     overstate what they bring to the table. */
+  const feeRows = [];
+  const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money(amount)]); };
+  const origPctStr = quote.origPct != null
+    ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
+  feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
+  feeRow('Underwriting / processing / legal', cc.lenderFee);
+  feeRow('Credit report', cc.creditFee);
+  feeRow('Title & settlement (estimated)', cc.titleAndSettlement);
+  for (const f of (Array.isArray(cc.extraFees) ? cc.extraFees : [])) {
+    if (f && f.name) feeRow(f.name, f.amount);
+  }
+  const feeTable = feeRows.length && num(cc.dueAtClosing) > 0
+    ? {
+      title: 'Estimated closing costs',
+      head: ['Fee', 'Amount'],
+      align: ['left', 'right'],
+      rows: [
+        ...feeRows,
+        ['Total due at closing', money(cc.dueAtClosing)],
+        ...(num(cc.appraisalPoc) > 0 ? [['Appraisal (paid when ordered, not at closing)', money(cc.appraisalPoc)]] : []),
+        ...(Number(to.deferredOrigPct) > 0 ? [[`Deferred origination fee (${Number(to.deferredOrigPct)}% — paid at payoff, not at closing)`, '—']] : []),
+      ],
+      note: 'These are estimates. Title and settlement charges are set by your title company and are confirmed on your closing disclosure; your own attorney’s fees are separate and are paid by you.',
+    }
+    : null;
+
   const lines = [
     'This reflects the structure your loan team registered. Open your portal to review the full term sheet, including all estimated closing costs.',
   ];
@@ -576,6 +714,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     badge: { text: 'Terms ready', tone: 'gold' },
     body: `Your ${programLabel} is registered. Here are your current terms — the full term sheet, with every estimated closing cost, is in your portal.`,
     lines,
+    table: feeTable,
     meta,
     ctaLabel: 'Review your full term sheet',
   };

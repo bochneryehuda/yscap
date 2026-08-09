@@ -39,6 +39,11 @@
  * envelope and would reveal it. See docs/DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.9.
  *
  * What else stays OUT (each a deliberate, individually-decided exclusion):
+ *   - documents NOBODY HAS ACCEPTED YET (owner-directed 2026-08-03) — a document
+ *     sitting on a condition unreviewed is not part of the file's document set,
+ *     is not ready to ship, and may not go to an investor. See
+ *     lib/document-acceptance.js. Held-back documents are REPORTED, never
+ *     silently dropped: `heldBack` on the build, `pending` on the preview.
  *   - rejected documents and superseded versions (is_current=false) — trash
  *   - chat attachments (conversation exhibits, not file documents)
  *   - items flagged tpr_exclude (owner-directed per-condition exclusions:
@@ -107,7 +112,7 @@ const CODE_CATEGORY = {
   cond_emd_corrfirst: C.EMD,
   // The non-owner-occupied affidavit files with the ENTITY documents: on an
   // individual-vested file it is what stands in for the entity file (db/417).
-  cond_noo_affidavit_individual: C.ENTITY,
+  cond_noo_affidavit_individual: C.LLC,
   // LLC / vesting entity documents
   llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
   rtl_llc_formation: C.LLC, rtl_llc_ein: C.LLC, rtl_llc_opagmt: C.LLC, rtl_llc_goodstanding: C.LLC,
@@ -117,6 +122,10 @@ const CODE_CATEGORY = {
   insurance_binder: C.INSURANCE, rtl_cond_insurance: C.INSURANCE,
   // Title
   title_commitment: C.TITLE, rtl_cond_title: C.TITLE,
+  // Refinance payoff (db/464) — the borrower's current mortgage / payoff
+  // statement (external) and the ordered/verified payoff (internal) file with
+  // Title: they clear the existing lien on the property.
+  cond_payoff_external: C.TITLE, cond_payoff_internal: C.TITLE,
   // Flood
   rtl_cond_flood: C.FLOOD,
   // Bank statements / assets
@@ -303,19 +312,39 @@ function buildXlsx(rows, sheetName = 'Track Record') {
 }
 
 /* ---------------- shared TPR document selection (the ONE chokepoint) --------
-   The package includes every CURRENT document connected to the file, across
-   every source — the application's own docs (any condition, internal or
+   The package includes every CURRENT, ACCEPTED document connected to the file,
+   across every source — the application's own docs (any condition, internal or
    borrower, plus loose attachments), the vesting entity's docs including
    LAYERED owning entities (db/094), and borrower-profile docs (photo ID etc.)
-   for borrower + co-borrower. Review no longer gates inclusion — a pending doc
-   ships and is LABELED pending in the manifest. Both the ZIP builder and the
-   staff preview endpoint MUST draw from these helpers so the panel's promised
-   count can never disagree with the package.
+   for borrower + co-borrower. Both the ZIP builder and the staff preview
+   endpoint MUST draw from these helpers so the panel's promised count can never
+   disagree with the package.
 
-   Now also returns template_code / slot_label / llc_id and the integrity
-   columns (sha256 / size_bytes / content_type) so the builder can both
-   CATEGORIZE the document and VERIFY its bytes are not corrupt. */
-const TPR_DOC_SELECT = `
+   REVIEW GATES INCLUSION AGAIN (owner-directed 2026-08-03 — this REVERSES the
+   2026-07-16 "a pending doc ships and is LABELED pending in the manifest"
+   decision). Two things made that decision unsafe. First, the label lived in
+   _Manifest.json, which was dropped on 2026-07-30 as a "garbage" technical file
+   — so from that day the pending document shipped with nothing saying so.
+   Second, and the reason it was reported: an insurance condition carried
+   documents from a PREVIOUS policy that were never accepted, insurance was then
+   ordered and the return accepted, and the investor package + the email to the
+   closing attorney went out carrying BOTH. The owner's rule is now literal —
+   "documents that are not accepted yet are not part of the documents in the
+   folder, they are not part of ready-to-ship, they cannot be used to send the
+   closing prep and cannot be used for TPR export". `document-acceptance` is the
+   one definition; nothing is silently dropped, because `selectTprPending` below
+   reports exactly what was held back and every surface prints it.
+
+   Also returns template_code / slot_label / llc_id and the integrity columns
+   (sha256 / size_bytes / content_type) so the builder can both CATEGORIZE the
+   document and VERIFY its bytes are not corrupt. */
+const docAccept = require('./document-acceptance');
+// ONE query body, TWO review tests. `selectTprDocuments` asks for the accepted
+// set (what ships) and `selectTprPending` asks the SAME question of the pending
+// set (what was held back and why the counts differ) — written once so the two
+// answers can never describe different corpora. Every other filter, the entity
+// walk and all three Heter-Iska guards are shared by construction.
+const TPR_DOC_SELECT_FOR = (reviewTest) => `
   WITH RECURSIVE ctx AS (
     SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1
   ), entity_tree AS (
@@ -339,14 +368,14 @@ const TPR_DOC_SELECT = `
               AND d.borrower_id IN (SELECT borrower_id FROM ctx
                                     UNION SELECT co_borrower_id FROM ctx WHERE co_borrower_id IS NOT NULL)))
      AND d.is_current=true
-     AND COALESCE(d.review_status,'pending') <> 'rejected'
+     AND ${reviewTest}
      AND COALESCE(d.source_type,'') <> 'chat_attachment'
      AND (ci.tpr_exclude IS NOT TRUE)
      -- system-regenerated artifacts (a prior TPR zip, autosaved track-record
      -- printouts, the PILOT-branded draw inspection reports) are not source
      -- documents — and re-packing a regenerable export inside the next one must
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
-     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report')
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- Closing-chain CORRESPONDENCE (whatever the attorney's chain mailed us) is a
      -- running record, not a source document, and much of it is drafts and internal
@@ -390,12 +419,26 @@ const TPR_DOC_SELECT = `
               AND ci.template_id IN (SELECT id FROM checklist_templates
                                       WHERE code='rtl_llc_goodstanding' AND scope='llc'))
    ORDER BY ci.sort_order NULLS LAST, d.created_at`;
+// What SHIPS. Kept as a named constant too, because several tests and the
+// closing-prep module reason about the selection contract by name.
+const TPR_DOC_SELECT = TPR_DOC_SELECT_FOR(docAccept.ACCEPTED_SQL('d'));
+// What was HELD BACK — the same corpus, still awaiting a human's decision. This
+// is the "no silent drops" half of the rule: every surface that reports an
+// included count also reports this one, so "why is the insurance binder not in
+// the package?" is answered on the screen instead of discovered by the investor.
+const TPR_DOC_PENDING_SELECT = TPR_DOC_SELECT_FOR(docAccept.AWAITING_SQL('d'));
+
 async function selectTprDocuments(appId) {
   return (await db.query(TPR_DOC_SELECT, [appId])).rows;
 }
+async function selectTprPending(appId) {
+  return (await db.query(TPR_DOC_PENDING_SELECT, [appId])).rows;
+}
 
 // Document conditions that would ship EMPTY: not satisfied/signed off and no
-// current, non-rejected document at all (inclusion no longer waits on accept).
+// current ACCEPTED document at all. A condition whose only document is still
+// waiting for a decision genuinely WOULD ship empty now, so it belongs on this
+// list — reading it as covered was the same mistake as shipping the document.
 async function selectTprMissing(appId) {
   return (await db.query(
     `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
@@ -403,7 +446,7 @@ async function selectTprMissing(appId) {
         AND signed_off_at IS NULL AND (tpr_exclude IS NOT TRUE)
         AND NOT EXISTS (SELECT 1 FROM documents d
                          WHERE d.checklist_item_id=ci.id AND d.is_current
-                           AND COALESCE(d.review_status,'pending') <> 'rejected')
+                           AND ${docAccept.ACCEPTED_SQL('d')})
       ORDER BY sort_order`, [appId])).rows.map(r => r.label);
 }
 
@@ -412,14 +455,17 @@ async function selectTprMissing(appId) {
 // condition (alongside the HTML snapshot). Pulled DIRECTLY here — the shared
 // TPR_DOC_SELECT deliberately drops every '*_export' kind, so without this the
 // Scope of Work folder never received the tool's own PDF/Excel. Only the CURRENT,
-// non-rejected set (a re-submit supersedes the prior one). The caller drops the
-// HTML (owner-directed 2026-07-30: "you don't need the HTML in the TPR export").
+// ACCEPTED set (a re-submit supersedes the prior one). The tool's own exports are
+// PILOT's own output and are born accepted at their insert (borrower.js /
+// staff.js tool-submit, sitewire/sow-line-edit.js) — so this filter never empties
+// the Scope of Work folder; it only keeps a rejected or hand-superseded export
+// out. The caller drops the HTML (owner-directed 2026-07-30).
 async function selectSowExports(appId) {
   return (await db.query(
     `SELECT d.id, d.filename, d.storage_ref, d.sha256, d.size_bytes, d.content_type, d.created_at
        FROM documents d
       WHERE d.application_id=$1 AND d.doc_kind='rehab_budget_export' AND d.is_current=true
-        AND COALESCE(d.review_status,'pending') <> 'rejected'
+        AND ${docAccept.ACCEPTED_SQL('d')}
         AND COALESCE(d.source_type,'') <> 'chat_attachment'
       ORDER BY d.created_at`, [appId])).rows;
 }
@@ -430,7 +476,10 @@ const isHtmlExport = (d) => /\.html?$/i.test(d.filename || '')
   || String(d.content_type || '').toLowerCase().includes('html');
 
 // Track-record verification docs for a set of line items (current, non-chat,
-// non-rejected — staff-internal docs ship too, per the everything directive).
+// ACCEPTED — staff-internal docs ship too, per the everything directive). Same
+// rule as the file's own documents: a prior-project deed nobody has reviewed is
+// not evidence the investor should be handed. `selectTrackRecordPending` is the
+// held-back half, reported beside it.
 async function selectTrackRecordDocs(trIds) {
   if (!trIds || !trIds.length) return [];
   return (await db.query(
@@ -438,7 +487,17 @@ async function selectTrackRecordDocs(trIds) {
        FROM documents
       WHERE track_record_id = ANY($1::uuid[]) AND is_current=true
         AND COALESCE(source_type,'') <> 'chat_attachment'
-        AND COALESCE(review_status,'pending') <> 'rejected'
+        AND ${docAccept.ACCEPTED_SQL('')}
+      ORDER BY created_at`, [trIds])).rows;
+}
+async function selectTrackRecordPending(trIds) {
+  if (!trIds || !trIds.length) return [];
+  return (await db.query(
+    `SELECT id, track_record_id, filename, created_at
+       FROM documents
+      WHERE track_record_id = ANY($1::uuid[]) AND is_current=true
+        AND COALESCE(source_type,'') <> 'chat_attachment'
+        AND ${docAccept.AWAITING_SQL('')}
       ORDER BY created_at`, [trIds])).rows;
 }
 
@@ -485,9 +544,15 @@ async function buildTprExport(appId) {
     registration.quote = rest;
   }
 
-  // EVERYTHING on the file — see the shared selection above for the full
-  // inclusion/exclusion contract (incl. the Heter Iska hard freeze).
+  // EVERY ACCEPTED document on the file — see the shared selection above for the
+  // full inclusion/exclusion contract (incl. the Heter Iska hard freeze).
   const docs = await selectTprDocuments(appId);
+
+  // What was HELD BACK for review. Reported on the download response and on the
+  // preview so the count difference is never a mystery — a package quietly one
+  // document short is the failure this whole change exists to prevent.
+  const heldBack = (await selectTprPending(appId))
+    .map((d) => ({ id: d.id, filename: d.filename, requirement: d.item_label || null }));
 
   // Document conditions that would ship empty — the pre-flight list.
   const missing = await selectTprMissing(appId);
@@ -497,7 +562,7 @@ async function buildTprExport(appId) {
   const records = (await db.query(
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
-            is_verified, verified_at, notes
+            is_verified, verified_at, verification_status, entered_by_kind, notes
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
@@ -602,7 +667,8 @@ async function buildTprExport(appId) {
     { header: 'Sale date', key: 'saleDate', w: 1.1, align: 'center' },
     { header: 'Hold (mo)', key: 'holdMo', w: 0.8, align: 'center' },
     { header: 'Gross profit', key: 'profit', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
+    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
     { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
   ];
   const holdCols = [
@@ -616,18 +682,28 @@ async function buildTprExport(appId) {
     { header: 'Refi amount', key: 'refi', w: 1.2, money: true, align: 'right', sum: true },
     { header: 'Refi date', key: 'refiDate', w: 1.0, align: 'center' },
     { header: 'Current value', key: 'currentValue', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
+    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
     { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
   ];
+  const trExport = require('./track-record-export');
   const flipRows = [], holdRows = [];
   for (const r of records) {
     const { exit, counts } = exitInfo(r);
+    // The REVIEW STATUS + whether documentation is attached (owner-directed
+    // 2026-08-05): the export must say clearly which deals are verified, which
+    // have documentation, which are pending review, and which have documentation
+    // but are not yet verified — never "everything is verified".
+    const hasDocs = (docsByTr[r.id] || []).length > 0;
+    const statusKey = trExport.trackRecordReviewStatus({ is_verified: r.is_verified, entered_by_kind: r.entered_by_kind, hasDocs });
     const base = {
       property: addrText(r.property_address) || '', dealType: dealLabel(r.deal_type),
       purchase: num(r.purchase_price), rehab: num(r.rehab_amount),
       purchaseDate: dateStr(r.purchase_date),
-      verified: r.is_verified ? 'Verified' : 'Unverified', counts: counts ? 'Yes' : (exit ? 'No' : ''),
-      __verified: !!r.is_verified,
+      status: trExport.REVIEW_STATUS[statusKey].label,
+      docs: hasDocs ? 'Attached' : '—',
+      counts: counts ? 'Yes' : (exit ? 'No' : ''),
+      __verified: !!r.is_verified, __status: statusKey, __hasDocs: hasDocs,
     };
     if (isHoldType(r)) {
       holdRows.push({ ...base, rent: num(r.rent_amount), rentDate: dateStr(r.rent_date),
@@ -644,7 +720,6 @@ async function buildTprExport(appId) {
     { title: 'FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)', columns: holdCols, rows: holdRows },
   ];
   const trMeta = { borrowerName, generatedDate: dateStr(generatedAt) };
-  const trExport = require('./track-record-export');
   // Nicer, sectioned Excel (reuses the proven style-free writer — no corruption risk).
   files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(trExport.trackRecordAoa(trSections, trMeta), 'Track Record') });
   // Branded PDF report ("the PDF export from our track record section"). Best-effort:
@@ -687,6 +762,9 @@ async function buildTprExport(appId) {
     const q = registration.quote || {};
     const s = q.sizing || {};
     const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
+    // Note rate keeps its 3rd decimal (10.625%, not 10.63%) — owner-directed
+    // 2026-08-04. LTC/LTV above stay at their existing precision.
+    const rateTxt = (v) => v == null ? 'n/a' : require('./rate-format').fmtRatePct(v) + '%';
     const m = (v) => v == null ? 'n/a' : '$' + Math.round(Number(v)).toLocaleString('en-US');
     // Fees / cash-to-close show EXACT cents (owner-directed 2026-07-16 — a $86.76
     // fee must not round); loan/advance/holdback/reserve stay whole-dollar (frozen).
@@ -698,7 +776,7 @@ async function buildTprExport(appId) {
         `Product: ${[q.programLabel, q.productLabel].filter(Boolean).join(' - ') || registration.program}`,
         `Status: ${registration.status || 'n/a'}`,
         `Loan amount: ${m(s.totalLoan || registration.total_loan)}`,
-        `Note rate: ${pct(q.noteRate || registration.note_rate)}`,
+        `Note rate: ${rateTxt(q.noteRate || registration.note_rate)}`,
         `Initial advance: ${m(s.initialAdvance)}`,
         `Rehab holdback: ${m(s.rehabHoldback)}`,
         `Financed interest reserve: ${m(s.financedReserve)}`,
@@ -722,7 +800,7 @@ async function buildTprExport(appId) {
   // are still gathered (cheap, and handy for logging) but no longer written in.
 
   const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
-  return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
+  return { zip: zip(files), filename, includedCount: manifestDocs.length, missing, heldBack };
 }
 
 /**
@@ -739,8 +817,12 @@ async function saveTprExportDocument(appId, zipBuf, filename, actorId) {
   const r = await db.query(
     `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
                             storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id,
-                            doc_kind, source_type, visibility)
-     VALUES ($1,$2,$3,'application/zip',$4,$5,$6,'staff',$7,'tpr_export','system','internal') RETURNING id`,
+                            doc_kind, source_type, visibility, review_status, reviewed_at)
+     -- BORN ACCEPTED: the export is PILOT's own artifact, so leaving it 'pending'
+     -- would put a document nobody can review on the file's "waiting for a
+     -- decision" list forever (owner-directed 2026-08-03). It is excluded from
+     -- every package by doc_kind regardless.
+     VALUES ($1,$2,$3,'application/zip',$4,$5,$6,'staff',$7,'tpr_export','system','internal','accepted',now()) RETURNING id`,
     [appId, app.borrower_id, filename, zipBuf.length, provider, ref, actorId || null]);
   await db.query(
     `UPDATE documents SET is_current=false,
@@ -756,6 +838,8 @@ module.exports = {
   // the shared selection chokepoint — the preview endpoint MUST use these so
   // its promised counts can never disagree with the built package
   selectTprDocuments, selectTprMissing, selectTrackRecordDocs, selectSowExports,
+  // the held-back half — every surface that reports an included count reports this
+  selectTprPending, selectTrackRecordPending,
   // exported for unit tests
   categoryFor, keywordCategory, integrityIssue, cleanFileName, isHtmlExport,
 };

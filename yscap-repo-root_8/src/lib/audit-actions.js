@@ -47,6 +47,7 @@ const ACTIONS = {
 
   // ---- Product & pricing --------------------------------------------------
   register_product: { label: 'Registered / repriced a product', cat: 'pricing' },
+  studio_experience_claim: { label: 'Set the claimed experience from the Term Sheet Studio', cat: 'pricing' },
   save_appraisal_card: { label: 'Saved the appraisal payment card', cat: 'pricing' },
   save_rehab_budget: { label: 'Saved the rehab budget / scope of work', cat: 'pricing' },
   link_bank: { label: 'Linked a bank statement', cat: 'pricing' },

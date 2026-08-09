@@ -133,9 +133,29 @@ console.log('\n--- 5. the whole chain is wired, not just the engine ---');
     ['src/lib/pricing-overrides.js', /origManualPct/, 'the approval detector knows it'],
     ['app-v2/src/components/TermSheetStudio.jsx', /tsOrigManual/, 'the snapshot captures + restores it'],
     ['app-v2/src/components/ProductStudioPanel.jsx', /origManualPct/, 'the register payload carries it'],
-    ['app-v2/src/screens/Apply.jsx', /origManualPct/, 'the apply flow carries it'],
   ];
   for (const [file, re, what] of wired) ok(re.test(read(file)), `${what} (${file})`);
+
+  /* The BORROWER's apply flow is the one place that must NOT carry it, and this
+     row used to assert the opposite (2026-08-03 post-merge audit).
+
+     `Apply.jsx` built an `origManualPct` (plus markup, fees and the manual
+     LTV/rate basis) into its register payload behind `if (adminKey)`. Two
+     independent reasons that was never real wiring: nothing ever called
+     `unlockAdminPricing()`, so `adminKey` could not be set — and even if it
+     could, `borrower.js borrowerPricingOverrides()` whitelists only targetLTC /
+     irMonths / irAmount / term / fico / exp*, so the server has DISCARDED every
+     staff-grade knob a borrower sends since audit S1-04 (2026-07-12).
+
+     The knob is also no longer displayed there: the borrower's studio strips the
+     admin zone from the DOM entirely. So the "displays one number, registers
+     another" risk this section guards against cannot arise on that screen — and
+     re-adding the payload to satisfy the old assertion would put staff pricing
+     controls back on a borrower surface. Asserted in the negative instead. */
+  ok(!/origManualPct/.test(read('app-v2/src/screens/Apply.jsx')),
+    'the BORROWER apply flow does NOT carry a staff-grade origination override (S1-04)');
+  ok(/adminCapable=\{false\}/.test(read('app-v2/src/screens/Apply.jsx')),
+    '…and its studio has no admin zone to type one into');
   // The capture and the restore are two different directions — a snapshot that
   // saves but never reloads looks fine until someone reopens the file.
   const studio = read('app-v2/src/components/TermSheetStudio.jsx');

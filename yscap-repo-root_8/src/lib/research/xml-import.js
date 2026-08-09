@@ -32,7 +32,8 @@
  *     (The reverse case, where the file copy arrives later, is handled on the other
  *     side by `ingest.retireDuplicateImports`.)
  *
- *  4. It never guesses. A file that is not a readable MISMO 2.6 appraisal is
+ *  4. It never guesses. A file that is not a readable appraisal — UAD 2.6 (MISMO
+ *     2.6) or UAD 3.6 (MISMO 3.6), both read by the same `extract()` — is
  *     recorded with the parser's own reason, in words, and nothing is written.
  */
 const crypto = require('crypto');
@@ -78,7 +79,7 @@ function shapeReport(A) {
   a.id = null;
   a.application_id = null;
   const comps = (A.comparables || []).map((c) => {
-    const row = comparableRowFrom(c);
+    const row = comparableRowFrom(c, A.formType);
     // In the database `adjustments` is jsonb and reads back as an array; the ingest
     // mines a comp's year built / lot / style out of those lines, so it must be one.
     if (typeof row.adjustments === 'string') {
@@ -87,7 +88,26 @@ function shapeReport(A) {
     row.id = null;
     return row;
   });
-  return { a, comps };
+  // THE RENT SCHEDULE (db/435), shaped for the same writer. The upload door has
+  // no `appraisals` row for the ingest to read these back from, so it hands them
+  // over the way it hands over the sales comparables. Column names, not the
+  // parser's camelCase — `writeReport` reads a database row.
+  const rentals = (A.rentalComps || []).filter((r) => !r.isSubject).map((r) => ({
+    seq: r.seq, is_subject: false,
+    address: r.address, city: r.city, state: r.state, zip: r.zip, proximity: r.proximity,
+    monthly_rent: r.monthlyRent, rent_per_gba: r.rentPerGba, gba_sqft: r.gba,
+    rent_controlled: r.rentControlled, data_source: r.dataSource,
+    lease_terms: r.leaseTerms, utilities_included: r.utilitiesIncluded, location_code: r.locationCode,
+    condition_uad: r.conditionUad, condition_text: r.conditionText,
+    age_years: r.ageYears,
+    year_built: Number.isFinite(Number(r.yearBuilt)) && r.yearBuilt != null && r.yearBuilt !== ''
+      ? Math.trunc(Number(r.yearBuilt)) : null,
+    units: r.units,
+    // Already an array here (the parser's own shape) — `bindable()` in the
+    // ingest handles both that and the string a database read returns.
+    unit_mix: r.unitMix,
+  }));
+  return { a, comps, rentals };
 }
 
 /**
@@ -143,11 +163,20 @@ const dateOnly = (v) => {
  * @param {{query:Function, getClient?:Function}} db
  * @returns {{ok, status, importId, reason, ...counts}}
  */
-async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
+/**
+ * @param {object} o
+ * @param {boolean} [o.untrusted]  the bytes came from somewhere we do not vouch for —
+ *   today, a BORROWER upload (db/462). The report's PROPERTY facts are taken exactly as
+ *   they always were: a comparable sale that happened, happened, and that is what this
+ *   warehouse is for. What it may not do is REWRITE the shared appraiser roster, which
+ *   every staff user reads and which was previously staff-write-only. See
+ *   `ingest.upsertAppraiser`'s `fillOnly`.
+ */
+async function importXml(db, { xml, filename = null, uploadedBy = null, source = null, untrusted = false } = {}) {
   const out = {
     ok: false, status: 'error', importId: null, filename, reason: null,
     subjectAddress: null, appraiserName: null, comparables: 0,
-    properties: 0, observations: 0, sales: 0, skipped: [], appraisalId: null,
+    properties: 0, observations: 0, sales: 0, skipped: [], salvaged: [], appraisalId: null,
   };
   const bytes = xml == null ? '' : String(xml);
   if (!bytes.trim()) { out.reason = 'The file was empty.'; return out; }
@@ -163,14 +192,20 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   // refresh its own row instead of adding a second copy of every property.
   let importId;
   try {
+    // `source` (db/462) records HOW the report arrived — a hand upload, a loan-file
+    // door, the back-book sweep, the Encompass catcher. A label for a human reading
+    // the import list, never a key anything branches on. It is COALESCEd on conflict
+    // for the same reason the filename is: the first door to file a report is the one
+    // that actually brought it in, and a later re-file must not rewrite that history.
     importId = (await db.query(
-      `INSERT INTO research_imports (sha256, filename, byte_size, uploaded_by, status)
-       VALUES ($1,$2,$3,$4,'pending')
+      `INSERT INTO research_imports (sha256, filename, byte_size, uploaded_by, source, status)
+       VALUES ($1,$2,$3,$4,$5,'pending')
        ON CONFLICT (sha256) DO UPDATE SET
          filename = COALESCE(research_imports.filename, EXCLUDED.filename),
+         source = COALESCE(research_imports.source, EXCLUDED.source),
          status = 'pending', error = NULL
        RETURNING id`,
-      [hash, filename, Buffer.byteLength(bytes, 'utf8'), uploadedBy])).rows[0].id;
+      [hash, filename, Buffer.byteLength(bytes, 'utf8'), uploadedBy, source ? String(source).slice(0, 120) : null])).rows[0].id;
   } catch (e) {
     out.reason = (e && e.message) || String(e);
     return out;
@@ -198,7 +233,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
     return fail(A && A.error ? A.error : 'This file is not an appraisal data file we can read.');
   }
 
-  const { a, comps } = shapeReport(A);
+  const { a, comps, rentals } = shapeReport(A);
   const observedOn = dateOnly(a.effective_date) || dateOnly(a.report_signed_date) || dateOnly(a.inspection_date);
   out.subjectAddress = a.subject_address || null;
   out.appraiserName = a.appraiser_name || null;
@@ -234,8 +269,8 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   // missing, with a header row claiming success. When handed the pool we take our
   // own connection; a caller inside its own transaction keeps ownership.
   const runner = async (client) => {
-    const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], appraiserId: null };
-    await ingest.writeReport(client, { a, comps, link: { importId }, out: w });
+    const w = { ok: false, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], salvaged: [], appraiserId: null };
+    await ingest.writeReport(client, { a, comps, rentals, link: { importId, untrusted }, out: w });
     return w;
   };
 
@@ -264,6 +299,7 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
   out.observations = w.observations;
   out.sales = w.sales;
   out.skipped = w.skipped;
+  out.salvaged = w.salvaged || [];
   out.status = 'ok';
   out.ok = true;
 
@@ -295,14 +331,14 @@ async function importXml(db, { xml, filename = null, uploadedBy = null } = {}) {
  * roll-ups are read-modify-write per property (two reports on one street landing at
  * once would fight over the same rows).
  */
-async function importMany(db, files = [], { uploadedBy = null, onProgress = null } = {}) {
+async function importMany(db, files = [], { uploadedBy = null, onProgress = null, source = 'hand upload', untrusted = false } = {}) {
   const results = [];
-  const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0 };
+  const summary = { total: files.length, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0, salvaged: 0 };
   for (let i = 0; i < files.length; i++) {
     const f = files[i] || {};
     let r;
     try {
-      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy });
+      r = await importXml(db, { xml: f.xml, filename: f.filename || null, uploadedBy, source, untrusted });
     } catch (e) {
       // importXml is written never to throw; this is the belt to its braces, so one
       // pathological file can never end a hundred-file upload.
@@ -315,6 +351,7 @@ async function importMany(db, files = [], { uploadedBy = null, onProgress = null
     summary.observations += r.observations || 0;
     summary.sales += r.sales || 0;
     summary.comparables += r.comparables || 0;
+    summary.salvaged += (r.salvaged && r.salvaged.length) || 0;
     results.push(r);
     if (onProgress) { try { onProgress(i + 1, files.length, r); } catch (_) { /* a progress hook never breaks the run */ } }
   }

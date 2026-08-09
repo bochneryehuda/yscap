@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useFlash } from '../components/FlashToast.jsx';
 
 /* Vendor directory (admin): every title company / insurance agent contact
    entered anywhere on the platform, tagged by type. Admins enrich, correct,
@@ -273,6 +274,110 @@ function MergeVendorPanel({ survivor, merged, onCancel, onMerged, busy }) {
   );
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   WHO ACTUALLY DELIVERS (owner-directed 2026-08-03).
+
+   Every figure is computed from our OWN order history — when each order went out,
+   when the documents came back, how many times somebody had to chase — so there is
+   no new data collection here and no vendor integration. WORST FIRST on purpose:
+   a leaderboard sorted best-first is a trophy cabinet, and this is meant to be a
+   to-do list.
+
+   Collapsed by default. It is a research tool, not something to scroll past on the
+   way to editing a phone number, and the number that changes a decision is the one
+   on the order card itself — where the vendor is actually being chosen.
+   ════════════════════════════════════════════════════════════════════════════ */
+function VendorScorecards() {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState(null);
+  const [type, setType] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    setRows(null);
+    api.staffVendorScorecards(type || null).then(setRows).catch(() => setRows([]));
+  }, [open, type]);
+
+  return (
+    <details className="panel" style={{ margin: '0 0 14px', padding: 0 }} open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary style={{ cursor: 'pointer', padding: '12px 16px', fontWeight: 700, color: '#141B22', listStyle: 'revert' }}>
+        How our vendors are performing
+      </summary>
+      <div style={{ padding: '0 16px 16px' }}>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          From our own orders: how fast each company sends the documents back, how often that is by the
+          date we expected them, and how often somebody had to chase. Slowest and least reliable first.
+          We do not measure whether what they sent was <em>correct</em> — nothing records that, and a
+          made-up number would make the rest untrustworthy.
+        </p>
+        <div className="row" style={{ gap: 8, marginBottom: 8, alignItems: 'center' }}>
+          <label className="muted small" htmlFor="vs-type">Show</label>
+          <select id="vs-type" className="small" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="">Everyone</option>
+            <option value="title_company">Title companies</option>
+            <option value="insurance_agent">Insurance agents</option>
+            {/* NO "Attorneys" OPTION. The scorecard is built from `file_orders`
+                joined to the vendor contact the order went to, and a closing-prep
+                order carries no vendor contact — it goes to the firm's fixed group
+                inbox, while the `attorney` contact type on a file is the
+                BORROWER's counsel, who is never ordered from. So the filter could
+                only ever answer "nothing to compare", which is a false statement
+                about work we really do send. An option that can never return a row
+                is worse than no option. */}
+          </select>
+        </div>
+        {rows == null ? <p className="muted small">Working it out…</p>
+          : !rows.length ? <p className="muted small">No orders have been placed with anybody yet, so there is nothing to compare.</p>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table" style={{ width: '100%', minWidth: 760 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left' }}>Vendor</th>
+                    <th style={{ textAlign: 'right' }}>Orders</th>
+                    <th style={{ textAlign: 'right' }}>Usually back in</th>
+                    <th style={{ textAlign: 'right' }}>On time</th>
+                    <th style={{ textAlign: 'right' }}>Had to chase</th>
+                    <th style={{ textAlign: 'right' }}>Out now</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((v) => (
+                    <tr key={v.id} style={v.card.overdueNow ? { background: '#FDF4F4' } : undefined}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{v.name}</div>
+                        <div className="muted small">{TYPE_LABEL[v.contactType] || v.contactType}{v.email ? ` · ${v.email}` : ''}</div>
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {v.card.orders}
+                        {v.card.thinSample && <div className="muted small">thin</div>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {v.card.medianDays != null ? `${v.card.medianDays} day${v.card.medianDays === 1 ? '' : 's'}` : <span className="muted">—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {v.card.onTimePct != null
+                          ? <span style={v.card.onTimePct < 60 ? { color: '#B3261E', fontWeight: 600 } : undefined}>{v.card.onTimePct}%</span>
+                          : <span className="muted">—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {v.card.chasedPct != null ? `${v.card.chasedPct}%` : <span className="muted">—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {v.card.openNow || <span className="muted">0</span>}
+                        {v.card.overdueNow > 0 && <div className="small" style={{ color: '#B3261E', fontWeight: 600 }}>{v.card.overdueNow} late</div>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </div>
+    </details>
+  );
+}
+
 export default function StaffVendors() {
   const { can } = useAuth();
   const isAdmin = can('manage_vendors');
@@ -283,7 +388,6 @@ export default function StaffVendors() {
   const [editing, setEditing] = useState(null);   // vendor id being edited
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
   // Manual merge (owner-directed 2026-07-21): mergePick = { survivorId, mergedId }.
   const [mergePick, setMergePick] = useState(null);
   const [mergePickChoice, setMergePickChoice] = useState(null);   // vendor id when picking a merge partner
@@ -298,7 +402,9 @@ export default function StaffVendors() {
       .catch(e => { if (mine === loadSeq.current) setErr(e.message); });
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type]);
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3000); };
+  // Vendor actions fire from rows anywhere down a long directory — confirm in
+  // the fixed toast so the list never jumps under the cursor (FlashToast.jsx).
+  const { flash, toast } = useFlash();
 
   const gate = useSubmitGate();
   async function add(f) {
@@ -352,7 +458,7 @@ export default function StaffVendors() {
           <button className="btn btn-ink btn-sm" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
         </div>
       </div>
-      {msg && <div className="notice ok">{msg}</div>}
+      {toast}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {rows != null && (
@@ -365,6 +471,9 @@ export default function StaffVendors() {
       )}
 
       {adding && <VendorForm initial={blank()} busy={busy} onSave={add} onCancel={() => setAdding(false)} />}
+
+      <VendorScorecards />
+
 
       {/* Duplicate suggestions (owner-directed 2026-07-21): the server flagged
           vendors sharing a company name / email / phone with another vendor of

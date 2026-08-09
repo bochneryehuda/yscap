@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
+import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
 const ROLE_LABEL = {
   super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
@@ -272,6 +273,9 @@ function GlobalSearch() {
 export default function StaffLayout({ children }) {
   const { signOut, role, can } = useAuth();
   const nav = useNavigate();
+  // The research desk's pages only appear in the sidebar while you are inside it,
+  // so seven entries collapse to one without hiding where you can go from here.
+  const inResearch = isResearchPath(useLocation().pathname);
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
@@ -286,6 +290,7 @@ export default function StaffLayout({ children }) {
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
   const [notifDraftCount, setNotifDraftCount] = useState(0);
   const [myExcCount, setMyExcCount] = useState(0);
+  const [trReviewCount, setTrReviewCount] = useState(0);
   const [closingCount, setClosingCount] = useState(0);
   // Files still OUTSTANDING on the purchasing desk (admins + closers).
   const [purchasingCount, setPurchasingCount] = useState(0);
@@ -294,6 +299,7 @@ export default function StaffLayout({ children }) {
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
+      api.staffTrackRecordReviewsCount().then(r => { if (alive) setTrReviewCount((r && r.pending) || 0); }).catch(() => {});
       api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
       // Gated: unlike /closing/count this endpoint is capability-gated, so polling
       // it for everyone would 403 on load and again every 2 minutes for every LO,
@@ -397,7 +403,7 @@ export default function StaffLayout({ children }) {
   // ONE Approvals badge = every decision queue this role can see. The pricing-
   // gated counts (escCount/excCount) only ever poll for manage_pricing/super
   // roles, so they stay 0 for everyone else and the sum is naturally scoped.
-  const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount;
+  const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount + trReviewCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
   return (
     <div className="app">
@@ -425,7 +431,7 @@ export default function StaffLayout({ children }) {
             Sync review, My exceptions) with ONE tabbed section. Visible to ALL
             staff; the badge sums every queue this role can see (the escalation/
             exception counts stay 0 for roles that don't poll them). */}
-        <NavLink className="sb-link" to="/internal/approvals" title="Approvals — everything waiting on a decision, in one place: manual/escalation approvals, policy exceptions, findings to review, sync reviews, and the requests you raised.">
+        <NavLink className="sb-link" to="/internal/approvals" title="Approvals — everything waiting on a decision, in one place: manual/escalation approvals, policy exceptions, findings to review, sync reviews, track-record deals waiting to be verified, and the requests you raised.">
           <NavIcon name="conditions" />Approvals
           {approvalsCount > 0 && <span className="sb-badge">{approvalsCount > 99 ? '99+' : approvalsCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/chat">
@@ -442,9 +448,25 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/term-sheet" title="Term Sheet Generator — price a loan and build a full term sheet without leaving PILOT. Save what you price as a named scenario and pick it up later."><NavIcon name="pricing" />Term Sheet Generator</NavLink>
         <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
         {/* The research desk (owner-directed 2026-08-02). Every staff role — it holds
-            addresses, property facts and recorded sale prices, and no borrower data. */}
+            addresses, property facts and recorded sale prices, and no borrower data.
+
+            ONE ENTRY, NOT SEVEN (owner-directed 2026-08-03: "we now have on our left
+            side a few separate sections which all of them should technically be
+            combined in one section with different pages in that section, because the
+            entire section everything is a property research and Resource Center").
+            Seven links sitting next to each other read as seven unrelated tools; this
+            is one desk. The pages appear beneath it once you are inside the section,
+            and the same strip is on every page of it (`ResearchNav`), so the sidebar
+            stays short without hiding where you can go. Every URL is unchanged — the
+            pages already lived at nested paths, so nothing anyone bookmarked moved. */}
         <NavLink className="sb-link" to="/internal/dashboards" title="Dashboards — how the business is doing, and the place to build your own. Every card shows exactly which files it counts, and clicking a number opens them."><NavIcon name="dashboards" />Dashboards</NavLink>
-        <NavLink className="sb-link" to="/internal/research" title="Property Research — every property and comparable sale our appraisers have ever shown us, searchable by town, price, size, bedrooms, condition and sale date. Pick the sales you like and build your own valuation from them."><NavIcon name="pipeline" />Property Research</NavLink>
+        <NavLink className="sb-link" to="/internal/research" title="Property Research & Resource Center — every property and comparable sale our appraisers have ever shown us, plus find comparables, market conditions, what we charge, the quick answer and market areas."
+          style={inResearch ? { background: 'var(--surface-soft)', color: 'var(--text)', fontWeight: 600, borderLeftColor: 'var(--gold)' } : undefined}>
+          <NavIcon name="pipeline" />Property Research</NavLink>
+        {inResearch && RESEARCH_PAGES.map((p) => (
+          <NavLink key={p.to} end={p.end} className="sb-link" to={p.to} title={p.blurb}
+            style={{ paddingLeft: 41, fontSize: 13 }}>{p.label}</NavLink>
+        ))}
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

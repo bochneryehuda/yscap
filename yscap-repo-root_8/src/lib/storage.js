@@ -187,3 +187,25 @@ function pickProvider() {
 
 module.exports = pickProvider();
 module.exports._local = local;   // exposed for the one-time local→S3 copy job
+
+/**
+ * WHICH PROVIDER HOLDS *THIS* DOCUMENT — the one definition (lifted out of
+ * sharepoint-backup.js, which now delegates here, so every reader agrees).
+ *
+ * Documents carry their own `storage_provider`, and the S3 cutover copies bytes into
+ * S3 only after they were saved locally — so a 'local'/NULL document is always
+ * readable straight from disk. Reading by the document's OWN provider (a) avoids a
+ * wasted S3 GET + 404 for a not-yet-migrated 'local' document while
+ * STORAGE_PROVIDER=s3, and (b) makes `probe()` report the RIGHT provider's health, so
+ * a transiently unmounted local disk yields a RETRY rather than a permanent failure.
+ * An 's3' document reads through the composite provider (the dual-read wrapper: S3,
+ * falling back to local disk for a document still mid-migration).
+ *
+ * `_local` is exported in BOTH modes; in local mode it IS this module, so this is a
+ * no-op there.
+ */
+module.exports.forRow = function forRow(row) {
+  const prov = (row && row.storage_provider) || 'local';
+  if (prov === 'local' && module.exports._local) return module.exports._local;
+  return module.exports;
+};

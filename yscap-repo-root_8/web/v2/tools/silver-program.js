@@ -42,9 +42,24 @@
    size identically off their own caps.
    Exposes window.SVP (browser) and module.exports (Node, for tests).
    ===================================================================== */
+/* WHY THE BROWSER DOES NOT GET `constants` (2026-08-03).
+   The api object carries a `constants` block (markup, origination, and — on the
+   Standard engine — the whole leverage MATRIX and the RA rate build-up; on Silver
+   the entire RATE_BLOCKS grid). Exposed on the global, one line in a browser
+   console dumped the firm's whole guideline book as tidy JSON:  SVP.constants.MATRIX
+   The SERVER still needs it — src/lib/pricing.js reads constants.ORIG_PCT, and the
+   Silver band/matrix/fixture test scripts read the grid — and all of those run in
+   Node, so Node keeps the FULL api unchanged. Only the browser global is narrowed.
+   `browserView` is a shallow copy: every method is the SAME function object, closing
+   over the SAME module state, so setMarkup()/evaluate() behave identically. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./standard-program.js"));
-  else root.SVP = factory(root.YSP);
+  else root.SVP = browserView(factory(root.YSP));
+  function browserView(a) {
+    var out = {}, k;
+    for (k in a) if (Object.prototype.hasOwnProperty.call(a, k) && k !== "constants") out[k] = a[k];
+    return out;
+  }
 }(typeof self !== "undefined" ? self : this, function (YSP) {
   "use strict";
 
@@ -53,7 +68,19 @@
   var MARKUP_MAX = 0.01;         // hard cap (owner-directed 2026-07-29): the program's buy-rate floor is the note
                                  // rate minus 1.00pt, so any spread above 1 point is never earned — cap it here.
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default; clamped to MARKUP_MAX
-  function effMarkup() { var m = (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; return (m > MARKUP_MAX) ? MARKUP_MAX : m; }
+  // Per-experience-tier markup (owner-directed item 15): { 1:frac, 2:frac, 3:frac },
+  // each tier OPTIONAL and each still clamped to MARKUP_MAX. A tier absent here
+  // falls back to the per-program override/default — so an UNSET map prices
+  // byte-identically to before. tier 1 = the program's TOP experience tier.
+  var MARKUP_TIERS = null;
+  function setMarkupTiers(m) { MARKUP_TIERS = (m && typeof m === "object") ? m : null; }
+  function effMarkup(tier) {
+    var m;
+    if (MARKUP_TIERS && tier != null && typeof MARKUP_TIERS[tier] === "number"
+        && isFinite(MARKUP_TIERS[tier]) && MARKUP_TIERS[tier] >= 0) m = MARKUP_TIERS[tier];
+    else m = (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR;
+    return (m > MARKUP_MAX) ? MARKUP_MAX : m;
+  }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? Math.min(f, MARKUP_MAX) : null; }
   var ORIG_PCT = 0.0125;         // 1.25% origination on the total loan (same as Standard)
   var MIN_LOAN = 100000;         // grid floor: "Loan Sizes $100k–$2.5m" / "$2.5m–$4.5m"
@@ -304,7 +331,11 @@
   /* The BORROWER-FACING price ladder's rungs are the lifted edges only: a rung one
      hundredth of a point under another buys the identical cell and would print as a
      near-duplicate row. */
-  var LADDER_EDGES_DESC = edgesDesc(LTC_EDGES_UP, AR_EDGES_UP);
+  /* The pre-2026-08-06 rung list — the LTC edges and the ARV edges MERGED into one
+     list, every one of which was then applied as a loan-to-COST cap. That was the
+     defect the single price-break ladder replaced (the 65%/70% ARV edges were
+     producing far smaller loans under a "Leverage (LTC)" label), so it is deleted
+     rather than left lying next to its replacement for someone to reach for. */
 
   /* Each block = market|size|product|purpose|term|tier → 54 cells (3 AR × 3 FICO × 6 LTC)
      flattened in band order above. Values are the note-buyer grid rate in
@@ -788,7 +819,7 @@
     var g = gridRate(o.market, o.sizeBand, prodToken(o.strategyCode), o.loanType === "Refinance" ? "R" : "P",
       termToken(o.term), o.tier, arBand(o.arltv), ficoBand(o.tier, o.fico), ltcBand(o.ltc));
     if (g == null) return null;
-    return g + effMarkup();
+    return g + effMarkup(o.tier);
   }
 
   /* ---------------- evaluate ---------------- */
@@ -1015,6 +1046,25 @@
     // ---- effective caps: voluntary de-leverage + admin overrides ----
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
     if (input.targetLTC && input.targetLTC > 0) capsEff.maxLTC = Math.min(capsEff.maxLTC, input.targetLTC);
+    /* VOLUNTARY DE-LEVERAGE ON THE VALUE SIDE (owner-directed 2026-08-06). EMCAP
+       prices on BOTH frontiers — every rate block is 3 AR x 3 FICO x 6 LTC — so a
+       borrower can earn a better cell by giving up ARV leverage just as they can by
+       giving up cost leverage, and until now only the cost side had a lever. The
+       owner: "it's very possible that LTC is also getting reduced… calculate the
+       pricing of both of them" — which needs nothing extra, because rateAt() below
+       already settles the rate on the ACHIEVED ratios, so a cut here moves both
+       bands and both are re-read.
+       MIN, exactly like targetLTC one line above: this can only ever LOWER the
+       ceiling, never raise it, so it cannot over-lend and cannot reach a structure
+       the guidelines refuse. Unset (0 / absent) it is completely inert — proven
+       byte-identical against the pre-change engine (scripts/test-silver-arv-lever-pure.js).
+       An ADMIN basis override (ovrARLTV, next line) still wins, as it does for LTC. */
+    if (input.targetARLTV && input.targetARLTV > 0) capsEff.maxARLTV = Math.min(capsEff.maxARLTV, input.targetARLTV);
+    /* A typed loan amount — a voluntary ceiling on the tier's own dollar wall, so it
+       can only ever REDUCE. Same kind as the two levers above; see the full note in
+       standard-program.js (whose sizeLoan this engine reuses). Inert when unset;
+       raising a loan still requires the admin basis below. */
+    if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
     if (input.ovrLTC > 0) capsEff.maxLTC = input.ovrLTC;
@@ -1043,7 +1093,7 @@
       return denom > 0 ? (s.totalLoan / denom) : 0;
     };
     var guess = rateOvr || (gridRate(market, sizeBand, pTok, purp, termTok, tier,
-      arBand(Math.min(capsEff.maxARLTV, 0.75)), ficoBand(tier, fico || 700), ltcBand(Math.min(capsEff.maxLTC, 0.925))) || 0.10) + (rateOvr ? 0 : effMarkup());
+      arBand(Math.min(capsEff.maxARLTV, 0.75)), ficoBand(tier, fico || 700), ltcBand(Math.min(capsEff.maxLTC, 0.925))) || 0.10) + (rateOvr ? 0 : effMarkup(tier));
     dealForSize.noteRateForIR = guess;
     var sizing = YSP.sizeLoan(dealForSize, capsEff);
     var rate = rateOvr || rateAt(sizing);
@@ -1107,7 +1157,7 @@
       var g = gridRate(market, sizeBand, pTok, purp, termTok, tier,
         arBand(atCap(arForBand(s), capsEff.maxARLTV)), ficoBand(tier, fico || 700),
         ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC, capsEff.maxLTC)));
-      return g == null ? null : g + effMarkup();
+      return g == null ? null : g + effMarkup(tier);
     }
 
     // ---- grid-aware leverage step-down -------------------------------------
@@ -1159,14 +1209,14 @@
         var d2 = {
           loanType: loanType, purchasePrice: effPurchase, asIsValue: aiv, arv: arv,
           rehabBudget: rehab, irMonths: irMonthsEff, irAmount: irAmountReq, accrual: input.accrual,
-          noteRateForIR: (seed == null ? 0.10 : seed) + effMarkup(),
+          noteRateForIR: (seed == null ? 0.10 : seed) + effMarkup(tier),
           reserveCapMonths: termMonths, reserveInCost: true, bridge: (sc === "BR")
         };
         var s2 = YSP.sizeLoan(d2, capsTry);
         if (!(s2.totalLoan > 0)) return null;
         var g2 = gridAt(s2, capsTry);
         if (g2 == null) return null;
-        d2.noteRateForIR = g2 + effMarkup();
+        d2.noteRateForIR = g2 + effMarkup(tier);
         var s3 = YSP.sizeLoan(d2, capsTry);
         // The re-size produced no loan at all, so the FIRST-pass structure stands —
         // and (s2, g2) is a consistent pair, because g2 IS gridAt(s2).
@@ -1299,7 +1349,7 @@
            the published `pricedCeiling` (clamped to the same maximum). */
         var cutLtc = best.caps.maxLTC < capsEff.maxLTC - 1e-9;
         var cutAr = best.caps.maxARLTV < capsEff.maxARLTV - 1e-9;
-        rate = best.grid + effMarkup();
+        rate = best.grid + effMarkup(tier);
         sizing = best.sizing;
         capsEff = best.caps;
         // NAME the guideline that actually holds the deal back — blaming
@@ -1463,52 +1513,103 @@
     return L;
   }
 
-  /* ---------------- pricing ladder (leverage ↔ rate, like the Standard engine) ----------------
-     Buckets are the grid's own LTC band edges, so each rung is a real pricing band. */
-  var LADDER_BUCKETS = LADDER_EDGES_DESC;
+  /* ---------------- THE PRICE LADDER: ONE ladder, stepped by REAL price breaks ----------------
+     Owner-directed 2026-08-06: *"I think we should build one ladder which you can slide
+     down to reduce your loan amount. On the backend, it should automatically calculate
+     whenever you get an ARV cut and whenever you get an LTC cut. You shouldn't be able to
+     move it by $1 — you should only be able to move it when you get better pricing."*
+
+     WHY ONE LADDER AND NOT TWO. EMCAP prices on BOTH frontiers (every block is
+     3 AR x 3 FICO x 6 LTC), and because rateAt() settles on the ACHIEVED ratios, cutting
+     either one moves the other. A borrower does not care WHICH ratio earned the better
+     cell — only that a smaller loan buys a better rate. So the rungs are the UNION of both
+     frontiers, ordered by loan amount, and each one NAMES the cut that produced it.
+
+     WHAT THIS REPLACES, and it was a real defect: the rungs used to be
+     edgesDesc(LTC_EDGES_UP, AR_EDGES_UP) — both families merged into one list — and every
+     one of them was then applied as `targetLTC`. So the ARV edges (0.65 / 0.70) were being
+     used as LOAN-TO-COST caps, producing far smaller loans under a "Leverage (LTC)" label,
+     and the value side was unreachable. Each family now drives its own lever.
+
+     THE TWO RULES THAT MAKE IT USEFUL
+       R1  A rung exists ONLY if the note rate actually improves. Crossing a band that buys
+           the same cell is not an option, it is noise.
+       R2  Each rung is the LARGEST loan that earns that better price (owner-agreed). Walking
+           the priced candidates from the biggest loan down and keeping the first that beats
+           the running-best rate gives exactly that — you never give up more than you must.
+
+     NEVER FABRICATES: a candidate the workbook prices nowhere is skipped, never invented.
+     Every rung is a real evaluate() of the real engine, so a rung can always be reproduced
+     on the file by registering with that same lever. */
+  var LTC_RUNGS_DESC = edgesDesc(LTC_EDGES_UP);   // cost-side frontiers, high -> low
+  var ARV_RUNGS_DESC = edgesDesc(AR_EDGES_UP);    // value-side frontiers, high -> low
   function priceLadder(input) {
     var full = evaluate(input);
     if (full.status === "INELIGIBLE" || !full.sizing || !(full.sizing.totalLoan > 0)) {
       return { eligible: false, status: full.status, reasons: full.reasons, rows: [] };
     }
-    var maxLtc = full.sizing.ltcPct;
-    var rows = [];
-    // TRUE-MAX top rung. The bucket-skip (`b > maxLtc` → continue) left the top
-    // rung a whole band BELOW the deal's real maximum in 71% of ladders (up to a
-    // $223k gap), so the term sheet's ladder page contradicted its own page 1
-    // (owner-directed 2026-07-30: "everything should tie up… the Max leverage the
-    // loan amounts"). Adopting the Standard engine's ltcBucket semantics
-    // (standard-program.js priceLadder): the FIRST row is the deal's EXACT
-    // maximum sizing — the very numbers evaluate() reports — and the band-edge
-    // rungs below it are the voluntary de-leverage steps.
-    // Its `ltc` is 0 on purpose: that is the ONLY marker that round-trips back
-    // through evaluate() as "no targetLTC", i.e. reproduces this exact maximum.
-    // Any real edge value would re-cap the sizing and could shift the loan.
-    var trueMax = (full.noteRate > 0);
-    if (trueMax) {
-      var fs = full.sizing;
-      rows.push({
-        ltc: 0, targetLtcPct: fs.ltcPct, totalLoan: fs.totalLoan, initialAdvance: fs.acquisition,
-        downPayment: fs.downPayment, rehabHoldback: fs.rehabLoan, noteRate: full.noteRate,
-        monthlyPayment: round2(fs.totalLoan * (full.noteRate / 12)),
-        isMax: true
-      });
-    }
-    for (var i = 0; i < LADDER_BUCKETS.length; i++) {
-      var b = LADDER_BUCKETS[i];
-      // with a true-max rung in place, only rungs strictly BELOW it are steps;
-      // without one (nothing prices at the max) keep the original bucket window.
-      if (trueMax ? (b >= maxLtc - 1e-9) : (b > maxLtc + 1e-4)) continue;
-      var ev = evaluate(assign({}, input, { targetLTC: b }));
+    var fs = full.sizing;
+    var maxLtc = fs.ltcPct;
+    // The ARV denominator the grid classifies on — mirrors arForBand() inside evaluate().
+    var arvDenom = num(input.arv) || num(input.asIsValue) || 0;
+    var arRatioOf = function (s) { return arvDenom > 0 ? (s.totalLoan / arvDenom) : 0; };
+    var rowOf = function (key, cut, lever, ev) {
       var s = ev.sizing || {};
-      if (!(s.totalLoan > 0) || !(ev.noteRate > 0)) continue;
-      if (rows.length && Math.abs(rows[rows.length - 1].totalLoan - s.totalLoan) < 1) continue;   // dedupe identical rungs
-      rows.push({
-        ltc: b, targetLtcPct: s.ltcPct, totalLoan: s.totalLoan, initialAdvance: s.acquisition,
-        downPayment: s.downPayment, rehabHoldback: s.rehabLoan, noteRate: ev.noteRate,
-        monthlyPayment: round2(s.totalLoan * (ev.noteRate / 12)),
+      return {
+        key: key, cut: cut,
+        // `ltc` stays the LEVER value for a cost-side rung and 0 for the maximum — the
+        // markers every existing consumer already reads. A value-side rung carries null
+        // rather than a look-alike number, so nothing can match it by accident; consumers
+        // that must identify a rung use `key` (a value-side and a cost-side rung can
+        // legitimately land on the same LTC).
+        ltc: lever, targetLtcPct: s.ltcPct, arvPct: arRatioOf(s),
+        totalLoan: s.totalLoan, initialAdvance: s.acquisition,
+        downPayment: s.downPayment, rehabHoldback: s.rehabLoan,
+        noteRate: ev.noteRate, monthlyPayment: round2(s.totalLoan * (ev.noteRate / 12)),
         isMax: false
-      });
+      };
+    };
+    var rows = [];
+    var bestRate = Infinity;
+    // The deal's TRUE maximum is always the first rung: the exact numbers evaluate()
+    // reports. Its `ltc` is 0 on purpose — the only marker that round-trips back through
+    // evaluate() as "no lever", reproducing this exact maximum.
+    if (full.noteRate > 0) {
+      var top = rowOf("max", null, 0, full);
+      top.isMax = true;
+      rows.push(top);
+      bestRate = full.noteRate;
+    }
+    // Candidates: every frontier strictly below what this deal already achieves. Each is a
+    // real evaluate() with its OWN lever — never one family's edge applied as the other's.
+    var cands = [], i;
+    for (i = 0; i < LTC_RUNGS_DESC.length; i++) {
+      if (LTC_RUNGS_DESC[i] < maxLtc - 1e-9) cands.push({ cut: "ltc", v: LTC_RUNGS_DESC[i] });
+    }
+    if (arvDenom > 0) {
+      var arNow = arRatioOf(fs);
+      for (i = 0; i < ARV_RUNGS_DESC.length; i++) {
+        if (ARV_RUNGS_DESC[i] < arNow - 1e-9) cands.push({ cut: "arv", v: ARV_RUNGS_DESC[i] });
+      }
+    }
+    var priced = [];
+    for (i = 0; i < cands.length; i++) {
+      var c = cands[i];
+      var over = (c.cut === "ltc") ? { targetLTC: c.v } : { targetARLTV: c.v };
+      var ev = evaluate(assign({}, input, over));
+      var s = ev.sizing || {};
+      if (!(s.totalLoan > 0) || !(ev.noteRate > 0)) continue;      // R5 — never invent a cell
+      priced.push({ cut: c.cut, v: c.v, ev: ev, loan: s.totalLoan, rate: ev.noteRate });
+    }
+    // R2: biggest loan first, so the FIRST candidate to reach a better rate is the largest
+    // loan that earns it. A tie on loan prefers the better rate.
+    priced.sort(function (a, b) { return (b.loan - a.loan) || (a.rate - b.rate); });
+    for (i = 0; i < priced.length; i++) {
+      var p = priced[i];
+      if (!(p.rate < bestRate - 1e-12)) continue;                   // R1 — a rung must BUY something
+      if (rows.length && Math.abs(rows[rows.length - 1].totalLoan - p.loan) < 1) continue;
+      rows.push(rowOf(p.cut + ":" + p.v, p.cut, p.cut === "ltc" ? p.v : null, p.ev));
+      bestRate = p.rate;
     }
     if (rows.length) rows[0].isMax = true;
     return { eligible: true, status: full.status, maxLtc: maxLtc, binding: (full.sizing && full.sizing.binding) || "", maxNoteRate: full.noteRate, rows: rows };
@@ -1519,7 +1620,7 @@
   return {
     evaluate: evaluate,
     priceLadder: priceLadder,
-    setMarkup: setMarkup,
+    setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     // exposed for tooling / tests
     marketOf: marketOf, geoCheck: geoCheck, tierOf: tierOf, projectCount: projectCount,
     caps: caps, gridRate: gridRate, rateKey: rateKey, noteRate: noteRate,

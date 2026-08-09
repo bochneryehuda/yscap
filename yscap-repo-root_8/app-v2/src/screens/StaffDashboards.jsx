@@ -78,15 +78,19 @@ export default function StaffDashboards() {
 
 function Tile({ d }) {
   return (
+    // `.dsh-tile-h` rather than the shared `.row`: `.row` lets a long name push the
+    // "Company" chip onto a second line, which made that one tile taller than the rest of
+    // its row. The chip is now `flex:none` beside a name that wraps under itself.
     <Link className="panel dsh-tile" to={`/internal/dashboards/${d.id}`}
       style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="row" style={{ marginBottom: 6 }}>
-        <b style={{ color: INK }}>{d.name}</b>
+      <div className="dsh-tile-h">
+        <b>{d.name}</b>
         <span className="spacer" />
-        {d.is_system && <span className="pill" title="Ships with PILOT — open it and make it yours to change">Company</span>}
+        {d.is_system && <span className="pill" style={{ flex: 'none' }}
+          title="Ships with PILOT — open it and make it yours to change">Company</span>}
       </div>
-      {d.description && <p className="small" style={{ color: MUTED, margin: '0 0 8px' }}>{d.description}</p>}
-      <div className="small" style={{ color: MUTED }}>
+      {d.description && <p className="small dsh-tile-d">{d.description}</p>}
+      <div className="small dsh-tile-m">
         {d.card_count} card{d.card_count === 1 ? '' : 's'}
         {d.role_default ? ` · the default for ${String(d.role_default).replace(/_/g, ' ')}` : ''}
       </div>

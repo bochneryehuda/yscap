@@ -7,10 +7,13 @@
  * to BOTH (that fan-out is `notify.notifyAppBorrowers`, which already includes both) — this is only for
  * the two one-to-one sends where a single recipient is required.
  */
-const db = require('../db');
+// Lazy so the PURE helpers (replyCcFrom) can be required without pulling in `pg` — the DB is
+// only touched when a resolver that reads the file is actually called.
+let _db = null;
+const db = () => (_db || (_db = require('../db')));
 
 async function drawRecipients(appId) {
-  const r = (await db.query(
+  const r = (await db().query(
     `SELECT b.id  AS b_id,  NULLIF(btrim(concat_ws(' ', b.first_name,  b.last_name)),  '') AS b_name,  b.email  AS b_email,
             cb.id AS c_id,  NULLIF(btrim(concat_ws(' ', cb.first_name, cb.last_name)), '') AS c_name, cb.email AS c_email
        FROM applications a
@@ -63,7 +66,7 @@ function uniqEmails(list) {
 async function drawCoordinatorsForFile(appId) {
   if (!appId) return [];
   try {
-    const r = await db.query(
+    const r = await db().query(
       `WITH cand AS (
             SELECT pl.draw_setup_started_by AS staff_id, 'started_draw'::text AS src, 1 AS pref
               FROM sitewire_property_links pl
@@ -88,7 +91,7 @@ async function drawCoordinatorsForFile(appId) {
 /** Every ACTIVE draw coordinator on the team — the desk-wide fallback when a file has none. */
 async function drawDeskCoordinators() {
   try {
-    const r = await db.query(
+    const r = await db().query(
       `SELECT id, full_name, email FROM staff_users
         WHERE is_active = true AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL
         ORDER BY lower(email)`);
@@ -125,7 +128,7 @@ async function drawTeamBcc(appId) {
 async function fileLoanOfficerEmails(appId) {
   if (!appId) return [];
   try {
-    const r = await db.query(
+    const r = await db().query(
       `SELECT su.email
          FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
         WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
@@ -150,6 +153,63 @@ async function fileLoanOfficerEmails(appId) {
 async function drawLoopInBcc(appId) {
   const [team, officers] = await Promise.all([drawTeamBcc(appId), fileLoanOfficerEmails(appId)]);
   return uniqEmails([...team, ...officers]);
+}
+
+/**
+ * THE LOOP-IN for a REPLY on a file that is in a draw process (owner-directed 2026-08-06:
+ * "I only see in my email CC the officer and myself, I don't see the draw coordinator … we
+ * need everything to be visible in the CC line … everybody that is receiving this email
+ * should be on the CC line, including the loan officer and the draw coordinator").
+ *
+ * Returns the file's draw coordinator(s) + the draws@ desk + the file's loan officer(s) — but
+ * ONLY when the file actually has an assigned draw coordinator (`drawCoordinatorsForFile`
+ * non-empty), so an ordinary reply on a file that is NOT in a draw process never Cc's the draw
+ * desk. This deliberately does NOT fall back to the whole desk the way `drawLoopInBcc` does:
+ * an OUTBOUND draw email is known-to-be-a-draw by its notification category, but a REPLY path
+ * (the file inbox / the email-center reply) can't tell a draw thread from any other, so the
+ * file's own coordinator being assigned IS the signal that this file's threads should loop the
+ * draw team in. Never throws.
+ *
+ * @returns {Promise<string[]>} lowercased, de-duped emails (empty when no coordinator).
+ */
+async function drawReplyLoopIn(appId) {
+  return (await drawReplyLoopInDetailed(appId)).map((x) => x.email);
+}
+
+/**
+ * The same loop-in as `drawReplyLoopIn`, but as `[{ email, name }]` — so a recipient PREVIEW
+ * (the reply composer's chips) can show WHO is looped in, which is exactly what the owner asked
+ * to be able to see. The email-only `drawReplyLoopIn` is derived from this, so the preview and
+ * the actual send can never disagree about who the draw loop-in is. Never throws.
+ */
+async function drawReplyLoopInDetailed(appId) {
+  if (!appId) return [];
+  const coords = await drawCoordinatorsForFile(appId);
+  if (!coords.length) return [];                 // file not in a draw process → loop nobody in
+  const officers = await fileLoanOfficerEmails(appId);
+  const out = [];
+  const seen = new Set();
+  const add = (email, name) => {
+    const e = String(email == null ? '' : email).trim().toLowerCase();
+    if (!e || seen.has(e)) return;
+    seen.add(e);
+    out.push({ email: e, name: name || e });
+  };
+  for (const c of coords) add(c.email, c.full_name);
+  add(DRAW_DESK_INBOX, 'YS Capital Draw Desk');
+  for (const e of officers) add(e);              // the LO is usually already an assignee chip
+  return out;
+}
+
+/**
+ * Compose the visible Cc for a reply: the draw loop-in, minus anyone already a TO recipient and
+ * minus the sender (never Cc a person on their own message). PURE — so the exclusion/de-dup is
+ * unit-tested with no DB. Returns a lowercased, de-duped array (possibly empty).
+ */
+function replyCcFrom(loopIn, { toEmails = [], sender = '' } = {}) {
+  const drop = new Set([...(Array.isArray(toEmails) ? toEmails : []), sender]
+    .map((e) => String(e == null ? '' : e).trim().toLowerCase()).filter(Boolean));
+  return uniqEmails(loopIn).filter((e) => !drop.has(e));
 }
 
 /**
@@ -182,4 +242,5 @@ module.exports = {
   drawRecipients, drawTeamBcc, DRAW_DESK_INBOX,
   drawCoordinatorsForFile, drawDeskCoordinators, coordinatorsOrDesk,
   fileLoanOfficerEmails, drawLoopInBcc, drawEnvelopeViewers,
+  drawReplyLoopIn, drawReplyLoopInDetailed, replyCcFrom,
 };

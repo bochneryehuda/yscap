@@ -54,7 +54,23 @@ export const QUALITY = {
   Q1: 'Q1 — highest quality', Q2: 'Q2 — high quality', Q3: 'Q3 — good quality',
   Q4: 'Q4 — average quality', Q5: 'Q5 — basic quality', Q6: 'Q6 — lowest quality',
 };
+/* THE APPRAISER'S OWN WORD, PLUS WHAT IT READS AS.
+   UAD was mandated for four forms and the 1025 (2-4 unit) was left out, so on
+   most of a 2-4 unit lender's book the condition is written in words. The word
+   is the record; the grade beside it is our reading of it (db/444,
+   src/lib/research/condition-scale.js), and it is shown as a SPAN because
+   "Average" is not C4 — it is C3-or-C4. A code we were never given is never
+   printed on its own. Pass the whole row to get the reading; the two-argument
+   form is kept for the callers that only hold the two strings. */
 export const conditionLabel = (c, text) => (c ? (CONDITION[c] || c) : (text || '—'));
+export function conditionRead(p) {
+  if (!p) return '—';
+  if (p.condition_uad) return CONDITION[p.condition_uad] || p.condition_uad;
+  if (!p.condition_text) return '—';
+  const lo = p.condition_rank_low, hi = p.condition_rank_high;
+  if (p.condition_read_source !== 'word' || lo == null || hi == null) return p.condition_text;
+  return `${p.condition_text} (reads as ${lo === hi ? `C${lo}` : `C${lo}–C${hi}`})`;
+}
 export const qualityLabel = (q, text) => (q ? (QUALITY[q] || q) : (text || '—'));
 export const CONDITION_CODES = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'];
 export const QUALITY_CODES = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'];
@@ -86,7 +102,11 @@ export const severityColor = (s) => (s === 'fatal' ? '#B4423A' : s === 'warning'
    them; the surrounding page keeps the app's own `card`/`btn`/`chip` classes. */
 export const S = {
   label: { display: 'block', fontSize: 12, color: MUTED, marginBottom: 3, fontWeight: 600 },
-  input: { width: '100%', padding: '7px 9px', border: '1px solid #DDD6C7', borderRadius: 6,
+  // minWidth:0 lets an input SHRINK inside a grid/flex track. Without it a native
+  // date input keeps its intrinsic ~130px min-content width and, in the narrow
+  // sticky search column, overflows the panel — the "sold date coming outside of
+  // this section" bug. A width:100% input never wants an intrinsic minimum here.
+  input: { width: '100%', minWidth: 0, padding: '7px 9px', border: '1px solid #DDD6C7', borderRadius: 6,
     fontSize: 14, color: INK, background: '#fff' },
   cell: { padding: '7px 9px', borderBottom: '1px solid #EEE9DD', fontSize: 13, color: INK, verticalAlign: 'top' },
   th: { padding: '7px 9px', borderBottom: '2px solid #DDD6C7', fontSize: 12, color: MUTED,

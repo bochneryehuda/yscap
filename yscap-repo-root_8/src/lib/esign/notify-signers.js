@@ -21,6 +21,7 @@ const { fileReplyTo } = require('../file-address');
 const PACKAGE_LABEL = {
   term_sheet_package: 'Term sheet, application & disclosure',
   heter_iska: 'Heter Iska',
+  noo_affidavit: 'Non-owner-occupied certification',
 };
 
 /**

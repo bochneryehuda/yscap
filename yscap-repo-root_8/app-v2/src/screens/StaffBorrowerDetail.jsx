@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -98,7 +99,22 @@ function Header({ b, name, onChanged }) {
   async function act(kind) {
     setBusy(kind); setErr('');
     try {
-      if (kind === 'invite') { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged(); }
+      if (kind === 'invite') {
+        /* NO PER-SCREEN FALLBACK ANY MORE (2026-08-07). This handler used to catch the
+           server's "this borrower has no active file" refusal and manufacture an
+           invite-only application so there was something to invite them TO. Two wrongs
+           that: it lived in ONE of the four screens that call this endpoint, so the
+           borrowers list and the shared BorrowerProfilePanel still dead-ended (the
+           owner's report); and it minted a loan number, a checklist and a ClickUp task
+           for a deal nobody has, purely to satisfy a check that should not have
+           existed. The server now sends a plain portal invitation when there is no
+           file, and the borrower starts their own application from the portal. */
+        const r = await api.staffBorrowerInvite(b.id);
+        flash(r && r.noFile
+          ? `PILOT invite sent to ${b.email} — they can start an application from the portal.`
+          : `PILOT invite sent to ${b.email}.`);
+        onChanged();
+      }
       else if (kind === 'reset') { await api.staffBorrowerResetPassword(b.id); flash(`Reset link emailed to ${b.email}.`); }
       else if (kind === 'ssn') { const r = await api.staffBorrowerSsn(b.id); setSsn(r.ssn); }
       else if (kind === 'photo') { const { blob, filename } = await api.staffDownloadDoc(b.photo_id_document_id); saveBlob(blob, filename || 'government-id'); }
@@ -432,16 +448,16 @@ function TrackRecord({ id }) {
   const [busy, setBusy] = useState('');
   async function verify(t) {
     setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { alert(e.message || 'Could not verify'); }
+    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { showMessage(e.message || 'Could not verify'); }
     finally { setBusy(''); }
   }
   async function revoke(t) {
     const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
     if (reason == null) return;                       // cancelled
-    if (!reason.trim()) { alert('A reason is required to revoke verification.'); return; }
+    if (!reason.trim()) { showMessage('A reason is required to revoke verification.'); return; }
     setBusy(t.id);
     try { await api.staffVerifyTrackRecord(t.id, { status: 'pending', reason: reason.trim() }); reload(); }
-    catch (e) { alert(e.message || 'Could not revoke verification'); }
+    catch (e) { showMessage(e.message || 'Could not revoke verification'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -775,7 +791,7 @@ function Tasks({ id }) {
     finally { setBusy(false); gate.leave(); }
   }
   async function complete(r) {
-    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { alert(e.message || 'Failed'); }
+    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { showMessage(e.message || 'Failed'); }
   }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
@@ -825,7 +841,7 @@ function Documents({ id }) {
   async function dl(d) {
     setBusy(d.id);
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
-    catch (e) { alert(e.message || 'Download failed'); }
+    catch (e) { showMessage(e.message || 'Download failed'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -884,12 +900,12 @@ function Notes({ id }) {
     if (!body.trim()) return;
     if (!gate.enter()) return;             // a note add is already in flight
     setBusy(true);
-    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { alert(e.message || 'Could not add note'); }
+    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { showMessage(e.message || 'Could not add note'); }
     finally { setBusy(false); gate.leave(); }
   }
   async function del(n) {
     if (!window.confirm('Delete this note?')) return;
-    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { alert(e.message || 'Could not delete'); }
+    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { showMessage(e.message || 'Could not delete'); }
   }
   return (
     <div className="panel">

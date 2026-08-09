@@ -62,7 +62,11 @@ const app = { loanNo: 'YSCAP258134761', address: '109 Chapel St', csz: 'New Have
   ok('staff shows loan number', text.includes('YSCAP258134761'));
   ok('staff shows borrower name', text.includes('Moshe Spitzer'));
   ok('staff shows Net release label', text.includes('Net release'));
-  ok('staff shows Draw fee label', text.includes('Draw fee'));
+  // The fee line is now spelled out as a DEDUCTION (owner-directed 2026-08-03 — say clearly why
+  // money is netted and exactly what is netted), so the label changed from "Draw fee" to
+  // "Less: draw processing fee".
+  ok('staff spells out the fee as a deduction', text.includes('draw processing fee'));
+  ok('staff names the final-approval step separately', text.includes('Final approved'));
   ok('staff shows Schedule of values', /Schedule of values/i.test(text));
   ok('staff shows an inspector note', text.includes('Work looks complete') || text.includes('Fidelis approved'));
   ok('staff KEEPS the capital-partner name (staff surface)', text.includes('Fidelis'));

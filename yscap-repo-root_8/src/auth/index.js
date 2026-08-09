@@ -24,6 +24,7 @@ const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
 const borrowerView = require('../lib/borrower-view');
+const borrowerAssistant = require('../lib/borrower-assistant');
 const { randomInt } = require('crypto');
 
 const MAX_FAILED = 6;
@@ -115,6 +116,65 @@ async function authenticate(req, res, next) {
   // deliberately carrying a non-borrower `sub`.
   if (claims.kind !== 'staff' && claims.kind !== 'borrower')
     return sessionDenied(req, res, 'wrong_token_kind', 'unauthenticated');
+  // BORROWER ASSISTANT (src/lib/borrower-assistant.js): a standing SECOND login a
+  // borrower authorized. The token is a real `kind:'borrower'` token (so every
+  // borrower-scoped endpoint works unchanged) carrying an assistant envelope. The
+  // assistant is its OWN credential, so it is validated against its OWN row here —
+  // NOT borrower_auth — which is what lets an assistant help a borrower who never
+  // set up a portal login of their own, and means the borrower's own password
+  // change never kicks their assistant out (the borrower revokes an assistant by
+  // disabling it, which bumps the assistant's token_version). PII is stripped and
+  // the signing ceremony is blocked downstream (the global guard + the borrower-
+  // router response scrub), keyed on `req.assistant`.
+  const assistant = borrowerAssistant.readAssistant(claims);
+  if (assistant) {
+    let a, bexists;
+    try {
+      a = await db.query(
+        `SELECT token_version, disabled_at, borrower_id, name, email
+           FROM borrower_assistants WHERE id=$1`, [assistant.assistantId]);
+      bexists = await db.query(`SELECT 1 FROM borrowers WHERE id=$1`, [claims.sub]);
+    } catch (e) {
+      console.error('[auth] assistant check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    const arow = a.rows[0];
+    // The envelope must belong to THIS borrower (a forged `sub` can never reach
+    // another borrower's files), the row must be live, the borrower must still
+    // exist, and the token_version must match (disable / re-invite / "sign out
+    // everywhere" all bump it).
+    if (!arow || arow.disabled_at || !bexists.rows[0]
+        || arow.borrower_id !== claims.sub
+        || (arow.token_version || 0) !== (assistant.assistantTv || 0)) {
+      return sessionDenied(req, res, 'assistant_revoked',
+        'This helper login is no longer active. Ask the borrower to invite you again.');
+    }
+    // Past this line the session is PROVEN good, so nothing downstream may answer
+    // 401 (same chokepoint reasoning as the borrower/staff path below).
+    const _st = res.status.bind(res);
+    res.status = (code) => _st(code === 401 ? 502 : code);
+    // Strip the borrower's personal information from EVERY response on this
+    // request, at one chokepoint (covers /auth/me and every borrower route, plus
+    // anything added later) — the assistant "can do everything but not see the
+    // personal information".
+    const _json = res.json.bind(res);
+    res.json = (body) => _json(borrowerAssistant.scrubPii(body));
+    req.actor = { id: claims.sub, kind: 'borrower', role: 'borrower', assistant: true };
+    req.assistant = { id: assistant.assistantId, borrowerId: claims.sub,
+      name: arow.name || null, email: arow.email || null, tv: arow.token_version || 0 };
+    // Sliding session — re-mint WITH the envelope so an assistant token can never
+    // decay into a plain borrower token (which would drop the PII strip + the
+    // sign block). No absolute cap: this is a standing login.
+    const nowSecA = Math.floor(Date.now() / 1000);
+    if (claims.exp && claims.iat
+        && (nowSecA - claims.iat) > Math.min(cfg.sessionRefreshAfterSec, (claims.exp - claims.iat) / 2)) {
+      res.set('X-Refresh-Token', borrowerAssistant.mintToken({
+        borrowerId: claims.sub, borrowerTv: claims.tv || 0,
+        assistantId: assistant.assistantId, assistantTv: arow.token_version || 0,
+      }));
+    }
+    return next();
+  }
   // token_version check (revocation). This runs on EVERY authenticated request,
   // so a DB blip here must answer 503 fast — never reject and hang the request.
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
@@ -1057,6 +1117,75 @@ router.post('/accept', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------------- borrower ASSISTANT credentials ----------------
+// A standing second login a borrower authorized (src/lib/borrower-assistant.js).
+// Its own credential store, its own login/accept/logout — never routed through
+// borrower_auth. The token is minted with the assistant envelope so downstream
+// PII is stripped and signing is blocked.
+
+// Accept an invite: set the password from the one-time link, then sign in.
+router.post('/assistant/accept', async (req, res, next) => {
+  const token = String((req.body && req.body.token) || '');
+  const password = (req.body && req.body.password) || '';
+  if (!token || !password) return res.status(400).json({ error: 'token + password required' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
+  try {
+    const r = await db.query(
+      `SELECT id, borrower_id FROM borrower_assistants
+        WHERE invite_token_hash=$1 AND invite_expires_at > now() AND disabled_at IS NULL
+        LIMIT 1`, [C.sha256(token)]);
+    const row = r.rows[0];
+    if (!row) return res.status(400).json({ error: 'invalid or expired invite' });
+    // Bump token_version on the password set (revokes any prior link/session) and
+    // clear the one-time invite so the link can't be reused.
+    const upd = await db.query(
+      `UPDATE borrower_assistants
+          SET password_hash=$2, token_version=token_version+1,
+              invite_token_hash=NULL, invite_expires_at=NULL,
+              failed_attempts=0, locked_until=NULL, last_login_at=now()
+        WHERE id=$1 RETURNING token_version`,
+      [row.id, await C.hashPassword(password)]);
+    res.json({ kind: 'borrower', assistant: true,
+      token: borrowerAssistant.mintToken({ borrowerId: row.borrower_id, borrowerTv: 0,
+        assistantId: row.id, assistantTv: upd.rows[0].token_version }) });
+  } catch (e) { next(e); }
+});
+
+router.post('/assistant/login', async (req, res, next) => {
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  const password = (req.body && req.body.password) || '';
+  try {
+    const r = await db.query(
+      `SELECT id, borrower_id, password_hash, token_version, failed_attempts, locked_until
+         FROM borrower_assistants
+        WHERE lower(email)=$1 AND disabled_at IS NULL LIMIT 1`, [email]);
+    const row = r.rows[0];
+    // Compensating hash (uniform timing) whether or not the account exists / has a
+    // password yet — an enumeration guard, same as the borrower/staff logins.
+    if (!row || !row.password_hash) { await C.hashPassword(String(password)).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
+    if (row.locked_until && new Date(row.locked_until) > new Date()) return res.status(423).json({ error: 'account locked — try later' });
+    if (!(await C.verifyPassword(password, row.password_hash))) {
+      const fa = (row.failed_attempts || 0) + 1;
+      await db.query(`UPDATE borrower_assistants SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+        [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+    await db.query(`UPDATE borrower_assistants SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]).catch(() => {});
+    res.json({ kind: 'borrower', assistant: true,
+      token: borrowerAssistant.mintToken({ borrowerId: row.borrower_id, borrowerTv: 0,
+        assistantId: row.id, assistantTv: row.token_version || 0 }) });
+  } catch (e) { next(e); }
+});
+
+// Sign the assistant out of ALL their devices (bump the assistant token_version).
+// `/auth/logout` is deliberately blocked for an assistant token (it would bump the
+// BORROWER's token_version and sign the real borrower out of their own devices).
+router.post('/assistant/logout', requireAuth, async (req, res) => {
+  if (!req.assistant) return res.status(400).json({ error: 'not a helper session' });
+  await db.query(`UPDATE borrower_assistants SET token_version=token_version+1 WHERE id=$1`, [req.assistant.id]).catch(() => {});
+  res.json({ ok: true, scope: 'all_devices' });
+});
+
 // ---------------- logout (revoke) + me ----------------
 /**
  * Sign out. THIS DEVICE ONLY by default.
@@ -1112,7 +1241,12 @@ router.get('/me', requireAuth, async (req, res) => {
     startedAt: req.impersonation.startedAt * 1000,
     expiresAt: (req.impersonation.startedAt + borrowerView.MAX_SESSION_SEC) * 1000,
   } : null;
-  res.json({ kind: 'borrower', ...r.rows[0], ...(impersonation ? { impersonation } : {}) });
+  // A helper (assistant) session reports that it IS one, so the portal can show
+  // the "you're helping <name> — personal details are hidden, you can't sign"
+  // banner and disable the signing buttons. (`req.assistant.name` is the helper's
+  // own name; the borrower identity is above.)
+  const assistant = req.assistant ? { assistant: true, name: req.assistant.name || null } : null;
+  res.json({ kind: 'borrower', ...r.rows[0], ...(impersonation ? { impersonation } : {}), ...(assistant || {}) });
 });
 
 module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken, mintBorrowerSession, mintStaffSession };

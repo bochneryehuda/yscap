@@ -30,6 +30,8 @@
  */
 const path = require('path');
 const reg = require('../conditions/field-registry');
+// One wording for "what does this file vest in" across every tape + screen.
+const { vestingCell } = require('../vesting-label');
 
 // Template cell-style indices (from the workbook's styles.xml cellXfs) — reused
 // so injected cells carry the template's own formatting:
@@ -245,7 +247,7 @@ function economics(loan) {
 // Each entry: [column, type, styleIndex|null, getter(loan, econ)]
 const COLUMNS = [
   ['A', 's', null, (l) => l.app.investor_loan_number || l.app.ys_loan_number || ''],
-  ['B', 's', null, (l) => l.vesting.llc || ''],
+  ['B', 's', null, (l) => vestingCell(l.vesting)],   // Borrowing Entity ("Individual" when there is no entity)
   ['C', 's', null, (l) => guarantorC(l)],
   ['D', 's', null, (l) => l.address.line1 || ''],
   ['E', 's', null, (l) => l.address.city || ''],
@@ -319,6 +321,18 @@ function bulkFilename() {
 module.exports = {
   key: 'fidelis',
   buyerKey: 'fidelis',
+  // The buyer's REAL note-buyer labels (applications.lender / the ClickUp dropdown),
+  // enumerated so the closed-list export gate (buyer-rule.keyNamesTapeBuyer) matches
+  // them. normNoteBuyer is EXACT (strips only casing/spacing/punctuation), so the
+  // owner's own label "Fidelis Investors LLC" normalizes to 'fidelisinvestorsllc' —
+  // NOT the bare 'fidelis' key — and without these a Fidelis file could neither export
+  // its tape (non-admin) nor persist its New-Construction answers (they were silently
+  // dropped, so every re-export re-asked). SAME shape as emcap.js buyerAliases; a
+  // CLOSED list, never a prefix/fuzzy match — the export direction is the one where an
+  // over-match ships a data tape to the WRONG buyer. Every spelling here is
+  // unambiguously Fidelis (the plural/singular + Investors/Investments variants the
+  // rest of the system already records — see field-registry.isFidelisNoteBuyer, db/151).
+  buyerAliases: ['fidelisinvestors', 'fidelisinvestorsllc', 'fidelisinvestorllc', 'fidelisinvestments', 'fidelisinvestmentsllc'],
   name: 'Fidelis',
   fullName: 'Fidelis Investors',
   description: 'Fidelis Pricing Matrix & Data Tape — the loan filled into Fidelis’s own Excel workbook (pricing tab auto-recalculates).',

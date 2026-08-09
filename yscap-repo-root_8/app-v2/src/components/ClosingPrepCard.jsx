@@ -64,7 +64,7 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium'
    order and we should also have the preview button". Checking that the term sheet
    and the binder about to go to the attorney are the right files is the point of
    showing the list at all. */
-function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
+function DocumentPreview({ documents, isAssignment, vestsIndividually, isRefinance, onPreview, onDownload }) {
   const [open, setOpen] = useState(false);
   const groups = documents.groups || [];
   const total = groups.reduce((n, g) => n + g.docs.length, 0);
@@ -79,8 +79,16 @@ function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
   // to warn about" rather than warning on every multi-part package.
   const partCap = Number(documents.maxParts) || 0;
   const overParts = partCap > 0 && partsNeeded > partCap;
-  // An assignment set is only "missing" on a deal that IS an assignment.
-  const missing = (documents.missing || []).filter((m) => !(m.key === 'assignment' && !isAssignment));
+  // The server already drops the groups this deal does not need (assignment on a
+  // straight purchase, purchase contract on a refinance, entity documents on an
+  // individual). This mirror-filter is belt-and-suspenders so a stale bundle can
+  // never show a document as outstanding that the deal does not require.
+  const missing = (documents.missing || []).filter((m) => {
+    if (m.key === 'assignment' && !isAssignment) return false;
+    if (m.key === 'contract' && isRefinance) return false;
+    if (m.key === 'llc' && vestsIndividually) return false;
+    return true;
+  });
   const ins = documents.insurance || {};
   return (
     <div style={{ marginTop: 10 }}>
@@ -143,10 +151,40 @@ function DocumentPreview({ documents, isAssignment, onPreview, onDownload }) {
         </div>
       )}
 
+      {/* WAITING TO BE ACCEPTED — held back, not missing (owner-directed
+          2026-08-03). These documents ARE on the file; nobody has accepted them,
+          so they are not attached. Shown before "not on the file yet" and worded
+          differently on purpose: sending somebody to chase a borrower for a
+          document that is sitting in the building is the exact confusion the
+          old "Nothing on file" line created. */}
+      {(documents.awaiting || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
+          <b style={{ color: INK }}>Waiting to be accepted — not attached:</b>
+          <ul style={{ margin: '3px 0 0 18px', padding: 0, color: MUTED }}>
+            {(documents.awaiting || []).map((d) => (
+              <li key={d.id} className="small">{d.filename}{d.groupLabel ? ` — ${d.groupLabel}` : ''}</li>
+            ))}
+          </ul>
+          <div className="small" style={{ color: MUTED, marginTop: 3 }}>
+            These are on the file already. Only documents somebody has accepted go to the attorney —
+            accept them on their condition and they will be included.
+          </div>
+        </div>
+      )}
+
+      {vestsIndividually && (
+        <div className="small" style={{ color: MUTED, marginTop: 6 }}>
+          This file closes in the borrower&rsquo;s <b style={{ color: INK }}>personal name</b> — no entity (LLC)
+          documents are required, and the attorney email says so.
+        </div>
+      )}
+
       {missing.length > 0 && (
         <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
           <b style={{ color: INK }}>Not on the file yet:</b>{' '}
-          <span style={{ color: MUTED }}>{missing.map((m) => m.label).join(' · ')}</span>
+          <span style={{ color: MUTED }}>
+            {missing.map((m) => `${m.label}${m.awaitingCount ? ` (${m.awaitingCount} waiting to be accepted)` : ''}`).join(' · ')}
+          </span>
           <div className="small" style={{ color: MUTED, marginTop: 3 }}>
             The email says these are coming. You can send now and they follow later, or add them first.
           </div>
@@ -224,7 +262,11 @@ function Recipients({ recipients, team, contacts, extra, setExtra, disabled }) {
   );
 }
 
-export default function ClosingPrepCard({ appId }) {
+/* `onChanged` lets the card tell whoever hosts it that the closing order moved —
+   the Orders panel refreshes the sibling title/insurance cards and the section
+   badges off it. Without it the three order sections each held their own copy of
+   the file and only the one you touched was ever right. */
+export default function ClosingPrepCard({ appId, onChanged = null }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
@@ -233,6 +275,8 @@ export default function ClosingPrepCard({ appId }) {
   const [note, setNote] = useState('');
   const [showDeal, setShowDeal] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const [followMsg, setFollowMsg] = useState('');
   const [previewDoc, setPreviewDoc] = useState(null);
 
@@ -243,6 +287,11 @@ export default function ClosingPrepCard({ appId }) {
       .catch((e) => setErr((e && e.message) || 'Could not load closing prep.'));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
+  /* Reload THIS card and tell the host the order moved, so the sibling order
+     sections and the section badges stop showing a file that has moved on.
+     Deliberately not folded into `load` itself: that also runs on mount, and
+     announcing a change nobody made would cost a round trip on every render. */
+  const reload = useCallback(() => { load(); if (onChanged) onChanged(); }, [load, onChanged]);
 
   const download = async (d) => {
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
@@ -271,9 +320,12 @@ export default function ClosingPrepCard({ appId }) {
           + (failed.length ? ` ${failed.length} of the follow-on emails did not send — these documents did NOT reach the attorney: ${failed.map((f) => f.files.join(', ')).join('; ')}. Re-send to try again.` : ''),
       });
       setNote('');
-      load();
+      reload();
     } catch (e) {
-      if (e && e.status === 409) setMsg({ tone: 'warn', text: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: true });
+      // The server's own wording wins — see the note on the same branch in
+      // OrdersPanel: a hard-coded string here tells somebody who just pressed
+      // "force a re-send" to force a re-send.
+      if (e && e.status === 409) setMsg({ tone: 'warn', text: (e && e.message) || 'Closing prep was already requested for this file. Use Follow-up, or force a re-send below.', canForce: !(e.data && e.data.code === 'too_soon') });
       else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the closing-prep request.' });
     } finally { setBusy(''); }
   };
@@ -286,16 +338,35 @@ export default function ClosingPrepCard({ appId }) {
         extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       });
       setMsg({ tone: 'ok', text: `Follow-up sent on the closing chain to ${(r.sent_to || []).join(', ')}.` });
-      setFollowMsg(''); setFollowOpen(false); load();
+      setFollowMsg(''); setFollowOpen(false); reload();
     } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the follow-up.' }); }
     finally { setBusy(''); }
   };
 
+  /* CANCEL NOW EMAILS OUTSIDE COUNSEL (owner-directed 2026-08-07). The old confirm said "Nobody is
+     emailed", which was true then and is exactly the behaviour the owner asked to change: an
+     attorney holding our package and a term sheet has to be told to stand down, not just quietly
+     dropped off the updates.
+
+     A REASON BOX, not a confirm dialog. The reason goes INTO the email counsel receives ("this is
+     a brokered file, it is closing with RCN"), which is the single most useful line on it — and a
+     browser confirm cannot collect one. `reopen` keeps its one-click path: putting an order back
+     on the desk emails nobody and needs no explanation. */
   const cancel = async (reopen) => {
-    if (!reopen && !window.confirm('Cancel the closing-prep request? Nobody is emailed, and anything the attorney already sent stays on the file.')) return;
     setBusy('cancel'); setMsg(null);
-    try { await api.staffCancelClosingPrep(appId, reopen); load(); }
-    catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
+    try {
+      const r = await api.staffCancelClosingPrep(appId, reopen, reopen ? null : cancelReason);
+      setCancelOpen(false); setCancelReason('');
+      // Say which of the two things happened. "Cancelled" and "cancelled AND counsel was told"
+      // are different states, and assuming the second when only the first is true is how an
+      // attorney ends up drafting a file nobody is working.
+      if (!reopen) {
+        setMsg(r && r.notified
+          ? { tone: 'ok', text: 'Cancelled — the attorney has been told to disregard this file, and no further updates will go out to them.' }
+          : { tone: 'warn', text: 'Cancelled and all further updates are stopped — but we could not send the cancellation email. Contact the attorney directly.' });
+      }
+      reload();
+    } catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update.' }); }
     finally { setBusy(''); }
   };
 
@@ -313,6 +384,8 @@ export default function ClosingPrepCard({ appId }) {
   const orderOnChain = ((data.chain && data.chain.messages) || [])
     .some((m) => m.event_kind === 'order' && (m.status === 'sent' || m.status === 'carried'));
   const isAssignment = !!(data.file || {}).isAssignment;
+  const vestsIndividually = !!(data.file || {}).vestsIndividually;
+  const isRefinance = !!(data.file || {}).isRefinance;
   const ready = blockers.length === 0;
 
   return (
@@ -352,6 +425,7 @@ export default function ClosingPrepCard({ appId }) {
       </div>
 
       <DocumentPreview documents={data.documents || {}} isAssignment={isAssignment}
+        vestsIndividually={vestsIndividually} isRefinance={isRefinance}
         onPreview={setPreviewDoc} onDownload={download} />
 
       <Recipients recipients={data.recipients || { to: [], cc: [] }} team={data.team || {}}
@@ -405,13 +479,29 @@ export default function ClosingPrepCard({ appId }) {
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
-            <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>
-              Cancel request
-            </button>
+            {/* NOT on a FINISHED request. Cancelling is an explicit stand-down
+                that shuts the follow-up and reply doors on the closing chain, so
+                on a request that already finished it can only cost the team the
+                ability to write to counsel about a deal that is done. Reopen is
+                the action there. */}
+            {order.status !== 'completed' && (
+              <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }}
+                onClick={() => { setCancelOpen((o) => !o); setFollowOpen(false); }}
+                title="Tell the attorney to disregard this file and stop every further update to them">
+                Cancel closing prep
+              </button>
+            )}
           </>
         )}
-        {order.status === 'cancelled' && (
-          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}>Reopen</button>
+        {/* Both ways this order ends. It reaches 'completed' on its own once the
+            deal is over (closing-prep.retireClosedOrdersOnce), so offering Reopen
+            only for 'cancelled' left a closed file that came back to life with no
+            way back onto the desk. */}
+        {(order.status === 'cancelled' || order.status === 'completed') && (
+          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)}
+            title="Put this request back on the Orders desk without re-sending it">
+            Reopen
+          </button>
         )}
       </div>
 
@@ -428,6 +518,32 @@ export default function ClosingPrepCard({ appId }) {
               {busy === 'follow' ? 'Sending…' : 'Send follow-up'}
             </button>
             <button className="btn ghost small" onClick={() => { setFollowOpen(false); setFollowMsg(''); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {cancelOpen && (
+        <div className="panel" style={{ background: 'var(--surface-soft, #f4f1ea)', marginTop: 10, borderLeft: '3px solid var(--danger, #B24A2B)' }}>
+          <div style={{ fontWeight: 700, color: INK }}>Cancel closing prep</div>
+          <div className="small" style={{ color: MUTED, marginTop: 4 }}>
+            The attorney is emailed on this same chain and told to disregard the file and stop work.
+            After this, nothing further goes out to them — no executed term sheet, no closing-date
+            change, no clear-to-close. Everything they already sent stays on the file, and you can
+            reopen the request later if the deal comes back.
+          </div>
+          <label className="muted small" style={{ color: MUTED, display: 'block', marginTop: 8 }}>
+            Why (optional — this goes in the email they receive)
+          </label>
+          <textarea className="input" rows={2} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="e.g. This is a brokered file — it is closing with RCN." />
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn primary small" disabled={busy === 'cancel'}
+              style={{ background: 'var(--danger, #B24A2B)', borderColor: 'var(--danger, #B24A2B)' }}
+              onClick={() => cancel(false)}>
+              {busy === 'cancel' ? 'Cancelling…' : 'Cancel and tell the attorney'}
+            </button>
+            <button className="btn ghost small" disabled={busy === 'cancel'}
+              onClick={() => { setCancelOpen(false); setCancelReason(''); }}>Keep it open</button>
           </div>
         </div>
       )}

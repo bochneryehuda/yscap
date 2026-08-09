@@ -36,6 +36,14 @@ const SWITCHES = [
   // gate (checked first), so it is always safe to leave on while verifying.
   { key: 'ENCOMPASS_FLOOD_DRYRUN', integration: 'encompass', label: 'Flood orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.encompassFlood && cfg.encompassFlood.dryrun) },
   { key: 'ENCOMPASS_FLOOD_OUTBOUND_ENABLED', integration: 'encompass', label: 'Place flood orders in Encompass (write)', dangerous: true, envDefault: () => cfg.encompassFloodOutboundEnabled },
+  // The appraisal-XML catcher. READ-ONLY, but it is a poller that talks to a
+  // vendor API on a timer, so it needs an off switch a human can reach WITHOUT a
+  // Render restart. The env var ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED=1 still
+  // wins on its own (it is checked first, so it can stop the catcher even if the
+  // switches table is unreachable).
+  // `resume: false` — the catcher re-reads this switch on EVERY tick, so turning
+  // it back on resumes by itself with no restart.
+  { key: 'ENCOMPASS_APPRAISAL_XML_CATCH_ENABLED', integration: 'encompass', label: 'Catch appraisal XML out of Encompass (read-only poller)', dangerous: false, resume: false, envDefault: () => process.env.ENCOMPASS_APPRAISAL_XML_CATCH_DISABLED !== '1' },
   // Xactus "Flood ReportX" — the ACTIVE flood-cert provider (owner-directed
   // 2026-07-30). This master switch turns the button's Xactus ordering on/off — the
   // ONE control here. There is deliberately NO "TEST MODE" toggle: test mode was
@@ -46,6 +54,19 @@ const SWITCHES = [
   // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
   // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.
   { key: 'APPRAISAL_ASIS_AUTO_ENABLED', integration: 'azure_docint', label: 'Lower the As-Is value automatically when the appraisal reads lower than the purchase price', dangerous: true, envDefault: () => cfg.appraisalAsIsAutoEnabled },
+  // AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway). Master turns
+  // on the lookups cache + the status/comment poll worker (reads); OUTBOUND actually
+  // places orders, messages the AMC, requests revisions and uploads documents.
+  { key: 'AMC_ENABLED', integration: 'amc', label: 'Order appraisals from the AMC (reading + polling)', dangerous: false, resume: true, envDefault: () => !!(cfg.amc && cfg.amc.enabled) },
+  // Test mode: build + log the exact request, send nothing. Dry-run wins over the
+  // write gate (checked first), so it is always safe to leave on while verifying.
+  { key: 'AMC_DRYRUN', integration: 'amc', label: 'AMC orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.amc && cfg.amc.dryrun) },
+  { key: 'AMC_OUTBOUND_ENABLED', integration: 'amc', label: 'Place appraisal orders / message the AMC / upload documents (write)', dangerous: true, envDefault: () => !!(cfg.amc && cfg.amc.outboundEnabled) },
+  // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
+  // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact
+  // enrichment, which is a per-person human click and can never be turned on globally.
+  { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
+  { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

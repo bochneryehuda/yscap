@@ -66,7 +66,7 @@ const CLAIM_STALE_MIN = 15;
 /** The system messages that may ride this chain. Adding another one is a single
     entry here plus the migration's CHECK — the send path itself is generic, which
     is the owner's "build up the logic that we can potentially add more emails". */
-const EVENT_KINDS = ['order', 'followup', 'executed_term_sheet', 'closing_date', 'clear_to_close', 'manual'];
+const EVENT_KINDS = ['order', 'followup', 'executed_term_sheet', 'closing_date', 'clear_to_close', 'manual', 'cancel'];
 
 function isAppId(v) { return UUID_RE.test(String(v || '').trim().toLowerCase()); }
 

@@ -20,9 +20,24 @@
    Reuses the shared loan-sizing math from standard-program.js (YSP.sizeLoan,
    YSP.normStrategy) so both programs size identically off the same caps.
    ===================================================================== */
+/* WHY THE BROWSER DOES NOT GET `constants` (2026-08-03).
+   The api object carries a `constants` block (markup, origination, and — on the
+   Standard engine — the whole leverage MATRIX and the RA rate build-up; on Silver
+   the entire RATE_BLOCKS grid). Exposed on the global, one line in a browser
+   console dumped the firm's whole guideline book as tidy JSON:  GSP.constants.MATRIX
+   The SERVER still needs it — src/lib/pricing.js reads constants.ORIG_PCT, and the
+   Silver band/matrix/fixture test scripts read the grid — and all of those run in
+   Node, so Node keeps the FULL api unchanged. Only the browser global is narrowed.
+   `browserView` is a shallow copy: every method is the SAME function object, closing
+   over the SAME module state, so setMarkup()/evaluate() behave identically. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./standard-program.js"));
-  else root.GSP = factory(root.YSP);
+  else root.GSP = browserView(factory(root.YSP));
+  function browserView(a) {
+    var out = {}, k;
+    for (k in a) if (Object.prototype.hasOwnProperty.call(a, k) && k !== "constants") out[k] = a[k];
+    return out;
+  }
 }(typeof self !== "undefined" ? self : this, function (YSP) {
   "use strict";
 
@@ -33,9 +48,21 @@
   var MARKUP = 0.005;            // base YS markup (0.5%); top-experience Tier 1 is exempt — see markupFor()
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default
   function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
-  // Tier 1 = the highest experience level (Fix & Flip / Bridge 10+, Ground-up 8+): NO markup, ever.
+  // Per-experience-tier markup (owner-directed item 15): { 1:frac, 2:frac, 3:frac },
+  // each tier OPTIONAL. When a tier is configured here it wins; otherwise the
+  // historic rule stands — Tier 1 (top experience) exempt at 0, other tiers the
+  // base/override markup. So an UNSET map prices byte-identically to before,
+  // INCLUDING Gold Tier 1 staying at 0; setting Tier 1 here is exactly the owner's
+  // "we don't even have an option to control the best tier's markup".
+  var MARKUP_TIERS = null;
+  function setMarkupTiers(m) { MARKUP_TIERS = (m && typeof m === "object") ? m : null; }
+  // Tier 1 = the highest experience level (Fix & Flip / Bridge 10+, Ground-up 8+): NO markup by default.
   // All other tiers carry the base markup (or the admin override when one is set).
-  function markupFor(tier) { return (tier === 1) ? 0 : effMarkup(); }
+  function markupFor(tier) {
+    if (MARKUP_TIERS && tier != null && typeof MARKUP_TIERS[tier] === "number"
+        && isFinite(MARKUP_TIERS[tier]) && MARKUP_TIERS[tier] >= 0) return MARKUP_TIERS[tier];
+    return (tier === 1) ? 0 : effMarkup();
+  }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? f : null; }
   var ORIG_PCT = 0.0125;         // 1.25% origination on the total loan
   var MAX_LOAN = 3000000, MIN_LOAN = 100000;
@@ -299,6 +326,11 @@
     }
     // optional voluntary de-leverage (slider): tighten LTC only
     if (input.targetLTC && input.targetLTC > 0 && caps.maxLTC) caps.maxLTC = Math.min(caps.maxLTC, input.targetLTC);
+    /* A typed loan amount — a voluntary ceiling on the tier's own dollar wall, so it
+       can only ever REDUCE. Identical in kind and effect to the line above; see the
+       full note in standard-program.js (whose sizeLoan this engine reuses). Inert
+       when unset; raising a loan still requires the admin basis below. */
+    if (input.targetLoan && input.targetLoan > 0) caps.maxLoan = Math.min(caps.maxLoan, input.targetLoan);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) caps.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) caps.maxARLTV = input.ovrARLTV;
@@ -439,7 +471,7 @@
   /* ---------------- public API ---------------- */
   return {
     evaluate: evaluate,
-    setMarkup: setMarkup,
+    setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     productOf: productOf,
     goldHeavy: goldHeavy,
     tierFromExp: tierFromExp,

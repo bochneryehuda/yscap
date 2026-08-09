@@ -502,12 +502,23 @@ function shadowCheckInner(input, result, opts) {
     if (num(c.maxAcqLTV) !== row.maxacq) {
       return bad('cap_mismatch', `Our system capped acquisition LTV at ${pctS(c.maxAcqLTV)}; the workbook tier grid says ${pctS(row.maxacq)}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
+    /* A VOLUNTARY DE-LEVERAGE NARROWS THE CEILING OUR ENGINE USES, and the monitor
+       has to expect that or it inverts itself. `targetLTC` has always been
+       compensated below; `targetARLTV` (the value-side ladder rung) and
+       `targetLoan` (a typed amount) are the same kind of thing — a MIN the borrower
+       or an officer deliberately asked for — and without the same compensation every
+       de-levered Silver file files a permanent advisory claiming the pricing engine
+       disagrees with the note buyer's workbook. That is the worst possible failure
+       for this control: it screams on the SAFE, smaller-loan files and stays silent
+       on the max-loan ones. Expect the reduction, then hold the workbook to account
+       for everything else exactly as before. */
+    const expAr = Math.min(row.maxar, num(input.targetARLTV) > 0 ? num(input.targetARLTV) : Infinity);
     if (!gridCappedAr) {
-      if (num(c.maxARLTV) !== row.maxar) {
-        return bad('cap_mismatch', `Our system capped after-repair LTV at ${pctS(c.maxARLTV)}; the workbook tier grid says ${pctS(row.maxar)}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+      if (Math.abs(num(c.maxARLTV) - expAr) > 1e-12) {
+        return bad('cap_mismatch', `Our system capped after-repair LTV at ${pctS(c.maxARLTV)}; the workbook tier grid says ${pctS(expAr)}${num(input.targetARLTV) > 0 ? ' (with the requested de-leverage)' : ''}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
       }
-    } else if (!(num(c.maxARLTV) < row.maxar + 1e-12)) {
-      return bad('cap_mismatch', `The grid step-down RAISED the after-repair LTV cap to ${pctS(c.maxARLTV)} above the workbook's ${pctS(row.maxar)} — a step-down may only lower it.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+    } else if (!(num(c.maxARLTV) < expAr + 1e-12)) {
+      return bad('cap_mismatch', `The grid step-down RAISED the after-repair LTV cap to ${pctS(c.maxARLTV)} above the workbook's ${pctS(expAr)} — a step-down may only lower it.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
     const expLtc = Math.min(row.maxltc, num(input.targetLTC) > 0 ? num(input.targetLTC) : Infinity);
     if (!gridCappedLtc) {
@@ -517,10 +528,13 @@ function shadowCheckInner(input, result, opts) {
     } else if (!(num(c.maxLTC) < expLtc + 1e-12)) {
       return bad('cap_mismatch', `The grid step-down RAISED the loan-to-cost cap to ${pctS(c.maxLTC)} above the workbook's ${pctS(expLtc)} — a step-down may only lower it.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
-    const okLoanA = num(c.maxLoan) === row.maxloan;
-    const okLoanB = num(c.maxLoan) === Math.min(row.maxloan, SMALL_MAX) && sizeBand === 'S';
+    // Same compensation for a TYPED loan amount — a voluntary dollar ceiling, so the
+    // engine's maxLoan is legitimately the smaller of the workbook's and the amount.
+    const tgtLoan = num(input.targetLoan) > 0 ? num(input.targetLoan) : Infinity;
+    const okLoanA = num(c.maxLoan) === Math.min(row.maxloan, tgtLoan);
+    const okLoanB = num(c.maxLoan) === Math.min(row.maxloan, SMALL_MAX, tgtLoan) && sizeBand === 'S';
     if (!okLoanA && !okLoanB) {
-      return bad('cap_mismatch', `Our system used a ${usd(c.maxLoan)} maximum loan for this tier; the workbook says ${usd(row.maxloan)}${sizeBand === 'S' ? ` (capped at ${usd(Math.min(row.maxloan, SMALL_MAX))} in the small band)` : ''}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+      return bad('cap_mismatch', `Our system used a ${usd(c.maxLoan)} maximum loan for this tier; the workbook says ${usd(row.maxloan)}${sizeBand === 'S' ? ` (capped at ${usd(Math.min(row.maxloan, SMALL_MAX))} in the small band)` : ''}${tgtLoan < Infinity ? ` (a ${usd(tgtLoan)} amount was requested)` : ''}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
     if (status === 'ELIGIBLE' && total > row.maxloan + 1) {
       return bad('cap_mismatch', `The sized ${usd(total)} loan exceeds the workbook's ${usd(row.maxloan)} tier maximum.`, { cellKey: `${prodTok}|${purp}|T${tier}` });

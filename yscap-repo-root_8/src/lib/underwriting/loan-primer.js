@@ -69,9 +69,12 @@ THE MONEY FIELDS — MEMORIZE THESE DISTINCTIONS (this is where misreads happen)
   financed interest reserve). This is NOT the cost basis and NOT the purchase price.
 
 THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
-- Total Cost Basis  = (purchase_price OR as_is_value, whichever the program uses) + rehab_budget
+- Total Cost Basis  = min(purchase_price, as_is_value) + rehab_budget
   [+ financed interest reserve, for programs where the reserve sits IN the cost basis].
-  On an assignment the price term is the EFFECTIVE (recognized) price, not the real total.
+  The acquisition term is the LOWER of the purchase price and the as-is value (a refinance
+  uses the as-is value); when the as-is value is below the purchase price the cost basis —
+  and the LTC — go by the as-is value, not the purchase price. On an assignment the price
+  term is the EFFECTIVE (recognized) price, not the real total.
 - loan_amount = initial advance (a.k.a. acquisition advance) + rehab holdback + financed
   interest reserve. These three ALWAYS sum to loan_amount to the dollar.
     * initial advance  = the day-one wire toward acquisition (capped by as-is / purchase LTV).
@@ -79,7 +82,7 @@ THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
     * financed interest reserve = pre-funded interest, financed into the loan (may be 0).
 - LEVERAGE, all as loan-to-X percentages (0-100):
     * ltv  = loan-to-value as registered on the file.
-    * loan_to_cost (LTC)  = loan_amount / (purchase_price + rehab_budget).
+    * loan_to_cost (LTC)  = loan_amount / (min(purchase_price, as_is_value) + rehab_budget).
     * loan_to_arv (LTARV) = loan_amount / arv.
   Each program caps the initial advance vs as-is/purchase, the LTC, and the ARV LTV. The loan is
   sized to the TIGHTEST binding cap. NEVER recompute or override an engine number.
@@ -89,8 +92,10 @@ THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
 
 PROGRAM / STRUCTURE
 - registered_program: 'standard' (Standard Program), 'gold' (Gold Standard Program),
-  'manual' (a manual override of the structure), or 'none' (not registered yet). This is the
-  product REGISTERED in the Term Sheet Studio — the authoritative structure.
+  'silver' (Silver Program — the EMCAP product), 'manual' (a manual override of the structure),
+  or 'none' (not registered yet). This is the product REGISTERED in the Term Sheet Studio — the
+  authoritative structure. 'silver' is a REAL, fully-valid program: never treat it as an unknown
+  or out-of-list program.
 - The frozen pricing engines (Standard = window.YSP, Gold = window.GSP) are the SOLE authority
   for every number (rates, caps, sizing, fees, reserves). AI NEVER recomputes, re-prices,
   invents, or overrides an engine number. A missing engine number stays missing.
@@ -127,7 +132,7 @@ THE CONFUSABLES — never substitute one for another
 - purchase_price vs as_is_value vs arv — three different dollars (paid / current value / future
   post-rehab value). ARV is highest on a rehab deal.
 - loan_amount vs cost basis vs purchase_price — loan_amount is what WE lend (a subset of cost).
-  Cost basis = price + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
+  Cost basis = min(price, as-is) + rehab (+reserve). loan/cost = LTC; loan/price is NOT a headline metric.
 - real purchase price vs effective (recognized) purchase price — on an assignment, "Purchase
   price" shows seller + FULL fee; the loan SIZES on the effective price (seller + financeable
   fee). Do not size on the real total; do not label the effective price as the purchase price.
@@ -277,8 +282,39 @@ function fileSummaryText(primer, opts) {
       lines.push(`    · ${discrepancyLine(d)}`);
     }
   }
+  // The whole-loan context reports a required fact "missing" when it is absent from the
+  // AUTHORITATIVE (registered) structure — loan_amount (and note_rate) are sourced from the
+  // registration ONLY, so a file with a PRELIMINARY loan amount on the application (shown in the
+  // "Loan amount" line above) but no registered product lists loan_amount here as missing.
+  // Printing "Loan amount $360,500" AND "loan_amount MISSING REQUIRED" side by side reads as a
+  // self-contradiction, and the whole-file narrative reasoner (correctly, given that input)
+  // flags it FATAL — a false positive the owner reported. So reconcile the two views against the
+  // SAME displayed fields: a required key the file has NO value for anywhere is genuinely missing
+  // (NOT_READY); a required key the file DOES show a value for is simply NOT YET REGISTERED /
+  // engine-sized — a normal workflow state, never a data contradiction. This keeps the
+  // authoritative structure (registration-only) intact while making the grounding coherent.
   if (primer && Array.isArray(primer.missing) && primer.missing.length) {
-    lines.push(`- MISSING REQUIRED (treat as NOT_READY): ${primer.missing.join(', ')}`);
+    // A missing-required key uses the whole-loan-context field name; the displayed summary uses
+    // the rule-context name (only `program` differs — it renders as `registered_program`). And
+    // `registered_program === 'none'` is the primer's explicit "not registered yet" sentinel, NOT
+    // a real value, so a missing program shown as 'none' stays genuinely missing (no false "it's
+    // there" reconciliation).
+    const DISPLAY_KEY = { program: 'registered_program' };
+    const hasDisplayedValue = (k) => {
+      const dk = DISPLAY_KEY[k] || k;
+      const v = f[dk];
+      if (v === null || v === undefined || v === '') return false;
+      if (dk === 'registered_program' && String(v).trim().toLowerCase() === 'none') return false;
+      return true;
+    };
+    const trulyMissing = primer.missing.filter((k) => !hasDisplayedValue(k));
+    const notYetRegistered = primer.missing.filter((k) => hasDisplayedValue(k));
+    if (trulyMissing.length) {
+      lines.push(`- MISSING REQUIRED (absent from every source — treat as NOT_READY): ${trulyMissing.join(', ')}`);
+    }
+    if (notYetRegistered.length) {
+      lines.push(`- NOT YET REGISTERED (a preliminary value is on the file, shown above, but the product is not yet registered/engine-sized — a normal workflow state, NOT a data contradiction): ${notYetRegistered.join(', ')}`);
+    }
   }
   if (Array.isArray(primer && primer.facts) && primer.facts.length) {
     const confirmed = primer.facts.filter((x) => x && (x.status === 'human_confirmed' || x.status === 'verified')).length;

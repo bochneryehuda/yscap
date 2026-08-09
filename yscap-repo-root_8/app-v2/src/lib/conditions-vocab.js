@@ -66,6 +66,55 @@ export function conditionStatusClass(status) {
 }
 
 /* ---------------------------------------------------------------------------
+ * 1b. THE DISPLAY STATE — a richer read than the raw status column, for the dot
+ *     colour + the small status line (owner-directed 2026-08-05: "the small dot at
+ *     the front should have better colors … at the bottom write the wording in very
+ *     small text … you should be able to see from outside if this condition has
+ *     documents in it, if it was rejected, if it was not accepted yet, pending
+ *     acceptance, or pending sign-off after it was accepted").
+ *
+ *     The status column alone can't separate "a document is waiting to be reviewed"
+ *     from "a document was accepted and now it just needs signing off" — both are
+ *     `received` — and it can't fold in a rejected document. This computes, from the
+ *     row PLUS its current documents, ONE state that decides the dot colour, a short
+ *     status word, and the next step in plain language. Worst news first, so a
+ *     rejected document is never hidden behind a later-arriving one.
+ *
+ *     Six colours (one more than the raw statuses): the extra one is `cond-accepted`
+ *     (documents accepted, not yet signed off) — a distinct blue so it reads apart
+ *     from "in review" (gold) and "signed off" (green).
+ * ------------------------------------------------------------------------ */
+export const CONDITION_DISPLAY = {
+  outstanding: { cls: 'cond-outstanding', label: 'Not started',        next: 'Nothing submitted yet — this condition has not been started.' },
+  requested:   { cls: 'cond-requested',   label: 'Asked the borrower',  next: 'We have asked the borrower; waiting on them to provide it.' },
+  review:      { cls: 'cond-received',    label: 'To review',           next: 'A document is in and waiting for you to accept or reject it.' },
+  accepted:    { cls: 'cond-accepted',    label: 'Accepted — sign off', next: 'The document is accepted; sign the condition off to complete it.' },
+  rejected:    { cls: 'cond-issue',       label: 'Sent back',           next: 'A document was rejected — the borrower needs to send a corrected one.' },
+  signed:      { cls: 'cond-satisfied',   label: 'Signed off',          next: 'Done — this condition is signed off.' },
+  waived:      { cls: 'cond-satisfied',   label: 'Not required',        next: 'Cleared — this condition was marked not required.' },
+};
+
+/* Compute the display state from a condition row + its current documents.
+   `docs` is the condition's documents (each with review_status + is_current). */
+export function conditionDisplayState(it = {}, docs = []) {
+  const list = Array.isArray(docs) ? docs.filter((d) => d && d.is_current !== false) : [];
+  const awaiting = list.filter((d) => (d.review_status || 'pending') === 'pending');
+  const accepted = list.filter((d) => d.review_status === 'accepted');
+  const rejected = list.filter((d) => d.review_status === 'rejected');
+  let key;
+  if (it.waived_at) key = 'waived';
+  else if (it.signed_off_at) key = 'signed';
+  else if (it.status === 'issue' || rejected.length) key = 'rejected';   // worst news first
+  else if (awaiting.length) key = 'review';
+  else if (accepted.length) key = 'accepted';
+  else if (it.status === 'requested') key = 'requested';
+  else key = 'outstanding';
+  const base = CONDITION_DISPLAY[key];
+  const label = key === 'review' && awaiting.length > 1 ? `${awaiting.length} to review` : base.label;
+  return { key, cls: base.cls, label, next: base.next, hasDocs: list.length > 0 };
+}
+
+/* ---------------------------------------------------------------------------
  * 2. TIMING, not "severity".
  *
  * `conditions.severity` holds standard / prior_to_docs / prior_to_funding /

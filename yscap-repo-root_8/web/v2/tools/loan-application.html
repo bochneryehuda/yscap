@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<script src="../theme.js?v=n7"></script>
+<script src="../theme.js?v=tsprog1"></script>
 <script>
 (function () {
   try {
@@ -11,7 +11,7 @@
   } catch (e) {}
 })();
 </script>
-<script src="../brand.js?v=n2"></script>
+<script src="../brand.js?v=tsprog1"></script>
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Capital — Loan Application | Fix &amp; Flip · Bridge · Rental</title>
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot3">
+<link rel="stylesheet" href="../suite.css?v=tsprog1">
 <style>
 /* =====================================================================
    LOAN APPLICATION — editorial reskin to the approved blueprint.
@@ -813,6 +813,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                             <div class="field"><label for="payoff">Current loan payoff</label><div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="decimal" placeholder="0"></div></div>
                             <div class="field"><label for="origPrice2">Original purchase price</label><div class="input"><span class="adorn">$</span><input id="origPrice2" type="number" inputmode="decimal" placeholder="0"></div></div>
                         </div>
+                        <!-- WHO is being paid off, and WHICH loan (owner-directed: the payoff
+                             is part of the structure — say who holds it and its loan number, so the
+                             closing attorney knows where to send the payoff request). Collected here
+                             exactly as the borrower portal and staff new-file form do, so a refinance
+                             started from ANY side carries the same payoff details. -->
+                        <div class="field-rows two-col" style="margin:0">
+                            <!-- The product elected on the Term Sheet Generator, carried by its "Start application →"
+                                 hand-off (owner-directed 2026-08-06) so the new file can register the pricing the
+                                 applicant was actually shown. Hidden and never typed: it is restored by
+                                 YS.applyState from the #d= fragment, exactly like the payoff carriers. -->
+                            <input id="tsProgram" type="hidden" value="">
+                            <div class="field"><label for="payoffLender">Lender being paid off</label><div class="input"><input id="payoffLender" type="text" placeholder="who holds the current loan"></div></div>
+                            <div class="field"><label for="payoffLoanNo">Their loan number</label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
+                        </div>
                         <div class="field" style="max-width:260px"><label for="acqDate">Date acquired</label><div class="input"><input id="acqDate" type="date"></div></div>
                     </div>
                 </div>
@@ -929,7 +943,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                 </div>
             </div>
             <div class="result-grid">
-                <div class="result"><div class="r-label">Effective purchase price</div><div class="r-value" id="snEffPrice">$0</div><div class="r-hint" id="snEffHint">price you pay</div></div>
+                <div class="result"><div class="r-label" id="snEffLbl">Effective purchase price</div><div class="r-value" id="snEffPrice">$0</div><div class="r-hint" id="snEffHint">price you pay</div></div>
                 <div class="result"><div class="r-label">Total rehab budget</div><div class="r-value" id="snRehab">$0</div></div>
                 <div class="result"><div class="r-label">Total project cost</div><div class="r-value" id="snTotalCost">$0</div><div class="r-hint">purchase + rehab</div></div>
                 <div class="result"><div class="r-label">Experience tier</div><div class="r-value" id="snTier" style="font-size:1.02rem">—</div></div>
@@ -937,7 +951,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                 <div class="result"><div class="r-label">Rehab holdback</div><div class="r-value" id="snHoldback">$0</div><div class="r-hint" id="snHoldbackHint">100% financed, in draws</div></div>
                 <div class="result"><div class="r-label">Est. down payment</div><div class="r-value" id="snDown">$0</div></div>
                 <div class="result"><div class="r-label">Est. title / escrow</div><div class="r-value" id="snTitle">—</div><div class="r-hint">rough estimate — depends on your title vendor</div></div>
-                <div class="result"><div class="r-label">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint">down payment + fees + est. title</div></div>
+                <div class="result"><div class="r-label" id="snCashLbl">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint" id="snCashHint">down payment + fees + est. title</div></div>
                 <div class="result"><div class="r-label">Financed interest reserve</div><div class="r-value" id="snIR">—</div><div class="r-hint">rolled into the loan</div></div>
                 <div class="result"><div class="r-label">Loan-to-cost</div><div class="r-value" id="snLtc">0%</div></div>
                 <div class="result"><div class="r-label">Loan-to-ARV</div><div class="r-value" id="snArvPct">0%</div></div>
@@ -1049,11 +1063,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 </footer>
 
 </div>
-<script src="../suite.js?v=admin8"></script>
-<script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller18-asgelig"></script>
-<script src="title-cost.js?v=admin8"></script>
-<script src="address-autocomplete.js?v=usps1"></script>
+<script src="../suite.js?v=tsprog1"></script>
+<script src="rb-logo.js?v=tsprog1"></script>
+<script src="standard-program.js?v=tsprog1"></script>
+<script src="title-cost.js?v=tsprog1"></script>
+<script src="address-autocomplete.js?v=tsprog1"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -1455,7 +1469,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "term_sheet_exception",
       name: bName(1) || null, email: vEmail || null, phone: vPhone || null,
-      officerCode: officerCode, subject: sum.subject, message: sum.body,
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: sum.subject, message: sum.body,
       formToken: FORM_TOKEN.t || undefined,
       payload: { kind: "loan_application_manual_review", state: YS.collectState() }
     }) })
@@ -1466,13 +1480,25 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   }
 
   /* ---------------- admin pricing overrides (soft-gated; Standard-only page) ---------------- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — obfuscation, not security.
-  function cyrb53(str, seed) {
-    seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-    for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  // The password and the check both live on the server now
+  // (POST /api/pricing-admin/unlock — src/routes/pricing-admin.js). They used to be
+  // right here: a cyrb53 hash with the plaintext beside it in a comment, compared in
+  // the visitor's own browser. Same password, still no login required.
+  function checkAdminPassword(pw, cb) {
+    var done = false;
+    var finish = function (ok) { if (!done) { done = true; cb(ok); } };
+    try {
+      var timer = setTimeout(function () { finish(false); }, 12000);
+      fetch("/api/pricing-admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: String(pw == null ? "" : pw) })
+      }).then(function (r) {
+        return r.ok ? r.json().catch(function () { return null; }) : null;
+      }).then(function (d) {
+        clearTimeout(timer); finish(!!(d && d.ok === true));
+      }).catch(function () { clearTimeout(timer); finish(false); });
+    } catch (e) { finish(false); }
   }
   // Company pricing defaults, live from /api/pricing-defaults so a fee/markup
   // change in the Admin Center reaches this public estimate too (audit #9), plus
@@ -1494,10 +1520,18 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         pw = el("laAdminPw"), go = el("laAdminGo"), err = el("laAdminErr"), hide = el("laAdminHide");
     if (!trig) return;
     function openLock() { if (lock) lock.hidden = false; if (panel) panel.hidden = true; trig.setAttribute("aria-expanded", "true"); if (err) err.hidden = true; if (pw) { pw.value = ""; pw.focus(); } }
+    var checking = false;   // one request at a time (the unlock route is rate-limited)
     function attempt() {
-      if (!pw) return;
-      if (cyrb53(pw.value, 0) === ADMIN_HASH) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
-      else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      if (!pw || checking) return;
+      checking = true;
+      if (go) { go.disabled = true; }
+      if (err) err.hidden = true;
+      checkAdminPassword(pw.value, function (ok) {
+        checking = false;
+        if (go) { go.disabled = false; }
+        if (ok) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
+        else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+      });
     }
     function setVal(id, v) { var e = el(id); if (e) e.value = v; }
     function lockDown() {
@@ -1542,7 +1576,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     };
     var R = YSP.evaluate(inp), s = R.sizing || {}, c = R.caps;
     var asg = R.assignment;
-    var basisPrice = (asg ? asg.recognizedPrice : totalPrice);   // price leverage is sized on
+    // A REFINANCE is sized on the AS-IS value, not a purchase price — so the cost
+    // basis and the "effective price" shown here must be the as-is value, matching
+    // the term-sheet tool (termsheet.js: isRefi() ? num("asIs")) and the engine's
+    // own LTC shown beside it. effPurchase() returns the PAYOFF on a refi, which is
+    // not the basis anything is leveraged on (owner-directed 2026-08-04).
+    var basisPrice = isRefi() ? num("asIs") : (asg ? asg.recognizedPrice : totalPrice);   // price/value leverage is sized on
     var totalCost = basisPrice + rehab;
     // Rounding policy (owner-directed 2026-07-09, extended to this snapshot 2026-07-17):
     // report the loan floored DOWN to whole dollars and reconcile the breakdown EXACTLY —
@@ -1565,12 +1604,24 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var titleEst = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(val("pState"), totalLoan, isRefi() ? "Refinance" : "Purchase") : { total: 0 };
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (titleEst.total || 0);
-    var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost + laExtraFeesTotal();   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    var closingFees = origFee + adminFeeUW() + adminFeeCredit() + titleCost + laExtraFeesTotal();   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    // On a REFINANCE the cash to close is the payoff shortfall the borrower BRINGS
+    // (payoff + closing − the funds that advance at closing = the initial advance),
+    // floored at 0 — the same figure the term-sheet tool and server compute. The
+    // purchase down-payment formula gave a refi just the fees (down payment is 0),
+    // ignoring the payoff entirely (owner-directed 2026-08-04). A cash-out floors to
+    // $0 here (funds advanced exceed payoff + closing).
+    var cashToClose = isRefi()
+      ? Math.max(0, num("payoff") + closingFees - snInitialR)
+      : ((s.downPayment || 0) + excessOOP + closingFees);
     var financedIR = snFinancedIR;
     var totalCostDisp = totalCost + financedIR;
 
     YS.put("snEffPrice", YS.fmtUSD(basisPrice));
-    YS.put("snEffHint", isAssign ? (asg && asg.overLimit ? "effective price: seller + fee counted up to 15% of the seller's price" : "seller + assignment fee") : (isRefi() ? "current payoff" : "price you pay"));
+    // A refinance has no purchase price — it is sized on the as-is value, so the
+    // label and hint say so (owner-directed 2026-08-04).
+    YS.put("snEffLbl", isRefi() ? "As-is value" : "Effective purchase price");
+    YS.put("snEffHint", isAssign ? (asg && asg.overLimit ? "effective price: seller + fee counted up to 15% of the seller's price" : "seller + assignment fee") : (isRefi() ? "what the property is worth now" : "price you pay"));
     YS.put("snRehab", YS.fmtUSD(rehab));
     YS.put("snTotalCost", YS.fmtUSD(totalCostDisp));
     YS.put("snMaxLoan", (ready && sized) ? YS.fmtUSD(totalLoan) : EM);
@@ -1579,7 +1630,19 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     YS.put("snHoldbackHint", (s && s.rehabOverCap) ? "capped \u2014 remainder out of pocket" : "100% financed, in draws");
     YS.put("snDown", ready ? YS.fmtUSD(s.downPayment || 0) : EM);
     YS.put("snTitle", (ready && titleCost > 0) ? YS.fmtUSD(titleCost) : EM);
-    YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
+    // On a CASH-OUT lead the borrower RECEIVES money and brings nothing, so cash-to-close
+    // is $0 — show what they GET instead (loan advanced − payoff − closing), matching how
+    // the term sheet and the server email surface a cash-out (owner-directed 2026-08-04).
+    var snCashOut = isRefi() ? Math.max(0, snInitialR - num("payoff") - closingFees) : 0;
+    if (isCashOut() && snCashOut > 0) {
+      YS.put("snCashLbl", "Est. cash to you");
+      YS.put("snCash", ready ? YS.fmtUSD(snCashOut) : EM);
+      YS.put("snCashHint", "loan advanced − payoff − closing");
+    } else {
+      YS.put("snCashLbl", "Est. cash to close");
+      YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
+      YS.put("snCashHint", isRefi() ? "payoff + closing − funds advanced" : "down payment + fees + est. title");
+    }
     YS.put("snIR", (ready && financedIR > 0) ? YS.fmtUSD(financedIR) : EM);
     YS.put("snLtc", (ready && s.ltcPct) ? YS.fmtPct(s.ltcPct, 1) : EM);
     YS.put("snArvPct", (ready && s.arvPct) ? YS.fmtPct(s.arvPct, 1) : EM);
@@ -1783,7 +1846,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     ]});
     var a = [];
     if (!isRefi()) { a.push(["Purchase price", money("price")]); if (el("isAssign").checked) { a.push(["Assignment / wholesale", "Yes"]); a.push(["Seller's contract price", money("origPrice")]); a.push(["Assignment fee", money("assignFee")]); } }
-    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
+    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Lender being paid off", val("payoffLender")]); a.push(["Their loan number", val("payoffLoanNo")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
     a.push(["As-is value", money("asIs")]); a.push(["ARV", money("arv")]);
     S.push({ title: "Acquisition & valuation", step: 2, items: a });
     S.push({ title: "Rehab, timeline & experience", step: 2, items: [
@@ -2053,6 +2116,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
          seasoning basis. Refinance-only: on a purchase there is nothing to pay
          off and no prior acquisition. */
       payoffAmount: isRefi() ? val("payoff") : null,
+      /* WHO is being paid off and WHICH loan — the other two thirds of the payoff
+         the borrower portal and staff new-file form both send. The intake handler
+         already stores payoff_lender / payoff_loan_number (refi-gated); the public
+         form simply never collected them, so a refinance started from the marketing
+         site lost them while the other two entry points kept them (owner-directed:
+         "no matter from which side"). Refinance-only, like the amount above. */
+      /* The product elected on the Term Sheet Generator (owner-directed
+         2026-08-06: "it should feed automatically into the products and pricing
+         that he'd chosen"). Only ever one of the three self-registerable
+         programs — the generator never carries MANUAL, which is an approval-
+         bearing admin product and must not register itself off a public form. */
+      pricingProgram: val("tsProgram") || null,
+      payoffLender: isRefi() ? (val("payoffLender") || null) : null,
+      payoffLoanNumber: isRefi() ? (val("payoffLoanNo") || null) : null,
       originalPurchasePrice: isRefi() ? val("origPrice2") : null,
       acquisitionDate: isRefi() ? val("acqDate") : null,
       isAssignment: assign,
@@ -2111,7 +2188,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       : ((new URLSearchParams(location.search).get("lo")) || "");
     return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "loan_application", name: bName(1), email: val("b1Email"), phone: val("b1Phone"),
-      officerCode: officerCode, subject: subject, message: buildSummary(), payload: YS.collectState()
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: subject, message: buildSummary(), payload: YS.collectState()
     }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function () { finish(off, null); })
@@ -2292,6 +2369,6 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 })();
 
 </script>
-<script src="../float-actions.js?v=admin10-applyfix"></script>
+<script src="../float-actions.js?v=tsprog1"></script>
 </body>
 </html>

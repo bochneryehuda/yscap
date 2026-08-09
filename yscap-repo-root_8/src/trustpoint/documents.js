@@ -106,7 +106,7 @@ async function storeDocument(appId, drawNumber, tpDrawId, doc, bytes) {
       `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, source_type,
           visibility, is_current, review_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',NULL,'draw_inspection_report','system','staff_only',true,'pending')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',NULL,'draw_inspection_report','system','staff_only',true,'accepted')
        RETURNING id`,
       [appId, borrower ? borrower.borrower_id : null, filename, doc.mime_type || 'application/pdf',
        bytes.length, saved.provider, saved.ref])).rows[0];

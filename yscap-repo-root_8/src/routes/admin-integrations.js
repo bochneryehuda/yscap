@@ -43,7 +43,12 @@ router.get('/health', async (req, res) => {
   try {
     await flags.refresh(); // so the on/off switches show their live override state, not a stale cache
     const integrations = await health.probeAll();
-    res.json({ checkedAt: new Date().toISOString(), integrations });
+    /* THE OUTBOUND RATE BUDGETS (lib/api-rate-limit.js, db/482). `waits` is the number
+       worth watching: a climbing count means real traffic wants more than the cap allows,
+       which is the signal to raise a limit BEFORE a provider phones the way ClickUp did
+       (owner-directed 2026-08-07). Best-effort — an empty list never fails the page. */
+    const rateLimits = await require('../lib/api-rate-limit').status();
+    res.json({ checkedAt: new Date().toISOString(), integrations, rateLimits });
   } catch (e) { return fail(res, 500, e, 'could not read integration health'); }
 });
 

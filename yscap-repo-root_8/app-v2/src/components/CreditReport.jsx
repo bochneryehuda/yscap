@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
+import DocPreview from './DocPreview.jsx';
 
 /**
  * Credit report (Xactus import) — the internal "Credit report" condition
@@ -763,6 +764,13 @@ function CreditHero({ report }) {
 // The entire report, laid out with the whole screen (owner-directed 2026-07-23):
 // opens on import and from the condition's "Open full report" button, closeable.
 function CreditReportOverlay({ report, history, justImported, onClose, onDownload }) {
+  // "Open PDF" DOWNLOADED the file (owner-reported 2026-08-06 about the manual
+  // upload: "you only have a button open that does not preview the document — it
+  // downloads it. It should be a regular preview button"). The manual-upload panel
+  // was fixed first; this is the SAME class on the imported-report overlay, so it
+  // reads the report inline through the same DocPreview and keeps Download as its
+  // own explicit action. Local state — the overlay owns its own preview.
+  const [previewDoc, setPreviewDoc] = useState(null);
   // Scroll-locked + position-preserving + Escape-to-close (see useScrollLock).
   useScrollLock(onClose);
 
@@ -779,7 +787,8 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
             </p>
           </div>
           <div className="crx-overlay-tools">
-            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open PDF</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => setPreviewDoc({ id: report.pdfDocumentId, filename: 'credit-report.pdf', content_type: 'application/pdf' })}>Preview</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
             <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
           </div>
@@ -801,7 +810,255 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
           )}
         </div>
       </div>
+      {previewDoc && (
+        <DocPreview
+          title="Credit report"
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => onDownload(previewDoc.id, previewDoc.filename)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </div>
+  );
+}
+
+// ───────────────────────── credit report from ANOTHER source + the waiver ────
+/**
+ * The second way a credit condition gets satisfied (owner-directed 2026-08-03):
+ * the borrower already has a current report from somewhere else and nobody wants
+ * to re-pull it (a fresh inquiry, at cost, for a report we already hold). So:
+ * upload the PDF onto this condition, get it accepted, and request an exception
+ * an admin approves — then the condition can be signed off with no import.
+ *
+ * The IMPORT rule above is untouched and is still the default. Both halves are
+ * required before the sign-off gate lets go: an ACCEPTED report here AND an
+ * APPROVED exception. The panel says which half is still outstanding rather than
+ * leaving anyone to guess.
+ *
+ * The PDF rides the ORDINARY staff document door, so it dedupes, reopens the
+ * condition's evidence, pushes the condition's status to ClickUp, mirrors to
+ * SharePoint and — once accepted — ships in the TPR export, exactly like every
+ * other document on the file.
+ */
+const WAIVER_REASON_ORDER = ['report_from_elsewhere', 'avoid_new_inquiry', 'vendor_unavailable', 'other'];
+
+function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, showFlash }) {
+  const [state, setState] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState('report_from_elsewhere');
+  const [note, setNote] = useState('');
+  const [preview, setPreview] = useState(null);   // doc being previewed inline
+
+  const q = itemId ? { itemId } : { scope: scopeKind === 'co' ? 'co' : 'primary' };
+  const load = useCallback(() => api.creditWaiverGet(appId, q)
+    .then(setState)
+    .catch(() => setState(null)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [appId, itemId, scopeKind]);
+  useEffect(() => { load(); }, [load]);
+
+  const docs = (state && state.documents) || [];
+  const waiver = state && state.waiver;
+  const exception = state && state.exception;
+  const reasons = (state && state.reasons) || {};
+  const accepted = docs.filter((d) => d.review_status === 'accepted');
+
+  // WHICH condition the report is filed on. Never guess: a document uploaded with
+  // no condition would land loose on the file, and the waiver — which is keyed on
+  // the condition — would never see it.
+  const targetItemId = (state && state.itemId) || itemId || null;
+
+  async function upload(file) {
+    if (!file) return;
+    if (!targetItemId) { setErr('This credit condition could not be identified — reload the page and try again.'); return; }
+    setErr(''); setBusy(true);
+    try {
+      const dataBase64 = await fileToBase64(file);
+      await api.staffUploadAppDoc(appId, {
+        filename: file.name, contentType: file.type || 'application/pdf', dataBase64,
+        checklistItemId: targetItemId,
+        slot: 'Credit report (uploaded)',
+      });
+      await load();
+      showFlash && showFlash('Credit report PDF uploaded ✓ — accept it, then request an exception if you are not importing credit.', 'ok');
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'The upload did not go through.'); }
+    setBusy(false);
+  }
+
+  async function review(doc, action) {
+    setErr('');
+    let why = '';
+    if (action === 'reject') {
+      why = window.prompt('Why is this credit report being rejected? The reason is recorded on the file.') || '';
+      if (!why.trim()) return;
+    }
+    setBusy(true);
+    try {
+      await api.staffReviewDoc(doc.id, action, why.trim() || undefined);
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not update the document.'); }
+    setBusy(false);
+  }
+
+  // Permanent delete — for a document uploaded by mistake. Removes it for good
+  // (bytes + row) and keeps it out of SharePoint, exactly like the file screen's
+  // own delete. Distinct from Reject, which keeps a rejected copy on the file.
+  async function del(doc) {
+    if (!window.confirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+    setErr(''); setBusy(true);
+    try {
+      await api.staffDeleteDoc(doc.id);
+      if (preview && preview.id === doc.id) setPreview(null);
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not delete the document.'); }
+    setBusy(false);
+  }
+
+  async function requestException() {
+    setErr('');
+    if (!note.trim()) { setErr('Add a short note saying where the credit report came from — an admin reads it.'); return; }
+    setBusy(true);
+    try {
+      await api.creditWaiverRequest(appId, {
+        reason, note: note.trim(), itemId: targetItemId,
+        scope: scopeKind === 'co' ? 'co' : 'primary',
+      });
+      setAsking(false); setNote('');
+      await load();
+      showFlash && showFlash('Exception requested ✓ — an admin approves it on the Exceptions screen, and then this condition can be signed off without importing credit.', 'ok');
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not request the exception.'); }
+    setBusy(false);
+  }
+
+  async function withdraw() {
+    if (!window.confirm('Withdraw the exception request? The credit condition goes back to needing an imported report.')) return;
+    setErr(''); setBusy(true);
+    try {
+      await api.creditWaiverRemove(appId, { itemId: targetItemId, scope: scopeKind === 'co' ? 'co' : 'primary' });
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not withdraw the request.'); }
+    setBusy(false);
+  }
+
+  // No credit condition resolved (a file that somehow carries none) — render nothing
+  // rather than a panel whose buttons could not work.
+  if (state && !state.itemId) return null;
+
+  const status = waiver && waiver.exceptionStatus;
+  const effective = !!(waiver && waiver.effective);
+
+  return (
+    <section className="crx-ext">
+      <div className="crx-ext-head">
+        <div>
+          <div className="crx-ext-title">Credit report from another source</div>
+          <div className="crx-ext-sub">
+            Got the report somewhere else and not re-pulling it? Upload the PDF here, accept it, then request an
+            exception — an admin approves it and this condition can be signed off with no credit imported.
+          </div>
+        </div>
+        <label className={'crx-btn ghost sm' + (busy || !targetItemId ? ' crx-disabled' : '')}>
+          {busy ? 'Working…' : '⬆ Upload credit report PDF'}
+          <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} disabled={busy || !targetItemId}
+            onChange={(e) => { const f = e.target.files[0]; e.target.value = ''; upload(f); }} />
+        </label>
+      </div>
+
+      {err && <div className="crx-alert danger">{err}</div>}
+
+      {docs.length === 0 ? (
+        <div className="crx-ext-empty">No uploaded credit report on this condition yet.</div>
+      ) : (
+        <div className="crx-ext-docs">
+          {docs.map((d) => (
+            <div className="crx-ext-doc" key={d.id}>
+              <span className="crx-ext-doc-name" title={d.filename}>{d.filename}</span>
+              <span className={'crx-pill crx-rev-' + d.review_status}>{d.review_status}</span>
+              <button className="crx-btn ghost sm" onClick={() => setPreview(d)}>Preview</button>
+              <button className="crx-btn ghost sm" onClick={() => onDownload(d.id, d.filename)}>Download</button>
+              {d.review_status !== 'accepted' && (
+                <button className="crx-btn ghost sm" disabled={busy} onClick={() => review(d, 'accept')}>Accept</button>
+              )}
+              {d.review_status !== 'rejected' && (
+                <button className="crx-btn ghost sm" disabled={busy} onClick={() => review(d, 'reject')}>Reject</button>
+              )}
+              <button className="crx-btn ghost sm danger" disabled={busy} onClick={() => del(d)}>Delete</button>
+            </div>
+          ))}
+          <div className="crx-ext-note">
+            An accepted report is what goes out in the TPR export and the SharePoint sync — a report nobody
+            has accepted never leaves the building.
+          </div>
+        </div>
+      )}
+
+      {/* The exception itself. */}
+      {waiver ? (
+        <div className={'crx-alert ' + (effective ? 'ok' : status === 'denied' ? 'danger' : 'warn')}>
+          <b>
+            {effective ? 'Exception approved — this condition can be signed off without importing credit.'
+              : status === 'approved' ? 'Exception approved — waiting on the uploaded report to be accepted.'
+              : status === 'denied' ? 'Exception denied.'
+              : status === 'withdrawn' ? 'Exception withdrawn.'
+              : 'Exception requested — waiting for an admin to approve it.'}
+          </b>
+          {exception && exception.exception_seq ? <span className="crx-muted"> · EX-{exception.exception_seq}</span> : null}
+          <div className="crx-ext-why">
+            {reasons[waiver.reason] || waiver.reason}{waiver.note ? ` — ${waiver.note}` : ''}
+          </div>
+          {exception && exception.decision_note ? <div className="crx-ext-why">Decision: {exception.decision_note}</div> : null}
+          {!effective && status === 'approved' && !accepted.length && (
+            <div className="crx-ext-why">Accept the uploaded credit report above and this condition is ready to sign off.</div>
+          )}
+          <div style={{ marginTop: 6 }}>
+            <button className="crx-btn ghost sm" disabled={busy} onClick={withdraw}>Withdraw the request</button>
+          </div>
+        </div>
+      ) : asking ? (
+        <div className="crx-ext-ask">
+          <label className="crx-opt-label">Why is credit not being imported here?</label>
+          <select className="crx-input" value={reason} onChange={(e) => setReason(e.target.value)}>
+            {WAIVER_REASON_ORDER.filter((k) => reasons[k]).map((k) => <option key={k} value={k}>{reasons[k]}</option>)}
+          </select>
+          <label className="crx-opt-label" style={{ marginTop: 8 }}>Where did this report come from?</label>
+          <textarea className="crx-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. The borrower's broker pulled a tri-merge on 12 May and sent us the PDF — it is 3 weeks old and we are not re-pulling." />
+          <div className="crx-foot-actions" style={{ marginTop: 8 }}>
+            <button className="crx-btn primary sm" disabled={busy} onClick={requestException}>
+              {busy ? 'Working…' : 'Request the exception'}
+            </button>
+            <button className="crx-btn ghost sm" disabled={busy} onClick={() => { setAsking(false); setErr(''); }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="crx-ext-actions">
+          <button className="crx-btn ghost sm" disabled={busy || !docs.length}
+            title={docs.length ? undefined : 'Upload the credit report PDF first — the exception is a request to sign off on that report.'}
+            onClick={() => setAsking(true)}>
+            Request an exception (sign off without importing credit)
+          </button>
+          {!docs.length && <span className="crx-muted small">Upload the PDF first.</span>}
+        </div>
+      )}
+
+      {preview && (
+        <DocPreview
+          title="Credit report"
+          filename={preview.filename}
+          contentType={preview.content_type}
+          load={() => api.staffDownloadDoc(preview.id)}
+          onDownload={() => onDownload(preview.id, preview.filename)}
+          onClose={() => setPreview(null)} />
+      )}
+    </section>
   );
 }
 
@@ -824,7 +1081,7 @@ function ScoreCell({ value, label, tone, emphasis }) {
  * buttons appeared twice (owner-reported 2026-07-27). The co-borrower's condition now
  * shows THEIR report, their history, their last attempt, and imports for them alone.
  */
-export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
+export function CreditCondition({ appId, canPull, onChanged, fieldKey, itemId }) {
   const [data, setData] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -860,7 +1117,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
       if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
       const tone = (out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
       if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-      if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       showFlash('Reused the borrower’s existing credit report ✓ — no new pull' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
       setJustImported(true);
       loadCredit().then(() => setShowOverlay(true));
@@ -891,7 +1148,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
         if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
         if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
         if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-        if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+        if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       }
       // A merged report is one document read for several people — say who it covered,
       // and name anyone it did NOT (never let that pass silently).
@@ -1042,6 +1299,12 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
       ) : (
         <div className="crx-empty">No credit report imported {who ? `for ${who} ` : ''}yet. Click <b>Import credit</b> to pull a tri-merge report{hasCo ? ' for both borrowers (or import one merged report covering both)' : ''} or import one you downloaded.</div>
       )}
+
+      {/* The second, exception-backed way this condition clears — a report from
+          another source. Always rendered: it is also where an already-uploaded
+          report and an in-flight exception are seen. */}
+      <ExternalCreditPanel appId={appId} itemId={itemId} scopeKind={scopeKind}
+        onChanged={onChanged} onDownload={download} showFlash={showFlash} />
 
       {showModal && (
         <CreditImportModal appId={appId} onClose={closeModal} onDone={onImported}

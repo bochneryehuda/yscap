@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -122,12 +122,66 @@ function RecipientRoster({ row }) {
   );
 }
 
+/* How tall an email body may render before we stop reserving room for it. It is a
+   runaway guard, not a layout choice, so it is deliberately far beyond any real
+   email — the old 6000 here against a 3600 clip on the collapse wrapper meant a
+   long thread was cut off mid-sentence with no scrollbar and nothing to say so. */
+const MAX_BODY_PX = 20000;
+/* What the open animation counts up to. A max-height transition needs a real
+   number, and one big enough for every email would make the reveal instant — so
+   this stays modest and the ceiling is dropped once the animation is over. */
+const OPEN_ANIM_PX = 3600;
+/* Below this CONTAINER width the list and the reader stop sharing the row.
+   260px list + 14px gap + a 600px email is 874, so anything under ~900 was
+   scaling the email down to fit — measured at 62% in the embedded order panel,
+   which is the owner's "very squeezed when you open it up". The existing phone
+   rules already do single-pane-with-a-back-button properly, so this reuses them
+   rather than inventing a second narrow layout. */
+const EC_TWO_PANE_MIN = 900;
+
 /* ---- one message in the conversation (collapsible) ---- */
 function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) {
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
+  /* The open animation is a max-height transition, so it needs a NUMBER to
+     animate to — and that number was also the permanent ceiling, which silently
+     truncated any email taller than it. Once the animation is done the ceiling is
+     dropped entirely, so a long email is simply as tall as it is. */
+  const [settled, setSettled] = useState(false);
+  // Was the reader asked to see the quoted conversation under this reply? Resets per
+  // message (this component is keyed on the row), so opening the next reply starts
+  // trimmed again.
+  const [showQuoted, setShowQuoted] = useState(false);
+  useEffect(() => {
+    if (!expanded) {
+      // RESET FOR THE NEXT OPEN. Re-opening while `settled` was still true would
+      // jump straight to 'none' with no number to animate to, so the email would
+      // appear instantly instead of unfolding.
+      //
+      // It does NOT smooth the COLLAPSE, and the comment here used to claim it
+      // did. It cannot: the style is `expanded ? (settled ? 'none' : N) : 0`, so
+      // the moment `expanded` goes false the SAME render already yields 0 — this
+      // effect runs afterwards — and the body is unmounted by `{expanded ? … :
+      // null}` in the same breath, so there is nothing left on screen to animate.
+      // Closing is a snap by design; only opening is animated.
+      if (settled) {
+        // Off `window` rather than the bare globals: an undeclared identifier
+        // compiles cleanly and only fails at render, which is the trap this repo
+        // has been caught by before.
+        const raf = window.requestAnimationFrame;
+        const id = raf ? raf(() => setSettled(false)) : setTimeout(() => setSettled(false), 0);
+        return () => { if (raf && window.cancelAnimationFrame) window.cancelAnimationFrame(id); else clearTimeout(id); };
+      }
+      return undefined;
+    }
+    // A timer rather than onTransitionEnd: that event does not fire at all when
+    // the reader prefers reduced motion, or when a re-render interrupts the
+    // animation — and either would leave the email clipped for good.
+    const t = setTimeout(() => setSettled(true), 400);
+    return () => clearTimeout(t);
+  }, [expanded, settled]);
   const frameRef = useRef(null);
   const wrapRef = useRef(null);
   const loadedFor = useRef(null);
@@ -146,8 +200,24 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
     return () => { alive = false; };
   }, [expanded, row.id, appId, globalMode]);
 
-  const html = full && full.body_html;
-  const text = full && full.body_text;
+  /* ONLY THEIR REPLY, WITH THE HISTORY BEHIND THE THREE DOTS (owner-reported
+     2026-08-07: "in the chat within the system, we should only see their reply. We
+     shouldn't see all the old messages, because it should realize that this is
+     anything above the three dots"). The server splits an inbound message at read
+     time (lib/email-log.splitStoredBody) and returns BOTH halves, so nothing is
+     hidden — `showQuoted` swaps this reader back to the whole original body. An
+     outbound message, and an inbound one with no quote in it, are untouched.
+
+     THE CONTRACT IS ADDITIVE: `body_html` is always the message AS STORED and
+     `replyHtml` is the trimmed half, so expanding is simply "read the stored body".
+     A second implementation trimmed `body_html` itself, which would have made this
+     control open the very thing it had already removed.
+
+     `showQuoted` is declared once, further up with the other reader state — it is
+     per-message because this component is keyed on the row. */
+  const trimmed = !!(full && full.trimmed);
+  const html = full && ((trimmed && !showQuoted && full.replyHtml) || full.body_html);
+  const text = full && ((trimmed && !showQuoted && full.replyText) || full.body_text);
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
   // Fit the email to the available width so a fixed-width (e.g. 600px) design is
   // never cut off — scale it down to the reader's width and reserve the scaled
@@ -165,7 +235,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
     frame.style.height = naturalH + 'px';
     frame.style.transformOrigin = 'top left';
     frame.style.transform = ratio < 1 ? `scale(${ratio})` : 'none';
-    wrap.style.height = Math.min(6000, Math.round(naturalH * ratio) + 4) + 'px';
+    wrap.style.height = Math.min(MAX_BODY_PX, Math.round(naturalH * ratio) + 4) + 'px';
   }, []);
   // Re-fit when the reader width changes (opening/closing the large popup, window resize).
   useEffect(() => {
@@ -213,7 +283,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
         </div>
         <span className={`ec-chev${expanded ? ' up' : ''}`} aria-hidden="true">⌄</span>
       </button>
-      <div className="ec-msg-collapse" style={{ maxHeight: expanded ? 3600 : 0 }}>
+      <div className="ec-msg-collapse" style={{ maxHeight: expanded ? (settled ? 'none' : OPEN_ANIM_PX) : 0 }}>
         {expanded ? (
           <div className="ec-msg-open">
             <div className="ec-msg-meta">
@@ -247,6 +317,19 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                   ? <div className="ec-frame-wrap" ref={wrapRef}><iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={fit} /></div>
                   : text ? <pre className="ec-plain">{text}</pre>
                     : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
+              {/* THE THREE DOTS. Same control every mail client uses for the same
+                  job, so it needs no explaining — and it is only ever offered when
+                  there genuinely is trimmed history, never as decoration. */}
+              {trimmed && !loading && !err ? (
+                <div className="ec-trimmed">
+                  <button type="button" className="ec-dots" onClick={() => setShowQuoted((v) => !v)}
+                    title={showQuoted ? 'Hide the earlier messages in this conversation' : 'Show the earlier messages in this conversation'}
+                    aria-expanded={showQuoted}>···</button>
+                  <span className="muted small">
+                    {showQuoted ? 'Showing the whole conversation' : 'Earlier messages in this conversation are hidden'}
+                  </span>
+                </div>
+              ) : null}
             </div>
             <div className="ec-msg-actions">
               {canResend ? <button className="btn ghost small" onClick={resend} disabled={busy === 'resend'}>{busy === 'resend' ? 'Resending…' : '↻ Resend'}</button> : null}
@@ -259,8 +342,27 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   );
 }
 
+/**
+ * A SCOPED THREAD DOES NOT GO TO THE FILE — it goes to ONE outside party.
+ *
+ * The composer used to name the file's own people on every thread, because that
+ * is who the default fan-out reaches. On a title, insurance or closing thread the
+ * server sends to the VENDOR instead (staff.js /emails/reply), so the operator was
+ * shown the borrower as a recipient while the title company got the mail. It is
+ * also why the typed subject is dropped there: the message has to land inside the
+ * vendor's existing conversation, so the thread's own subject is used.
+ *
+ * `null` for a scope that behaves normally, so nothing else changes.
+ */
+const SCOPED_THREAD = {
+  title: { who: 'the title company on this order', verb: 'Reply to the title company', fixedSubject: true },
+  insurance: { who: 'the insurance agent on this order', verb: 'Reply to the insurance agent', fixedSubject: true },
+  closing: { who: 'everyone on the closing chain — the attorney, title, the settlement agent', verb: 'Reply on the closing chain', fixedSubject: true },
+};
+
 /* ---- reply / compose composer (shows who it reaches) ---- */
 function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
+  const scoped = SCOPED_THREAD[scope] || null;
   const [open, setOpen] = useState(!!isNew);
   const [body, setBody] = useState('');
   const [subj, setSubj] = useState(isNew ? '' : (subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`));
@@ -270,14 +372,35 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   useEffect(() => { if (!isNew) setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject, isNew]);
   useEffect(() => {
     if (!open) return;
+    // On a scoped thread the file's own recipient list is the WRONG list — but
+    // "wrong list" was answered by showing no list at all, and the heading then
+    // named only the vendor. An insurance order CC's the borrower by default
+    // (owner-directed: they usually chose the agent), so the one line this
+    // composer printed understated who reads the reply — the same class of error,
+    // pointing the other way, as the borrower-named heading it replaced. The
+    // order's OWN preview is the right answer, and the server already computes it.
+    if (scoped) {
+      if (scope === 'title' || scope === 'insurance') {
+        api.staffOrders(appId)
+          .then((d) => {
+            const rec = d && d.orders && d.orders[scope] && d.orders[scope].recipients;
+            const list = rec ? [...(rec.to || []), ...(rec.cc || [])] : [];
+            setRecips(list.map((e) => ({ email: e })));
+          })
+          .catch(() => setRecips([]));
+      }
+      return;
+    }
     api.staffAppReplyRecipients(appId).then((r) => setRecips(Array.isArray(r) ? r : [])).catch(() => setRecips([]));
-  }, [open, appId]);
+  }, [open, appId, scoped, scope]);
   const send = async () => {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
     try {
       const r = await api.staffAppEmailReply(appId, { body, subject: subj, scope: scope || undefined });
-      setMsg(`Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
+      setMsg(r.unconfirmed
+        ? (r.warning || 'This may or may not have gone out — check the thread before sending it again.')
+        : `Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
       setBody(''); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
     } catch (e) { setMsg(e.message || 'Could not send.'); }
@@ -287,7 +410,7 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   if (!open) {
     return (
       <div className="ec-reply-bar">
-        <button className="btn primary small" onClick={() => setOpen(true)}>↩ Reply to the file</button>
+        <button className="btn primary small" onClick={() => setOpen(true)}>↩ {scoped ? scoped.verb : 'Reply to the file'}</button>
         {msg ? <span className="muted small" style={{ marginLeft: 10 }}>{msg}</span> : null}
       </div>
     );
@@ -296,12 +419,25 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
     <div className="ec-reply">
       <div className="ec-reply-to">
         <span className="ec-metalabel">To</span>
-        {recips === null ? <span className="muted small">loading…</span>
+        {/* EVERY ADDRESS, on a scoped thread as much as an ordinary one. The
+            descriptive phrase is only the fallback for a scope with no per-order
+            preview (the closing chain, whose audience the attorney controls) and
+            for a preview that could not be read. */}
+        {scoped && recips && recips.length ? recips.map((r, i) => (
+          <span className="ec-chip" key={i}><Avatar name={r.name} email={r.email} size={20} />{r.name || r.email}</span>))
+          : scoped ? <span className="small" style={{ color: '#141B22' }}>{scoped.who}</span>
+          : recips === null ? <span className="muted small">loading…</span>
           : recips.length ? recips.map((r, i) => (
               <span className="ec-chip" key={i}><Avatar name={r.name} email={r.email} size={20} inbound={r.kind === 'borrower'} />{r.name || r.email}</span>))
             : <span className="muted small">the borrower and everyone assigned to this file</span>}
       </div>
-      <input className="ec-reply-subject" value={subj} onChange={(e) => setSubj(e.target.value)} placeholder="Subject" />
+      {scoped ? (
+        <div className="muted small" style={{ marginBottom: 6 }}>
+          This stays on the existing conversation, so it keeps that thread’s subject.
+        </div>
+      ) : (
+        <input className="ec-reply-subject" value={subj} onChange={(e) => setSubj(e.target.value)} placeholder="Subject" />
+      )}
       <textarea className="ec-reply-text" rows={5} placeholder="Type your message…  (⌘/Ctrl + Enter to send)" value={body}
         onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} autoFocus />
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
@@ -333,6 +469,30 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
   const [read, setRead] = useState(() => loadJSON(READ_KEY, {}));
   const [stars, setStars] = useState(() => loadJSON(STAR_KEY, {}));
   const searchRef = useRef(null);
+  /* IS THERE ROOM FOR TWO PANES *HERE*? — measured on this component's own box,
+     not on the viewport. The phone breakpoint asks `@media (max-width:820px)`,
+     which is a question about the WINDOW, so an Email Center embedded in an order
+     section on a 1440px monitor kept the two-pane grid inside a 782px box: the
+     reading pane came out 372px wide and every email was scaled to 62% to fit.
+     A container query would express this too, but `container-type` also makes the
+     element a containing block for positioned descendants, and this component
+     already owns a ResizeObserver — so it measures. */
+  const wrapRef = useRef(null);
+  const [narrow, setNarrow] = useState(false);
+  // useLayoutEffect, not useEffect: an effect runs AFTER paint, so the first frame
+  // was the two-pane grid squeezed into a narrow box before the measurement
+  // corrected it. Measuring before the browser paints removes that flash.
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => setNarrow((el.clientWidth || 0) < EC_TWO_PANE_MIN);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // `big` is a dependency because the overlay re-parents this element: without
+    // it the reader stays single-pane inside a 1320px popup.
+  }, [big]);
 
   const load = useCallback((append) => {
     setErr(''); setRefreshing(true);
@@ -458,7 +618,7 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
   }
 
   const main = (
-    <div className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}${big ? ' big' : ''}`}>
+    <div ref={wrapRef} className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}${big ? ' big' : ''}${narrow ? ' ec-narrow' : ''}`}>
       {globalMode && stats ? (
         <div className="ec-stats">
           <div className="ec-stat"><span className="ec-stat-n">{stats.total}</span><span className="ec-stat-l">total</span></div>
@@ -477,13 +637,26 @@ export default function EmailCenter({ mode = 'file', appId = null, scope = null 
         </div>
         {unreadCount ? <button className="ec-textbtn" onClick={markAllRead} title="Mark all as read">Mark all read</button> : null}
         {!globalMode ? <button className="btn primary small" onClick={() => { setComposing(true); setMobileReader(true); }}>＋ New email</button> : null}
-        {!globalMode && !big ? <button className="ec-refresh" onClick={() => setBig(true)} title="Open the Email Center in a large window" aria-label="Open large">⤢</button> : null}
+        {/* A LABEL, NOT A GLYPH. This has opened full screen since it shipped, but
+            as a bare ⤢ styled identically to the ⟳ beside it — so nobody found it,
+            and the chain read as something that could only ever be squeezed. */}
+        {!globalMode && !big ? (
+          <button className="btn ghost small ec-bigbtn" onClick={() => setBig(true)}
+            title="Open this email chain full screen (Esc to come back)">⤢ Full screen</button>
+        ) : null}
         <button className="ec-refresh" onClick={() => load(false)} title="Refresh" aria-label="Refresh">{refreshing ? '…' : '⟳'}</button>
       </div>
 
       {composing && !globalMode ? (
         <div className="ec-compose-panel">
-          <div className="ec-compose-head">{scope === 'draw' ? 'New draw message to this file' : 'New email to this file'}</div>
+          {/* Say WHO this reaches. On a scoped thread it is one outside party, not
+              the file's own people, and a heading that says otherwise is how a
+              message meant for the title company gets written to the borrower. */}
+          <div className="ec-compose-head">
+            {SCOPED_THREAD[scope] ? `New message to ${SCOPED_THREAD[scope].who}`
+              : scope === 'draw' ? 'New draw message to this file'
+              : 'New email to this file'}
+          </div>
           <Composer appId={appId} subject="" isNew onSent={() => load(false)} onClose={() => setComposing(false)} scope={scope} />
         </div>
       ) : null}

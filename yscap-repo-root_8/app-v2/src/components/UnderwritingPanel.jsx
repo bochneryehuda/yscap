@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import DocCompare from './DocCompare.jsx';
@@ -98,7 +99,7 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
   const run = async (fn, label) => {
     setBusy(true);
     try { await fn(); onChange && onChange(); }
-    catch (e) { alert(`Could not ${label}: ${(e && e.message) || 'error'}`); }
+    catch (e) { showMessage(`Could not ${label}: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   const decide = (action, extra) => run(() => api.aiSuggestionsDecide(appId, suggestionId, { action, ...(extra || {}) }), action.replace(/_/g, ' '));
@@ -177,7 +178,7 @@ function EntityAdoptButton({ appId, entityName, findingId, onChange }) {
       const r = await api.adoptEntityToProfile(appId, entityName, findingId);
       setDone(r);
       onChange && onChange();
-    } catch (e) { alert(`Could not add the entity: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not add the entity: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   if (done) {
@@ -265,21 +266,21 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       setSimRows(rows);
       const p = {}; for (const s of rows) p[s.id] = true;
       setSimPicked(p);
-    } catch (e) { alert('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
+    } catch (e) { showMessage('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
     finally { setSimBusy(false); }
   };
   const runBulk = async () => {
     const ids = Object.keys(simPicked).filter(id => simPicked[id]);
-    if (!ids.length) { alert('No findings selected.'); return; }
-    if (simAction === 'dismiss' && !simNote.trim()) { alert('Please add a dismissal reason.'); return; }
+    if (!ids.length) { showMessage('No findings selected.'); return; }
+    if (simAction === 'dismiss' && !simNote.trim()) { showMessage('Please add a dismissal reason.'); return; }
     if (!window.confirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`)) return;
     setSimBusy(true);
     try {
       const r = await api.bulkResolveFindings(appId, ids, simAction, simNote);
-      alert(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
+      showMessage(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
       setSimOpen(false); setSimRows(null); setSimNote('');
       onChange && onChange();
-    } catch (e) { alert(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
+    } catch (e) { showMessage(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
     finally { setSimBusy(false); }
   };
   const runCommittee = async () => {
@@ -289,7 +290,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       const r = await api.runCommitteeReview(appId, f.id, false);
       setCommitteeOpinion(r.opinion || null);
       onChange && onChange();
-    } catch (e) { alert(e.message || 'The panel could not be reached'); }
+    } catch (e) { showMessage(e.message || 'The panel could not be reached'); }
     finally { setCommitteeBusy(false); }
   };
   const s = SEV[f.severity] || SEV.info;
@@ -314,7 +315,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
   const submit = async (action, extra = {}) => {
     setBusy(true);
     try { await api.underwritingResolveFinding(appId, f.id, { action, ...extra }); onChange && onChange(); }
-    catch (e) { alert(e.message || 'Could not resolve the finding'); }
+    catch (e) { showMessage(e.message || 'Could not resolve the finding'); }
     finally { setBusy(false); }
   };
   const click = (a) => {
@@ -346,7 +347,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       });
       setEscOpen(false); setEscNote('');
       onChange && onChange();
-    } catch (e) { alert(e.message || 'Could not escalate the finding'); }
+    } catch (e) { showMessage(e.message || 'Could not escalate the finding'); }
     finally { setBusy(false); }
   };
 
@@ -365,7 +366,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       const w = window.open(url, '_blank');
       if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (err) { alert(err.message || 'Could not open the source document'); }
+    } catch (err) { showMessage(err.message || 'Could not open the source document'); }
   };
   return (
     <div ref={cardRef} style={{
@@ -1521,7 +1522,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
   const confirmFact = async (factKey) => {
     const inp = confirmInputs[factKey] || {};
     const value = (inp.value || '').trim();
-    if (!value) { alert('Enter the value you want to lock in.'); return; }
+    if (!value) { showMessage('Enter the value you want to lock in.'); return; }
     setConfirmBusy(factKey);
     try {
       await api.confirmFact(appId, factKey, value, inp.reason || '');
@@ -1529,7 +1530,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       const d = await api.factHistory(appId, factKey);
       setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
       setConfirmInputs((i) => ({ ...i, [factKey]: { value: '', reason: '' } }));
-    } catch (e) { alert(e.message || 'Could not confirm the value.'); }
+    } catch (e) { showMessage(e.message || 'Could not confirm the value.'); }
     finally { setConfirmBusy(null); }
   };
   const twinCount = (twinFacts || []).length;
@@ -2698,8 +2699,8 @@ function SovereignAskAdminSection({ appId }) {
     try {
       await api.askAdminAboutFile(appId, q.trim());
       setSent(true);
-      alert('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
-    } catch (e) { alert(`Could not send: ${(e && e.message) || 'error'}`); }
+      showMessage('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
+    } catch (e) { showMessage(`Could not send: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   const runXd = async () => {
@@ -2709,13 +2710,13 @@ function SovereignAskAdminSection({ appId }) {
       const r = await api.aiCrossDocCheck(appId);
       setXdRes(r);
       if (r && r.findings && r.findings.length) {
-        alert(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
+        showMessage(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
       } else if (r && r.ok) {
-        alert('Cross-doc AI check found no contradictions across the file.');
+        showMessage('Cross-doc AI check found no contradictions across the file.');
       } else {
-        alert(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
+        showMessage(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
       }
-    } catch (e) { alert(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
     finally { setXdBusy(false); }
   };
   return (
@@ -2895,8 +2896,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
                     const r = await api.aiRerunChecks(appId);
                     const total = Object.values(r.ran || {}).reduce((a, b) => a + (Number(b) || 0), 0);
                     load();
-                    alert(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
-                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                    showMessage(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
+                  } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
                 }}>▶ Re-run checks</button>
             )}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
@@ -2919,8 +2920,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
                   try {
                     const r = await api.aiDismissAllOnFile(appId, reason || 'Bulk-dismissed from file view');
                     load();
-                    alert(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
-                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                    showMessage(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
+                  } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
                 }}>Dismiss all</button>
             )}
             {/* R3.37 — filter chips */}
@@ -3000,7 +3001,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionsDecide(appId, suggestion.id, { action, ...extra });
       if (onChanged) await onChanged();
     } catch (e) {
-      alert(`Could not ${action.replace(/_/g, ' ')}: ${(e && e.message) || 'error'}`);
+      showMessage(`Could not ${action.replace(/_/g, ' ')}: ${(e && e.message) || 'error'}`);
     } finally { setBusy(false); }
   }, [appId, suggestion.id, disabled, onChanged]);
 
@@ -3011,7 +3012,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionAddNote(appId, suggestion.id, noteText);
       setNoteText(''); setNoteOpen(false);
       if (onChanged) await onChanged();
-    } catch (e) { alert(`Could not add note: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not add note: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
 
@@ -3025,7 +3026,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionAddNote(appId, suggestion.id, `[asked super-admin] ${q}`);
       await api.aiSuggestionsDecide(appId, suggestion.id, { action: 'ask_admin', reason: q });
       if (onChanged) await onChanged();
-    } catch (e) { alert(`Could not ask super-admin: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not ask super-admin: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
 
@@ -3033,7 +3034,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
     const pa = suggestion.proposed_action || {};
     const tplCode = (pa.fields && pa.fields.opensCondition) || pa.templateCode || null;
     if (!tplCode) {
-      alert('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
+      showMessage('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
       return;
     }
     if (!window.confirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`)) return;
@@ -3106,8 +3107,8 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
                 if (reason == null || !reason.trim()) return;
                 try {
                   await api.aiSilencedCodesAdd(code, reason.trim());
-                  alert(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
-                } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                  showMessage(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
+                } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
               }}>🔇 Silence code</button>
           )}
         </div>
@@ -3441,7 +3442,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
                 const hours = parseInt(window.prompt('Snooze the fraud banner for how many hours? (1–168)', '24') || '', 10);
                 if (!(hours >= 1 && hours <= 168)) return;
                 try { await api.fraudBannerSnooze(appId, hours); load(); }
-                catch (e) { alert(`Snooze failed: ${(e && e.message) || 'error'}`); }
+                catch (e) { showMessage(`Snooze failed: ${(e && e.message) || 'error'}`); }
               }}>Snooze banner</button>
               {/* This used to scroll to the FIRST <h4> on the whole page, which is
                   above the reader — so a button labelled "open the findings panel"

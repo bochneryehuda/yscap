@@ -72,6 +72,31 @@ ok(K.propertyKey({ street: '123 Main St', state: 'NJ', zip: '07103' }) !== null,
 ok(K.propertyKey('') === null && K.propertyKey(null) === null && K.propertyKey({}) === null,
   'empty input never produces a key');
 
+// ---- keyProblem NAMES the missing piece (so a left-out comparable can say WHY) --
+ok(K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).missing === 'house_number',
+  'a street with no house number reports house_number missing');
+ok(K.keyProblem({ street: '123 Main St', city: 'Newark' }).missing === 'state',
+  'no state reports state missing');
+ok(K.keyProblem({ street: '123 Main St', state: 'NJ' }).missing === 'locality',
+  'no city AND no ZIP reports locality missing');
+ok(K.keyProblem({ street: '123 Main St', city: 'Newark', state: 'NJ' }) === null,
+  'a full address has no problem');
+ok(typeof K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).reason === 'string'
+  && K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).reason.length > 0,
+  'every problem carries a plain-language reason');
+// keyProblem is the SINGLE SOURCE of the null decision — they can never disagree.
+for (const t of [
+  { street: 'Main St', city: 'Newark', state: 'NJ' },          // no house number
+  { street: '123 Main St', city: 'Newark' },                   // no state
+  { street: '123 Main St', state: 'NJ' },                      // no locality
+  { street: '123 Main St', state: 'NJ', zip: '07103' },        // usable (ZIP locality)
+  { street: '26 S 10th St', city: 'Piscataway', state: 'NJ' }, // usable
+  {}, '', null,                                                 // empty
+]) {
+  ok((K.keyProblem(t) === null) === (K.propertyKey(t) !== null),
+    `keyProblem and propertyKey agree for ${JSON.stringify(t)}`);
+}
+
 // ---- display -----------------------------------------------------------------
 ok(/^26 S 10th St 2, Piscataway, NJ 08854$/.test(
   K.displayAddress({ street: '26 South 10th Street', unit: '2', city: 'PISCATAWAY', state: 'New Jersey', zip: '08854' })),
@@ -129,6 +154,81 @@ ok(ID.contactKey('phone', '(973) 555-1212') === ID.contactKey('phone', '+1 973-5
   'the same phone written two ways is one contact');
 ok(ID.contactKey('email', 'John@Acme.Test') === ID.contactKey('email', 'john@acme.test'),
   'email case does not create a second contact');
+
+/* THE INHERITED TOWN IS A FALLBACK, NEVER THE CITY ITSELF.
+   A comparable that named no city inherits the subject's, gated on the ZIPs
+   matching — but a town the comparable WROTE inside its own packed address line
+   must always win, or the house is filed under the wrong town and the split the
+   inheritance exists to close is created instead. */
+const PACKED = '12 Oak St, Newark, NJ 07103';
+ok(K.propertyKey({ street: PACKED, city: null, fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||newark|nj',
+'a town written inside the comparable\'s own address line BEATS the inherited one');
+ok(K.propertyKey({ street: '12 Oak St', city: null, fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||irvington|nj',
+'with no town of its own, the inherited town is still used — the split stays closed');
+ok(K.propertyKey({ street: PACKED, city: 'Harrison', fallbackCity: 'Irvington', state: 'NJ', zip: '07103' })
+   === '12 oak st||harrison|nj',
+'an explicitly stated city beats both the packed line and the inherited town');
+ok(K.propertyKey({ street: '12 Oak St', city: null, state: 'NJ', zip: '07103' })
+   === '12 oak st||z07103|nj',
+'and with no inheritance offered at all, nothing changes — it still keys on the ZIP');
+
+
+// ---- THE IDENTITY RULE'S THREE MEASURED DEFECTS (db/428) --------------------
+// Two collisions (different properties keyed the same — the worse direction, and
+// the one that silently destroys a street name) and one family of splits.
+{
+  const key = (o) => K.propertyKey(Object.assign({ city: 'Newark', state: 'NJ' }, o));
+  const differ = (a, b, msg) => ok(key(a) !== key(b) && key(a) && key(b), msg);
+  const agree = (a, b, msg) => ok(key(a) === key(b) && !!key(a), msg);
+
+  // COLLISION 1 — a street whose NAME is a unit keyword had its name eaten, so
+  // "5 Building Rd" and "5 Room Rd" both keyed `5|rd|newark|nj`.
+  differ({ street: '5 Building Rd' }, { street: '5 Room Rd' },
+    'a street NAMED "Building" is not the same property as one named "Room"');
+  ok(/building/.test(key({ street: '5 Building Rd' })),
+    'and the street NAME survives into the key instead of being read as a unit');
+  agree({ street: '5 Building Rd' }, { street: '5 Building Road' },
+    'while the same street written long still matches');
+
+  // COLLISION 2 — every unit KIND was stripped, so a mixed-use building's
+  // commercial suite and residential apartment became one property.
+  differ({ street: '5 Main St', unit: 'Apt 5' }, { street: '5 Main St', unit: 'Suite 5' },
+    'Apt 5 and Suite 5 are different units');
+  differ({ street: '5 Main St', unit: 'Apt 5' }, { street: '5 Main St', unit: 'Floor 5' },
+    'and so are Apt 5 and Floor 5');
+  differ({ street: '5 Main St', unit: 'Apt 5' }, { street: '5 Main St', unit: 'Building 5' },
+    'a whole BUILDING 5 is not one of its own apartments');
+  // …but the dwelling SYNONYMS still collapse, which is the far commoner case:
+  // five appraisers writing one apartment five ways.
+  for (const u of ['Unit 5', '#5', '5', 'Apt. 5', 'No 5']) {
+    agree({ street: '5 Main St', unit: 'Apt 5' }, { street: '5 Main St', unit: u },
+      `"Apt 5" and "${u}" are the same apartment`);
+  }
+  agree({ street: '5 Main St', unit: 'Ste 200' }, { street: '5 Main St', unit: 'Suite 200' },
+    'and a kept kind still matches its own abbreviation');
+  // THE PREFIX-OVERLAP TRAP: /^(fl|floor)/ matched the "Fl" inside "Floor" and
+  // left "oor 5" behind, producing a key that LOOKED right and matched nothing.
+  agree({ street: '5 Main St', unit: 'Floor 5' }, { street: '5 Main St', unit: 'Fl 5' },
+    '"Floor 5" and "Fl 5" are the same floor — the long spelling is not read as its own abbreviation');
+
+  // SPLITS — one property that used to key several ways.
+  agree({ street: '150 15 Ave' }, { street: '150 15th Ave' }, 'an ordinal is not a different street');
+  agree({ street: '8 St James Pl' }, { street: '8 Saint James Pl' }, 'nor is "Saint" spelled out');
+  agree({ street: '12 Oak Street Extension' }, { street: '12 Oak St Ext' },
+    'nor a suffix left long in the middle of a name');
+  agree({ street: '1 North Ave' }, { street: '1 N Ave' }, 'nor a directional spelled out');
+
+  // …and the things that must STILL be different.
+  differ({ street: '12 Oak St' }, { street: '12 Oak St Ext' },
+    '"Oak St" and "Oak St Extension" are genuinely different streets');
+  differ({ street: '27 Main St' }, { street: '29 Main St' }, 'and so are two house numbers');
+  ok(key({ street: '27-29 Main St' }).startsWith('27-29 '),
+    'a house-number RANGE survives the street key intact');
+  ok(key({ street: '1 North St' }).startsWith('1 '),
+    'and the house number itself is never rewritten as a directional');
+}
 
 console.log(`test-research-property-key: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

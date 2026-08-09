@@ -54,6 +54,9 @@ export default function BorrowerDraws({ appId }) {
 
   const proj = rollup && rollup.project ? rollup.project : null;
   const pct = proj ? Math.max(0, Math.min(100, Number(proj.pct_complete) || 0)) : 0;
+  // The per-draw money, keyed by draw, so a result card can show what actually reaches the
+  // borrower. Read from the rollup — the SAME source their downloadable report is built from.
+  const drawMoney = new Map(((rollup && rollup.draws) || []).map((d) => [String(d.sitewire_draw_id), d]));
 
   return (
     <div className="dd-wrap">
@@ -95,8 +98,12 @@ export default function BorrowerDraws({ appId }) {
 
       {rollup && Array.isArray(rollup.draws) && rollup.draws.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto' }}>
-          <table className="dd-table" style={{ minWidth: 420 }}>
-            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th></tr></thead>
+          <table className="dd-table" style={{ minWidth: 520 }}>
+            {/* WHAT YOU RECEIVE (owner-directed 2026-08-03) — the approved figure is what the
+                inspector signed off; this is the money that actually reaches the borrower, after
+                the draw fee. It comes straight off the rollup, the same source their PDF report is
+                built from, so the two can never quote different numbers. */}
+            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
             <tbody>
               {rollup.draws.map((d) => {
                 const s = DRAW_STATUS[d.status] || { label: d.status, cls: 'sw-insp' };
@@ -106,6 +113,7 @@ export default function BorrowerDraws({ appId }) {
                     <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : s.cls)}>{s.label}</span></td>
                     <td className="num">{usd2(d.requested_cents)}</td>
                     <td className="num">{usd2(d.approved_cents)}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>{d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
                   </tr>
                 );
               })}
@@ -120,28 +128,42 @@ export default function BorrowerDraws({ appId }) {
       {/* Eligibility preview + the in-PILOT composer (physical files) or the Sitewire hand-off */}
       {eligibility && <EligibilityCard e={eligibility} appId={appId} onChanged={load} />}
 
-      {findings.map((f) => <FindingCard key={f.id} finding={f} appId={appId} onChanged={load} />)}
+      {findings.map((f) => (
+        <FindingCard key={f.id} finding={f} appId={appId} onChanged={load}
+          money={drawMoney.get(String(f.sitewire_draw_id)) || null} />
+      ))}
     </div>
   );
 }
 
-/* The borrower's draw lifecycle at a glance — five plain-language steps from inspection to money in hand.
-   Driven only by borrower-safe finding state (status + a released flag), no capital-partner detail. */
-function DrawStepper({ finding }) {
+// A short, shift-free date ("Aug 1") for a draw step — parses a date-only value in local time so it
+// never slips a day, and shows nothing for a step that hasn't happened yet.
+const fmtStepDay = (v) => {
+  if (!v) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+/* The borrower's draw lifecycle at a glance — plain-language steps from inspection to money in hand,
+   each carrying the date it was reached (owner-directed: a timestamp on every step). Driven only by
+   borrower-safe finding state (status + timestamps + a released flag), no capital-partner detail. */
+function DrawStepper({ finding, releasedAt }) {
   const st = finding.status;
   const disputed = st === 'disputed';
   const accepted = st === 'accepted' || st === 'resolved';
   const released = !!finding.released;
   const steps = [
-    { key: 'inspected', label: 'Inspected', done: true },
-    { key: 'results', label: 'Results ready', done: true },
-    { key: 'review', label: disputed ? 'Under review' : 'You accept', done: accepted, active: st === 'delivered', warn: disputed },
-    { key: 'released', label: 'Funds released', done: released, active: accepted && !released },
+    { key: 'inspected', label: 'Inspected', done: true, at: null },
+    { key: 'results', label: 'Results ready', done: true, at: finding.delivered_at },
+    { key: 'review', label: disputed ? 'Under review' : 'You accept', done: accepted, active: st === 'delivered', warn: disputed, at: disputed ? finding.disputed_at : (finding.accepted_at || finding.resolved_at) },
+    { key: 'released', label: 'Funds released', done: released, active: accepted && !released, at: released ? releasedAt : null },
   ];
   return (
     <div className="row" style={{ gap: 0, alignItems: 'flex-start', margin: '4px 0 14px', flexWrap: 'nowrap', overflowX: 'auto' }}>
       {steps.map((s, i) => {
         const color = s.warn ? 'var(--warning, #b8860b)' : s.done ? 'var(--teal)' : s.active ? 'var(--gold, #ae8746)' : 'var(--ink-3, #c9cdd0)';
+        const day = s.done ? fmtStepDay(s.at) : '';
         return (
           <React.Fragment key={s.key}>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 66, flex: '0 0 auto' }}>
@@ -149,6 +171,7 @@ function DrawStepper({ finding }) {
                 {s.done ? '✓' : (s.warn ? '!' : i + 1)}
               </span>
               <span className="small" style={{ marginTop: 5, textAlign: 'center', color: (s.done || s.active || s.warn) ? 'var(--text)' : 'var(--text-muted)', fontWeight: (s.active || s.warn) ? 700 : 500, lineHeight: 1.15 }}>{s.label}</span>
+              {day && <span style={{ marginTop: 2, fontSize: 10, textAlign: 'center', color: 'var(--text-muted)', lineHeight: 1.1 }}>{day}</span>}
             </div>
             {i < steps.length - 1 && <span style={{ flex: '1 1 18px', minWidth: 18, height: 2, background: steps[i + 1].done || steps[i].done ? 'var(--teal)' : 'var(--line)', marginTop: 10 }} />}
           </React.Fragment>
@@ -185,24 +208,16 @@ function EligibilityCard({ e, appId, onChanged }) {
         </div>
       </div>
 
+      {/* One bullet style, two tones (owner-directed 2026-08-03) — these were two copies of the
+          same hand-drawn dot built from inline styles. */}
       {e.blocking && e.blocking.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {e.blocking.map((b, i) => (
-            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
-              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--warning, #b8860b)' }} />
-              <span className="small" style={{ color: 'var(--text-muted)' }}>{b}</span>
-            </div>
-          ))}
+        <div className="dd-notes">
+          {e.blocking.map((b, i) => <div key={i} className="dd-note warn">{b}</div>)}
         </div>
       )}
       {e.next_steps && e.next_steps.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {e.next_steps.map((s, i) => (
-            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
-              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--gold, #ae8746)' }} />
-              <span className="small" style={{ color: 'var(--text-muted)' }}>{s}</span>
-            </div>
-          ))}
+        <div className="dd-notes">
+          {e.next_steps.map((s, i) => <div key={i} className="dd-note next">{s}</div>)}
         </div>
       )}
 
@@ -299,7 +314,7 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
           </div>
           <textarea className="small" rows={2} value={note} onChange={(ev) => setNote(ev.target.value)}
             placeholder="Anything your team should know about this draw (optional)" style={{ width: '100%', marginTop: 8 }} maxLength={500} />
-          <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+          <div className="act-bar" style={{ alignItems: 'center' }}>
             <span className="small" style={{ fontWeight: 700 }}>Total: {usd2(totalCents)}</span>
             {overLine && <span className="small" style={{ color: 'var(--warning, #b8860b)' }}>“{overLine.name}” only has {usd2(overLine.remaining_cents)} left.</span>}
             <span style={{ flex: 1 }} />
@@ -339,24 +354,30 @@ function MediaStrip({ line }) {
   );
 }
 
-/* One button that opens the whole-project inspection report (every draw in one branded PDF). */
+/* One button that opens the whole-project inspection report (every draw in one branded PDF).
+   Uses the shared `.act-card` (owner-directed 2026-08-03) — a section that OWNS its action, with
+   the title and the one-line explanation on the left and the button on the right. The hand-rolled
+   flex row it replaced had no `flex:1` on the text block, so the button broke onto its own line at
+   ordinary widths and ended up floating under the sentence. */
 function ProjectReportButton({ appId }) {
   const [err, setErr] = useState('');
   return (
-    <div className="dd-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-      <div>
-        <div style={{ fontWeight: 700, color: 'var(--text)' }}>Full inspection report</div>
-        <div className="dd-sub" style={{ marginTop: 1 }}>Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
-        {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4, fontWeight: 600 }}>{err}</div>}
+    <div className="act-card">
+      <div className="act-card-head">
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div className="act-card-title">Full inspection report</div>
+          <div className="act-card-sub">Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
+          {err && <div className="act-card-sub" style={{ color: 'var(--danger)', fontWeight: 600 }}>{err}</div>}
+        </div>
+        <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
+          Download PDF
+        </button>
       </div>
-      <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
-        Download full report (PDF)
-      </button>
     </div>
   );
 }
 
-function FindingCard({ finding, appId, onChanged }) {
+function FindingCard({ finding, appId, onChanged, money }) {
   const [mode, setMode] = useState(null); // null | 'dispute'
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -388,13 +409,28 @@ function FindingCard({ finding, appId, onChanged }) {
         <span className={'pill ' + badge.cls}>{badge.label}</span>
       </div>
       <div className="dd-sub" style={{ marginTop: -2 }}>
-        Approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
+        The inspector approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
         {finding.status === 'accepted' && !finding.released && finding.wire_due_at ? ` Your release is expected by ${new Date(finding.wire_due_at).toLocaleDateString('en-US')}.` : ''}
         {finding.released ? ' Your funds have been released.' : ''}
       </div>
 
+      {/* THE NUMBER THEY ACTUALLY CARE ABOUT (owner-directed 2026-08-03). The card used to state
+          only what the inspector approved, so the borrower had to open the PDF to learn that
+          $24,701 — not $25,000 — was landing in their account. The figure and the sentence both
+          come from the server (the rollup + approval.netExplanation's borrower wording), so this
+          screen, their report and the email can never phrase the same deduction differently. */}
+      {money && money.net_release_cents != null && (
+        <div className="dd-payout">
+          <div>
+            <div className="dd-payout-k">{money.released ? 'Released to you' : 'You receive'}</div>
+            <div className="dd-payout-v">{usd2(money.net_release_cents)}</div>
+          </div>
+          {money.net_explanation && <div className="dd-payout-why">{money.net_explanation}</div>}
+        </div>
+      )}
+
       {/* Visual step tracker — inspection → results → your acceptance → funds released */}
-      <DrawStepper finding={finding} />
+      <DrawStepper finding={finding} releasedAt={money && money.release_date} />
 
       <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12, boxShadow: 'none' }}>
         <table className="dd-table" style={{ minWidth: 520 }}>
@@ -440,19 +476,24 @@ function FindingCard({ finding, appId, onChanged }) {
       </div>
 
       {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 8, fontWeight: 600 }}>{err}</div>}
-      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+      {/* DECISIONS FIRST, THEN THE DOCUMENT (owner-directed 2026-08-03). Accepting the results
+          releases money and disputing opens a review — "Download report" merely opens a PDF, and
+          all three used to sit shoulder to shoulder in one row of identical buttons. The download
+          is now a quiet `soft` action behind a hairline, so the two real choices stand alone. */}
+      <div className="act-bar">
         {canAct && mode !== 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={accept}>Accept results</button>}
         {canAct && mode !== 'dispute' && <button className="btn btn-sm ghost" onClick={() => setMode('dispute')}>Dispute an item</button>}
         {mode === 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={submitDispute}>Submit dispute</button>}
         {mode === 'dispute' && <button className="btn btn-sm ghost" onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
         {/* the borrower's OWN branded inspection report (PDF) — always available once findings exist */}
-        {mode !== 'dispute' && (
-          <button className="btn btn-sm ghost" disabled={busy}
+        {mode !== 'dispute' && (<>
+          {canAct && <span className="act-sep" aria-hidden="true" />}
+          <button className="btn btn-sm soft" disabled={busy}
             title="A PILOT-branded PDF of your draw inspection — the schedule of values, what was approved, the inspector’s notes and photos."
             onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, finding.sitewire_draw_id, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
             Download report (PDF)
           </button>
-        )}
+        </>)}
       </div>
     </div>
   );

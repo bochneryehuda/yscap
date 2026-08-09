@@ -126,6 +126,19 @@ const APPRAISAL_XML_WAIVER_REASONS = Object.freeze({
   other:            'Other (see note)',
 });
 
+// A CREDIT REPORT "we are not pulling one here" waiver (owner-directed
+// 2026-08-03). The credit condition normally requires a report IMPORTED here —
+// that is what files the PDF + data file AND reads the scores. These are the
+// reasons a current report obtained elsewhere stands in for that import instead.
+// EVERY one of them needs an admin's approval; unlike the appraisal no-XML
+// waiver there is deliberately no reason that auto-waives.
+const CREDIT_IMPORT_WAIVER_REASONS = Object.freeze({
+  report_from_elsewhere: 'A current credit report was obtained elsewhere — we are not re-pulling it',
+  avoid_new_inquiry:     'Re-pulling would put another inquiry on the borrower for a report we already hold',
+  vendor_unavailable:    'The credit vendor cannot reissue this report (login / vendor issue)',
+  other:                 'Other (see note)',
+});
+
 // An issuance override is recorded, not requested — one catch-all code.
 const ISSUANCE_OVERRIDE_REASONS = Object.freeze({
   other: 'Super-admin override past a fatal hard-warning (see note)',
@@ -142,6 +155,18 @@ const CONDITION_OVERRIDE_REASONS = Object.freeze({
 // encompass_sync_resolutions); this register row is the audit/certificate surface.
 const ENCOMPASS_MISMATCH_REASONS = Object.freeze({
   other: 'Super-admin excepted an Encompass field that does not match (see note)',
+});
+
+// A "waive THIS condition" request (owner-directed 2026-08-04). Any staffer on the
+// file may ask an admin/super-admin to waive a specific condition it names; on
+// approval the condition is marked waived. These are the standing reasons.
+const CONDITION_WAIVER_REASONS = Object.freeze({
+  provided_other_form:  'Satisfied another way / documented elsewhere on the file',
+  not_applicable:       'The condition does not apply to this deal',
+  investor_accepts:     'The capital provider / investor accepts the file without it',
+  duplicate_condition:  'A duplicate of a condition already met on the file',
+  will_follow_at_close:  'Will be provided at closing (waive the pre-close hold)',
+  other:                'Other (see note)',
 });
 
 /**
@@ -259,6 +284,35 @@ const EXCEPTION_TYPES = Object.freeze({
     slaHours: 24,
     decideRole: 'super_admin',
   }),
+  // Owner-directed 2026-08-03: sign the credit condition off on a report obtained
+  // ELSEWHERE, without importing/reissuing credit here. Not expirable — like the
+  // guaranty waiver it decides one condition on one file in one moment, and a
+  // clock must never silently re-arm a condition somebody already cleared. Decided
+  // by the register's default gate (`manage_pricing` = admins + super-admins),
+  // matching the owner's "the admin should sign off".
+  credit_import_waiver: Object.freeze({
+    label: 'Credit report — no import (report from elsewhere)',
+    reasonCodes: CREDIT_IMPORT_WAIVER_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: false,
+    slaHours: 24,
+  }),
+  // Owner-directed 2026-08-04: any staffer on a file may REQUEST that a specific
+  // condition be waived; an admin/super-admin decides, and APPROVAL marks that one
+  // condition waived (admin-exceptions.js). Not record-only — a real request →
+  // decision. Not expirable — a waived condition is a one-time human decision, not
+  // a clock-driven allowance (like the guaranty waiver). Unlike every other type
+  // it names a target condition (target_checklist_item_id), so a file may carry
+  // several open at once (one per condition — see db/470's per-condition index).
+  condition_waiver: Object.freeze({
+    label: 'Condition waiver',
+    reasonCodes: CONDITION_WAIVER_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: false,
+    slaHours: 48,
+  }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
 function typeConfig(t) { return EXCEPTION_TYPES[t] || null; }
@@ -273,6 +327,17 @@ function reasonCodesFor(type) {
   return (cfg && cfg.reasonCodes) || REASON_CODES;
 }
 function reasonLabelFor(type, code) { const m = reasonCodesFor(type); return (code && m[code]) || null; }
+// The human display label for an exception TYPE, from the ONE registry. Every
+// read surface carries this on the row (type_label) so the UI never has to
+// keep its own copy of the type→label map — the trap that made a
+// condition_override render as a "Guaranty waiver" (its UI fell back to the
+// guaranty card when it had no entry for the type). Falls back to a humanized
+// type so an unknown/legacy type is still named, never mislabeled.
+function typeLabelFor(type) {
+  const cfg = typeConfig(type);
+  if (cfg && cfg.label) return cfg.label;
+  return type ? String(type).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : null;
+}
 function isReasonCodeFor(type, code) {
   return !!code && Object.prototype.hasOwnProperty.call(reasonCodesFor(type), code);
 }
@@ -401,12 +466,25 @@ function dealDrift(row) {
 async function requestException(client, opts) {
   const type = isExceptionType(opts.type) ? opts.type : 'guaranty_waiver';
   const cfg = typeConfig(type);
-  await client.query(
-    `UPDATE loan_exceptions
-        SET status='withdrawn', withdrawn_at=now(),
-            decision_note=COALESCE(decision_note,'Superseded by a newer request')
-      WHERE application_id=$1 AND exception_type=$2 AND status=$3`,
-    [opts.appId, type, OPEN]);
+  // Supersede the prior OPEN request this one replaces. For a condition_waiver the
+  // scope is the SAME condition (a file may hold several — one per condition), so a
+  // second condition's request must NOT withdraw the first; for every other type
+  // the scope is the whole (file, type) — the one-open-per-file rule (db/470).
+  if (type === 'condition_waiver' && opts.targetChecklistItemId) {
+    await client.query(
+      `UPDATE loan_exceptions
+          SET status='withdrawn', withdrawn_at=now(),
+              decision_note=COALESCE(decision_note,'Superseded by a newer request')
+        WHERE application_id=$1 AND exception_type=$2 AND target_checklist_item_id=$3 AND status=$4`,
+      [opts.appId, type, opts.targetChecklistItemId, OPEN]);
+  } else {
+    await client.query(
+      `UPDATE loan_exceptions
+          SET status='withdrawn', withdrawn_at=now(),
+              decision_note=COALESCE(decision_note,'Superseded by a newer request')
+        WHERE application_id=$1 AND exception_type=$2 AND status=$3`,
+      [opts.appId, type, OPEN]);
+  }
   const kind = opts.requestedByKind === 'borrower' ? 'borrower'
     : opts.requestedByKind === 'system' ? 'system' : 'staff';
   const severity = ['advisory', 'standard', 'material'].includes(opts.severity) ? opts.severity : 'standard';
@@ -414,8 +492,9 @@ async function requestException(client, opts) {
     `INSERT INTO loan_exceptions
        (application_id, exception_type, subject_borrower_id, status, reason_code, reason_note,
         requested_by, requested_by_kind, requested_by_borrower_id,
-        gate_snapshot, deal_snapshot, compensating_factors, re_request_of, severity, due_at)
-     VALUES ($1,$2,$3,'requested',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        gate_snapshot, deal_snapshot, compensating_factors, re_request_of, severity, due_at,
+        target_checklist_item_id)
+     VALUES ($1,$2,$3,'requested',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      RETURNING *`,
     [opts.appId, type,
      cfg.subject === 'co_borrower' ? (opts.subjectBorrowerId || null) : null,
@@ -425,7 +504,8 @@ async function requestException(client, opts) {
      opts.gateSnapshot ? JSON.stringify(opts.gateSnapshot) : null,
      opts.dealSnapshot ? JSON.stringify(opts.dealSnapshot) : null,
      opts.compensatingFactors ? JSON.stringify(opts.compensatingFactors) : null,
-     opts.reRequestOf || null, severity, dueAtFor(type)]);
+     opts.reRequestOf || null, severity, dueAtFor(type),
+     type === 'condition_waiver' ? (opts.targetChecklistItemId || null) : null]);
   return ins.rows[0];
 }
 
@@ -441,6 +521,22 @@ async function requestGuarantyWaiver(client, { appId, subjectBorrowerId, reasonC
     type: 'guaranty_waiver', appId, subjectBorrowerId, reasonCode, reasonNote, requestedBy,
     compensatingFactors, reRequestOf,
     dealSnapshot: await dealSnapshotFor(appId),
+  });
+}
+
+/**
+ * Request a CONDITION WAIVER (owner-directed 2026-08-04) — any staffer on the file
+ * asks an admin/super-admin to waive the ONE condition it names. On approval,
+ * admin-exceptions.js marks that checklist_item waived. `checklistItemId` is
+ * required; the request carries it as target_checklist_item_id so the reviewer can
+ * see (and the approval can clear) exactly which condition.
+ */
+async function requestConditionWaiver(client, { appId, checklistItemId, reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'condition_waiver', appId, targetChecklistItemId: checklistItemId,
+    reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId,
+    compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
   });
 }
 
@@ -499,6 +595,20 @@ async function requestAppraisalXmlWaiver(client, { appId, reasonCode, reasonNote
     type: 'appraisal_xml_waiver', appId, reasonCode, reasonNote, requestedBy,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
     reRequestOf,
+  });
+}
+
+/**
+ * Request a CREDIT REPORT import waiver (owner-directed 2026-08-03). The waiver
+ * row itself is written by the credit-waiver route; this is the reviewable
+ * register entry an admin approves, and until it IS approved the credit
+ * condition's sign-off gate is unchanged (lib/credit/waiver.js fails closed).
+ */
+async function requestCreditImportWaiver(client, { appId, reasonCode, reasonNote, requestedBy, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'credit_import_waiver', appId, reasonCode, reasonNote, requestedBy,
+    compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
   });
 }
 
@@ -822,7 +932,7 @@ async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, 
        ${where}
       ORDER BY e.created_at DESC
       LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
-  return r.rows.map((row) => presentExpiry({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
+  return r.rows.map((row) => presentExpiry({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code), type_label: typeLabelFor(row.exception_type) }));
 }
 
 /* ---------------- comments (staff-only thread on an exception) ---------------- */
@@ -907,7 +1017,8 @@ async function registerForApp(appId, client = db) {
             sb.first_name AS subject_first, sb.last_name AS subject_last,
             rq.full_name AS requested_by_name, dc.full_name AS decided_by_name,
             wd.full_name AS withdrawn_by_name,
-            rb.first_name AS requested_borrower_first, rb.last_name AS requested_borrower_last
+            rb.first_name AS requested_borrower_first, rb.last_name AS requested_borrower_last,
+            tci.label AS target_condition_label
        FROM loan_exceptions e
        JOIN applications a ON a.id = e.application_id
        LEFT JOIN borrowers sb ON sb.id = e.subject_borrower_id
@@ -915,12 +1026,14 @@ async function registerForApp(appId, client = db) {
        LEFT JOIN staff_users rq ON rq.id = e.requested_by
        LEFT JOIN staff_users dc ON dc.id = e.decided_by
        LEFT JOIN staff_users wd ON wd.id = e.withdrawn_by
+       LEFT JOIN checklist_items tci ON tci.id = e.target_checklist_item_id
       WHERE e.application_id = $1
       ORDER BY e.created_at DESC
       LIMIT 200`, [appId]);
   return r.rows.map((row) => presentExpiry({
     ...row,
     reason_label: reasonLabelFor(row.exception_type, row.reason_code),
+    type_label: typeLabelFor(row.exception_type),
     deal_drift: dealDrift(row),
   }));
 }
@@ -935,7 +1048,8 @@ async function getById(id, client = db) {
             b.first_name, b.last_name,
             sb.first_name AS subject_first, sb.last_name AS subject_last,
             rq.full_name AS requested_by_name, dc.full_name AS decided_by_name,
-            wd.full_name AS withdrawn_by_name
+            wd.full_name AS withdrawn_by_name,
+            tci.label AS target_condition_label
        FROM loan_exceptions e
        JOIN applications a ON a.id = e.application_id
        JOIN borrowers b ON b.id = a.borrower_id
@@ -943,10 +1057,12 @@ async function getById(id, client = db) {
        LEFT JOIN staff_users rq ON rq.id = e.requested_by
        LEFT JOIN staff_users dc ON dc.id = e.decided_by
        LEFT JOIN staff_users wd ON wd.id = e.withdrawn_by
+       LEFT JOIN checklist_items tci ON tci.id = e.target_checklist_item_id
       WHERE e.id=$1`, [id]);
   const row = r.rows[0] || null;
   if (row) {
     row.reason_label = reasonLabelFor(row.exception_type, row.reason_code);
+    row.type_label = typeLabelFor(row.exception_type);
     row.deal_drift = dealDrift(row);
     return presentExpiry(row);
   }
@@ -978,7 +1094,8 @@ async function listExceptions({ status = 'open', type = null, limit = 100, offse
             b.first_name, b.last_name,
             sb.first_name AS subject_first, sb.last_name AS subject_last,
             rq.full_name AS requested_by_name, dc.full_name AS decided_by_name,
-            wd.full_name AS withdrawn_by_name
+            wd.full_name AS withdrawn_by_name,
+            tci.label AS target_condition_label
        FROM loan_exceptions e
        JOIN applications a ON a.id = e.application_id
        JOIN borrowers b ON b.id = a.borrower_id
@@ -986,12 +1103,14 @@ async function listExceptions({ status = 'open', type = null, limit = 100, offse
        LEFT JOIN staff_users rq ON rq.id = e.requested_by
        LEFT JOIN staff_users dc ON dc.id = e.decided_by
        LEFT JOIN staff_users wd ON wd.id = e.withdrawn_by
+       LEFT JOIN checklist_items tci ON tci.id = e.target_checklist_item_id
        ${where}
       ORDER BY e.created_at DESC
       ${limSql} ${offSql}`, params);
   return r.rows.map((row) => presentExpiry({
     ...row,
     reason_label: reasonLabelFor(row.exception_type, row.reason_code),
+    type_label: typeLabelFor(row.exception_type),
     deal_drift: dealDrift(row),
   }));
 }
@@ -1099,12 +1218,14 @@ module.exports = {
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
   APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS, TAPE_ENCOMPASS_REASONS,
+  CREDIT_IMPORT_WAIVER_REASONS, CONDITION_WAIVER_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig, decideRoleFor,
-  reasonCodesFor, reasonLabelFor, isReasonCodeFor,
+  reasonCodesFor, reasonLabelFor, isReasonCodeFor, typeLabelFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
+  requestCreditImportWaiver, requestConditionWaiver,
   recordIssuanceOverride, recordConditionOverride, recordTapeEncompassOverride,
   recordEncompassException, approvedForApp, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,

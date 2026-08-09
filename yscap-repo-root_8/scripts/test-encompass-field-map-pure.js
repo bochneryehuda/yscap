@@ -88,12 +88,16 @@ assert.strictEqual(ex.note_rate, 8.0);
 assert.strictEqual(ex.property_type, '2-4 Family');
 ok('flattenLoan + extractFields read a full loan (customFields[] + standard paths)');
 
-// ── Money exact-to-the-penny ────────────────────────────────────────────────
+// ── Money: whole-dollar figures absorb cents-rounding; input fields stay exact ──
 assert.strictEqual(m.compareField('loan_amount', 450000, '450000.0000').status, 'match');
 assert.strictEqual(m.compareField('loan_amount', '$450,000.00', 450000).status, 'match');
-assert.strictEqual(m.compareField('loan_amount', 450000, '450000.01').status, 'mismatch', 'one cent is a mismatch');
+// loan_amount is a whole-dollar figure (Encompass rounds off cents), so a cents gap is
+// a MATCH — owner-directed 2026-08-06, superseding the old "one cent is a mismatch" here.
+assert.strictEqual(m.compareField('loan_amount', 450000, '450000.01').status, 'match', 'a cents gap on a whole-dollar figure is Encompass rounding, not a mismatch');
 assert.strictEqual(m.compareField('loan_amount', 450000, null).status, 'incomparable');
-ok('money compares exact-to-the-penny (strips $/commas; a cent mismatches; null → incomparable)');
+// An INPUT money field (NOT whole-dollar) still catches a one-cent gap.
+assert.strictEqual(m.compareField('purchase_price', 450000, '450000.01').status, 'mismatch', 'a cent still mismatches on an exact-penny money field');
+ok('money: whole-dollar figures absorb cents-rounding; input money fields stay exact-to-the-penny; null → incomparable');
 
 // ── Percent tolerance ───────────────────────────────────────────────────────
 assert.strictEqual(m.compareField('actual_ltc', 92.1034, '92.1034').status, 'match');
@@ -342,6 +346,38 @@ assert.strictEqual(m.compareField('capital_provider', '', 'Fidelis Investors').s
 assert.strictEqual(m._internals.stripCorpForm('fidelis investors llc'), 'fidelis investors', 'stripCorpForm removes a trailing LLC');
 assert.strictEqual(m._internals.normPartnerName('Fidelis Investors, L.L.C.'), 'fidelis investors', 'normPartnerName normalizes punctuation + corporate form');
 ok('capital provider: LLC/Inc/spelling variants of the SAME buyer MATCH; unmapped buyers compare by name; "no data" only when a side is truly empty');
+
+// Owner-reported 2026-08-06: our side reads "EMCAP Financial", Encompass reads "EMCAP"
+// — the same note buyer. "Financial" is a descriptive word (NOT a corporate form the
+// name-fallback strips), so both spellings are enumerated onto the one 'emcap' token.
+for (const [ours, theirs] of [
+  ['EMCAP Financial', 'EMCAP'],
+  ['EMCAP', 'EMCAP Financial'],
+  ['EMCAP Financial LLC', 'EMCAP'],
+  ['Em Cap Financial', 'EMCAP'],
+]) {
+  assert.strictEqual(m.compareField('capital_provider', ours, theirs).status, 'match', `${ours} should MATCH ${theirs} (EMCAP alias)`);
+}
+assert.strictEqual(m.compareField('capital_provider', 'EMCAP', 'Fidelis').status, 'mismatch', 'EMCAP vs a different buyer still flags');
+ok('note buyer: "EMCAP Financial" ≡ "EMCAP" match');
+
+// Owner-reported 2026-08-06: Encompass stores the computed loan/cost figures as WHOLE
+// DOLLARS (no cents), so PILOT's cent-precise figure vs Encompass's rounded one is a
+// MATCH, not a mismatch — e.g. total cost $2,598,093.72 vs $2,598,094.
+assert.strictEqual(m._internals.WHOLE_DOLLAR_TOL, 1, 'whole-dollar tolerance is $1 (inclusive)');
+assert.strictEqual(m.compareField('total_cost', 2598093.72, 2598094).status, 'match', 'total cost: cents vs whole-dollar rounding is a MATCH');
+assert.strictEqual(m.compareField('loan_amount', 2598093, 2598094).status, 'match', 'loan amount: floor vs round ($1 apart) is a MATCH');
+assert.strictEqual(m.compareField('final_initial_loan', 174921.4, 174921).status, 'match', 'initial advance: sub-dollar gap is a MATCH');
+assert.strictEqual(m.compareField('financed_interest_reserve', 12000.5, 12000).status, 'match', 'financed reserve: sub-dollar gap is a MATCH');
+assert.strictEqual(m.compareField('loan_amount', 500000, 500001).status, 'match', 'a $1 loan-amount gap is rounding — a MATCH (owner 2026-08-06)');
+// A genuine >$1 disagreement on a whole-dollar figure STILL flags.
+assert.strictEqual(m.compareField('total_cost', 2598093, 2599100).status, 'mismatch', 'a real (>$1) total-cost gap still flags');
+assert.strictEqual(m.compareField('loan_amount', 500000, 500002).status, 'mismatch', 'a $2 loan-amount gap is beyond rounding — still flags');
+// The tolerance is SCOPED to the whole-dollar figures — an ordinary money field
+// (purchase price, an input) stays exact-to-the-penny, so a $1 gap there still flags.
+assert.strictEqual(m.compareField('purchase_price', 500000, 500001).status, 'mismatch', 'a $1 purchase-price gap still flags (not a whole-dollar field)');
+assert.strictEqual(m.compareField('purchase_price', 500000, 500000.004).status, 'match', 'purchase price keeps the half-cent float tolerance');
+ok('whole-dollar figures (loan/cost/sizing) tolerate Encompass cents-rounding; input money fields stay exact-to-the-penny');
 
 ok('PII governance: economics registry is PII-free; SSN/DOB sensitive; 1859 vesting in identity map');
 

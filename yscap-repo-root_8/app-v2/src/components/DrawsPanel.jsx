@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
@@ -26,6 +27,18 @@ const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
   const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+};
+// Day + time for a full timestamp (a draw step time), day only for a date-only value. For a full
+// timestamp the date is taken from the SAME local moment as the time — not fmtDay's UTC calendar-day
+// extraction — so a near-midnight-UTC value never shows a date that disagrees with its own time.
+const fmtStamp = (v) => {
+  if (!v) return '';
+  const iso = String(v);
+  const hasTime = /T\d/.test(iso) || iso.includes(':');
+  if (!hasTime) return fmtDay(v);   // date-only → shift-free local calendar date
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return fmtDay(v);
+  return `${d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 };
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
@@ -194,10 +207,14 @@ export default function DrawsPanel({ appId }) {
                 </div>
                 <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
                 <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+                  {/* "Remaining" used to be budget − RELEASED, so a draw the inspector had fully
+                      approved left the entire budget showing as still available. It now counts a
+                      not-yet-final draw as spent — the owner's rule: treat it as approved, and if it
+                      is amended or declined it all goes back to available. */}
                   <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
-                  <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
-                  <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
-                  <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
+                  <KpiTile label="Released" value={usd(rollup.project.drawn)} sub={`${pct}% released`} tone="teal" />
+                  <KpiTile label="Approved, not yet released" value={usd(Math.max(0, (rollup.project.committed ?? rollup.project.drawn) - rollup.project.drawn))} sub="counts against the budget" />
+                  <KpiTile label="Still available" value={usd(rollup.project.available ?? rollup.project.remaining)} tone="gold" />
                 </div>
               </div>
               {writesOff && (
@@ -218,7 +235,7 @@ export default function DrawsPanel({ appId }) {
                     onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
                     Whole-project report
                   </button>
-                  <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower."
+                  <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
                     onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                     Borrower copy
                   </button>
@@ -239,7 +256,7 @@ export default function DrawsPanel({ appId }) {
 
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
-              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} onSaved={load} act={act} busy={busy} />
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -284,10 +301,15 @@ export default function DrawsPanel({ appId }) {
    PDF files back to the "Signed draw request form" draw condition AND the typed wire details
    are captured here (masked account number). If the wire account name is a NEW entity (not the
    borrower and not the subject LLC), a FATAL operating-agreement condition is opened. */
+// A SHORT verdict for the chip (a pill can't wrap, so it must fit a phone) — the full explanation
+// for a new entity lives in the operating-agreement block right below the card.
 const WIRE_KIND = {
-  borrower_personal: { label: 'Borrower’s personal account', tone: 'on' },
+  borrower_personal: { label: 'Borrower’s account', tone: 'on' },
   subject_llc: { label: 'Subject LLC account', tone: 'on' },
-  new_entity: { label: 'New entity — operating agreement required', tone: 'off' },
+  // A known entity of the borrower (on their profile / library) — not the file's linked
+  // subject LLC, but not an unknown third party either, so no operating agreement is needed.
+  known_entity: { label: 'Borrower’s entity', tone: 'on' },
+  new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
 function DrawRequestCard({ appId }) {
@@ -365,33 +387,59 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* captured wire instructions (account number masked) */}
+      {/* WIRE INSTRUCTIONS — redesigned (owner-directed 2026-08-05). The account name (where the
+          money goes) leads, with its verdict chip; the bank details sit in a clean grid below. */}
       {wire && (
-        <div className="dd-card" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)' }}>
-          <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <b>Captured wire instructions</b>
-            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}><span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}</span>
+        <div className="act-card" style={{ marginTop: 12 }}>
+          <div className="act-card-head">
+            <div style={{ minWidth: 200, flex: 1 }}>
+              <div className="act-card-title">Where this draw’s money goes</div>
+              <div className="act-card-sub">The borrower’s wire instructions, captured from the signed form.</div>
+            </div>
+            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}>
+              <span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}
+            </span>
           </div>
-          <div style={{ marginTop: 6, display: 'grid', gap: 4, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-            <WireRow k="Account name" v={wire.account_name} />
-            <WireRow k="Bank" v={wire.bank_name} />
-            <WireRow k="Account number" v={wire.account_number_masked} />
-            <WireRow k="Routing / ABA" v={wire.routing_number} />
-            <WireRow k="Bank address" v={wire.bank_address} />
-            <WireRow k="Account holder address" v={wire.account_address} />
+
+          <div style={{ marginTop: 12 }}>
+            <div className="act-label" style={{ display: 'block' }}>Account name</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
           </div>
-          {wire.captured_at && <div className="muted small" style={{ marginTop: 6 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
+
+          <div style={{ marginTop: 12, display: 'grid', gap: '11px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+            <WireField k="Bank" v={wire.bank_name} />
+            <WireField k="Account number" v={wire.account_number_masked} mono />
+            <WireField k="Routing / ABA" v={wire.routing_number} mono />
+            <WireField k="Bank address" v={wire.bank_address} />
+            <WireField k="Account holder address" v={wire.account_address} />
+          </div>
+
+          {wire.captured_at && <div className="act-card-sub" style={{ marginTop: 12 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
         </div>
       )}
 
-      {/* FATAL: new-entity operating-agreement condition */}
-      {oa && !oa.satisfied && (
-        <div className="dd-card" style={{ marginTop: 10, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
-          <b>Operating agreement required before releasing this wire.</b>
-          <div className="dd-sub" style={{ marginTop: 3 }}>The wire account name is a company that isn’t the borrower or the subject LLC. A fatal condition is open to collect that entity’s operating agreement (and confirm its authority to receive funds) before any wire is released.</div>
+      {/* Operating agreement — the new-entity slot + its progress (Task 5) */}
+      {oa && (
+        <div className="act-card" style={{ marginTop: 10, borderLeft: '3px solid ' + (oa.satisfied ? 'var(--success,#2E7A5E)' : 'var(--danger,#A32A2A)') }}>
+          <div className="act-card-title">
+            {oa.satisfied ? 'Operating agreement — collected' : 'Operating agreement required before releasing this wire'}
+          </div>
+          <div className="act-card-sub" style={{ marginTop: 3 }}>
+            {oa.satisfied
+              ? 'The wire entity’s operating agreement has been collected, and the entity is saved to the borrower’s profile for the future.'
+              : 'The wire account name is a company that isn’t the borrower or the subject LLC. Collect that entity’s operating agreement — and confirm its authority to receive funds — before any wire is released.'}
+          </div>
+          {!oa.satisfied && (
+            <div className="act-card-sub" style={{ marginTop: 6 }}>
+              {oa.doc_accepted > 0
+                ? <span style={{ color: 'var(--success,#2E7A5E)' }}>An operating agreement has been accepted — sign off the condition to clear it. It has been saved to the entity on the borrower’s profile.</span>
+                : oa.doc_total > 0
+                  ? <span style={{ color: 'var(--warning,#B07A1E)' }}>An operating agreement is on the condition, waiting to be reviewed.</span>
+                  : <span style={{ color: 'var(--muted)' }}>No operating agreement on file yet — upload it on the condition, or it is pulled automatically if the borrower already has this entity on their profile.</span>}
+            </div>
+          )}
         </div>
       )}
-      {oa && oa.satisfied && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--teal,#2f7f86)' }}>Operating agreement for the wire entity has been collected.</div>}
 
       {/* signed PDF */}
       {d.signed_document && (
@@ -428,11 +476,14 @@ function DrawRequestCard({ appId }) {
     </div>
   );
 }
-function WireRow({ k, v }) {
+// One wire detail — a small uppercase label above the value, so long values (addresses) read
+// cleanly and the grid never has to right-align a wrapping string.
+function WireField({ k, v, mono }) {
   return (
-    <div className="row between" style={{ gap: 8 }}>
-      <span className="muted small">{k}</span>
-      <span className="small" style={{ fontWeight: 600, textAlign: 'right' }}>{v || '—'}</span>
+    <div>
+      <div className="act-label" style={{ display: 'block' }}>{k}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: v ? 'var(--text)' : 'var(--muted)', marginTop: 2,
+        fontVariantNumeric: mono ? 'tabular-nums' : undefined, wordBreak: 'break-word' }}>{v || '—'}</div>
     </div>
   );
 }
@@ -1796,6 +1847,57 @@ function SitewireDocumentPush({ appId, writesOff }) {
   );
 }
 
+/* The draw transitions PILOT can drive in Sitewire, by whether the draw is still open.
+   `amend` and `reopen` are the post-decision actions — an approved draw is exactly when they are
+   needed — and both require a written reason, which is journaled on the file. */
+const DRAW_ACTIONS = (isOpen) => (isOpen ? [
+  { key: 'approve', label: 'Final approve', done: 'Draw finally approved.', needsNote: false,
+    hint: 'Records OUR final approval in Sitewire — the last step before the money is released.' },
+  { key: 'amend', label: 'Amend', needsNote: true, done: 'Draw amended — the borrower can revise it.',
+    prompt: 'Why are you amending this draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Send the draw back for changes to the amounts or the work claimed.' },
+  { key: 'reopen', label: 'Reopen', needsNote: true, done: 'Draw reopened.',
+    prompt: 'Why are you reopening this draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Put the draw back into the inspection stage.' },
+] : [
+  { key: 'amend', label: 'Amend this draw', needsNote: true, done: 'Draw amended — it is back open for changes.',
+    prompt: 'Why are you amending this approved draw? (at least a few words — it goes on the audit trail)',
+    hint: 'The draw is already finally approved. Amending reopens it for changes, and the money goes back to available until it is approved again.' },
+  { key: 'reopen', label: 'Reopen', needsNote: true, done: 'Draw reopened.',
+    prompt: 'Why are you reopening this approved draw? (at least a few words — it goes on the audit trail)',
+    hint: 'Put an approved draw back into the inspection stage.' },
+]);
+
+/* The draw's journey as a staged, timestamped path — the draw equivalent of a loan file's status
+   timeline (owner-directed: "a timestamp on every step … a unified status like a loan file's
+   stages"). The resolved shape (each stage done/current/upcoming, with the date it was reached) is
+   built server-side by src/sitewire/draw-timeline.js so the desk never re-derives it. Collapsed by
+   default so it never crowds the card; a stage with no recorded time shows no date, never a guess. */
+function DrawTimeline({ timeline }) {
+  if (!Array.isArray(timeline) || timeline.length === 0) return null;
+  const cur = timeline.find((s) => s.state === 'current');
+  return (
+    <details style={{ marginTop: 10 }}>
+      <summary className="small" style={{ cursor: 'pointer', color: 'var(--muted)', fontWeight: 600 }}>
+        Draw timeline{cur ? ` — ${cur.label}` : ''}
+      </summary>
+      <ol className="timeline" style={{ marginTop: 10 }}>
+        {timeline.map((s) => (
+          <li key={s.stage} className={`tl-step ${s.state}`}>
+            <span className="tl-dot" />
+            <div className="tl-body">
+              <div className="tl-label">{s.label}</div>
+              {s.at
+                ? <div className="muted small">{fmtStamp(s.at)}</div>
+                : (s.state === 'current' ? <div className="muted small">In progress</div> : null)}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
@@ -1822,11 +1924,27 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
-          <span className="pill sw-insp">{STATUS[draw.status] || 'In progress'}</span>
+          <span className="pill sw-insp">{draw.approval_label || STATUS[draw.status] || 'In progress'}</span>
           {risk && flags.length > 0 && <span className={'pill ' + risk.cls}>{risk.label} · {flags.length}</span>}
         </div>
-        <div className="muted small">Requested {usd2(draw.requested_cents)} · Approved {usd2(draw.approved_cents)} · Net {usd2(draw.net_release_cents)}</div>
+        {/* "Approved" here is the INSPECTOR's approval until we press Final approve — Sitewire's own
+            total_approved_cents stays 0 for that whole stretch, which is what printed $0 across the
+            desk and the reports on a fully-inspected draw (owner-reported 2026-08-03). */}
+        <div className="muted small">
+          Requested {usd2(draw.requested_cents)} · {draw.final_approved_cents > 0 ? 'Final approved' : 'Inspector approved'} {usd2(draw.approved_cents)}
+          {draw.fee_cents > 0 ? <> · Less fee {usd2(draw.fee_cents)}{draw.fee_projected ? '*' : ''}</> : null}
+          {' '}· Net {usd2(draw.net_release_cents)}
+        </div>
       </div>
+
+      {draw.net_explanation && (
+        <div className="dd-sub" style={{ marginTop: 4 }}>
+          {draw.net_explanation}
+          {draw.final_approved_cents > 0 ? '' : ' This is what the inspector approved — it still needs the borrower’s acceptance, the capital partner’s review and our final approval.'}
+        </div>
+      )}
+
+      <DrawTimeline timeline={draw.timeline} />
 
       {/* Sitewire pipeline status — the same status control Sitewire's own desk has, per draw */}
       {Array.isArray(quickStatuses) && quickStatuses.length > 0 && (
@@ -1854,7 +1972,9 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       {requests.length > 0 && (
         <div style={{ overflowX: 'auto', marginTop: 8 }}>
           <table className="table" style={{ width: '100%', minWidth: 560 }}>
-            <thead><tr><th>Line</th><th style={{ textAlign: 'right' }}>Requested</th><th style={{ textAlign: 'right' }}>Approved</th><th>Photos</th>{isOpen && <th>Set approved</th>}</tr></thead>
+            <thead><tr><th>Line</th><th style={{ textAlign: 'right' }}>Requested</th>
+              <th style={{ textAlign: 'right' }} title="What the inspector approved on this line. It becomes the final approved amount when we press Final approve.">{isOpen ? 'Approved by inspector' : 'Approved'}</th>
+              <th title="Inspection photos and videos on file for this line — counted from the inspector's findings and the copies archived in PILOT, not just from the live Sitewire feed.">Photos</th>{isOpen && <th>Set approved</th>}</tr></thead>
             <tbody>
               {requests.map((r) => (
                 <tr key={r.sitewire_request_id}>
@@ -1887,30 +2007,241 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         </div>
       )}
 
-      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-        {isOpen && ['approve', 'amend', 'reopen'].map((a) => (
-          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} title={offTip} disabled={writesOff || busy === a + draw.sitewire_draw_id}
-            onClick={() => act(a + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a}`, {}); return { msg: `Draw ${a}d.` }; })}>
-            {a[0].toUpperCase() + a.slice(1)}
+      {/* ACTIONS GROUPED BY WHAT THEY DO (owner-directed 2026-08-03: "everything is a little
+          messed up … the button is not a nice place"). This had grown to nine buttons in one
+          wrapping row, all the same weight — so Approve, which moves real money, read exactly as
+          loudly as Draw packet, which downloads a spreadsheet. Two clusters now: the DECISIONS on
+          this draw, then the DOCUMENTS it produces (quiet `soft` buttons), with a hairline
+          between them. Same actions, same handlers — only the grouping and the weight changed. */}
+      <div className="act-bar">
+        {/* AMEND AND REOPEN MUST SURVIVE THE FINAL APPROVAL (owner-reported 2026-08-03: "we're
+            missing the amend button, which is available in Sitewire after the final approval").
+            These two actions only make sense on a draw somebody already decided — that is what
+            "amend" means — yet the whole row was hidden the moment the draw reached `approved`, so
+            the one state they exist for was the one state they could not be reached in. The backend
+            route has always accepted them (client.DRAW_TRANSITIONS). Both also REQUIRE a note of at
+            least 8 characters (audit B-10) which the old button never asked for, so every click
+            answered 400 — the button was broken on open draws too. */}
+        {DRAW_ACTIONS(isOpen).map((a) => (
+          <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
+            title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
+            onClick={() => {
+              let note = null;
+              if (a.needsNote) {
+                note = window.prompt(a.prompt, '');
+                if (note == null) return;                       // cancelled
+                if (String(note).trim().length < 8) { showMessage('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
+              }
+              act(a.key + draw.sitewire_draw_id, async () => {
+                await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a.key}`, note ? { note: String(note).trim() } : {});
+                return { msg: a.done };
+              });
+            }}>
+            {a.label}
           </button>
         ))}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
           onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
-        <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'ghost')} onClick={() => setShowPhotos((s) => !s)}>
-          {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
-        </button>
-        <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
-        <button className="btn btn-sm ghost" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
-          onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>PILOT report (PDF)</button>
-        <button className="btn btn-sm ghost" title="The same report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-          onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
-        {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
+
+        <span className="act-sep" aria-hidden="true" />
+
+        <span className="act-group">
+          <span className="act-label">Documents</span>
+          <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'soft')} onClick={() => setShowPhotos((s) => !s)}>
+            {showPhotos ? 'Hide photos' : 'Photos'}
+          </button>
+          <button className="btn btn-sm soft" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Packet (Excel)</button>
+          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
+            onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
+          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
+            onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+          {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
+        </span>
       </div>
 
       {showPhotos && <InspectionGallery appId={appId} draw={draw} finding={finding} readsOff={readsOff} />}
       {finding && <FindingStatus appId={appId} finding={finding} reload={reload} />}
+      {finding && <InvestorDeliveryCard appId={appId} drawId={draw.sitewire_draw_id} reload={reload} />}
+    </div>
+  );
+}
+
+/* INVESTOR DELIVERY (owner-directed 2026-08-03) — once the borrower agrees, the draw goes to the
+   note buyer who actually funds it. Everything shown here is computed by the server
+   (src/sitewire/investor-delivery*.js): the money, who receives it, and what is blocking the send.
+   The screen never re-derives a figure — it prints what the report and the packet were built from. */
+function InvestorDeliveryCard({ appId, drawId, reload }) {
+  const [open, setOpen] = useState(false);
+  const [p, setP] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [note, setNote] = useState('');   // optional note for a MANUAL delivery
+  const load = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
+  }, [appId, drawId]);
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  async function setMode(mode, scope) {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/funding-mode`, { mode, scope });
+      load();
+    } catch (e) { setErr(e?.data?.error || 'Could not save that choice.'); }
+    finally { setBusy(false); }
+  }
+
+  async function send() {
+    if (!p) return;
+    const manual = p.funding_mode === 'manual';
+    let ok;
+    if (manual) {
+      ok = window.confirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+    } else {
+      const who = p.to.join(', ');
+      const modeLine = p.funding_mode === 'reimbursement'
+        ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+        : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
+      ok = window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
+    }
+    if (!ok) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
+      });
+      if (r.manual) {
+        setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
+      } else {
+        const missing = (r.skipped || []).length;
+        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      }
+      setNote('');
+      load(); reload();
+    } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
+    finally { setBusy(false); }
+  }
+
+  // A section that OWNS its action (owner-directed 2026-08-03: "the button is not a nice place").
+  // Collapsed, it is a titled row that says what it does with the action on the right — never a
+  // bare button floating under the card attached to nothing.
+  if (!open) {
+    return (
+      <div className="act-card">
+        <div className="act-card-head">
+          <div style={{ minWidth: 220, flex: 1 }}>
+            <div className="act-card-title">Investor delivery</div>
+            <div className="act-card-sub">Send this draw to the investor who funds it, with the reports, the packet and the signed wire instructions.</div>
+          </div>
+          <button className="btn btn-sm ghost" onClick={() => setOpen(true)}>Open</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="act-card is-open">
+      <div className="act-card-head">
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div className="act-card-title">Investor delivery</div>
+          {p && <div className="act-card-sub">Goes to <b style={{ color: 'var(--text)' }}>{p.note_buyer || 'the note buyer'}</b> with the inspector’s report, our report, the draw packet and the borrower’s signed wire instructions.</div>}
+        </div>
+        <button className="btn btn-sm soft" onClick={() => setOpen(false)}>Close</button>
+      </div>
+
+      {!p ? <div className="act-card-sub" style={{ marginTop: 10 }}>Loading…</div> : (
+        <>
+          {/* the money, exactly as the report and the packet state it */}
+          <dl className="act-figs">
+            <dt>Approved on inspection</dt><dd>{usd2(p.money.approved_cents)}</dd>
+            <dt>To the borrower</dt><dd>{usd2(p.money.to_borrower_cents)}</dd>
+            {p.money.to_us_cents > 0 && (<>
+              <dt>Our draw fee</dt><dd>{usd2(p.money.to_us_cents)}</dd>
+            </>)}
+            <div className="rule" />
+            <dt className="tot">Investor funds</dt><dd className="tot">{usd2(p.money.investor_total_cents)}</dd>
+          </dl>
+
+          {/* how it is funded — one segmented control, not two look-alike buttons */}
+          <div style={{ marginTop: 14 }}>
+            <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>How this draw is funded</div>
+            <div className="seg" role="group" aria-label="How this draw is funded">
+              {(p.modes || []).map((m) => (
+                <button key={m.mode} type="button" className={p.funding_mode === m.mode ? 'on' : ''}
+                  disabled={busy} title={m.help} aria-pressed={p.funding_mode === m.mode}
+                  onClick={() => setMode(m.mode, 'draw')}>{m.label}</button>
+              ))}
+            </div>
+            <div className="act-card-sub" style={{ marginTop: 6 }}>
+              {(p.modes || []).find((m) => m.mode === p.funding_mode)?.help}
+              {p.funding_mode_source === 'default' ? ' This is the standard arrangement.' : p.funding_mode_source === 'file' ? ' Set as this file’s default.' : ' Set for this draw.'}
+              {' '}
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} disabled={busy}
+                onClick={() => setMode(p.funding_mode, 'file')}>Use for every draw on this file</button>
+            </div>
+          </div>
+
+          {/* who it goes to — or, for a manual delivery, a note field (PILOT sends no email) */}
+          {p.funding_mode === 'manual' ? (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Manual delivery</div>
+              <div className="act-card-sub" style={{ marginTop: 0, marginBottom: 6 }}>
+                PILOT sends no email in this mode — you deliver this draw to the investor yourself and record it here so the reminders stop.
+              </div>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} disabled={busy}
+                placeholder="How it was delivered (optional) — e.g. sent through the investor's portal, or by phone" maxLength={2000} rows={2}
+                aria-label="Manual delivery note"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
+            </div>
+          ) : (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
+              <div className="act-card-sub" style={{ marginTop: 0 }}>
+                <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
+                <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
+                The borrower is never included.
+              </div>
+            </div>
+          )}
+
+          {/* the signed wire form's review state — the investor wires the borrower off it, so it
+              must be reviewed and accepted first (a MANUAL delivery is handled outside PILOT). */}
+          {p.funding_mode !== 'manual' && p.wire_form && (
+            <div className="act-card-sub" style={{ marginTop: 12 }}>
+              <b style={{ color: 'var(--text)' }}>Signed wire form</b>{' '}
+              {p.wire_form.accepted
+                ? <span style={{ color: 'var(--good,#2F7F53)' }}>accepted ✓</span>
+                : !p.wire_form.present
+                  ? <span style={{ color: 'var(--danger,#B4453C)' }}>not signed yet</span>
+                  : p.wire_form.rejectedOnly
+                    ? <span style={{ color: 'var(--danger,#B4453C)' }}>rejected — needs to be re-signed</span>
+                    : <span style={{ color: 'var(--warn,#AE8746)' }}>waiting to be accepted</span>}
+            </div>
+          )}
+
+          {p.blockers.length > 0 && (
+            <ul className="act-card-sub" style={{ marginTop: 12, color: 'var(--danger,#B4453C)', paddingLeft: 18 }}>
+              {p.blockers.map((b, i) => <li key={i}>{b}</li>)}
+            </ul>
+          )}
+
+          <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
+              title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
+              {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
+                : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}
+            </button>
+            {p.history.length > 0 && (
+              <span className="act-card-sub" style={{ marginTop: 0 }}>
+                Last sent {new Date(p.history[0].sent_at).toLocaleString('en-US')}{p.history[0].status === 'error' ? ' (failed)' : ''} · {p.history.length} on record
+              </span>
+            )}
+          </div>
+          {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
+          {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
+        </>
+      )}
     </div>
   );
 }
@@ -1939,9 +2270,42 @@ function FindingStatus({ appId, finding, reload }) {
     if (decision === 'approved' && dollars != null && dollars !== '' && Number.isFinite(Number(dollars))) body.approved_cents = Math.round(Number(dollars) * 100);
     try { await api.post(`/api/sitewire/findings/${finding.id}/lines/${lineId}/decide`, body); const d = await api.get(`/api/sitewire/findings/${finding.id}`); setDetail(d); reload(); } catch (e) { /* surfaced by parent on reload */ }
   }
+  // THE BORROWER MAY AGREE OUTSIDE THE PORTAL (owner-directed 2026-08-03): "we should also be able
+  // to click that the borrower agreed with the finding in case the borrower gives us his
+  // authorization verbally or he writes an email and he's not doing it in the portal." It runs the
+  // SAME transition their own Accept button does — the note records how the approval arrived.
+  const [recording, setRecording] = useState(false);
+  const [recErr, setRecErr] = useState('');
+  async function recordAgreement() {
+    const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
+    if (note == null) return;
+    if (String(note).trim().length < 8) { showMessage('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
+    setRecording(true); setRecErr('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/mark-accepted`, { note: String(note).trim() });
+      reload();
+    } catch (e) { setRecErr(e?.data?.error || 'Could not record the borrower’s approval — please try again.'); }
+    finally { setRecording(false); }
+  }
+
   return (
     <div style={{ marginTop: 8, borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8 }}>
-      <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}</div>
+      <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}
+        {finding.accepted_via === 'staff' ? <span className="muted"> · recorded by the team</span> : null}</div>
+      {finding.status === 'delivered' && (
+        <div className="act-card" style={{ marginTop: 8 }}>
+          <div className="act-card-head">
+            <div style={{ minWidth: 220, flex: 1 }}>
+              <div className="act-card-title">Waiting on the borrower</div>
+              <div className="act-card-sub">If they approved by phone or email instead of in their portal, record it here.</div>
+            </div>
+            <button className="btn btn-sm ghost" disabled={recording} onClick={recordAgreement}>
+              {recording ? 'Recording…' : 'Borrower agreed'}
+            </button>
+          </div>
+        </div>
+      )}
+      {recErr ? <div className="small" style={{ color: '#B4453C', marginTop: 4 }}>{recErr}</div> : null}
       {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => {
         const defDollars = l.dispute_desired_cents != null ? String(Math.round(Number(l.dispute_desired_cents)) / 100) : '';
         const val = amt[l.id] != null ? amt[l.id] : defDollars;
@@ -2095,7 +2459,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, oop = null, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
@@ -2158,7 +2522,13 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, onSaved, act
       {/* summary tiles */}
       <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
         <KpiTile label="Approved to date" value={usd(totApproved)} />
-        <KpiTile label="Our fees" value={usd(totFee)} tone="gold" />
+        {/* OUR fee income on this project, kept separate from the borrower's money (owner-directed
+            2026-08-03). `charged` is what recorded releases actually took; `projected` is the file's
+            standard fee on draws that have not been released yet. */}
+        <KpiTile label="Our fees" value={usd(totFee)} tone="gold"
+          sub={fees && Number(fees.projected_cents) > 0
+            ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
+            : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined)} />
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
         {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}

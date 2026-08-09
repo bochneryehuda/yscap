@@ -268,11 +268,93 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(again.status === 409 && again.body.code === 'already_ordered',
       'a second send is refused — the attorney and the whole Cc chain are not blasted twice');
     assert(sends.length === 0, 'and nothing went out');
+    // A FORCED re-send inside ten seconds is a double-click, not a decision.
+    // Forcing passes no dedupe key (a real re-send must be allowed to repeat), so
+    // without this window the biggest email in the system — the borrower's term
+    // sheet, contract, entity documents and ID — went to outside counsel twice on
+    // two clicks. Its title and insurance siblings each carry the same window.
+    const tooSoon = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(tooSoon.status === 409 && tooSoon.body.code === 'too_soon',
+      'a forced re-send one second later is refused as the double-click it is');
+    assert(sends.length === 0, 'and that one did not go out either');
+    // …and it says so in its OWN words rather than advising "force a re-send" to
+    // somebody who just pressed exactly that.
+    assert(!/force a re-send/i.test(String(tooSoon.body.error || '')),
+      'the refusal does not tell them to do the thing they just did');
+    // Past the window, the deliberate re-send is allowed.
+    await db.query(`UPDATE file_orders SET ordered_at = ordered_at - interval '1 minute'
+                     WHERE application_id=$1 AND order_type='attorney'`, [appId]);
     const forced = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
     assert(forced.status === 200 && sends.length === 1, 'a DELIBERATE re-send is allowed');
     assert(sends[0].headers['In-Reply-To'], 'the re-send threads onto the existing chain');
     const fo = (await db.query(`SELECT send_count FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
     assert(fo.send_count === 2, 'the re-send is counted');
+  }
+
+  /* ── 4b. A CLAIM THAT DID NOT SEND IS PUT BACK ───────────────────────────────
+     The forced re-send claims the row by stamping `ordered_at = now()` BEFORE the
+     email is built — that is what makes two clicks impossible. This order's AGE is
+     that same column, so a claim that is never released leaves a twelve-day-late
+     order looking freshly placed: off the desk's Late tab and out of the overdue
+     nudge for another whole SLA window, on a send that never happened. Three
+     unwind paths, and each one had to be proven rather than assumed. */
+  {
+    const orderRow = async () => (await db.query(
+      `SELECT status, ordered_at, send_count FROM file_orders
+        WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0] || null;
+
+    // (i) THE SEND FAILS → the clock goes back to exactly where it was.
+    await db.query(`UPDATE file_orders SET ordered_at = ordered_at - interval '1 minute'
+                     WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    const before = await orderRow();
+    sends.length = 0;
+    const realNoopSend2 = noop.sendMail;
+    noop.sendMail = async () => { throw new Error('provider down'); };
+    const failedSend = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    noop.sendMail = realNoopSend2;
+    assert(failedSend.status === 500, 'a re-send whose provider is down is reported as a failure');
+    const after = await orderRow();
+    assert(after && +new Date(after.ordered_at) === +new Date(before.ordered_at),
+      'and the claim is RELEASED — the order keeps its real age, so it stays on the Late tab');
+    assert(after.send_count === before.send_count, 'a failed re-send is not counted as a send');
+
+    // (ii) A SUCCESSFUL send KEEPS its claim. The release is a no-op once the
+    // email is out, or a later bookkeeping error would rewind the clock on an
+    // order outside counsel has already received.
+    await db.query(`UPDATE file_orders SET ordered_at = ordered_at - interval '1 minute'
+                     WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    const preOk = await orderRow();
+    sends.length = 0;
+    const okSend = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(okSend.status === 200 && sends.length >= 1, 'a re-send past the window still goes out');
+    const postOk = await orderRow();
+    assert(+new Date(postOk.ordered_at) > +new Date(preOk.ordered_at),
+      'and a send that DID happen keeps the fresh stamp — the release must never unwind it');
+
+    /* (iii) THE CLAIM MINTED THE ROW → releasing DELETES it, rather than leaving a
+       phantom 'ordered' attorney order on a file nobody ever sent one for.
+       Run on THIS file, deliberately. A fresh application is the obvious way to get
+       a file with no order row, and it is the wrong one: it carries no product
+       registration, so `closing-prep.blockers` refuses at `not_registered` and the
+       route answers 400 long before the claim INSERT — the row is never minted, and
+       "no phantom row" then passes for a reason that has nothing to do with the
+       release. Asserting the 500 is what keeps that honest. */
+    await db.query(`DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    const realNoopSend3 = noop.sendMail;
+    noop.sendMail = async () => { throw new Error('provider down'); };
+    const minted = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    noop.sendMail = realNoopSend3;
+    assert(minted.status === 500,
+      'the send is genuinely reached — a 400 blocker here would make the next check meaningless');
+    const phantom = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    assert(!phantom,
+      'a claim that minted the row removes it again — never a phantom "ordered" order nobody placed');
+    // Put the order back for the sections below (announce() refuses without a live
+    // order, which is the rule that stops PILOT writing to an attorney nobody engaged).
+    sends.length = 0;
+    const restored = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(restored.status === 200 && sends.length >= 1, 'and the order can simply be sent again afterwards');
   }
 
   /* ───── 5. the three automatic updates ride the SAME chain, exactly once ─── */
@@ -758,8 +840,16 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       'and refuses a closing-scoped reply for the SAME reason — the two doors agree');
     assert(sends.length === 0, 'a cancelled order emails outside counsel through NEITHER door');
 
+    /* REOPENED TO 'documents_in', NOT 'ordered' — and that is the point of the
+       rule, not an accident of this fixture. The attorney has already answered on
+       this chain (two documents were filed through the closing inbox further up),
+       which stamps `first_response_at`. 'ordered' means "the vendor owes us an
+       answer" to `order-sla.pendingOn`, so reopening there would have the overdue
+       nudge email the team "we asked the closing attorney N days ago and nothing
+       has come back" about documents sitting on the file. */
     const re = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
-    assert(re.status === 200 && re.body.status === 'ordered', 'and can be reopened');
+    assert(re.status === 200 && re.body.status === 'documents_in',
+      'and can be reopened — to documents_in, because the attorney has already answered');
 
     // Reopening restores BOTH doors — a stand-down must be reversible, not a trap.
     sends.length = 0;
@@ -767,12 +857,72 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       { body: 'we are back on.', scope: 'closing' });
     assert(rep2.status === 200 && sends.length === 1 && sends[0].to.includes('teamag@privatelenderlaw.com'),
       'a reopened order lets the reply door reach the attorney again');
+
+    /* REOPEN COVERS BOTH WAYS THIS ORDER ENDS. It reaches 'completed' on its own
+       — retireClosedOrdersOnce closes it when the deal is over — and Reopen was
+       offered only for 'cancelled', so a file that came back to life had no way
+       back onto the desk. */
+    await db.query(`UPDATE file_orders SET status='completed', completed_at=now()
+                     WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    const reDone = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
+    assert(reDone.status === 200 && reDone.body.status === 'documents_in',
+      'a FINISHED closing-prep request can be reopened, not only a cancelled one');
+    const reRow = (await db.query(
+      `SELECT completed_at FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    assert(reRow.completed_at === null,
+      'and reopening clears the completion — a running order must not carry a turnaround');
+    const reLive = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
+    assert(reLive.status === 409 && reLive.body.code === 'not_reopenable',
+      'reopening one that is already open is refused rather than silently rewritten');
+
+    /* A RE-SEND KEEPS THE RETIRE STAMP. `auto_retired_at` is the once-per-order
+       mark that stops the sweep closing an order a second time, and the forced
+       re-send REPLACED the whole meta object — so a coordinator pressing "Re-send
+       request" on a finished order (the button IS offered there) sent the entire
+       package, brought the order back to life, and then watched the next sweep,
+       within half an hour, retire it straight off the desk again. Reopen never had
+       this bug because it does not touch meta, so the two ways back to life
+       disagreed about whether the order stayed. */
+    await db.query(
+      `UPDATE file_orders SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('auto_retired_at', now()),
+              status='completed', ordered_at = ordered_at - interval '1 minute'
+        WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    sends.length = 0;
+    const resent = await call('POST', `/api/staff/applications/${appId}/closing-prep/place`, { force: true });
+    assert(resent.status === 200 && sends.length >= 1, 'a finished request can be deliberately re-sent');
+    const metaRow = (await db.query(
+      `SELECT status, (meta ? 'auto_retired_at') AS stamped, meta->>'parts' AS parts
+         FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    assert(metaRow.status === 'ordered', 'the re-send brings it back to life');
+    assert(metaRow.stamped === true,
+      'and it KEEPS the retire stamp, so the sweep does not close it again half an hour later');
+    assert(metaRow.parts != null,
+      'while this send’s own bookkeeping is still written — the merge adds, it does not just preserve');
+
+    /* THE ROW IS WRITTEN AFTER THE SEND, so a DB blip can leave a file whose
+       request genuinely went out with nothing recorded — and Cancel is the one
+       action that must stay reachable once outside counsel has been written to.
+       That recovery branch answered 500 on every call: it runs precisely when the
+       UPDATE matched no row, and the response then read `upd.rows[0].status`
+       through the undefined it had just checked for. */
+    await db.query(`DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    const recovered = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, {});
+    assert(recovered.status === 200 && recovered.body.status === 'cancelled',
+      'Cancel still works when the order row was lost — the chain can always be stopped');
+    assert((await db.query(`SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`,
+      [appId])).rows[0].status === 'cancelled', 'and the row is put back, cancelled');
+    const reRecovered = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
+    assert(reRecovered.status === 200 && reRecovered.body.status === 'ordered',
+      'and it can be reopened again afterwards');
   }
 
   /* ───────────────── 10. the global orders queue sees it ─────────────────── */
   {
     const r = await call('GET', '/api/staff/orders');
-    const row = (r.body || []).find((f) => f.applicationId === appId);
+    // The desk answers {files, capped, cap} so a truncated read can say so — it
+    // used to be a bare array with no cap at all.
+    const deskFiles = Array.isArray(r.body) ? r.body : ((r.body && r.body.files) || []);
+    const row = deskFiles.find((f) => f.applicationId === appId);
     assert(!!row && !!row.attorney, 'the closing-prep order appears in the global orders queue');
     assert(row.attorney.unassignedDocs === 0,
       'and its chain documents are never counted as "waiting to be classified" (they need no slot)');

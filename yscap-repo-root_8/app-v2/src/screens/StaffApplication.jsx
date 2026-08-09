@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -37,20 +38,23 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
-import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
+import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
+import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote, NoteBuyerMark } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
+import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -377,18 +381,12 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
-// EMCAP prices the rental cash flow, so a fix-and-hold loan sold to EMCAP needs an
-// estimated monthly rent for completeness. These mirror the server's
-// normNoteBuyer / normStrategy fix-hold branch (src/lib/conditions/field-registry.js)
-// — keep them in sync so the panel and the submit gate agree.
-const isEmcapBuyer = (app) => String(app.lender || '').toLowerCase().replace(/[^a-z0-9]/g, '') === 'emcap';
-function isFixHoldStrategy(app) {
-  const s = [app.program, app.loan_type, app.rehab_type].filter(Boolean).join(' ').toLowerCase();
-  if (!s) return false;
-  if (/ground|construction(?!\s*&)/.test(s) && /ground|new/.test(s)) return false; // ground_up
-  if (/dscr|rental|stabilized|long[-\s]?term|30[-\s]?year/.test(s)) return false;   // rental_dscr
-  return /hold|brrrr/.test(s);
-}
+// Whether this file needs an estimated monthly rent for completeness is decided
+// by the SERVER and arrives as `app.requires_estimated_rent`
+// (GET /api/staff/applications/:id). It used to be re-derived here, which put a
+// capital partner's name in the bundle every visitor downloads and drifted from
+// the server's own rule — see the note on that line in src/routes/staff.js.
+// Never re-derive a note-buyer rule in the browser: ask the server.
 
 /* COMPLETENESS IS THREE LISTS, NOT ONE (owner-directed 2026-08-02: split it
    three ways — the application, the borrower, the co-borrower).
@@ -430,15 +428,30 @@ const APP_COMPLETENESS_FIELDS = (app) => [
      It saves through the file's one vesting door rather than complete-fields:
      `applications.llc_id` is a LINK to the borrower's entity, never a text
      column, and a name written into a column would be a name with no documents
-     behind it. Individual vesting still lives in the Vesting entity section —
-     it is a sign-off (it waives the LLC condition), not a field to type. */
+     behind it.
+
+     AND THE OTHER ANSWER IS RIGHT HERE TOO (owner-directed 2026-08-03: "you have
+     a plus mark where you can put an LLC. We need over there to have a tool to
+     select that this is on an individual"). The pill asks "what does this vest
+     in?" and there are TWO answers, but only one of them could be given here —
+     the other was a sentence telling the officer to go and find a different
+     section, on the one pill they had already opened to answer the question.
+     "An individual" is a SIGN-OFF (it stands the LLC condition down), so it
+     still saves through the personal-name door — a second button on the same
+     editor, never a value typed into the name box. */
   { key: 'entity_name',
     label: (app.personal_name_purchase && !app.llc_id) ? 'Vesting' : 'Subject-property LLC',
     ok: !!(app.entity_name || app.llc_name || app.llc_id || (app.personal_name_purchase && !app.llc_id)),
     type: 'entity', placeholder: 'Acme Holdings LLC',
     postEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting-llc'),
     postBody: (v) => ({ entityName: v }),
-    hint: 'The LLC taking title — type the name. Individual vesting is set in the Vesting entity section.' },
+    // The second answer, offered beside the name box by CompletenessPanel.
+    altEndpoint: (base) => base.replace(/\/complete-fields$/, '/vesting/personal-name'),
+    altBody: () => ({}),
+    altLabel: 'No LLC — an individual',
+    altNote: 'Saved — this file closes in the borrower’s own name. The signed non-owner-occupied affidavit is now asked for on its own condition.',
+    altBlocked: app.vesting_individual_blocked || '',
+    hint: 'The LLC taking title — type the name, or say it closes in the borrower’s own name.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -471,7 +484,7 @@ const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
   // Estimated monthly rent — required for completeness only on an EMCAP
   // fix-and-hold loan (owner-directed 2026-07-26). Hidden on every other file.
-  ...(isEmcapBuyer(app) && isFixHoldStrategy(app)
+  ...(app.requires_estimated_rent
     ? [{ key: 'estimated_rental_income', label: 'Estimated monthly rent', ok: app.estimated_rental_income != null, type: 'money' }]
     : []),
   // Loan number (applications.ys_loan_number) — part of application completeness
@@ -609,6 +622,23 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
     } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
+  /* THE OTHER ANSWER — a field whose question has a second, non-typed answer
+     (today: "this vests in an individual", which is a sign-off through the
+     personal-name door, not a name to type). It posts NOTHING from the box, so
+     it deliberately does not go through `save` and is never gated on the box
+     having a value. `altBlocked` carries the server's own reason (Blue Lake /
+     Gold), so the button is greyed WITH the reason rather than answering 409. */
+  async function saveAlt(f) {
+    if (!f.altEndpoint || f.altBlocked) return;
+    setBusy(true); setErr(''); setNote('');
+    try {
+      await api.post(f.altEndpoint(endpoint), f.altBody ? f.altBody() : {});
+      setEditing(null); setVal('');
+      if (f.altNote) setNote(f.altNote);
+      await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 8 }}>
@@ -647,7 +677,14 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                       onChange={(e) => setVal(f.type === 'fico' ? cleanFICO(e.target.value) : e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
                 <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                {f.altEndpoint && (
+                  <button className="btn ghost small" disabled={busy || !!f.altBlocked}
+                    title={f.altBlocked || 'No company takes title — the borrower buys in their own name.'}
+                    onClick={() => saveAlt(f)}>{f.altLabel || 'Other'}</button>
+                )}
                 <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
+                {f.altEndpoint && f.altBlocked
+                  && <span className="small" style={{ flexBasis: '100%', color: '#8A6D3B' }}>{f.altBlocked}</span>}
               </span>
             ) : f.edit === false ? (
               // A field this compact panel can't edit itself is still one CLICK
@@ -1477,14 +1514,18 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
-  // It used to collapse only once YOUR role-action was done, so a file's whole
-  // list rendered fully expanded — 24 conditions measured 8,116px, over seven
-  // screens. `expandOverride` is still the per-row manual override on top.
-  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic (shut)
+  //
+  // OPEN/SHUT IS THE PARENT'S `expandedConds`, NOT LOCAL STATE (2026-08-07). This
+  // row used to keep its own `expandOverride`, so the list ran on TWO collapse
+  // stores — the internal rows on this one, every other row on the parent's Set.
+  // That is the same root as the wandering Collapse button: two stores cannot help
+  // but behave differently, and they did (full screen opened both but restored only
+  // one on the way out, and no "open/close everything" could ever reach these
+  // rows). One Set now owns every row on the file.
   const signed = !!it.signed_off_at;
   // No `completer` here any more — who may do what is decided inside the shared
   // action bar (components/ConditionActions), so this row cannot answer that
@@ -1501,16 +1542,16 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  // In full screen everything opens by default (owner-directed); the per-row
-  // manual override still wins, so you can collapse an internal condition by hand.
-  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
-  if (collapsed) {
+  // Full screen opens everything — the parent seeds `expandedConds` with every
+  // visible row on the way in and restores the normal state on the way out, so an
+  // internal condition now behaves exactly like every other one.
+  if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
       // exactly where it was on screen (lib/keep-scroll.js).
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
-          onToggle={() => setExpandOverride(true)} onPatch={onPatch} />
+          onToggle={onToggleExpand} onPatch={onPatch} />
       </div>
     );
   }
@@ -1561,6 +1602,8 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             </pre>
           )}
         </div>
+        {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+        <ConditionCollapse onToggle={onToggleExpand} />
       </div>
 
       {it.template_code === 'rtl_cond_credit' && (
@@ -1570,7 +1613,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         // `field_key` tells it WHICH credit condition this is: the file-level one, or
         // a co-borrower's own ('cob_credit') — which shows that borrower's report
         // only, instead of repeating the whole file's credit section twice.
-        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} />
+        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} itemId={it.id} />
       )}
 
       {/* The typed answer, for the conditions that ARE a typed answer — the note
@@ -1716,12 +1759,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
-          row and the borrower-facing one can never drift again. */}
+          row and the borrower-facing one can never drift again. Collapse is NOT in
+          here: it is a view control, not an action on the loan, and mixing the two
+          is what put it at the bottom of this one row and nowhere else. */}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-          docs={itemDocs} size="" />
-        {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
-          onClick={() => setExpandOverride(false)}>Collapse</button>}
+          docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
       </div>
       <ConditionNote it={it} onPatch={onPatch} />
     </div>
@@ -1917,7 +1960,12 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       {llcs == null ? <p className="muted small">Loading…</p>
         : llcs.length === 0 ? <p className="muted small">{app.llc_id
             ? "The vesting entity linked to this file isn't loading — refresh the page."
-            : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
+            : app.personal_name_purchase
+              /* An individual purchase has no entity BY DEFINITION, so telling
+                 the officer to go and create one is the one instruction that
+                 must never appear here (owner-reported 2026-08-03). */
+              ? 'This file closes as an individual — title goes in the borrower’s own name, so there is no entity to verify. Switch it back to an LLC on the entity condition below if that is wrong.'
+              : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
         : (() => {
           // #57 — render JUST the vesting entity for THIS file up top; the file's
           // track-record entities collapse behind a toggle so staff verify the one
@@ -2135,15 +2183,27 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     )}
                     {appId && (
                       <button className="btn ghost small" disabled={busy === l.id}
-                        title="Post a request/issue about this entity — it becomes a named condition on this file that the borrower can respond to"
+                        title="Flag an internal issue about this entity for the team to review — the borrower is NOT notified"
                         onClick={async () => {
-                          const reason = window.prompt(`Raise an issue on "${l.llc_name}" — what do you need? (the borrower will see this)`);
+                          const reason = window.prompt(`Raise an internal issue about "${l.llc_name}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                           if (reason == null || !reason.trim()) return;
                           setBusy(l.id); setErr(''); setMsg('');
-                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — added as a condition on this file.`); onChanged && onChanged(); }
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — recorded internally for review (the borrower was not notified).`); onChanged && onChanged(); }
                           catch (e) { setErr(e.message || 'Could not raise the issue'); }
                           finally { setBusy(''); }
                         }}>Raise an issue</button>
+                    )}
+                    {appId && (
+                      <button className="btn ghost small" disabled={busy === l.id}
+                        title="Post a borrower-facing condition on THIS loan about this entity — the borrower is notified"
+                        onClick={async () => {
+                          const reason = window.prompt(`Post a condition on this loan about the entity "${l.llc_name}" — what does the borrower need to provide?\n\nThe borrower WILL be notified.`);
+                          if (reason == null || !reason.trim()) return;
+                          setBusy(l.id); setErr(''); setMsg('');
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim(), true); setMsg(`Condition posted about ${l.llc_name} — the borrower was notified.`); onChanged && onChanged(); }
+                          catch (e) { setErr(e.message || 'Could not post the condition'); }
+                          finally { setBusy(''); }
+                        }}>Post a condition</button>
                     )}
                   </div>
                 </div>
@@ -2280,6 +2340,156 @@ function TrackRecordFindings({ appId, onChanged }) {
   );
 }
 
+/* WHAT'S LEFT ON THIS TRACK RECORD (owner-directed 2026-08-03: "after the track
+   record there should be the skew of the stuff that still needs to be done to
+   the track record — stuff that still needs to be reviewed — nicely laid out
+   within the file as well").
+
+   Everything here is WORKED OUT ON THE SERVER (`src/lib/track-record-todo.js`).
+   The 3-year exit window is a frozen rule and the refusals are the sign-off
+   gate's own wording, so nothing on this panel is re-derived in the browser —
+   a screen that judged a line "ready" while the gate refused it is exactly the
+   confusion this replaces.
+
+   Grouped by WHO OWES THE WORK, because that is the question an officer opens
+   this section with. Our own work comes first: it is the only part anyone here
+   can finish today. */
+const TODO_GROUPS = [
+  { key: 'us', title: 'For us to do', tone: '#2F7F86', blurb: 'Nobody outside the office is holding these up.' },
+  { key: 'borrower', title: 'Waiting on the borrower', tone: '#8A6D3B', blurb: 'Asked for, or still to be asked for.' },
+  { key: 'nobody', title: 'Worth knowing', tone: '#4B585C', blurb: 'Nothing to chase — these lines simply cannot count.' },
+];
+
+function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    api.staffTrackRecordTodo(appId, borrowerId)
+      .then((d) => { if (alive) { setData(d && typeof d === 'object' ? d : null); setErr(''); } })
+      .catch((e) => { if (alive) { setData(null); setErr((e && e.message) || 'could not work out what is left'); } });
+    return () => { alive = false; };
+  }, [appId, borrowerId, reloadKey]);
+
+  if (err) return <div className="small" style={{ color: '#8A6D3B', marginTop: 12 }}>{err}</div>;
+  if (!data) return null;
+
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  const findings = Array.isArray(data.findings) ? data.findings : [];
+  const exp = data.experience || null;
+  const s = data.summary || { items: 0, us: 0, borrower: 0, lines: 0 };
+  const expShort = exp && (!exp.registered || (exp.shortfall || []).length);
+
+  // One flat list per group — the property is named on each row, so an officer
+  // reads their own work in one place instead of hunting it across ten cards.
+  const byGroup = {};
+  for (const l of lines) {
+    for (const t of (l.todo || [])) {
+      const k = t.waitingOn || 'nobody';
+      (byGroup[k] = byGroup[k] || []).push({ ...t, line: l });
+    }
+  }
+
+  const headline = data.ok
+    ? 'Nothing left — every deal on this track record has been reviewed.'
+    : [
+      s.items ? `${s.items} ${s.items === 1 ? 'thing' : 'things'} on ${s.lines} ${s.lines === 1 ? 'deal' : 'deals'}` : '',
+      findings.length ? `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'} to settle` : '',
+      expShort ? 'experience short of the registered product' : '',
+    ].filter(Boolean).join(' · ');
+
+  return (
+    <div className="panel" style={{ marginTop: 12, padding: 12 }}>
+      <div className="row" style={{ alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <h4 style={{ margin: 0, color: '#141B22' }}>What&rsquo;s left on this track record</h4>
+        {!data.ok && s.us > 0 && (
+          <span className="pill small" style={{ borderColor: '#2F7F86', color: '#2F7F86' }}>
+            {s.us} on us
+          </span>
+        )}
+        {!data.ok && s.borrower > 0 && (
+          <span className="pill small" style={{ borderColor: '#8A6D3B', color: '#8A6D3B' }}>
+            {s.borrower} with the borrower
+          </span>
+        )}
+      </div>
+      <div className="small" style={{ color: data.ok ? '#2F7F86' : '#4B585C', margin: '4px 0 0' }}>
+        {headline}
+      </div>
+
+      {/* The two other things the sign-off gate refuses on, in ITS order:
+          the findings first, then the experience shortfall. */}
+      {findings.length > 0 && (
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
+          <strong>{findings.length === 1 ? 'One finding' : `${findings.length} findings`} to settle first.</strong>{' '}
+          They are at the top of this section — the experience condition cannot be signed off until each one is
+          settled or dismissed.
+        </div>
+      )}
+      {exp && expShort && (
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#141B22' }}>
+          {!exp.registered ? (
+            <>
+              <strong>No product registered yet.</strong>{' '}
+              Experience is checked against the registered product, so the experience condition can&rsquo;t be
+              signed off until Products &amp; Pricing has been registered.
+            </>
+          ) : (
+            <>
+              <strong>Verified experience is short of the registered product.</strong>{' '}
+              Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
+              {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
+              The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.
+            </>
+          )}
+        </div>
+      )}
+
+      {TODO_GROUPS.map((g) => {
+        const rows = byGroup[g.key] || [];
+        if (!rows.length) return null;
+        return (
+          <div key={g.key} style={{ marginTop: 12 }}>
+            <div className="row" style={{ alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: g.tone }}>
+                {g.title}
+              </span>
+              <span className="muted small">{g.blurb}</span>
+            </div>
+            {rows.map((r, i) => (
+              <div key={`${r.line.id}:${r.code}:${i}`}
+                style={{ display: 'flex', gap: 10, padding: '8px 0', borderTop: '1px solid rgba(127,169,176,.18)' }}>
+                <span aria-hidden="true" style={{ width: 3, borderRadius: 2, background: g.tone, flex: '0 0 3px' }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <strong style={{ color: '#141B22' }}>{r.title}</strong>
+                    <span className="muted small">{r.line.address}</span>
+                    {r.line.selfReported && (
+                      <span className="pill small" title="The borrower typed this deal themselves — it is self-reported until somebody reads the documents behind it">
+                        Self-reported
+                      </span>
+                    )}
+                    {r.line.exitDate && <span className="muted small">exit {r.line.exitDate}</span>}
+                  </div>
+                  <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>{r.how}</div>
+                  {r.code === 'open_request' && (r.line.openRequests || []).map((rq) => (
+                    <div key={rq.id} className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+                      ↳ {rq.label} <span className="pill small">{rq.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function StaffTrackRecordPanel({ app, role }) {
   // On a co-borrower file each borrower has their OWN track record (#80): pick
   // whose you're editing. Every deal you add saves to THAT borrower's profile
@@ -2315,6 +2525,12 @@ function StaffTrackRecordPanel({ app, role }) {
       setTrDocs(docMap);
     }).catch(() => { setTrs([]); setTrDocs({}); });
   }, [borrowerId]);
+  // Anything that CHANGES the record also re-asks the server what is left. The
+  // plain mount path deliberately does NOT bump this — the to-do panel already
+  // fetches once when it mounts, and bumping there would make every open of the
+  // section fetch it twice.
+  const [todoKey, setTodoKey] = useState(0);
+  const reloadAll = useCallback(() => { refreshTrs(); setTodoKey((k) => k + 1); }, [refreshTrs]);
   // Accept / reject a document uploaded against a track-record line item. Reject
   // requires a reason and un-verifies the line item (its evidence no longer stands).
   const reviewTrDoc = useCallback(async (doc, action) => {
@@ -2322,7 +2538,7 @@ function StaffTrackRecordPanel({ app, role }) {
     if (action === 'delete') {
       if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
       setTrBusy(doc.id); setTrMsg('');
-      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); refreshTrs(); }
+      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); reloadAll(); }
       catch (e) { setTrMsg(e.message || 'Could not delete the document'); }
       finally { setTrBusy(''); }
       return;
@@ -2332,10 +2548,10 @@ function StaffTrackRecordPanel({ app, role }) {
       if (reason == null || !reason.trim()) return;
     }
     setTrBusy(doc.id); setTrMsg('');
-    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); refreshTrs(); }
+    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); reloadAll(); }
     catch (e) { setTrMsg(e.message || 'Could not review the document'); }
     finally { setTrBusy(''); }
-  }, [refreshTrs]);
+  }, [reloadAll]);
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
@@ -2358,7 +2574,7 @@ function StaffTrackRecordPanel({ app, role }) {
   useEffect(() => {
     const unsub = subscribeChat((event, data) => {
       if (event !== 'track_record:updated' || !data || data.borrowerId !== borrowerId) return;
-      refreshTrs();
+      reloadAll();
       refreshSnap();
       document.querySelectorAll('iframe').forEach((f) => {
         try { if (f.contentWindow) f.contentWindow.postMessage({ type: 'ys-tr-reload' }, window.location.origin); }
@@ -2366,7 +2582,7 @@ function StaffTrackRecordPanel({ app, role }) {
       });
     });
     return unsub;
-  }, [borrowerId, refreshTrs, refreshSnap]);
+  }, [borrowerId, reloadAll, refreshSnap]);
   async function download() {
     if (!snap) return;
     setDl(true);
@@ -2378,7 +2594,7 @@ function StaffTrackRecordPanel({ app, role }) {
     <div className="panel" style={{ marginTop: 18 }}>
       {/* What is WRONG with this track record comes first — it holds the
           experience condition, so it must not be below the fold. */}
-      <TrackRecordFindings appId={app.id} onChanged={refreshTrs} />
+      <TrackRecordFindings appId={app.id} onChanged={reloadAll} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
@@ -2415,6 +2631,27 @@ function StaffTrackRecordPanel({ app, role }) {
       )}
       {trs.length > 0 && (
         <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
+          {/* WHAT IS WAITING ON US (owner-directed 2026-08-03: a track record the
+              borrower typed "should go to the processing queue to review … and
+              this should be pending review"). The per-line status pill was
+              already here, but nothing added the pills up, so a borrower who had
+              just entered ten deals produced no signal at all — the officer had
+              to notice ten grey "pending" chips. Counted off the same rows the
+              list below renders, so the two can never disagree. */}
+          {(() => {
+            const waiting = trs.filter((t) => !t.is_verified
+              && (t.verification_status || 'pending') !== 'limited').length;
+            if (!waiting) return null;
+            return (
+              <div className="small" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8,
+                border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
+                <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
+                Nothing counts toward this file&rsquo;s experience until it is verified — read the closing
+                statement, deed or lease on each one, then set its status to Verified below.{' '}
+                <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
+              </div>
+            );
+          })()}
           <div className="muted small" style={{ marginBottom: 6 }}>
             Raise a request against a specific past project — it becomes a named condition on this file the borrower can respond to.
           </div>
@@ -2438,20 +2675,30 @@ function StaffTrackRecordPanel({ app, role }) {
                       const label = window.prompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
                       if (label == null || !label.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not request the document'); }
                       finally { setTrBusy(''); }
                     }}>Request a document</button>
                   <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Post a request/issue about this past project — it becomes a condition on this file"
+                    title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
                     onClick={async () => {
-                      const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
+                      const reason = window.prompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
+                    onClick={async () => {
+                      const reason = window.prompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
+                      if (reason == null || !reason.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
+                      catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
+                      finally { setTrBusy(''); }
+                    }}>Post a condition</button>
                 </div>
                 {openReqs.map(rq => (
                   <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
@@ -2484,6 +2731,9 @@ function StaffTrackRecordPanel({ app, role }) {
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={220}
       />
+      {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
+          record, then you read what is still left on it. */}
+      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} />
       {full && (
         <ToolModal
           title="Borrower track record"
@@ -2784,14 +3034,14 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
             <input className="input" value={f.middleName} onChange={e => setF({ ...f, middleName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional — needed later to invite or sign)</span></span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
         </div>
         {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim() || !f.email.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
+          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
           <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
         </div>
         </>}
@@ -2877,57 +3127,147 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-// Personal-name purchase (owner-directed 2026-07-31): buy in an individual name
-// instead of an LLC. Upload a non-owner-occupied affidavit (in lieu of LLC docs)
-// to waive the LLC condition — vesting flips to Individual (default is LLC).
+/* IT'S AN INDIVIDUAL — the CHOICE, not an upload (owner-directed 2026-07-31,
+   corrected 2026-08-03: "on the Condition Slot on the LLC, if there's no LLC
+   selected, the LLC condition says 'Add LLC,' but it doesn't have a way for this
+   condition because it's an individual").
+
+   The affidavit stopped being a PREREQUISITE of the choice on 2026-08-02 (db/417
+   moved it to its own rule-driven condition, `cond_noo_affidavit_individual`),
+   and the server's 400 went with it — but this control never followed. Its only
+   button opened a FILE PICKER, so the one door that could answer "this file has
+   no entity" still demanded a document the officer usually doesn't have yet, and
+   a file with no LLC was left with nothing to click but "Add LLC". So the plain
+   choice comes first now, and the upload stays beside it for whoever DOES have
+   the affidavit in hand — one request files it and marks the file in one step,
+   exactly as before.
+
+   THE BLUE LAKE GATE rides both buttons: the reason comes from the server
+   (`app.vesting_individual_blocked`, the same rule the door enforces), so the
+   control is greyed WITH the reason instead of answering 409 after the click. */
 function PersonalNameWaiver({ appId, app, onChanged }) {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState('');
+  const [err, setErr] = React.useState('');
   const fileRef = React.useRef(null);
   const isPersonal = !!(app && app.personal_name_purchase);
-  const waive = async (file) => {
-    if (!file) return;
-    setBusy(true); setMsg('');
+  const blocked = (app && app.vesting_individual_blocked) || '';
+  const run = async (body, okMsg, failMsg) => {
+    setBusy(true); setMsg(''); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => {
-        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
-      });
-      await api.staffVestingPersonalName(appId, { filename: file.name, contentType: file.type || 'application/pdf', dataUrl });
-      setMsg('Saved — this is a personal-name purchase. Vesting is now Individual.');
+      await api.staffVestingPersonalName(appId, body);
+      setMsg(okMsg);
       onChanged && await onChanged();
-    } catch (e) { setMsg(e.message || 'could not save the affidavit'); }
+    } catch (e) { setErr(e.message || failMsg); }
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
   };
-  const undo = async () => {
-    setBusy(true); setMsg('');
-    try { await api.staffVestingPersonalName(appId, { undo: true }); setMsg('Back to an LLC purchase — vesting is LLC.'); onChanged && await onChanged(); }
-    catch (e) { setMsg(e.message || 'could not undo'); }
-    finally { setBusy(false); }
+  // The plain choice — no document required. This is what the owner asked for.
+  const markIndividual = () => run({},
+    'Saved — this file closes in the borrower’s own name. The LLC documents stand down; the signed non-owner-occupied affidavit is now asked for as its own condition.',
+    'could not mark this file individual');
+  // The same choice WITH the affidavit already in hand: filed as the condition's
+  // evidence in the same request, so it is never a second step.
+  const waive = async (file) => {
+    if (!file) return;
+    let dataUrl;
+    try {
+      dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
+      });
+    } catch (e) { setErr(e.message || 'could not read the file'); return; }
+    await run({ filename: file.name, contentType: file.type || 'application/pdf', dataUrl },
+      'Saved — this file closes in the borrower’s own name and the affidavit is on file.',
+      'could not save the affidavit');
   };
+  const undo = () => run({ undo: true }, 'Back to an LLC purchase — vesting is LLC.', 'could not undo');
   return (
     <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
       {isPersonal ? (
         <>
-          <span className="pill ok">Personal name (Individual) — affidavit on file</span>
-          <span className="muted small" style={{ color: '#4B585C' }}>Bought in an individual name, not an LLC. ClickUp vesting is Individual.</span>
+          <span className="pill ok">Closing as an individual — no entity</span>
+          <span className="muted small" style={{ color: '#4B585C' }}>Title goes in the borrower’s own name, not an LLC. ClickUp vesting is Individual.</span>
           <button className="btn link small" disabled={busy} onClick={undo}>Undo — back to an LLC</button>
         </>
       ) : (
         <>
           <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
             onChange={(e) => waive(e.target.files && e.target.files[0])} />
-          <button className="btn small" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}>
-            {busy ? 'Saving…' : 'Buying in a personal name? Upload the non-owner-occupied affidavit'}
+          <button className="btn small" disabled={busy || !!blocked} title={blocked || undefined} onClick={markIndividual}>
+            {busy ? 'Saving…' : 'No LLC — this file closes as an individual'}
           </button>
-          <span className="muted small" style={{ color: '#4B585C' }}>Waives the LLC documents and sets vesting to Individual.</span>
+          <button className="btn ghost small" disabled={busy || !!blocked} title={blocked || undefined}
+            onClick={() => fileRef.current && fileRef.current.click()}>
+            …and I have the affidavit
+          </button>
+          <span className="muted small" style={{ color: '#4B585C' }}>
+            {blocked || 'Stands the LLC documents down and asks for the signed non-owner-occupied affidavit on its own condition.'}
+          </span>
         </>
       )}
-      {msg && <span className="muted small" style={{ color: '#4B585C', flexBasis: '100%' }}>{msg}</span>}
+      {msg && <span className="muted small" style={{ color: '#256168', flexBasis: '100%' }}>{msg}</span>}
+      {err && <span className="small" style={{ color: 'var(--danger)', flexBasis: '100%' }}>{err}</span>}
     </div>
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
+// Which conditions a person may hand-delete: only the MANUALLY-added ones
+// (owner-directed 2026-08-04). Auto/rules/system conditions are engine-owned.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+const isManualCondition = (it) => MANUAL_CONDITION_ORIGINS.includes(it && it.origin_kind);
+
+// Delete a manual condition. The adder / an admin succeeds; anyone else gets a
+// 403 and is offered to ASK the adder to delete it (the server records the request
+// and notifies them). The server is the sole authority — the client just tries.
+function ManualConditionDelete({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!isManualCondition(it)) return null;
+  async function doDelete() {
+    if (!window.confirm(`Delete "${it.label}"? This removes the condition from the file.`)) return;
+    setBusy(true);
+    try {
+      await api.staffDeleteCondition(appId, it.id);
+      onChanged && onChanged();
+    } catch (e) {
+      if (e && e.status === 403 && e.data && e.data.code === 'needs_delete_request') {
+        const who = e.data.creatorName || 'the person who added it';
+        if (window.confirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
+          const reason = window.prompt('Add a short note for them (optional):', '') || '';
+          try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); showMessage(`Asked ${who} to delete it. They'll get a prompt.`); }
+          catch (_) { showMessage('Could not send the request.'); }
+        }
+      } else {
+        showMessage((e && e.message) || 'Could not delete the condition.');
+      }
+    } finally { setBusy(false); }
+  }
+  return (
+    <button className="btn link small" style={{ marginLeft: 8, color: '#b3261e' }} disabled={busy} onClick={doDelete}>
+      {busy ? 'Working…' : 'Delete'}
+    </button>
+  );
+}
+
+// The prompt the ADDER sees when someone asked them to delete a condition. They
+// can delete it (they are the adder, so the server allows it) or keep it.
+function DeleteRequestBanner({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!it || !it.delete_requested_by) return null;
+  const who = it.delete_requested_by_name || 'A teammate';
+  async function del() { setBusy(true); try { await api.staffDeleteCondition(appId, it.id); onChanged && onChanged(); } catch (e) { showMessage((e && e.message) || 'Could not delete it.'); } finally { setBusy(false); } }
+  async function keep() { setBusy(true); try { await api.staffDismissDeleteRequest(appId, it.id); onChanged && onChanged(); } catch (_) {} finally { setBusy(false); } }
+  return (
+    <div className="notice" style={{ marginTop: 6, borderLeft: '3px solid var(--gold)', padding: '6px 10px', background: 'rgba(174,135,70,0.06)' }}>
+      <b style={{ color: '#141B22' }}>{who} asked to delete this condition.</b>
+      {it.delete_request_reason ? <span style={{ color: '#4B585C' }}> — “{it.delete_request_reason}”</span> : null}
+      <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+        <button className="btn small" disabled={busy} onClick={del}>Delete it</button>
+        <button className="btn ghost small" disabled={busy} onClick={keep}>Keep it</button>
+      </div>
+    </div>
+  );
+}
+
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -3017,7 +3357,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
     if (card) { setCard(null); return; }
     setCardBusy(true);
     try { setCard(await api.staffAppraisalCard(appId)); }
-    catch (e) { alert(e.message || 'No card on file yet.'); }
+    catch (e) { showMessage(e.message || 'No card on file yet.'); }
     finally { setCardBusy(false); }
   }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
@@ -3187,7 +3527,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
                 <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>gate</span>
                 <span className="cnd-meta">
-                  {app.entity_verified ? 'Verified' : app.llc_id ? 'In progress' : 'No entity linked'}
+                  {/* "No entity linked" is the wrong answer on a file that HAS
+                      answered — with "an individual". It read as an unanswered
+                      question and pointed at an Add-LLC step that must never
+                      happen here (owner-reported 2026-08-03). */}
+                  {app.entity_verified ? 'Verified'
+                    : app.llc_id ? 'In progress'
+                      : app.personal_name_purchase ? 'Individual — no entity'
+                        : 'No entity linked'}
                 </span>
               </div>
             </div>
@@ -3201,17 +3548,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
                 {app.entity_verified
                   ? <span className="pill ok">Verified ✓</span>
-                  : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
-                <div className="spacer" />
-                <button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button>
+                  : app.llc_id ? <span className="pill">In progress</span>
+                    : app.personal_name_purchase ? <span className="pill ok">Individual — no entity</span>
+                      : <span className="pill">No entity linked</span>}
+                {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+                <ConditionCollapse onToggle={() => toggleCond('__llc')} />
               </div>
-              <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
+              <div className="muted small">
+                {app.personal_name_purchase && !app.llc_id
+                  ? 'Condition to close. This file closes in the borrower’s own name, so there is no entity to document — the signed non-owner-occupied affidavit is chased on its own condition instead.'
+                  : 'Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.'}
+              </div>
+              {/* THE FULL LOGIC FOR A FILE WITH NO ENTITY (owner-reported
+                  2026-08-03). There are two reasons an entity can be missing and
+                  they need opposite answers: nobody has picked one yet (link or
+                  create one), or the file vests in an individual (there is
+                  nothing to pick, by definition). Saying "link or create one" to
+                  the second was a dead end — the only way out of this condition
+                  was an entity it must never have. */}
               {app.llc_id
                 ? <LlcManager llcId={app.llc_id} staff compactHeader
                     coBorrower={app.co_borrower_id
                       ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
-                : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+                : app.personal_name_purchase
+                  ? <p className="muted small" style={{ margin: 0 }}>No entity on this file, and none is needed — title goes in the borrower’s own name.</p>
+                  : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above, or mark this file individual below.</p>}
               {!app.entity_verified && <PersonalNameWaiver appId={appId} app={app} onChanged={onChanged} />}
             </div>
           )
@@ -3243,7 +3605,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
+                onRequestWaiver={onRequestWaiver}
+                expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -3258,6 +3622,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ padding: '2px 10px' }}>
               <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={rowDone}
                 onToggle={() => toggleCond(it.id)} onPatch={onPatch} />
+              {/* A pending "please delete" request shows even on the collapsed row,
+                  so the adder notices it without opening the condition. */}
+              <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
             </div>
           );
         }
@@ -3289,9 +3656,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
-                  {/* Always offered — every row opens now, so every row must close. */}
-                  <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>
+                  {/* Delete a manually-added condition (owner-directed 2026-08-04). */}
+                  <ManualConditionDelete it={it} appId={appId} onChanged={onChanged} />
                 </div>
+                <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
                 {it.pilot_advice && (
                   <div style={{ marginTop: 5 }}><PilotAdvice it={it} /></div>
                 )}
@@ -3462,7 +3830,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   canSendBack is forced on: these rows are the borrower's list,
                   so sending one back is always a real option here. */}
               <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-                docs={itemDocs} canSendBack />
+                docs={itemDocs} canSendBack onRequestWaiver={onRequestWaiver} />
+              {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+              <ConditionCollapse onToggle={() => toggleCond(it.id)} />
             </div>
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
@@ -3934,6 +4304,28 @@ export default function StaffApplication() {
       // NEXT file and scroll it to the top (open A, switch to B within ~650ms).
       return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
     }
+    // A plain REFRESH lands here: no deep link, no ?finding/?focus. The room is
+    // already restored (the [id] effect read it from sessionStorage); if the
+    // reader was scrolled into a specific section, open it and put them back on it.
+    // A remembered NON-trivial place (any section, or a room other than Overview)
+    // wins over the closer's default landing below — a closer who was working a
+    // section should refresh back onto it, not be yanked to Closing. A first-time
+    // open, or "remembered the top of Overview", has nothing meaningful to restore
+    // and falls through so the closer landing still runs.
+    const savedRoom = readStation(id);
+    const savedSec = readSection(id);
+    if (savedRoom && (savedRoom !== 'st-overview' || savedSec)) {
+      if (!savedSec) return;   // remembered only the room; the [id] effect already put them there
+      let inner = null;
+      const t = setTimeout(() => {
+        requestOpenSection(savedSec);   // the section may render collapsed — open it first
+        inner = setTimeout(() => {
+          const el = document.getElementById(savedSec);
+          if (el) el.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }, 120);
+      }, 220);
+      return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
+    }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
     if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
@@ -4174,8 +4566,27 @@ export default function StaffApplication() {
       }
       setErr(msg);
       if (completing) {
-        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
+        try { showMessage('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
+    }
+  }
+  // Any staffer may ASK an admin/super-admin to waive a condition (owner-directed
+  // 2026-08-04). Prompts for the reason, files the request; approval (in the
+  // Exceptions box) marks the condition waived.
+  async function requestWaiver(it) {
+    const reason = window.prompt(
+      `Ask an admin to waive this condition:\n\n“${(it && it.label) || 'condition'}”\n\n`
+      + 'Why should it be waived? (an admin/super-admin will review; if approved, it is marked waived)');
+    if (reason == null || !reason.trim()) return;
+    try {
+      const r = await api.requestConditionWaiver(id, it.id, { reasonNote: reason.trim() });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');
+      flash('Waiver requested — an admin will review it ✓');
+      await load();
+    } catch (e) {
+      const emsg = (e && e.data && e.data.error) || (e && e.message) || 'Could not send the request.';
+      setErr(emsg);
+      try { showMessage(emsg); } catch (_) { /* no window */ }
     }
   }
   async function downloadDoc(doc) {
@@ -4440,13 +4851,36 @@ export default function StaffApplication() {
      exactly — the rooms code stands aside entirely, incl. the jump resolver. */
   const [fileViewPref, setFileViewPref] = useStickyFilter('fileView', 'rooms');
   const classic = fileViewPref === 'classic';
-  const [activeStation, setActiveStation] = useState('st-overview');
-  // Opening a DIFFERENT file starts at Overview — the component is reused
-  // across /internal/app/:id, so without this file B opened in whatever room
-  // file A was left in (audit 2026-08-02 #3).
-  useEffect(() => { setActiveStation('st-overview'); pendingRevealRef.current = null; }, [id]);
+  // Start in the room the reader was last in ON THIS FILE, so a browser REFRESH
+  // lands them back where they were working — not on Overview (owner-reported).
+  // Per-file (readStation keys on the id), so opening a DIFFERENT file never
+  // inherits this file's room — the guarantee the old hard `st-overview` reset
+  // was there to give (audit 2026-08-02 #3). A file never opened before, or a
+  // fresh tab, has nothing stored and still starts on Overview.
+  const [activeStation, setActiveStation] = useState(() => readStation(id) || 'st-overview');
+  useEffect(() => { setActiveStation(readStation(id) || 'st-overview'); pendingRevealRef.current = null; }, [id]);
   const activeStationRef = useRef(activeStation); activeStationRef.current = activeStation;
   const pendingRevealRef = useRef(null);
+  // Keep the reader's place saved as they scroll (room + the section they're
+  // reading), so a refresh restores it (see the landing effect below). Debounced
+  // to ~300ms after scrolling STOPS — one sessionStorage write per scroll burst,
+  // never per frame. A pure courtesy: it never throws and does nothing in classic
+  // view (no rooms to restore there).
+  useEffect(() => {
+    if (classic) return undefined;
+    let t = null;
+    const onScroll = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        t = null;
+        savePlace(idRef.current, { station: activeStationRef.current, section: nearestFileSectionId() || '' });
+      }, 300);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => { window.removeEventListener('scroll', onScroll); if (t) clearTimeout(t); };
+    // Re-arm on file change too, so a pending save from the previous file's
+    // scroll can't fire against the new one.
+  }, [classic, id]);
   // Permission-gated rooms vanish exactly as their sections do today; a deep
   // link into a hidden room stays a silent no-op (parity with today).
   const stationEnabled = useCallback((stId) => {
@@ -4495,6 +4929,27 @@ export default function StaffApplication() {
       setTimeout(poll, 120);
     }
   }, [setCommTab]);
+  // The E-sign Send button calls this to FINALIZE the term sheet (owner-directed
+  // 2026-08-04). The studio (ProductStudioPanel) mounts only while sec-pricing is
+  // open and its imperative ref lands a beat later — so open the section, poll for
+  // the ref, then drive its finalizeTermSheet(). Degrades to a clear message if the
+  // studio never mounts. Returns a { ok, reason } promise the caller shows/acts on.
+  const finalizeTermSheetBridge = useCallback(() => new Promise((resolve) => {
+    requestOpenSection('sec-pricing');
+    let tries = 0;
+    const poll = () => {
+      const ref = studioRef.current;
+      if (ref && typeof ref.finalizeTermSheet === 'function') {
+        Promise.resolve(ref.finalizeTermSheet())
+          .then((r) => resolve(r || { ok: false, reason: 'Could not finalize the term sheet.' }))
+          .catch((e) => resolve({ ok: false, reason: (e && e.message) || 'Could not finalize the term sheet.' }));
+        return;
+      }
+      if (++tries < 120) { setTimeout(poll, 50); return; }
+      resolve({ ok: false, reason: 'Open Products & Pricing and re-register to attach the final term sheet.' });
+    };
+    setTimeout(poll, 120);
+  }), []);
   // Flush a queued jump once the newly-active room's sections have mounted.
   useEffect(() => {
     const t = pendingRevealRef.current;
@@ -4535,11 +4990,13 @@ export default function StaffApplication() {
       }
       pendingRevealRef.current = target;
       setActiveStation(st);
+      writeStation(idRef.current, st);   // remember the room for a refresh
       return true;
     });
   }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
+    writeStation(idRef.current, stId);   // remember the room (and clear the section) for a refresh
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     pendingRevealRef.current = null;
     setActiveStation(stId);
@@ -4554,6 +5011,7 @@ export default function StaffApplication() {
     if (!classic && activeStationRef.current !== 'st-deal') {
       pendingRevealRef.current = t;
       setActiveStation('st-deal');
+      writeStation(idRef.current, 'st-deal');   // remember the room for a refresh
       return;
     }
     runReveal(t);
@@ -4700,7 +5158,19 @@ export default function StaffApplication() {
     return [n ? `${plural(n, 'item')} still open here` : null,
       notes ? `${plural(notes, 'PILOT note')} to read` : null];
   };
-  const nOrdersToAssign = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length;
+  /* WHAT CAME BACK ON EACH ORDER AND STILL NEEDS A HUMAN. Per order type now that
+     each is its own section — a badge on "Title" must count title returns, not the
+     whole desk's. The room badge is still the sum, so the rail reads the same
+     total it always did. A returned document with no slot_label is one nobody has
+     said what it IS yet, which is the work. */
+  const nReturnsToAssign = (kind) => docs.filter(d =>
+    d.doc_kind === `${kind}_order_return` && !d.slot_label && d.is_current !== false).length;
+  const nTitleToAssign = nReturnsToAssign('title');
+  const nInsToAssign = nReturnsToAssign('insurance');
+  const nOrdersToAssign = nTitleToAssign + nInsToAssign;
+  // The attorney chain needs no classification (closing-inbox files its documents
+  // on no condition and no slot), so its section counts what ARRIVED instead.
+  const nClosingDocs = docs.filter(d => d.doc_kind === 'closing_correspondence' && d.is_current !== false).length;
   const summaries = {
     /* THE PAYOFF — a refinance-only section, so both of these are computed from
        the file's own row through the shared mirror in lib/payoff.js (pinned
@@ -4734,7 +5204,10 @@ export default function StaffApplication() {
       app.status === 'funded' ? 'Funded' : app.closer_id ? 'Closer assigned' : 'No closer assigned yet',
       ...openHere('sec-closing')),
     'sec-esign': line(...openHere('sec-esign')),
-    'sec-orders': line(nOrdersToAssign ? `${plural(nOrdersToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-title': line(nTitleToAssign ? `${plural(nTitleToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-insurance': line(nInsToAssign ? `${plural(nInsToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-appraisal': line('Order the appraisal directly from the AMC'),
+    'sec-order-closing': line(nClosingDocs ? `${plural(nClosingDocs, 'document')} on the closing chain` : 'Nothing on the closing chain yet'),
     // The header badge already carries the file COUNT, so the line must not
     // repeat it — a summary that echoes the badge is noise. It speaks only when
     // it has something the count cannot say.
@@ -4769,11 +5242,17 @@ export default function StaffApplication() {
     // "& exports" is gone with the exports themselves (owner-directed 2026-08-02:
     // "that section should just be called Documents").
     { id: 'sec-documents', label: 'Documents', group: 'Review & conditions', badge: badges.documents.short },
-    // Orders is its own room now, so it gets its own group rather than sharing
-    // one with signing. Same count the section's own summary line uses — derived
-    // once above, so the rail and the header can't drift the way the badges once did.
-    { id: 'sec-orders', label: 'Orders (title, insurance & closing prep)', group: 'Orders',
-      badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
+    /* THE THREE ORDERS ARE THREE SECTIONS (owner-directed 2026-08-03), which is
+       what puts them in the rail under Orders — the spoke list only renders for a
+       room with more than one section, so the single combined section showed
+       nothing at all beneath "Orders". Each carries the same count its own summary
+       line uses, derived once above so the rail and the header cannot drift. */
+    { id: 'sec-order-title', label: 'Title', group: 'Orders',
+      badge: nTitleToAssign ? `${nTitleToAssign} to assign` : '' },
+    { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
+      badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
+    { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
+    { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
     // Closing — the closer's desk. Shown to closers/admins always, and to the
@@ -5306,6 +5785,11 @@ export default function StaffApplication() {
           under Structure & pricing (most exceptions are pricing exceptions). */}
       <Section hidden={!show('sec-exceptions')} id="sec-exceptions" title="Exceptions" defaultOpen={false}
         info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
+        {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST live
+            HERE now (owner-directed 2026-08-06: "remove it from Products & Pricing,
+            add it to the general request & exceptions area"). Self-hides with no
+            co-borrower. The approve side already lives in the Exceptions box. */}
+        <GuarantyWaiverCard appId={id} />
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
@@ -5364,7 +5848,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -5422,6 +5906,18 @@ export default function StaffApplication() {
             appraisal-documents waiver, so entering on either side shows "already
             entered — confirm" on the other. */}
         <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
+        {/* FIND COMPARABLES FOR THIS FILE, without leaving it and re-typing the
+            subject from memory. The comp search takes an application id and reads
+            the subject off the file, so this works whether or not an appraisal has
+            been imported yet. */}
+        <div style={{ margin: '0 0 12px' }}>
+          <Link className="btn ghost small" to={`/internal/research/comps?application_id=${id}`}>
+            Find comparables for this property →
+          </Link>
+          <span style={{ color: '#4B585C', fontSize: 12, marginLeft: 10 }}>
+            Searches every comparable sale our own appraisals have shown us.
+          </span>
+        </div>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
@@ -5455,14 +5951,35 @@ export default function StaffApplication() {
           called "Documents & exports". */}
       </Section>
 
-      <Section hidden={!show('sec-orders')} id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
-        info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
-      <OrdersPanel appId={id} canAccept={canComplete(role)} />
+      {/* ONE SECTION PER ORDER (owner-directed 2026-08-03). They open by DEFAULT,
+          unlike the single combined section they replace: landing in the Orders
+          room and finding three collapsed headers is the very "go into orders and
+          then see the 3 options" the split is meant to end. A collapsed Section
+          unmounts its children, so the panel's shared store (OrdersPanel) still
+          makes this ONE request for the file however many of them are showing. */}
+      <Section hidden={!show('sec-order-title')} id="sec-order-title" summary={summaries['sec-order-title']} title="Title"
+        info="Order title from the title company on the file. The order emails them with the borrower, loan officer and processor copied, tracks its own thread, and files what they send back onto the title condition for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="title" />
+      </Section>
+
+      <Section hidden={!show('sec-order-insurance')} id="sec-order-insurance" summary={summaries['sec-order-insurance']} title="Insurance"
+        info="Order insurance from the agent on the file. The order emails them with the borrower, loan officer and processor copied, tracks its own thread, and files the binder and invoice they send back onto the insurance condition for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="insurance" />
+      </Section>
+
+      <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
+        info="Order the appraisal directly from the AMC (AppraisalScope) with every field filled in and the right form picked automatically. Track its status, message the AMC back and forth, request revisions or dispute the value (ROV) with comps from the Property Research Center, and send documents up. Turns on once the CoreLogic login is set up.">
+      <AmcAppraisalPanel appId={id} />
+      </Section>
+
+      <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
+        info="Send the closing attorney the file for closing prep, with the package of documents attached. Everything that goes back and forth on that chain — from the attorney, title, the settlement agent — files here as the file's closing correspondence.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="closing" />
       </Section>
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
-      <EsignFileSection appId={id} role={role} onChanged={load} />
+      <EsignFileSection appId={id} role={role} onChanged={load} onFinalizeTermSheet={finalizeTermSheetBridge} />
       </Section>
       {showClosing && (
         <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
@@ -5724,7 +6241,7 @@ function TprExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'TPR_export.zip'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (
@@ -5742,11 +6259,34 @@ function TprExport({ appId }) {
             One folder named for the property, with a clean subfolder per document type (ID, LLC, Insurance, TITLE,
             Appraisal, Term Sheet, Contract &amp; Assignment…). REO holds the track-record Excel plus a folder per prior
             property. {prev.includedCount} document{prev.includedCount === 1 ? '' : 's'}
-            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included (the Heter Iska, rejected &amp; superseded files are excluded).
+            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included. Only documents somebody has ACCEPTED go
+            into the package — the Heter Iska, rejected and superseded files are excluded too.
           </p>
+          {/* HELD BACK, NAMED (owner-directed 2026-08-03). The package carries
+              only accepted documents, so the one thing this panel must never do
+              is let a package go out one document short without saying which
+              one. Named, not counted — "3 held back" sends nobody anywhere. */}
+          {(prev.pending || []).length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>
+                {prev.pending.length} document{prev.pending.length === 1 ? '' : 's'} on this file {prev.pending.length === 1 ? 'has' : 'have'} not been accepted yet, so {prev.pending.length === 1 ? 'it is' : 'they are'} NOT in the export:
+              </b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {prev.pending.slice(0, 15).map((d) => (
+                  <li key={d.id} className="small">{d.filename}{d.requirement ? ` — ${d.requirement}` : ''}</li>
+                ))}
+              </ul>
+              {prev.pending.length > 15 && (
+                <div className="small" style={{ color: '#4B585C' }}>…and {prev.pending.length - 15} more.</div>
+              )}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Accept each one on its condition (or reject it) and it will be in the next export.
+              </div>
+            </div>
+          )}
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-              <span className="muted small">Not yet accepted:</span>
+              <span className="muted small">Would ship empty:</span>
               {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{m}</span>)}
             </div>
           )}
@@ -5787,9 +6327,9 @@ function TapeExport({ appId }) {
       const q = await api.staffTapeQuestions(appId, tapeKey);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned }); setBusy(null); return; }
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
       await runExport(tapeKey, name, undefined);
-    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+    } catch (e) { showMessage((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
     setBusy(tapeKey); setMsg('');
@@ -5815,7 +6355,7 @@ function TapeExport({ appId }) {
         setPending(null); setReqOpen(true); load();
         setBusy(null); return;
       }
-      alert(d.message || e.message || 'Export failed');
+      showMessage(d.message || e.message || 'Export failed');
     }
     finally { setBusy(null); }
   }
@@ -5948,7 +6488,11 @@ function TapeExport({ appId }) {
       {pending && (
         <TapeQuestionsModal
           title={pending.questions.length ? `${pending.name} tape — a few details` : `${pending.name} tape — confirm current numbers`}
-          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          subtitle={pending.questions.length
+            ? (pending.supplementalMissing > 0
+                ? "This is a ground-up loan. Fill in these details — they're saved on the file and pre-filled here every time you export."
+                : "These details are saved on the file and pre-filled here. Review or change anything, then export.")
+            : undefined}
           questions={pending.questions}
           seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}
@@ -5967,7 +6511,7 @@ function MismoExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffExportMismo(appId); saveBlob(blob, filename || 'MISMO_3.4.xml'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (

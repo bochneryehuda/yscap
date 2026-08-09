@@ -230,6 +230,9 @@ async function canonicalize(text, { needCoords = false } = {}) {
   try {
     const url = 'https://maps.googleapis.com/maps/api/geocode/json?components=country:US'
       + '&address=' + encodeURIComponent(key) + '&key=' + encodeURIComponent(cfg.googlePlacesKey);
+    // Shared-across-processes pacing (lib/api-rate-limit.js, db/482). Its own bucket, far
+    // above Nominatim's: this backs the live autocomplete and must not crawl.
+    await require('./api-rate-limit').acquire('google_geocode');
     const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const j = r.ok ? await r.json() : null;
     definitive = googleDefinitive(r.ok, j);
@@ -276,19 +279,11 @@ async function samePlace(a, b) {
 // `osm:` key prefix so they can never be confused with a Google `place_id`
 // (place_id identity is what samePlace compares).
 // ---------------------------------------------------------------------------
-let _osmChain = Promise.resolve(); let _osmLast = 0;
-function osmPolite(fn) {
-  // Nominatim's usage policy asks for at most 1 request/second. Serialize and
-  // space them; the gate always RESOLVES so one failure can't poison the chain.
-  const run = _osmChain.then(async () => {
-    const wait = 1100 - (Date.now() - _osmLast);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    _osmLast = Date.now();
-    return fn();
-  });
-  _osmChain = run.then(() => {}, () => {});
-  return run;
-}
+// Nominatim asks for at most 1 request/second — for the PROCESS, not per module.
+// Four places here call it, and each used to keep its OWN clock, so any two of
+// them running together could fire twice inside one second while every one of
+// them looked correct on its own. There is one clock now (`lib/osm-gate`).
+const osmPolite = require('./osm-gate').osmRun;
 
 /**
  * Pure (unit-tested): one Nominatim match → our cache row shape, or null.

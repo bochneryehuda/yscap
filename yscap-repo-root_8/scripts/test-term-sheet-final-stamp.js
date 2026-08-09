@@ -109,33 +109,78 @@ ok(stampFromDisposition({ outstanding: [null, undefined, B('expected_closing')] 
 ok(/still outstanding/i.test(stampReason([B('expected_closing', { label: 'Estimated closing date' })])),
   'stampReason names what is outstanding');
 ok(stampReason([]).length > 0, 'stampReason always says something, even with no blockers');
-ok(/INITIAL TERM SHEET/.test(REGENERATE_MESSAGE) && /re-register/i.test(REGENERATE_MESSAGE),
-  'the refusal message quotes what the sheet PRINTS and names the one-step fix — a refusal nobody can act on is how this class of bug survives');
+ok(typeof REGENERATE_MESSAGE === 'string', 'the stamp module still exports its wording constant');
 
-// ---- the DB reader is wired the way the rule assumes ----------------------
-{
-  const src = require('fs').readFileSync(R + '/src/lib/esign/term-sheet-stamp.js', 'utf8');
-  ok(/purpose:\s*'term_sheet_package'/.test(src),
-    'the gate is read AS the term-sheet package — with purpose omitted the estimated-closing-date requirement would still apply, but naming it keeps the stamp and the send judging the same package');
-  ok(/unreadable: true/.test(src) && /final: false, blockers: \[\], unreadable: true/.test(src),
-    'an unreadable gate stamps INITIAL — the honest wording, and it blocks nothing that was not already blocked');
-}
-
-// The send guard must read the RECORDED stamp, never re-derive it: the bytes
-// were generated at some earlier moment and only the recorded flag describes
-// what they actually print.
+// ============================================================================
+// THE FIX (owner-directed 2026-08-06): the term sheet is now BUILT ON OUR SERVER
+// at send time — pressing Send always produces the FINAL from the last
+// registration, so the old "reuse the stored initial → refuse the send →
+// re-register" loop (the owner's reported bug) is GONE. The stamp rule above is
+// still exercised (staff.js reports termSheetFinal), but it no longer gates the
+// send. These checks pin the new wiring.
+// ============================================================================
 {
   const src = require('fs').readFileSync(R + '/src/lib/esign/orchestrate.js', 'utf8');
-  ok(/term_sheet_final/.test(src), 'orchestrate.js reads documents.term_sheet_final');
-  ok(/doc\.term_sheet_final !== true/.test(src),
-    'and refuses anything not recorded as FINAL — NULL (a legacy sheet, generated under the rule that printed the initial wording) is refused too');
-  ok(/SELECT id, filename, content_type, storage_ref, storage_provider, created_at, term_sheet_final/.test(src),
-    'the column is actually selected — without it doc.term_sheet_final is undefined and EVERY send would refuse');
+  ok(/kind: 'term_sheet',[\s\S]{0,200}?generate: true/.test(src),
+    'the term_sheet package doc is generate:true — BUILT fresh at send time, never reused from the stored P&P copy');
+  ok(!/doc\.term_sheet_final !== true/.test(src),
+    'the old "only initial → refuse the send" block is REMOVED (the sender generates the final now)');
+  ok(!/TERM_SHEET_NOT_FINAL/.test(src),
+    'the TERM_SHEET_NOT_FINAL refusal code is gone');
+  ok(/function buildTermSheetView/.test(src) && /termsheet: buildTermSheetView/.test(src),
+    'loadDocGenData assembles the term-sheet view from the registered quote (parity)');
+  ok(/prefix: 'ts_b1'/.test(src) && /prefix: 'ts_b2'/.test(src) && /prefix: 'ts_lo'/.test(src) && /prefix: 'ts_admin'/.test(src),
+    'the view emits all four signer prefixes (borrower/co/LO/admin) — matching buildRoster + tabsFor, so no recipient anchor is ever missing');
+}
+{
+  const src = require('fs').readFileSync(R + '/src/lib/esign/docgen.js', 'utf8');
+  ok(/term_sheet: buildTermSheet/.test(src),
+    'docgen dispatches the term_sheet doc_kind to the server-side builder');
 }
 {
   const src = require('fs').readFileSync(R + '/src/lib/esign/tracking.js', 'utf8');
-  ok(/is_current DESC NULLS LAST, created_at DESC/.test(src),
-    'the panel judges the SAME document the send will attach (mirrors orchestrate.latestDocument ordering)');
+  ok(/block: false/.test(src) && !/REGENERATE_MESSAGE/.test(src),
+    'the panel no longer hard-holds the term-sheet Send on a stored "initial" stamp — the send builds the final (real esignSendGate still governs the send)');
+}
+{
+  const src = require('fs').readFileSync(R + '/app-v2/src/components/ProductStudioPanel.jsx', 'utf8');
+  ok(/const stampFinal = false;/.test(src),
+    "Products & Pricing produces ONLY the initial (owner's rule) — the FINAL is built by the sender");
+}
+
+// ---- the server builder produces a valid FINAL PDF carrying EXACTLY the
+// DocuSign anchors the send engine seeds (orchestrate.tabsFor, prefix ts). ----
+{
+  const { buildTermSheet } = require(R + '/src/lib/esign/term-sheet-pdf');
+  const data = {
+    application: { loanNo: 'YSCAP1' },
+    termsheet: {
+      final: true, programName: 'Gold Standard Program', primaryName: 'MW Trading LLC',
+      partiesSub: 'Vesting entity', purposeLine: 'Purchase', propertyLine: 'Property: 1 Main St, NY',
+      validThrough: 'Valid through Jan 1, 2027', loanAmount: '$487,500', noteRate: '9.625%',
+      termLine: '12-month term',
+      structureRows: [{ k: 'Purchase price', v: '$400,000' }, { k: 'Total loan amount', v: '$487,500', opts: { bold: true, accent: true } }, { k: 'Omitted', v: '' }],
+      termRows: [{ k: 'Loan term', v: '12 months' }],
+      disclosures: [{ h: 'Business purpose only', body: 'Business purpose.' }],
+      signers: [
+        { name: 'A B', role: 'Borrower / guarantor', prefix: 'ts_b1' },
+        { name: 'C D', role: 'Co-borrower / guarantor', prefix: 'ts_b2' },
+        { name: 'Officer', role: 'Loan officer', prefix: 'ts_lo' },
+        { name: 'YS Capital Group', role: 'Authorized signer', prefix: 'ts_admin' },
+      ],
+    },
+  };
+  const buf = buildTermSheet(data);
+  ok(Buffer.isBuffer(buf) && buf.slice(0, 5).toString() === '%PDF-', 'buildTermSheet returns a real PDF');
+  const s = buf.toString('latin1');
+  for (const a of ['/ts_b1_sig/', '/ts_b1_dt/', '/ts_b2_sig/', '/ts_b2_dt/', '/ts_lo_sig/', '/ts_lo_dt/', '/ts_admin_sig/', '/ts_admin_dt/']) {
+    ok(s.includes(a), `the FINAL term sheet carries the ${a} anchor for the send engine`);
+  }
+  ok(/FINAL TERM SHEET/.test(s), 'a final sheet prints the FINAL stamp');
+  ok(!/INITIAL TERM SHEET/.test(s), 'a final sheet never prints "INITIAL TERM SHEET — NOT FINAL"');
+  // A draft renders the initial stamp (used only for a preview/record copy).
+  const draft = buildTermSheet({ application: {}, termsheet: { ...data.termsheet, final: false } });
+  ok(/INITIAL TERM SHEET/.test(draft.toString('latin1')), 'final:false prints the INITIAL stamp');
 }
 
 console.log(`term-sheet final stamp: ${pass} checks passed`);

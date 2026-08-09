@@ -41,15 +41,26 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   // file (registered before this change, min_interest_enabled NULL) falls back to
   // the program default (manual ON, Standard/Gold OFF).
   let termOptions = null;
+  // Cash-out proceeds for a cash-out refinance (see below) — surfaced to the
+  // borrower as "cash to you".
+  let cashOut = null;
   // Brand the email to (and From) the assigned loan officer, matching the
   // register routes so recurring business stays with the officer's name.
   let officer = null;
   try {
     const t = await db.query(
       `SELECT loan_officer_id, accrual_type, min_interest_enabled, deferred_orig_pct,
-              first_payment_date, maturity_date, co_borrower_pg_waived
+              first_payment_date, maturity_date, co_borrower_pg_waived, estimated_cash_out
          FROM applications WHERE id=$1`, [appId]);
     const row = t.rows[0] || {};
+    // Cash-out figure of record (mirrors payoff.cashOutOfRecord): a per-file typed
+    // amount wins (>=0 is a real answer), else the structure's implied proceeds from
+    // the quote. Only >0 on a cash-out refi — the borrower email surfaces it as
+    // "cash to you" instead of a $0 cash-to-close (owner-directed 2026-08-04).
+    const typedCashOut = row.estimated_cash_out != null ? Number(row.estimated_cash_out) : null;
+    cashOut = (typedCashOut != null && typedCashOut >= 0)
+      ? typedCashOut
+      : ((quote && quote.refi) ? Number(quote.refi.cashOut) || 0 : null);
     termOptions = {
       accrualType: row.accrual_type || 'non_dutch',
       minInterestEnabled: row.min_interest_enabled != null
@@ -77,7 +88,7 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   try { ctx = await notify.fileContext(appId); } catch (_) {}
 
   await notify.notifyAppBorrowers(appId, {
-    ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions }),
+    ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut }),
     applicationId: appId,
     link: `/app/${appId}`,
     from: officer ? email.fromWithName(officer.name) : null,

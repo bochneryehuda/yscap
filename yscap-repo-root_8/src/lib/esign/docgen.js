@@ -344,8 +344,17 @@ const { buildIskaPdf } = require('./iska-pdf');
 // The Draw Request & Wire Instructions form — a PILOT-branded PDF auto-filled from the
 // file + fillable borrower wire boxes (draw-request-pdf.js). Same generate() contract.
 const { buildDrawRequest } = require('./draw-request-pdf');
+// The Non-Owner-Occupied Certification — a PILOT-branded PDF the individual-vesting
+// borrower(s) e-sign (no notary), built from the file (noo-affidavit-pdf.js). Same
+// generate() contract.
+const { buildNooAffidavit } = require('./noo-affidavit-pdf');
+// The FINAL term sheet — BUILT on our server from the last registration at send
+// time (term-sheet-pdf.js), so pressing Send always produces the final version
+// (owner-directed 2026-08-02/06). Products & Pricing keeps making the stored
+// INITIAL for preview; the FINAL is only ever generated here.
+const { buildTermSheet } = require('./term-sheet-pdf');
 
-const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest };
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest, noo_affidavit: buildNooAffidavit, term_sheet: buildTermSheet };
 
 /** Build a generated document by doc_kind. Returns a PDF Buffer for every live
  *  doc_kind (bp_disclosure, heter_iska, application_export — all PDFs our server
@@ -358,7 +367,7 @@ function generate(docKind, data) {
 }
 
 module.exports = {
-  generate, buildDisclosure, buildDisclosurePdf, buildIska, buildIskaPdf, buildApplication,
+  generate, buildDisclosure, buildDisclosurePdf, buildIska, buildIskaPdf, buildApplication, buildNooAffidavit,
   // exported for tests
   fillField, replaceNthTokenRun, replaceRunContaining, removeTableContaining,
   insertParaBefore, insertParaAfter, removeParaContaining, removeParaAndPrecedingLabel,

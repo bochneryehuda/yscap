@@ -17,11 +17,18 @@
  * the Email Center by msg_type so each order has its own Gmail-style thread.
  */
 const db = require('../db');
+const crypto = require('crypto');
 const cfg = require('../config');
 const email = require('./email');
 const notify = require('./notify');
 const tpl = require('./email/template');
+const quote = require('./email/quote');
 const { orderReplyTo } = require('./file-address');
+// RCN detection is the ONE shared note-buyer helper (mirrors isFidelis/isEmcap/
+// isBlueLake), so the order clause and the underwriting mortgagee-address check
+// agree on which files are RCN. normNoteBuyer normalizes exactly as the old local
+// copy did (lowercase, non-alphanumerics stripped) — behavior unchanged.
+const { isRcnNoteBuyer } = require('./conditions/field-registry');
 
 const ORDER_TYPES = ['title', 'insurance'];
 // The service-contact type that fulfils each order (a title order needs the
@@ -37,7 +44,104 @@ const MORTGAGEE_CLAUSE = [
   'Brooklyn, NY 11211',
 ];
 
+/** When the note buyer is RCN, its notes are serviced by Elite Commercial
+    Servicing, so a vendor order must list us as mortgagee/loss payee AT THE
+    SERVICER'S NOTICE ADDRESS — otherwise insurance cancellation notices and title
+    matters never reach the party actually servicing the note (owner-directed
+    2026-08-04, order email only). */
+const MORTGAGEE_CLAUSE_RCN = [
+  'YS Capital Group, ISAOA ATIMA',
+  'c/o Elite Commercial Servicing, LLC',
+  'PO Box 15126',
+  'Richmond, VA 23227-0526',
+];
+
+/** The mortgagee clause LINES for a file, by note buyer (RCN → the servicer clause,
+    everyone else → the standard YS Capital clause). The loan number is appended by
+    the caller. */
+function mortgageeClauseFor(lender) {
+  return isRcnNoteBuyer(lender) ? MORTGAGEE_CLAUSE_RCN : MORTGAGEE_CLAUSE;
+}
+
 function money(n) { return n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
+
+/**
+ * A date-only value in plain English ("August 21, 2026"), by CALENDAR-STRING
+ * arithmetic only — never `new Date('YYYY-MM-DD')`, which shifts a date-only value
+ * by the server's timezone (the standing date rule; mirrors closing-prep.dayText).
+ */
+function dayText(d) {
+  if (!d) return null;
+  const s = typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10);
+  const [y, m, day] = s.split('-').map(Number);
+  if (!y || !m || !day) return null;
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${MONTHS[m - 1]} ${day}, ${y}`;
+}
+
+/**
+ * THE COVERAGE WE ARE ACTUALLY ASKING FOR, in the industry's own words
+ * (owner-directed 2026-08-07: "we need builders' risk coverage and vacant property
+ * coverage" — with the exact language researched rather than paraphrased).
+ *
+ * Two separate coverages, and the distinction is the whole point — an agent who
+ * reads only "builders risk" quotes a policy whose VACANCY CLAUSE then guts it:
+ *
+ *  • BUILDERS RISK / COURSE OF CONSTRUCTION — the renovation policy. Written on a
+ *    SPECIAL FORM at REPLACEMENT COST, covering the structure plus materials on
+ *    site and in transit, with renovation/construction expressly PERMITTED. Without
+ *    "renovations permitted" a standard property form excludes the work itself.
+ *  • VACANT PROPERTY — a standard commercial/dwelling property form contains a
+ *    VACANCY CLAUSE that suspends or cuts coverage once a building has stood vacant
+ *    (customarily 60 days), which is exactly the state every one of these files is
+ *    in. The fix has a name: a VACANCY PERMIT / VACANCY PERMISSION ENDORSEMENT that
+ *    removes the vacancy clause and any vacancy exclusion for the full policy term.
+ *    Asking for "coverage on a vacant property" without naming the endorsement is
+ *    how a binder arrives that reads fine and pays nothing.
+ *
+ * The remaining three lines are the requirements every note buyer imposes anyway
+ * (limit, mortgagee clause, notice of cancellation) — stating them up front is what
+ * stops a second round trip. DISPLAY ONLY: no number here is computed, and none of
+ * this touches a frozen pricing figure.
+ */
+const INSURANCE_COVERAGE_LINES = [
+  "Builders Risk / Course of Construction coverage on a special form at replacement cost, covering the structure, materials on site and materials in transit, with renovation and construction work expressly permitted.",
+  'Vacant property coverage — please include a vacancy permit / vacancy permission endorsement so the policy’s vacancy clause and any vacancy exclusion do not apply for the full policy term. The property is vacant and under renovation.',
+  'Dwelling / building limit at no less than the greater of the loan amount or the replacement cost of the structure.',
+  'YS Capital Group named as mortgagee and loss payee exactly as the clause below reads, with the loan number shown.',
+  'At least 30 days’ written notice of cancellation or non-renewal to the mortgagee.',
+];
+
+/**
+ * THE INFORMATION THE AGENT ALWAYS COMES BACK FOR (owner-reported 2026-08-07: the
+ * agency replied to a live order asking for the borrower's mailing address, phone,
+ * email, closing date, purchase price and rehab cost — every one of which PILOT
+ * already holds). It is now stated in the order itself, so the round trip is gone.
+ *
+ * Two rules, both deliberate:
+ *  • The MAILING ADDRESS is the borrower's own home address, not the subject
+ *    property (owner-directed: "Mailing address can be the borrowers personal home
+ *    address") — a Builders Risk policy on a vacant house cannot be mailed to the
+ *    vacant house. The entity is the NAMED INSURED; the human is where the paper
+ *    goes, which is why the label says so.
+ *  • A value we do not have is OMITTED, never printed as a blank or a guess. A row
+ *    reading "Purchase Price: —" teaches an agent our numbers are unreliable and
+ *    invites the same reply this exists to prevent; its absence reads as "not
+ *    stated", which is the truth. Same discipline as closing-prep's fact rows.
+ */
+function insuranceDetailMeta(data) {
+  const out = [];
+  const add = (label, value) => { if (value != null && String(value).trim()) out.push({ label, value: String(value).trim() }); };
+  add('Named Insured', data.entityName || null);
+  add(data.entityName ? 'Mailing Address (borrower’s home address)' : 'Borrower Mailing Address', data.borrowerMailingAddress);
+  add('Borrower Phone', data.borrowerPhone);
+  add('Borrower Email', data.borrowerEmail);
+  add('Estimated Closing Date', dayText(data.expectedClosing));
+  add('Purchase Price', data.purchasePrice != null ? money(data.purchasePrice) : null);
+  add('Rehab / Construction Cost', data.rehabBudget != null ? money(data.rehabBudget) : null);
+  return out;
+}
 
 /** Purchase vs Refinance, best-effort from the file's loan_type. */
 function transactionType(loanType) {
@@ -63,11 +167,14 @@ function propertyLine(pa) {
  */
 async function getOrderData(appId) {
   const r = await db.query(
-    `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount,
+    `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount, a.lender,
             a.usps_match, a.usps_imported_at,
+            a.purchase_price, a.rehab_budget, a.expected_closing, a.est_closing_date,
             a.loan_officer_id, a.processor_id,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
+            b.cell_phone AS borrower_cell, b.current_address AS borrower_address,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
+            cb.cell_phone AS co_cell,
             l.llc_name AS entity_name,
             lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
             lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
@@ -104,8 +211,29 @@ async function getOrderData(appId) {
     borrowerName: borrowerName || a.borrower_email || 'Borrower',
     borrowerEmail: a.borrower_email || null,
     coBorrowerEmail: a.co_email || null,
+    // The borrower's OWN contact details, for the insurance order's detail block.
+    // The mailing address is deliberately the borrower's HOME address — a builder's
+    // risk policy on a vacant house cannot be mailed to the vacant house — rendered
+    // through the ONE canonical address formatter so the agent reads the same
+    // mailing one-line every other surface shows (never a geocoder display name).
+    borrowerPhone: a.borrower_cell || a.co_cell || null,
+    borrowerMailingAddress: (() => {
+      try { return require('./address').canonicalOneLine(a.borrower_address || {}) || null; }
+      catch (_) { return null; }
+    })(),
+    // The estimated closing date, resolved EXACTLY as closing-prep resolves it
+    // (the file's confirmed expected closing, else the estimate on the term sheet)
+    // so the attorney order and the insurance order can never state two dates.
+    expectedClosing: a.expected_closing || a.est_closing_date || null,
+    purchasePrice: a.purchase_price != null ? Number(a.purchase_price) : null,
+    rehabBudget: a.rehab_budget != null ? Number(a.rehab_budget) : null,
     dob: a.date_of_birth ? new Date(a.date_of_birth).toLocaleDateString('en-US') : '',
     entityName: a.entity_name || '',
+    // The note buyer (capital partner), STAFF-ONLY, drives the mortgagee clause on
+    // the vendor order — RCN's notes are serviced by Elite Commercial Servicing, so
+    // its clause names the servicer's notice address (owner-directed 2026-08-04).
+    // Never leaves the order email; borrower-facing surfaces are untouched.
+    lender: a.lender || null,
     loanAmount: a.loan_amount != null ? money(a.loan_amount) : '',
     officer: a.lo_name
       ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
@@ -156,7 +284,7 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
 
-  const clause = MORTGAGEE_CLAUSE.concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
+  const clause = mortgageeClauseFor(data.lender).concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
   // The loan officer signs the order (a real person the vendor can reach) — as
   // the branded contact card the template already renders.
   const officerCard = data.officer
@@ -183,39 +311,56 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
         ? String(note).trim()
         : `Following up to confirm when we can expect the ${kind === 'title' ? 'title search' : 'insurance quote'} to be completed. Please provide the following as soon as they become available:`,
       lines: wantLines.concat(['', signOff]),
+      // A follow-up on an INSURANCE order is precisely the moment an agent is waiting
+      // on borrower/deal details, so it restates them rather than making them ask
+      // again. Same helper as the order, so the two can never state different facts.
       meta: [
         { label: 'Property', value: data.propertyLine || '—' },
         { label: 'Borrower', value: data.borrowerName },
         data.loanNumber ? { label: 'Loan Number', value: data.loanNumber } : null,
-      ].filter(Boolean),
+      ].filter(Boolean).concat(kind === 'insurance' ? insuranceDetailMeta(data) : []),
       officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,
+      // The shared reply delimiter (lib/email/quote.js). A vendor's reply comes back
+      // through file-inbox, which cuts on this token — printed at the TOP of the
+      // content, so it lands just below whatever they type once their client quotes
+      // us underneath. Without it the cut relies on the client's own attribution
+      // alone, and a vendor on an exotic client sent us the whole thread every round.
+      replyMarker: quote.replyMarker('and it reaches the whole loan team'),
       audience: 'staff',
     });
     return built;
   }
 
   // The initial order.
+  // On an INSURANCE order the meta block carries everything the agency used to write
+  // back for (mailing address, phone, email, closing date, purchase price, rehab
+  // cost) — see insuranceDetailMeta. `filter(Boolean)` still runs last so a detail we
+  // genuinely do not hold is simply absent rather than printed as a blank.
   const meta = [
     data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
     { label: 'Property Address', value: data.propertyLine || '—' },
     { label: 'Borrower Name', value: data.borrowerName },
     kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
-    data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
-    { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
-    { label: 'Loan Number', value: data.loanNumber || '(pending)' },
-  ].filter(Boolean);
+    // The entity is printed by insuranceDetailMeta as the NAMED INSURED on an
+    // insurance order, so it is not repeated here.
+    kind !== 'insurance' && data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
+  ].filter(Boolean)
+    .concat(kind === 'insurance' ? insuranceDetailMeta(data) : [])
+    .concat([
+      { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
+      { label: 'Loan Number', value: data.loanNumber || '(pending)' },
+    ]);
 
   const intro = kind === 'title'
     ? `Hi ${vendorGreetName(vendor)}, please proceed with ordering title for the following transaction:`
-    : `Hi ${vendorGreetName(vendor)}, could you please provide an insurance quote for the following transaction? Let us know if you require any additional details to proceed.`;
+    : `Hi ${vendorGreetName(vendor)}, could you please provide an insurance quote for the following transaction? Everything we have on the deal is below — please let us know if anything else is needed to bind.`;
 
-  const lines = (kind === 'insurance'
-    ? ['Please quote a Builders Risk policy issued in the business entity name, covering a vacant rental property under renovation, with renovations permitted.',
-       'Please let us know if you need any additional information to complete the order.']
-    : ['Please let us know if you need any additional information to complete the order.'])
-    .concat(['', signOff]);
+  const lines = kind === 'insurance'
+    // The coverage ask is its own titled section (below), so the body stays short.
+    ? ['', signOff]
+    : ['Please let us know if you need any additional information to complete the order.', '', signOff];
 
   const built = tpl.render({
     title: `${label} Order Request`,
@@ -226,6 +371,16 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     intro,
     lines,
     meta,
+    // WHAT WE ARE ASKING TO BE COVERED — Builders Risk AND vacant property, each
+    // named in the industry's own terms so a binder cannot come back with a vacancy
+    // clause still in it. Insurance only; a title order has no coverage to request.
+    sections: kind === 'insurance'
+      ? [{ title: 'Coverage required', body: INSURANCE_COVERAGE_LINES },
+         { title: 'Policy term & effective date',
+           body: [dayText(data.expectedClosing)
+             ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
+             : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
+      : undefined,
     // The mortgagee clause as a highlighted callout — it's the load-bearing part
     // of the order (the vendor lists us as mortgagee with this exact loan number).
     callout: { title: 'Mortgagee Clause', body: clause },
@@ -233,29 +388,40 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     officer: officerCard,
     note: 'Reply to this email and it reaches the whole loan team.',
     replyable: true,
+    replyMarker: quote.replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;
 }
 
 /**
- * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31: "By
- * default, the borrower should not be included and looped in the title
- * insurance order email … the officer can turn that on on each and every file
- * … and the loan officers should have their settings section [to] default to
- * CC their borrowers").
+ * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31, tightened
+ * 2026-08-05: "the default across the board should be that it's not CC'ing the
+ * borrower. It should only CC the borrower if the setting over there was changed
+ * to CC the borrower. By default, they should not be CC'd. We need to set the
+ * company default so that they should not be CC.").
  * Precedence, per kind:
  *   1. an explicit per-order choice (the checkbox at place time, or the choice
  *      persisted on file_orders.meta.ccBorrower from the first send — follow-ups
  *      stay on the same footing as the order they follow);
- *   2. TITLE: the file's loan officer's own default (lo-settings
- *      ccBorrowerOnTitleOrder) — false when unset;
- *   3. INSURANCE: true (unchanged behavior — the borrower usually picked the
- *      agent; the checkbox can still turn it off per order).
+ *   2. the file's loan officer's OWN default for THIS order kind — TITLE reads
+ *      lo-settings ccBorrowerOnTitleOrder, INSURANCE reads
+ *      ccBorrowerOnInsuranceOrder; both false (off) when unset. So an officer who
+ *      wants to CC their borrowers can set a default different from the company's;
+ *   3. the COMPANY default, which is now OFF for EVERY order kind (was ON for
+ *      insurance) — the borrower is never CC'd unless the officer opted in.
  */
+
+// Which per-officer setting key defaults the CC-borrower choice for an order kind.
+// Both default false (off) — see lo-settings.js. A kind with no key can never
+// default the borrower in (the company default stands: off).
+const CC_SETTING_KEY = { title: 'ccBorrowerOnTitleOrder', insurance: 'ccBorrowerOnInsuranceOrder' };
+function ccBorrowerSettingKey(kind) { return CC_SETTING_KEY[kind] || null; }
+
 function ccBorrowerDefault(kind, loSetting) {
-  if (kind === 'title') return loSetting === true;
-  return true;
+  // Company default is OFF for every order kind: only the officer's own setting
+  // (loSetting === true) — or the per-order checkbox — loops the borrower in.
+  return loSetting === true;
 }
 
 /** Recipients for an order: TO the vendor; CC the loan officer + processor, and
@@ -279,8 +445,136 @@ function recipientsFor(kind, data, opts) {
   return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower };
 }
 
+/**
+ * THE PROVIDER'S ANSWER DECIDES — the one rule for "did this order email go out?".
+ *
+ * PURE, so the whole truth table is unit-testable. `email/noop.js` returns
+ * `{ok:false, skipped:true}` WITHOUT throwing, and `email/index.js` silently falls
+ * back to that provider when its API key is missing — so the three order doors,
+ * which all did a bare `await email.sendMail(...)` and then recorded success,
+ * would record an order as SENT that no vendor ever received. On this desk that is
+ * the worst possible failure: the file waits on a title company that was never
+ * asked, and the Orders desk shows a healthy placed order, so nobody chases it.
+ * Exactly the trap closing-thread.sendOnThread already documents.
+ *
+ * @returns {{ok:true} | {ok:false, reason:'email_disabled'|'send_failed', message:string}}
+ */
+function sendVerdict(res) {
+  if (res && res.ok === true) return { ok: true };
+  if (res && res.skipped) {
+    return { ok: false, reason: 'email_disabled', message: 'Email sending is turned off in this environment, so the order was not sent and has not been recorded.' };
+  }
+  return { ok: false, reason: 'send_failed', message: 'The email provider did not accept the order, so it was not sent and has not been recorded.' };
+}
+
+/**
+ * A send failure we cannot call either way.
+ *
+ * Resend gives up at 15 seconds and the provider may well have accepted the
+ * message, so an abort/timeout must NEVER be reported as "not sent" — that is what
+ * makes an operator re-send and the vendor receive the order twice. Same list, same
+ * reasoning, as closing-thread.isAmbiguousSendFailure.
+ */
+function isAmbiguousSendFailure(err) {
+  const s = `${(err && err.message) || ''} ${(err && err.code) || ''} ${(err && err.name) || ''}`.toLowerCase();
+  return /timed out|timeout|abort|econnreset|econnaborted|etimedout|epipe|socket hang up|network|fetch failed/.test(s);
+}
+
+/**
+ * PUT AN ORDER EMAIL ON THE WIRE, and say plainly what happened. NEVER THROWS.
+ *
+ * Every door that writes to a title or insurance vendor — place, follow-up, and the
+ * Email Center reply — goes through here, so "did it send?" has ONE answer and the
+ * bookkeeping each door does can be keyed on it. Before this, each door had its own
+ * bare `await email.sendMail(...)` inside a route-wide try/catch, which conflated
+ * three different outcomes into one generic "Could not send the order."
+ *
+ * @returns {Promise<{ok:true, to:string[], cc:string[]} | {ok:false, reason:string, message:string, ambiguous?:boolean}>}
+ */
+/** A Message-ID we own for an order email (angle-bracketed, our domain on the
+    right). Unique per send; the left side names the order for traceability. */
+function newOrderMessageId(appId, kind) {
+  const domain = cfg.chatReplyDomain || 'orders.yscapgroup.com';
+  return `<order.${kind}.${String(appId).replace(/[^a-z0-9-]/gi, '')}.${crypto.randomBytes(8).toString('hex')}@${domain}>`;
+}
+/** Re:-prefix a subject exactly once (mirrors closing-thread.replySubject) so a
+    follow-up carries the SAME subject as the order — what Gmail/Outlook thread on
+    when a provider rewrites our Message-ID. */
+function replyOrderSubject(subject) {
+  const s = String(subject || '').trim();
+  if (!s) return '';
+  return /^re\s*:/i.test(s) ? s : `Re: ${s}`;
+}
+
+/**
+ * @param {object} [thread] the stored order thread state — `{ root, last, subject }`
+ *        from file_orders (meta.rootMessageId / meta.lastMessageId + the stored
+ *        subject). Absent on the FIRST send (the order itself, which is the root).
+ *        When present, this send is a FOLLOW-UP / reply and MUST land in the same
+ *        conversation the order was placed on — in the vendor's own inbox, not a
+ *        new chain (owner-directed 2026-08-04). Two mechanisms, mirroring
+ *        closing-thread: (1) reuse the ORIGINAL order subject with one "Re:" (the
+ *        load-bearing part — Resend may rewrite our Message-ID, and the subject is
+ *        what mail clients fall back to); (2) RFC threading headers (a Message-ID we
+ *        mint + In-Reply-To/References pointing at the last message we sent). The
+ *        minted Message-ID is RETURNED so the caller can advance the thread.
+ */
+async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type, thread }) {
+  const toList = (to || []).filter(Boolean);
+  const ccList = (cc || []).filter(Boolean);
+  if (!toList.length) {
+    return { ok: false, reason: 'contact', message: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first — there is no one to send the order to.` };
+  }
+  // The follow-up / reply doors ALWAYS pass `thread` (the place door never does), so
+  // its presence — not whether it carries ids — is what marks a reply. This matters
+  // for a LEGACY order placed before threading existed: it has no stored Message-ID,
+  // but the follow-up must STILL reuse the order subject with "Re:" so it threads by
+  // subject in the vendor's inbox.
+  const isReply = !!thread;
+  const parent = thread && (thread.last || thread.root);
+  const messageId = newOrderMessageId(appId, kind);
+  const subject = isReply ? (replyOrderSubject(thread.subject || built.subject) || built.subject) : built.subject;
+  // Message-ID + an X- marker always ride; Microsoft Graph can carry only X- headers
+  // (it drops the RFC threading ones), so the subject reuse above is what threads a
+  // Graph-sent chain. In-Reply-To/References are added only when we know the parent's
+  // Message-ID (a reply on a thread we anchored) — for Resend.
+  const headers = { 'Message-ID': messageId, 'X-Pilot-Order-Thread': `${appId}:${kind}` };
+  if (parent) {
+    headers['In-Reply-To'] = parent;
+    headers.References = (thread.root && thread.root !== parent) ? `${thread.root} ${parent}` : parent;
+  }
+  let res;
+  try {
+    res = await email.sendMail({
+      to: toList, cc: ccList,
+      subject, html: built.html, text: built.text, headers,
+      replyTo: replyTo || require('./file-address').fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: fromName && email.fromWithName ? email.fromWithName(fromName) : undefined,
+      _ctx: { applicationId: appId, type, audience: 'staff' },
+    });
+  } catch (e) {
+    // AMBIGUOUS IS NOT FAILED. The provider may have taken it, so the caller must
+    // keep whatever it recorded and let a human decide, rather than inviting a
+    // re-send that delivers the order to the vendor twice.
+    if (isAmbiguousSendFailure(e)) {
+      return {
+        ok: false, ambiguous: true, reason: 'send_unconfirmed',
+        message: 'The order may or may not have gone out — the email provider stopped responding while we were sending. Check the Email Center before re-sending, so the vendor does not get it twice.',
+      };
+    }
+    return { ok: false, reason: 'send_failed', message: 'Could not send the order — the email provider rejected it.' };
+  }
+  const verdict = sendVerdict(res);
+  if (!verdict.ok) return { ok: false, reason: verdict.reason, message: verdict.message };
+  return { ok: true, to: toList, cc: ccList, messageId };
+}
+
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
-  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
-  transactionType, propertyLine, money,
+  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault, ccBorrowerSettingKey,
+  transactionType, propertyLine, money, dayText,
+  INSURANCE_COVERAGE_LINES, insuranceDetailMeta,
+  mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
+  sendOrderMail, sendVerdict, isAmbiguousSendFailure,
+  newOrderMessageId, replyOrderSubject,
 };

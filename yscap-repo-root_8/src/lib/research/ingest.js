@@ -36,9 +36,64 @@
  *     keeping observations in the first place.
  */
 const K = require('./property-key');
+const CS = require('./condition-scale');
+const COORDS = require('./coords');
+// The portal's own property-type vocabulary — a rental comparable's category is
+// derived from its unit count exactly the way a sales comparable's is, so the
+// two grids can never describe one building in two different words.
+const PT = require('../property-type');
+const MARKET = require('./market');
 const ID = require('./identity');
 
-const INGEST_VERSION = 1;
+/**
+ * WHAT THE INGEST CURRENTLY KNOWS HOW TO READ OFF A REPORT.
+ *
+ * The distinction from `ROLLUP_VERSION` below is the whole point, and getting it
+ * wrong strands the back book silently:
+ *
+ *   * a new PROPERTY column (a new entry in `ROLLUP_FACTS`, or a change to the
+ *     roll-up's RULES) is recomputed FROM the observations — bump ROLLUP_VERSION
+ *     and the boot sweep re-rolls every property;
+ *   * a new OBSERVATION column is read off the REPORT, and no amount of
+ *     re-rolling can invent a value that was never written to an observation —
+ *     the report has to be READ AGAIN. That is this number.
+ *
+ * db/450 hit exactly that: `attachment_type` was added to both sides, and after
+ * a full re-roll 4 of the 5 appraisals carrying an attachment style still had
+ * NULL on their property, because the value had never reached an observation.
+ * The same was true of every db/448 fact — 3 of 125 observations carried a tax
+ * amount. `backfill()` keys on `l.ingest_version < INGEST_VERSION`, is bounded
+ * per boot, runs oldest-report-first and self-drains, and `ingestStatus()`
+ * reports how much is left.
+ *
+ * BUMP THIS whenever the ingest starts reading a fact it did not read before.
+ */
+// 2 — db/448's 59 facts and db/450's `attachment_type` are read off the report,
+//     so the reports have to be re-read for the corpus we already hold.
+// 3 — db/426: a 2-4 unit comparable's rooms/beds/baths were read off the FIRST
+//     `ROOM_ADJUSTMENT` row, which is UNIT 1, not the property. Every such comp
+//     in the warehouse is holding a wrong number right now (measured: a grid
+//     stating 14 rooms / 7 beds / 3 baths stored 5 / 3 / 1), and `beds` rolls up,
+//     so the wrong number is on `properties` too. Only re-reading fixes it.
+// 5 — db/435: the RENT schedule is read. Its comparables become observations in
+//     their own role, carrying the rent the building actually earns, whether
+//     that rent is controlled, and a per-unit breakdown that states SQUARE
+//     FOOTAGE — the one per-unit fact the sales grid never carries.
+// 4 — the observation now carries `identity_basis` (WHERE a comparable's unit
+//     count came from), the 2-4 family transaction facts `price_per_unit` /
+//     `monthly_rent` / `grm`, the parsed `year_built`, and the appraiser's own
+//     `design_style`. Without this bump every stored observation keeps
+//     `identity_basis` NULL, which scores 0 in `identityRank` and collapses the
+//     new best-sourced roll-up back into plain recency on the whole back book.
+// 6 — a comparable with a thin address is no longer DROPPED (see
+//     `fileComparableProperty`): a comp missing only its town borrows the subject's,
+//     and one with no house number is kept for review. Without this bump the whole
+//     back book keeps the comparable sales it already over-dropped — which is the
+//     owner's actual complaint ("way too many skipped") — so the boot back-fill
+//     must re-ingest every report to salvage them (re-ingest retires + re-files, so
+//     it is idempotent and self-draining). Manual uploads do not store their bytes,
+//     so those are healed by re-dropping the same files (idempotent on the sha).
+const INGEST_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -60,15 +115,31 @@ const dateOnly = (v) => {
  */
 const ROLLUP_FACTS = Object.freeze({
   property_type: 'property_type', property_category: 'property_category',
-  units: 'units', year_built: 'year_built', gla: 'gla', lot_area: 'lot_area', lot_sqft: 'lot_sqft',
+  units: 'units', year_built: 'year_built', gla: 'gla', gla_basis: 'gla_basis',
+  lot_area: 'lot_area', lot_sqft: 'lot_sqft',
   beds: 'beds', baths_full: 'baths_full', baths_half: 'baths_half', baths_text: 'baths_text',
   total_rooms: 'total_rooms', stories: 'stories', design_style: 'design_style',
   basement_sqft: 'basement_sqft', below_grade_sqft: 'below_grade_sqft',
   below_grade_finished_sqft: 'below_grade_finished_sqft',
+  // db/437 — WHAT IS DOWNSTAIRS, beside how much of it there is. `beds` above is
+  // the ABOVE-grade count the grid states; these are never added to it, because
+  // the whole reason the form separates them is that they are not the same thing.
+  below_grade_beds: 'below_grade_beds',
+  below_grade_baths_full: 'below_grade_baths_full',
+  below_grade_baths_half: 'below_grade_baths_half',
+  below_grade_rec_rooms: 'below_grade_rec_rooms',
+  below_grade_other_rooms: 'below_grade_other_rooms',
+  basement_exit: 'basement_exit',
   garage_type: 'garage_type', garage_spaces: 'garage_spaces',
   condition_uad: 'condition_uad', condition_text: 'condition_text',
   quality_uad: 'quality_uad', quality_text: 'quality_text',
   view_rating: 'view_rating', location_rating: 'location_rating', location_type: 'location_type',
+  // The view RATING is one appraiser's verdict on the outlook; the view TYPE is
+  // what is actually there. Both roll up, because a later reader can re-judge a
+  // cemetery and cannot re-judge an "Adverse".
+  view_type: 'view_type',
+  // How well the layout works, in the appraiser's own words (db/439).
+  functional_utility: 'functional_utility',
   neighborhood: 'neighborhood', census_tract: 'census_tract', flood_zone: 'flood_zone',
   zoning_id: 'zoning_id', zoning_desc: 'zoning_desc', market_rent: 'market_rent',
   owner_of_record: 'owner_of_record', hoa_fee_amount: 'hoa_fee_amount', hoa_fee_period: 'hoa_fee_period',
@@ -86,6 +157,63 @@ const ROLLUP_FACTS = Object.freeze({
   property_rights: 'property_rights', occupancy_status: 'occupancy_status',
   fema_flood_zone: 'fema_flood_zone', sfha: 'sfha',
   unit_mix: 'unit_mix',
+  // db/435 — what the building is ACTUALLY let for, and whether that rent can
+  // move. Both are facts about the BUILDING, so they roll up; the per-unit
+  // rent inside `unit_mix` travels with the mix.
+  actual_monthly_rent: 'actual_monthly_rent', rent_controlled: 'rent_controlled',
+  // db/448 — the facts the reports have always stated that reached NO warehouse
+  // table at all. Property-side only: the tax bill, the cost approach and its
+  // depreciation, the condo PROJECT, the FEMA panel date, the listing history and
+  // the deficiency / zoning notes. The report-side facts added by the same
+  // migration (who ordered it, which form, the narratives, this transaction's
+  // concessions) are deliberately ABSENT from this map — rolling those onto the
+  // property would let the newest appraisal overwrite a durable answer with
+  // something that was only ever true of one report.
+  // db/450 — the attachment STYLE, which db/405 evicted from `property_type`
+  // specifically so the fact would not be lost, and which then reached no
+  // warehouse table at all. Durable and searchable; it is simply not a category.
+  attachment_type: 'attachment_type',
+  property_tax_amount: 'property_tax_amount',
+  property_tax_year: 'property_tax_year',
+  site_improvements_value: 'site_improvements_value',
+  dwelling_cost_new: 'dwelling_cost_new',
+  dwelling_sqft: 'dwelling_sqft',
+  dwelling_price_per_sqft: 'dwelling_price_per_sqft',
+  cost_new_total: 'cost_new_total',
+  depreciated_cost_improvements: 'depreciated_cost_improvements',
+  depreciation_physical: 'depreciation_physical',
+  depreciation_functional: 'depreciation_functional',
+  depreciation_external: 'depreciation_external',
+  depreciation_total: 'depreciation_total',
+  // db/450 — `cost_data_source` and `listing_history` are DELIBERATELY absent.
+  // The first names the cost SERVICE the appraiser consulted (report methodology,
+  // the exact analogue of `contract_data_source`, which is already observation-
+  // only); the second is a note whose date-qualifier `listed_within_year` is
+  // observation-only, so on the property row it becomes a listing note nothing
+  // can ever clear. `cost_quality_rating` grades the DWELLING and stays — under
+  // AS_IS_ONLY, so an after-repair report cannot state it.
+  cost_quality_rating: 'cost_quality_rating',
+  building_status: 'building_status',
+  off_site_improvements: 'off_site_improvements',
+  rent_included_utilities: 'rent_included_utilities',
+  physical_deficiency_note: 'physical_deficiency_note',
+  zoning_compliance_note: 'zoning_compliance_note',
+  fema_panel_date: 'fema_panel_date',
+  condo_project_name: 'condo_project_name',
+  condo_project_type: 'condo_project_type',
+  // THE DURABLE project attributes only (db/450). What the project was DESIGNED
+  // as does not move; how much of it has SOLD does, and those counts describe the
+  // whole BUILDING as of one report's date — filing them here gave every unit a
+  // private copy of the building's statistics, disagreeing with the unit next
+  // door by whichever report happened to be newest. Proven on a real database.
+  // The eight moving ones stay on `property_observations`, correctly dated by the
+  // report that stated them, until the project gets its own table.
+  condo_units_planned: 'condo_units_planned',
+  condo_total_phases: 'condo_total_phases',
+  condo_parking_spaces: 'condo_parking_spaces',
+  condo_common_elements: 'condo_common_elements',
+  condo_commercial_space: 'condo_commercial_space',
+  condo_management_type: 'condo_management_type',
 });
 
 /**
@@ -100,7 +228,39 @@ const ROLLUP_FACTS = Object.freeze({
  * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
  * entire migration story for a future fact: add the column, add the mapping, bump.
  */
-const ROLLUP_VERSION = 2;
+// 5 — db/448 widened the fact set by 36 property columns; db/450 corrected five
+// of those placements, added the attachment style, and — the reason this bump
+// MATTERS rather than merely tidying — put the cost approach and its depreciation
+// under AS_IS_ONLY. A property already rolled at 3 is carrying after-repair
+// depreciation figures right now, and only a re-roll takes them back off. 5 is
+// the audit's correction to that set in BOTH directions: three more facts joined
+// it (the years and the deficiency note, which were still reading the finished
+// house) and two provably wrong entries left it (`building_status` and
+// `site_improvements_value`), so a row rolled at 4 is carrying an after-repair
+// effective age AND is missing a build status it is entitled to. The boot sweep
+// (`rerollStaleProperties`) drains it through the one definition of the roll-up;
+// db/447 made its index version-agnostic so this bump does not silently cost it
+// that index (verified by EXPLAIN at both 4 and 5).
+// 7 — db/435 adds two rolled-up facts (the actual rent and rent control).
+// 6 — the roll-up's rule for `units` / `property_type` changed: a MEASURED unit
+//     count now outranks an INFERRED one whatever the dates say, so every
+//     property has to be recomputed.
+// 7 — db/436 added `gla_basis` and `rental_comp_count` to the roll-up and changed
+//     how `gla` is chosen. The bump was MISSED, so `rerollStaleProperties` — the
+//     sweep that exists to carry exactly this kind of change onto the back book —
+//     reported "nothing to do" on a database where 848 properties had a `gla` and
+//     no basis and 242 had counts that did not add up. Only reports going back
+//     through the comparable re-parse were repaired, which excludes every report
+//     that reached the warehouse through the upload door.
+// 8 — db/437 added the view type, the basement exit and the below-grade room
+//     breakdown, and corrected two roll-up rules the audit proved wrong: an
+//     UNRECORDED area basis no longer outranks a stated building area, and
+//     `gla_basis` no longer travels without the `gla` it describes (105 property
+//     rows read "we do not know the area, but we know it is a building area").
+// 9 — db/444: a worded condition or quality rating is read into a rank a filter
+//     can use (`condition_rank_read` and its span). A quarter of the warehouse
+//     carried words only and was invisible to every condition filter.
+const ROLLUP_VERSION = 9;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -112,8 +272,64 @@ const ROLLUP_VERSION = 2;
  * files this lender writes most. An observation whose `condition_basis` is
  * 'as_repaired' is skipped for these columns only; everything else it stated
  * (the size, the year built, the address) is a fact either way and still counts.
+ *
+ * db/450 EXTENDED THIS SET, because db/448 added the numeric analogue of
+ * `condition_uad` and left it unprotected. Proven on a real database: a 2019
+ * as-is report said C5 with $72,000 of depreciation, a 2026 renovation report
+ * (correctly stamped `as_repaired`) said C2 with ZERO physical depreciation and
+ * replacement cost as-if-new — and the property row ended up reading
+ *
+ *     condition_uad             C5      <- correctly protected
+ *     depreciation_physical     0.00    <- the AFTER-repair figure
+ *     cost_new_total            520000
+ *
+ * at the same time. "Condition C5, zero physical depreciation" is not a
+ * conservative answer or an optimistic one; it is a self-contradicting one, and
+ * every number in it describes a house that does not exist yet. Depreciation IS
+ * condition expressed in dollars, so it belongs under exactly the same rule.
+ *
+ * A SECOND audit then proved the set stopped ONE COLUMN SHORT in three places
+ * and OVER-REACHED in two. Both directions are bugs, and the second is the
+ * quieter one — a false refusal does not produce a wrong answer, it produces NO
+ * answer, and a fact we hold and refuse to file is as lost as one we never read.
+ *
+ * STOPPED SHORT. Physical depreciation IS effective age over total economic
+ * life, and `remaining_economic_life` is read off the SAME `COST_ANALYSIS` node
+ * as the depreciation figures — protecting the dollars and not the years
+ * reproduces the exact self-contradiction one column over. Measured on the same
+ * two-report fixture: `depreciation_physical` correctly held 2019's $60,000
+ * while `effective_age` read the renovation report's 3 years and
+ * `remaining_economic_life` its 57. `dwelling_sqft` was the one member of the
+ * cost triple left out, so the row said $250,000 of dwelling cost over 2,100
+ * after-repair feet — $119/sqft — beside a `dwelling_price_per_sqft` of $156.25.
+ * And `physical_deficiency_note` reading "None noted." next to condition C5 and
+ * $60,000 of physical depreciation is a statement about a house that does not
+ * exist yet.
+ *
+ * OVER-REACHED. `building_status` was WRONG to be here, and provably so: its
+ * three non-'Existing' values (Proposed / UnderConstruction / SubstantiallyComplete)
+ * are only ever stated on a subject-to-completion report — which is precisely the
+ * set `conditionBasis` marks 'as_repaired'. The guard refused the value exactly on
+ * the reports that carry it, so the column could only ever read 'Existing' or
+ * nothing, and the desk's own warning ("not an existing structure; confirm the
+ * improvements are complete") went dark. `site_improvements_value` likewise: its
+ * source attribute is literally `SiteOtherImprovementsAsIsAmount` — the Fannie
+ * cost line printed as "As-is" Value of Site Improvements — so it is an as-is
+ * figure by name, on any report.
  */
-const AS_IS_ONLY = new Set(['condition_uad', 'condition_text', 'quality_uad', 'quality_text']);
+const AS_IS_ONLY = new Set([
+  'condition_uad', 'condition_text', 'quality_uad', 'quality_text',
+  // The cost approach and its depreciation — the same claim as `condition_uad`,
+  // in dollars (db/450).
+  'depreciation_physical', 'depreciation_functional', 'depreciation_external',
+  'depreciation_total', 'depreciated_cost_improvements',
+  'cost_new_total', 'dwelling_cost_new', 'dwelling_price_per_sqft', 'dwelling_sqft',
+  'cost_quality_rating',
+  // …and the same claim in YEARS, off the same node.
+  'effective_age', 'remaining_economic_life',
+  // "What is wrong with this house" is about the house as it stands.
+  'physical_deficiency_note',
+]);
 
 // ---------------------------------------------------------------------------
 // APPRAISER
@@ -122,7 +338,18 @@ const AS_IS_ONLY = new Set(['condition_uad', 'condition_text', 'quality_uad', 'q
  * Upsert the appraiser who signed this report and record every contact detail it
  * carries. Returns the appraiser id, or null when the report names nobody.
  */
-async function upsertAppraiser(db, a) {
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.fillOnly]  the report's provenance is UNTRUSTED (db/462) — it
+ *   may CREATE an appraiser and FILL a column nobody has filled, and it may never
+ *   OVERWRITE one. `appraisers` is a shared, cross-file, every-staff-user roster, and
+ *   since every XML entering PILOT feeds this warehouse, a BORROWER's uploaded file
+ *   reaches it. Without this a borrower could rewrite a real appraiser's company,
+ *   phone and email for the whole company by attaching one document — measured. The
+ *   report still lands: its comparables, its sales and its observations are facts
+ *   about property, which is what the warehouse is for.
+ */
+async function upsertAppraiser(db, a, opts = {}) {
   const identity = ID.appraiserIdentity({
     name: a.appraiser_name, company: a.appraiser_company,
     licenseId: a.license_id, licenseState: a.license_state,
@@ -140,7 +367,10 @@ async function upsertAppraiser(db, a) {
   const existing = (await db.query(
     `SELECT id, last_report_date FROM appraisers WHERE identity_key = $1`, [identity.key])).rows[0];
   const prevDate = existing ? dateOnly(existing.last_report_date) : null;
-  const newer = !existing || !prevDate || (reportDate && reportDate >= prevDate);
+  // `fillOnly` forces this false: every scalar below is then COALESCE-guarded against
+  // the value already on the row, so an untrusted report can add but never replace.
+  const newer = !opts.fillOnly
+    && (!existing || !prevDate || (reportDate && reportDate >= prevDate));
 
   const vals = [identity.key, name, identity.nameKey, txt(a.appraiser_company), identity.companyKey,
     txt(a.appraiser_phone), txt(a.appraiser_email), txt(a.appraiser_company_address),
@@ -244,16 +474,61 @@ async function recountAppraiser(db, appraiserId) {
 // ---------------------------------------------------------------------------
 // PROPERTY
 // ---------------------------------------------------------------------------
-/** Upsert the property for an address. Returns its id, or null when unidentifiable. */
-async function upsertProperty(db, parts, extra = {}) {
-  const key = K.propertyKey(parts);
+/**
+ * Upsert the property for an address. Returns its id, or null when unidentifiable.
+ *
+ * `opts.keyOverride` files a comparable we could NOT identify from its address
+ * under a caller-supplied, per-report key (see `fileComparableProperty`) — the
+ * strict null check is skipped and the row is flagged `needs_review` so the search
+ * keeps it out of the way. A normal call (no override) is byte-for-byte unchanged.
+ */
+async function upsertProperty(db, parts, extra = {}, opts = {}) {
+  const key = opts.keyOverride || K.propertyKey(parts);
   if (!key) return null;
+  const needsReview = !!opts.needsReview;
+  const reviewReason = needsReview ? (txt(opts.reviewReason) || 'address incomplete') : null;
   const p = K.normalizeParts(parts);
   const display = K.displayAddress(parts);
+
+  // A MERGE MUST SURVIVE THE NEXT RE-INGEST. Merging deletes the losing row,
+  // which frees its `address_key` — so the next report that mentions that
+  // spelling re-created it here and `upsertObservation`'s ON CONFLICT moved the
+  // observation off the survivor, quietly undoing a human's decision and leaving
+  // the survivor's counts describing rows it no longer owns. `property_merges`
+  // records `merged_key` for exactly this and was never read (only written).
+  // Re-ingest is ordinary traffic — the comp-split back-fill, the second pass
+  // after photo extraction, and any forced back-fill all reach it.
+  //
+  // Best-effort: if the lookup fails the ordinary upsert still runs, so a
+  // database blip can never stop a report being filed.
+  // An override (kept-for-review) key is per-report and is never a merge target,
+  // so the lookup is meaningless for it — skip it.
+  if (!opts.keyOverride) try {
+    const m = (await db.query(
+      `SELECT survivor_id FROM property_merges WHERE merged_key = $1
+        ORDER BY created_at DESC LIMIT 1`, [key])).rows[0];
+    if (m && m.survivor_id) {
+      // The survivor may itself have been merged since; follow the chain.
+      const M = require('./property-merge');
+      const finalId = (await M.survivorOf(db, m.survivor_id)) || m.survivor_id;
+      const still = (await db.query(`SELECT id FROM properties WHERE id = $1`, [finalId])).rows[0];
+      if (still) {
+        // Fill-only, exactly as the ON CONFLICT branch below does — a report that
+        // omits the ZIP or the county must never blank one already learned.
+        await db.query(
+          `UPDATE properties SET
+             zip = COALESCE(zip, $2), county = COALESCE(county, $3), apn = COALESCE(apn, $4),
+             last_seen_at = now()
+           WHERE id = $1`,
+          [still.id, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn)]);
+        return still.id;
+      }
+    }
+  } catch (e) { /* fall through to the ordinary upsert */ }
   const r = await db.query(
     `INSERT INTO properties (address_key, display_address, street, unit, city, state, zip, county, apn,
-                             first_seen_at, last_seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), now())
+                             needs_review, review_reason, first_seen_at, last_seen_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now())
      ON CONFLICT (address_key) DO UPDATE SET
        -- The address columns are FILL-ONLY: a later report that omits the ZIP or
        -- the county must never blank one we already learned.
@@ -262,11 +537,75 @@ async function upsertProperty(db, parts, extra = {}) {
        zip    = COALESCE(properties.zip, EXCLUDED.zip),
        county = COALESCE(properties.county, EXCLUDED.county),
        apn    = COALESCE(properties.apn, EXCLUDED.apn),
+       -- The review flag is set only by an override key, whose namespace is
+       -- disjoint from every strict key — so a normal upsert can never touch it.
+       needs_review  = EXCLUDED.needs_review,
+       review_reason = EXCLUDED.review_reason,
        last_seen_at = now(), updated_at = now()
      RETURNING id`,
     [key, display, p.street || null, p.unit || null, K.titleCity(p.city) || null,
-     p.state || null, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn)]);
+     p.state || null, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn),
+     needsReview, reviewReason]);
   return r.rows[0].id;
+}
+
+/**
+ * FILE A COMPARABLE'S PROPERTY — keeping the sale even when the address is thin.
+ *
+ * The report CHOSE this sale as a comparable, so it is a real transaction worth
+ * recording even when the appraiser wrote a short address. Three tiers, tried in
+ * order, so the strict identity of a full address is never weakened:
+ *
+ *   1. STRICT — a full address keys and folds exactly as it always has. No flag.
+ *   2. TOWN BORROWED — a comp that named a house number and street but no town or
+ *      ZIP is, by the very definition of a comparable, near the subject, so it
+ *      takes the subject's town and keys as a NORMAL property (folding with the
+ *      real one if we already hold it). This is the fix for the over-skipping the
+ *      owner reported: a comp with no town AND no ZIP used to be dropped outright.
+ *   3. KEPT FOR REVIEW — a comp we still cannot identify (no house number) is NOT
+ *      dropped: it is filed as its OWN row, flagged `needs_review` so the ordinary
+ *      comparable search leaves it out, keyed PER REPORT so two of them never
+ *      collide and a re-import updates it in place instead of piling up.
+ *
+ * Only a comp with no street text at all is truly skipped — there is nothing to
+ * file. Returns `{ pid, kind, why, missing }`: `kind` is null (strict),
+ * 'inherited_town' or 'needs_review'; `pid` is null only on a true skip.
+ */
+async function fileComparableProperty(db, { parts, subject = {}, reportId = null, seq = null, extra = {} }) {
+  const strict = await upsertProperty(db, parts, extra);
+  if (strict) return { pid: strict, kind: null };
+
+  const problem = K.keyProblem(parts);
+
+  // Tier 2 — borrow the subject's town when the town is the ONLY thing missing.
+  if (problem && problem.missing === 'locality' && (txt(subject.city) || txt(subject.zip))) {
+    const borrowed = Object.assign({}, parts, {
+      fallbackCity: txt(subject.city) || txt(parts.fallbackCity) || null,
+      zip: txt(parts.zip) || txt(subject.zip) || null,
+    });
+    const pid = await upsertProperty(db, borrowed, extra);
+    if (pid) {
+      return { pid, kind: 'inherited_town',
+        why: 'the report gave no town for this comparable, so the subject property’s town was used' };
+    }
+  }
+
+  // Tier 3 — keep it for review rather than drop it, as long as there is a street
+  // to show and a report to key it to.
+  if (txt(parts.street) && reportId) {
+    const reviewKey = `review:${reportId}:${seq == null ? 'x' : seq}`;
+    const pid = await upsertProperty(db, parts, extra,
+      { keyOverride: reviewKey, needsReview: true, reviewReason: problem ? problem.reason : 'address incomplete' });
+    if (pid) {
+      return { pid, kind: 'needs_review',
+        why: problem ? problem.reason : 'the address could not be fully identified',
+        missing: problem ? problem.missing : null };
+    }
+  }
+
+  return { pid: null, kind: null,
+    why: problem ? problem.reason : 'the report wrote no address for this comparable',
+    missing: problem ? problem.missing : null };
 }
 
 /**
@@ -283,11 +622,23 @@ async function upsertObservation(db, cols) {
   // a second copy, which is why the choice is made from the row itself rather than
   // from a flag the caller could forget to pass.
   const uploaded = cols.import_id != null;
-  const conflict = cols.role === 'subject'
-    ? (uploaded ? '(import_id) WHERE role = \'subject\' AND import_id IS NOT NULL'
-      : '(appraisal_id) WHERE role = \'subject\'')
-    : (uploaded ? '(import_id, comp_seq) WHERE role = \'comparable\' AND import_id IS NOT NULL'
-      : '(comparable_id) WHERE comparable_id IS NOT NULL');
+  // A RENTAL comparable (db/435) has no `appraisal_comparables` row to key on —
+  // it comes off the rent schedule, not the sales grid — so it keys on the
+  // report plus its own sequence within that grid. Without this it would fall
+  // through to the sales pivot, whose partial index does not cover a NULL
+  // `comparable_id`, and every re-ingest would insert another copy.
+  const rental = cols.role === 'rental_comparable';
+  // COALESCE'd, matching db/436's indexes: NULLs are DISTINCT in a unique index,
+  // so a rental row with no sequence matched no conflict target at all and every
+  // re-ingest inserted another copy.
+  const conflict = rental
+    ? (uploaded ? '(import_id, COALESCE(comp_seq, \'\')) WHERE role = \'rental_comparable\' AND import_id IS NOT NULL'
+      : '(appraisal_id, COALESCE(comp_seq, \'\')) WHERE role = \'rental_comparable\' AND appraisal_id IS NOT NULL')
+    : cols.role === 'subject'
+      ? (uploaded ? '(import_id) WHERE role = \'subject\' AND import_id IS NOT NULL'
+        : '(appraisal_id) WHERE role = \'subject\'')
+      : (uploaded ? '(import_id, comp_seq) WHERE role = \'comparable\' AND import_id IS NOT NULL'
+        : '(comparable_id) WHERE comparable_id IS NOT NULL');
   const updatable = keys.filter((k) => k !== 'appraisal_id' && k !== 'import_id'
     && k !== 'comparable_id' && k !== 'comp_seq' && k !== 'role');
   const r = await db.query(
@@ -298,6 +649,489 @@ async function upsertObservation(db, cols) {
      RETURNING id, property_id`,
     keys.map((k) => cols[k]));
   return r.rows[0];
+}
+
+
+/**
+ * THE ADJUSTMENT LINES, AS ROWS (db/440).
+ *
+ * `property_observations.adjustments` holds every line the appraiser wrote on this
+ * comparable, and as jsonb it can only be read one comparable at a time. Written
+ * out as rows keyed by line code, the same data answers "what are appraisers
+ * actually paying for a bathroom in Paterson?" in one GROUP BY — the corpus no
+ * data vendor has, because these are adjustments from reports we paid for.
+ *
+ * REPLACE, NEVER APPEND. A report is re-ingested on every re-parse and on every
+ * version bump, so adding rows would multiply the corpus by the number of deploys
+ * and quietly corrupt every median computed from it. The jsonb column stays as the
+ * record of what the report said; these rows are a derived index of it.
+ *
+ * A NULL amount is KEPT and is not zero: a line written with no figure means the
+ * appraiser looked and adjusted nothing, which is different from a line the form
+ * never asked for. Collapsing them would make every average wrong.
+ *
+ * Best-effort. This is a derived index; failing to build it must never fail an
+ * ingest that has already stored the observation it derives from.
+ */
+/**
+ * THE ADJUSTMENT AMOUNT, made storable.
+ *
+ * Two separate traps, both proven:
+ *
+ * · `Number('')`, `Number('   ')`, `Number(false)` and `Number([])` are all 0, so
+ *   the old `Number.isFinite(Number(x))` test turned four kinds of NOTHING into a
+ *   stated zero — violating this table's own first rule, that a NULL amount is not
+ *   a zero. Only a real number or a numeric string is taken.
+ *
+ * · The column is `numeric(14,2)`. `extract.js` reads the grid amount with a bare
+ *   `toNum()` and no ceiling, so ONE corrupt vendor figure raised a numeric
+ *   overflow that took the WHOLE comparable's rows down with it — measured: five
+ *   parsed lines, zero stored, and the recorded reason named neither the line nor
+ *   the value. Worse, that observation then jammed the back-fill queue forever.
+ *   An out-of-range figure is dropped to null so the other lines survive.
+ */
+const ADJ_MAX = 1e11;
+function adjAmount(v) {
+  if (v == null || typeof v === 'boolean') return null;
+  if (typeof v !== 'number' && typeof v !== 'string') return null;
+  const t = typeof v === 'string' ? v.trim() : v;
+  if (t === '') return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  return Math.abs(n) < ADJ_MAX ? n : null;
+}
+
+/**
+ * THE SIZE LINES, whose delta is unambiguous because both sides state ONE number
+ * in ONE unit. A `RoomCount` adjustment on most grids covers rooms AND bedrooms
+ * AND bathrooms together, so dividing it by a room difference would attribute the
+ * bathrooms to the rooms; those need their own measurement before they get a rate.
+ */
+const SIZE_LINES = new Set(['GrossLivingArea', 'GrossBuildingArea']);
+// Below this the arithmetic stops being a market signal: an ordinary adjustment
+// over a 20-foot difference reads as several hundred dollars a foot.
+const MIN_SQFT_DELTA = 25;
+
+/**
+ * The difference an adjustment was made FOR — SUBJECT minus COMPARABLE, because
+ * the appraiser adjusts the comparable's price TOWARD the subject. Measured over
+ * all 152 real reports: 468 of 473 usable, ZERO negative and ZERO implausible,
+ * which is the evidence that the convention holds rather than an assumption.
+ * Returns null the moment either side is silent — a rate we cannot ground is a
+ * rate we do not state.
+ *
+ * THE TWO SIDES MUST BE MEASURING THE SAME THING, and on 36% of the rows they
+ * were not. `appraisals.gla` is ALWAYS `GrossLivingAreaSquareFeetCount`, while a
+ * comparable's `gla` may be gross BUILDING area — a 1025 grid states building
+ * area under the same element, which is why db/427 added `gla_basis` to record
+ * which one it is. Measured over the 557 delta-carrying rows: 358 were living
+ * area on both sides, and **199 subtracted a comparable's BUILDING area from the
+ * subject's LIVING area** and then labelled the result `'sqft'`, exactly as if
+ * the two were the same measure. All 199 are 1025 forms — the owner's own 2-4
+ * unit segment — and the two populations answer differently ($45/sq ft against
+ * $28), so blending them under one label produced a median describing neither.
+ * db/436's own header states the rule: "'$150 a foot of living area' and '$150 a
+ * foot of building area' describe different properties."
+ *
+ * So the basis is RECORDED rather than assumed. The rows are not dropped — a
+ * building-area adjustment is real information about how that grid was worked,
+ * and discarding the entire 2-4 unit population would be worse than separating
+ * it — and `unit_delta_basis` exists precisely so no consumer has to guess what
+ * a rate is per. A NULL comparable basis is treated as living area, which is
+ * what it is on a 1004 and what every row written before db/427 assumed.
+ */
+function unitDeltaFor(lineType, subjectGla, compGla, compGlaBasis) {
+  if (!SIZE_LINES.has(lineType)) return null;
+  const s = Number(subjectGla), c = Number(compGla);
+  if (!Number.isFinite(s) || !Number.isFinite(c) || s <= 0 || c <= 0) return null;
+  const d = s - c;
+  if (Math.abs(d) < MIN_SQFT_DELTA) return null;
+  const basis = String(compGlaBasis || '').toLowerCase() === 'gba' ? 'sqft_gba' : 'sqft';
+  return { delta: d, basis };
+}
+
+/**
+ * WHERE AND WHEN, resolved ONCE from the canonical row.
+ *
+ * The live writer and the back-fill each computed these for themselves and
+ * disagreed on almost every row: 15,909 of 17,431 differed on the DATE (the
+ * comparable's sale against the report's effective date, 165 days apart on
+ * average and over a year apart on 606 rows) and 2,850 on the CITY — "City Of
+ * Wilkes Barre" against "Wilkes Barre", which differ case-insensitively, so no
+ * `lower(city)` predicate could reconcile them. Whichever writer ran last won,
+ * and one GROUP BY was aggregating two different meanings of "when" and "where".
+ *
+ * The place is the PROPERTY's normalised row — the same value the benchmark
+ * groups by — and the date is the comparable's own SALE date, because that is
+ * the market the appraiser was pricing against. One definition, read here, so
+ * the two callers cannot drift again.
+ */
+async function adjustmentPlaceAndDate(db, propertyId, saleDate, fallbackDate) {
+  let place = { state: null, city: null, zip: null };
+  if (propertyId) {
+    try {
+      const r = await db.query('SELECT state, city, zip FROM properties WHERE id = $1', [propertyId]);
+      if (r.rows[0]) place = { state: r.rows[0].state, city: r.rows[0].city, zip: r.rows[0].zip };
+    } catch (_) { /* the row is a nicety; the lines still file */ }
+  }
+  return { place, on: saleDate || fallbackDate || null };
+}
+
+async function writeAdjustments(db, { observationId, propertyId, adjustments, place, on, subjectGla, compGla, compGlaBasis }) {
+  if (!observationId) return 0;
+  const rows = (Array.isArray(adjustments) ? adjustments : []).filter((a) => a && a.type);
+  // UPSERT BY POSITION, THEN TRIM — never delete-then-insert. Two ingests of one
+  // report genuinely overlap (`fireResearchIngest` is called from the import, the
+  // photo pass, the comparable re-parse and the boot backfill), and
+  // delete-then-insert is not atomic against an identical concurrent operation:
+  // both delete, both insert, and the corpus keeps BOTH copies. Measured before
+  // this shape: one report seeded through two racing ingests stored 266 rows
+  // where it holds 133, exactly double, and every median it fed would have
+  // counted that report twice.
+  if (rows.length) {
+    const vals = [];
+    const chunks = rows.map((a, i) => {
+      const b = i * 12;
+      const ud = unitDeltaFor(String(a.type), subjectGla, compGla, compGlaBasis);
+      vals.push(observationId, i, propertyId || null, String(a.type),
+        a.description == null ? null : String(a.description).slice(0, 500),
+        // `amount` may legitimately be 0 or negative; only a non-finite value is dropped.
+        adjAmount(a.amount),
+        (place && place.state) || null, (place && place.city) || null, (place && place.zip) || null,
+        ud ? ud.delta : null, ud ? ud.basis : null,
+        // How many dwellings this line covers (db/442) — a 1025 room line is a
+        // SUM across 2-4 units and is not comparable with a single-property one.
+        Number.isFinite(Number(a.spansUnits)) && Number(a.spansUnits) > 0 ? Math.trunc(Number(a.spansUnits)) : null);
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12},$${rows.length * 12 + 1})`;
+    });
+    vals.push(on || null);
+    await db.query(
+      `INSERT INTO property_adjustments
+         (observation_id, seq, property_id, line_type, description, amount, state, city, zip,
+          unit_delta, unit_delta_basis, spans_units, observed_on)
+       VALUES ${chunks.join(',')}
+       ON CONFLICT (observation_id, seq) DO UPDATE SET
+         property_id = EXCLUDED.property_id, line_type = EXCLUDED.line_type,
+         description = EXCLUDED.description, amount = EXCLUDED.amount,
+         state = EXCLUDED.state, city = EXCLUDED.city, zip = EXCLUDED.zip,
+         unit_delta = EXCLUDED.unit_delta, unit_delta_basis = EXCLUDED.unit_delta_basis,
+         spans_units = EXCLUDED.spans_units,
+         observed_on = EXCLUDED.observed_on`, vals);
+  }
+  // A re-read that found FEWER lines must not leave the extra ones standing.
+  await db.query('DELETE FROM property_adjustments WHERE observation_id = $1 AND seq >= $2',
+    [observationId, rows.length]);
+  return rows.length;
+}
+
+/**
+ * WHAT APPRAISERS IN THIS MARKET ACTUALLY ADJUST FOR THIS LINE.
+ *
+ * Returns the count, the median and the quartiles of the NON-ZERO adjustments —
+ * a peer benchmark, not a rate. It REFUSES below `minSample` rather than answer
+ * from four numbers, for the same reason the valuation engine's derived rates
+ * refuse: a figure on a screen gets believed, and a median of four is noise
+ * wearing the clothes of an answer.
+ *
+ * THIS IS NOT A PER-UNIT RATE. A -$5,000 room-count adjustment says nothing per
+ * room without knowing how many rooms apart the two properties were. The caller
+ * is told so in `basis` so the wording on any screen cannot drift from the truth.
+ *
+ * Never throws.
+ */
+async function adjustmentBenchmark(db, { lineType, state, city, zip, months = 24, minSample, spanning } = {}) {
+  if (!lineType) return { ok: false, reason: 'no line type' };
+  // `= 8` only defaults `undefined`. A caller reading the floor from config where
+  // the key is absent-as-null passed null, and `3 < null` is FALSE — so the guard
+  // failed OPEN and returned a "benchmark" from three numbers with ok:true.
+  const floor = Number.isFinite(Number(minSample)) && Number(minSample) > 0 ? Math.floor(Number(minSample)) : 8;
+  try {
+    const p = [String(lineType), String(months)];
+    const where = ['line_type = $1', 'amount IS NOT NULL', 'amount <> 0',
+      "observed_on > (now() - ($2 || ' months')::interval)::date"];
+    // A WHOLE-BUILDING TOTAL IS NOT A PER-PROPERTY ADJUSTMENT (db/442). A 1025
+    // room line is the SUM across 2-4 dwellings — 237 of 550 real ones — and
+    // averaging those with single-property figures gives a median describing
+    // neither. Excluded by default; `spanning: true` asks for exactly them, which
+    // is a real question when comparing multi-family grids.
+    if (spanning === true) where.push('spans_units > 1');
+    else if (spanning !== 'all') where.push('(spans_units IS NULL OR spans_units = 1)');
+    // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
+    // Springfield NJ and Springfield OH answered together as one "market" with a
+    // median describing neither — and a zip scope ignored a contradicting state
+    // outright rather than refusing it. Every supplied part now narrows.
+    if (zip) { p.push(String(zip)); where.push(`zip = $${p.length}`); }
+    else if (city) { p.push(String(city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
+    if (state) { p.push(String(state).toUpperCase()); where.push(`state = $${p.length}`); }
+    const r = await db.query(
+      `SELECT count(*)::int AS n,
+              percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS median,
+              percentile_cont(0.25) WITHIN GROUP (ORDER BY amount) AS q1,
+              percentile_cont(0.75) WITHIN GROUP (ORDER BY amount) AS q3
+         FROM property_adjustments WHERE ${where.join(' AND ')}`, p);
+    const row = r.rows[0] || { n: 0 };
+    if (!row.n || row.n < floor) {
+      return { ok: false, n: row.n || 0, minSample: floor,
+        reason: `only ${row.n || 0} adjustment${row.n === 1 ? '' : 's'} on this line in this market — too few to state a benchmark` };
+    }
+    return {
+      ok: true, n: row.n,
+      median: row.median == null ? null : Number(row.median),
+      q1: row.q1 == null ? null : Number(row.q1),
+      q3: row.q3 == null ? null : Number(row.q3),
+      months,
+      spanning: spanning === true ? 'whole-building totals only'
+        : spanning === 'all' ? 'single-property and whole-building lines together'
+          : 'lines describing ONE property',
+      // Said explicitly so no screen can present this as a rate per room / per foot.
+      basis: 'the dollar adjustment appraisers wrote on this grid line, not a per-unit rate',
+    };
+  } catch (_) { return { ok: false, reason: 'could not read the adjustment corpus' }; }
+}
+
+
+/**
+ * WHAT APPRAISERS IN THIS MARKET ACTUALLY PAY PER SQUARE FOOT.
+ *
+ * This is the one `adjustmentBenchmark` explicitly refuses to be. That function
+ * returns the DOLLAR adjustments and says so; this divides each by the size
+ * difference it was made for, which is the number a person actually wants and the
+ * one the design document called the peer benchmark.
+ *
+ * Measured over the 152 real reports before it was built: 468 of 473 usable,
+ * ZERO negative and ZERO above $500 — median $40/sq ft, quartiles $25 and $50.
+ *
+ * ONE MEASURE AT A TIME. That 468 blended two different feet: 290 where both
+ * sides state LIVING area, and 178 where the comparable stated gross BUILDING
+ * area on a 1025 grid ($45/sq ft against $28 — see db/443). The default `basis`
+ * is `'sqft'`, so the published rate is living-area-only; `'sqft_gba'` asks for
+ * the building-area population by name. They are never returned together,
+ * because a median of the two describes neither.
+ *
+ * REFUSES rather than answers thinly, on the same rule as everything else here: a
+ * rate is a number people will price a deal against, and a median of four
+ * adjustments is noise wearing the clothes of an answer. Never throws.
+ *
+ * AND WHEN THE TOWN IS TOO THIN IT SAYS SO AND STEPS OUT — but only if asked
+ * (`relax`), and never past the state line.
+ *
+ * Splitting the two feet (db/443) was correct and it left most towns holding
+ * fewer than eight adjustments of the measure their own comparables are written
+ * in. Measured over the real corpus: of the 29 markets that hold ANY
+ * building-area adjustment, 9 clear the floor in their own town (New Haven 24,
+ * Wilkes-Barre 22, Scranton 19, Trenton 18, Elizabeth 11, Pittston 10, Irvington
+ * 8, Roselle 8, Jersey City 8) and 19 more clear it at the state (Newark 5 of
+ * 73 in NJ, Bridgeport 3 of 27 in CT, Rochester 2 of 14 in NY). Refusing all 19
+ * sends them to a national rule of thumb while we hold dozens of real local
+ * adjustments one rung out — which is a worse answer, not a more careful one.
+ *
+ * THREE RULES, and none of them is decoration:
+ *   · The ladder is walked NARROWEST FIRST and STOPS at the first rung that
+ *     clears the floor, so a town that can answer for itself always does.
+ *   · IT NEVER LEAVES THE STATE. A nationwide median of appraiser adjustments
+ *     describes no market anyone is lending in — `ratesFor` already refuses to
+ *     derive rates with no market named, and a ladder that widened to "every
+ *     market we hold" would walk straight back into it.
+ *   · EVERY RUNG TRIED IS RETURNED, and the answer SAYS WHERE IT CAME FROM
+ *     (`where`), because "$28 a foot in Newark" and "$28 a foot across New
+ *     Jersey" are different claims and only one of them is true. The caller
+ *     prints `where`; it must never keep saying "in this market".
+ *
+ * Without `relax` the behaviour is exactly what it was: one scope, one answer.
+ */
+async function rateAtScope(db, { basis, months, rung }) {
+  const p = [String(basis), String(months)];
+  const where = ['unit_delta_basis = $1', 'amount IS NOT NULL', 'amount <> 0',
+    'unit_delta IS NOT NULL', 'unit_delta <> 0',
+    "observed_on > (now() - ($2 || ' months')::interval)::date"];
+  // THE STATE IS ALWAYS APPLIED WHEN GIVEN. A city-only scope spanned states —
+  // Springfield NJ and Springfield OH answered together as one "market" with a
+  // median describing neither — and a zip scope ignored a contradicting state
+  // outright rather than refusing it. Every supplied part now narrows.
+  if (rung.zip) { p.push(String(rung.zip)); where.push(`zip = $${p.length}`); }
+  else if (rung.city) { p.push(String(rung.city).toLowerCase()); where.push(`lower(city) = $${p.length}`); }
+  if (rung.state) { p.push(String(rung.state).toUpperCase()); where.push(`state = $${p.length}`); }
+  // A NEGATIVE RATE IS A MISREAD, NOT A MARKET. It means the adjustment pointed
+  // the opposite way to the size difference — zero of 468 real ones do — so it
+  // is excluded rather than averaged in, where two of them would drag a median
+  // that people price against.
+  const r = await db.query(
+    `SELECT count(*)::int AS n,
+            percentile_cont(0.5)  WITHIN GROUP (ORDER BY amount / unit_delta) AS median,
+            percentile_cont(0.25) WITHIN GROUP (ORDER BY amount / unit_delta) AS q1,
+            percentile_cont(0.75) WITHIN GROUP (ORDER BY amount / unit_delta) AS q3
+       FROM property_adjustments
+      WHERE ${where.join(' AND ')} AND (amount / unit_delta) > 0 AND (amount / unit_delta) < 500`, p);
+  return r.rows[0] || { n: 0 };
+}
+
+// The rungs, narrowest first, and the plain words for each. A rung is only built
+// from a value the caller actually supplied, so nothing is ever invented.
+function rateRungs({ state, city, zip }) {
+  const st = state ? String(state).toUpperCase() : null;
+  const rungs = [];
+  if (zip) rungs.push({ scope: 'zip', zip, state: st, where: `in ZIP ${zip}${st ? `, ${st}` : ''}` });
+  if (city) rungs.push({ scope: 'city', city, state: st, where: `in ${city}${st ? `, ${st}` : ''}` });
+  if (st) rungs.push({ scope: 'state', state: st, where: `across ${st}` });
+  if (!rungs.length) rungs.push({ scope: 'any', where: 'across every market we hold' });
+  return rungs;
+}
+
+async function adjustmentRate(db, { basis = 'sqft', state, city, zip, months = 36, minSample, relax = false } = {}) {
+  // Same guard as the benchmark: a null or NaN floor must not open the gate.
+  const floor = Number.isFinite(Number(minSample)) && Number(minSample) > 0 ? Math.floor(Number(minSample)) : 8;
+  try {
+    const all = rateRungs({ state, city, zip });
+    // WITHOUT `relax`, ONE RUNG — and it is the same one the single-scope query
+    // has always used (the narrowest supplied, narrowed again by the state), so
+    // every existing caller is byte-identical.
+    const rungs = relax ? all : all.slice(0, 1);
+    const tried = [];
+    for (const rung of rungs) {
+      const row = await rateAtScope(db, { basis, months, rung });
+      tried.push({ scope: rung.scope, where: rung.where, n: row.n || 0 });
+      if (!row.n || row.n < floor) continue;
+      return { ok: true, n: row.n, basis, months,
+        scope: rung.scope, where: rung.where, tried,
+        // A widened answer is FLAGGED, not merely describable — a caller that
+        // forgets to print `where` must still be able to tell.
+        relaxed: rung.scope !== all[0].scope,
+        median: Number(row.median), q1: Number(row.q1), q3: Number(row.q3),
+        // The wording NAMES the measure, so a building-area rate can never be read
+        // as a living-area one on the strength of the sentence beside it.
+        of: basis === 'sqft_gba'
+          ? `dollars per square foot of gross BUILDING area of difference, as appraisers ${rung.where} actually adjusted`
+          : `dollars per square foot of living area of difference, as appraisers ${rung.where} actually adjusted` };
+    }
+    // The refusal names EVERY rung, so "why is there no rate?" is answered by the
+    // refusal itself rather than by a second look at the data.
+    const last = tried[tried.length - 1] || { n: 0, where: 'in this market' };
+    const detail = tried.length > 1
+      ? tried.map((t) => `${t.n} ${t.where}`).join(', ')
+      : `${last.n} usable adjustment${last.n === 1 ? '' : 's'} ${last.where}`;
+    return { ok: false, n: last.n, minSample: floor, basis, tried,
+      scope: null, where: last.where,
+      reason: `only ${detail} — too few to state a rate` };
+  } catch (_) { return { ok: false, basis, reason: 'could not read the adjustment corpus' }; }
+}
+
+/**
+ * PREVIOUS AND FUTURE — build the adjustment rows for observations already stored.
+ *
+ * Every observation already carries its lines in the `adjustments` jsonb, so this
+ * needs no re-parse and no stored XML: it reads what is there and writes the rows.
+ *
+ * Bounded per boot and SELF-DRAINING — an observation is picked only while it has
+ * lines in the jsonb and no rows in the table, so each pass permanently reduces
+ * the queue. An observation whose array is genuinely EMPTY is skipped by the same
+ * predicate rather than being re-examined forever.
+ *
+ * Deliberately NOT a SQL statement inside the migration. `jsonb_array_elements`
+ * over the whole table would be one unbounded write of tens of millions of rows
+ * inside the boot transaction, on a table the app is trying to serve from.
+ *
+ * Best-effort; never throws.
+ */
+async function backfillAdjustmentRowsOnce(db, { limit = 2000 } = {}) {
+  let scanned = 0, written = 0, stuck = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT o.id, o.property_id, o.adjustments,
+              -- THE COMPARABLE'S OWN SALE DATE, exactly as the live writer uses —
+              -- the market the appraiser was pricing against, not the report's
+              -- effective date.
+              COALESCE(o.sale_date, o.observed_on) AS on_date,
+              p.state, p.city, p.zip,
+              o.gla AS comp_gla, o.gla_basis AS comp_gla_basis, a.gla AS subject_gla
+         FROM property_observations o
+         LEFT JOIN properties p ON p.id = o.property_id
+         LEFT JOIN appraisals a ON a.id = o.appraisal_id
+        WHERE jsonb_typeof(o.adjustments) = 'array'
+          AND jsonb_array_length(o.adjustments) > 0
+          AND (
+            -- (a) the rows were never built at all — an observation stored before
+            --     db/440.
+            NOT EXISTS (SELECT 1 FROM property_adjustments x WHERE x.observation_id = o.id)
+            -- (b) OR they were built before db/441 and carry no per-unit delta,
+            --     while BOTH sizes needed to derive one are on hand. Without this
+            --     arm every row db/440 wrote would keep a NULL rate forever: the
+            --     first arm only picks observations with NO rows, so nulling a
+            --     column can never bring one back into the queue. Bounded by the
+            --     same self-draining rule — writing the delta removes the row from
+            --     this arm, and an observation whose sizes are unknown is excluded
+            --     by the NOT NULL tests rather than re-examined every boot.
+            OR EXISTS (
+              SELECT 1 FROM property_adjustments x
+               WHERE x.observation_id = o.id
+                 AND x.line_type IN ('GrossLivingArea', 'GrossBuildingArea')
+                 AND x.unit_delta IS NULL
+                 -- EVERY REFUSAL unitDeltaFor MAKES IS MIRRORED HERE, or the
+                 -- observation is re-picked on every boot forever and never
+                 -- changes. Greater-than-zero is not the same test as IS NOT
+                 -- NULL: the function refuses a zero or negative size as well as
+                 -- a missing one, and only the missing case was mirrored — so a
+                 -- stored size of 0 armed this arm, wrote no delta, and re-armed
+                 -- it on the next boot, permanently. Neither column carries a
+                 -- CHECK, so nothing but this line prevents it.
+                 -- (NO BACKTICKS IN HERE — this is a template literal, and one
+                 --  inside a SQL comment terminates the whole string.)
+                 AND o.gla > 0 AND a.gla > 0
+                 -- AND THE SIZES MUST ACTUALLY DIFFER ENOUGH TO YIELD ONE: a delta
+                 -- under the floor is a PERMANENT null, not a pending one.
+                 -- Measured before this line: the queue stalled at 29 observations
+                 -- that could never drain. The threshold is BOUND from the JS
+                 -- constant rather than written into the SQL, so the two can never
+                 -- drift the way a hand-copied twin does.
+                 AND abs(a.gla - o.gla) >= $2)
+          )
+        ORDER BY o.observed_on DESC NULLS LAST
+        LIMIT $1`, [limit, MIN_SQFT_DELTA])).rows;
+    for (const r of rows) {
+      scanned++;
+      try {
+        const wrote = await writeAdjustments(db, {
+          observationId: r.id, propertyId: r.property_id,
+          adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
+          place: { state: r.state, city: r.city, zip: r.zip },
+          on: r.on_date,
+          subjectGla: r.subject_gla, compGla: r.comp_gla, compGlaBasis: r.comp_gla_basis,
+        });
+        // AND IT MUST LEAVE THE QUEUE EITHER WAY. An observation whose lines all
+        // lack a `type`, or whose only figure is unstorable, writes nothing — and
+        // the "no rows yet" arm below then re-selects it on every boot forever.
+        // With a LIMIT window those stuck rows sit at the head (newest first) and
+        // block every writable observation behind them: measured, three passes
+        // scanned the same 2 and wrote 0, and the good observation was never
+        // reached. A row that yields nothing is stamped so the queue moves on.
+        if (!wrote) await markNothingToFile(db, r.id);
+        written += wrote;
+      } catch (_) {
+        // A THROW IS THE SAME PROBLEM. An observation the writer cannot store is
+        // stamped too, or it jams the window exactly as above.
+        try { await markNothingToFile(db, r.id); } catch (__) { /* best-effort */ }
+        stuck++;
+      }
+    }
+  } catch (_) { /* best-effort */ }
+  // `stuck` is REPORTED. An observation the writer could not file is a fact about
+  // the corpus, and a silent skip reads as "nothing to do" — the no-silent-caps
+  // rule this codebase has already learned once.
+  return { scanned, written, stuck };
+}
+
+/**
+ * MARK AN OBSERVATION AS HAVING NOTHING TO FILE, so the queue can move past it.
+ *
+ * A single row with a null `line_type` sentinel would violate the NOT NULL, and a
+ * separate ledger table is a lot of machinery for a rare case — so the marker is
+ * the observation's own jsonb, emptied to `[]`. That is TRUE by then: the writer
+ * has just looked at those lines and found nothing it can file, and the ORIGINAL
+ * report is untouched (the appraisal, its stored XML and `appraisal_comparables`
+ * all still hold it, and a re-parse rebuilds the observation from them).
+ */
+async function markNothingToFile(db, observationId) {
+  await db.query(
+    `UPDATE property_observations SET adjustments = '[]'::jsonb WHERE id = $1`, [observationId]);
 }
 
 /**
@@ -336,6 +1170,25 @@ function bindable(v) {
 }
 
 /**
+ * HOW WELL-SOURCED AN OBSERVATION'S UNIT COUNT IS. Mirrors `compIdentity`'s own
+ * ordering (grid > style > price > form). A SUBJECT observation has no
+ * `identity_basis` at all and ranks highest on purpose — the appraiser inspected
+ * the building and counted the doors; nothing on a comparable grid beats that.
+ */
+function identityRank(o) {
+  if (!o) return -1;
+  // A SUBJECT OBSERVATION IS NOT AUTOMATICALLY A MEASUREMENT. The appraiser
+  // usually did stand in the building and count the doors — but on a 1004 or a
+  // 1073 with a blank `LivingUnitCount` the parser IMPLIES the count from the
+  // form, and that inference used to rank above a grid-counted comparable. It
+  // now says which it was (db/434), and a legacy row with nothing recorded is
+  // read as measured, because before db/434 a subject count came only from
+  // `LivingUnitCount`.
+  if (o.role === 'subject') return o.identity_basis === 'form' ? 1 : 4;
+  return { grid: 3, style: 2, price: 2, form: 1 }[o.identity_basis] || 0;
+}
+
+/**
  * Recompute a property's roll-up from its observations.
  *
  * For each fact column the winner is the most recent observation that STATED it
@@ -352,19 +1205,140 @@ async function rollupProperty(db, propertyId) {
   const set = {};
   for (const [obsCol, propCol] of Object.entries(ROLLUP_FACTS)) {
     for (const o of obs) {
-      if (AS_IS_ONLY.has(obsCol) && o.condition_basis === 'as_repaired') continue;
+      const repaired = o.condition_basis === 'as_repaired';
+      if (AS_IS_ONLY.has(obsCol) && repaired) {
+        // ONE NARROW EXCEPTION, and only for the condition CODE. A subject-to
+        // report's grid states the finished house, so its rating is refused —
+        // which left every renovation-only property with NO current condition at
+        // all. When the appraiser wrote the as-is rating into the condition
+        // narrative ("C4 for as-is value. C3 for As repaired value."), that IS a
+        // statement about the house as it stands and may be used. Nothing else on
+        // an after-repair report gets this: the money figures have no such
+        // sentence, and letting them through is the db/450 bug.
+        if (obsCol !== 'condition_uad' || !o.condition_uad_as_is) continue;
+        set[propCol] = o.condition_uad_as_is;
+        break;
+      }
       if (o[obsCol] != null && o[obsCol] !== '') { set[propCol] = o[obsCol]; break; }
     }
     if (!(propCol in set)) set[propCol] = null;
   }
+  // A MEASUREMENT OUTRANKS AN INFERENCE, WHATEVER THE DATES SAY.
+  //
+  // `units` and `property_type` are the two facts a comparable can now carry
+  // WITHOUT anyone having measured them: on a 1004 the form alone proves one
+  // dwelling, and that is recorded as `identity_basis = 'form'`. Recency alone
+  // would then let the weakest reading win — a house that appeared as the
+  // SUBJECT of a 1025 with `LivingUnitCount 3` (genuinely counted), and later as
+  // a COMPARABLE on a newer 1004, would roll up to `1 / SFR (1 unit)` and the
+  // triplex would vanish from the warehouse. So among the observations that
+  // stated a unit count, the best-sourced one wins, and recency only breaks a
+  // tie. A subject observation carries no `identity_basis` and is treated as
+  // measured, because that is what it is: the appraiser stood in the building.
+  // A GROSS LIVING AREA OUTRANKS A GROSS BUILDING AREA, whatever the dates say.
+  // They are different measurements — a building area includes the stairwells,
+  // the shared halls and the basement — and `gla` is read blind downstream: the
+  // search screen labels it "Gross living area", sorts on it and divides the
+  // sale price by it, and the valuation engine derives its per-foot adjustment
+  // and its size bracket from it. Measured inside ONE report (766 Winchester
+  // Ave): the sales grid says 2,247 living and the rent schedule says 2,747
+  // building; on a tie the rental was written last and won. Nothing is
+  // converted — the difference varies per building, so the honest answer is to
+  // prefer the one that answers the question and record which it is.
+  // AN UNRECORDED BASIS IS NOT A LIVING AREA. The first cut ranked by
+  // `gla_basis === 'gba' ? 1 : 0`, which demotes only the value that SAYS it is a
+  // building area — so NULL (an observation written before db/427 added the
+  // column, which could equally have been either) scored level with a stated
+  // 'gla' and won on recency. Proven: a 2020 observation with no basis beat a
+  // 2026 one stating `gba`, and the property then recorded NULL for what its own
+  // number means. Ranked explicitly instead — stated living, then unknown, then
+  // stated building — so an unlabelled number can never impersonate a living area
+  // and can never outrank one.
+  const GLA_RANK = { gla: 2, gba: 0 };
+  const bestGla = obs
+    .filter((o) => o.gla != null && o.gla !== '')
+    .sort((a, b) => (GLA_RANK[b.gla_basis] != null ? GLA_RANK[b.gla_basis] : 1)
+      - (GLA_RANK[a.gla_basis] != null ? GLA_RANK[a.gla_basis] : 1))[0];
+  // THE BASIS TRAVELS WITH THE NUMBER, AND ONLY WITH IT. `gla_basis` was also
+  // left in the generic recency loop, which writes each fact independently — so a
+  // rent schedule naming a building but stating no area produced an observation
+  // with `gla_basis='gba', gla=NULL`, and the loop wrote the basis onto the
+  // property on its own. Measured: 105 property rows reading "we do not know the
+  // area, but we know it is a building area." The pair is set here together, and
+  // cleared together when no observation states an area at all.
+  if (bestGla) { set.gla = bestGla.gla; set.gla_basis = bestGla.gla_basis || null; }
+  else { set.gla_basis = null; }
+
+  const bestUnits = obs
+    .filter((o) => o.units != null && o.units !== '')
+    .sort((a, b) => identityRank(b) - identityRank(a))[0];
+  // THE PAIR MOVES TOGETHER OR NOT AT ALL. Taking `units` from the best-sourced
+  // observation while leaving `property_type` to the recency loop can land a
+  // 3-unit count beside "SFR (1 unit)" — the self-contradicting row this whole
+  // rule exists to prevent — whenever that observation states a count but no
+  // type (a subject observation's type can be null).
+  if (bestUnits && bestUnits.property_type != null && bestUnits.property_type !== '') {
+    set.units = bestUnits.units;
+    set.property_type = bestUnits.property_type;
+    // AND HOW WE KNOW (db/444). The winner was chosen by `identityRank` and the
+    // provenance was then discarded, so a consumer holding a DIFFERENT reading —
+    // the appraisal tab, ranking this report's own statement against the
+    // warehouse's — had no way to tell a measurement from a form inference. A
+    // subject observation carries no `identity_basis` because it IS the
+    // measurement, so it is recorded by name.
+    // 'subject' MEANS AN APPRAISER STOOD IN THE BUILDING, which is what db/444's
+    // own comment promises and what `comp-identity` ranks it as. But a subject
+    // observation on a 1004 or 1073 with a blank `LivingUnitCount` has its count
+    // IMPLIED BY THE FORM, and `identityRank` deliberately scores that BELOW a
+    // grid statement. Measured: 19 real properties would have asserted a
+    // measurement they never had.
+    set.units_basis = bestUnits.role === 'subject'
+      ? (bestUnits.identity_basis === 'form' ? 'form' : 'subject')
+      : (bestUnits.identity_basis || null);
+  } else set.units_basis = null;
+  // THE WORDED RATINGS ARE READ INTO SOMETHING A FILTER CAN USE (db/444).
+  // `condition_rank` / `quality_rank` are GENERATED from the UAD code alone, so a
+  // property whose only rating is the appraiser's own word — the whole 2-4 unit
+  // book, because the 1025 was never brought into UAD — is invisible to every
+  // condition filter, to the facets and to the valuation's per-grade rate.
+  // Measured: 234 of 955 real properties.
+  //
+  // It reads the ROLLED-UP values, not the observations, so it inherits the
+  // after-repair protection above for free: `AS_IS_ONLY` has already decided
+  // which report's condition is allowed to describe this property TODAY, and
+  // re-reading the words from the observations would walk straight around it.
+  // A rating we cannot read leaves every column NULL, which is the same thing
+  // the columns said before — never a guess, never a default.
+  const condRead = CS.readCondition(set.condition_uad || set.condition_text);
+  const qualRead = CS.readQuality(set.quality_uad || set.quality_text);
+  set.condition_rank_read = condRead.rank;
+  set.condition_rank_low = condRead.rankLow;
+  set.condition_rank_high = condRead.rankHigh;
+  set.condition_read_source = condRead.source;
+  set.condition_read_confidence = condRead.confidence;
+  set.quality_rank_read = qualRead.rank;
+  set.quality_rank_low = qualRead.rankLow;
+  set.quality_rank_high = qualRead.rankHigh;
+  set.quality_read_source = qualRead.source;
+  set.quality_read_confidence = qualRead.confidence;
+
   const comps = obs.filter((o) => o.role === 'comparable');
   const counts = {
     subject_count: obs.filter((o) => o.role === 'subject').length,
     comp_count: comps.length,
+    // Counted apart from the sales comparables so subject + comp + rental adds
+    // up to `observation_count` — adding a third role made those two disagree
+    // by a number nothing on the screen explained.
+    rental_comp_count: obs.filter((o) => o.role === 'rental_comparable').length,
     arv_comp_count: comps.filter((o) => o.comp_set === 'arv').length,
     asis_comp_count: comps.filter((o) => o.comp_set === 'as_is').length,
     observation_count: obs.length,
-    first_observed_on: obs.length ? obs[obs.length - 1].observed_on : null,
+    // THE EARLIEST DATE WE ACTUALLY HAVE, not the last row in the list. `obs` is
+    // ordered `observed_on DESC NULLS LAST`, so the final element is an UNDATED
+    // observation whenever one exists — and one undated report made a property
+    // that we have known about for years report "first seen: never".
+    first_observed_on: obs.reduce((min, o) => (
+      o.observed_on && (!min || o.observed_on < min) ? o.observed_on : min), null),
     last_observed_on: obs.length ? obs[0].observed_on : null,
   };
   // The APN can arrive on a later report; treat it as fill-only like the address.
@@ -404,20 +1378,61 @@ async function rollupProperty(db, propertyId) {
 // SALES
 // ---------------------------------------------------------------------------
 /** Record a transaction. Silently ignores anything without a date (never guesses one). */
-async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId }) {
+async function recordSale(db, { propertyId, date, price, type, status, source, appraisalId, observationId,
+  importId, out = null, what = null }) {
   const d = dateOnly(date);
-  if (!propertyId || !d) return 0;
+  // A SALE WE CANNOT FILE IS COUNTED, NEVER DROPPED IN SILENCE. A comparable whose
+  // date of sale reads "Unk" has a perfectly good PRICE, and this used to return 0
+  // — so a $444,000 sale vanished from `property_sales`, the property's roll-up
+  // showed no last sale at all, and the ingest ledger still said `ok` with zero
+  // skips. "The numbers still look healthy" is the worst shape a data loss can
+  // take, and it is exactly what the owner's "it saves every property" is about.
+  const note = (why) => {
+    if (out && Array.isArray(out.skipped)) out.skipped.push(Object.assign({ role: 'sale', why }, what || {}));
+    return 0;
+  };
+  if (!propertyId) return 0;                      // no property = nothing to hang it on; already counted upstream
+  // NOTHING STATED IS NOT A LOSS. Most reports simply do not carry a prior sale or
+  // a contract, and counting those as skips would bury the real ones in noise and
+  // make every clean import look damaged. A skip is only worth reporting when the
+  // report DID state something we then failed to file.
+  if (date == null && price == null) return 0;
+  if (!d) {
+    return note(price != null
+      ? 'the report stated a sale price but no date we could read, so the sale could not be filed'
+      : 'the report stated a sale date we could not read');
+  }
   const amount = K.num(price, { min: 1, max: 1e10 });
+  // AN UNSTORABLE PRICE MUST NOT BECOME A PRICELESS SALE. `K.num` returns null for
+  // a figure outside the guard, and the unique key is
+  // (property_id, sale_date, COALESCE(sale_price,-1)) — so two different
+  // out-of-range transactions on one date collapsed into ONE row with no price at
+  // all. Refuse and count it instead of silently inventing a merged, unpriced sale.
+  if (price != null && amount == null) {
+    return note('the sale price on this report is outside anything we can store, so the sale was not filed');
+  }
   await db.query(
+    // `source_import_id` was in the table and in every caller's arguments, and was
+    // neither destructured above nor listed here — so an UPLOADED report's sales
+    // carried no provenance at all. That matters because retiring a duplicate
+    // upload deletes its observations, which SET-NULLs `source_observation_id`:
+    // without the import id there is then nothing left saying where the sale came
+    // from.
     `INSERT INTO property_sales (property_id, sale_date, sale_price, sale_type, sale_status, source,
-                                 source_appraisal_id, source_observation_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                                 source_appraisal_id, source_observation_id, source_import_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (property_id, sale_date, COALESCE(sale_price, -1)) DO UPDATE SET
        sale_type   = COALESCE(property_sales.sale_type, EXCLUDED.sale_type),
-       sale_status = COALESCE(property_sales.sale_status, EXCLUDED.sale_status),
+       -- A CLOSED SALE WINS. The old COALESCE meant the FIRST status ever written
+       -- stuck forever, so a subject's contract recorded as pending could never
+       -- become closed even when a later report stated the settled sale outright —
+       -- the price stayed filed as an asking price for good.
+       sale_status = CASE WHEN EXCLUDED.sale_status = 'closed' THEN 'closed'
+                          ELSE COALESCE(property_sales.sale_status, EXCLUDED.sale_status) END,
        last_seen_at = now(),
        times_seen  = property_sales.times_seen + 1`,
-    [propertyId, d, amount, txt(type), txt(status), source, appraisalId || null, observationId || null]);
+    [propertyId, d, amount, txt(type), txt(status), source, appraisalId || null, observationId || null,
+      importId || null]);
   return 1;
 }
 
@@ -425,7 +1440,18 @@ async function recordSale(db, { propertyId, date, price, type, status, source, a
 // PHOTOS
 // ---------------------------------------------------------------------------
 // Which stored photo categories describe the SUBJECT of the report.
-const SUBJECT_PHOTO = new Set(['subject', 'subject_front', 'interior', 'rental', 'photo']);
+//
+// `'photo'` IS DELIBERATELY NOT HERE. It is the generic category the desk stores
+// when the XML carried no photo metadata to name the slots with — which is the
+// majority of files — so treating it as "subject" handed the COMPARABLES'
+// photographs to the subject property: the subject's gallery showed other
+// people's houses, `photo_count` and the has-photos filter were inflated, and
+// the comparables showed none. An unnamed photograph is matched by its CAPTION
+// (which routinely carries the comp's address) and otherwise attached to the
+// subject only when it is the FIRST picture in the report — the subject front
+// shot is first on every residential form — rather than pinned to the wrong
+// house, which is this module's own stated rule for the comparable side.
+const SUBJECT_PHOTO = new Set(['subject', 'subject_front', 'interior', 'rental']);
 
 /**
  * Link this report's stored photos to the properties they show.
@@ -464,6 +1490,32 @@ async function linkPhotos(db, appraisalId, { comps = null, subjectPropertyId = n
   const bySeq = new Map();
   for (const c of compRows) { const n = digits(c.comp_seq); if (n) bySeq.set(n, c); }
 
+  // ADDRESSES FOR THE CAPTION MATCH. A photo caption on a report with no photo
+  // metadata is usually the comparable's own address, which identifies it far
+  // more reliably than an ordinal two vendors number two different ways. The
+  // matcher is `photo-meta.compSeqFromCaption` — the SAME one the appraisal desk
+  // uses — so "the same address" means one thing across the whole system. It
+  // wants `{seq, address, city, state, zip}`, and the observation rows carry only
+  // ids, so the properties are joined in here. Best-effort: a failure just leaves
+  // the caption unmatched.
+  let capComps = [];
+  try {
+    const ids = compRows.map((c) => c.property_id).filter(Boolean);
+    if (ids.length) {
+      const addrs = (await db.query(
+        `SELECT id, street, city, state, zip FROM properties WHERE id = ANY($1::uuid[])`, [ids])).rows;
+      const byId = new Map(addrs.map((a) => [a.id, a]));
+      capComps = compRows.filter((c) => c.comp_seq && byId.has(c.property_id)).map((c) => {
+        const a = byId.get(c.property_id);
+        return { seq: c.comp_seq, address: a.street, city: a.city, state: a.state, zip: a.zip };
+      });
+    }
+  } catch (e) { capComps = []; }
+  const captionSeq = (caption) => {
+    if (!caption || !capComps.length) return null;
+    try { return require('../appraisal/photo-meta').compSeqFromCaption(caption, capComps); } catch (_) { return null; }
+  };
+
   const compPhotos = photos.filter((p) => p.category === 'comparable');
   const aligned = compPhotos.length > 0 && compPhotos.length === compRows.length;
 
@@ -471,7 +1523,19 @@ async function linkPhotos(db, appraisalId, { comps = null, subjectPropertyId = n
   for (let i = 0; i < photos.length; i++) {
     const ph = photos[i];
     let propertyId = null, observationId = null, isPrimary = false;
-    if (SUBJECT_PHOTO.has(ph.category) || (!ph.category && i === 0)) {
+    // AN UNNAMED PHOTOGRAPH: try to read the comparable's address out of its own
+    // caption before assuming anything. `desk.js` already writes that caption, and
+    // on a report with no photo metadata it is the only thing distinguishing the
+    // subject's pictures from the comparables'.
+    const unnamed = !ph.category || ph.category === 'photo';
+    let capTarget = null;
+    if (unnamed) {
+      const seq = digits(ph.comp_seq) || digits(ph.identifier) || digits(captionSeq(ph.caption));
+      if (seq) capTarget = bySeq.get(seq) || null;
+    }
+    if (capTarget) {
+      propertyId = capTarget.property_id; observationId = capTarget.id; isPrimary = true;
+    } else if (SUBJECT_PHOTO.has(ph.category) || (unnamed && i === 0)) {
       propertyId = subjectId;
       isPrimary = ph.category === 'subject_front' || (ph.sequence === 0 && ph.category !== 'comparable');
     } else if (ph.category === 'comparable') {
@@ -514,7 +1578,7 @@ function digits(v) {
  * @param {string} appraisalId
  */
 async function ingestAppraisal(db, appraisalId) {
-  const out = { ok: false, appraisalId, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], error: null };
+  const out = { ok: false, appraisalId, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], salvaged: [], error: null };
   if (!appraisalId) { out.error = 'appraisalId required'; return out; }
   try {
     const a = (await db.query(`SELECT * FROM appraisals WHERE id = $1`, [appraisalId])).rows[0];
@@ -579,11 +1643,57 @@ async function ingestAppraisal(db, appraisalId) {
  * @param {{appraisalId?:string, importId?:string}} link which door this came through
  * @param {object}   out   the running summary, mutated in place
  */
-async function writeReport(db, { a, comps, link, out }) {
+/**
+ * RUN A BEST-EFFORT BLOCK THAT CANNOT POISON THE CALLER'S TRANSACTION.
+ *
+ * `writeReport` is called BOTH ways: the upload door wraps it in a transaction of
+ * its own, and the loan-file door (`ingestAppraisal`) hands it the pool directly.
+ * That difference decides what "best-effort" has to mean, and getting it wrong
+ * breaks one door or the other:
+ *
+ *   · INSIDE a transaction, a bare try/catch does not contain a SQL error at
+ *     all. Postgres aborts the transaction on the first failed statement and
+ *     everything after it answers "current transaction is aborted" — so a
+ *     swallowed error takes the subject, the whole sales grid, the rent schedule
+ *     and the roll-ups down with it, and the report is refused with a message
+ *     about a transaction rather than about the thing that failed. Measured: 5
+ *     of 152 real reports lost their entire warehouse write that way, invisibly.
+ *
+ *   · OUTSIDE one, `SAVEPOINT` is itself an error ("can only be used in
+ *     transaction blocks") — so unconditionally opening one breaks the loan-file
+ *     door, which needs no protection because each statement is its own
+ *     transaction and a failure cannot reach the next one.
+ *
+ * So the savepoint is ATTEMPTED and its absence is fine. Nothing else in the
+ * block changes behaviour between the two doors.
+ */
+async function bestEffort(db, name, run, onError) {
+  let held = false;
+  try { await db.query(`SAVEPOINT ${name}`); held = true; } catch (_) { /* not in a transaction */ }
+  try {
+    const r = await run();
+    if (held) await db.query(`RELEASE SAVEPOINT ${name}`);
+    return r;
+  } catch (e) {
+    // ROLLING BACK TO A SAVEPOINT DOES NOT RELEASE IT. The subtransaction stays
+    // open, and a report whose rent schedule fails row after row therefore leaves
+    // one per failure — past 64 open subtransactions Postgres overflows its
+    // per-backend subxid cache and every other session's visibility checks start
+    // hitting disk. Released explicitly, on the SUCCESS path above and here.
+    if (held) {
+      try { await db.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch (__) { /* tx already gone */ }
+      try { await db.query(`RELEASE SAVEPOINT ${name}`); } catch (__) { /* ditto */ }
+    }
+    onError(e);
+    return null;
+  }
+}
+
+async function writeReport(db, { a, comps, rentals, link, out }) {
   const appraisalId = link.appraisalId || null;
   const importId = link.importId || null;
 
-  const appraiserId = await upsertAppraiser(db, a);
+  const appraiserId = await upsertAppraiser(db, a, { fillOnly: !!(link && link.untrusted) });
   out.appraiserId = appraiserId;
   if (appraiserId && appraisalId) {
     await db.query(`UPDATE appraisals SET appraiser_id = $2 WHERE id = $1`, [appraisalId, appraiserId]);
@@ -627,6 +1737,9 @@ async function writeReport(db, { a, comps, link, out }) {
       property_id: subjectId, appraisal_id: appraisalId, import_id: importId,
       application_id: a.application_id || null,
       comparable_id: null, appraiser_id: appraiserId, role: 'subject',
+      // Whether the subject's unit count was counted or implied (db/434), so the
+      // roll-up ranks it for what it is.
+      identity_basis: txt(a.subject_units_basis),
       comp_seq: null, comp_set: null, comp_set_confidence: null, comp_set_needs_review: null,
       observed_on: observedOn, form_type: txt(a.form_type),
       address_as_stated: [txt(a.subject_address), subjectUnit, txt(a.subject_city),
@@ -644,8 +1757,36 @@ async function writeReport(db, { a, comps, link, out }) {
       stories: txt(a.stories), design_style: txt(a.design_style),
       property_type: txt(a.property_category) || txt(a.property_type),
       property_category: txt(a.property_category),
-      condition_uad: txt(a.condition_uad), condition_text: null,
-      quality_uad: txt(a.quality_uad), quality_text: null,
+      // The attachment STYLE, kept as its own fact rather than smuggled into the
+      // category. db/405 evicted it from `property_type` precisely so it would
+      // not be lost — "Detached" answers a different question from "Multi 2-4",
+      // and neither substitutes for the other (db/450).
+      attachment_type: txt(a.attachment_type),
+      // THE GRID'S CODE, THE APPRAISER'S WORD, AND — ON A RENOVATION REPORT — THE
+      // AS-IS CODE OUT OF THEIR OWN NARRATIVE.
+      //
+      // A subject-to report's grid condition describes the FINISHED house, so the
+      // roll-up refuses it (AS_IS_ONLY) and those properties were left with no
+      // current condition at all. When the appraiser wrote the as-is rating down
+      // in the condition narrative — "C4 for as-is value. C3 for As repaired
+      // value." — that IS a statement about the house as it stands, so it is
+      // filed as an AS-IS observation and the roll-up may use it. Only a code a
+      // strict clause-by-clause reader could PROVE gets here; anything ambiguous
+      // arrives null and the property keeps no condition, which is the honest
+      // answer (db/429).
+      condition_uad: txt(a.condition_uad),
+      condition_text: txt(a.condition_text),
+      quality_uad: txt(a.quality_uad), quality_text: txt(a.quality_text),
+      // THE AS-IS CODE OUT OF THE APPRAISER'S OWN NARRATIVE, in its own column.
+      //
+      // It must NOT be written into `condition_uad`, and the observation's
+      // `condition_basis` must NOT be flipped to 'as_is' to let it through: that
+      // flag gates the WHOLE of AS_IS_ONLY, so flipping it would let this report's
+      // after-repair depreciation and cost figures roll up too — re-opening
+      // exactly the db/450 defect ("condition C5" beside "zero physical
+      // depreciation") one commit after fixing it. The roll-up consults this
+      // column explicitly instead.
+      condition_uad_as_is: txt(a.condition_uad_as_is),
       condition_basis: conditionBasis,
       // ONE COLUMN, TWO VOCABULARIES — the trap. A COMPARABLE's view_rating is a
       // UAD enum (Beneficial/Neutral/Adverse); the SUBJECT's is free text off a
@@ -659,7 +1800,12 @@ async function writeReport(db, { a, comps, link, out }) {
       price_per_gla: null, gla_basis: 'gla', proximity: null,
       neighborhood: txt(a.neighborhood), census_tract: txt(a.census_tract),
       flood_zone: txt(a.flood_zone), fema_flood_zone: txt(a.fema_flood_zone),
-      sfha: a.special_flood_hazard == null ? null : !!a.special_flood_hazard,
+      // THE FEMA DETERMINATION WINS over the appraiser's own typed indicator when
+      // we have one — it is the authoritative answer, and the flood-certificate
+      // condition already treats it as governing. Without this the warehouse could
+      // only ever see what the appraiser ticked.
+      sfha: a.fema_flood_sfha != null ? !!a.fema_flood_sfha
+        : (a.special_flood_hazard == null ? null : !!a.special_flood_hazard),
       zoning_id: txt(a.zoning_id), zoning_desc: txt(a.zoning_desc),
       occupancy_status: txt(a.occupancy_status), market_rent: marketRent,
       unit_mix: unitMix ? JSON.stringify(unitMix) : null,
@@ -676,6 +1822,77 @@ async function writeReport(db, { a, comps, link, out }) {
       net_adjustment: null, net_adj_pct: null, gross_adj_pct: null, adjustments: '[]',
       appraised_value: a.appraised_value, as_is_value: a.as_is_value, arv_value: a.arv_value,
       contract_price: a.contract_price, contract_date: dateOnly(a.contract_date),
+      // ---- db/448: every fact the report stated that used to stop at `appraisals` ----
+      // No new parsing — the same values, carried across the last hop. Types are
+      // normalised the way every other column here is: text trimmed to null, a
+      // boolean kept as a real tri-state (null means the report did not say), and
+      // a jsonb value passed through `bindable` because a jsonb column reads back
+      // as a JS object and node-postgres would otherwise serialise an array as a
+      // Postgres array literal (the roll-up wipe of PR #974).
+      cost_data_source: txt(a.cost_data_source),
+      cost_quality_rating: txt(a.cost_quality_rating),
+      listing_history: txt(a.listing_history),
+      building_status: txt(a.building_status),
+      physical_deficiency_note: txt(a.physical_deficiency_note),
+      zoning_compliance_note: txt(a.zoning_compliance_note),
+      condo_project_name: txt(a.condo_project_name),
+      condo_project_type: txt(a.condo_project_type),
+      condo_common_elements: txt(a.condo_common_elements),
+      condo_management_type: txt(a.condo_management_type),
+      // `form_version` and `software_vendor` were written here by db/448 and are
+      // GONE (db/450): the parser never assigns either, `appraisalRowFrom`
+      // hard-codes software_vendor null and omits form_version entirely, so both
+      // source columns are always NULL and both observation columns were dead.
+      // db/448's own test only passed because it INSERTed a value straight into
+      // `appraisals`, which no real import path does. If a vendor's XML turns out
+      // to carry them, they come back WITH a parser that reads them.
+      appraisal_purpose: txt(a.appraisal_purpose),
+      appraisal_purpose_other: txt(a.appraisal_purpose_other),
+      uspap_report_type: txt(a.uspap_report_type),
+      inspection_type: txt(a.inspection_type),
+      lender_name: txt(a.lender_name),
+      amc_name: txt(a.amc_name),
+      lender_address: txt(a.lender_address),
+      supervisor_license_id: txt(a.supervisor_license_id),
+      supervisor_license_state: txt(a.supervisor_license_state),
+      concession_description: txt(a.concession_description),
+      contract_review_comment: txt(a.contract_review_comment),
+      reconciliation_comment: txt(a.reconciliation_comment),
+      conditions_comment: txt(a.conditions_comment),
+      addendum_text: txt(a.addendum_text),
+      sales_agreement_analysis: txt(a.sales_agreement_analysis),
+      property_tax_amount: a.property_tax_amount,
+      property_tax_year: a.property_tax_year,
+      site_improvements_value: a.site_improvements_value,
+      dwelling_cost_new: a.dwelling_cost_new,
+      dwelling_sqft: a.dwelling_sqft,
+      dwelling_price_per_sqft: a.dwelling_price_per_sqft,
+      cost_new_total: a.cost_new_total,
+      depreciated_cost_improvements: a.depreciated_cost_improvements,
+      depreciation_physical: a.depreciation_physical,
+      depreciation_functional: a.depreciation_functional,
+      depreciation_external: a.depreciation_external,
+      depreciation_total: a.depreciation_total,
+      condo_units_planned: a.condo_units_planned,
+      condo_units_completed: a.condo_units_completed,
+      condo_units_sold: a.condo_units_sold,
+      condo_units_rented: a.condo_units_rented,
+      condo_units_for_sale: a.condo_units_for_sale,
+      condo_owner_occupied: a.condo_owner_occupied,
+      condo_total_phases: a.condo_total_phases,
+      condo_parking_spaces: a.condo_parking_spaces,
+      condo_commercial_space: a.condo_commercial_space == null ? null : !!a.condo_commercial_space,
+      condo_developer_control: a.condo_developer_control == null ? null : !!a.condo_developer_control,
+      condo_concentrated_ownership: a.condo_concentrated_ownership == null ? null : !!a.condo_concentrated_ownership,
+      seller_is_owner: a.seller_is_owner == null ? null : !!a.seller_is_owner,
+      concession_indicator: a.concession_indicator == null ? null : !!a.concession_indicator,
+      contract_reviewed: a.contract_reviewed == null ? null : !!a.contract_reviewed,
+      has_prior_sale: a.has_prior_sale == null ? null : !!a.has_prior_sale,
+      comps_have_prior_sales: a.comps_have_prior_sales == null ? null : !!a.comps_have_prior_sales,
+      fema_panel_date: dateOnly(a.fema_panel_date),
+      supervisor_license_exp: dateOnly(a.supervisor_license_exp),
+      off_site_improvements: bindable(a.off_site_improvements),
+      rent_included_utilities: bindable(a.rent_included_utilities),
       facts: JSON.stringify(subjectFacts(a)),
     });
     subjectObsId = obs.id;
@@ -685,15 +1902,102 @@ async function writeReport(db, { a, comps, link, out }) {
     // know about — marked 'pending' until a later report proves it closed).
     out.sales += await recordSale(db, { propertyId: subjectId, date: a.prior_sale_date,
       price: a.prior_sale_amount, type: null, status: 'closed', source: 'subject_prior_sale',
-      appraisalId, importId, observationId: subjectObsId });
+      appraisalId, importId, observationId: subjectObsId,
+      out, what: { address: txt(a.subject_address), of: 'the subject\'s previous sale' } });
     out.sales += await recordSale(db, { propertyId: subjectId, date: a.contract_date,
       price: a.contract_price, type: txt(a.sale_type), status: 'pending', source: 'subject_contract',
-      appraisalId, importId, observationId: subjectObsId });
-  } else if (txt(a.subject_address)) {
-    out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
+      appraisalId, importId, observationId: subjectObsId,
+      out, what: { address: txt(a.subject_address), of: 'the subject\'s contract' } });
+  } else {
+    // A SUBJECT THAT NEVER LANDS IS ALWAYS COUNTED. This used to be gated on the
+    // report having stated an address at all, so a report carrying NO subject
+    // address was dropped in total silence and its ledger row still read
+    // `status: ok, rows_skipped: 0` — measured on 64 rows. That is precisely what
+    // the ledger exists to prevent (db/409 §6): "nothing is ever silently
+    // dropped" has to include the case where there was nothing to drop it FROM.
+    // The two reasons are different and a human needs to be told which: one is a
+    // report we cannot read, the other is a report that did not say.
+    out.skipped.push(txt(a.subject_address)
+      ? { role: 'subject', address: txt(a.subject_address),
+        why: 'the report states this address but we could not read a house number, a state and a '
+          + 'town or ZIP out of it, so it cannot be told apart from any other property' }
+      : { role: 'subject', address: null,
+        why: 'this report states no subject address at all, so there is no property to file it '
+          + 'against — everything else on it (its market read, its comparables) is still kept' });
   }
 
+  // ---- what the report said about the MARKET (db/449) ---------------------
+  // The 1004MC grid and the page-1 neighbourhood read describe an AREA over a
+  // PERIOD, not this house, so they go to their own table rather than onto the
+  // property — see db/449's header for why that distinction is load-bearing.
+  // Deliberately OUTSIDE the `if (subjectId)` branch above: a report whose
+  // address we could not key still told us about its market, and that is worth
+  // keeping. Best-effort — a market read is never worth failing a whole report
+  // over, and the failure is COUNTED rather than swallowed.
+  //
+  // THROUGH `bestEffort`, because "best-effort" inside a transaction is not what
+  // a bare catch does: this block's catch used to swallow a SQL error that had
+  // already aborted the transaction, so the subject, the whole sales grid, the
+  // rent schedule and the roll-ups went down with it and the report was refused
+  // with a message about a transaction. Measured: 5 of 152 real reports lost
+  // their entire warehouse write that way, invisibly.
+  await bestEffort(db, 'market_grid', async () => {
+    // NO COORDINATES ARE PASSED, deliberately: `appraisals` carries no
+    // subject_latitude/longitude (verified against information_schema — reading
+    // them would be a phantom column that silently answers null forever). The
+    // subject's position lives on the PROPERTY, which `property_id` points at
+    // once the geocoder has placed it.
+    const m = await MARKET.writeMarket(db, a, {
+      appraisalId, importId, propertyId: subjectId || null, appraiserId,
+    });
+    if (m.written) { out.market = 1; out.marketPeriods = m.periods; }
+  }, (e) => out.skipped.push({ role: 'market', why: `the market grid could not be filed: ${e.message}` }));
+
   // ---- the COMPARABLES ---------------------------------------------------
+  //
+  // ITEM 2.4b — PER-UNIT SQUARE FOOTAGE FOR A SALES COMPARABLE, which its own
+  // grid can never state. A sales comparable's unit mix is mined from
+  // `ROOM_ADJUSTMENT`: rooms, beds and baths, and no area, ever. Measured across
+  // the corpus, 353 sales comparables carry a mix and **not one** carries a
+  // square footage, while 289 of 290 RENTAL comparables do.
+  //
+  // On 62 of them the appraiser described the SAME BUILDING in both grids of the
+  // same report — so the area is already in the file, one grid over. Indexed by
+  // the same property key the warehouse dedupes on, so "the same building" means
+  // exactly what it means everywhere else.
+  //
+  // Keyed on the PROPERTY the address resolves to, not on a second key computed
+  // here — the two grids agree about a building exactly when the warehouse says
+  // they do, and re-deriving that would be a second definition free to drift.
+  const rentalMixByPid = new Map();
+  await bestEffort(db, 'rental_mix_index', async () => {
+    const rr = Array.isArray(rentals) ? rentals : (appraisalId ? (await db.query(
+      `SELECT address, city, state, zip, is_subject, units, unit_mix
+         FROM appraisal_rental_comparables WHERE appraisal_id = $1`, [appraisalId])).rows : []);
+    for (const rc of rr) {
+      if (rc.is_subject) continue;
+      let mix = rc.unit_mix;
+      if (typeof mix === 'string') { try { mix = JSON.parse(mix); } catch (_) { mix = null; } }
+      if (!Array.isArray(mix) || !mix.some((u) => u && u.sqft != null)) continue;
+      const inh = K._internals.zip5(rc.zip)
+        && K._internals.zip5(rc.zip) === K._internals.zip5(a.subject_zip) ? txt(a.subject_city) : null;
+      const pid = await upsertProperty(db, {
+        street: rc.address, city: txt(rc.city), fallbackCity: inh,
+        state: txt(rc.state) || a.subject_state, zip: rc.zip,
+      });
+      // TOUCHED, so the property this resolved gets a roll-up. Without it the
+      // index could leave a `properties` row with no observation and no
+      // recomputation if the rental block later failed.
+      if (pid) { touched.add(pid); if (!rentalMixByPid.has(pid)) rentalMixByPid.set(pid, mix); }
+    }
+  }, (e) => {
+    // NAMED, not silent. Every other best-effort block in this file records why
+    // it gave up; this one returned nothing at all, so a failure was invisible
+    // in `out.skipped` and in `property_ingest_log` alike.
+    out.skipped.push({ role: 'rental_area_index',
+      why: `per-unit areas could not be carried from the rent schedule onto the sales grid: ${e.message}` });
+  });
+
   const compObs = [];
   for (const c of comps) {
     // A COMPARABLE THAT NAMED NO TOWN INHERITS THE SUBJECT'S — GATED ON THE ZIP.
@@ -718,16 +2022,44 @@ async function writeReport(db, { a, comps, link, out }) {
     //     city-bearing reports already produce.
     // A comp outside the subject's ZIP that states no city still keys on its ZIP, and
     // goes to the duplicate detector (db/419) instead.
-    const compCity = txt(c.city)
-      || (K._internals.zip5(c.zip) && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
-        ? txt(a.subject_city) : null);
-    const pid = await upsertProperty(db, {
-      street: c.address, city: compCity, state: c.state || a.subject_state, zip: c.zip,
+    // The inherited town is a FALLBACK, never the city itself. `normalizeParts`
+    // re-parses a packed address line ("12 Oak St, Newark, NJ 07103") for the
+    // pieces it does not already hold, and handing it an inherited town filled
+    // that slot first — so a comparable that WROTE its own town inside its own
+    // address line was filed under the subject's town instead, creating exactly
+    // the split this inheritance exists to close. `fallbackCity` is applied last,
+    // after both the explicit element and the packed-line parse.
+    const inheritedCity = K._internals.zip5(c.zip)
+      && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
+      ? txt(a.subject_city) : null;
+    const compParts = {
+      street: c.address, city: txt(c.city), fallbackCity: inheritedCity,
+      state: c.state || a.subject_state, zip: c.zip,
+    };
+    // KEEP THE SALE unless the address is truly unusable — borrow the subject's
+    // town for a comp that named none, and file a comp we still cannot identify as
+    // its own kept-for-review row rather than dropping it (see fileComparableProperty).
+    const statedAddress = [txt(c.address), txt(c.city), txt(c.state), txt(c.zip)].filter(Boolean).join(', ') || txt(c.address);
+    const filed = await fileComparableProperty(db, {
+      parts: compParts,
+      subject: { city: a.subject_city, zip: a.subject_zip, state: a.subject_state },
+      reportId: appraisalId || importId, seq: c.seq,
     });
+    const pid = filed.pid;
     if (!pid) {
-      out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
-        why: 'the report did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
+      // SAY WHICH PIECE IS MISSING, not just "we could not use this address": a
+      // reviewer opens the appraisal and sees exactly what the appraiser left off
+      // the grid, with the full stated address shown verbatim.
+      out.skipped.push({ role: 'comparable', seq: c.seq, address: statedAddress,
+        missing: filed.missing || null,
+        why: filed.why || 'the report did not write enough of this address to identify the property (needs a house number, a state, and a town or ZIP)' });
       continue;
+    }
+    if (filed.kind) {
+      // KEPT, not lost — record what we did so the screen can reassure the owner
+      // rather than let a fixed comp read as a dropped one.
+      (out.salvaged || (out.salvaged = [])).push({ role: 'comparable', seq: c.seq,
+        address: statedAddress, kind: filed.kind, missing: filed.missing || null, why: filed.why });
     }
     touched.add(pid);
     out.properties++;
@@ -753,11 +2085,29 @@ async function writeReport(db, { a, comps, link, out }) {
       // elements — but the appraiser's ADJUSTMENT LINES name them ("Age", "Site",
       // "Design (Style)") with the comp's own figure in the description, so they
       // are mined from there. Only a value the line actually states is taken.
-      year_built: fromAdjustments(c.adjustments, 'age', K.yearBuilt),
+      // THE AGE LINE STATES AN AGE, NOT A YEAR — so mining it for a 4-digit year
+      // returned NULL on every comparable in the 602-comp corpus ("106",
+      // "114 yrs", "76"). The parser now derives the year from that age plus the
+      // report's effective date (db/432) and stores it on the comparable itself;
+      // the mine is kept behind it for the rare vendor that really does write a
+      // year on that line.
+      year_built: K.int(c.year_built, { min: 1700, max: 2100 })
+        ?? fromAdjustments(c.adjustments, 'age', K.yearBuilt),
       lot_area: fromAdjustments(c.adjustments, 'site', (v) => txt(v)),
       lot_sqft: fromAdjustments(c.adjustments, 'site', K.lotSqft),
       units: K.int(c.units, { min: 1, max: 100 }),
-      stories: null, design_style: fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
+      // WHERE THAT UNIT COUNT CAME FROM, carried into the warehouse so the
+      // roll-up can prefer a measurement over an inference (db/431 added the
+      // column; nothing wrote it, so every observation looked equally sure).
+      identity_basis: txt(c.identity_basis),
+      // The 2-4 family transaction facts (db/430): the price per door and the
+      // rent multiplier are facts about THIS SALE, so they live on the
+      // observation and are deliberately never rolled up onto the property.
+      price_per_unit: c.price_per_unit, monthly_rent: c.monthly_rent, grm: c.grm,
+      stories: null,
+      design_style: txt(c.design_style) || fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
+      // Written at last (db/409 §7): the comparable's own type, proved from how
+      // many unit rows its grid carried — never inherited from the subject.
       property_type: txt(c.property_type), property_category: null,
       condition_uad: txt(c.condition_uad), condition_text: txt(c.condition_text),
       quality_uad: txt(c.quality_uad), quality_text: txt(c.quality_text),
@@ -765,34 +2115,219 @@ async function writeReport(db, { a, comps, link, out }) {
       // an after-repair comparable, so its ratings are always the as-is basis.
       condition_basis: 'as_is',
       view_rating: txt(c.view_rating), location_rating: txt(c.location_rating),
-      location_type: txt(c.location_type),
+      location_type: txt(c.location_type), view_type: txt(c.view_type),
+      functional_utility: txt(c.functional_utility),
       below_grade_sqft: c.below_grade_sqft, below_grade_finished_sqft: c.below_grade_finished_sqft,
+      below_grade_beds: c.below_grade_beds,
+      below_grade_baths_full: c.below_grade_baths_full,
+      below_grade_baths_half: c.below_grade_baths_half,
+      below_grade_rec_rooms: c.below_grade_rec_rooms,
+      below_grade_other_rooms: c.below_grade_other_rooms,
+      basement_exit: txt(c.basement_exit),
       basement_sqft: null, basement_finished_pct: null,
       garage_type: fromAdjustments(c.adjustments, 'garage', (v) => txt(v)), garage_spaces: null,
-      price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
+      price_per_gla: c.price_per_gla,
+      // NOT `|| 'gla'`. A comparable row stored before db/427 added the column has
+      // NO recorded basis, and defaulting it to 'gla' ASSERTS it is a living area
+      // — which then outranks a correctly-labelled building area in the roll-up,
+      // whatever the dates. That is the exact fact-dropping this pair exists to
+      // stop. An unrecorded basis stays unrecorded and ranks between the two.
+      gla_basis: txt(c.gla_basis), proximity: txt(c.proximity),
       neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
       zoning_id: null, zoning_desc: null,
-      occupancy_status: null, market_rent: null, unit_mix: null,
+      occupancy_status: null, market_rent: null,
+      // THE PER-UNIT ROOM LINE the 1025 grid stated (db/426). Through `bindable`
+      // because a jsonb column reads back as a JS array and binding it raw makes
+      // node-postgres send a Postgres array literal — the roll-up wipe of #974.
+      unit_mix: bindable(mergeUnitAreas(c.unit_mix, rentalMixByPid.get(pid))),
       owner_of_record: null, property_rights: null,
       hoa_fee_amount: null, hoa_fee_period: null, condo_floor: null,
       effective_age: null, remaining_economic_life: null,
       heating_type: null, heating_fuel: null, cooling: null, foundation_type: null,
       attic: null, has_adu: null, lot_shape: null, lot_dimensions: null, listed_within_year: null,
-      latitude: c.latitude, longitude: c.longitude,
+      // BOTH OR NEITHER — the same rule the importer applies, restated here
+      // because this path also runs over reports stored before it existed.
+      ...COORDS.coordPair(c.latitude, c.longitude),
       net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
       adjustments: JSON.stringify(c.adjustments || []),
       appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
-      contract_date: null,
+      // WHEN THE PRICE WAS AGREED (db/452). Distinct from the settled date above,
+      // and NULL on anything imported before we started reading it — which means
+      // 'unknown', never 'same as the settled date'.
+      contract_date: dateOnly(c.contract_date),
       facts: JSON.stringify({}),
     });
     compObs.push({ id: obs.id, property_id: pid, comp_seq: txt(c.seq) });
     out.observations++;
+    // The adjustment lines as rows (db/440) — the market benchmark's raw material.
+    // Its own savepoint: a derived index must never fail the ingest that feeds it.
+    // A KEPT-FOR-REVIEW comp (unverifiable address) must never price the market:
+    // adjustmentRate/adjustmentBenchmark read property_adjustments directly (no join
+    // to properties), so its lines are simply not written. A town-borrowed comp is a
+    // normal property and does feed the benchmark, like any other.
+    if (filed.kind !== 'needs_review') await bestEffort(db, 'adj_rows', async () => {
+      // ONE definition of where and when, shared with the back-fill — see
+      // `adjustmentPlaceAndDate`. Deriving them here independently is what made
+      // the two writers disagree on 15,909 of 17,431 rows.
+      const pd = await adjustmentPlaceAndDate(db, pid, saleDate, observedOn);
+      return writeAdjustments(db, {
+        observationId: obs.id, propertyId: pid, adjustments: c.adjustments || [],
+        place: pd.place, on: pd.on,
+        // The two sizes the size-line rate is derived from. `a.gla` is the
+        // SUBJECT of this report; `c.gla` is this comparable's own.
+        subjectGla: a.gla, compGla: c.gla, compGlaBasis: c.gla_basis,
+      });
+    }, (e) => { out.skipped.push({ what: 'adjustment rows', why: e && e.message }); });
     out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
       type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
-      appraisalId, importId, observationId: obs.id });
+      appraisalId, importId, observationId: obs.id,
+      out, what: { address: txt(c.address), seq: txt(c.seq), of: 'a comparable sale' } });
     out.sales += await recordSale(db, { propertyId: pid, date: c.prior_sale_date, price: c.prior_sale_amount,
-      type: null, status: 'closed', source: 'comp_prior_sale', appraisalId, importId, observationId: obs.id });
+      type: null, status: 'closed', source: 'comp_prior_sale', appraisalId, importId, observationId: obs.id,
+      out, what: { address: txt(c.address), seq: txt(c.seq), of: 'a comparable\'s previous sale' } });
   }
+
+  // ---- the RENTAL comparables (db/435) -----------------------------------
+  //
+  // The rent schedule's own grid. These are REAL properties with an in-place
+  // rent, filed as observations in their own role so nothing that means "a
+  // sale" ever picks them up: they have no sale price, no sale date and no
+  // adjustment grid, and `recordSale` is deliberately never called for them.
+  //
+  // What they bring that the sales grid cannot: PER-UNIT SQUARE FOOTAGE (289 of
+  // 290 across the corpus — `ROOM_ADJUSTMENT` never states an area), the rent
+  // somebody is actually paying, and whether that rent is controlled.
+  //
+  // Sequence 0 is the SUBJECT's own rental summary and is skipped here — the
+  // subject already has its own observation, written above, and filing a second
+  // one for the same report would double every count on that property.
+  // Through `bestEffort` — see its header for why "best-effort" means two
+  // different things depending on which door called us.
+  //
+  // COUNTED OUTSIDE THE BLOCK. `out.observations++` inside a savepoint survives
+  // the rollback that un-writes its row, and that number is what
+  // `property_ingest_log.observations_written` records.
+  let rentalsFiled = 0;
+  await bestEffort(db, 'rental_grid', async () => {
+    // ONE REPORT IS READ THE SAME WAY WHICHEVER DOOR IT ARRIVED THROUGH. A
+    // loan-file report has `appraisal_rental_comparables` rows to read; an
+    // UPLOADED report (db/411) has no `appraisals` row to hang them on and hands
+    // them straight over, exactly as it does for the sales comparables.
+    const rentalRows = Array.isArray(rentals) ? rentals
+      : (appraisalId ? (await db.query(
+        `SELECT * FROM appraisal_rental_comparables
+          WHERE appraisal_id = $1 AND is_subject = false ORDER BY seq`, [appraisalId])).rows : []);
+    for (const rc of rentalRows) {
+      if (rc.is_subject) continue;
+      // ONE BAD ROW MUST NOT COST THE WHOLE SCHEDULE. With a single savepoint
+      // around the loop, an unstorable figure on the first rental discarded a
+      // perfectly good second one. Each row settles on its own, and a failure
+      // NAMES the row rather than the schedule.
+      const settled = await bestEffort(db, 'rental_row', async () => {
+      // The SAME address shape the sales comparables use — `upsertProperty`
+      // owns the key, and `fallbackCity` is the gated inheritance (a row that
+      // named no town takes the subject's ONLY when the two ZIPs agree).
+      const rentInheritedCity = K._internals.zip5(rc.zip)
+        && K._internals.zip5(rc.zip) === K._internals.zip5(a.subject_zip)
+        ? txt(a.subject_city) : null;
+      const rentParts = {
+        street: rc.address, city: txt(rc.city), fallbackCity: rentInheritedCity,
+        state: txt(rc.state) || a.subject_state, zip: rc.zip,
+      };
+      // Same salvage path as a sales comparable — borrow the subject's town, or
+      // keep it for review, rather than drop a rent comp for a thin address.
+      const rentStated = [txt(rc.address), txt(rc.city), txt(rc.state), txt(rc.zip)].filter(Boolean).join(', ') || txt(rc.address);
+      const rfiled = await fileComparableProperty(db, {
+        parts: rentParts,
+        subject: { city: a.subject_city, zip: a.subject_zip, state: a.subject_state },
+        reportId: appraisalId || importId, seq: `r${txt(rc.seq) || ''}`,
+      });
+      const pid = rfiled.pid;
+      if (!pid) {
+        out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: rentStated,
+          missing: rfiled.missing || null,
+          why: rfiled.why ? `${rfiled.why} (rent-schedule comparable)`
+            : 'the rent schedule did not write enough of this address to identify the property (needs a house number, a state, and a town or ZIP)' });
+        return false;
+      }
+      if (rfiled.kind) {
+        (out.salvaged || (out.salvaged = [])).push({ role: 'rental_comparable', seq: txt(rc.seq),
+          address: rentStated, kind: rfiled.kind, missing: rfiled.missing || null, why: rfiled.why });
+      }
+      touched.add(pid);
+      await upsertObservation(db, {
+        property_id: pid, appraisal_id: appraisalId, import_id: importId,
+        application_id: a.application_id || null,
+        comparable_id: null, appraiser_id: appraiserId, role: 'rental_comparable',
+        comp_seq: txt(rc.seq), comp_set: null, comp_set_confidence: null, comp_set_needs_review: null,
+        observed_on: observedOn, form_type: txt(a.form_type),
+        address_as_stated: [txt(rc.address), txt(rc.city), txt(rc.state), txt(rc.zip)].filter(Boolean).join(', ') || null,
+        // A RENT IS NOT A SALE. Every transaction column stays null and no row is
+        // written to `property_sales` — this property did not change hands.
+        sale_price: null, adjusted_price: null, sale_date: null, sale_date_text: null,
+        sale_status: null, sale_type: null, concession_amount: null, financing_type: null,
+        days_on_market: null, data_source: txt(rc.data_source),
+        prior_sale_amount: null, prior_sale_date: null,
+        // The rent schedule states GROSS BUILDING area, never gross LIVING area,
+        // so the basis travels with the number exactly as it does on a 1025 grid.
+        gla: rc.gba_sqft, gla_basis: 'gba',
+        actual_monthly_rent: rc.monthly_rent, rent_per_gba: rc.rent_per_gba,
+        rent_controlled: rc.rent_controlled,
+        beds: null, baths_text: null, baths_full: null, baths_half: null, total_rooms: null,
+        year_built: K.int(rc.year_built, { min: 1700, max: 2100 }),
+        lot_area: null, lot_sqft: null, units: K.int(rc.units, { min: 1, max: 100 }),
+        // The rent schedule does not name a category, and a unit count of 2+ is
+        // what makes it a small-income building — the same rule `compIdentity`
+        // applies, with no form to lean on.
+        identity_basis: rc.units != null ? 'grid' : null,
+        price_per_unit: null, monthly_rent: null, grm: null,
+        stories: null, design_style: null,
+        property_type: rc.units != null && rc.units >= 2
+          ? (rc.units >= 5 ? PT.LABEL_OF.multi_5_plus : PT.LABEL_OF.multi_2_4) : null,
+        property_category: null,
+        condition_uad: txt(rc.condition_uad), condition_text: txt(rc.condition_text),
+        quality_uad: null, quality_text: null,
+        // A rental comparable is described as it stands and is let today —
+        // there is no such thing as an after-repair rent comparable.
+        condition_basis: 'as_is',
+        view_rating: null, location_rating: null, location_type: txt(rc.location_code),
+        below_grade_sqft: null, below_grade_finished_sqft: null,
+        basement_sqft: null, basement_finished_pct: null,
+        garage_type: null, garage_spaces: null,
+        price_per_gla: null, proximity: txt(rc.proximity),
+        neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
+        zoning_id: null, zoning_desc: null,
+        occupancy_status: null, market_rent: null,
+        // THE FACT THE SALES GRID CANNOT GIVE: per-unit rooms, beds, baths AND
+        // SQUARE FOOTAGE, plus what each unit rents for.
+        unit_mix: bindable(rc.unit_mix),
+        owner_of_record: null, property_rights: null,
+        hoa_fee_amount: null, hoa_fee_period: null, condo_floor: null,
+        effective_age: null, remaining_economic_life: null,
+        heating_type: null, heating_fuel: null, cooling: null, foundation_type: null,
+        attic: null, has_adu: null, lot_shape: null, lot_dimensions: null, listed_within_year: null,
+        latitude: null, longitude: null,
+        net_adjustment: null, net_adj_pct: null, gross_adj_pct: null,
+        // A rental comparable has no adjustment grid at all — the appraiser is
+        // comparing RENTS, not reconciling a price. The column is NOT NULL, and
+        // an empty list is the honest reading: there were no adjustment lines,
+        // as opposed to "we did not look".
+        adjustments: JSON.stringify([]),
+        appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
+        contract_date: null,
+        facts: JSON.stringify({ lease_terms: txt(rc.lease_terms) || null,
+          utilities_included: txt(rc.utilities_included) || null }),
+        });
+        return true;
+      }, (e) => out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: txt(rc.address),
+        why: `this rent-schedule row could not be filed: ${e.message}` }));
+      if (settled) rentalsFiled++;
+    }
+  }, (e) => out.skipped.push({ role: 'rental_comparable', why: `the rent schedule could not be filed: ${e.message}` }));
+  // COUNTED AFTER THE BLOCK SETTLES, never inside it. `out.observations++` sat
+  // within the savepoint, so a rollback un-wrote the rows and left the number —
+  // and that number is what `property_ingest_log.observations_written` records.
+  out.observations += rentalsFiled;
 
   // ---- photos, then the roll-ups ----------------------------------------
   // ONLY A LOAN-FILE REPORT HAS PICTURES TO LINK. The photographs live in
@@ -822,12 +2357,12 @@ async function writeReport(db, { a, comps, link, out }) {
   // failure is COUNTED and named rather than swallowed: `rollup_version` stays
   // behind on the row, so the boot re-roll retries it, and the skip is reported.
   for (const pid of touched) {
-    try {
-      await rollupProperty(db, pid);
-    } catch (e) {
+    // One property failing to recompute must not take every property after it —
+    // and the report itself — down with it.
+    await bestEffort(db, 'rollup_one', () => rollupProperty(db, pid), (e) => {
       out.rollupFailed = (out.rollupFailed || 0) + 1;
       out.skipped.push({ role: 'rollup', property_id: pid, why: `the property's facts could not be recomputed: ${(e && e.message) || e}` });
-    }
+    });
   }
   await recountAppraiser(db, appraiserId);
   return out;
@@ -938,7 +2473,14 @@ const ADJ_TYPES = Object.freeze({
   age: ['age', 'actualage', 'yearbuilt'],
   site: ['site', 'sitearea', 'lot', 'lotsize'],
   design: ['design', 'designstyle', 'style'],
-  garage: ['garage', 'garagecarport', 'carport'],
+  // A COMPARABLE'S GARAGE WAS STRUCTURALLY ALWAYS NULL. These keys are matched
+  // against the MISMO `SALE_PRICE_ADJUSTMENT/@_Type` enum, and 2.6 writes the
+  // garage line as `Parking` or `CarStorage` — neither of which was here. The
+  // three original spellings are what a human would guess the enum says; they
+  // are kept because a vendor does emit them, but they matched nothing on a
+  // standards-compliant file, so the fact never reached a single comparable.
+  garage: ['garage', 'garagecarport', 'carport', 'parking', 'carstorage',
+    'garageparking', 'parkingoncarstorage'],
 });
 function fromAdjustments(adjustments, kind, parse) {
   const want = ADJ_TYPES[kind];
@@ -956,14 +2498,72 @@ function fromAdjustments(adjustments, kind, parse) {
   return null;
 }
 
+/**
+ * CARRY PER-UNIT SQUARE FOOTAGE FROM THE RENT SCHEDULE ONTO THE SALES GRID
+ * (task-list item 2.4b), for the same building on the same report.
+ *
+ * The two grids describe one property and were both written by the same
+ * appraiser, each numbering its dwellings explicitly. What the sales grid states
+ * (rooms, beds, baths) and what the rent grid states (area, rent) are disjoint,
+ * so this only ever FILLS a blank — a value already on the sales mix is never
+ * touched.
+ *
+ * IT REFUSES ON ANY DISAGREEMENT. The two grids must describe the same number of
+ * dwellings, and a unit number present on one side must be present on the other;
+ * otherwise the pairing is a guess and putting unit 3's area on unit 2 is worse
+ * than leaving it blank. Anything unreadable yields the sales mix unchanged.
+ */
+function mergeUnitAreas(salesMix, rentalMix) {
+  let mix = salesMix;
+  if (typeof mix === 'string') { try { mix = JSON.parse(mix); } catch (_) { return salesMix; } }
+  if (!Array.isArray(mix) || !mix.length) return salesMix;
+  if (!Array.isArray(rentalMix) || rentalMix.length !== mix.length) return salesMix;
+  const byUnit = new Map();
+  for (const u of rentalMix) { if (u && u.unit != null) byUnit.set(String(u.unit), u); }
+  if (byUnit.size !== rentalMix.length) return salesMix;              // a repeated unit number on the rent side
+  // AND ON THE SALES SIDE. A sales row with no stated sequence is labelled by
+  // POSITION (`r.seq != null ? r.seq : i + 1`), so a seq-less first row and a
+  // genuine `UnitSequenceIdentifier="1"` row both come out as "1" — and both
+  // would then have been given unit 1's area while unit 2's was discarded.
+  if (new Set(mix.map((u) => String(u.unit))).size !== mix.length) return salesMix;
+  if (!mix.every((u) => u && u.unit != null && byUnit.has(String(u.unit)))) return salesMix;
+  let filled = 0;
+  const out = mix.map((u) => {
+    const r = byUnit.get(String(u.unit));
+    const add = {};
+    if (u.sqft == null && r.sqft != null) { add.sqft = r.sqft; filled++; }
+    if (u.monthly_rent == null && r.monthly_rent != null) { add.monthly_rent = r.monthly_rent; filled++; }
+    return filled || Object.keys(add).length ? Object.assign({}, u, add) : u;
+  });
+  return filled ? out : salesMix;
+}
+
 /** The per-unit rent roll off a 1025/1007, or null when the report carried none. */
+/* ONE SHAPE FOR A RENT ROLL, WHICHEVER DOOR IT CAME THROUGH.
+ *
+ * node-postgres renders a `numeric` column as a STRING, so the loan-file door
+ * (which reads `appraisal_units` rows) produced {"sqft":"1100.00"} where the
+ * upload door (which carries the parsed numbers) produced {"sqft":1100}. Same
+ * fact, two shapes, in a jsonb column — harmless while only existence checks and
+ * display read it, and a real trap for the first thing that does arithmetic on a
+ * rent roll. The warehouse's whole promise is that a fact is filed ONE way
+ * whichever door it arrives through. */
+function numericUnit(u) {
+  const n = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+  return {
+    unit_seq: n(u.unit_seq), rooms: n(u.rooms), beds: n(u.beds), baths: n(u.baths),
+    sqft: n(u.sqft), actual_rent: n(u.actual_rent), market_rent: n(u.market_rent),
+    lease_status: u.lease_status == null ? null : String(u.lease_status),
+  };
+}
+
 async function subjectUnitMix(db, a) {
   // An UPLOADED report (db/411) has no `appraisal_units` rows — it was never stored
   // per-file — so it hands its parsed rent schedule along on the row shape itself.
   // Without this a 1025 uploaded straight into the research database would lose its
   // whole unit mix, which is one of the facts the warehouse exists to hold.
   if (Array.isArray(a && a._units)) {
-    const rows = a._units.map((u) => ({
+    const rows = a._units.map((u) => numericUnit({
       unit_seq: u.seq, rooms: u.rooms, beds: u.beds, baths: u.baths, sqft: u.sqft,
       actual_rent: u.actualRent, market_rent: u.marketRent, lease_status: u.leaseStatus,
     }));
@@ -972,7 +2572,7 @@ async function subjectUnitMix(db, a) {
   const r = await db.query(
     `SELECT unit_seq, rooms, beds, baths, sqft, actual_rent, market_rent, lease_status
        FROM appraisal_units WHERE appraisal_id = $1 ORDER BY unit_seq`, [(a && a.id) || null]);
-  return r.rows.length ? r.rows : null;
+  return r.rows.length ? r.rows.map(numericUnit) : null;
 }
 
 /** The appraiser's stated monthly market rent for the whole subject property, or null. */
@@ -1050,6 +2650,13 @@ async function backfill(db, { limit = 500, force = false, onProgress = null } = 
          LEFT JOIN property_ingest_log l ON l.appraisal_id = a.id
         WHERE $2::boolean OR l.appraisal_id IS NULL
            OR (l.status NOT IN ('ok','skipped')) OR l.ingest_version < $3
+           -- A REPORT THAT HAS SINCE BEEN SUPERSEDED BUT IS STILL LOGGED ok is
+           -- still IN the warehouse, counting its whole grid a second time beside
+           -- the report that replaced it. The import now re-ingests what it
+           -- retires, so this only has to catch the ones already stranded — but it
+           -- is what heals the back book, and it costs nothing once they are done
+           -- (retiring stamps the ledger skipped, so each is picked up once).
+           OR (a.superseded AND l.status = 'ok')
         ORDER BY COALESCE(a.effective_date, a.report_signed_date, a.imported_at::date) ASC, a.imported_at ASC
         LIMIT $1`, [Math.min(Math.max(1, limit), 5000), !!force, INGEST_VERSION])).rows;
   } catch (e) {
@@ -1106,7 +2713,9 @@ async function ingestStatus(db) {
     `SELECT (SELECT count(*)::int FROM appraisals) AS appraisals,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='ok' AND ingest_version >= $1) AS ingested,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='error') AS failed,
-            (SELECT count(*)::int FROM properties) AS properties,
+            -- Searchable properties only, so "warehouse size" matches what a search
+            -- over the same corpus returns (kept-for-review rows are excluded there).
+            (SELECT count(*)::int FROM properties WHERE needs_review = false) AS properties,
             (SELECT count(*)::int FROM property_observations) AS observations,
             (SELECT count(*)::int FROM property_sales) AS sales,
             (SELECT count(*)::int FROM appraisers) AS appraisers`, [INGEST_VERSION]);
@@ -1115,12 +2724,14 @@ async function ingestStatus(db) {
 }
 
 module.exports = {
-  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties,
+  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties, adjustmentBenchmark, adjustmentRate,
+  backfillAdjustmentRowsOnce,
   // The shared report-writing body — the standalone XML upload (db/411) drives it
   // with the same row shapes, so both doors read one report identically.
   writeReport,
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal, bindable,
-    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION },
+    rateRungs, rateAtScope,
+    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION, mergeUnitAreas, identityRank, writeAdjustments, unitDeltaFor },
 };

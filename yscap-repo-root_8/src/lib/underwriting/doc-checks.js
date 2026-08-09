@@ -348,7 +348,10 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
       // so 'ours' says nothing. The other two are not the same thing as each other and neither is
       // silent: no address at all means notices have nowhere to go, and an address we cannot
       // recognise means they may be going somewhere else.
-      const addrState = clauseAddressState(ins.mortgageeClause);
+      // On an RCN file, the Elite Commercial Servicing notice address is ours (PILOT
+      // requests it on the order), so it reads as 'ours' rather than 'unrecognized'.
+      const rcn = require('../conditions/field-registry').isRcnNoteBuyer(subject && subject.note_buyer);
+      const addrState = clauseAddressState(ins.mortgageeClause, { rcn });
       if (addrState === 'none') {
         out.push(mk('insurance', { code: 'insurance_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
           docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,

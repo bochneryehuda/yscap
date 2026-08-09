@@ -18,17 +18,32 @@ const events = require('../lib/events');
 router.get('/', async (req, res) => {
   const claims = C.verifyJwt(String(req.query.token || ''));
   if (!claims || claims.mfa) return res.status(401).json({ error: 'unauthenticated' });
-  const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-  const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
-  // Staff also gets an is_active check — a deactivated staffer must NOT keep the
-  // live stream (S1-01). borrower_auth has no is_active column, so only select it
-  // for staff.
-  const cols = claims.kind === 'staff' ? 'token_version, is_active' : 'token_version';
-  const r = await db.query(`SELECT ${cols} FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
-  const row = r.rows[0];
-  const tv = row ? row.token_version : null;
-  if (tv === null || tv !== (claims.tv || 0)) return res.status(401).json({ error: 'session expired' });
-  if (claims.kind === 'staff' && !row.is_active) return res.status(401).json({ error: 'account disabled' });
+  // BORROWER ASSISTANT (src/lib/borrower-assistant.js): a helper token is a
+  // borrower-kind token carrying an assistant envelope, validated against its OWN
+  // row — NOT borrower_auth — so this endpoint (which re-implements the auth
+  // middleware) must re-implement that too, or a DISABLED helper keeps the live
+  // stream (the one surface that bypasses authenticate()).
+  const asst = require('../lib/borrower-assistant').readAssistant(claims);
+  if (asst) {
+    const a = await db.query(
+      `SELECT token_version, disabled_at, borrower_id FROM borrower_assistants WHERE id=$1`, [asst.assistantId]);
+    const arow = a.rows[0];
+    if (!arow || arow.disabled_at || arow.borrower_id !== claims.sub
+        || (arow.token_version || 0) !== (asst.assistantTv || 0))
+      return res.status(401).json({ error: 'helper access ended' });
+  } else {
+    const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
+    const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
+    // Staff also gets an is_active check — a deactivated staffer must NOT keep the
+    // live stream (S1-01). borrower_auth has no is_active column, so only select it
+    // for staff.
+    const cols = claims.kind === 'staff' ? 'token_version, is_active' : 'token_version';
+    const r = await db.query(`SELECT ${cols} FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
+    const row = r.rows[0];
+    const tv = row ? row.token_version : null;
+    if (tv === null || tv !== (claims.tv || 0)) return res.status(401).json({ error: 'session expired' });
+    if (claims.kind === 'staff' && !row.is_active) return res.status(401).json({ error: 'account disabled' });
+  }
   // Per-device sign-out (db/321) must close the live stream too, or a "signed
   // out" tab keeps receiving chat/presence events. Fails OPEN — a stream is not
   // worth a hard failure if the table is briefly unavailable.

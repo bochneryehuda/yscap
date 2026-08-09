@@ -2,6 +2,29 @@ import React, { useEffect } from 'react';
 import { nextStep, docNextStep, canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { canOverride, askOverride } from '../lib/condition-override.js';
 import { CONDITION_STATUSES, conditionStatusLabel } from '../lib/conditions-vocab.js';
+import { fmtDateTime } from '../lib/dates.js';
+
+/* THE AUDIT TRAIL on a condition — who cleared it, and exactly when (owner-directed
+ * 2026-08-05: "right on the bottom of the Signed Off button you should see a
+ * timestamp for exactly the date and time the condition was signed off and by whom").
+ * The data is already on the row (checklist_items.signed_off_by/at, waived_by/at,
+ * reviewed_by/at, override_by/at + reason), resolved to a name by the checklist
+ * route. Only one completion is in effect at a time, so this shows the one that is. */
+export function ConditionAudit({ it }) {
+  if (!it) return null;
+  if (it.override_at) {
+    return (
+      <div className="cond-audit override">
+        Overridden by <b>{it.override_by_name || 'a super admin'}</b> · {fmtDateTime(it.override_at)}
+        {it.override_reason ? ` — ${it.override_reason}` : ''}
+      </div>
+    );
+  }
+  if (it.waived_at) return <div className="cond-audit">Marked not required by <b>{it.waived_by_name || 'staff'}</b> · {fmtDateTime(it.waived_at)}</div>;
+  if (it.signed_off_at) return <div className="cond-audit">Signed off by <b>{it.signed_off_name || 'staff'}</b> · {fmtDateTime(it.signed_off_at)}</div>;
+  if (it.reviewed_at) return <div className="cond-audit">Marked done by <b>{it.reviewed_by_name || 'staff'}</b> · {fmtDateTime(it.reviewed_at)}</div>;
+  return null;
+}
 
 /* THE CONDITION ACTION BAR — one prominent next step, everything else behind
  * "More". Owner-directed 2026-07-27: "we don't need to remove features but we
@@ -72,6 +95,10 @@ export default function ConditionActions({
   // Rendered inside the More menu, under a divider — for the one-off actions a
   // particular condition carries (waive an appraisal card, open a tool).
   extra,
+  // Any staffer may ASK an admin/super-admin to waive this condition (owner-directed
+  // 2026-08-04). Provided by the file screen; when present a "Request a waiver…"
+  // action appears in More for a not-yet-cleared condition.
+  onRequestWaiver,
 }) {
   useMenuAutoClose();
   const completer = canComplete(role);
@@ -157,6 +184,20 @@ export default function ConditionActions({
 
             {extra ? <><div className="cond-more-sep" />{extra}</> : null}
 
+            {/* Any staffer may ASK for a waiver (owner-directed 2026-08-04) — an
+                admin/super-admin decides, and approval marks the condition waived.
+                Distinct from the super-admin's own immediate override below. */}
+            {onRequestWaiver && !cleared && (
+              <>
+                <div className="cond-more-sep" />
+                <button className="btn ghost small"
+                  title="Ask an admin / super-admin to waive this condition. If they approve, it is marked waived."
+                  onClick={() => onRequestWaiver(it)}>
+                  Request a waiver…
+                </button>
+              </>
+            )}
+
             {/* Super admin only: clear this condition without what it asks for.
                 Kept offered UP-FRONT (not only after a refusal) exactly as
                 before — moving it into More does not put it behind a failure. */}
@@ -178,6 +219,10 @@ export default function ConditionActions({
           what to do first. This is the direct answer to "the accept button and
           the sign off button and the done button — it's too complicated." */}
       <div className="cond-act-hint">{step.hint}</div>
+
+      {/* The audit trail — who signed it off / waived it / overrode it, and when.
+          Sits right under the action, as the owner asked. */}
+      <ConditionAudit it={it} />
     </div>
   );
 }
@@ -195,10 +240,15 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
   // click, so it comes out of the "More" menu and the menu keeps only the rest
   // (download, replace, reject, delete…).
   return (
+    <div className="cond-doc-actions">
     <div className="cond-act-row">
+      {/* `step.action` is what the ladder decided this viewer's move is — Accept
+          for a completer, Reject for everyone else (a loan officer used to see no
+          action at all on a document row). Never hard-code 'accept' here again:
+          that is what made the officer's Reject reachable only from More. */}
       {step && (
-        <button className="btn primary small" title={step.title}
-          onClick={() => onReviewDoc(doc, 'accept')}>{step.label}</button>
+        <button className={`btn ${step.tone === 'primary' ? 'primary' : 'ghost'} small`} title={step.title}
+          onClick={() => onReviewDoc(doc, step.action || 'accept')}>{step.label}</button>
       )}
       {fullscreen && onPreview && (
         <button className="btn ghost small" title="Preview without downloading"
@@ -218,13 +268,24 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
               title="Accept this document but keep the condition open and ask the borrower for one more"
               onClick={() => onReviewDoc(doc, 'accept_more')}>Accept, and ask for one more</button>
           )}
-          {rs !== 'rejected' && <button className="btn ghost small"
+          {/* …unless Reject is already the visible action on the row above. */}
+          {rs !== 'rejected' && !(step && step.action === 'reject') && <button className="btn ghost small"
             onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
           {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: '#A32A2A' }}
             title="Permanently delete — for a mistake upload (never synced to SharePoint)"
             onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
         </div>
       </details>
+    </div>
+      {/* WHO accepted this document and WHEN — right under the accept control, as
+          the owner asked (2026-08-05). documents.reviewed_by/reviewed_at, resolved
+          to a name by the documents route. */}
+      {rs === 'accepted' && (doc.reviewed_at || doc.reviewed_by_name) && (
+        <div className="cond-audit">Accepted by <b>{doc.reviewed_by_name || 'staff'}</b>{doc.reviewed_at ? ` · ${fmtDateTime(doc.reviewed_at)}` : ''}</div>
+      )}
+      {rs === 'rejected' && (doc.reviewed_at || doc.reviewed_by_name) && (
+        <div className="cond-audit">Rejected by <b>{doc.reviewed_by_name || 'staff'}</b>{doc.reviewed_at ? ` · ${fmtDateTime(doc.reviewed_at)}` : ''}{doc.rejection_reason ? ` — ${doc.rejection_reason}` : ''}</div>
+      )}
     </div>
   );
 }

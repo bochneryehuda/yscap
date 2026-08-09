@@ -25,6 +25,11 @@ export function actorFromToken(t) {
         sessionId: p.impSid || null,
         startedAt: (Number(p.impAt) || 0) * 1000,
       } : null,
+      // BORROWER ASSISTANT envelope (see src/lib/borrower-assistant.js). Present
+      // only on a helper token. Decoded here so the "you're a helper — personal
+      // details hidden, you can't sign" banner renders on the FIRST paint and the
+      // sign buttons never flash enabled.
+      assistant: !!p.asst,
     };
   } catch { return null; }
 }
@@ -49,12 +54,19 @@ export function AuthProvider({ children }) {
   // from /auth/me the moment a borrower-view token is in play, so the banner can
   // name the borrower rather than just saying "a borrower".
   const [viewingAs, setViewingAs] = useState(null);
+  // Named from /auth/me for a helper (assistant) session: who they're helping.
+  const [assistantOf, setAssistantOf] = useState(null);
   const signIn  = useCallback((t) => { setToken(t); setTok(t); }, []);
   const signOut = useCallback(() => {
     // Revoke server-side first (bumps token_version, killing every copy of the
     // token in other tabs/devices), then clear locally. Best-effort: local
-    // sign-out must work even if the server is unreachable.
-    try { api.post('/auth/logout').catch(() => {}); } catch { /* ignore */ }
+    // sign-out must work even if the server is unreachable. A HELPER session must
+    // sign OUT of its OWN credential — /auth/logout would bump the BORROWER's
+    // token_version (and is blocked for a helper anyway).
+    try {
+      if (actorFromToken(getToken())?.assistant) api.assistantLogout().catch(() => {});
+      else api.post('/auth/logout').catch(() => {});
+    } catch { /* ignore */ }
     clearToken(); setTok('');
     // Defense-in-depth: wipe the PWA shell cache on logout (it never holds PII,
     // but this keeps a shared device clean).
@@ -75,13 +87,25 @@ export function AuthProvider({ children }) {
   const actor = actorFromToken(token);
   const isStaff = actor?.kind === 'staff';
   const impersonation = actor?.impersonation || null;
+  const isAssistant = !!actor?.assistant;
   useEffect(() => {
     let live = true;
     if (isStaff) {
       api.me().then((r) => { if (live) setPerms(Array.isArray(r?.permissions) ? r.permissions : []); }).catch(() => {});
-      setViewingAs(null);
+      setViewingAs(null); setAssistantOf(null);
+    } else if (isAssistant) {
+      // Name the borrower being helped for the banner. /auth/me carries `name`
+      // (the helper's own name) + the borrower identity.
+      setPerms([]); setViewingAs(null);
+      api.me().then((r) => {
+        if (!live) return;
+        setAssistantOf({
+          borrowerName: [r?.first_name, r?.last_name].filter(Boolean).join(' ').trim() || r?.email || 'this borrower',
+          helperName: r?.name || null,
+        });
+      }).catch(() => { if (live) setAssistantOf({ borrowerName: 'this borrower', helperName: null }); });
     } else {
-      setPerms([]);
+      setPerms([]); setAssistantOf(null);
       if (impersonation) {
         // Name the borrower + the real staffer for the banner. `me` carries the
         // impersonation block for exactly this.
@@ -100,7 +124,7 @@ export function AuthProvider({ children }) {
       }
     }
     return () => { live = false; };
-  }, [token, isStaff, impersonation?.sessionId]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, isStaff, isAssistant, impersonation?.sessionId]);   // eslint-disable-line react-hooks/exhaustive-deps
   const can = useCallback((cap) => perms.includes(cap), [perms]);
 
   /* Step INTO a borrower's portal. Parks the staff token, swaps in the
@@ -150,6 +174,10 @@ export function AuthProvider({ children }) {
       isBorrowerView: !!impersonation,
       viewingAs,
       startBorrowerView, exitBorrowerView,
+      // Borrower helper (assistant): truthy when this is a helper login, plus who
+      // they are helping (for the banner). Drives the PII banner + sign disabling.
+      isAssistant,
+      assistantOf,
     }}>
       {children}
     </Ctx.Provider>

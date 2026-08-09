@@ -177,6 +177,42 @@ function isEmcapNoteBuyer(raw) {
   return !!key && key.startsWith(EMCAP_KEY_PREFIX);
 }
 
+// BLUE LAKE — the capital provider the GOLD program is paired with
+// (tapes/program-provider.js: gold ↔ bluelake). Same PREFIX shape as the two
+// helpers above, and for the same reason: the real ClickUp label is routinely
+// "Blue Lake Capital" (→ 'bluelakecapital'), which an exact key never matches.
+// No other note buyer's key starts with 'bluelake'.
+// This does NOT loosen `normNoteBuyer` (which stays EXACT) and the tape EXPORT
+// gate deliberately does not use it — the export direction is the one where an
+// over-match ships a data tape to the wrong buyer. Blast radius here: the
+// individual-vesting refusal (lib/vesting-program-rule.js) — the direction where
+// matching a genuine Blue Lake spelling is strictly safer than missing it,
+// because Blue Lake does not buy a loan taken in a personal name at all.
+const BLUELAKE_KEY_PREFIX = 'bluelake';
+
+/** True when this note-buyer label (applications.lender) is Blue Lake, however it is spelled. */
+function isBlueLakeNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(BLUELAKE_KEY_PREFIX);
+}
+
+// RCN — RCN Capital, whose notes are serviced by Elite Commercial Servicing. Same
+// PREFIX shape as the helpers above and for the same reason: the real ClickUp label
+// is routinely "RCN Capital" / "RCN Capital, LLC" (→ 'rcncapital'…), which an exact
+// key never matches. No other note buyer's key starts with 'rcn'. This does NOT
+// loosen normNoteBuyer (which stays EXACT). Blast radius: the vendor-order mortgagee
+// clause (lib/orders.js) and the insurance mortgagee-address check (underwriting/
+// lender.js) — the direction where recognizing a genuine RCN spelling is strictly
+// safer than missing it (a missed match sends the wrong servicer address / raises a
+// spurious "unrecognized address" nudge, never a wrong data-tape export).
+const RCN_KEY_PREFIX = 'rcn';
+
+/** True when this note-buyer label (applications.lender) is RCN, however it is spelled. */
+function isRcnNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(RCN_KEY_PREFIX);
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -205,7 +241,7 @@ const FIELDS = [
   { key: 'loan_to_arv', label: 'Loan / ARV % (computed)', group: 'Loan & program', type: 'percent',
     description: 'Loan amount divided by after-repair value (0–100). Computed live.' },
   { key: 'loan_to_cost', label: 'Loan / total cost % (computed)', group: 'Loan & program', type: 'percent',
-    description: 'Loan amount ÷ (purchase price + rehab budget) (0–100). Computed live.' },
+    description: 'Loan amount ÷ (min(purchase price, as-is value) + rehab budget) (0–100). Computed live.' },
   { key: 'rate_pct', label: 'Note rate %', group: 'Loan & program', type: 'percent' },
   { key: 'requested_ir_months', label: 'Interest reserve months', group: 'Loan & program', type: 'number', writable: true,
     borrowerLabel: 'Requested interest reserve (months)', borrowerHint: 'How many months of interest reserve are you requesting? (0–24)' },
@@ -223,10 +259,22 @@ const FIELDS = [
   // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
   // condition (rtl_cond_flood, db/281) — which a FIDELIS file is excluded from
   // (db/335, via note_buyer_is_fidelis below).
+  // note_buyer is STAFF-set from the completeness datalist (staff.js complete-fields
+  // writes the picked LABEL straight to applications.lender) — it is deliberately not
+  // writable from a Condition Center info-field. RCN's real ClickUp dropdown label is
+  // "RCN Capital" (owner-directed 2026-08-05); listing { v:'rcncapital', label:'RCN
+  // Capital' } makes it a first-class, pickable note buyer (listNoteBuyers reads these
+  // labels) even on a cold ClickUp option cache, instead of a value staff had to type
+  // by hand. `v` is the normalized label so it lines up with normNoteBuyer('RCN
+  // Capital')='rcncapital'. RCN needs no rule/boolean companion — its only special
+  // handling is the vendor-order mortgagee clause + the insurance address check, both
+  // keyed on isRcnNoteBuyer (prefix), which already matches "RCN Capital" and every
+  // other 'rcn…' spelling.
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
-      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' }],
+      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' },
+      { v: 'rcncapital', label: 'RCN Capital' }],
     description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
   // Is the note buyer FIDELIS (any spelling — "Fidelis", "Fidelis Investors",
   // "Fidelis Investors LLC")? A BOOLEAN companion to note_buyer, deliberately not
@@ -487,4 +535,6 @@ module.exports = {
   normCitizenship, normOccupancy, normNoteBuyer,
   FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
   EMCAP_KEY_PREFIX, isEmcapNoteBuyer,
+  BLUELAKE_KEY_PREFIX, isBlueLakeNoteBuyer,
+  RCN_KEY_PREFIX, isRcnNoteBuyer,
 };

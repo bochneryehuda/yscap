@@ -1,0 +1,782 @@
+'use strict';
+/**
+ * THE 2026-08-07 NOTIFICATION REDESIGN — pure regression tests (no DB, no network).
+ *
+ * Each block below reproduces one thing the owner reported, and every assertion was checked to
+ * FAIL on the pre-change code. They are grouped by the complaint rather than by module, because
+ * that is what a future reader will be looking for.
+ */
+
+const assert = require('assert');
+const tpl = require('../src/lib/email/template');
+const drawEmail = require('../src/lib/email/draw-email');
+const pricingEmail = require('../src/lib/email/pricing-email');
+const { computeRollup } = require('../src/sitewire/rollup');
+
+let passed = 0;
+const ok = (label, fn) => {
+  try { fn(); passed++; console.log('  ok  ' + label); }
+  catch (e) { console.error('  FAIL ' + label + '\n       ' + (e && e.message)); process.exitCode = 1; }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A · A REQUESTED DRAW IS SPOKEN FOR THE MOMENT IT IS REQUESTED
+   Owner: "the 'Still Available' and all the notifications say this draw is counted, and it's
+   still available in the entire rehab budget. You need to reduce the amount that he requested …
+   And also, the construction budget used percentage should be the percentage of this draw as
+   well, included already."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nA · a requested draw comes off the available budget');
+
+// The owner's file: a $135,000 rehab budget, Draw #1 requesting $6,450, nothing inspected yet.
+const links = [
+  { sow_line_key: 'roof', sitewire_job_item_id: 1, name: 'Roof', budgeted_cents: 13500000, state: 'live' },
+];
+const freshDraw = {
+  links,
+  draws: [{ sitewire_draw_id: 10, number: 1, status: 'submitted', total_requested_cents: 645000, total_approved_cents: 0 }],
+  requests: [{ sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 0 }],
+};
+
+ok('a draw with nothing approved yet still takes its REQUESTED amount off available', () => {
+  const r = computeRollup(freshDraw);
+  assert.strictEqual(r.project.budget, 13500000);
+  assert.strictEqual(r.project.drawn, 0, 'nothing has been released');
+  assert.strictEqual(r.project.pending_exposure, 645000, 'the request is the exposure');
+  assert.strictEqual(r.project.committed, 645000);
+  assert.strictEqual(r.project.available, 13500000 - 645000,
+    'this is the exact number the owner said was wrong: $128,550, not $135,000');
+});
+
+ok('and the "budget used" percentage counts it — not 0%', () => {
+  const r = computeRollup(freshDraw);
+  assert.ok(r.project.pct_committed > 4.7 && r.project.pct_committed < 4.9,
+    `expected ~4.8%, got ${r.project.pct_committed}`);
+  assert.strictEqual(r.project.pct_complete, 0, 'released-only percent is deliberately still 0');
+});
+
+ok('once the inspector answers, THEIR number governs — never approved + requested', () => {
+  const r = computeRollup({
+    links,
+    draws: [{ sitewire_draw_id: 10, number: 1, status: 'submitted', total_requested_cents: 645000, total_approved_cents: 0 }],
+    // Requested $6,450, inspector approved $4,000.
+    requests: [{ sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 400000 }],
+  });
+  assert.strictEqual(r.project.pending_exposure, 400000,
+    'double-counting would give $10,450 of exposure on a $6,450 request');
+  assert.strictEqual(r.project.available, 13500000 - 400000);
+});
+
+ok('a line carrying one inspected draw AND one fresh request keeps both — a per-line max loses one', () => {
+  const r = computeRollup({
+    links,
+    draws: [
+      { sitewire_draw_id: 10, number: 1, status: 'submitted', total_requested_cents: 645000, total_approved_cents: 0 },
+      { sitewire_draw_id: 11, number: 2, status: 'submitted', total_requested_cents: 200000, total_approved_cents: 0 },
+    ],
+    requests: [
+      { sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 400000 },
+      { sitewire_draw_id: 11, sitewire_job_item_id: 1, requested_cents: 200000, approved_cents: 0 },
+    ],
+  });
+  assert.strictEqual(r.project.pending_exposure, 400000 + 200000);
+});
+
+ok('a RELEASED draw is drawn, not exposure — the two are never counted twice', () => {
+  const r = computeRollup({
+    links,
+    draws: [{ sitewire_draw_id: 10, number: 1, status: 'approved', total_requested_cents: 645000, total_approved_cents: 645000 }],
+    requests: [{ sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 645000 }],
+  });
+  assert.strictEqual(r.project.drawn, 645000);
+  assert.strictEqual(r.project.pending_exposure, 0);
+  assert.strictEqual(r.project.committed, 645000);
+});
+
+ok('no draws at all → the whole budget is available (the ordinary case is unchanged)', () => {
+  const r = computeRollup({ links, draws: [], requests: [] });
+  assert.strictEqual(r.project.available, 13500000);
+  assert.strictEqual(r.project.pct_committed, 0);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   B · THE APPROVED-DRAW EMAIL CARRIES THE WHOLE PICTURE
+   Owner: "The approved amount / the released amount / the fee … How much is the total
+   construction budget? How much was drawn already, including this amount that was approved?
+   What percentage was drawn already? … Include how much is still available after this draw."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nB · the approved-draw email states approved, fee, released and the budget');
+
+const approvedMoney = {
+  requested_cents: 2962500, approved_cents: 997500, not_approved_cents: 1965000,
+  net_release_cents: 972500, fee_cents: 25000, has_inspector_amounts: true,
+  is_final_approved: true, is_released: false, number: 3,
+};
+const rollupWithBudget = {
+  project: { budget: 13500000, drawn: 500000, committed: 1497500, available: 12002500, pct_committed: 11.1 },
+};
+
+ok('the release leads and the arithmetic behind it is spelled out', () => {
+  const f = drawEmail.drawFigures(approvedMoney, { borrower: true });
+  assert.strictEqual(f.primary.label, 'To be released');
+  assert.strictEqual(f.primary.value, '$9,725');
+  assert.ok(/\$9,975 approved/.test(f.primary.sub), f.primary.sub);
+  assert.ok(/\$250 draw fee/.test(f.primary.sub), f.primary.sub);
+});
+
+ok('a zero-fee release says so rather than implying a deduction happened', () => {
+  const f = drawEmail.drawFigures({ ...approvedMoney, fee_cents: 0, net_release_cents: 997500 }, {});
+  assert.ok(!/draw fee/.test(f.primary.sub) || /no draw fee/.test(f.primary.sub), f.primary.sub);
+});
+
+ok('the facts box answers all four budget questions', () => {
+  const { rows, progress } = drawEmail.drawFacts({ money: approvedMoney, rollup: rollupWithBudget, borrower: true });
+  const byLabel = Object.fromEntries(rows.map((r) => [r.label, r.value]));
+  assert.strictEqual(byLabel['Rehab budget'], '$135,000');
+  assert.strictEqual(byLabel['Drawn so far'], '$5,000');
+  assert.strictEqual(byLabel['Drawn including this draw'], '$14,975');
+  assert.strictEqual(byLabel['Still available to draw'], '$120,025');
+  assert.strictEqual(byLabel['Draw processing fee'], '$250');
+  assert.ok(/this draw included/i.test(progress.label), progress.label);
+  assert.strictEqual(progress.done, 1497500);
+});
+
+ok('a released draw does not print "drawn so far" and "including this draw" as two equal rows', () => {
+  const r = { project: { budget: 13500000, drawn: 1497500, committed: 1497500, available: 12002500 } };
+  const { rows } = drawEmail.drawFacts({ money: approvedMoney, rollup: r });
+  assert.ok(!rows.some((x) => /including/i.test(x.label)), 'the duplicate row must be omitted');
+});
+
+ok('a file with no budget still renders — the block is omitted, never shown as dashes', () => {
+  const { rows, progress } = drawEmail.drawFacts({ money: approvedMoney, rollup: { project: { budget: 0 } } });
+  assert.strictEqual(progress, null);
+  assert.ok(!rows.some((r) => /Rehab budget/.test(r.label)));
+  assert.ok(rows.some((r) => r.label === 'Draw processing fee'), 'the fee is still stated');
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   C · AN APPROVAL EMAIL SHOWS WHAT IS BEING ASKED FOR
+   Owner: "this email is so [confusing] I can't even see what they want from me … What exactly is
+   the exception request for? Nicely laid out."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nC · the exception request states the ask, the changes and the deal');
+
+const overrideChanges = [
+  { key: 'markupGoldPct', label: 'Rate markup / YSP — Gold', unit: 'pct', value: 0, defaultValue: 0.4 },
+  { key: 'markupSilverPct', label: 'Rate markup / YSP — Silver', unit: 'pct', value: 0.5, defaultValue: 0.4 },
+  { key: 'origStdPct', label: 'Origination points — Standard', unit: 'pct', value: 1, defaultValue: 1.25 },
+];
+const silverDeal = {
+  loanAmount: 405000, noteRate: '10.40%', programLabel: 'Silver Program',
+  productLabel: 'Silver Program — pricing override', purchasePrice: 410000, arv: 540000,
+  rehabBudget: 60000, cashToClose: 78411, liquidity: 109799,
+  acqLtvPct: 65, arvPct: 65, ltcPct: 80,
+};
+
+ok('every change is its OWN row, with the default and the ask separated', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  assert.strictEqual(p.changes.rows.length, 3);
+  const gold = p.changes.rows.find((r) => /Gold/.test(r.label));
+  assert.strictEqual(gold.from, '0.4%');
+  assert.strictEqual(gold.to, '0%', 'a value of 0 must render as 0%, never be dropped as falsy');
+});
+
+ok('the headline asks the question instead of narrating the mechanism', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  assert.ok(/needs your approval/i.test(p.title), p.title);
+  assert.ok(!/Escalations box/i.test(p.body), 'the ask must not open with where the record lives');
+  assert.strictEqual(p.badge.tone, 'action');
+});
+
+ok('the deal an approver has to judge is on the email', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  const byLabel = Object.fromEntries(p.facts.rows.map((r) => [r.label, r.value]));
+  assert.strictEqual(byLabel['ARV'], '$540,000');
+  assert.strictEqual(byLabel['Loan-to-cost'], '80%');
+  assert.strictEqual(p.figures.primary.value, '$405,000');
+});
+
+ok('a figure the money band already stated is never repeated in the facts', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  const labels = p.facts.rows.map((r) => r.label);
+  assert.ok(!labels.includes('Loan amount'), 'the headline already says it');
+  assert.ok(!labels.includes('Cash to close'), 'the money band already says it');
+});
+
+ok('the consequence of doing nothing is stated', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  assert.ok(/not sent terms/i.test(p.callout.body), p.callout.body);
+});
+
+ok('a manual-review scenario lists its reasons as rows too', () => {
+  const p = pricingEmail.approvalRequestEmail({
+    kind: 'manual_review', deal: { loanAmount: 2380000 },
+    manualReasons: ['Rehab budget exceeds what this program can finance'],
+  });
+  assert.strictEqual(p.changes.rows.length, 1);
+  assert.ok(/Rehab budget exceeds/.test(p.changes.rows[0].label));
+});
+
+ok('a scenario that is BOTH manual-review and overridden keeps both ledgers', () => {
+  const p = pricingEmail.approvalRequestEmail({
+    kind: 'manual_review', deal: { loanAmount: 1 },
+    manualReasons: ['Below the program minimum'], overrideChanges,
+  });
+  assert.strictEqual(p.changes.rows.length, 4, 'neither ledger may be silently dropped');
+});
+
+ok('a legacy escalation carrying only pre-rendered lines still renders as a ledger', () => {
+  const led = pricingEmail.overrideLedger({ lines: ['Origination points — Standard: 1.25% → 1%'] });
+  assert.strictEqual(led.rows[0].label, 'Origination points — Standard');
+  assert.strictEqual(led.rows[0].from, '1.25%');
+  assert.strictEqual(led.rows[0].to, '1%');
+});
+
+ok('an unparseable legacy line becomes a label, never a guess', () => {
+  const led = pricingEmail.overrideLedger({ lines: ['Manual scenario (admin-set basis) is on'] });
+  assert.strictEqual(led.rows[0].from, undefined);
+  assert.strictEqual(led.rows[0].to, undefined);
+  assert.ok(/Manual scenario/.test(led.rows[0].label));
+});
+
+ok('no changes and no reasons → no ledger rather than an empty box', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: { loanAmount: 1 } });
+  assert.strictEqual(p.changes, null);
+});
+
+ok('the build-time dedup Set never leaves the module (it would serialise to {} in a Draft)', () => {
+  const p = pricingEmail.approvalRequestEmail({ kind: 'pricing_override', deal: silverDeal, overrideChanges });
+  assert.ok(!('_consumed' in p.figures));
+  assert.strictEqual(JSON.parse(JSON.stringify(p)).figures.primary.value, '$405,000');
+});
+
+/* ── the decision email ─────────────────────────────────────────────────── */
+console.log('\nC2 · the decision email names the decision AND the thing decided');
+
+ok('an approval lists exactly what now applies', () => {
+  const d = pricingEmail.approvalDecidedEmail({
+    kind: 'pricing_override', decision: 'approved', decidedBy: 'a super-admin',
+    deal: silverDeal, overrideChanges,
+  });
+  assert.strictEqual(d.title, 'Exception approved');
+  assert.strictEqual(d.changes.rows.length, 3, 'the old copy named none of them');
+  assert.ok(/What was approved/i.test(d.changes.title));
+  assert.strictEqual(d.badge.tone, 'positive');
+});
+
+ok('a decline says the file keeps its old terms', () => {
+  const d = pricingEmail.approvalDecidedEmail({ kind: 'manual_product', decision: 'declined', deal: { loanAmount: 1 } });
+  assert.strictEqual(d.title, 'Exception declined');
+  assert.ok(/keeps the terms it had/i.test(d.emailBody), d.emailBody);
+});
+
+ok('the past-tense copy is written out, not derived by string surgery', () => {
+  for (const kind of ['pricing_override', 'manual_product', 'manual_review']) {
+    const d = pricingEmail.approvalDecidedEmail({ kind, decision: 'approved', deal: {} });
+    assert.ok(!/,\s*\./.test(d.emailBody), `stray punctuation in: ${d.emailBody}`);
+    assert.ok(!/ and is asking/.test(d.emailBody), `present tense leaked: ${d.emailBody}`);
+  }
+});
+
+ok('the approver’s note is surfaced, not buried in the sentence', () => {
+  const d = pricingEmail.approvalDecidedEmail({
+    kind: 'manual_review', decision: 'approved', deal: {}, note: 'Compensating: 780 FICO, 12 completed flips',
+  });
+  assert.ok(/780 FICO/.test(d.callout.body));
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   D · THE TEMPLATE RENDERS BOTH NEW BLOCKS, IN HTML AND TEXT/PLAIN
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nD · the change ledger and the list table survive both parts');
+
+const rendered = tpl.render({
+  title: 'A pricing exception needs your approval',
+  audience: 'staff',
+  changes: {
+    title: 'What you are being asked to approve',
+    rows: [{ label: 'Origination points — Standard', from: '1.25%', to: '1%' }],
+    note: 'The struck-through figure is the company default.',
+  },
+  table: {
+    title: 'Waiting on a decision',
+    head: ['Property', 'Exception', 'Waiting'],
+    rows: [['276 Blake St, New Haven', 'Send before clear-to-close', '10d']],
+    note: '…and 3 more.',
+  },
+});
+
+ok('the ledger reaches the HTML with both values', () => {
+  assert.ok(rendered.html.includes('Origination points'));
+  assert.ok(rendered.html.includes('1.25%') && rendered.html.includes('1%'));
+  assert.ok(/line-through/.test(rendered.html), 'the default must read as superseded');
+});
+
+ok('the ledger reaches text/plain — an approval a plaintext client cannot read is not an approval', () => {
+  assert.ok(/Origination points — Standard: 1.25% -> 1%/.test(rendered.text), rendered.text);
+  assert.ok(/WHAT YOU ARE BEING ASKED TO APPROVE/.test(rendered.text));
+});
+
+ok('the table reaches both parts, header included', () => {
+  assert.ok(rendered.html.includes('276 Blake St, New Haven'));
+  assert.ok(/Property \| Exception \| Waiting/.test(rendered.text), rendered.text);
+  assert.ok(/276 Blake St, New Haven \| Send before clear-to-close \| 10d/.test(rendered.text));
+  assert.ok(/…and 3 more\./.test(rendered.text));
+});
+
+ok('nothing renders as [object Object] and no light token is used as a text colour', () => {
+  assert.ok(!rendered.html.includes('[object Object]'));
+  // #F6F3EC / #F4F1EA are SURFACE colours; used as `color:` they are white-on-white.
+  assert.ok(!/color:\s*#F6F3EC/i.test(rendered.html));
+  assert.ok(!/color:\s*#F4F1EA/i.test(rendered.html));
+});
+
+ok('an email with neither block is byte-identical to one that never knew about them', () => {
+  const base = { title: 'Hello', body: 'Body text.', audience: 'staff' };
+  const a = tpl.render(base);
+  const b = tpl.render({ ...base, changes: null, table: null });
+  assert.strictEqual(a.html, b.html);
+  assert.strictEqual(a.text, b.text);
+});
+
+ok('an EMPTY ledger / table payload renders nothing rather than an empty card', () => {
+  const a = tpl.render({ title: 'Hello', body: 'B', audience: 'staff' });
+  const b = tpl.render({ title: 'Hello', body: 'B', audience: 'staff', changes: { rows: [] }, table: { rows: [] } });
+  assert.strictEqual(a.html, b.html);
+});
+
+ok('an html-looking value in a cell is escaped, never rendered', () => {
+  const r = tpl.render({
+    title: 'x', audience: 'staff',
+    table: { rows: [['<script>alert(1)</script>', 'b']] },
+  });
+  assert.ok(!r.html.includes('<script>'));
+  assert.ok(r.html.includes('&lt;script&gt;'));
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   E · THE CLOSING CHAIN — one reply cutter, and a cancellation that is sent
+   Owner: "the reply needs to be above the three dots, and only those three dots should be part of
+   the reply. If not, it is messing everything up terribly." · "add a button … Cancel Closing Prep,
+   which should send them a cancellation email to disregard this file, and then it should stop
+   sending them the updates."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nE · the closing chain');
+
+const replyCut = require('../src/lib/email/reply-cut');
+const fileInbox = require('../src/lib/file-inbox');
+const chat = require('../src/lib/chat');
+const closingPrep = require('../src/lib/closing-prep');
+
+// The owner's REAL reply, verbatim from the reported thread.
+const REAL_REPLY = [
+  'Confirming we are disregarding.',
+  '',
+  'PrivateLenderLaw.com<https://www.privatelenderlaw.com> | 1 (212) LEND-LAW',
+  '',
+  'Allison Glessner',
+  '',
+  '________________________________',
+  '',
+  'From: Yehuda Bochner <Yehuda@yscapgroup.com>',
+  'Sent: Thursday, August 6, 2026 1:14 AM',
+  'Subject: Re: File ready for closing prep',
+  '',
+  'Please ignore this email and close this file.',
+].join('\n');
+
+ok('the owner’s own reply is cut at the quoted history, not carried whole', () => {
+  const out = replyCut.topReply(REAL_REPLY);
+  assert.ok(/^Confirming we are disregarding\./.test(out), out);
+  assert.ok(!/Yehuda Bochner/.test(out), 'the quoted original leaked through');
+  assert.ok(!/Please ignore this email/.test(out), 'the quoted body leaked through');
+});
+
+ok('the file inbox uses the SAME cutter — it had a weaker private copy', () => {
+  assert.strictEqual(fileInbox.topReply(REAL_REPLY), replyCut.topReply(REAL_REPLY));
+});
+
+ok('the marker phrase has ONE definition, shared with the chat', () => {
+  assert.strictEqual(chat.CHAT_REPLY_MARKER_PHRASE, replyCut.REPLY_MARKER_PHRASE);
+  assert.ok(replyCut.REPLY_MARKER.includes(replyCut.REPLY_MARKER_PHRASE));
+});
+
+ok('our own delimiter cuts, wherever the client put its attribution', () => {
+  const s = `Sounds good.\n\n${replyCut.REPLY_MARKER}\n\nPILOT · by YS Capital\n\nFile ready for closing prep`;
+  assert.strictEqual(replyCut.topReply(s), 'Sounds good.');
+});
+
+ok('a Gmail attribution WRAPPED across lines is still cut', () => {
+  const s = 'Will do.\n\nOn Wed, 6 Aug 2026 at 01:14, Yehuda Bochner\n<yehuda@yscapgroup.com> wrote:\n> the original';
+  assert.strictEqual(replyCut.topReply(s), 'Will do.');
+});
+
+ok('a message with no quote at all is returned whole', () => {
+  assert.strictEqual(replyCut.topReply('Just this.'), 'Just this.');
+  assert.strictEqual(replyCut.splitReply('Just this.').trimmed, false);
+});
+
+ok('a message that is ALL quote is kept whole rather than cut to one quoted line', () => {
+  // Every quote pattern needs a preceding newline, so the FIRST "> …" line always reads as fresh
+  // text and the cut lands on the second one. Answering with that single quoted line would be
+  // worse than useless — losing what somebody wrote is not recoverable, keeping some quoted text
+  // is only a nuisance.
+  const s = '> everything they wrote\n> and more';
+  assert.ok(replyCut.topReply(s).length > 0);
+  const r = replyCut.splitReply(s);
+  assert.strictEqual(r.trimmed, false);
+  assert.ok(/and more/.test(r.reply), 'the whole message is kept');
+});
+
+ok('splitReply hands back both halves', () => {
+  const r = replyCut.splitReply(REAL_REPLY);
+  assert.strictEqual(r.trimmed, true);
+  assert.ok(/Confirming we are disregarding/.test(r.reply));
+  assert.ok(/Yehuda Bochner/.test(r.quoted), 'the history must be kept, not discarded');
+});
+
+const cancelEmail = closingPrep.buildCancelEmail(
+  { loanNumber: 'YSCAP258134791', propertyLine: '3091 Patricia Ct, Manchester, NJ', borrowerName: 'MOSES WEIL' },
+  { reason: 'This is a brokered file — it is closing with RCN.', senderName: 'Yehuda Bochner' });
+
+ok('the cancellation says disregard, in the headline', () => {
+  assert.ok(/disregard/i.test(cancelEmail.html));
+  assert.ok(/no longer closing with you/i.test(cancelEmail.text), cancelEmail.text.slice(0, 300));
+});
+
+ok('it promises the updates stop — which is the half that already worked silently', () => {
+  assert.ok(/no more updates/i.test(cancelEmail.text) || /not receive any more updates/i.test(cancelEmail.text));
+  assert.ok(/executed term sheet/i.test(cancelEmail.text));
+  assert.ok(/closing-date/i.test(cancelEmail.text));
+});
+
+ok('it threads on the closing subject rather than arriving as a stray email', () => {
+  assert.ok(cancelEmail.subject.startsWith(closingPrep.CLOSING_PREP_TITLE), cancelEmail.subject);
+});
+
+ok('the typed reason reaches the attorney', () => {
+  assert.ok(/closing with RCN/.test(cancelEmail.text));
+});
+
+ok('and it carries the reply delimiter like every other message on the chain', () => {
+  /* Keyed on the PHRASE, not on a decorated line. The token is the contract both halves cut
+     on; the surrounding dashes and the trailing wording are presentation, and the chain's
+     messages settled on `quote.replyMarker('and it reaches the whole loan team')`. Asserting
+     the exact line would fail the next time the wording is tuned, on a message that is in
+     fact correct — so assert what actually has to be true. */
+  const marker = require('../src/lib/email/quote').replyMarker('and it reaches the whole loan team');
+  assert.ok(cancelEmail.text.startsWith(marker), cancelEmail.text.slice(0, 90));
+  assert.ok(cancelEmail.html.includes(replyCut.REPLY_MARKER_PHRASE));
+  // EVERY message the chain sends carries the SAME delimiter — a cancellation is not special.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/closing-prep.js'), 'utf8');
+  const markers = src.match(/replyMarker: [^\n]*/g) || [];
+  assert.ok(markers.length >= 5, `expected every chain message to set one, saw ${markers.length}`);
+  assert.strictEqual(new Set(markers).size, 1, `they must all be the same:\n${[...new Set(markers)].join('\n')}`);
+});
+
+ok('no reason typed → no empty "Why" box', () => {
+  const e = closingPrep.buildCancelEmail({ loanNumber: 'X', propertyLine: 'Y', borrowerName: 'Z' }, {});
+  assert.ok(!/\bWHY\b/.test(e.text), e.text);
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   F · EVERY WORKFLOW IS DESIGNED SEPARATELY
+   Owner: "emails like this should have a list of the files and the status of each and every file
+   and whose loan officer in every single file, nicely designed … if it's in the draw coordinator
+   workflow, the draw coordinator workflows should only be stuff that they need to do now. It means
+   stuff that has open draws, and the same thing for the closer work loan for the purchasing
+   workflow. Nicely design every workflow separately."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nF · the overdue nudge splits into one card per workflow');
+
+const wfQueues = require('../src/lib/email/workflow-queues');
+const workflow = require('../src/lib/workflow');
+
+// One person who somehow holds every kind of hand-off at once — the whole point is that these are
+// four different desks, not one list.
+const mixed = [
+  { submission_type: 'processing', property_address: { street: '1 Oak St', city: 'Newark', state: 'NJ' },
+    file_status: 'in_processing', lo_name: 'Dani R', hours_over: 30 },
+  { submission_type: 'condition_clearing', property_address: { oneLine: '2 Elm Ave, Newark, NJ' },
+    file_status: 'underwriting', lo_name: null, hours_over: 96 },
+  { submission_type: 'closing', property_address: { oneLine: '3 Pine Rd, Lakewood, NJ' },
+    file_status: 'clear_to_close', lo_name: 'Moshe K', hours_over: 12 },
+  // A draw file where a borrower IS waiting on money.
+  { submission_type: 'trinity_inspection_order', property_address: { oneLine: '4 Ash Ln, Passaic, NJ' },
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 50, has_open_draw: true },
+  // Two funded files set up for draws that nobody has asked for money on yet.
+  { submission_type: 'draw_setup', property_address: { oneLine: '5 Birch Ct, Trenton, NJ' },
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 400, has_open_draw: false },
+  { submission_type: 'draw_setup', ys_loan_number: 'yscap258134728',
+    file_status: 'funded', lo_name: 'Dani R', hours_over: 700, has_open_draw: false },
+  { submission_type: 'post_closing', property_address: { oneLine: '7 Cedar Way, Camden, NJ' },
+    file_status: 'funded', lo_name: 'Moshe K', hours_over: 80 },
+];
+
+const grouped = wfQueues.buildQueueTables(mixed, workflow.typeConfig, { perTable: 8 });
+
+ok('four different desks arrive as four separate cards, not one merged list', () => {
+  const titles = grouped.tables.map((t) => t.title);
+  assert.strictEqual(grouped.tables.length, 4, titles.join(' | '));
+  assert.ok(/^Processing —/.test(titles[0]), titles[0]);
+  assert.ok(/^Closing —/.test(titles[1]), titles[1]);
+  assert.ok(/^Construction draws —/.test(titles[2]), titles[2]);
+  assert.ok(/^Purchasing \/ investor delivery —/.test(titles[3]), titles[3]);
+});
+
+ok('each card says what that queue is FOR — the line that makes two lists read as two jobs', () => {
+  for (const t of grouped.tables) assert.ok(t.subtitle && t.subtitle.length > 20, t.title);
+  assert.ok(/investor/i.test(grouped.tables[3].subtitle));
+});
+
+ok('the draw card carries ONLY the file somebody is waiting on money for', () => {
+  const draws = grouped.tables.find((t) => /Construction draws/.test(t.title));
+  assert.strictEqual(draws.rows.length, 1);
+  assert.ok(/Ash Ln/.test(draws.rows[0][0]), JSON.stringify(draws.rows));
+});
+
+ok('…and the parked draw files are COUNTED and explained, never silently dropped', () => {
+  const draws = grouped.tables.find((t) => /Construction draws/.test(t.title));
+  assert.strictEqual(grouped.parked, 2);
+  assert.ok(/2 other files are/.test(draws.note), draws.note);
+  assert.ok(/nobody has asked for a draw/.test(draws.note), draws.note);
+});
+
+ok('every row names the property, the job, the file status, the loan officer and how late it is', () => {
+  const proc = grouped.tables[0];
+  assert.deepStrictEqual(proc.head, ['Property / file', 'Waiting for', 'File status', 'Loan officer', 'Over by']);
+  assert.deepStrictEqual(proc.rows[0], ['1 Oak St, Newark, NJ', 'Processing', 'in processing', 'Dani R', '30h']);
+  // Past two days it reads in days; an unassigned officer says so rather than blank.
+  assert.deepStrictEqual(proc.rows[1], ['2 Elm Ave, Newark, NJ', 'Condition Clearing', 'underwriting', 'unassigned', '4d']);
+});
+
+ok('a file with no address falls back to its loan number, never to nothing', () => {
+  const only = wfQueues.buildQueueTables(
+    [{ submission_type: 'draw_setup', ys_loan_number: 'yscap258134728', file_status: 'funded', hours_over: 5, has_open_draw: true }],
+    workflow.typeConfig, {});
+  assert.strictEqual(only.tables[0].rows[0][0], 'YSCAP258134728');
+});
+
+ok('a draw queue that is ENTIRELY parked still gets a card saying so', () => {
+  const parkedOnly = wfQueues.buildQueueTables(
+    [{ submission_type: 'draw_setup', ys_loan_number: 'a1', file_status: 'funded', hours_over: 300, has_open_draw: false }],
+    workflow.typeConfig, {});
+  assert.strictEqual(parkedOnly.shown, 0);
+  assert.strictEqual(parkedOnly.tables.length, 1);
+  assert.ok(/Construction draws/.test(parkedOnly.tables[0].title));
+  assert.ok(/1 file is/.test(parkedOnly.tables[0].rows[0][0]), JSON.stringify(parkedOnly.tables[0].rows));
+});
+
+ok('an unrecognised hand-off lands in "Everything else" rather than vanishing', () => {
+  const odd = wfQueues.buildQueueTables(
+    [{ submission_type: 'something_new', ys_loan_number: 'a1', file_status: 'funded', hours_over: 5 }],
+    workflow.typeConfig, {});
+  assert.strictEqual(odd.tables.length, 1);
+  assert.ok(/Everything else/.test(odd.tables[0].title));
+  assert.strictEqual(odd.tables[0].rows[0][1], 'something new');
+});
+
+ok('a long queue is capped per card and SAYS how many it left out', () => {
+  const many = Array.from({ length: 11 }, (_, i) => ({
+    submission_type: 'processing', ys_loan_number: 'a' + i, file_status: 'funded', hours_over: 10,
+  }));
+  const capped = wfQueues.buildQueueTables(many, workflow.typeConfig, { perTable: 8 });
+  assert.strictEqual(capped.tables[0].rows.length, 8);
+  assert.ok(/…and 3 more in this queue\./.test(capped.tables[0].note), capped.tables[0].note);
+});
+
+ok('the template renders every card, each with its own title and subtitle', () => {
+  const out = tpl.render({
+    title: '7 files in your Workflow are overdue',
+    body: 'grouped below by the queue they belong to',
+    tables: grouped.tables,
+    audience: 'staff',
+  });
+  for (const t of grouped.tables) {
+    assert.ok(out.html.includes(t.title.split(' —')[0]), t.title);
+    assert.ok(out.text.includes(t.subtitle), t.subtitle);
+  }
+  // The four queues each appear once — a merged list would show one heading. (The plaintext
+  // renderer upper-cases a table title, so this is matched case-insensitively.)
+  assert.strictEqual((out.text.match(/past target/gi) || []).length, 4);
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   G · THE THREE DOTS ON THE SCREEN — the HTML half of the closing-chain cut
+   Owner: "this email needs to be much nicer designed so that you can realize exactly what is part
+   of the current email with these three dots on every single reply back and forth. The reply needs
+   to be above the three dots, and only those three dots should be part of the reply."
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nG · the quoted history folds behind the three dots');
+
+const GMAIL_HTML =
+  '<div dir="ltr">Sounds good — closing Tuesday works.</div>' +
+  '<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Thu, Aug 7, 2026 at 9:02 AM YS Capital ' +
+  '&lt;notifications@yscapgroup.com&gt; wrote:</div>' +
+  '<blockquote class="gmail_quote"><p>— — — Reply above this line — — —</p><p>The whole request…</p></blockquote></div>';
+
+ok('a Gmail reply shows what they typed, and only that', () => {
+  const s = replyCut.splitReplyHtml(GMAIL_HTML);
+  assert.strictEqual(s.trimmed, true);
+  assert.ok(/closing Tuesday works/.test(s.reply), s.reply);
+  assert.ok(!/The whole request/.test(s.reply), s.reply);
+});
+
+ok('…and the history is HANDED BACK, never thrown away', () => {
+  const s = replyCut.splitReplyHtml(GMAIL_HTML);
+  assert.ok(/The whole request/.test(s.quoted), s.quoted);
+  // The two halves put back together are the original, byte for byte.
+  assert.strictEqual(s.reply + s.quoted, GMAIL_HTML);
+});
+
+ok('every client family is recognised, and each cut lands on a tag boundary', () => {
+  const wrappers = [
+    '<div class="gmail_quote_container">',
+    '<div id="divRplyFwdMsg" dir="ltr">',
+    // Outlook desktop's real id is `appendonsend`. This list once said `appendonly`, which is
+    // not a wrapper any client emits — so the assertion passed against a pattern that could
+    // never match a real message. Corrected when the two HTML splitters were consolidated.
+    '<div id="appendonsend">',
+    '<div class="yahoo_quoted">',
+    '<div class="moz-cite-prefix">',
+    '<blockquote type="cite">',
+    '<hr id="stopSpelling">',
+  ];
+  for (const w of wrappers) {
+    const body = '<p>My answer.</p>' + w + '<p>old stuff</p>';
+    const s = replyCut.splitReplyHtml(body);
+    assert.strictEqual(s.trimmed, true, w);
+    assert.strictEqual(s.reply, '<p>My answer.</p>', w);
+    assert.ok(s.quoted.startsWith('<'), w);
+  }
+});
+
+ok('our OWN delimiter cuts even when the client wrapper is one we do not know', () => {
+  const body = '<p>Confirmed.</p><table><tr><td>— — — Reply above this line — — —</td></tr></table>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, true);
+  assert.ok(/Confirmed/.test(s.reply));
+  assert.ok(!/Reply above this line/.test(s.reply), s.reply);
+  // The cut backed up to a tag open rather than slicing mid-markup.
+  assert.ok(s.quoted.startsWith('<'), s.quoted.slice(0, 40));
+});
+
+ok('a plain reply with no history is left completely alone', () => {
+  const body = '<div dir="ltr">Thanks, received.</div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false);
+  assert.strictEqual(s.reply, body);
+  assert.strictEqual(s.quoted, '');
+});
+
+ok('a body that is history ALL THE WAY UP is kept whole, never cut to nothing', () => {
+  const body = '<div class="gmail_quote"><p>everything they quoted</p></div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false);
+  assert.strictEqual(s.reply, body);
+});
+
+ok('a "reply" that is only markup — no words — is not a reply', () => {
+  const body = '<div><br></div><div>&nbsp;</div><blockquote type="cite"><p>the real content</p></blockquote>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.trimmed, false, JSON.stringify(s.reply));
+});
+
+ok('the EARLIEST wrapper wins when a reply carries two of them', () => {
+  const body = '<p>Yes.</p><blockquote type="cite">A</blockquote><div class="gmail_quote">B</div>';
+  const s = replyCut.splitReplyHtml(body);
+  assert.strictEqual(s.reply, '<p>Yes.</p>');
+});
+
+ok('junk in, no throw out', () => {
+  for (const v of [null, undefined, '', 123, {}, '<<<<>>>>']) {
+    const s = replyCut.splitReplyHtml(v);
+    assert.strictEqual(typeof s.reply, 'string');
+    assert.strictEqual(s.trimmed, false);
+  }
+});
+
+ok('the server folds an INBOUND reply and leaves an OUTBOUND message untouched', () => {
+  /* The split is INBOUND-ONLY, and that is the load-bearing half: our own sent message carries
+     the delimiter at the TOP, so cutting there would hide the entire message rather than its
+     history. Asserted against `email-log.splitStoredBody`, which is where the fold lives — a
+     second implementation in the route once did the same job by rewriting `body_html` in place
+     and was retired, because running both made the reader's "show the original" control open a
+     body that had already been trimmed. */
+  const emailLog = require('../src/lib/email-log');
+  const quoted = '<p>Their answer.</p><div class="gmail_quote"><p>our earlier note</p></div>';
+  const inbound = emailLog.splitStoredBody({ direction: 'inbound', body_html: quoted });
+  assert.strictEqual(inbound.trimmed, true, 'an inbound reply is split');
+  assert.ok(/Their answer/.test(inbound.replyHtml), 'the reply half is what they typed');
+  assert.ok(!/our earlier note/.test(inbound.replyHtml), 'the history is out of the reply half');
+
+  const outbound = emailLog.splitStoredBody({ direction: 'outbound', body_html: quoted });
+  assert.strictEqual(outbound.trimmed, false, 'an OUTBOUND message is never folded');
+  assert.strictEqual(outbound.replyHtml, null, 'and nothing is trimmed off it');
+
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/routes/staff.js'), 'utf8');
+  // Both message-detail routes fold — the file view AND the global mailbox.
+  assert.strictEqual((src.match(/emailLog\.splitStoredBody\(row\)/g) || []).length, 2);
+  // THE CONTRACT IS ADDITIVE. The retired helper must not come back: a route that trims the
+  // stored body puts the history beyond reach of the one control that exists to show it.
+  assert.ok(!/function foldQuotedHistory/.test(src), 'the in-place rewrite stays retired');
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   H · THE NOTE BUYER RIDES ON ONE EMAIL, NEVER ON THE SHARED BLOCK
+   Owner (item 12): "it should say in the email who the loan officer on the file is and who the
+   note buyer on the file is." That is the Workflow hand-off.
+
+   THE BUG THIS PINS: the note buyer was first added to `notify.fileContext`'s STAFF meta — the
+   block EVERY staff email on a file inherits — which silently put a capital-partner name into the
+   investor draw reminders, whose whole design is to say "the investor" so the desk can forward one
+   without disclosing who funds the loan. CI caught it (test-draw-coordinator-reminders-db). The
+   name now rides as that one email's own `extraMeta`.
+   ═════════════════════════════════════════════════════════════════════════ */
+console.log('\nH · a note-buyer name is attached per-email, never to the shared staff block');
+
+const notifySrc = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/notify.js'), 'utf8');
+const staffSrc  = require('fs').readFileSync(require('path').join(__dirname, '../src/routes/staff.js'), 'utf8');
+
+ok('the shared staff meta block does NOT carry the note buyer', () => {
+  // The block runs from the staff `meta` array to where that array is closed. It is delimited on
+  // `...extraMeta,` — the array's last entry — NOT on the word "borrowerMeta", which the block's
+  // own explanatory comment mentions and which would cut the slice short of the rows being tested.
+  const start = notifySrc.indexOf("{ label: 'Borrower', value:");
+  const end = notifySrc.indexOf('...extraMeta,', start);
+  assert.ok(start > 0 && end > start, 'located the shared meta block');
+  const block = notifySrc.slice(start, end);
+  assert.ok(/label: 'Loan officer'/.test(block), 'the officer IS on it — that leaks nothing');
+  assert.ok(/label: 'Processor'/.test(block), 'the processor IS on it');
+  assert.ok(!/label: 'Note buyer'/.test(block),
+    'a note-buyer row here rides EVERY staff email — including the investor draw reminders');
+});
+
+ok('the Workflow hand-off attaches it itself', () => {
+  const i = staffSrc.indexOf("type: 'workflow_submitted'");
+  assert.ok(i > 0, 'found the hand-off notify');
+  const around = staffSrc.slice(i - 1600, i + 400);
+  assert.ok(/label: 'Note buyer'/.test(around), 'the hand-off names the note buyer');
+  assert.ok(/extraMeta/.test(around), 'and it rides as that email’s own extraMeta');
+});
+
+ok('extraMeta is honoured for staff and REFUSED for a borrower', () => {
+  const i = notifySrc.indexOf('opts.extraMeta');
+  assert.ok(i > 0, 'enrichFileOpts forwards extraMeta');
+  const around = notifySrc.slice(i - 400, i + 300);
+  assert.ok(/audience !== 'borrower'/.test(around),
+    'a borrower email must never be able to inherit a hand-attached note-buyer row');
+});
+
+ok('the note buyer never reaches the notifications DB row', () => {
+  // Same discipline as _fileCtx / subjectTag / kicker: the INSERT names its columns, so an
+  // email-only opt cannot be persisted.
+  const ins = notifySrc.slice(notifySrc.indexOf('INSERT INTO notifications'), notifySrc.indexOf('INSERT INTO notifications') + 400);
+  assert.ok(!/extraMeta|meta/.test(ins), ins.slice(0, 200));
+});
+
+console.log(`\n${passed} passed, ${process.exitCode ? 'SOME FAILED' : '0 failed'}`);

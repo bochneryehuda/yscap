@@ -321,9 +321,59 @@ const ATTACH = {
   assert(/CLEAR TO CLOSE/.test(ctc.html), 'the clear-to-close update says so plainly');
   assert(/settlement statement/i.test(ctc.html), 'and asks for the settlement statement + closing documents');
   assert(cp.buildAutoEmail('nope', DATA, {}) === null, 'an unknown event builds nothing');
+
+  // THE BIG HEADLINE (H1) IS PER-EVENT — only the FIRST email headlines "File ready for
+  // closing prep"; a later chain update says what IT is about (owner-directed 2026-08-05).
+  // The SUBJECT is untouched above, so threading is untouched.
+  const orderEmail = cp.buildClosingPrepEmail(DATA, PKG_FULL, { address: ADDRESS, attach: ATTACH });
+  assert(/<h1[^>]*>File ready for closing prep<\/h1>/.test(orderEmail.html),
+    'the FIRST closing-prep email still headlines "File ready for closing prep"');
+  const HEADINGS = {
+    executed_term_sheet: 'Final term sheet is ready',
+    closing_date: 'Estimated closing date on this file changed',
+    clear_to_close: 'This file is clear to close',
+  };
+  for (const kind of Object.keys(HEADINGS)) {
+    const b = cp.buildAutoEmail(kind, DATA, { date: '2026-08-21', closingDate: '2026-08-21' });
+    assert(b.html.includes('>' + HEADINGS[kind] + '</h1>'),
+      `the ${kind} update headlines "${HEADINGS[kind]}"`);
+    assert(!/<h1[^>]*>File ready for closing prep<\/h1>/.test(b.html),
+      `the ${kind} update does NOT repeat "File ready for closing prep" as its headline`);
+    assert(b.subject.includes('File ready for closing prep'),
+      `the ${kind} update KEEPS the chain subject, so it stays on the conversation`);
+    assert(b.text.includes(HEADINGS[kind]) && !b.text.includes('File ready for closing prep'),
+      `the ${kind} plaintext headline matches its H1, not the subject`);
+  }
+  // The overflow documents-part email also does not re-headline the order.
+  const part = cp.buildAttachmentPartEmail(DATA, { part: 2, of: 2, files: ['x.pdf'] });
+  assert(/<h1[^>]*>Closing prep documents — part 2 of 2<\/h1>/.test(part.html)
+    && part.subject.includes('File ready for closing prep'),
+    'a documents-part email has its own headline but keeps the chain subject');
 }
-assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_date,clear_to_close,manual',
-  'the chain event kinds are exactly the ones the migration CHECK allows');
+/* THE EVENT-KIND LIST AND THE DATABASE MUST AGREE, and this now READS the database's answer
+   instead of restating it. A hard-coded literal here means every widening fails the test for the
+   right reason and is then fixed by editing the literal — which is exactly how the two drift: the
+   next person updates the string and forgets the migration. The CHECK is parsed out of the
+   HIGHEST-numbered migration that defines it, which is how Postgres ends up seeing it. */
+{
+  const fs = require('fs'), path = require('path');
+  const dbDir = path.join(__dirname, '..', 'db');
+  const files = fs.readdirSync(dbDir).filter((f) => /^\d+_.*\.sql$/.test(f))
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  let allowed = null;
+  for (const f of files) {
+    const sql = fs.readFileSync(path.join(dbDir, f), 'utf8');
+    // The last CHECK on event_kind in the highest-numbered file that mentions one.
+    const matches = [...sql.matchAll(/event_kind\s+IN\s*\(([^)]*)\)/gi)];
+    if (matches.length) {
+      allowed = matches[matches.length - 1][1]
+        .split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean);
+    }
+  }
+  assert(Array.isArray(allowed) && allowed.length, 'no event_kind CHECK found in db/*.sql');
+  assert(ct.EVENT_KINDS.slice().sort().join(',') === allowed.slice().sort().join(','),
+    `the chain event kinds must match the migration CHECK — code has [${ct.EVENT_KINDS}], the database allows [${allowed}]`);
+}
 
 /* ───────────── 8. attachments: budget, priority order, nothing silent ─────── */
 (async () => {

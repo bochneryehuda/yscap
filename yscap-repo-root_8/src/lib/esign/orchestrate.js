@@ -141,7 +141,11 @@ const PACKAGES = {
     // `generate:true` docs are BUILT on our server from a stored Word template
     // (docgen.js) at send time — no paid DocuSign DocGen add-on, no pre-stored PDF.
     docs: [
-      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
+      // The term sheet is BUILT on our server at send time from the last
+      // registration (term-sheet-pdf.js → docgen), so pressing Send always
+      // produces the FINAL — never the stored "initial" (owner-directed
+      // 2026-08-02/06). Generated fresh, it can't be stale, so no freshnessCheck.
+      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', generate: true, genExt: 'pdf' },
       // The loan application is BUILT on our server (jsPDF) from the current loan
       // file at send time (application-pdf.js), uploaded as a real PDF (genExt) —
       // DocuSign accepts PDF natively, so unlike the docx docs it is NOT converted.
@@ -183,6 +187,26 @@ const PACKAGES = {
     blurb: 'Please review your draw request, enter your bank wire instructions, and sign.',
     docs: [
       { kind: 'draw_request', prefix: 'dr', signedKind: 'draw_request_signed', condition: 'draw_cond_signed_request', name: 'Draw Request & Wire Instructions', generate: true, genExt: 'pdf', wireForm: true },
+    ],
+  },
+  // The NON-OWNER-OCCUPIED CERTIFICATION (owner-directed 2026-08: "Certification
+  // (e-sign, no notary)"). A file that vests in an INDIVIDUAL's name carries the
+  // cond_noo_affidavit_individual condition (db/417); this is the DocuSign package
+  // that satisfies it. Built on our server as a branded PDF (noo-affidavit-pdf.js)
+  // and uploaded AS PDF (genExt) — DocuSign accepts PDF natively, no docx conversion.
+  // NOT an origination document — it is a prior-to-docs occupancy certification meant
+  // to be signable EARLY, so the appraisal/P&P term-sheet send gate does not apply
+  // (skipAppraisalGate); its only prerequisites (property + borrower name) are enforced
+  // by validateGenerated. NOT soloBorrower — an individual-vesting file may still carry
+  // a co-borrower, and both individuals certify non-occupancy. No countersign, no notary.
+  noo_affidavit: {
+    label: 'Non-owner-occupied certification',
+    countersignRequired: false,
+    skipAppraisalGate: true,
+    subject: (loan, addr) => composeSubject('Non-owner-occupied certification ready to sign', loan, addr),
+    blurb: 'Please review and sign the non-owner-occupied certification confirming you will not occupy the property.',
+    docs: [
+      { kind: 'noo_affidavit', prefix: 'noo', signedKind: 'noo_affidavit_signed', condition: 'cond_noo_affidavit_individual', name: 'Non-Owner-Occupied Certification', generate: true, genExt: 'pdf' },
     ],
   },
 };
@@ -298,6 +322,14 @@ function fmtPct(v) {
   let s = (n * 100).toFixed(2).replace(/\.?0+$/, '');
   return `${s}%`;
 }
+// The NOTE RATE keeps its third decimal on the executed term sheet (10.625%, not
+// 10.63%) — owner-directed 2026-08-04. LTC/LTV keep the 2-decimal fmtPct above.
+function fmtRate(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!isFinite(n)) return '';
+  return require('../rate-format').fmtRatePct(n) + '%';
+}
 /** Decrypt the SSN for the internal signed application; never throw, never print
  *  ciphertext. Full 9 digits → 123-45-6789; only a last-4 survives → ***-**-1234. */
 function fmtSsn(encrypted, last4) {
@@ -356,6 +388,8 @@ async function loadDocGenData(db, applicationId) {
             a.program, a.loan_type, a.occupancy, a.property_type, a.units,
             a.requested_ir_months, a.requested_ir_amount,
             a.is_assignment, a.underlying_contract_price, a.assignment_fee,
+            a.co_borrower_pg_waived, a.accrual_type, a.min_interest_enabled,
+            a.deferred_orig_pct, a.est_closing_date, a.loan_officer_id,
             a.property_address->>'line1'  AS addr_line1,
             a.property_address->>'street' AS addr_street,
             a.property_address->>'unit'   AS addr_unit,
@@ -470,7 +504,7 @@ async function loadDocGenData(db, applicationId) {
       type: a.loan_type || '',
       amt: fmtUSD(a.loan_amount),
       term: a.term || '',
-      rate: fmtPct(a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null)),
+      rate: fmtRate(a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null)),
       price: fmtUSD(a.purchase_price),
       asis: fmtUSD(a.as_is_value),
       arv: fmtUSD(a.arv),
@@ -507,9 +541,125 @@ async function loadDocGenData(db, applicationId) {
     propZip: zip,
     bFirst: a.b_first || '', bLast: a.b_last || '',
     hasCoBorrower: !!a.co_borrower_id,
-    cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
+    cbFirst: a.cb_first || '', cbLast: a.cb_last || '', cbEmail: a.cb_email || '',
     // The nested view the auto-generated loan application renders from.
     application,
+    // The nested view the FINAL term sheet renders from (term-sheet-pdf.js). Every
+    // figure is sourced from the REGISTERED quote (reg.quote) + the file's own
+    // columns, so the sheet the sender builds can never disagree with the
+    // registration — the frozen-number rule. term-sheet-pdf.js only DRAWS it.
+    termsheet: buildTermSheetView(a, q, sizing, { street, city, state, zip }),
+  };
+}
+
+/**
+ * Assemble the FINAL term sheet's rendered view from the file row `a`, the
+ * registered quote `q` and its `sizing` block. Numbers come ONLY from the
+ * registration (reg.quote) — never recomputed — so the sent sheet always matches
+ * what was registered. term-sheet-pdf.js consumes this and merely draws it.
+ */
+function buildTermSheetView(a, q, sizing, addr) {
+  const TO = require('../term-options');
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const isRefi = /refi|refinance/i.test(String(a.loan_type || ''));
+  const rate = a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null);
+  const origPct = q && q.origPct != null ? q.origPct : null;
+  const bName = `${a.b_first || ''} ${a.b_last || ''}`.trim();
+  const cbName = `${a.cb_first || ''} ${a.cb_last || ''}`.trim();
+  const programName = programLabel(a.reg_program, a.reg_label, a.program);
+  const LENDER_NAME = 'YS Capital Group';
+
+  // ---- Loan structure (registered quote — parity) ----
+  const structureRows = [];
+  structureRows.push({ k: isRefi ? 'As-is value' : 'Purchase price', v: fmtUSD(isRefi ? a.as_is_value : a.purchase_price) });
+  if (a.is_assignment && num(a.underlying_contract_price) > 0) {
+    structureRows.push({ k: 'Seller price / assignment fee', v: fmtUSD(a.underlying_contract_price) + ' / ' + fmtUSD(a.assignment_fee) });
+  }
+  if (num(a.rehab_budget) > 0) structureRows.push({ k: 'Construction / rehab budget', v: fmtUSD(a.rehab_budget) });
+  if (num(a.arv) > 0) structureRows.push({ k: 'After-repair value (ARV)', v: fmtUSD(a.arv) });
+  if (sizing) {
+    if (num(sizing.financedReserve) > 0) structureRows.push({ k: 'Financed interest reserve', v: fmtUSD(sizing.financedReserve) });
+    if (num(sizing.costBasis) > 0) structureRows.push({ k: 'Total project cost', v: fmtUSD(sizing.costBasis), opts: { bold: true } });
+    if (num(sizing.initialAdvance) > 0) {
+      const ltv = num(sizing.acqLtvPct) > 0 ? '   (' + fmtPct(sizing.acqLtvPct) + ' LTV)' : '';
+      structureRows.push({ k: 'Initial advance (at closing)', v: fmtUSD(sizing.initialAdvance) + ltv });
+    }
+    if (num(sizing.rehabHoldback) > 0) structureRows.push({ k: 'Construction holdback', v: fmtUSD(sizing.rehabHoldback) });
+    if (num(sizing.oopRehab) > 0) structureRows.push({ k: 'Out-of-pocket rehab (funded over construction)', v: fmtUSD(sizing.oopRehab) });
+    structureRows.push({ k: 'Total loan amount', v: fmtUSD(num(sizing.totalLoan) > 0 ? sizing.totalLoan : a.loan_amount), opts: { bold: true, accent: true } });
+    if (num(sizing.ltcPct) > 0) structureRows.push({ k: 'Loan-to-cost (LTC)', v: fmtPct(sizing.ltcPct) });
+    if (num(sizing.arvPct) > 0) structureRows.push({ k: 'Loan-to-ARV', v: fmtPct(sizing.arvPct) });
+  } else {
+    structureRows.push({ k: 'Total loan amount', v: fmtUSD(a.loan_amount), opts: { bold: true, accent: true } });
+  }
+
+  // ---- Terms ----
+  const kd = TO.keyDates(a.est_closing_date, a.term);
+  const dayUS = (s) => { const p = TO.parseYMD(s); return p ? `${String(p.mo).padStart(2, '0')}/${String(p.d).padStart(2, '0')}/${p.y}` : ''; };
+  const deferredOrig = TO.resolveDeferredOrigPct(a.deferred_orig_pct);
+  const termRows = [];
+  if (a.term) termRows.push({ k: 'Loan term', v: `${a.term} months` });
+  termRows.push({ k: 'Note rate (interest-only)', v: fmtRate(rate) });
+  if (origPct != null) termRows.push({ k: 'Origination', v: fmtPct(origPct) });
+  termRows.push({ k: 'Program', v: programName });
+  termRows.push({ k: 'Loan purpose', v: isRefi ? 'Refinance' : 'Purchase' });
+  termRows.push({ k: 'Interest accrual', v: TO.accrualLabel(TO.resolveAccrual(a.accrual_type)) });
+  if (a.est_closing_date) {
+    termRows.push({ k: 'Estimated closing date', v: dayUS(kd.estClosing) });
+    if (kd.firstPayment) termRows.push({ k: 'First payment date', v: dayUS(kd.firstPayment) });
+    if (kd.maturity) termRows.push({ k: 'Maturity date', v: dayUS(kd.maturity) });
+  }
+  if (deferredOrig > 0) termRows.push({ k: 'Deferred origination fee (at payoff)', v: fmtPct(deferredOrig / 100) });
+
+  // ---- Disclosures ----
+  const gs = TO.guarantySummary({ borrowerName: bName, coBorrowerName: cbName, pgWaived: a.co_borrower_pg_waived });
+  const minIntOn = TO.resolveMinInterest(a.reg_program || a.program, a.min_interest_enabled);
+  const disclosures = [
+    { h: 'Business purpose only', body: 'This loan is made solely for business, commercial or investment purposes and is NOT for personal, family, or household (consumer) use. It is secured by non-owner-occupied real property, is not subject to consumer-mortgage (TILA / RESPA) disclosures, and requires a personal guaranty and a first-lien position.' },
+    { h: 'Personal guaranty / recourse', body: gs.disclosureDetail },
+    { h: 'Interest accrual', body: TO.accrualDetail(TO.resolveAccrual(a.accrual_type)) },
+    { h: 'Due diligence', body: 'Borrower will provide all necessary due diligence to Lender.' },
+    { h: 'Title', body: "Borrower shall provide a Title Report and Title Insurance to the satisfaction of the Lender. Lender's title coverage must be approved." },
+    { h: 'Legal fees and expenses', body: 'The Borrower shall pay for all legal fees and services related to the loan transaction, plus the Lender underwriting / processing fee and all other applicable Lender fees.' },
+    { h: 'Insurance', body: 'Borrower shall provide insurance certificates satisfactory to Lender.' },
+    { h: 'Draw fees', body: TO.drawFeeLines(a.reg_program || a.program).join('   |   ') },
+  ];
+  if (minIntOn) disclosures.push({ h: 'Minimum interest', body: TO.MIN_INTEREST_DETAIL });
+  if (deferredOrig > 0) disclosures.push({ h: 'Deferred origination fee', body: 'A deferred origination fee of ' + fmtPct(deferredOrig / 100) + ' of the loan amount is payable at payoff as an exit fee. It is not collected at closing and is not part of the cash to close or the liquidity to show.' });
+  disclosures.push({ h: 'Disclaimer', body: "This term sheet does not set forth all of the terms of the loan contemplated hereunder. Additional terms and conditions may be set by the Lender prior to closing. This term sheet is not a commitment to lend money and is subject to, among other things, the Lender's sole discretion regarding Borrower's status, the Property, the Loan, title, and due diligence." });
+  disclosures.push({ h: 'Acknowledgement & indemnification', body: 'By accepting these terms you confirm that you will not hold YS Capital Group and/or the Lender liable for any damages related to their decision not to make the loan for any reason. You also confirm that you will indemnify and hold harmless YS Capital Group and the Lender from any claims or liabilities related to this transaction.' });
+
+  // ---- Signers (EXACTLY buildRoster's roster: borrower always; co if present;
+  // loan officer if assigned + has an email; the admin/lender countersign). Any
+  // mismatch here vs. the seeded roster would leave a recipient's anchor missing. ----
+  const signers = [{ name: bName, role: 'Borrower / guarantor', prefix: 'ts_b1' }];
+  if (a.co_borrower_id) signers.push({ name: cbName, role: gs.coSignerRole, prefix: 'ts_b2' });
+  if (a.loan_officer_id && a.officer_email) signers.push({ name: a.officer_name || a.officer_email, role: 'Loan officer, ' + LENDER_NAME, prefix: 'ts_lo' });
+  signers.push({ name: (cfg.docusign && cfg.docusign.countersignName) || LENDER_NAME, role: LENDER_NAME + ' - authorized signer', prefix: 'ts_admin' });
+
+  // ---- Parties block ----
+  const entity = (a.llc_name || '').trim();
+  let partiesSub;
+  if (entity) partiesSub = 'Vesting entity' + (gs.guarantorList ? '  -  Guarantor(s): ' + gs.guarantorList : '') + (gs.waived ? '  -  Member (non-guarantor): ' + gs.nonGuarantorList : '');
+  else if (cbName) partiesSub = gs.waived ? ('Borrower: ' + bName + '  -  Co-borrower (non-guarantor): ' + cbName) : ('Borrower & co-borrower: ' + gs.guarantorList);
+  else partiesSub = 'Individual borrower';
+  const propertyLine = addr && (addr.street || addr.city)
+    ? ('Property: ' + [addr.street, addr.state].filter(Boolean).join(', '))
+    : '';
+  const validExp = new Date(Date.now() + 14 * 864e5);
+
+  return {
+    final: true,
+    programName,
+    primaryName: entity || bName || 'Prospective Borrower',
+    partiesSub,
+    purposeLine: isRefi ? 'Refinance' : 'Purchase',
+    propertyLine,
+    validThrough: 'Valid through ' + validExp.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    loanAmount: fmtUSD(sizing && num(sizing.totalLoan) > 0 ? sizing.totalLoan : a.loan_amount),
+    noteRate: fmtRate(rate),
+    termLine: (a.term ? a.term + '-month term' : '') + (origPct != null ? '  -  ' + fmtPct(origPct) + ' origination' : ''),
+    structureRows, termRows, disclosures, signers,
   };
 }
 
@@ -533,10 +683,21 @@ function validateGenerated(spec, data) {
   // Only a package that BOTH signs the co-borrower AND prints its name needs it. The
   // draw request is soloBorrower (co-borrower never signs it), so a co on file is fine.
   if (!spec.soloBorrower && data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
+  // A co-borrower who SIGNS a package needs an email (DocuSign requires a recipient
+  // email). A co-borrower may now be added without an email (#22), so catch it HERE
+  // with a friendly, field-named refusal instead of letting buildEnvelopeDefinition
+  // fail deep with a raw "invalid signer email" DocuSign-arg string.
+  if (!spec.soloBorrower && data.hasCoBorrower && !(data.cbEmail || '').trim()) missing.push('co-borrower email');
   // The disclosure, the loan application, AND the draw request print the loan number +
   // subject property, so a blank one must BLOCK the send, not render blank.
   if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export') || genKinds.includes('draw_request')) {
     if (!data.loanNumber) missing.push('loan number');
+    if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
+  }
+  // The NOO certification prints the property (and the loan number when present) but is
+  // designed to be signable EARLY — before a loan number is assigned — so a blank
+  // property BLOCKS the send while a missing loan number does not.
+  if (genKinds.includes('noo_affidavit')) {
     if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
   }
   if (missing.length) {
@@ -817,22 +978,12 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       err.retryable = false;
       throw err;
     }
-    // THE SHEET THAT GOES OUT FOR SIGNATURE IS THE FINAL ONE (owner-directed
-    // 2026-08-02): "that term sheet should not be 'not final' — it is going to
-    // everybody through DocuSign after you finished all the required steps."
-    // The INITIAL/FINAL wording is PRINTED INTO the PDF at generation time, so
-    // by the time the bytes are here nothing can read it back — db/404 records
-    // what the generator printed. A sheet whose own face says "INITIAL TERM
-    // SHEET — NOT FINAL" (or a legacy sheet whose stamp was never recorded, all
-    // of which were generated under the rule that produced that wording) is
-    // REFUSED, permanently, with the one-step fix. Nothing here decides whether
-    // the package MAY send — gate.js still owns that; this only stops the wrong
-    // DOCUMENT going out once it may.
-    if (d.kind === 'term_sheet' && doc.term_sheet_final !== true) {
-      const err = new Error(`Cannot send ${spec.label}: ${termSheetStamp.REGENERATE_MESSAGE}`);
-      err.retryable = false;
-      throw err;
-    }
+    // NOTE (owner-directed 2026-08-06): the term sheet is now BUILT on our server
+    // at send time (generate:true above → the branch at the top of this loop), so
+    // pressing Send always produces the FINAL — the old "the stored sheet still
+    // says INITIAL, refuse the send / re-register" trap (and its super-admin
+    // override) is gone. This non-generate branch no longer handles the term
+    // sheet at all; it stays for the other stored-doc kinds.
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
@@ -1011,6 +1162,17 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     }
   }
 
+  // Super-admin OVERRIDE of the "term sheet still prints NOT FINAL" refusal
+  // (owner-directed 2026-08-04, db/469). The ROUTE authorizes it (super_admin +
+  // a reason) and passes it here; sendPackage only APPLIES it — it stamps the
+  // envelope so buildDefinition, and every send retry, honor it. It never widens
+  // the appraisal/P&P send-gate (checked above); it only lets an authorized send
+  // past the wording refusal. A blank/unauthorized override is ignored.
+  const tsOverride = (opts.termSheetFinalOverride && opts.termSheetFinalOverride.by
+    && String(opts.termSheetFinalOverride.reason || '').trim())
+    ? { by: opts.termSheetFinalOverride.by, reason: String(opts.termSheetFinalOverride.reason).trim().slice(0, 1000) }
+    : null;
+
   const app = await loadApplication(db, applicationId);
   // A draw_request needs its "Signed draw request form" condition to EXIST before the
   // envelope is created, so createOrClaimEnvelope binds the signed doc → that condition.
@@ -1019,13 +1181,36 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   if (purpose === 'draw_request') {
     await require('./draw-wire').ensureDrawRequestCondition(db, applicationId, actor && actor.id);
   }
+  // The NOO certification exists to CLEAR the cond_noo_affidavit_individual condition,
+  // which is rule-driven off individual vesting (db/417). Unlike the draw request, we do
+  // NOT create the condition on demand — that would put an occupancy affidavit on an
+  // entity-vested file. Refuse the send when the file isn't individual-vesting, so the
+  // signed certification can never file against nothing (a silent no-op clear).
+  if (purpose === 'noo_affidavit') {
+    const item = await resolveConditionItem(db, applicationId, 'cond_noo_affidavit_individual');
+    if (!item) {
+      const e = new Error('This file does not vest in an individual’s name, so the non-owner-occupied certification does not apply. Mark the file as individual vesting first.');
+      e.code = 'NOO_NOT_APPLICABLE'; e.retryable = false; throw e;
+    }
+  }
   // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
   // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.
-  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue, recipient: opts.recipient });
+  // A term-sheet-final override also mints a FRESH envelope (reissue) so it can be
+  // stamped even when a prior refused send left a terminal one — the in-flight
+  // check inside createOrClaimEnvelope still prevents any duplicate.
+  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue || !!tsOverride, recipient: opts.recipient });
   // A plain send that found only a TERMINAL prior envelope did NOT mint a new one —
   // report that (never a false "Sent"), so the UI tells staff to use Re-issue rather
   // than piling up duplicate envelopes.
   if (terminal) return { ok: false, terminal: true, envelopeRowId: row.id, latestStatus: row.status };
+  if (tsOverride) {
+    await db.query(
+      `UPDATE esign_envelopes
+          SET ts_final_override_by=$2, ts_final_override_reason=$3, ts_final_override_at=now(), updated_at=now()
+        WHERE id=$1`,
+      [row.id, tsOverride.by, tsOverride.reason]);
+    row.ts_final_override_by = tsOverride.by;   // reflect locally (buildDefinition re-reads via the claim)
+  }
 
   const result = await send.sendClaimedEnvelope(row.id, {
     db, docusign,
