@@ -122,11 +122,26 @@ if (!process.env.DATABASE_URL) {
     [pid, JSON.stringify(LINES)]))[0].id;
   const before = (await q('SELECT count(*)::int n FROM property_adjustments WHERE observation_id=$1', [o3]))[0].n;
   ok(before === 0, 'an observation stored before db/440 has no rows');
-  const bf = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
+  /* DRAIN, DON'T TAKE ONE CAPPED PASS. `backfillAdjustmentRowsOnce` is a GLOBAL
+     sweep with a row LIMIT, ordered observed_on DESC — it does not know about this
+     fixture. On a database carrying more un-built observations than the cap, ONE
+     pass proves nothing about THIS observation: it can sit past the cap entirely
+     and never be looked at, and "a second pass finds nothing" is false while
+     anyone else's backlog is outstanding. Measured: 600 seeded observations made
+     BOTH assertions below fail with nothing wrong with the back-fill. Every
+     scanned row is settled (written, or stamped by markNothingToFile), so this
+     terminates — the bound and the no-progress break are belt-and-suspenders. */
+  let bf = null, passes = 0, stuck = false;
+  for (let i = 0; i < 60; i++) {
+    bf = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
+    passes++;
+    if (!bf.scanned) break;
+    if (i === 59) stuck = true;
+  }
   const after = (await q('SELECT count(*)::int n FROM property_adjustments WHERE observation_id=$1', [o3]))[0].n;
-  ok(after === 5, `the back-fill builds them from the jsonb it already carries (${after}, pass ${JSON.stringify(bf)})`);
+  ok(after === 5, `the back-fill builds them from the jsonb it already carries (${after}, ${passes} pass(es), last ${JSON.stringify(bf)})`);
   const again = await ingest.backfillAdjustmentRowsOnce(db, { limit: 500 });
-  ok(again.scanned === 0, `and it self-drains — the second pass finds nothing (scanned ${again.scanned})`);
+  ok(again.scanned === 0 && !stuck, `and it self-drains — a further pass finds nothing (scanned ${again.scanned})`);
 
   // -------------------------------------------------------------------------
   // WHAT AN APPRAISER ACTUALLY PAID PER SQUARE FOOT (db/441).
