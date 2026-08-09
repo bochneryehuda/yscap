@@ -174,7 +174,7 @@ function DocumentPreview({ documents, isAssignment, vestsIndividually, isRefinan
 
       {vestsIndividually && (
         <div className="small" style={{ color: MUTED, marginTop: 6 }}>
-          This file closes in the borrower&rsquo;s <b style={{ color: INK }}>personal name</b> — no entity (LLC)
+          This file closes in the borrower&rsquo;s <b style={{ color: INK }}>personal name</b> — no entity
           documents are required, and the attorney email says so.
         </div>
       )}
@@ -383,9 +383,10 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
   // re-send, so it goes down the re-send path and says so.
   const orderOnChain = ((data.chain && data.chain.messages) || [])
     .some((m) => m.event_kind === 'order' && (m.status === 'sent' || m.status === 'carried'));
-  const isAssignment = !!(data.file || {}).isAssignment;
-  const vestsIndividually = !!(data.file || {}).vestsIndividually;
-  const isRefinance = !!(data.file || {}).isRefinance;
+  const file = data.file || {};
+  const isAssignment = !!file.isAssignment;
+  const vestsIndividually = !!file.vestsIndividually;
+  const isRefinance = !!file.isRefinance;
   const ready = blockers.length === 0;
 
   return (
@@ -431,6 +432,43 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
       <Recipients recipients={data.recipients || { to: [], cc: [] }} team={data.team || {}}
         contacts={data.contacts || { title: [], other: [] }}
         extra={extra} setExtra={setExtra} disabled={!!busy} />
+
+      {/* WHO SIGNS, AND AS WHAT — a nudge, not a blocker (owner-directed
+          2026-08-09: "when the closer gets the closing desk, if it's not filled
+          yet they should tell her that she needs to fill it"). A title prints
+          under the signature line on every recorded instrument and the document
+          engine merges it verbatim, so a blank one is real missing work. It is
+          deliberately NOT in `blockers`: refusing the whole closing-prep order
+          over something the closer can fix in ten seconds, while they are looking
+          right at it, would be worse than saying so plainly here. */}
+      {(file.ownersMissingTitles || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 10, ...CALLOUT }} role="status">
+          <div style={{ fontWeight: 600, marginBottom: 4, color: INK }}>
+            {file.ownersMissingTitles.length === 1
+              ? 'One owner of the vesting entity has no title yet'
+              : `${file.ownersMissingTitles.length} owners of the vesting entity have no title yet`}
+          </div>
+          <div className="small" style={{ color: MUTED }}>
+            {file.ownersMissingTitles.join(', ')} — a title (Managing Member, President…) prints under each
+            signature on the recorded documents, so the closing package cannot be drafted without one. Set it
+            on the vesting entity in the Borrower section of this file.
+          </div>
+        </div>
+      )}
+      {/* NOBODY HAS SAID WHAT KIND OF COMPANY THIS IS. Everything treats it as an
+          LLC in the meantime, which it usually is — but the loan documents describe
+          an LLC's members and operating agreement where a corporation has
+          shareholders and bylaws, so the closing desk is the last cheap moment to
+          settle it. Also a nudge, for the same reason. */}
+      {!!file.entityName && !file.entityTypeConfirmed && (
+        <div className="notice" style={{ marginTop: 10, ...CALLOUT }} role="status">
+          <div style={{ fontWeight: 600, marginBottom: 4, color: INK }}>Confirm what {file.entityName} is</div>
+          <div className="small" style={{ color: MUTED }}>
+            Nobody has said whether it is an LLC, a corporation, a partnership or a trust, so the documents will
+            describe it as an LLC. Set the entity type on the vesting entity in the Borrower section if that is wrong.
+          </div>
+        </div>
+      )}
 
       {/* What still has to happen first — each with the action, never a silently
           greyed-out button (a loan officer reads a disabled button as "not allowed"). */}

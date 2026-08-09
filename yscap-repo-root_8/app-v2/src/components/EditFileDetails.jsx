@@ -61,6 +61,9 @@ function formFrom(app) {
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
     llcId: app.llc_id || '', entityName: app.entity_name || '',
+    // Only a CONFIRMED type is carried — see LlcPicker.choose for why an assumed
+    // one must never ride out of a picker as though somebody had answered.
+    entityType: app.entity_type_confirmed ? (app.entity_type || '') : '',
     /* WHO TAKES TITLE — a CHOICE, not a name box (owner-directed 2026-08-03:
        "where you can fill the Vesting Entity LLC, you can only fill that LLC
        name. You cannot select that. You don't need to fill that LLC name because
@@ -211,7 +214,9 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
           if (wasIndividual) await api.staffVestingPersonalName(app.id, { undo: true });
           let llcId = f.llcId;
           if (!llcId && f.entityName.trim()) {
-            const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim() });
+            // WHICH KIND OF ENTITY travels with the name (owner-directed
+            // 2026-08-09) — it decides which governing document we ask for.
+            const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim(), entityType: f.entityType || undefined });
             llcId = c.llcId || c.id;
           }
           if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
@@ -307,7 +312,7 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
                 <label>
                   <input type="radio" name={`vesting-${app.id}`} checked={f.vesting === 'entity'}
                     onChange={() => set('vesting', 'entity')} />
-                  <span>An LLC / entity</span>
+                  <span>An entity</span>
                 </label>
                 <label className={individualBlocked ? 'is-off' : ''}
                   title={individualBlocked || 'The borrower buys in their own personal name — no company takes title.'}>
@@ -320,14 +325,14 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
               {individualBlocked
                 ? <span className="edit-hint warn">{individualBlocked}</span>
                 : f.vesting === 'individual'
-                  ? <span className="edit-hint">No LLC name is needed. Saving this stands the LLC documents down and asks for the signed non-owner-occupied affidavit as its own condition instead.</span>
+                  ? <span className="edit-hint">No entity name is needed. Saving this stands the entity documents down and asks for the signed non-owner-occupied affidavit as its own condition instead.</span>
                   : null}
             </div>
             {f.vesting === 'entity' && (
-              <label className="col-4"><span>Vesting entity / LLC</span>
-                <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id}
-                  placeholder="Which LLC is this property purchased under?"
-                  onPick={({ id, name }) => setF((s) => ({ ...s, entityName: name, llcId: id || '' }))} />
+              <label className="col-4"><span>Vesting entity name</span>
+                <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id} entityType={f.entityType}
+                  placeholder="Which entity is this property purchased under?"
+                  onPick={({ id, name, entityType }) => setF((s) => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType }))} />
               </label>
             )}
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the

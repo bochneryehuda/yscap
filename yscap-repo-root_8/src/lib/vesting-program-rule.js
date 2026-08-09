@@ -57,7 +57,7 @@ function programKey(program) {
 /** The owner's own words, so every door says the same thing. */
 const GOLD_INDIVIDUAL_REFUSAL =
   'The Gold Standard program does not allow a loan in an individual\'s name. '
-  + 'Switch this file to an LLC and enter the LLC name to register it into Gold, '
+  + 'Switch this file to an entity and enter the entity name to register it into Gold, '
   + 'or register it into a different program.';
 
 /**

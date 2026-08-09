@@ -16,6 +16,7 @@ import { PROPERTY_TYPES } from '../lib/enums.js';
 import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
+import { describeEntity } from '../lib/entityType.js';
 import LlcManager from '../components/LlcManager.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
@@ -414,7 +415,7 @@ function experienceRequirement(app) {
   };
 }
 
-/* The LLC condition — fulfilled by the LINKED entity's state, never by ad-hoc
+/* The ENTITY condition — fulfilled by the LINKED entity's state, never by ad-hoc
    uploads. No entity linked: pick or create one. Linked but not verified:
    set it up right here (details, ownership, three documents) — everything
    saves to the borrower profile and is reused on every future loan. Linked
@@ -427,12 +428,17 @@ function LlcCondition({ it, app, onChanged }) {
   const [err, setErr] = useState('');
   const linked = !!app.llc_id;
   const verified = !!app.llc_verified;
+  /* WHAT THE FILE'S ENTITY IS — so this row asks for the right governing
+     document by name ("bylaws" on a corporation, "operating agreement" on an
+     LLC) instead of naming one the borrower does not have. An entity nobody has
+     confirmed reads as an LLC, which is what it is treated as everywhere. */
+  const entityKind = describeEntity({ entity_type: app.entity_type, entity_type_confirmed: app.entity_type_confirmed });
 
   async function link(llcId) {
     if (!llcId || busy) return;
     setBusy(true); setErr('');
     try { await api.linkLlc(app.id, llcId); setSwitching(false); setOpen(true); await onChanged(); }
-    catch (e) { setErr(e.message || 'Could not link the LLC'); }
+    catch (e) { setErr(e.message || 'Could not link the entity'); }
     finally { setBusy(false); }
   }
 
@@ -441,8 +447,8 @@ function LlcCondition({ it, app, onChanged }) {
       <ConditionRow
         done={false}
         issue={it.status === 'issue'}
-        title={it.label || 'Your LLC (vesting entity)'}
-        subtitle="Which LLC is taking title? Pick one of your entities or create a new one — its details and documents live on your profile and are reused on every loan."
+        title={it.label || 'Your vesting entity'}
+        subtitle="Which entity is taking title? Pick one of yours or create a new one — its details and documents live on your profile and are reused on every loan."
         status="To do"
         open
         action={switching ? <button className="btn link small" onClick={() => setSwitching(false)}>Cancel</button> : null}
@@ -450,10 +456,10 @@ function LlcCondition({ it, app, onChanged }) {
         {err && <div role="alert" className="notice err" style={{ marginBottom: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ flex: 1, minWidth: 220 }}>
-            <LlcPicker value={pick.name} onPick={setPick} placeholder="Start typing your LLC name…" />
+            <LlcPicker value={pick.name} onPick={setPick} placeholder="Start typing your entity name…" />
           </div>
           <button className="btn primary small" disabled={!pick.id || busy} onClick={() => link(pick.id)}>
-            {busy ? 'Linking…' : 'Link this LLC'}
+            {busy ? 'Linking…' : 'Link this entity'}
           </button>
         </div>
       </ConditionRow>
@@ -464,11 +470,11 @@ function LlcCondition({ it, app, onChanged }) {
     return (
       <ConditionRow
         done
-        title={it.label || 'Your LLC (vesting entity)'}
-        subtitle={`${app.llc_name} is verified — its formation documents, EIN letter and operating agreement are on file and linked to this loan automatically.`}
+        title={it.label || 'Your vesting entity'}
+        subtitle={`${app.llc_name} is verified — its formation documents, EIN letter and ${entityKind.governingDocWord} are on file and linked to this loan automatically.`}
         status="Verified ✓"
         open={open}
-        action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'View LLC'}</button>}
+        action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'View entity'}</button>}
       >
         <LlcManager llcId={app.llc_id} onChanged={onChanged} />
       </ConditionRow>
@@ -479,14 +485,14 @@ function LlcCondition({ it, app, onChanged }) {
     <ConditionRow
       done={isDone(it.status)}
       issue={it.status === 'issue'}
-      title={it.label || 'Your LLC (vesting entity)'}
+      title={it.label || 'Your vesting entity'}
       subtitle={`Set up ${app.llc_name}: entity details, full ownership, and its three documents. It saves to your profile — you'll never be asked again once it's verified.`}
       status={statusText(it)}
       open={open}
       action={
         <span className="row" style={{ gap: 6 }}>
-          <button className="btn link small" onClick={() => setSwitching(true)}>Use a different LLC</button>
-          <button className="btn primary small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'Set up LLC'}</button>
+          <button className="btn link small" onClick={() => setSwitching(true)}>Use a different entity</button>
+          <button className="btn primary small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'Set up entity'}</button>
         </span>
       }
     >
@@ -495,8 +501,8 @@ function LlcCondition({ it, app, onChanged }) {
         const formState = app.llc_formation_state;
         return propState && formState && String(propState).toUpperCase() !== String(formState).toUpperCase() ? (
           <p className="muted small" style={{ marginBottom: 8 }}>
-            Heads up: this LLC is formed in {formState} but the property is in {propState} — you'll likely
-            need to register the LLC as a foreign entity in {propState} before closing. Your loan team can help.
+            Heads up: this entity is formed in {formState} but the property is in {propState} — you'll likely
+            need to register it as a foreign entity in {propState} before closing. Your loan team can help.
           </p>
         ) : null;
       })()}
@@ -963,7 +969,7 @@ export default function Application() {
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
           <SsnRow profile={profile} onSaved={load} />
           <div className="metrow"><span className="k">Vesting entity</span><span className="v">
-            {app.entity_name || app.llc_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}
+            {app.entity_name || app.llc_name || (app.llc_id ? 'Entity on file' : 'Not linked yet')}
             {app.llc_id && app.llc_verified && <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>}
           </span></div>
           {(() => {
@@ -1203,7 +1209,7 @@ export default function Application() {
                 </ConditionRow>
               )}
 
-              {/* 3 — The vesting LLC: linked entity's state drives this condition */}
+              {/* 3 — The vesting entity: the linked entity's state drives this condition */}
               {llcItem && show(llcItem) && <LlcCondition it={llcItem} app={app} onChanged={load} />}
 
               {/* 4 — Company contacts (title / insurance) + appraisal card */}

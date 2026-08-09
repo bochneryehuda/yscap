@@ -32,6 +32,12 @@
 const catalog = require('./catalog');
 const scope = require('./scope');
 const fieldMap = require('./field-map');
+/* WHAT KIND OF COMPANY THE BORROWER IS — the ONE definition, shared with the
+   entity screens, the document slots and the closing desk, so "is this an LLC or
+   a corporation" cannot be answered one way here and another way there. It is
+   itself pure (no database, no config, no requires), which is what lets this
+   module keep its own promise. */
+const entityType = require('../lib/entity-type');
 
 /* ───────────────────────────── formatting ───────────────────────────── */
 
@@ -63,6 +69,19 @@ function pct(v) {
   const n = num(v);
   if (n === null) return null;
   return String(Math.round(n * 1000) / 1000);
+}
+
+/**
+ * A COUNT, grouped the way a document prints it: `1,000`. Used for a share count,
+ * which is a whole number of things — a fractional or negative one is not a count
+ * at all, so it is refused rather than rounded into something plausible. Null,
+ * blank and junk all read as "not answered", which is what makes the readiness
+ * report say so instead of printing a zero onto a pledge.
+ */
+function wholeNumber(v) {
+  const n = num(v);
+  if (n === null || n <= 0 || Math.floor(n) !== n) return null;
+  return n.toLocaleString('en-US');
 }
 
 /**
@@ -328,13 +347,52 @@ function buildPayload(file, lender, opts = {}) {
   c.set('district_number', trimmed(f.districtNumber), 'NY tax-map district — off the title commitment.');
   c.set('property_town', trimmed(pa.city));
 
-  /* ── the entity's character ── */
-  c.set('type_of_organization', trimmed(f.entityOrgType),
-    'PILOT has no LLC-vs-corporation field, so the documents cannot yet say whether this entity has members or shareholders.');
-  c.set('acknowledgement_corporate_status', trimmed(f.acknowledgementCorporateStatus),
-    'Depends on the entity type above.');
-  c.set('bylaws_operating_agreement', trimmed(f.bylawsOrOperatingAgreement), 'Depends on the entity type above.');
-  c.set('membership_interest_percentage', f.membershipInterestPct != null ? pct(f.membershipInterestPct) : null);
+  /* ── the entity's character ──
+     ALL FOUR OF THESE ARE ONE ANSWER (owner-directed 2026-08-09). `llcs.entity_type`
+     says whether this company has MEMBERS holding a percentage or SHAREHOLDERS
+     holding shares, and src/lib/entity-type.js turns that one key into the exact
+     wording DocLab's own master payload uses — so "what kind of company is this"
+     has ONE definition in this codebase rather than one in the entity code and a
+     second one here. A caller may still override any of them explicitly (the
+     `f.entityOrgType` family), which is what a closer needs when a real entity is
+     unusual; the derivation is the default, never a ceiling.
+
+     AN UNCONFIRMED TYPE IS STILL SENT, AND WARNED ABOUT. db/494 stamped the whole
+     back book `llc` without anybody choosing it, so on those files this is our
+     assumption rather than a stated fact — and a document that says "operating
+     agreement" about a corporation is worse than one that says nothing. The value
+     goes out (an LLC is right the overwhelming majority of the time and omitting
+     it prints a blank on a mortgage either way) with a warning naming the file. */
+  const ET = entityType;
+  const derived = ET.docLabVariables({ entity_type: f.entityType });
+  const entityKind = ET.typeOf(f.entityType);
+  if (trimmed(f.entityName) && !ET.isRecognized(f.entityType)) {
+    warnings.push({
+      code: 'entity_type_assumed',
+      message: `Nobody has stated whether "${trimmed(f.entityName)}" is an LLC, a corporation, a partnership or a trust, so the documents will describe it as a limited liability company. Confirm the entity type before these go out.`,
+    });
+  }
+  c.set('type_of_organization', trimmed(f.entityOrgType) || derived.type_of_organization);
+  c.set('acknowledgement_corporate_status',
+    trimmed(f.acknowledgementCorporateStatus) || derived.acknowledgement_corporate_status);
+  c.set('bylaws_operating_agreement',
+    trimmed(f.bylawsOrOperatingAgreement) || derived.bylaws_operating_agreement);
+  c.set('operating_agreement_or_bylaws',
+    trimmed(f.operatingAgreementOrBylaws) || derived.operating_agreement_or_bylaws);
+
+  /* WHAT AN OWNER HOLDS — a PERCENTAGE or SHARES, never both. Sending a share
+     count for an LLC or a membership percentage for a corporation is not a
+     harmless extra: the merge prints whichever the template asks for, so the
+     wrong one lands on a pledge as a fact. Each is left ABSENT (and reported
+     missing when the template wants it) on the side it does not belong to. */
+  if (entityKind.usesShares) {
+    c.set('number_of_shares', wholeNumber(f.entityShares),
+      'A corporation\'s pledge names a share count. Record it on the entity\'s owners in the borrower profile.');
+    c.set('certificate_number', trimmed(f.entityCertificateNumber),
+      'The numbered stock certificate being pledged — it comes off the certificate itself. Record it on the entity\'s owners in the borrower profile.');
+  } else {
+    c.set('membership_interest_percentage', f.membershipInterestPct != null ? pct(f.membershipInterestPct) : null);
+  }
 
   /* ── the derived phrases ── */
   c.set('guarantor_or_collectively_the_guarantor',

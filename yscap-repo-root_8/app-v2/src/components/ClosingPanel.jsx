@@ -36,7 +36,7 @@ const STAGE_LABEL = {
 };
 const QUICKLINK_LABEL = {
   term_sheet: 'Term sheet', insurance: 'Insurance', contract: 'Purchase contract',
-  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements',
+  assignment: 'Assignment of contract', llc: 'Entity documents', bank_statement: 'Bank statements',
   // The readable credit report (both borrowers'); the machine-readable XML data
   // file is deliberately excluded server-side — see closing.isCreditReportDoc.
   credit_report: 'Credit report', title: 'Title',

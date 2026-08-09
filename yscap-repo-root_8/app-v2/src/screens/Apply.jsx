@@ -825,15 +825,15 @@ export default function Apply() {
                 "my own name" clears any entity, because the two contradict. */}
             <div className="field"><label>How will you hold title?</label>
               <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 4 }}>
-                {[{ v: 'entity', t: 'In an entity (LLC / Corp)' }, { v: 'individual', t: 'In my own name — no entity' }].map(o => (
+                {[{ v: 'entity', t: 'In an entity' }, { v: 'individual', t: 'In my own name — no entity' }].map(o => (
                   <label key={o.v} className="row" style={{ gap: 6, alignItems: 'center', cursor: 'pointer', color: '#141B22' }}>
                     <input type="radio" name="vesting" value={o.v}
                       checked={(form.vesting || 'entity') === o.v}
                       onChange={() => setForm(f => {
                         const next = o.v === 'individual'
-                          ? { ...(f || {}), vesting: 'individual', entityName: '', llcId: '' }
+                          ? { ...(f || {}), vesting: 'individual', entityName: '', llcId: '', entityType: '' }
                           : { ...(f || {}), vesting: 'entity' };
-                        save({ data: o.v === 'individual' ? { vesting: 'individual', entityName: '', llcId: '' } : { vesting: 'entity' } });
+                        save({ data: o.v === 'individual' ? { vesting: 'individual', entityName: '', llcId: '', entityType: '' } : { vesting: 'entity' } });
                         return next;
                       })} />
                     <span>{o.t}</span>
@@ -846,10 +846,14 @@ export default function Apply() {
               </p>
             </div>
             {(form.vesting || 'entity') === 'entity' ? (
-            <div className="field"><label>Vesting entity / LLC (if any)</label>
-              <LlcPicker value={form.entityName || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
-                onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
-              <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
+            <div className="field"><label>Vesting entity name</label>
+              <LlcPicker value={form.entityName || ''} entityType={form.entityType || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
+                onPick={({ id, name, entityType }) => setForm(f => {
+                  const next = { ...(f || {}), entityName: name, llcId: id, entityType: entityType || (f || {}).entityType || '' };
+                  save({ data: { entityName: name, llcId: id, entityType: next.entityType } });
+                  return next;
+                })} />
+              <p className="muted small" style={{ marginTop: 4 }}>Reuse an entity you've used before, or create a new one — we'll ask for its formation documents, EIN letter and governing document once.</p></div>
             ) : null}
             {ownedOfficer ? (
               // Locked to the officer of record — the borrower has worked with

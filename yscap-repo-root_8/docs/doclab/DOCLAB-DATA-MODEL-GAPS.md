@@ -30,9 +30,31 @@ already ahead, and the work is just to make sure the good structure actually rea
 
 ## The ten real gaps, worst first
 
-### 1. We call every company an "LLC" — and the documents need to know if it isn't one
+### 1. ~~We call every company an "LLC"~~ — **BUILT 2026-08-09**
 
-**This is the biggest one by a distance.**
+**This was the biggest one by a distance. It is now closed** (owner-directed 2026-08-09; db/494,
+db/495, `src/lib/entity-type.js`). The write-up below is kept because it explains *why* the change
+was worth making — and what still has to happen on each file.
+
+**What now happens.** Every company record carries an entity type — **LLC, corporation, partnership
+or trust** — and every door that creates one asks for it: the marketing loan application, the
+borrower's own application, the staff new-file form, the entity screens on both portals, and the
+public intake. `src/lib/entity-type.js` is the one definition; it turns that single answer into all
+six DocLab fields, into which documents we ask the borrower for, and into which titles their owners
+may hold.
+
+**Everything created before that day is an LLC — and says it was assumed.** The owner's rule was
+"everything created till now should automatically be default LLC, only going forward this change to
+go in effect", so the whole back book is stamped `llc` — *and* stamped **not confirmed**, because
+"we assumed" and "a person chose" are different facts and only one of them is safe to print on a
+mortgage. Nothing behaves differently on an unconfirmed entity; it just lets the closing desk, and
+the DocLab payload, say they are assuming instead of stating a guess as a fact.
+
+**Still to do on each file:** somebody has to actually confirm the type on the entities already on
+the books, and fill in each owner's title. Both are nudged at the closing desk rather than blocked —
+they are ten-second fixes that must not stop a closing.
+
+*The original write-up follows.*
 
 Our table for a borrowing company is literally called `llcs`, and it has no field for *what kind of
 company it is*. Every company on every file is treated as an LLC.
@@ -63,7 +85,22 @@ There is a bonus: our entity-document conditions currently ask everyone for an "
 agreement". A corporation does not have one, so today we are asking some borrowers for a document
 that does not exist. This fixes that too.
 
-### 2. Nobody's *title* is recorded — and a title is printed on every signature block
+### 2. ~~Nobody's *title* is recorded~~ — **BUILT 2026-08-09**
+
+Also closed in the same pass. Every owner of an entity — on both owner tables, because PILOT splits
+them into "owners who are our borrowers" and "everybody else" and a loan document does not care
+about that distinction — now carries a **title**, chosen from a fixed list per entity type
+(`Managing Member`, `President`, `Trustee`, …, always with `Authorized Signatory` as the catch-all).
+
+It is a **drop-down, never a text box**, on purpose: the value prints under a signature line and
+DocLab merges it verbatim, so "managing member", "Managing Member" and "MGR" must not all be
+reachable. It is **staff-only** (the owner's call), and the **closing desk is told by name** which
+owners still have none — a nudge, never a blocker.
+
+A corporation additionally carries each owner's **share count** and **stock certificate number**;
+see the note under gap 1 for what a certificate number is.
+
+*The original write-up follows.*
 
 We know who the members of a company are and what percentage they own. We do not record that
 somebody is the **Managing Member**, the **President** or the **Manager**.
@@ -170,14 +207,16 @@ and somebody has to say whether it is *our* rule.
 ## What I would do, in order
 
 **Do now (small, and they unblock the most):**
-1. Entity type on the company record — it unlocks six DocLab fields and fixes a condition we ask
-   wrongly today.
+1. ~~Entity type on the company record~~ — **DONE 2026-08-09.** It unlocked six DocLab fields and
+   fixed the condition we were asking wrongly (a corporation being asked for an operating
+   agreement). Owner titles, share counts and certificate numbers came with it.
 2. Copy the county from the appraisal to the file. The data is already ours.
 3. Put the standing terms (default rate, governing law, servicer) into settings.
 
 **Decide next (needs the owner's answer, not just code):**
 4. How the legal description gets in — read it, or paste it.
-5. Titles and signing authority on members.
+5. ~~Titles on members~~ — **DONE 2026-08-09.** Signing AUTHORITY (which of the owners may sign
+   alone) is still not recorded; the title is the closest thing we have to it today.
 6. Trustee and title underwriter — where they get captured at closing.
 
 **Leave alone for now:**

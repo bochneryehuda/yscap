@@ -553,6 +553,7 @@ async function getClosingPrepData(applicationId) {
             NULLIF(TRIM(b.full_name),'') AS borrower_name, b.email AS borrower_email, b.cell_phone AS borrower_cell,
             NULLIF(TRIM(cb.full_name),'') AS co_borrower_name, cb.email AS co_borrower_email,
             l.llc_name AS entity_name, l.formation_state AS entity_state,
+            l.entity_type, l.entity_type_confirmed,
             lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
             lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
             pr.full_name AS proc_name, pr.email AS proc_email, pr.title AS proc_title,
@@ -652,6 +653,17 @@ async function getClosingPrepData(applicationId) {
   const effectivePrice = a.is_assignment ? recognized : null;
   const effectivePriceOverridden = !!(asg && asg.overridden);
 
+  /* THE OWNERS WITH NO TITLE RECORDED YET (owner-directed 2026-08-09). Read here
+     rather than in the panel so the ONE definition — which reads BOTH owner
+     tables, because PILOT splits owners into `llc_borrowers` and `llc_members`
+     and a loan document does not care about that distinction — is shared with
+     every other surface that asks. Never throws: an unreadable entity reports
+     nothing outstanding rather than inventing a blocker on a closing. */
+  let ownersMissingTitles = [];
+  if (a.llc_id) {
+    try { ownersMissingTitles = await require('./llc').ownersMissingTitles(a.llc_id); } catch (_) { /* best-effort */ }
+  }
+
   return {
     appId: a.id,
     status: a.status,
@@ -667,6 +679,26 @@ async function getClosingPrepData(applicationId) {
     entityName: a.entity_name || '',
     entityState: a.entity_state || null,
     hasEntity: !!a.llc_id,
+    entityId: a.llc_id || null,
+    /* WHAT KIND OF COMPANY IT IS, and whether anybody actually SAID SO
+       (owner-directed 2026-08-09). db/494 stamped the whole back book `llc`
+       without a person choosing it, so `entityTypeConfirmed` is the difference
+       between a fact and our assumption — and the closing desk is the last place
+       that difference is cheap to fix, because a corporation signs its documents
+       under bylaws where an LLC signs under an operating agreement. */
+    entityType: a.entity_type || null,
+    entityTypeConfirmed: !!a.entity_type_confirmed,
+    entityKind: a.llc_id ? require('./entity-type').describe({
+      entity_type: a.entity_type, entity_type_confirmed: a.entity_type_confirmed,
+    }) : null,
+    /* WHO SIGNS, AND AS WHAT. A title prints under the signature line on every
+       recorded instrument and DocLab merges it verbatim, so a blank one is real
+       missing work — but it is a NUDGE, never a blocker (owner-directed: "when
+       the closer gets the closing desk, if it's not filled yet they should tell
+       her that she needs to fill it"). Refusing the order would stop the file
+       over something a closer can fix in ten seconds while they are looking at
+       it. `blockers()` deliberately does not read this. */
+    ownersMissingTitles,
     /* HOW TITLE VESTS, IN WORDS. A personal-name purchase has no entity by
        definition, so every "Vesting entity" line here used to be dropped and the
        closing attorney was told nothing at all about vesting on exactly the
@@ -803,8 +835,17 @@ function dealMeta(data) {
   add('Property type', [data.propertyType, data.units ? `${data.units} unit${data.units === 1 ? '' : 's'}` : null].filter(Boolean).join(' · '));
   add('Transaction', data.transactionType);
   add(data.borrowerCount > 1 ? `Borrowers (${data.borrowerCount})` : 'Borrower', data.borrowers.join(' & '));
+  /* WHAT KIND OF COMPANY, stated ONLY when somebody actually chose it
+     (owner-directed 2026-08-09). The type decides which governing document
+     counsel drafts around — bylaws for a corporation, an operating agreement
+     for an LLC — so it is worth saying. But db/494 stamped the whole back book
+     `llc` without a person choosing it, and telling outside counsel "limited
+     liability company" about a corporation because of our own back-fill is
+     exactly the kind of confident wrong answer this file exists to avoid.
+     Unconfirmed: we say the name and let the entity documents speak. */
+  const entityKindWord = data.entityTypeConfirmed && data.entityKind ? data.entityKind.label : null;
   add('Vesting', data.entityName
-    ? [data.entityName, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ')
+    ? [data.entityName, entityKindWord ? `— ${entityKindWord}` : null, data.entityState ? `(${data.entityState})` : null].filter(Boolean).join(' ')
     : (data.vestsIndividually ? 'Closing as an individual — title in the borrower\u2019s own name, no entity' : null));
   if (data.isAssignment) {
     // On an assignment the attorney needs all three numbers to draft correctly.

@@ -360,8 +360,17 @@ async function siteIntake(p, opts = {}) {
           await require('../lib/vesting').setVestingLlcByName(appId, entityName, {
             source: 'intake',
             // Only used when the entity is genuinely NEW — a name the borrower
-            // already has keeps its own details (never overwritten by a re-type).
-            fields: { ein: (p.eEin || p.entityEin || null), formationState: (p.eState || p.entityState || null) },
+            // already has keeps its own details (never overwritten by a re-type),
+            // except for the TYPE, which records onto an entity nobody has
+            // confirmed or verified (llc.confirmEntityType owns that rule).
+            fields: {
+              ein: (p.eEin || p.entityEin || null),
+              formationState: (p.eState || p.entityState || null),
+              // The marketing form has ASKED for this since it shipped and never
+              // sent it (owner-directed 2026-08-09) — the same collected-then-
+              // discarded class as the refinance fields.
+              entityType: (p.eType || p.entityType || null),
+            },
           });
         }
       } catch (vestErr) { console.error('[intake] vesting wiring failed:', db.describeError(vestErr)); }

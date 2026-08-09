@@ -285,7 +285,7 @@ function SubmittedDeal({ lead }) {
   const p = (lead && lead.payload && typeof lead.payload === 'object') ? lead.payload : {};
   const rows = [];
   const add = (label, value) => { if (value != null && String(value).trim() !== '') rows.push([label, String(value)]); };
-  add('Entity / LLC', lead.company);
+  add('Entity', lead.company);
   add('Property', (lead.property_address && (lead.property_address.oneLine || addrLine(lead.property_address))) || null);
   add('Property type', lead.property_type);
   add('Program', lead.program);

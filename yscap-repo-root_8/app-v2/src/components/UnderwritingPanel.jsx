@@ -24,7 +24,7 @@ const DOC_LABEL = {
   government_id: 'Government ID', purchase_contract: 'Purchase contract', title: 'Title report',
   bank_statement: 'Bank statement', appraisal: 'Appraisal', operating_agreement: 'Operating agreement',
   assignment: 'Assignment of contract', ein_letter: 'EIN letter', good_standing: 'Good standing',
-  llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
+  llc_formation: 'Entity formation', insurance: 'Insurance', flood: 'Flood cert',
   settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
   contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
   voided_check: 'Voided check', plans_permits: 'Plans & permits', signed_term_sheet: 'Signed term sheet',
@@ -2671,7 +2671,7 @@ function SovereignKnowledgeGraphSection({ appId }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber,#B7791F)', marginBottom: 4 }}>Shared signals</div>
               {shared.map((s, i) => (
                 <div key={i} style={{ fontSize: 12, padding: '2px 0', color: 'var(--amber,#B7791F)' }}>
-                  {s.signal}: {s.files_on_llc} files on this LLC
+                  {s.signal}: {s.files_on_llc} files on this entity
                 </div>
               ))}
             </div>

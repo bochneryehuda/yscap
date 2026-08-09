@@ -49,6 +49,7 @@ async function getMembers(llcId) {
   const r = await db.query(
     `SELECT m.id, m.full_name, m.ownership_pct, m.email, m.phone,
             m.member_kind, m.owner_llc_id,
+            m.member_title, m.shares, m.certificate_number,
             o.llc_name AS owner_llc_name, o.is_verified AS owner_is_verified
        FROM llc_members m
        LEFT JOIN llcs o ON o.id = m.owner_llc_id
@@ -57,8 +58,8 @@ async function getMembers(llcId) {
 }
 
 /* Direct owning entities of an LLC (the parents one layer up). */
-async function getOwnerLlcIds(llcId) {
-  const r = await db.query(
+async function getOwnerLlcIds(llcId, client = db) {
+  const r = await client.query(
     `SELECT DISTINCT owner_llc_id FROM llc_members
       WHERE llc_id=$1 AND owner_llc_id IS NOT NULL`, [llcId]);
   return r.rows.map((x) => String(x.owner_llc_id));
@@ -69,7 +70,7 @@ async function getOwnerLlcIds(llcId) {
    number of LEVELS walked (the longest ownership PATH in edges) — NOT the
    node count. A holding company owning five property LLCs is depth 1 with
    five ids; the cap must compare depth, never ids.length. */
-async function walkChain(llcId, dir, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
+async function walkChain(llcId, dir, { maxDepth = MAX_ENTITY_DEPTH, client = db } = {}) {
   const seen = new Set([String(llcId)]);
   const ids = [];
   let depth = 0;
@@ -78,8 +79,8 @@ async function walkChain(llcId, dir, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
     const next = [];
     for (const id of frontier) {
       const related = dir === 'up'
-        ? await getOwnerLlcIds(id)
-        : (await db.query(`SELECT DISTINCT llc_id FROM llc_members WHERE owner_llc_id=$1`, [id])).rows.map((x) => String(x.llc_id));
+        ? await getOwnerLlcIds(id, client)
+        : (await client.query(`SELECT DISTINCT llc_id FROM llc_members WHERE owner_llc_id=$1`, [id])).rows.map((x) => String(x.llc_id));
       for (const rel of related) {
         if (seen.has(rel)) continue;
         seen.add(rel);
@@ -110,14 +111,14 @@ async function getDescendantEntityIds(llcId, opts) {
    ownership PATH through the new link (layers above the owner + the link +
    layers below this LLC) — breadth (how MANY entities a layer holds) is
    never limited. */
-async function ownershipLinkError(llcId, ownerLlcId) {
+async function ownershipLinkError(llcId, ownerLlcId, client = db) {
   if (String(ownerLlcId) === String(llcId)) return 'an entity cannot own itself';
   // Cycle: the proposed owner is (transitively) owned by this LLC already.
-  const up = await walkChain(ownerLlcId, 'up', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  const up = await walkChain(ownerLlcId, 'up', { maxDepth: MAX_ENTITY_DEPTH + 1, client });
   if (up.ids.includes(String(llcId))) {
     return 'that would create an ownership loop — this entity already (indirectly) owns the one you picked';
   }
-  const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1, client });
   if (up.depth + 1 + down.depth > MAX_ENTITY_DEPTH) return `ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`;
   return null;
 }
@@ -268,7 +269,12 @@ async function getLlcBundle(llcId) {
   const llc = l.rows[0];
   if (!llc) return null;
   const [members, slots] = await Promise.all([getMembers(llcId), getSlots(llcId)]);
-  return { ...llc, members, slots, completeness: completeness(llc, members, slots) };
+  /* WHAT THIS ENTITY IS, in the shape a screen can render without knowing the
+     rules — the owner noun, whether it holds SHARES or a PERCENTAGE, the titles
+     its owners may hold. Derived here rather than in each screen so "Ownership %"
+     never appears on a corporation and "Shares" never appears on an LLC. */
+  const entity = require('./entity-type').describe(llc);
+  return { ...llc, entity, members, slots, completeness: completeness(llc, members, slots) };
 }
 
 /**
@@ -316,9 +322,9 @@ async function syncLlcConditions(llcId, opts = {}) {
   // '[auto]'-prefixed notes are ours to overwrite; a note a staffer typed by
   // hand is never clobbered by a sync.
   const note = llc.is_verified
-    ? `[auto] Verified LLC "${llc.llc_name}" on file — condition satisfied`
-    : rejected ? `[auto] An LLC document for "${llc.llc_name}" was rejected — see the borrower profile`
-    : allIn ? `[auto] LLC "${llc.llc_name}" documents uploaded — awaiting review`
+    ? `[auto] Verified entity "${llc.llc_name}" on file — condition satisfied`
+    : rejected ? `[auto] An entity document for "${llc.llc_name}" was rejected — see the borrower profile`
+    : allIn ? `[auto] "${llc.llc_name}" documents uploaded — awaiting review`
     : null;
   const noteSet = `notes=CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $3 ELSE ci.notes END`;
 
@@ -393,10 +399,12 @@ async function cascadeToOwnedEntities(llcId, opts) {
 // layered entity — another LLC owning a slice of this one) names the owning
 // LLC (by id from the picker, or by name to find-or-create) and may own up to
 // the full 100% (a pure holding-company structure has borrower stake 0).
-function parseMembers(raw, borrowerPct) {
+function parseMembers(raw, borrowerPct, opts = {}) {
   if (raw === undefined) return { members: undefined };
   if (!Array.isArray(raw)) return { error: 'members must be an array' };
   if (raw.length > 20) return { error: 'a maximum of 20 members is supported' };
+  const ET = require('./entity-type');
+  const entityType = ET.normalizeKey(opts.entityType) || ET.DEFAULT_TYPE;
   const members = [];
   for (const m of raw) {
     const isEntity = (m && m.memberKind) === 'entity';
@@ -408,6 +416,31 @@ function parseMembers(raw, borrowerPct) {
     } else if (!isFinite(p) || p <= 0 || p >= 100) {
       return { error: 'each member needs an ownership % between 0 and 100' };
     }
+    /* WHO THEY ARE ON THE SIGNATURE LINE, AND WHAT THEY HOLD (owner-directed
+       2026-08-09). STAFF ONLY — `opts.allowOwnerDetails` is false for every
+       borrower-facing door, so these three keys are IGNORED rather than refused
+       when a borrower's payload happens to carry them (a borrower editing their
+       members must never be answered with an error about a box they cannot see).
+       A value that IS accepted is validated: the title is printed under a
+       signature line and merged verbatim into a mortgage, so it may only ever be
+       one of the titles entity-type.js records. */
+    const detail = { memberTitle: undefined, shares: undefined, certificateNumber: undefined };
+    if (opts.allowOwnerDetails && m) {
+      if (m.memberTitle !== undefined) {
+        const t = String(m.memberTitle == null ? '' : m.memberTitle).trim();
+        const problem = ET.titleProblem(t, entityType);
+        if (problem) return { error: problem };
+        detail.memberTitle = t || null;
+      }
+      if (m.shares !== undefined) {
+        const s = shareCount(m.shares);
+        if (s && s.error) return { error: `${fullName}: ${s.error}` };
+        detail.shares = s == null ? null : s;
+      }
+      if (m.certificateNumber !== undefined) {
+        detail.certificateNumber = String(m.certificateNumber == null ? '' : m.certificateNumber).trim().slice(0, 40) || null;
+      }
+    }
     members.push({
       fullName, ownershipPct: Math.round(p * 100) / 100,
       email: !isEntity && m.email ? String(m.email).trim().slice(0, 160) : null,
@@ -415,12 +448,28 @@ function parseMembers(raw, borrowerPct) {
       memberKind: isEntity ? 'entity' : 'person',
       ownerLlcId: isEntity && m.ownerLlcId ? String(m.ownerLlcId) : null,
       ownerLlcName: isEntity ? (String(m.ownerLlcName || m.fullName || '').trim().slice(0, 160) || null) : null,
+      ...detail,
     });
   }
   const own = borrowerPct == null ? 0 : Number(borrowerPct) || 0;
   const total = own + members.reduce((s, m) => s + m.ownershipPct, 0);
   if (total > 100.01) return { error: `ownership exceeds 100% (${total.toFixed(2)}%)` };
   return { members };
+}
+
+/* A SHARE COUNT IS A WHOLE NUMBER OF SHARES, and zero is refused — an owner with
+   zero shares is not an owner, and a zero would print "0 shares" onto a pledge.
+   Returns the number, null for a blank (not answered — the honest state today),
+   or {error}. Bounded to what int4 holds, so the value can never reach the column
+   as a 22003 the route turns into "server error" (the number-bounds rule). */
+const MAX_SHARES = 2147483647;
+function shareCount(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return null;
+  const n = Number(v);
+  if (!isFinite(n) || Math.floor(n) !== n) return { error: 'the share count must be a whole number' };
+  if (n <= 0) return { error: 'the share count must be more than zero' };
+  if (n > MAX_SHARES) return { error: `the share count is too large (max ${MAX_SHARES.toLocaleString()})` };
+  return n;
 }
 
 /* Replace an LLC's members. `opts.borrowerId` is REQUIRED when any member is
@@ -430,50 +479,254 @@ function parseMembers(raw, borrowerPct) {
    layered entity opens up as a full entity section of its own. Throws (with
    .status) on cycle / depth / foreign-entity errors. */
 async function replaceMembers(llcId, members, opts = {}) {
+  /* `opts.client` lets a caller already inside a transaction run this on its own
+     connection, so the lookups see its uncommitted writes — the same optional
+     trailing client `findOrCreateLlc` / `findLlcByName` / `generateLlcChecklist`
+     already take, and the reason the entity-adoption path can do all of its work
+     atomically. Defaults to the pool, so every existing caller is unchanged. */
+  const client = opts.client || db;
   const resolved = [];
   for (const m of members) {
     if (m.memberKind !== 'entity') { resolved.push({ ...m, ownerLlcId: null }); continue; }
     if (!opts.borrowerId) { const e = new Error('entity members need a borrower context'); e.status = 400; throw e; }
     let ownerId = m.ownerLlcId;
     if (ownerId) {
-      const own = await db.query(`SELECT id, llc_name FROM llcs WHERE id=$1 AND borrower_id=$2`, [ownerId, opts.borrowerId]);
+      const own = await client.query(`SELECT id, llc_name FROM llcs WHERE id=$1 AND borrower_id=$2`, [ownerId, opts.borrowerId]);
       if (!own.rows[0]) { const e = new Error('owning entity not found'); e.status = 404; throw e; }
       m.fullName = own.rows[0].llc_name;   // display name follows the entity
     } else {
       // Resolve by name BEFORE creating anything, and validate the link first —
       // a rejected link (cycle / depth) must not leave an orphan LLC behind.
-      ownerId = await findLlcByName(opts.borrowerId, m.ownerLlcName || m.fullName);
+      ownerId = await findLlcByName(opts.borrowerId, m.ownerLlcName || m.fullName, client);
     }
     if (ownerId) {
-      const linkErr = await ownershipLinkError(llcId, ownerId);
+      const linkErr = await ownershipLinkError(llcId, ownerId, client);
       if (linkErr) { const e = new Error(linkErr); e.status = 400; throw e; }
     } else {
       // Brand-new owning entity: no cycle is possible (nothing links to it yet);
       // only the PATH DEPTH of the chain hanging under this LLC can overflow.
-      const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+      const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1, client });
       if (1 + down.depth > MAX_ENTITY_DEPTH) {
         const e = new Error(`ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`); e.status = 400; throw e;
       }
-      const made = await findOrCreateLlc(opts.borrowerId, { llcName: m.ownerLlcName || m.fullName });
+      const made = await findOrCreateLlc(opts.borrowerId, { llcName: m.ownerLlcName || m.fullName }, client);
       ownerId = made.id;
     }
     resolved.push({ ...m, ownerLlcId: ownerId });
   }
-  await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
+  /* THE TITLE THE CLOSER TYPED SURVIVES THE BORROWER'S NEXT EDIT.
+     This function REPLACES the member list wholesale (delete + re-insert), and
+     the title / share count / certificate number are STAFF-ONLY — a borrower
+     editing their own members never sends them. Without carrying them over, a
+     borrower fixing a spelling would silently wipe the closing desk's work on a
+     value that prints under a signature line. Carried by normalized NAME, which
+     is the only stable identity a re-inserted row has; a member whose name the
+     edit CHANGED is a different person as far as this is concerned, and starts
+     with a blank title — which is honest, and the closing-desk nudge will ask
+     for it again. A value the caller DID supply always wins (including a
+     deliberate blank). */
+  const prior = new Map();
+  for (const p of (await client.query(
+    `SELECT full_name, member_title, shares, certificate_number FROM llc_members WHERE llc_id=$1`, [llcId])).rows) {
+    if (p.member_title == null && p.shares == null && p.certificate_number == null) continue;
+    prior.set(String(p.full_name || '').trim().toLowerCase(), p);
+  }
+  await client.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
   for (const m of resolved) {
-    await db.query(
-      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone, member_kind, owner_llc_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [llcId, m.fullName, m.ownershipPct, m.email, m.phone, m.memberKind || 'person', m.ownerLlcId]);
+    const was = prior.get(String(m.fullName || '').trim().toLowerCase()) || {};
+    await client.query(
+      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone, member_kind, owner_llc_id,
+                                member_title, shares, certificate_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [llcId, m.fullName, m.ownershipPct, m.email, m.phone, m.memberKind || 'person', m.ownerLlcId,
+        m.memberTitle === undefined ? (was.member_title || null) : m.memberTitle,
+        m.shares === undefined ? (was.shares == null ? null : was.shares) : m.shares,
+        m.certificateNumber === undefined ? (was.certificate_number || null) : m.certificateNumber]);
   }
   // Every owning entity gets (or already has) its own document requirements —
   // the layered entity is a full entity: info + formation docs + EIN letter +
   // operating agreement, recursively. Lazy require avoids a module cycle.
   for (const m of resolved) {
     if (m.ownerLlcId) {
-      try { await require('../routes/borrower').generateLlcChecklist(m.ownerLlcId); } catch (_) { /* best-effort */ }
+      try { await require('../routes/borrower').generateLlcChecklist(m.ownerLlcId, client); } catch (_) { /* best-effort */ }
     }
   }
+}
+
+/**
+ * WRITE THE ENTITY-DOCUMENT SLOTS' WORDING FOR WHAT THIS ENTITY ACTUALLY IS.
+ *
+ * Owner-directed 2026-08-09: *"re-label the operating agreement slot for bylaws
+ * and stock certificate, and this change needs to be everywhere else — SharePoint
+ * syncing, TPR export and everywhere else."*
+ *
+ * THE ITEM CARRIES THE WORDING, NOT THE TEMPLATE, AND THAT IS THE MECHANISM.
+ * There is ONE `rtl_llc_opagmt` template and one row per entity created from it,
+ * so the template cannot say "operating agreement" and "bylaws" at the same
+ * time. `checklist_items` already COPY the wording at creation (the repo's
+ * long-standing pattern), so the per-entity label is written there — and because
+ * SharePoint names its folders from the item's label and the TPR export
+ * categorises from it, BOTH follow with no second map to keep in step. That is
+ * the whole reason this is one function and not three.
+ *
+ * IT ONLY EVER REWRITES WORDING THIS MODULE OWNS. Every update is guarded on the
+ * value it is about to replace being one of the four types' known wordings for
+ * that slot (or blank), so a label a human edited by hand is left alone — the
+ * same discipline the migrations use. Never throws: a wording pass must not be
+ * able to fail a create.
+ *
+ * IT MUST BE RE-RUNNABLE, BECAUSE db/033 UNDOES IT ON EVERY BOOT. That migration
+ * copies the TEMPLATE's borrower wording down onto every item made from these
+ * three templates, every deploy — which is right for an LLC (the template says
+ * what an LLC needs) and wrong for a corporation, whose item has been re-worded
+ * here. Migrations are never edited, so the answer is the repo's usual one: this
+ * function is the ONE definition and `lib/entity-slot-heal.js` re-applies it at
+ * boot, after the migrations have run. That is also why the guard below fires on
+ * ANY of the four fields being off rather than on the label alone — db/033
+ * clobbers the borrower wording while leaving the internal label intact, and a
+ * label-only test would report "nothing to do" on exactly the rows that were
+ * just reverted.
+ */
+async function applyEntitySlotWording(llcId, client = db) {
+  const ET = require('./entity-type');
+  try {
+    const r = await client.query(`SELECT entity_type FROM llcs WHERE id=$1`, [llcId]);
+    if (!r.rows[0]) return { updated: 0 };
+    const type = ET.normalizeKey(r.rows[0].entity_type) || ET.DEFAULT_TYPE;
+    let updated = 0;
+    for (const code of ET.TYPED_SLOT_CODES) {
+      const want = ET.slotWording(code, type);
+      if (!want) continue;
+      // Every wording this slot could legitimately be carrying — the four types'
+      // own. Anything else is a human's edit and is not ours to overwrite.
+      const ours = ET.KEYS.map((k) => ET.slotWording(code, k)).filter(Boolean);
+      const okLabels = Array.from(new Set(ours.map((w) => w.label)));
+      const okBorrower = Array.from(new Set(ours.map((w) => w.borrowerLabel)));
+      const okHints = Array.from(new Set(ours.map((w) => w.hint).filter(Boolean)));
+      /* THE TEMPLATE'S OWN CURRENT WORDING COUNTS AS OURS TO REPLACE, and that
+         is not a nicety: a fresh slot INHERITS the template's label, which db/494
+         deliberately made type-neutral ("Governing document (operating agreement
+         / bylaws)"). Without `OR ci.label = t.label` the guard would refuse to
+         touch a brand-new corporation's slot — the exact row this function
+         exists for. Anything that is neither a type's wording nor the template's
+         is a human's edit, and stays. */
+      const u = await client.query(
+        `UPDATE checklist_items ci
+            SET label          = $3,
+                borrower_label = CASE WHEN COALESCE(ci.borrower_label,'') = ''
+                                       OR ci.borrower_label = ANY($6::text[])
+                                       OR ci.borrower_label = t.borrower_label
+                                      THEN $4 ELSE ci.borrower_label END,
+                hint           = CASE WHEN ci.hint IS NULL OR ci.hint = ANY($8::text[]) OR ci.hint = t.hint
+                                      THEN $7 ELSE ci.hint END,
+                borrower_hint  = CASE WHEN ci.borrower_hint IS NULL OR ci.borrower_hint = ANY($8::text[])
+                                       OR ci.borrower_hint = t.borrower_hint
+                                      THEN $7 ELSE ci.borrower_hint END,
+                updated_at     = now()
+           FROM checklist_templates t
+          WHERE t.id = ci.template_id AND t.code = $2
+            AND ci.llc_id = $1
+            -- Only a row whose wording is one of OURS (or the template's) is touched…
+            AND (ci.label = ANY($5::text[]) OR ci.label = t.label)
+            -- …and only when at least one of the four is not already right, so a
+            -- settled entity is a no-op rather than an updated_at churn.
+            AND (ci.label IS DISTINCT FROM $3
+              OR (ci.borrower_label IS DISTINCT FROM $4
+                  AND (COALESCE(ci.borrower_label,'') = '' OR ci.borrower_label = ANY($6::text[]) OR ci.borrower_label = t.borrower_label))
+              OR (ci.hint IS DISTINCT FROM $7
+                  AND (ci.hint IS NULL OR ci.hint = ANY($8::text[]) OR ci.hint = t.hint))
+              OR (ci.borrower_hint IS DISTINCT FROM $7
+                  AND (ci.borrower_hint IS NULL OR ci.borrower_hint = ANY($8::text[]) OR ci.borrower_hint = t.borrower_hint)))`,
+        [llcId, code, want.label, want.borrowerLabel, okLabels, okBorrower, want.hint, okHints]);
+      updated += u.rowCount || 0;
+    }
+    return { updated };
+  } catch (_) {
+    // Wording is cosmetic next to the entity itself existing. Never block a create.
+    return { updated: 0, failed: true };
+  }
+}
+
+/**
+ * RECORD WHAT KIND OF COMPANY THIS IS, WHEN A HUMAN ACTUALLY SAYS SO.
+ *
+ * Owner-directed 2026-08-09: *"everything created till now should automatically
+ * be default LLC, only going forward this change to go in effect."* db/494 did
+ * that — every entity on file is stamped `llc`, `entity_type_confirmed = false`
+ * — and this is the other half: the moment a person picks a type on any door,
+ * the ASSUMPTION becomes a STATEMENT.
+ *
+ * THREE GUARDS, each closing a way this could do harm:
+ *   · it only ever writes an UNCONFIRMED entity. A type somebody already chose
+ *     is never overwritten by a different door (an application form typed months
+ *     later must not silently re-type the entity the closer settled).
+ *   · it never touches a VERIFIED entity. Its documents have been read and
+ *     accepted by a human, so its type is settled by evidence, not by a dropdown
+ *     — and a mis-click on a re-used name must not relabel a finished entity's
+ *     document slots.
+ *   · an unrecognised value states NOTHING. A typo reads as an unanswered
+ *     question, never as a confident answer.
+ *
+ * Re-labels the entity's document slots to match, because a corporation is asked
+ * for bylaws and a stock certificate rather than an operating agreement. Never
+ * throws — recording the type must not be able to fail a create.
+ */
+async function confirmEntityType(llcId, type, opts = {}) {
+  const ET = require('./entity-type');
+  const client = opts.client || db;
+  try {
+    if (!llcId || !ET.isRecognized(type)) return { changed: false, reason: 'not_stated' };
+    const key = ET.normalizeKey(type);
+    const r = await client.query(
+      `UPDATE llcs
+          SET entity_type = $2, entity_type_confirmed = true,
+              entity_type_set_at = now(), entity_type_set_by = $3, updated_at = now()
+        WHERE id = $1 AND entity_type_confirmed = false AND is_verified = false
+        RETURNING entity_type`,
+      [llcId, key, opts.staffId || null]);
+    if (!r.rows[0]) return { changed: false, reason: 'already_confirmed_or_verified' };
+    await applyEntitySlotWording(llcId, client);
+    return { changed: true, entityType: key };
+  } catch (_) {
+    return { changed: false, reason: 'failed' };
+  }
+}
+
+/**
+ * WHICH OWNERS OF THIS ENTITY HAVE NO TITLE YET — the closing desk's question.
+ *
+ * Owner-directed 2026-08-09: *"it should only be for the staff side to fill out;
+ * when the closer gets the closing desk, if it's not filled yet they should tell
+ * her that she needs to fill it."* A title prints under the signature line on
+ * every recorded instrument, so a closing package cannot be drafted without one.
+ *
+ * Reads BOTH owner tables, because PILOT splits owners in two — `llc_borrowers`
+ * is the owners who are our borrowers, `llc_members` is everybody else — and a
+ * loan document does not care about that distinction: it lists every owner with
+ * their title. An ENTITY member is skipped: a holding company has no title, it
+ * signs through its own people, who are recorded on its own row.
+ *
+ * Never throws; an unreadable entity reports nothing outstanding rather than
+ * inventing a blocker.
+ */
+async function ownersMissingTitles(llcId, client = db) {
+  if (!llcId) return [];
+  try {
+    const r = await client.query(
+      `SELECT name FROM (
+          SELECT NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '') AS name,
+                 lb.member_title AS title
+            FROM llc_borrowers lb JOIN borrowers b ON b.id = lb.borrower_id
+           WHERE lb.llc_id = $1
+          UNION ALL
+          SELECT m.full_name AS name, m.member_title AS title
+            FROM llc_members m
+           WHERE m.llc_id = $1 AND COALESCE(m.member_kind,'person') <> 'entity'
+        ) o
+        WHERE COALESCE(TRIM(o.title), '') = ''
+        ORDER BY name`, [llcId]);
+    return r.rows.map((x) => x.name).filter(Boolean);
+  } catch (_) { return []; }
 }
 
 // Normalize an EIN to XX-XXXXXXX. Returns {ein} (null for blank) or {error}.
@@ -515,13 +768,26 @@ async function findOrCreateLlc(borrowerId, fields, client = db) {
   if (!name) throw new Error('llcName required');
   const existingId = await findLlcByName(borrowerId, name, client);
   if (existingId) return { id: existingId, existed: true };
+  /* WHAT KIND OF COMPANY IS THIS (owner-directed 2026-08-09).
+     A type the caller states is RECORDED AS CHOSEN; anything else falls back to
+     LLC and is recorded as NOT confirmed. That distinction is the whole point:
+     "we assumed" and "a person chose" are different facts, and only one of them
+     is safe to print on a mortgage. `isRecognized` is what keeps a typo out —
+     an unreadable type reads as an unanswered question, never as an LLC that
+     somebody vouched for. src/lib/entity-type.js owns the rules. */
+  const ET = require('./entity-type');
+  const stated = fields && fields.entityType;
+  const confirmed = ET.isRecognized(stated);
+  const entityType = confirmed ? ET.normalizeKey(stated) : ET.DEFAULT_TYPE;
   try {
     const r = await client.query(
-      `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct,
+                         entity_type,entity_type_confirmed,entity_type_set_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $8 THEN now() ELSE NULL END) RETURNING id`,
       [borrowerId, name, (fields.ein || null), (fields.formationState || null),
-        require('./fields').normalizeTypedDate(fields.formationDate), (fields.ownershipPct || null)]);  // WO-6 (F-M11): year-0026-proof formation date
-    return { id: r.rows[0].id, existed: false };
+        require('./fields').normalizeTypedDate(fields.formationDate), (fields.ownershipPct || null),
+        entityType, confirmed]);  // WO-6 (F-M11): year-0026-proof formation date
+    return { id: r.rows[0].id, existed: false, entityType, entityTypeConfirmed: confirmed };
   } catch (e) {
     // Only reachable where uq_llcs_borrower_name exists: a concurrent create
     // won the race for the same name — reuse the winner instead of erroring.
@@ -547,6 +813,10 @@ module.exports = {
   normalizeEin,
   findLlcByName,
   findOrCreateLlc,
+  applyEntitySlotWording,
+  confirmEntityType,
+  ownersMissingTitles,
+  shareCount,
   getOwnerLlcIds,
   getAncestorEntityIds,
   getDescendantEntityIds,
