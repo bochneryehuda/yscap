@@ -28,6 +28,19 @@ function statusColor(s) {
   return TEAL;
 }
 function money(n) { return n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
+// A refused order, in the words the server used. `missing` first (it is the actionable
+// list), then the route's own sentence; never the bare error CODE, which is for us.
+function refusal(out) {
+  if (!out) return '';
+  if (Array.isArray(out.missing) && out.missing.length) return 'Still needed: ' + out.missing.join(', ');
+  return out.message || '';
+}
+// The form the appraiser fills in. The NAME is the point — a bare product code is the
+// appraisal company's internal id and says nothing about what was ordered.
+function formLabel(name, code) {
+  if (name) return name;
+  return code ? ('Form #' + code) : 'auto-select pending';
+}
 function fmtDate(d) { if (!d) return '—'; try { return new Date(d).toLocaleDateString('en-US'); } catch (_) { return String(d); } }
 
 export default function AmcAppraisalPanel({ appId }) {
@@ -62,13 +75,19 @@ export default function AmcAppraisalPanel({ appId }) {
     try {
       const out = await api.amcPlaceOrder(appId, { place: doPlace });
       if (!out.ok) {
-        setErr(out.missing && out.missing.length ? ('Still needed: ' + out.missing.join(', ')) : (out.message || 'Could not place the order.'));
+        setErr(refusal(out));
       } else {
         setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Appraisal order placed.') : 'Draft saved.');
         await load();
         if (out.order) setSelected(out.order.id);
       }
-    } catch (e) { setErr(e.message || 'Could not place the order.'); }
+    } catch (e) {
+      // A refused order comes back as a non-2xx, so `api` throws and the SERVER's own
+      // sentence is on `e.data` — `e.message` is only the short code. Reading the
+      // body is what turns "order_failed" back into the plain explanation the route
+      // wrote (and, before that, the generic "Something went wrong on our end").
+      setErr(refusal(e.data) || e.message || 'Could not place the order.');
+    }
     setBusy(false);
   }, [appId, load]);
 
@@ -135,10 +154,17 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
   const card = preview.card || {};
   const prop = spec.property || {};
   const loan = spec.loan || {};
+  const code = preview.productCode || spec.productCode || form.productCode || null;
+  const formName = preview.formName || form.formName || null;
+  const contacts = spec.contacts || [];
+  const contactNotes = preview.contactNotes || [];
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-        <Field label="Form">{form.productCode ? ('#' + form.productCode) : 'auto-select pending'}</Field>
+        <Field label="Form">
+          <div>{formLabel(formName, code)}</div>
+          {formName && code ? <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>Their form #{code}</div> : null}
+        </Field>
         <Field label="Loan #">{spec.clientOrderNumber || '—'}</Field>
         <Field label="Property">{[prop.addressLine, prop.city, prop.state].filter(Boolean).join(', ') || '—'}</Field>
         <Field label="Type">{prop.titleCategory || '—'}</Field>
@@ -147,6 +173,8 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
         <Field label="Borrowers">{(spec.borrowers || []).map((b) => b.fullName || [b.firstName, b.lastName].filter(Boolean).join(' ') || b.legalEntityName).filter(Boolean).join(', ') || '—'}</Field>
         <Field label="Payment card">{card.onFile ? ((card.brand || 'card') + ' ••' + (card.last4 || '')) : 'not on file'}</Field>
       </div>
+
+      <ContactList contacts={contacts} notes={contactNotes} />
 
       {missing.length ? (
         <div style={{ marginTop: 10, color: '#9A3B33', fontSize: 13 }}>
@@ -164,6 +192,46 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
         </button>
       </div>
       {!outbound ? <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>Sending to the AMC is off — you can save a draft now and place it once it’s turned on.</div> : null}
+    </div>
+  );
+}
+
+// Who the appraiser gets, by role — the same four people the Class Valuation order
+// carries. HOW each one travels differs (the borrower rides their own record, the
+// property-access person is sent as a named contact, our loan officer is copied on
+// the appraisal company's notices), so each line says which — otherwise the screen
+// implies our loan officer is somebody the appraiser will phone.
+const ROLE_LABEL = {
+  Borrower: 'Borrower', Coborrower: 'Co-borrower',
+  PropertyAccess: 'Property access', LoanOfficer: 'Loan officer (us)',
+};
+const SENT_AS = {
+  borrower: 'sent with the borrower',
+  party: 'sent as the property contact',
+  notification: 'copied on updates',
+};
+function ContactList({ contacts, notes }) {
+  if (!contacts.length && !notes.length) return null;
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+      <SectionTitle>Contacts sent with the order</SectionTitle>
+      {contacts.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {contacts.map((c, i) => (
+            <div key={c.role + i} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              <span style={{ color: MUTED, fontSize: 12, minWidth: 130 }}>{ROLE_LABEL[c.role] || c.role}</span>
+              <span style={{ color: INK, fontWeight: 550 }}>{c.name || '—'}</span>
+              <span style={{ color: MUTED, fontSize: 12 }}>
+                {[c.company, c.email, c.phone].filter(Boolean).join(' · ') || 'no email or phone on file'}
+              </span>
+              <span style={{ color: TEAL, fontSize: 11 }}>{SENT_AS[c.sentAs] || ''}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {notes.map((n, i) => (
+        <div key={i} style={{ marginTop: 6, fontSize: 12, color: MUTED }}>{n}</div>
+      ))}
     </div>
   );
 }

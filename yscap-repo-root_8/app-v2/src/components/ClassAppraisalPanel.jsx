@@ -615,14 +615,20 @@ function VersionRow({ preview, chosen, onPick }) {
 function ProductRow({ preview, chosen, enabled, open, onOpen, onPick }) {
   const row = (preview.fields || []).find((f) => f.path === 'productId');
   const value = row ? row.value : null;
+  // The full form NAME, resolved by the server from Class's own catalogue. A number
+  // on its own does not say whether this is an interior 1004 or a desktop.
+  const title = preview.productTitle || null;
   return (
     <div style={{ border: `1px solid ${value ? LINE : BAD}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>Which report to order</div>
           <div style={{ color: value ? INK : BAD, fontWeight: 600 }}>
-            {value ? `Class product #${value}` : 'Not chosen yet'}
+            {value ? (title || `Class product #${value}`) : 'Not chosen yet'}
           </div>
+          {value && title ? (
+            <div style={{ fontSize: 12, color: MUTED }}>Their form #{value}</div>
+          ) : null}
           <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
             {chosen ? 'You picked this one.' : 'Class hasn’t given us a standard report to default to, so this is picked by hand for now.'}
           </div>
@@ -692,7 +698,7 @@ function FieldRow({ field, enums, occSuggestions, occIsList, value, onChange }) 
   const key = overrideKeyFor(field.path);
   const enumName = key ? ENUM_FOR[key] : null;
   const options = enumName ? (enums[enumName] || []) : null;
-  const shownValue = field.value == null || field.value === '' ? '—' : String(field.value);
+  const shownValue = field.display || (field.value == null || field.value === '' ? '—' : String(field.value));
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: '9px 12px', background: field.state === 'missing' ? '#FDF6F5' : '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>

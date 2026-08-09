@@ -96,6 +96,75 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     const list = await orderService.listOrders(c, appId);
     ok(list.length === 1 && list[0].id === draft.order.id, 'listOrders returns the draft');
 
+    // ---- the form's NAME, not just its number (owner-directed 2026-08-09) ----
+    // Two sources, both real: the tenant's own catalog in amc_lookup_cache, and the
+    // name the owner put on the rule. The catalog wins.
+    await c.query(
+      `INSERT INTO amc_form_map (program, product_code, product_name, priority, active)
+       VALUES ('ground_up', '77', 'Owner label for 77', 20, true)`);
+    await c.query(
+      `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
+       VALUES ('GetJobType', $1, $2::jsonb, now())
+       ON CONFLICT (lookup_type, subdomain)
+         DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`,
+      [ctx.subdomain || '', JSON.stringify([{ id: '5', name: '1004 w/ 1007 - Single Family Residence' }])]);
+
+    const named = await orderService.buildPreview(c, appId);
+    ok(named.formName === '1004 w/ 1007 - Single Family Residence',
+      'the preview names the form from the tenant catalog, not just its number');
+    ok(named.chosenForm.formName === named.formName, 'the chosen form carries the same name');
+    ok(named.productCode === '5', 'the preview says which product code that name belongs to');
+    ok(orderService.formNameFor('77', [], await orderService.formRules(c)) === 'Owner label for 77',
+      'a form outside the catalog still gets the name set on its rule');
+
+    const named2 = await orderService.createOrder(c, appId, { place: false, staffId: null });
+    ok(named2.order.form_description === '1004 w/ 1007 - Single Family Residence',
+      'the order records the form NAME, so the orders list never shows a bare number');
+
+    // ---- the four role contacts (owner-directed 2026-08-09) ----
+    // Class Valuation carries Borrower / Co-borrower / Property access / Loan officer;
+    // the AMC now carries the same four people, read by the SHARED reader.
+    const sc = await c.query(
+      `INSERT INTO service_contacts (borrower_id, contact_type, company_name, contact_name, email, phone)
+       VALUES ($1,'realtor','Acme Realty','Dana Realtor','dana@acme.test','555-9000') RETURNING id`, [borrowerId]);
+    await c.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type, added_by_kind)
+       VALUES ($1,$2,'realtor','staff')`, [appId, sc.rows[0].id]);
+    const lo = await c.query(
+      `INSERT INTO staff_users (email, full_name, role, phone, password_hash, is_active)
+       VALUES ($1,'Moshe Officer','loan_officer','555-7000','x',true) RETURNING id`,
+      [`amc-lo-${Date.now()}@example.com`]);
+    await c.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, lo.rows[0].id]);
+
+    const withPeople = await orderService.buildPreview(c, appId);
+    const role = (r) => (withPeople.spec.contacts || []).find((x) => x.role === r);
+    ok(role('Borrower') && role('Borrower').email, 'the borrower is on the order');
+    ok(role('PropertyAccess') && role('PropertyAccess').company === 'Acme Realty',
+      'the realtor who can open the door is finally sent — this was never wired for either vendor');
+    ok(role('PropertyAccess').phone === '555-9000', 'their phone number travels');
+    ok(role('LoanOfficer') && role('LoanOfficer').email, 'our loan officer is on the order');
+    ok(withPeople.spec.notifyEmails.some((e) => /amc-lo-/.test(e)),
+      'the officer is copied on the appraisal company’s notices (their loan-officer slot is the note buyer’s)');
+    ok(withPeople.spec.parties.bestContact === 'Agent',
+      'with a property-access contact, that is who the appraiser is told to call');
+    ok((withPeople.contactNotes || []).length === 0, 'nothing left to warn about once all four are on file');
+
+    // ---- TEST MODE / no login must never 500 (owner-reported 2026-08-09) ----
+    // The AMC master switch is off in a test environment, which is exactly the state
+    // the owner hit: pressing "Place order" used to throw out of here and surface as
+    // the server's generic "Something went wrong on our end".
+    let threw = null;
+    let placed = null;
+    try { placed = await orderService.createOrder(c, appId, { place: true, staffId: null }); }
+    catch (e) { threw = e; }
+    ok(!threw, 'placing an order with no live connection does not throw');
+    ok(placed && placed.ok === false && placed.error === 'not_connected',
+      'it is refused as "not connected", not as a server error');
+    ok(placed && /switched off|isn’t set up|Could not sign in/.test(placed.message || ''),
+      'the refusal says in plain words what is wrong');
+    ok(placed && placed.order && placed.order.status === 'draft',
+      'and the work is saved as a draft rather than thrown away');
+
     // ---- a refinance file must NOT carry a sales-contract amount ----
     const refi = await c.query(
       `INSERT INTO applications (borrower_id, ys_loan_number, program, loan_type, property_address, property_type, purchase_price, loan_amount)

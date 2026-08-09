@@ -148,10 +148,14 @@ router.post('/files/:id/order', async (req, res) => {
   try {
     const ins = await db.query(
       `INSERT INTO class_orders (application_id, reference_number, api_version, uad, order_path,
-                                 product_id, request_body, dryrun, status, placed_by, placed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,'placing',$9, now()) RETURNING id`,
+                                 product_id, product_title, request_body, dryrun, status, placed_by, placed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,'placing',$10, now()) RETURNING id`,
       [appId, preview.body.referenceNumber || null, preview.apiVersion, preview.uad, preview.path,
        preview.body.productId != null ? String(preview.body.productId) : null,
+       // The form's NAME as it was at the moment of ordering. Stored rather than
+       // looked up later on purpose: their catalogue can be renamed or retired, and
+       // an order must always be able to say which report it actually bought.
+       preview.productTitle || null,
        require('../lib/fields').jsonbText(preview.body), !!cfgd.dryrun, req.actor.id]);
     orderRowId = ins.rows[0].id;
   } catch (e) {

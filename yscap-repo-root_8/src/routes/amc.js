@@ -69,13 +69,25 @@ router.post('/files/:id/order', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const body = req.body || {};
-  const out = await orderService.createOrder(db, appId, {
-    staffId: req.actor && req.actor.id,
-    place: !!body.place,
-    overrides: readOverrides(body),
-    checklistItemId: isUuid(body.checklistItemId) ? body.checklistItemId : null,
-    parentOrderId: Number.isInteger(body.parentOrderId) ? body.parentOrderId : null,
-  });
+  let out;
+  try {
+    out = await orderService.createOrder(db, appId, {
+      staffId: req.actor && req.actor.id,
+      place: !!body.place,
+      overrides: readOverrides(body),
+      checklistItemId: isUuid(body.checklistItemId) ? body.checklistItemId : null,
+      parentOrderId: Number.isInteger(body.parentOrderId) ? body.parentOrderId : null,
+    });
+  } catch (e) {
+    // Anything unexpected here used to reach the global handler and come back as the
+    // generic "Something went wrong on our end", which tells the person at the desk
+    // nothing about a connection that is simply not set up yet. Say what happened.
+    console.warn('[amc] order failed:', e && e.message);
+    return res.status(502).json({
+      ok: false, error: 'order_failed',
+      message: 'The appraisal order could not be completed: ' + String((e && e.message) || 'unknown error').slice(0, 200),
+    });
+  }
   if (!out.ok) return res.status(out.error === 'file_not_found' ? 404 : 400).json(out);
   res.json(out);
 });

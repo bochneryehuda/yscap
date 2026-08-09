@@ -25,6 +25,7 @@ const session = require('./session');
 const lookups = require('./lookups');
 const formSelect = require('./form-select');
 const orderBuild = require('./order-build');
+const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
 
 // ---------------------------------------------------------------------------
 // Loan-file context loader — one query into the normalized shape order-build
@@ -128,7 +129,12 @@ async function loadContext(db, appId) {
       salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
-    parties: { bestContact: 'Borrower' },
+    // The four roles the appraiser may have to call, read by the ONE shared reader
+    // both appraisal desks use (src/lib/appraisal-contacts.js). Never re-read a
+    // borrower or an officer here — the two desks must name the same people.
+    contacts: (await loadAppraisalContacts(db, appId)) || {},
+    parties: {},
+
     // The appraisal-fee card, so the order desk shows whether payment is on file and
     // the same card fills the appraisal_card condition (bidirectional — owner-directed).
     card: await cardStatus(db, appId),
@@ -157,12 +163,58 @@ async function cardStatus(db, appId) {
 // ---------------------------------------------------------------------------
 async function formRules(db) {
   const r = await db.query(
-    `SELECT id, program, property_category, loan_purpose, product_code, subproduct_codes,
+    `SELECT id, program, property_category, loan_purpose, loan_type, property_key,
+            product_code, product_name, subproduct_codes,
             amc_identifier, priority, active
        FROM amc_form_map
       WHERE active = true
       ORDER BY priority ASC, id ASC`);
   return r.rows;
+}
+
+// ---------------------------------------------------------------------------
+// The form's NAME — "we need to see the full form name in the order", not #56634
+// (owner-directed 2026-08-09).
+//
+// A bare product code is the appraisal company's internal id and says nothing about
+// what was ordered; "1004 - Single Family Residence - Completed Subject to (w/As Is
+// Value)" is the thing a human is checking before an order goes out. Both names we
+// already hold are used, most authoritative first:
+//   1. the FORM CATALOG (`amc_lookup_cache`, GetJobType) — the vendor's own name for
+//      that id on THIS tenant, so it stays right when they rename a product;
+//   2. the rule's `product_name` (db/481) — what the owner called it when they set
+//      the default, which covers an auto-picked form before any live lookup has run.
+// Catalog rows are matched inside ONE subdomain only: their ids are per environment
+// (db/481's own rule), and a name borrowed from another tenant would confidently
+// describe the wrong report.
+// Returns null when we genuinely do not know — the screen then says "Form #<code>"
+// rather than inventing a name.
+// ---------------------------------------------------------------------------
+const idOf = (row) => {
+  const v = row && (row.id != null ? row.id : (row.Id != null ? row.Id : (row.jobTypeId != null ? row.jobTypeId : row.job_type_id)));
+  return v == null ? null : String(v).trim();
+};
+const nameOf = (row) => {
+  const v = row && (row.name || row.Name || row.jobTypeName || row.job_type_name || row.description);
+  const s = v == null ? '' : String(v).trim();
+  return s || null;
+};
+
+function formNameFor(productCode, forms, rules) {
+  const code = productCode == null ? null : String(productCode).trim();
+  if (!code) return null;
+  const hit = (Array.isArray(forms) ? forms : []).find((f) => idOf(f) === code);
+  const fromCatalog = hit ? nameOf(hit) : null;
+  if (fromCatalog) return fromCatalog;
+  const rule = (Array.isArray(rules) ? rules : []).find(
+    (r) => r && r.product_code != null && String(r.product_code).trim() === code && r.product_name);
+  return rule ? String(rule.product_name).trim() || null : null;
+}
+
+// The form catalog for a tenant, best-effort — an unreachable cache must never stop
+// an order being built. Always an array.
+async function formCatalog(db, subdomain) {
+  try { return await lookups.forms(db, subdomain); } catch (_) { return []; }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,14 +229,21 @@ async function buildPreview(db, appId, opts = {}) {
   const chosen = formSelect.chooseForm(deal, rules);
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
-  let forms = [];
-  try { forms = await lookups.forms(db, ctx.subdomain); } catch (_) { forms = []; }
+  const forms = await formCatalog(db, ctx.subdomain);
+  // The name of the form that would ACTUALLY be ordered — spec.productCode, so a
+  // staff override is named too, not just the auto-picked default.
+  const formName = formNameFor(spec.productCode, forms, rules);
   return {
     context: ctx,
     deal,
-    chosenForm: chosen,
+    chosenForm: chosen ? { ...chosen, formName } : null,
+    // Named at the top level too: with no rule matched there is no chosenForm at all,
+    // and a staff-picked form still has a name worth showing.
+    productCode: spec.productCode || null,
+    formName,
     spec,
     missing,
+    contactNotes: orderBuild.contactNotes(spec),
     canPlace: missing.length === 0,
     forms,        // the cached form catalog, for a staff override dropdown
     card: ctx.card,
@@ -203,14 +262,21 @@ async function insertOrder(db, appId, spec, maskedMessage, staffId, extra = {}) 
     `INSERT INTO amc_orders
        (application_id, checklist_item_id, client_order_number, client_reference_number,
         request_action, parent_order_id, product_code, subproduct_codes, amc_identifier,
+        form_description,
         status, rush, need_by_date, job_fee, management_fee,
         request_payload, dryrun, ordered_by, sp_subdomain)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [appId, extra.checklistItemId || null, spec.clientOrderNumber || null, spec.clientReferenceNumber || null,
      spec.requestAction || 'CreateAppraisal', extra.parentOrderId || null,
      spec.productCode || null, (spec.subproductCodes && spec.subproductCodes.length) ? spec.subproductCodes : null,
-     spec.amcIdentifier || null, 'draft', !!spec.rush, spec.needByDate || null,
+     spec.amcIdentifier || null,
+     // The form's NAME is recorded ON THE ORDER at the moment it is placed, so the
+     // orders list reads "1004 - Single Family Residence …" from the first second
+     // rather than "Form 56634" until the AMC's own ACK happens to carry a
+     // description. applyAck's COALESCE keeps the vendor's wording when it arrives.
+     extra.formName || null,
+     'draft', !!spec.rush, spec.needByDate || null,
      spec.jobFee != null ? spec.jobFee : null, spec.managementFee != null ? spec.managementFee : null,
      maskedMessage ? JSON.stringify(maskedMessage) : null, false, staffId || null,
      (cfg.amc && cfg.amc.subdomain) || null]);
@@ -250,6 +316,20 @@ async function applyAck(db, orderId, ack, resp) {
   return r.rows[0];
 }
 
+// Why we could not sign in to the appraisal company, in words a non-developer can
+// act on. The three real causes are: the master switch is off, the login has never
+// been set up, and the login was refused — and they need three different people.
+function signInMessage(e) {
+  const raw = String((e && e.message) || '');
+  if ((e && e.code) === 'AMC_DISABLED' || /AMC_DISABLED/.test(raw)) {
+    return 'Appraisal ordering is switched off. Turn it on in API Health first.';
+  }
+  if (/are not all set/.test(raw)) {
+    return 'The appraisal company login isn’t set up yet, so nothing can be sent. The order was saved as a draft — turn on test mode to check the order, or ask an admin to finish the connection.';
+  }
+  return 'Could not sign in to the appraisal company, so nothing was sent. The order was saved as a draft. (' + raw.slice(0, 160) + ')';
+}
+
 /**
  * Create — and optionally PLACE — an appraisal order for a file.
  *
@@ -272,25 +352,43 @@ async function createOrder(db, appId, opts = {}) {
 
   if (opts.place && missing.length) return { ok: false, missing, error: 'incomplete' };
 
-  // Build the message up front so the DRAFT stores the masked payload either way.
-  let built = null;
-  let authCtx = null;
-  if (opts.place) {
-    authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
-    built = cdg.buildCreateAppraisal(spec, authCtx);
-  } else {
-    // A draft still records what WOULD be sent (masked), using the config identifiers
-    // without a live api key — buildCreateAppraisal only needs them for the envelope.
-    const a = cfg.amc || {};
-    built = cdg.buildCreateAppraisal(spec, {
-      apiKey: null, subdomain: a.subdomain, lenderIdentifier: a.lenderIdentifier, sourceClientId: a.sourceClientId,
-    });
-  }
+  const formName = formNameFor(spec.productCode, await formCatalog(db, ctx.subdomain), rules);
 
+  // The identifiers the envelope needs when there is no live session — a draft, and
+  // TEST MODE, both build the exact message without one.
+  const a = cfg.amc || {};
+  const offlineCtx = { apiKey: null, subdomain: a.subdomain, lenderIdentifier: a.lenderIdentifier, sourceClientId: a.sourceClientId };
+
+  // TEST MODE MUST NOT LOG IN. The whole point of the dry run is to build the request
+  // and send NOTHING, but this used to call DoLogin first — so on a tenant whose
+  // AppraisalScope login is not set up yet (which is the state today) pressing "Place
+  // order" in test mode threw, the route had nothing to catch it, and the desk showed
+  // the server's generic "Something went wrong on our end". A test run now needs no
+  // credentials at all, and a REAL send that cannot log in is answered in plain words
+  // instead of a 500.
+  const dryrun = !!client.configured().dryrun;
+  let built = cdg.buildCreateAppraisal(spec, offlineCtx);
+
+  // The draft row is written BEFORE anything can fail, so a refusal below leaves the
+  // work saved rather than thrown away — and the message we then show can honestly
+  // say so.
   const order = await insertOrder(db, appId, spec, cdg.maskRequest(built.message ? built : { message: built }),
-    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId });
+    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId, formName });
 
   if (!opts.place) return { ok: true, order, missing, draft: true };
+
+  if (!dryrun) {
+    let authCtx = null;
+    try {
+      authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
+    } catch (e) {
+      const why = signInMessage(e);
+      await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`, [order.id, why]);
+      await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: why, staffId: opts.staffId });
+      return { ok: false, error: 'not_connected', message: why, order: await getOrder(db, order.id) };
+    }
+    built = cdg.buildCreateAppraisal(spec, authCtx);
+  }
 
   // Place it. An AddForm rides the parent's CDG order number as ?orderId=.
   let orderIdParam = null;
@@ -356,5 +454,5 @@ module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
   createOrder, listOrders, getOrder, journal,
   // exported for tests
-  addrParts, borrowerCtx,
+  addrParts, borrowerCtx, formNameFor,
 };

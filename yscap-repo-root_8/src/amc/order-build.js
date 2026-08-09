@@ -103,7 +103,7 @@ function buildOrderSpec(ctx, form, opts = {}) {
     jobFee: opts.jobFee != null ? opts.jobFee : null,
     managementFee: opts.managementFee != null ? opts.managementFee : null,
     requestComment: opts.requestComment || null,
-    notifyEmails: Array.isArray(opts.notifyEmails) ? opts.notifyEmails.filter(Boolean) : [],
+    notifyEmails: notifyList(ctx, opts),
 
     loan: {
       loanNumber: ctx.loanNumber || null,
@@ -143,12 +143,19 @@ function buildOrderSpec(ctx, form, opts = {}) {
       residence: b.residence || null,
     })),
 
+    // The people the appraiser may have to call, by ROLE — the same four Class
+    // Valuation carries (src/class/order-build.js), read once by the shared
+    // src/lib/appraisal-contacts.js so the two desks can never name different
+    // people for one file. See buildRoleContacts below for how each role travels.
+    contacts: buildRoleContacts(ctx, opts),
+
     parties: {
       loanOfficerId: (ctx.parties && ctx.parties.loanOfficerAmcId) || null,
       loanProcessorId: (ctx.parties && ctx.parties.loanProcessorAmcId) || null,
       investorId: (ctx.parties && ctx.parties.investorAmcId) || null,
       // Best-person-to-contact is REQUIRED (enum Borrower | Co-Borrower | Owner | Agent).
-      bestContact: opts.bestContact || (ctx.parties && ctx.parties.bestContact) || 'Borrower',
+      bestContact: opts.bestContact || (ctx.parties && ctx.parties.bestContact)
+        || bestContactFor(ctx),
     },
 
     embeddedFiles: Array.isArray(opts.embeddedFiles) ? opts.embeddedFiles : [],
@@ -162,6 +169,91 @@ function buildContacts(b) {
   if (b.workPhone) out.push({ type: 'Work', phone: b.workPhone });
   if (b.cellPhone && !(out[0] && out[0].phone === b.cellPhone)) out.push({ type: 'Mobile', phone: b.cellPhone });
   return out.length ? out : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Role contacts — "add to AppraisalScope the contacts same as we have with Class"
+// (owner-directed 2026-08-09).
+//
+// Class takes all four roles in ONE list. AppraisalScope does not have one list,
+// and the difference is not cosmetic:
+//   • BORROWER / CO-BORROWER already ride their own borrowers[] entries, so their
+//     phone and email go there (buildContacts above) and are never duplicated.
+//   • PROPERTY ACCESS is the person who opens the door. It travels as a named
+//     party, and it is the only reason `bestContact` may read anything other than
+//     "Borrower".
+//   • OUR LOAN OFFICER MAY NEVER BE SENT AS THEIR "LoanOfficer". That slot on the
+//     NAN tenant carries the NOTE BUYER (db/481 / src/amc/party-map.js — their list
+//     literally reads "Investor Blue Lake"), so putting our employee there would
+//     route the order, and its invoice, to the wrong capital partner. The officer
+//     is carried as a NOTIFICATION address instead — a documented CDG field — so
+//     they hear about the order without occupying a routing slot.
+// A role we cannot fill is simply absent; nothing here invents a person.
+// ---------------------------------------------------------------------------
+function buildRoleContacts(ctx, opts = {}) {
+  const src = ctx.contacts || {};
+  const rows = [];
+  const add = (role, person, how) => {
+    if (!person) return;
+    const name = person.fullName || [person.firstName, person.lastName].filter(Boolean).join(' ') || null;
+    if (!name && !person.email && !person.mobile && !person.workPhone) return;
+    rows.push({
+      role,
+      name,
+      firstName: person.firstName || null,
+      lastName: person.lastName || null,
+      company: person.company || null,
+      email: person.email || null,
+      phone: person.mobile || person.workPhone || null,
+      // How this person actually reaches the appraisal company, so the order
+      // screen can say so instead of implying every role is sent the same way.
+      sentAs: how,
+    });
+  };
+  add('Borrower', src.borrower, 'borrower');
+  add('Coborrower', src.coBorrower, 'borrower');
+  add('PropertyAccess', src.propertyContact, 'party');
+  add('LoanOfficer', src.loanOfficer, 'notification');
+  if (opts.suppressLoanOfficerNotify) return rows.filter((r) => r.role !== 'LoanOfficer');
+  return rows;
+}
+
+// The order's notification list: whatever staff typed, plus our own loan officer
+// (see buildRoleContacts — this is how the officer travels, since their LoanOfficer
+// slot belongs to the note buyer). De-duplicated case-insensitively so an officer
+// somebody already typed in is not notified twice.
+function notifyList(ctx, opts = {}) {
+  const typed = Array.isArray(opts.notifyEmails) ? opts.notifyEmails : [];
+  const lo = ctx.contacts && ctx.contacts.loanOfficer;
+  const all = [...typed, lo && lo.email].filter(Boolean).map((e) => String(e).trim()).filter(Boolean);
+  const seen = new Set();
+  return all.filter((e) => { const k = e.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+// Their required "best person to contact" enum (Borrower | Co-Borrower | Owner |
+// Agent). A file with somebody recorded for property access means the appraiser
+// should call THEM to get in; with nobody, it is the borrower — which is what this
+// desk has always sent. The exact enum spelling is one of the leaves marked
+// "verify against UAT" in cdg.js.
+function bestContactFor(ctx) {
+  const pc = ctx.contacts && ctx.contacts.propertyContact;
+  return pc ? 'Agent' : 'Borrower';
+}
+
+// Who is missing, in plain words, for the order screen. NOT a refusal: an appraisal
+// can be ordered with only the borrower, which is how every order placed so far has
+// gone out. It says what the appraiser will be left with.
+function contactNotes(spec) {
+  const rows = (spec && spec.contacts) || [];
+  const has = (role) => rows.some((r) => r.role === role && (r.email || r.phone));
+  const notes = [];
+  if (!has('PropertyAccess')) {
+    notes.push('No property-access contact on the file — the appraiser will call the borrower to arrange entry.');
+  }
+  if (!has('LoanOfficer')) {
+    notes.push('No loan-officer email on the file — nobody here will be copied on the appraisal company’s notices.');
+  }
+  return notes;
 }
 
 // What's still missing before this order can be sent? Returns [] when the required
@@ -182,10 +274,23 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
+  // Somebody has to let the appraiser in. Class refuses an order with no borrower
+  // contact for exactly this reason. Here the test is satisfied by ANY of the ways a
+  // reachable person actually reaches the appraisal company — the borrower's own
+  // contact methods on borrowers[], or a named property-access party — because a
+  // realtor with the lockbox answers the question just as well as the borrower does.
+  const borrowerReachable = (spec.borrowers || []).some((b) =>
+    Array.isArray(b.contacts) && b.contacts.some((c) => c.email || c.phone));
+  const accessReachable = (spec.contacts || []).some((c) =>
+    c.role === 'PropertyAccess' && (c.email || c.phone));
+  if (!borrowerReachable && !accessReachable) {
+    missing.push('an email or phone number for the borrower (the appraiser needs someone to call to get in)');
+  }
   return missing;
 }
 
 module.exports = {
-  buildOrderSpec, dealShapeFor, missingRequired,
+  buildOrderSpec, dealShapeFor, missingRequired, contactNotes,
   titleCategoryFor, occupancyFor, loanPurposeFor,
+  _internals: { buildRoleContacts, bestContactFor, notifyList, buildContacts },
 };

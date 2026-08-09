@@ -53,6 +53,33 @@ async function main() {
   ok(ctx.property.category === 'sfr', 'the property type is the CANONICAL key, not the raw label');
   ok(ctx.borrower.email === `ada.${tag}@example.com`, 'the borrower comes through');
 
+  // The person who can open the door. Both appraisal desks carried
+  // `propertyContact: null, // filled from file contacts once wired`, so a realtor or
+  // contractor recorded on the file for exactly this purpose was never sent to either
+  // vendor. One shared reader (src/lib/appraisal-contacts.js) fills it for both.
+  {
+    const sc = await db.query(
+      `INSERT INTO service_contacts (borrower_id, contact_type, company_name, contact_name, email, phone)
+       VALUES ($1,'realtor','Keystone Realty','Pat Agent',$2,'570-555-0101') RETURNING id`,
+      [borrowerId, `pat.${tag}@example.com`]);
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type, added_by_kind)
+       VALUES ($1,$2,'realtor','staff')`, [appId, sc.rows[0].id]);
+    const withAccess = await orderService.loadContext(db, appId);
+    ok(withAccess.propertyContact && withAccess.propertyContact.company === 'Keystone Realty',
+      'the file’s realtor is finally read as the property-access contact');
+    ok(withAccess.propertyContact.firstName === 'Pat' && withAccess.propertyContact.lastName === 'Agent',
+      'their name is split for a vendor that wants first + last');
+    const built = require('../src/class/order-build').buildOrder(withAccess);
+    const roles = (built.body.contacts || []).map((c) => c.Type || c.type);
+    ok(roles.includes('PropertyAccess'), 'and Class is actually told about them');
+    // Every other file is unaffected: with nobody recorded, the order still says so
+    // rather than inventing a contact.
+    await db.query('DELETE FROM application_service_contacts WHERE application_id=$1', [appId]);
+    const without = await orderService.loadContext(db, appId);
+    ok(without.propertyContact === null, 'a file with no such contact still reports none');
+  }
+
   // --- the preview shows everything --------------------------------------
   const pv = await orderService.buildPreview(db, appId);
   ok(!!pv, 'a preview is produced');
