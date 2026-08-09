@@ -26,34 +26,8 @@ const lookups = require('./lookups');
 const formSelect = require('./form-select');
 const orderBuild = require('./order-build');
 const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
-
-/**
- * WHAT THE PERSON AT THE DESK IS TOLD WHEN A SEND FAILS.
- *
- * The exception's own text is written for US — "AMC CreateAppraisal -> 502",
- * "AMC_OUTBOUND_DISABLED: refusing CreateAppraisal — writes are gated off", "fetch
- * failed", a raw vendor description. Returned as `message` it is relayed by the route
- * and rendered verbatim in the desk's banner, where a non-developer learns nothing from
- * it and cannot act on it. The two cases a person CAN act on are told apart, and the
- * detail goes to the log.
- */
-// THE VENDOR'S OWN REFUSAL IS WORTH SHOWING — "Loan number already exists" tells the
-// person exactly what to do, unlike a transport error — but it is THEIR text, so it is
-// bounded and framed rather than pasted raw, and a bare numeric code (which says nothing
-// to anybody) is replaced by plain words.
-function nackMessage(err, what) {
-  const d = err && err.description != null ? String(err.description).trim() : '';
-  if (!d) return 'The appraisal company would not accept ' + what + '.';
-  return 'The appraisal company would not accept ' + what + ': ' + d.slice(0, 300);
-}
-
-function sendFailMessage(e, what) {
-  if (e && e.code === 'AMC_OUTBOUND_DISABLED') {
-    return 'Sending to the appraisal company is switched off, so ' + what + ' was not sent.';
-  }
-  return 'Could not reach the appraisal company, so ' + what + ' was not sent. '
-    + 'Please try again in a moment.';
-}
+// One definition for both desks — never a pasted copy; see the module header.
+const { sendFailMessage, nackMessage } = require('../lib/appraisal-messages');
 
 
 // ---------------------------------------------------------------------------
@@ -470,7 +444,7 @@ async function createOrder(db, appId, opts = {}) {
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
       [order.id, String(e.message || e)]);
     await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: String(e.message || e), staffId: opts.staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'the order') };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'The order') };
   }
 
   // Dry-run: the transport short-circuited without sending. Record the attempt.

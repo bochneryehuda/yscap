@@ -36,6 +36,9 @@
 const db = require('../db');
 const client = require('./client');
 const reasons = require('./revision-reasons');
+// The SAME wording both desks use — see src/lib/appraisal-messages.js. Four hand-typed
+// copies lived here, and one of them told a READ path that nothing had been sent.
+const { sendFailMessage } = require('../lib/appraisal-messages');
 
 const text = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
 
@@ -82,8 +85,7 @@ async function note(orderRowId, content, { staffId } = {}) {
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'send_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
-      detail: String((e && e.message) || e).slice(0, 500) };
+    return { ok: false, error: e.code || 'send_failed', id: rowId, message: sendFailMessage(e, 'Your message') };
   }
 }
 
@@ -157,8 +159,10 @@ async function syncNotes(orderRowId) {
     }
     return { ok: true, added, total: list.length };
   } catch (e) {
-    return { ok: false, error: e.code || 'lookup_failed', message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
-      detail: String((e && e.message) || e).slice(0, 500) };
+    // A read has no row to stamp, so the log is where the detail lives — the browser
+    // gets the sentence, we keep what actually happened.
+    console.warn('[class] reading the note thread failed for order', order && order.id, ':', (e && e.message) || e);
+    return { ok: false, error: e.code || 'lookup_failed', message: sendFailMessage(e, 'The replies', { reading: true }) };
   }
 }
 
@@ -205,8 +209,7 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
-      detail: String((e && e.message) || e).slice(0, 500) };
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }
 
@@ -243,8 +246,7 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status='error', last_error=$2 WHERE id=$1`,
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
-      detail: String((e && e.message) || e).slice(0, 500) };
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }
 

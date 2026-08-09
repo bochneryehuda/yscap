@@ -373,8 +373,7 @@ async function processEvent(row, { dbc } = {}) {
     }
     // The raw text is kept for the worker and the log; `message` is what any screen
     // that ever renders this would show.
-    return { ok: false, error: 'callback_failed', detail: String((e && e.message) || e).slice(0, 500),
-      message: 'An update from the appraisal company could not be recorded. It will be retried.',
+    return { ok: false, error: 'callback_failed',       message: 'An update from the appraisal company could not be recorded. It will be retried.',
       attempts: attempt, dead };
   }
 }
@@ -463,7 +462,8 @@ async function refreshOrder(order) {
     const body = await client.order(order.class_order_id, { version: v.version });
     return { ok: true, version: v, order: body };
   } catch (e) {
-    return { ok: false, reason: 'lookup_failed', detail: String((e && e.message) || e).slice(0, 500),
+    console.warn('[class] reading order', order && order.class_order_id, 'failed:', (e && e.message) || e);
+    return { ok: false, reason: 'lookup_failed',
       message: 'That order could not be read from the appraisal company just now. Please try again in a moment.' };
   }
 }

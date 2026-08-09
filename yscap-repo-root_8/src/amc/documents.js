@@ -26,34 +26,8 @@ const session = require('./session');
 const storage = require('../lib/storage');
 const tpr = require('../lib/tpr-export');
 const { journal } = require('./order-service');
-
-/**
- * WHAT THE PERSON AT THE DESK IS TOLD WHEN A SEND FAILS.
- *
- * The exception's own text is written for US — "AMC CreateAppraisal -> 502",
- * "AMC_OUTBOUND_DISABLED: refusing CreateAppraisal — writes are gated off", "fetch
- * failed", a raw vendor description. Returned as `message` it is relayed by the route
- * and rendered verbatim in the desk's banner, where a non-developer learns nothing from
- * it and cannot act on it. The two cases a person CAN act on are told apart, and the
- * detail goes to the log.
- */
-// THE VENDOR'S OWN REFUSAL IS WORTH SHOWING — "Loan number already exists" tells the
-// person exactly what to do, unlike a transport error — but it is THEIR text, so it is
-// bounded and framed rather than pasted raw, and a bare numeric code (which says nothing
-// to anybody) is replaced by plain words.
-function nackMessage(err, what) {
-  const d = err && err.description != null ? String(err.description).trim() : '';
-  if (!d) return 'The appraisal company would not accept ' + what + '.';
-  return 'The appraisal company would not accept ' + what + ': ' + d.slice(0, 300);
-}
-
-function sendFailMessage(e, what) {
-  if (e && e.code === 'AMC_OUTBOUND_DISABLED') {
-    return 'Sending to the appraisal company is switched off, so ' + what + ' was not sent.';
-  }
-  return 'Could not reach the appraisal company, so ' + what + ' was not sent. '
-    + 'Please try again in a moment.';
-}
+// One definition for both desks — never a pasted copy; see the module header.
+const { sendFailMessage, nackMessage } = require('../lib/appraisal-messages');
 
 
 // The stable category labels the auto-upload rules key on (tpr-export's own strings).
@@ -197,7 +171,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   try { staged = await stage(files); }
   catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false, error: String(e.message || e), staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'stage_failed', message: sendFailMessage(e, 'the documents'), skipped };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'stage_failed', message: sendFailMessage(e, 'The documents'), skipped };
   }
 
   // THE VENDOR ANSWERS PER FILE, AND A FAILURE THERE IS AN HTTP 200. `/postdocuments`
@@ -286,7 +260,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   try { resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: amcAction, dryrun }); }
   catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, ok: false, error: String(e.message || e), staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'the documents'), skipped };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'The documents'), skipped };
   }
 
   const dry = !!(resp && resp.__dryrun);
@@ -327,7 +301,11 @@ async function autoUploadForOrder(dbh, order, deps = {}) {
     && !/\.html?$/i.test(String(d.filename || '')));
   if (!pick.length) return { ok: true, uploaded: 0 };
   const out = await uploadToOrder(dbh, order, { staffId: null, documentIds: pick.map((d) => d.id) }, { ...deps, dryrun: autoDry });
-  return { ok: out.ok, uploaded: out.uploaded ? out.uploaded.length : 0, error: out.error, skipped: out.skipped };
+  // `message` rides along or the poller has only a CODE to print — every plain
+  // sentence the send path composes would stop at this line, on the one path where
+  // nobody is watching and the log is the whole record.
+  return { ok: out.ok, uploaded: out.uploaded ? out.uploaded.length : 0,
+    error: out.error, message: out.message, skipped: out.skipped };
 }
 
 module.exports = { listUploadable, uploadToOrder, autoUploadForOrder, docTypeForCategory, categoryOf, CAT_SOW, CAT_CONTRACT };

@@ -273,6 +273,21 @@ const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleStr
 // on the very screen this branch first put a property-access person on.
 function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 
+// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT.
+// `class_notes.send_error` and `class_revisions.last_error` hold whatever the transport
+// threw, truncated — "Class addNote failed: HTTP 502", "connect ECONNREFUSED 10.0.0.4:443",
+// "class: the UAD version of this order is unknown…". Rendering that put the raw text on
+// the owner's screen PERMANENTLY (it is persisted on the row), directly under a banner
+// that had just said the same thing in plain words. The row says what happened and what
+// it means for the message; the text itself stays in the database for us.
+function failNote(stored) {
+  if (!stored) return null;
+  const t = String(stored);
+  // The one distinction a person can act on: a switch of ours versus their end.
+  if (/switched off|disabled/i.test(t)) return 'not delivered — the connection is switched off';
+  return 'not delivered — it will be retried';
+}
+
 // The form's NAME on an order, or null. The server fills it in on read for orders
 // placed before it was stored, so this is deliberately not a second place that decides
 // what a form is called — it only asks whether we have a name to show.
@@ -437,7 +452,7 @@ function OrderDetail({ appId, order, onChanged }) {
                   </div>
                   <div style={{ fontSize: 11, color: n.send_error ? BAD : MUTED, marginTop: 2 }}>
                     {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
-                    {n.send_error ? ` · not delivered: ${n.send_error}` : ''}
+                    {n.send_error ? ` · ${failNote(n.send_error)}` : ''}
                     {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
                   </div>
                 </div>
@@ -472,7 +487,7 @@ function OrderDetail({ appId, order, onChanged }) {
               <ul style={{ margin: '4px 0 0 18px', padding: 0, color: MUTED, fontSize: 13 }}>
                 {(r.reasons || []).map((x, j) => <li key={j}>{x.reason || x.reasonType}</li>)}
               </ul>
-              {r.last_error ? <div style={{ fontSize: 12, color: BAD, marginTop: 4 }}>{r.last_error}</div> : null}
+              {r.last_error ? <div style={{ fontSize: 12, color: BAD, marginTop: 4 }}>{failNote(r.last_error)}</div> : null}
             </div>
           )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>We haven’t asked Class for anything on this order.</div>}
         </div>

@@ -90,6 +90,29 @@ async function run(result) {
   ok(/would not accept/.test(out) && /could not send/.test(out),
      'a mixed batch reports each side to the right party');
 
+  // A REFUSAL THAT SAYS SOMETHING NEW IS ALWAYS SAID, even when files were also held
+  // back individually (tenth audit). `uploadToOrder` returns `skipped` on EVERY refusal
+  // path — including the send failing and the connection being switched off — so
+  // suppressing the batch line whenever anything was held back meant one unreadable
+  // document got reported while two documents failing to send went unmentioned, on the
+  // one path where this line is the only signal anybody gets.
+  out = await run({ ok: false, error: 'send_failed',
+    message: 'The documents could not be sent — the appraisal company could not be reached.',
+    skipped: [{ documentId: 'd1', filename: 'a.pdf', reason: 'read_failed', detail: 'the stored copy could not be read' }] });
+  ok(/could not be reached/.test(out), 'a send that failed is reported even when a file was also held back');
+  ok(/a\.pdf/.test(out), 'and the held-back file is still named as well');
+
+  out = await run({ ok: false, error: 'outbound_disabled',
+    message: 'Sending to the appraisal company is switched off, so the documents were not sent.',
+    skipped: [{ documentId: 'd1', filename: 'a.pdf', reason: 'read_failed', detail: 'unreadable' }] });
+  ok(/switched off/.test(out), 'and so is the connection being switched off');
+
+  // …but a refusal whose sentence is BUILT FROM those same skips is not repeated.
+  out = await run({ ok: false, error: 'stage_rejected',
+    message: 'The appraisal company would not accept any of those documents: a.pdf — virus scan',
+    skipped: [{ documentId: 'd1', filename: 'a.pdf', reason: 'stage_rejected', detail: 'virus scan' }] });
+  ok((out.match(/a\.pdf/g) || []).length === 1, 'a batch refusal composed from the skips is not said twice');
+
   // A whole-batch refusal is reported with its sentence.
   out = await run({ ok: false, error: 'stage_rejected', message: 'The appraisal company would not accept that document: sow.pdf — virus scan', skipped: [] });
   ok(/would not accept/.test(out), 'a whole-batch refusal is reported, with its own words');

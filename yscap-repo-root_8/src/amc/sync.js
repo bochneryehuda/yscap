@@ -283,12 +283,28 @@ async function autoUploadStep(dbh, order) {
     if (ours.length) {
       console.warn('[amc] could not send', ours.length, 'document(s) on order', order.id + ':', list(ours));
     }
-    // ONLY WHAT THE TWO LINES ABOVE DID NOT ALREADY SAY. When every held-back document
-    // was named individually, the batch sentence repeats them — and for years the two
-    // could even contradict each other, one blaming the appraisal company while the
-    // other blamed our storage. A refusal with nothing in `skipped` (the send itself
-    // failed, the connection is off) has no per-file line, and that is what this is for.
-    if (up && up.ok === false && up.error && up.error !== 'nothing_to_upload' && !held.length) {
+    // ONLY WHAT THE TWO LINES ABOVE DID NOT ALREADY SAY — and that is decided by the
+    // batch's own ERROR CODE, not by whether anything was held back.
+    //
+    // Exactly two codes are composed FROM the skips (`documents.js` builds their
+    // sentence out of the same list the lines above print), so those two would repeat.
+    // Every other refusal — the send failed, the connection is switched off, the vendor
+    // refused the whole message — says something the per-file lines do NOT contain, and
+    // `uploadToOrder` returns `skipped` on those paths too. Keying on `held.length`
+    // therefore silenced them: one unreadable document was reported while two documents
+    // failing to send, or the connection being off entirely, went unlogged on the one
+    // path where this line is the only signal anybody gets.
+    // …and it only REPEATS when there were skips to print in the first place: the same
+    // code with an EMPTY list (every file refused before any per-file line existed)
+    // makes the batch sentence the only signal there is, so it must still be said.
+    //
+    // `nothing_to_upload` is silent either way, and always was: there was nothing to
+    // send, which is not a refusal and not news. When it DOES carry skips (every picked
+    // document failed to be read) those are printed above as ours, which is the story.
+    const code = up && up.error;
+    const REPEATS_SKIPS = new Set(['stage_rejected', 'unmatched_answer']);
+    const alreadySaid = code === 'nothing_to_upload' || (REPEATS_SKIPS.has(code) && held.length > 0);
+    if (up && up.ok === false && code && !alreadySaid) {
       console.warn('[amc] auto document upload refused for order', order.id + ':', up.message || up.error);
     }
   } catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }

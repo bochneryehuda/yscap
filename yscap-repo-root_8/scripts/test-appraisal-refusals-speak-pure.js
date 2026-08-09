@@ -44,13 +44,28 @@ ok(FILES.length >= 9, 'both desks are actually being read (a shrunken list would
 // `{ ok: false, error: 'x' }` and `res.status(4xx|5xx).json({ error: 'x' })` must carry
 // a `message` within the same object literal. The scan walks braces from the `{` so a
 // multi-line literal is read whole rather than line by line.
+// The walker must SKIP strings, template literals and comments. Counting braces inside
+// them means one `{` in a message string runs the slice to end-of-file — and a slice
+// that long contains a `message:` somewhere, so every site after it passes silently.
+// A scan that fails open is worse than no scan.
 function objectAt(src, openIdx) {
   let depth = 0;
   for (let i = openIdx; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') { depth--; if (!depth) return src.slice(openIdx, i + 1); }
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i); if (i < 0) break; continue; }
+    if (c === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i); if (i < 0) break; i++; continue; }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c;
+      for (i++; i < src.length; i++) {
+        if (src[i] === '\\') { i++; continue; }
+        if (src[i] === q) break;
+      }
+      continue;
+    }
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (!depth) return src.slice(openIdx, i + 1); }
   }
-  return src.slice(openIdx);
+  return null;   // unbalanced — report nothing rather than a runaway slice
 }
 
 const missingWords = [];
@@ -60,20 +75,42 @@ for (const rel of FILES) {
   const lineOf = (idx) => src.slice(0, idx).split('\n').length;
 
   // ---- service-shaped refusals: { ok: false, error: … }
-  const re = /\{\s*(?:\/\/[^\n]*\n\s*)*ok:\s*false\s*,/g;
+  // `ok: false` ANYWHERE in the literal, not only as its first key — `{ error:'x',
+  // ok:false }` and `{ ok: false }` with no trailing comma both used to be invisible.
+  const re = /\bok:\s*false\b/g;
   let m;
   while ((m = re.exec(src))) {
-    const obj = objectAt(src, m.index);
+    // Walk back to the `{` that opens the literal this key sits in, and keep walking
+    // until one of them actually CONTAINS the key — a nested literal opens later.
+    let open = src.lastIndexOf('{', m.index);
+    let obj = null;
+    while (open > 0) {
+      const cand = objectAt(src, open);
+      if (cand && open + cand.length > m.index) { obj = cand; break; }
+      open = src.lastIndexOf('{', open - 1);
+    }
+    if (!obj) continue;
+    // ONLY A LITERAL THAT IS RETURNED IS AN ANSWER TO SOMEBODY. `journal(db, {…, ok:
+    // false, error: <raw> })` writes an AUDIT ROW — that one is written for us, the raw
+    // text belongs in it, and demanding a plain sentence there would be demanding the
+    // opposite of the rule. So the object must sit directly after `return`.
+    if (!/\breturn\s*$/.test(src.slice(Math.max(0, open - 12), open))) continue;
     if (!/\berror\s*:/.test(obj)) continue;         // not a refusal, just a false flag
     if (!/\bmessage\s*:/.test(obj)) missingWords.push(`${rel}:${lineOf(m.index)}`);
   }
 
   // ---- route-shaped refusals: res.status(4xx|5xx).json({ … })
-  const re2 = /res\s*\.\s*status\(\s*(\d{3})\s*\)\s*\.\s*json\(\s*\{/g;
+  // ANY status expression, not only a literal — `res.status(vendorFailStatus(out))`
+  // is exactly the shape used for the vendor refusals, and it was never scanned.
+  const re2 = /res\s*\.\s*status\(\s*([^)]*)\s*\)\s*\.\s*json\(\s*\{/g;
   while ((m = re2.exec(src))) {
-    const code = Number(m[1]);
+    // A computed status is assumed to be a refusal (that is what those helpers are
+    // for); a literal under 400 is a success and is not one.
+    const lit = /^\d{3}$/.test(m[1].trim()) ? Number(m[1].trim()) : null;
+    const code = lit == null ? 500 : lit;
     if (code < 400) continue;
-    const obj = objectAt(src, src.indexOf('{', m.index + m[0].length - 1));
+    const obj = objectAt(src, m.index + m[0].length - 1);
+    if (!obj) continue;
     // 403/404 are their own complete answer — "forbidden" / "not found" is already the
     // whole story and a sentence would add nothing. Everything else must speak.
     if (code === 403 || code === 404) continue;

@@ -47,26 +47,82 @@ function matchStaged(files, staged) {
   if (!answers.length) return out;
 
   const taken = new Set();
-  // A FILENAME IS COMPARED BY MEANING, NEVER BY SPELLING — the same rule this repo
-  // already applies to every other free-text value that two systems both write (the
-  // loan term, the property type, an address). An upload endpoint routinely rewrites
-  // the name it was handed: spaces to underscores, a case change, punctuation dropped.
-  // Comparing those byte-for-byte gets it wrong in BOTH directions, and both directions
-  // shipped:
-  //   • read as DISAGREEMENT, a rewritten echo of THIS file's own name vetoed the
-  //     `part<i>` label we ourselves assigned (client.js appends the parts as 'part'+i),
-  //     so the document was refused and the desk reported that the appraisal company had
-  //     not answered — when they had, correctly.
-  //   • read as NO EVIDENCE, a rewritten echo of ANOTHER file's name stopped
-  //     contradicting the part number, so a vendor that reorders AND renumbers AND
-  //     rewrites filenames silently swapped two documents.
-  // One key answers both: "Contract_2024.pdf" and "Contract 2024.pdf" are the same
-  // name, and are not the same name as "Scope of Work.pdf".
-  const fnKey = (v) => {
+
+  // ===========================================================================
+  // HOW A FILENAME IS COMPARED — EXACT FIRST, MEANING ONLY WHEN IT IS SAFE.
+  // ===========================================================================
+  // Comparing byte-for-byte is wrong: an upload endpoint routinely rewrites the name it
+  // was handed (spaces to underscores, a case change, punctuation dropped), and reading
+  // that as disagreement vetoed the `part<i>` label we assign ourselves — the document
+  // was refused and the desk reported that the appraisal company had not answered, when
+  // they had.
+  //
+  // Comparing ONLY by meaning is also wrong, and worse. Normalizing collapses case and
+  // punctuation, so two files this loan genuinely has — the purchase "Contract.pdf" and
+  // the assignment "contract.pdf" — become one name. Both then stop discriminating, the
+  // veto that placed them cannot fire, and a reordered batch swaps them. That shipped,
+  // and it is the failure this whole module exists to prevent.
+  //
+  // So the exact name is the evidence whenever it settles the question, and the
+  // normalized key is consulted only where it is UNAMBIGUOUS — a key that two of our
+  // files share proves nothing about either.
+  const exactOf = (v) => (v == null ? null : String(v));
+  const keyOf = (v) => {
+    if (v == null) return null;
     const k = String(v).toLowerCase().replace(/[^a-z0-9]+/g, '');
-    return k || null;
+    return k || null;   // an all-punctuation name has no meaning to compare
   };
-  const nameOf = (f) => (f && f.fileName != null ? fnKey(f.fileName) : null);
+  const fileExact = files.map((f) => exactOf(f && f.fileName));
+  const fileKey = files.map((f) => keyOf(f && f.fileName));
+  const countExact = (v) => (v == null ? 0 : fileExact.filter((x) => x === v).length);
+  const countKey = (v) => (v == null ? 0 : fileKey.filter((x) => x === v).length);
+
+  // Does this answer's filename identify file i, and how strongly? 'exact' beats 'key';
+  // null means it says nothing about file i. A key is only allowed to identify when it
+  // picks out exactly one of our files.
+  function identifies(s, i) {
+    if (!s || s.fileName == null) return null;
+    // An exact name TWO OF OUR FILES SHARE identifies neither of them — the purchase and
+    // the assignment are both literally "Contract.pdf". The key branch below always
+    // asked this; the exact branch did not, so a duplicate-named pair was placed by
+    // position dressed up as evidence.
+    const e = exactOf(s.fileName);
+    if (e != null && fileExact[i] != null && e === fileExact[i] && countExact(e) === 1) return 'exact';
+    const k = keyOf(s.fileName);
+    if (k != null && fileKey[i] != null && k === fileKey[i] && countKey(k) === 1) return 'key';
+    return null;
+  }
+  // CONTRADICTING TAKES LESS EVIDENCE THAN IDENTIFYING, and the two must not share a
+  // bar. `identifies` demands uniqueness, because placing a document on the strength of
+  // an ambiguous name is how documents get swapped. But a name does not have to pick out
+  // exactly one file to tell you it is not about THIS one: "contract.pdf" plainly is not
+  // "photo 1.pdf", even on a loan carrying two files called "contract.pdf". Requiring
+  // uniqueness on both sides silently dropped that veto and trusted the part number.
+  //
+  // So a filename contradicts file i when it fits some OTHER file BETTER than it fits
+  // file i — exact spelling beats a mere match of meaning, which beats nothing at all.
+  // Ties never contradict: a name matching two files equally says nothing about either.
+  const strengthFor = (s, j) => {
+    if (!s || s.fileName == null) return 0;
+    if (fileExact[j] != null && exactOf(s.fileName) === fileExact[j]) return 2;
+    if (fileKey[j] != null && keyOf(s.fileName) === fileKey[j]) return 1;
+    return 0;
+  };
+  function namesAnotherFile(s, i) {
+    const mine = strengthFor(s, i);
+    for (let j = 0; j < files.length; j++) {
+      if (j !== i && strengthFor(s, j) > mine) return true;
+    }
+    return false;
+  }
+  // Whether file i's own name can tell it apart from its siblings at all — by its exact
+  // spelling, or by a key no sibling shares.
+  const discriminates = (i) => (fileExact[i] != null && countExact(fileExact[i]) === 1)
+    || (fileKey[i] != null && countKey(fileKey[i]) === 1);
+  // …and the same question of the OTHER side: an answer whose filename two answers claim
+  // identifies neither of them.
+  const claimedOnce = (i) => answers.filter((s) => identifies(s, i)).length === 1;
+
   // The length agreeing is what makes a bare `part<i>` and a bare position believable:
   // it means nothing was dropped, so their numbering is still ours.
   const sameLength = answers.length === files.length;
@@ -86,39 +142,16 @@ function matchStaged(files, staged) {
     && named.every((n) => n >= 0 && n < answers.length);
   const barePartNamesTrusted = sameLength || !looksRenumbered;
 
-  // A filename shared by two of the files we are sending CANNOT tell them apart, so it
-  // corroborates nothing — treating it as agreement is how a duplicate-named pair (the
-  // purchase "Contract.pdf" and the assignment "Contract.pdf") gets swapped.
-  const discriminates = (i) => {
-    const fn = nameOf(files[i]);
-    return fn != null && files.filter((f) => nameOf(f) === fn).length === 1;
-  };
-  // …and the same question asked of the OTHER side. A filename TWO ANSWERS claim
-  // identifies neither of them: one of the two is echoing a name that is not its own,
-  // so this response's filenames cannot be taken at face value at all. Pass 2 already
-  // refuses on this (it wants exactly one file AND exactly one answer); pass 3 must ask
-  // it too, or it hands the file the answer that merely happens to sit in its position
-  // and calls the agreeing filename corroboration — which is pass 2's refusal undone.
-  const claimedOnce = (fn) => answers.filter((s) => s.fileName != null
-    && fnKey(s.fileName) === fn).length === 1;
-
-  // A name that means one of our OTHER files contradicts this file's part number; a
-  // name that means NONE of our files is a rewrite we cannot interpret, and an
-  // uninterpretable label must not outvote one we wrote ourselves.
-  const namesAnotherFile = (i, fn) => fn !== nameOf(files[i])
-    && files.some((f) => nameOf(f) === fn);
-
   // ---- pass 1: the part name, corroborated ---------------------------------
   for (let i = 0; i < files.length; i++) {
     const want = 'part' + i;
     const hit = answers.find((s) => {
       if (taken.has(s) || s.name !== want) return false;
-      const fn = s.fileName == null ? null : fnKey(s.fileName);
-      // The filename AGREES and actually identifies: the strongest evidence there is,
-      // and it stands even in a batch whose numbering is otherwise untrustworthy.
-      if (fn != null && discriminates(i) && fn === nameOf(files[i])) return true;
-      // It names one of our OTHER files: this answer is about that file, not this one.
-      if (fn != null && namesAnotherFile(i, fn)) return false;
+      // The filename identifies THIS file: the strongest evidence there is, and it
+      // stands even in a batch whose numbering is otherwise untrustworthy.
+      if (identifies(s, i)) return true;
+      // It identifies one of our OTHER files: this answer is about that file, not this.
+      if (namesAnotherFile(s, i)) return false;
       // Otherwise the part name stands alone, and is trusted on the usual terms.
       return barePartNamesTrusted;
     });
@@ -128,8 +161,6 @@ function matchStaged(files, staged) {
   // ---- pass 2: the filename, when it identifies exactly one of each ---------
   for (let i = 0; i < files.length; i++) {
     if (out[i]) continue;
-    const fn = nameOf(files[i]);
-    if (fn == null) continue;
     if (!discriminates(i)) continue;
     // THE FILENAME OUTRANKS THE PART NUMBER HERE, DELIBERATELY. Reaching pass 2 means
     // pass 1 refused, so a part number is already known to be contradicted somewhere in
@@ -139,8 +170,13 @@ function matchStaged(files, staged) {
     // echoing another file's name (name true, filename lies — refuse it), because a
     // single answer presents IDENTICALLY in both. No rule separates them, so the choice
     // is which way to be wrong, and a renumbering is the shape vendors actually produce.
-    const hits = answers.filter((s) => !taken.has(s) && s.fileName != null
-      && fnKey(s.fileName) === fn);
+    // An EXACT hit outranks a merely-equivalent one: where both exist the exact name is
+    // the one that can tell a case-different sibling apart, and taking the other would
+    // be the swap all over again.
+    const free = answers.filter((s) => !taken.has(s));
+    const exactHits = free.filter((s) => identifies(s, i) === 'exact');
+    const keyHits = free.filter((s) => identifies(s, i) === 'key');
+    const hits = exactHits.length ? exactHits : keyHits;
     if (hits.length === 1) { out[i] = hits[0]; taken.add(hits[0]); }
   }
 
@@ -168,7 +204,7 @@ function matchStaged(files, staged) {
       // Kept in the same shape as pass 1 so the two read alike, though `usable` below is
       // what actually enforces filename agreement here — this line only ever fires on a
       // name belonging to one of our other files, which pass 2 has already placed.
-      if (at.fileName != null && namesAnotherFile(i, fnKey(at.fileName))) continue;
+      if (namesAnotherFile(at, i)) continue;
       // With nothing USABLE to check, position is a guess — unless the vendor labels
       // nothing at all (see above), or there is only one file, where there is nothing
       // to confuse it with. A filename that two of our files share is not usable: it
@@ -177,9 +213,7 @@ function matchStaged(files, staged) {
       // vendor-sanitized name is not disproof (above) but it is not proof either, so a
       // batch labelled only with names we cannot recognise is refused like an
       // unlabelled one.
-      const usable = at.name != null
-        || (at.fileName != null && discriminates(i)
-          && fnKey(at.fileName) === nameOf(files[i]) && claimedOnce(fnKey(at.fileName)));
+      const usable = at.name != null || (!!identifies(at, i) && claimedOnce(i));
       if (!usable && files.length > 1) continue;
       out[i] = at; taken.add(at);
     }

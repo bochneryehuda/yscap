@@ -32,12 +32,27 @@ const permutations = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) =>
 let cases = 0, wrong = 0, unmatched = 0, identifiableMissed = 0;
 const missedShapes = [];
 
+// `dupNames` says how the files we sent are NAMED, and all three cases are real:
+//   'distinct'  — ordinary names.
+//   'same'      — two genuinely identical names (the purchase and the assignment are
+//                 both "Contract 2024.pdf"); nothing can tell them apart by name.
+//   'collide'   — DIFFERENT names that a normalized comparison collapses into one
+//                 ("Contract.pdf" / "contract.pdf"). Two real documents; a matcher that
+//                 compares only by meaning loses the ability to tell them apart and
+//                 swaps them. That case shipped once, and the sweep could not see it
+//                 because its fixtures were all plainly distinct.
 for (const n of [1, 2, 3]) {
-  for (const dupNames of [false, true]) {
+  for (const dupNames of ['distinct', 'same', 'collide']) {
     // Real filenames, with spaces and case — a single-token name like `file-0.pdf`
     // cannot exercise a rewrite, and that blind spot is what let a document swap ship.
+    const NAME_MODE = {
+      distinct: (i) => `Scope of Work ${i}.pdf`,
+      same: () => 'Contract 2024.pdf',
+      // Same normalized key, different real names — alternating case per file.
+      collide: (i) => (i % 2 ? 'contract.pdf' : 'CONTRACT.PDF'),
+    };
     const files = Array.from({ length: n }, (_, i) => ({
-      fileName: dupNames && n > 1 ? 'Contract 2024.pdf' : `Scope of Work ${i}.pdf`,
+      fileName: n > 1 ? NAME_MODE[dupNames](i) : `Scope of Work ${i}.pdf`,
     }));
     // What an upload endpoint does to a name on the way in. `sanitized` is the vendor
     // echoing THIS file's own name, rewritten; it is every bit as truthful as an exact
@@ -88,8 +103,19 @@ for (const n of [1, 2, 3]) {
             // part number and a TRUE filename, so no rule can separate them and a sweep
             // that demanded it would be demanding a guess. It stays in the alphabet
             // because the one-answer-one-document property below still holds over it.
-            const truthful = (nameMode === 'orig' && fnMode !== 'other')
-              || (echoed && !dupNames);
+            // A filename identifies a file when no SIBLING carries the identical string.
+            const nameIdentifies = (i) => files.filter(
+              (f) => f.fileName === files[i].fileName).length === 1;
+            // A REWRITE THAT LANDS ON A SIBLING'S REAL NAME IS NOT A TRUTHFUL LABEL.
+            // The vendor meant this file, but the string it produced is byte-for-byte
+            // what another of our files is actually called — taken at face value it
+            // points there, and nothing can see past that. Undefendable, like a lying
+            // part number with no filename to check it against.
+            const rewriteCollides = fnMode === 'sanitized' && order.some((truth) =>
+              files.some((f, j) => j !== truth && f.fileName === rewrite(files[truth].fileName)));
+            const truthful = !rewriteCollides
+              && ((nameMode === 'orig' && fnMode !== 'other')
+                || (echoed && files.every((_, i) => nameIdentifies(i))));
 
             // (1) NEVER WRONG — held wherever the evidence could have told us.
             if (truthful) {
@@ -117,13 +143,14 @@ for (const n of [1, 2, 3]) {
             for (let i = 0; i < n; i++) {
               const mine = answers.find((a) => a.truth === i);
               if (!mine || got[i]) continue;
-              const uniqueName = echoed
+              const uniqueName = echoed && !rewriteCollides
                 && files.filter((f) => f.fileName === files[i].fileName).length === 1;
               // A part number is only IDENTIFYING while nothing contradicts it. When the
               // echoed filename means one of our OTHER files the two labels disagree,
               // either could be the lie, and refusing is the correct answer — demanding
               // a match there would be demanding a guess.
-              const trustedPart = nameMode === 'orig' && keep.length === n && fnMode !== 'other';
+              const trustedPart = nameMode === 'orig' && keep.length === n
+                && fnMode !== 'other' && !rewriteCollides;
               // eslint-disable-line -- kept explicit: a contradicted part number is not
               // identifying, for the same reason `truthful` excludes it above.
               if (uniqueName || trustedPart) {
@@ -187,6 +214,21 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
   ok(got[0] && got[0].retrievalUrl === 'URL-sow',
      'a vendor-rewritten filename does not overrule the part number we assigned');
   ok(got[1] && got[1].retrievalUrl === 'URL-contract', 'and the untouched one still matches');
+}
+// THE SWAP THE TENTH AUDIT FOUND — comparing ONLY by meaning caused it. This loan has
+// two real documents whose names differ only in case (the purchase contract and the
+// assignment), which normalizes to one name: both files stop discriminating, the veto
+// that would have placed them cannot fire, and a reordered batch swaps them. The exact
+// spelling settles it, so the exact name is the evidence wherever it can be.
+{
+  const files = F('Contract.pdf', 'contract.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
+    { name: 'part1', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
+  ]);
+  ok(got[0] && got[0].retrievalUrl === 'PURCHASE',
+     'two files whose names differ only in case are still told apart');
+  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and neither gets the other’s link');
 }
 // THE SWAP the ninth audit found, and the reason filenames are compared by MEANING.
 // The vendor reordered the parts, numbered them by their own position, and rewrote the
