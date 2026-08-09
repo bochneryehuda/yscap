@@ -812,17 +812,32 @@ function MonitorBanner({ monitor, busy, onToggle, onReset }) {
   const sw = monitor.switch;
   const on = !!monitor.enabled;
   const swept = since(monitor.lastSweepAt);
+  /* WHO gets the mail, in plain words. The page must be able to answer "why did the emails
+     stop?" on its own — otherwise the quieting (owner-directed 2026-08-09) reads as the
+     alerts being broken. Both numbers come from the server so the screen can never state a
+     policy the monitor is not actually running. */
+  const waitMin = Number(monitor.alertAfterMin);
+  const roles = Array.isArray(monitor.emailRoles) ? monitor.emailRoles : [];
+  const mailedTo = roles.length === 1 && roles[0] === 'super_admin' ? 'super admins' : 'the admins';
   return (
     <div className={`ah-note ${on ? 'ah-t-info' : 'ah-t-warn'} ah-monitor`}>
       <span className="ah-monitor-ic"><Icon name="bell" /></span>
       <div className="ah-monitor-t">
         <b>{on ? 'Automatic down-alerts are on.' : 'Automatic down-alerts are off.'}</b>{' '}
         {on
-          ? <>Every service is checked every {monitor.intervalMin} minutes, and the admins are emailed when something
-            that WAS working stops — and again when it recovers.{swept ? ` Last swept ${swept} ago.` : ' No sweep recorded yet.'}</>
-          : <>Nothing checks these services between visits, so one can go down and nobody is emailed. Turning this on
-            checks every service every {monitor.intervalMin} minutes and emails the admins on a real change only —
-            never on every check, and never for a service that is switched off or awaiting keys.</>}
+          ? <>Every service is checked every {monitor.intervalMin} minutes.{swept ? ` Last checked ${swept} ago.` : ' No check recorded yet.'}</>
+          : <>Nothing checks these services between visits, so one can go down and nobody is told. Turning this on
+            checks every service every {monitor.intervalMin} minutes.</>}
+        {' '}
+        {Number.isFinite(waitMin) && waitMin > 0
+          ? <>Nothing is emailed until a service has been unreachable for <b>more than {waitMin} minutes</b>, so a
+            short wobble is never an email — and when several go at once it is <b>one email</b>, not one per service.</>
+          : <>An email goes out on a real change only — never on every check.</>}
+        {' '}
+        {/* Present-tense "only super admins are emailed" reads oddly on a banner that has
+            just said the alerts are OFF, so the sentence is written to be true either way. */}
+        <>When one does go out, only <b>{mailedTo}</b> are emailed — every admin still sees it
+          here and in their notifications.</>
         {sw && sw.overridden && (
           <> <span className="ah-tag ah-t-warn">overridden</span> The hosting default is {sw.envDefault ? 'on' : 'off'}.</>
         )}
