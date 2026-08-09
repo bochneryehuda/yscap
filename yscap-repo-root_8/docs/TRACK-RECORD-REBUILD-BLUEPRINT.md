@@ -112,24 +112,72 @@ from the other four, which makes the investor export disagree with the counts th
 **Blackout band.** An exit claimed within the last **45 days** resolves to *too recent to verify*,
 never *not found*. For satisfaction-dependent logic, **120 days**.
 
-### 2.2 Ownership — the ladder
+### 2.2 Ownership — TWO CHECKS, not one
+
+*Owner-directed 2026-08-09: "If any LLC already exists in our system and is already verified, and that
+property is tied to the same LLC, we just need to verify that this property was owned by this LLC.
+Once it's owned by that LLC, we just bring in that verified LLC section into the track record as
+verified."*
+
+Ownership splits into two independent questions. **The point of the split is that Check A is done once
+per entity and Check B is small.**
+
+```
+   CHECK A — does the borrower control the LLC?
+   ├─ Asked ONCE, on the entity, never per property
+   ├─ Proved by the OPERATING AGREEMENT (the only document that proves control),
+   │  corroborated where available by SoS officer records and recorded signers
+   └─ Result lives on `llcs.is_verified` + `llc_borrowers.ownership_verified`
+                              │
+                              ▼
+   CHECK B — did that LLC own THIS property?
+   ├─ Asked PER PROPERTY, and it is a small factual lookup
+   ├─ Proved by the deed: the ownership row's grantee is that entity
+   └─ Result lives on the property's ownership pillar
+                              │
+                              ▼
+   A ✓ AND B ✓  →  OWNERSHIP VERIFIED for that property
+                   and the entity's documents become that property's
+                   ownership evidence — nobody re-uploads anything
+```
+
+A borrower with ten properties across two LLCs does **two Check A's and ten small Check B's**, not ten
+investigations.
+
+**Check A — the evidence ladder for controlling an entity**
 
 | Tier | Evidence | Auto? |
 |---|---|---|
-| **A — Signer** | A recorded deed/mortgage signer resolves to the borrower's person id, `signingOnBehalfOf` names the owning entity, title is controlling (Member, Manager, Managing Member, President, CEO, Partner) | Yes, gated on D5 |
-| **B — Registry** | `sosOfficer: true` with a controlling `sosTitle` | Yes, gated on D5 |
-| **C — Grantee** | The ownership row's `entityGrantees[]` contains the borrower's person id or one of their entity ids | **Mandatory at every tier.** Without it the row is discarded |
-| **D — Circumstantial** | Shared address, network co-occurrence, common registered agent | Never sufficient alone |
-| **E — Unprovable from records** | Delaware, New Mexico, Wyoming, nominee-managed Nevada | **Operating agreement path** — see §4 |
+| **A1 — Operating agreement** | Names the borrower as member/manager with a percentage | Human review; **this is the one that proves control** |
+| **A2 — Registry** | `sosOfficer: true` with a controlling `sosTitle` | Corroborating, auto, gated on D5 |
+| **A3 — Signer** | A recorded deed/mortgage signer resolves to the borrower, `signingOnBehalfOf` names the entity, title is controlling | Corroborating, auto, gated on D5 |
+| **A4 — Circumstantial** | Shared address, co-occurrence, common registered agent | Never sufficient alone |
 
-**Tier C caught a live false positive**: a Philadelphia property returned under a York, PA investor who
-never owned it, because his LLC appeared as *grantor* on an unrelated later deed. `entityGrantees`
-named someone else. That one filter separates a usable pipeline from a dangerous one.
+A2 and A3 are **corroboration, not substitutes.** They prove *signing authority*, which is powerful
+but is not an equity stake — an employee, property manager or attorney-in-fact can sign. In Delaware,
+New Mexico and Wyoming they are unavailable entirely, and there is no federal beneficial-ownership
+source coming: FinCEN's March 2025 rule exempted all US-formed entities (GAO: 99%+), New York's LLCTA
+covers only non-US LLCs, and FinCEN's residential real-estate rule was vacated nationwide 2026-03-19.
+**The operating agreement is the path, and the UX says so plainly** — *"your state doesn't publish
+this, so we need one upload"*, never as a fraud flag.
 
-**Tier E is normal, not suspicious.** There is no federal beneficial-ownership source and none is
-coming — FinCEN's March 2025 rule exempted all US-formed entities (GAO: 99%+), New York's LLCTA covers
-only non-US LLCs, and FinCEN's residential real-estate rule was vacated nationwide 2026-03-19. The UX
-reads *"your state doesn't publish this — one upload and we're done."*
+**Check B — did the LLC own this property**
+
+| Signal | Weight |
+|---|---|
+| The ownership row's `entityGrantees[]` contains the entity's id | **Mandatory.** Without it the claim is discarded |
+| The acquisition deed's grantee is the entity | Proves it |
+| The exit deed's grantor is the entity | Proves it |
+| The holding period falls inside the borrower's membership window (§4.5) | Required — otherwise `contradicted` |
+
+**The mandatory grantee check caught a live false positive**: a Philadelphia property returned under a
+York, PA investor who never owned it, because his LLC appeared as *grantor* on an unrelated later deed.
+`entityGrantees` named someone else entirely. That one filter separates a usable pipeline from a
+dangerous one.
+
+**When Check B fails but Check A passed**, the property is not verified and the entity is untouched —
+they are independent facts and the failure message must say which one failed. This is D3 applied at
+the property level.
 
 ### 2.3 The exit, by deal type — FINAL
 
@@ -460,12 +508,34 @@ seven writers kept in step by discipline.
 
 **`entity_name` becomes a display fallback for historical rows only.** New rows always carry `llc_id`.
 
-⚠️ **The backfill trap.** db/485 treats **both** `llc_id` and `entity_name` as material, so a naive
-UPDATE would un-verify the entire back book and reopen live experience conditions. Two options,
-owner's call:
-- **Suspend the trigger for the bounded backfill** (the db/399 precedent), preserving verifications; or
-- **Accept the re-review** as a deliberate, announced pass.
-Going forward it is free — a new line is pending anyway.
+### 4.2a The back-book backfill — DECIDED
+
+*Owner-directed 2026-08-09: existing verified lines **keep their verification**.*
+
+db/485 treats both `llc_id` and `entity_name` as material, so a naive UPDATE would un-verify the entire
+back book, drop every borrower's experience tier, and reopen the experience condition on live files.
+
+**The backfill therefore runs with the verify guard suspended for that one bounded pass** — the db/399
+precedent. Connecting a name to the record it already referred to is *a repair, not a restatement*:
+the property, the price, the dates and the deal type are byte-identical before and after. This is
+exactly the reasoning db/485 already applies to `address_key`, whose own header says re-keying is
+*"a repair, not a restatement, and treating it as material would un-verify the whole book on the next
+heal."*
+
+**What this does not weaken.** Every entity still has to pass Check A on its own before it proves
+ownership for anything. The backfill sets a **link**, never a verdict — the ownership pillar on each
+line stays exactly where it was until an entity is verified and Check B is confirmed.
+
+The pass must be:
+- **Bounded and resumable** — a cursor in `sync_runtime_state`, like every other heal in this repo
+- **Audited per row** — `track_record_entity_backfilled` with the name it matched and the entity it
+  chose, so every automatic link is attributable
+- **Conservative on ambiguity** — where `entityMatch` returns more than one candidate, or the name is
+  junk (`"N/A"`, a bare `"LLC"`, a person's name), **write nothing** and leave the free text alone
+- **Idempotent** — re-running it changes nothing
+
+Going forward it is free: a new line lands pending anyway, so it gets its link at creation with no
+side effect and no suspension.
 
 ### 4.3 Setting up an LLC — the workflow
 
@@ -502,35 +572,100 @@ names it, and from any file vesting in it.
 **Every borrower gets an entity list**, whether or not they have an open file — the entity is a fact
 about the person, exactly as `borrower_contacts` and track records already are.
 
-### 4.4 Verify ownership once, carry it everywhere
+### 4.4 Check A carries — verify the entity once, and every property it held inherits it
 
-The mechanism already exists for files; it needs a sibling for properties.
+The fan-out mechanism already exists for loan files (`syncLlcConditions`); it needs a sibling for
+properties.
 
 ```js
 // src/lib/llc.js — new, alongside syncLlcConditions
 async function syncEntityToTrackRecords(llcId, { client }) {
-  // every line held by this entity OR any entity it owns (chains already resolved
-  // by getDescendantEntityIds), for every borrower linked through llc_borrowers
-  // → upsert track_record_pillars(pillar='ownership') with
-  //   auto_verdict='proved', auto_source='entity', auto_grade='strong',
-  //   satisfied_by_llc_id=<llcId>, auto_evidence={the entity's own evidence}
+  // Every line held by this entity OR any entity it owns (chains already resolved by
+  // getDescendantEntityIds), for every borrower linked through llc_borrowers.
+  //
+  // CHECK A is the entity's own verification. CHECK B must ALSO hold for this line —
+  // the deed's grantee is this entity, and the holding period falls inside the
+  // borrower's membership window (§4.5). Only then:
+  //
+  //   upsert track_record_pillars(pillar='ownership')
+  //     auto_verdict     = 'proved'
+  //     auto_source      = 'entity'
+  //     auto_grade       = 'strong'
+  //     satisfied_by_llc_id = <llcId>
+  //     auto_evidence    = { checkA: {documentId of the operating agreement,
+  //                                   sosTitle, signerName, verifiedAt, verifiedBy},
+  //                          checkB: {deedId, grantee, recordingDate, source} }
+  //
+  // Check A passed but Check B unproven → auto_verdict = 'no_data', with a message
+  // naming WHICH check is missing (D3). Never silence.
 }
 ```
 
-**Ten properties on two entities become two verifications, not ten.** That is the owner's requirement,
-and it falls straight out of the existing chain walker.
+**Ten properties on two entities become two Check A's and ten small Check B's.** That falls straight
+out of the existing chain walker.
 
-**Three constraints:**
+**Four constraints:**
 
 1. **The entity flag and the deal flag stay distinct.** `track_records.is_verified` is about the
    *deal* — its verify route gates on a completed, in-window exit. Entity ownership is about *who held
    it*. Collapsing them means verifying an entity would appear to verify a deal with no exit.
 2. **It writes `auto_verdict`, not `human_verdict`** (D1). A human still confirms the ownership pillar
-   on each property — but with the evidence already assembled and one click, not a fresh investigation.
-3. **Revoking an entity's verification revokes the carry.** `syncEntityToTrackRecords` runs on revoke
+   — but with the evidence already assembled and one click, not a fresh investigation.
+3. **The message always names which check is missing.** "The entity isn't verified yet" and "we can't
+   see this entity on the deed" are different problems with different fixes, and a reviewer must never
+   have to guess which one they are looking at.
+4. **Revoking an entity's verification revokes the carry.** `syncEntityToTrackRecords` runs on revoke
    too, clearing `auto_verdict` on every carried pillar and raising `entity_unverified` on any line
    whose ownership pillar was human-confirmed *on that basis*. A verification result is not read-only:
    lowering verified experience reopens a signed-off condition and can flag a live registration stale.
+
+### 4.4a The entity's documents become the property's ownership evidence
+
+*Owner-directed 2026-08-09: "we just bring in that verified LLC section into the track record as
+verified… we need to make sure that the LLC documents are going to be exported into the track record
+as well, together with the TPR export."*
+
+When Check A and Check B both hold, the entity's document set is **surfaced on the property**, not
+copied onto it:
+
+- The property's ownership pillar renders the operating agreement (and the articles / EIN / good
+  standing behind it) as its evidence, with a link through to the entity.
+- **Nothing is duplicated in `documents`.** The bytes stay on the entity's slot with one
+  `checklist_item_id` and one owner. A property-level copy would fork the review state — accept it on
+  one property and it would still read as pending on the other five.
+- The borrower is never asked twice. If the operating agreement is already accepted on the entity, the
+  ownership pillar on a newly-imported property is **already satisfied on arrival**.
+
+**In the TPR export** (`tpr-export.js`), the investor package gains an entity layer beside the existing
+`REO/` tree:
+
+```
+REO/
+  Track Record.xlsx            ← gains an "Owning entity" and "Ownership verified" column
+  Track Record.pdf
+  62 Highland St/              ← the property's own documents, unchanged
+    Closing statement.pdf
+    Deed.pdf
+  118 Oak Ave/
+Entities/
+  MW TRADING LLC/
+    Operating agreement.pdf    ← the document that proved Check A
+    Articles of organization.pdf
+    EIN letter.pdf
+    Certificate of good standing.pdf
+    Properties held.txt        ← which track-record lines this entity backs
+```
+
+So a buyer or a diligence firm can follow the chain: *this deal → this entity → the operating
+agreement that proves the borrower controlled it.* That is exactly the artifact third-party diligence
+asks for — their published scope names both *"REO Schedule or Track Record"* and *"Articles of
+Organization, Operating Agreement, Certificate of Good Standing"*, and today those two live in
+unconnected parts of the package.
+
+Selection rules, following the existing exporter's discipline: **accepted documents only**; a
+Good-Standing certificate past its 30-day window is omitted rather than shipped stale; an entity with
+no verified ownership still exports its documents but the manifest says *ownership not verified*, so
+absence is never silently indistinguishable from failure.
 
 ### 4.5 Ownership as of a date
 
@@ -1007,16 +1142,29 @@ Each phase ships independently and leaves the system working.
 
 ---
 
-## 13. STILL OPEN — owner's call before Phase 2
+## 13. DECIDED, AND STILL OPEN
 
-1. **The back-book entity backfill.** Promoting `entity_name` → `llc_id` un-verifies already-verified
-   lines unless db/485's trigger is suspended for the bounded pass. **Suspend (keeps verifications) or
-   accept the re-review?** This is the only decision that blocks Phase 2.
-2. **`nameCommonnessScore` thresholds** — 60 proposed for requiring document proof, 85 for hard-capping
+### Decided by the owner, 2026-08-09
+
+| Decision | Ruling |
+|---|---|
+| **Hold period** | Not a gate. Recorded and displayed only (D10) |
+| **Refinance window** | **4–20 months** auto-proved; 20–30 with one corroborator |
+| **Cash purchases** | Count exactly as a bridge loan does. Only a permanent loan **never refinanced** falls to the lease pathway |
+| **Ownership model** | **Two checks** — control of the entity once, ownership of the property per line (§2.2) |
+| **Entity documents** | Surfaced on the property as its ownership evidence, and shipped in the TPR export under `Entities/` (§4.4a) |
+| **Back-book backfill** | **Existing verifications survive.** The pass runs with the verify guard suspended, bounded, audited, and conservative on ambiguity (§4.2a) |
+
+### Still open — none of these block Phase 0, 1 or 2
+
+1. **`nameCommonnessScore` thresholds** — 60 proposed for requiring document proof, 85 for hard-capping
    at manual review.
-3. **Ground-up substitution** — confirm flips do not count toward ground-up experience, and whether a
+2. **Ground-up substitution** — confirm flips do not count toward ground-up experience, and whether a
    verified GC's record can substitute (industry practice allows it).
-4. **A second vendor** — Elementix is live in 421 of 3,226 counties with zero document images in Los
+3. **A second vendor** — Elementix is live in 421 of 3,226 counties with zero document images in Los
    Angeles. ATTOM for breadth or DataTree for document images, and when?
-5. **Adverse-action wording** — legal review of the "unable to verify" vs "verified, insufficient"
+4. **Adverse-action wording** — legal review of the "unable to verify" vs "verified, insufficient"
    split before it can affect pricing (D3).
+5. **Entity document expiry in the export** — a Good-Standing certificate older than 30 days is omitted
+   from the TPR package today by the same rule the entity screen uses. Confirm that is right for
+   investor delivery, or ship it stamped with its age instead.
