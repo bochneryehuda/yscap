@@ -458,6 +458,42 @@ function outcomeOf(location) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  console.log('\n  B9. A crafted link cannot redirect anywhere but our own page');
+  // -------------------------------------------------------------------------
+  {
+    // This route is PUBLIC, so anyone can hit it with anything — and the vendor's
+    // `error_description` is the one piece of attacker-controlled text that reaches
+    // a `Location` header. Three things must hold for every value of it: the target
+    // stays our own relative API Health path (never an open redirect — a callback
+    // that can be made to bounce a staff member to another site is a phishing
+    // primitive), no CRLF reaches the header (response splitting), and the OUTCOME
+    // cannot be flipped to `connected` by smuggling a second query parameter.
+    nextComplete = async () => { throw new Error('a denial must not reach completeConnect'); };
+    const crafted = [
+      'https://evil.example.com/steal',        // absolute URL
+      '//evil.example.com',                    // protocol-relative
+      '\r\nLocation: https://evil.example.com', // response splitting
+      '?x=1&elementix=connected',              // outcome spoofing
+      '#/internal/somewhere-else',             // fragment takeover
+      '</script><img src=x onerror=alert(1)>', // script injection
+    ];
+    for (const evil of crafted) {
+      const res = await get('/api/admin/elementix/callback'
+        + `?error=access_denied&error_description=${encodeURIComponent(evil)}`);
+      assert.strictEqual(res.status, 302, `still a redirect for ${JSON.stringify(evil)}`);
+      assert.ok(res.location.startsWith(`${HEALTH}?`),
+        `the target must always be our own relative API Health path, got ${res.location}`);
+      assert.ok(!/[\r\n]/.test(res.location), 'no CRLF may reach the Location header');
+      const { outcome, message } = outcomeOf(res.location);
+      assert.strictEqual(outcome, 'error',
+        'a crafted message must never flip the outcome to "connected"');
+      assert.strictEqual(message, evil,
+        'the message survives as encoded DATA — the page renders it as React text, so it cannot execute');
+    }
+    ok(`all ${crafted.length} crafted messages stay data: no open redirect, no header injection, no outcome spoofing`);
+  }
+
   await new Promise((r) => server.close(r));
 
   // The other half of the network trap at the top of this file.
