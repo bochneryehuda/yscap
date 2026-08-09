@@ -2994,6 +2994,58 @@ function trackRecordCols(b) {
   };
 }
 
+/* AN EDIT ONLY TOUCHES WHAT THE REQUEST ACTUALLY SAID (2026-08-09 audit).
+   `trackRecordCols` builds the FULL column shape — right for the create doors,
+   a loaded gun on the two PUT doors: a partial body nulled every absent figure
+   (sale price, the dates, the entity name), silently reset an absent dealType
+   to 'flip', and — on the staff door — every one of those "changes" is
+   material to db/485, so the line was un-verified over columns the caller
+   never mentioned. Both tools send full rows, which is why it stayed quiet;
+   the doors must not depend on that. Shared by BOTH put doors so they cannot
+   drift. */
+const TRK_COL_SENT_KEY = {
+  property_address: 'propertyAddress', deal_type: 'dealType',
+  purchase_price: 'purchasePrice', sale_price: 'salePrice', rehab_amount: 'rehabAmount',
+  purchase_date: 'purchaseDate', sale_date: 'saleDate',
+  rent_amount: 'rentAmount', rent_date: 'rentDate',
+  refi_amount: 'refiAmount', refi_date: 'refiDate',
+  current_value: 'currentValue', notes: 'notes', property_type: 'propertyType',
+  entity_name: 'entityName', owned_personally: 'ownedPersonally',
+};
+const TRK_MATERIAL_COLS = [
+  // db/485's own material list — the columns whose CHANGE resets a review.
+  'property_address', 'llc_id', 'owned_personally', 'entity_name', 'deal_type',
+  'property_type', 'purchase_price', 'sale_price', 'rehab_amount', 'rent_amount',
+  'refi_amount', 'current_value', 'purchase_date', 'sale_date', 'rent_date', 'refi_date',
+];
+function trackRecordSentOnly(cols, b) {
+  const out = { ...cols };
+  for (const [col, key] of Object.entries(TRK_COL_SENT_KEY)) {
+    // "Owned personally" CLEARS the entity by design even when entityName was
+    // not restated — the flag is the statement about the entity.
+    if (b[key] === undefined && !(col === 'entity_name' && b.ownedPersonally)) delete out[col];
+  }
+  // The dedupe key follows the address: only a request that SPOKE about the
+  // address may rewrite it (an absent address would have nulled the key too).
+  if (b.propertyAddress === undefined) delete out.address_key;
+  /* THE REVIEW RESET BELONGS TO db/485, NOT TO THIS ROUTE. The entered stamp
+     (`trackRecordEnteredCols`) force-writes is_verified=false + 'pending' —
+     right on the CREATE doors (entering a line is pending review, and their
+     ON CONFLICT retry can land on a verified row), and WRONG restated on an
+     EDIT: a notes-only save, or a full-row autosave echo carrying the exact
+     same figures, destroyed a reviewer's verification over nothing (2026-08-09
+     audit — the trigger's own tail says "no material column moved … left
+     completely alone", and this route was overruling it). The trigger fires on
+     every REAL material change from every writer, so dropping the two flags
+     here removes only the false resets. The who-typed-this stamp itself rides
+     only when the edit actually spoke about the deal's substance — a note is
+     not "whoever last put these figures on the line". */
+  delete out.is_verified;
+  delete out.verification_status;
+  if (!TRK_MATERIAL_COLS.some((c) => c in out)) { delete out.entered_by_kind; delete out.entered_at; }
+  return out;
+}
+
 /* WHO TYPED THIS, AND SO WHERE IT STANDS (owner-directed 2026-08-03: "anyone
    that enters the track record first should be pending review till they review
    it and they provide documentation, then it should go for verified").
@@ -3117,13 +3169,19 @@ router.put('/track-records/:id', async (req, res) => {
   }
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
-  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') };
+  const cols = trackRecordSentOnly({ ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') }, b);
   const names = Object.keys(cols);
   const vals = Object.values(cols);
+  /* llc_id only moves when the request SPOKE about it — `b.llcId || null` used
+     to clear the entity link on any body that simply omitted the field. */
+  const llcSet = (b.llcId !== undefined || b.ownedPersonally)
+    ? 'llc_id=$3, ' : '';
+  const llcVals = llcSet ? [b.ownedPersonally ? null : (b.llcId || null)] : [];
+  const off = 3 + llcVals.length;
   await db.query(
-    `UPDATE track_records SET llc_id=$3, ${names.map((n, i) => `${n}=$${i + 4}`).join(', ')}, updated_at=now()
+    `UPDATE track_records SET ${llcSet}${names.map((n, i) => `${n}=$${i + off}`).join(', ')}, updated_at=now()
       WHERE id=$1 AND borrower_id=$2`,
-    [req.params.id, me(req), b.llcId || null, ...vals]);
+    [req.params.id, me(req), ...llcVals, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   await audit(req, 'edit_track_record', 'track_record', req.params.id, { address: b.propertyAddress || null, dealType: b.dealType || null });
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
@@ -4616,6 +4674,7 @@ module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
 module.exports.trackRecordMissing = trackRecordMissing;
 module.exports.trackRecordEnteredCols = trackRecordEnteredCols;
+module.exports.trackRecordSentOnly = trackRecordSentOnly;
 // Exposed so a test can RUN this door's text helper rather than regex the source
 // for its name — a source regex passes even when the helper has stopped
 // delegating, which is exactly how two defects in this series stayed hidden.
