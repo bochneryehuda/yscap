@@ -61,7 +61,6 @@ import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
 import ClassAppraisalPanel from '../components/ClassAppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
-import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import { strayConditionReason, strayConfirmText } from '../lib/conditionLabel.js';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2603,10 +2602,6 @@ function StaffTrackRecordPanel({ app, role }) {
     catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
     finally { setTrBusy(''); }
   }, [app.id, reloadAll]);
-  // The legacy embedded editor stays one click away during the parity period —
-  // collapsed so the new ledger is the record you read, and the iframe only
-  // LOADS once opened (a closed <details> would still boot it).
-  const [legacyOpen, setLegacyOpen] = useState(false);
   // Accept / reject a document uploaded against a track-record line item. Reject
   // requires a reason and un-verifies the line item (its evidence no longer stands).
   const reviewTrDoc = useCallback(async (doc, action) => {
@@ -2738,26 +2733,12 @@ function StaffTrackRecordPanel({ app, role }) {
         <StaffPropertyWorkbench key={`wb-${borrowerId}`} borrowerId={borrowerId}
           borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
       </div>
-      {/* The legacy embedded editor — the full add/edit/verify sheet — stays one
-          click away through the parity period (mega-workspace phase C), COLLAPSED
-          so the ledger above is the record you read. The iframe mounts only once
-          opened: a closed <details> would still boot it on every file view.
-          "Open full screen" above stays the primary editing surface. */}
-      <details style={{ marginTop: 12 }} open={legacyOpen}
-        onToggle={(e) => setLegacyOpen(e.currentTarget.open)}>
-        <summary className="small" style={{ cursor: 'pointer', fontWeight: 650, color: '#141B22' }}>
-          Edit the record here (embedded editor)
-          <span style={{ color: '#4B585C', fontWeight: 400 }}> — add, edit, verify or attach documents without leaving the page</span>
-        </summary>
-        {legacyOpen && (
-          <StaticToolFrame
-            key={borrowerId}
-            title="Borrower track record"
-            src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
-            minHeight={220}
-          />
-        )}
-      </details>
+      {/* Phase E (owner-directed 2026-08-09): the EMBEDDED legacy editor is
+          retired — the ledger above is the record you read, "Open full screen"
+          is the editor, and the borrower's saved copy is rebuilt SERVER-SIDE on
+          every write (src/lib/track-record/html-copy.js), so nothing depends on
+          this page hosting the tool any more. The borrower's own tool sheet and
+          the ?internal=1 bridge are untouched (constraint A13). */}
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
           record, then you read what is still left on it. The detail list reads
           the SAME todo payload fetched above (`preloaded`), so the section costs
@@ -3300,7 +3281,6 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
-  const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
   // File service contacts (title / insurance) so staff can see + edit them right
@@ -3803,24 +3783,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
                 </button>
               )}
-              {it.tool_key === 'track_record' && app.borrower_id && (() => {
-                // #103 — on a co-borrower file the experience condition opens EACH
-                // borrower's own track record: one button per borrower, named.
-                const pb = (it.tool_payload && it.tool_payload.perBorrower) || null;
-                if (pb && pb.length > 1) {
-                  return (
-                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      {pb.map(p => (
-                        <button key={p.borrowerId} className="btn ghost small" onClick={() => setTrOpen(p.borrowerId)}
-                          title={`Open ${p.name}'s track record${p.isPrimary ? ' (primary borrower)' : ' (co-borrower)'}`}>
-                          Open {p.name.split(' ')[0] || 'track record'}'s track record
-                        </button>
-                      ))}
-                    </div>
-                  );
-                }
-                return <button className="btn ghost small" onClick={() => setTrOpen(app.borrower_id)}>Open track record</button>;
-              })()}
+              {it.tool_key === 'track_record' && app.borrower_id && (
+                /* Phase E (2026-08-09): this used to open the legacy tool in an
+                   iframe modal. The Track Record CENTER on this same page is now
+                   the workspace — jump there (the whose-record picker at its top
+                   covers the co-borrower case the old per-borrower buttons did;
+                   full editing stays one click away via its "Open full screen"). */
+                <button className="btn ghost small" onClick={() => goToSection('sec-track')}
+                  title="Open the Track Record Center on this file — the record, the experience math, and every action">
+                  Open the track record
+                </button>
+              )}
               {it.tool_key === 'appraisal_card' && (
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
@@ -3901,12 +3874,6 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           title="Rehab Budget — Scope of Work (internal)"
           url={sowUrl(appId, sowOpen, app)}
           onClose={() => setSowOpen(null)} />
-      )}
-      {trOpen && (
-        <ToolModal
-          title="Borrower track record (internal)"
-          url={`/tools/track-record.html?internal=1&borrower=${trOpen}&embed=1`}
-          onClose={() => { setTrOpen(null); onChanged && onChanged(); }} />
       )}
     </div>
   );

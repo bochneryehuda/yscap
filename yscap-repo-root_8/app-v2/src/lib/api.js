@@ -592,6 +592,12 @@ export const api = {
   staffTrackRecordTodo: (appId, borrowerId) =>
     req('GET', `/api/staff/applications/${appId}/track-record-todo${borrowerId ? `?borrower=${borrowerId}` : ''}`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
+  /* The profile lens of the Track Record Center: per-line to-do codes + the
+     borrower's verified in-window counts — the person, no file. */
+  staffBorrowerTrackRecordTodo: (id) => req('GET', `/api/staff/borrowers/${id}/track-record-todo`),
+  /* The search sheet's budget meter — calls this hour / paid credits this
+     month, read-only (the refusing caps live server-side). */
+  staffElementixUsage: () => req('GET', '/api/staff/elementix/usage'),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
   // Deals a BORROWER typed that nobody has reviewed yet — the track-record

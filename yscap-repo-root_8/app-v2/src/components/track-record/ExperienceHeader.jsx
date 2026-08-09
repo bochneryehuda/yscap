@@ -33,7 +33,11 @@ function tierOf(qn) {
 const n0 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const trio = (o) => `${n0(o && o.flips)} flips · ${n0(o && o.holds)} holds · ${n0(o && o.ground)} ground-up`;
 
-export default function ExperienceHeader({ app, experience, findingsOpen, multiBorrower }) {
+/* TWO LENSES (phase D): the LOAN FILE shows all three boxes — a claim and a
+   sign-off requirement only exist on a file. The borrower PROFILE passes
+   lens="borrower" and gets the one box that is about the PERSON: verified
+   in-window counts + the tier ladder. */
+export default function ExperienceHeader({ app, experience, findingsOpen, multiBorrower, lens = 'file' }) {
   // Claimed: the server's figure when the todo carried one, else the file's
   // own columns — the same value, read off the row already on screen.
   const claimed = (experience && experience.claimed) || {
@@ -53,6 +57,24 @@ export default function ExperienceHeader({ app, experience, findingsOpen, multiB
   const box = { flex: '1 1 180px', minWidth: 160, padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(127,169,176,.25)', background: '#fff' };
   const eyebrow = { display: 'block', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: MUTED };
   const big = { fontSize: 15, fontWeight: 650, color: INK };
+
+  if (lens === 'borrower') {
+    // The person, not a file: verified counts + the ladder, nothing that
+    // presumes a claim or a sign-off gate.
+    return (
+      <div style={{ margin: '4px 0 12px' }}>
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
+          <div style={box}>
+            <span style={eyebrow}>Verified (last 3 years)</span>
+            <span style={big}>{verified ? trio(verified) : '—'}</span>
+            <div className="small" style={{ color: MUTED }}>
+              {ladder ? <><strong style={{ color: INK }}>{ladder.tier}</strong> · {ladder.next}</> : 'Only verified deals count toward experience.'}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ margin: '4px 0 12px' }}>
