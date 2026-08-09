@@ -1178,6 +1178,43 @@ not a verification — it writes `pending` and lands in the staff queue.
 
 ---
 
+### 9.5 The bulk property workbench — Phase 9, owner-directed 2026-08-09
+
+The owner, in their own words: *"Staff should not go in only one at a time. They should have a view
+where they can just search and see all the properties that come in. This comes up from Elementix. They
+can select which properties they want to import and then review the information for each and every
+property for accuracy."* And: *"Do a lot of research on how to make this massive, better than ever."*
+
+**This sits ON TOP of §9.1–9.3, it does not replace them.** Phase 7 already searches, stages into
+`track_record_candidates`, and decides one candidate at a time through four verbs. What is missing is
+the SHAPE OF THE WORK: a reviewer facing forty properties has to open forty screens. The workbench is
+one screen over the same staging table — search, see everything that came back, tick what is theirs,
+then walk the ticked ones through an accuracy review before anything lands.
+
+**What does NOT change, and must not be softened to make bulk work comfortable:**
+
+- **Nothing found lands on the track record by itself.** The staging table stays the only landing
+  place for a search; promotion stays a human act. Bulk means a person decides about many properties
+  in one sitting, NOT that a machine decides for them.
+- **Every promoted line still lands `pending`** and still counts toward nothing until it is verified.
+  db/485 is untouched.
+- **The accuracy review is per property.** The owner asked for it explicitly — *"review the
+  information for each and every property for accuracy"* — so a "select all → import" that skips the
+  per-property read is the one shape this must not become. Ticking is the cheap step; reading is the
+  step that carries the risk, and it is per line.
+- **The paid-call rules hold.** No skip trace, no contact numbers, no bulk "trace this list" — the
+  1,000/month ceiling is the reason. A screen that shows forty properties must not fire forty paid
+  lookups because it rendered.
+
+**Open questions the research pass must answer before a line is written** — none are decided yet:
+how a reviewer tells forty look-alike rows apart at a glance; what the per-property accuracy review
+actually shows and in what order; how a partly-worked batch survives someone closing the tab; whether
+"these forty are all under one company" can be answered once instead of forty times (Check A already
+says it can be, §2.2); what happens to the ones nobody ticks; and how a reviewer undoes a batch they
+worked through too fast.
+
+---
+
 ## 10. THE DEFECTS — Phase 0
 
 | # | Fix | Test |
@@ -1209,7 +1246,8 @@ Each phase ships independently and leaves the system working.
 | **6** | **Elementix read path** (§7) | `lookups.js`, cache, per-lookup audit, the guards. The per-property **Verify** button. Still nothing auto-writes |
 | **7** | **The importer** (§9.1–9.3) | Search → staging → one-at-a-time import → compare/merge, with the entity chokepoint on import |
 | **8** | **The borrower confirmation flow** (§9.4) | |
-| **9** | **The long tail** | Municipal rental-license lookups and CO portal checks for the top markets (free, government-attested, unused by anyone); lease-document metadata checks; reverse image matching |
+| **9** | **The bulk property workbench** (§9.5) | **Owner-directed 2026-08-09, and it REPLACES the old Phase 9.** Staff stop working one property at a time: one screen searches the public records, lists everything that comes back for a borrower, lets a reviewer tick the ones that are theirs, and then walks each ticked property through an accuracy review before any of it lands. Needs its own research pass first |
+| ~~**9 (was)**~~ | ~~The long tail~~ | **SHELVED by the owner 2026-08-09** — *"we are not going to do this free government stuff now."* Municipal rental-license lookups, CO portal checks, lease-document metadata, reverse image matching. The research stands and none of it is deleted; it is simply not being built now. Do NOT start it without the owner reopening it |
 
 ---
 
@@ -1241,6 +1279,8 @@ Each phase ships independently and leaves the system working.
 | **Ownership model** | **Two checks** — control of the entity once, ownership of the property per line (§2.2) |
 | **Entity documents** | Surfaced on the property as its ownership evidence, and shipped in the TPR export under `Entities/` (§4.4a) |
 | **Back-book backfill** | **Existing verifications survive.** The pass runs with the verify guard suspended, bounded, audited, and conservative on ambiguity (§4.2a) |
+| **The old Phase 9** | **Shelved** — *"we are not going to do this free government stuff now."* Rental-license / CO-portal / lease-metadata / reverse-image work is parked, not cancelled. Do not start it unless the owner reopens it |
+| **The new Phase 9** | **The bulk property workbench** (§9.5) — search, see everything Elementix returns, tick what is theirs, then review each one for accuracy. Sits on top of Phase 8. **Research pass first**, then build |
 
 ### Still open — none of these block Phase 0, 1 or 2
 
