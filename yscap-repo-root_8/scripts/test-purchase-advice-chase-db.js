@@ -270,6 +270,16 @@ const DIG = require('../src/lib/notification-digests');
     const p2 = await SEND.deliveryPreview(tf, d2);
     eq('G7 a table-funded file gets NO warning at all — it was sold at the closing table', p2.sold_warning, null);
     eq('G8 …and says so', p2.sold_via, 'table_funding');
+
+    // CLEAN UP THE DRAW FIXTURES. An accepted-but-undelivered draw is exactly what the coordinator
+    // sweeps chase, so leaving these behind makes THIS suite look like real outstanding work to
+    // every other suite sharing the test database — which is precisely how it broke
+    // test-draw-coordinator-reminders-db. Only the draw rows are removed: the applications are
+    // needed by nothing else and are harmless, while these actively feed another sweep.
+    for (const a of [direct, tf]) {
+      await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [a]);
+      await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [a]);
+    }
   }
 
   console.log(fail ? `test-purchase-advice-chase-db: ${pass} passed, ${fail} FAILED` : `test-purchase-advice-chase-db: all ${pass} checks passed.`);
