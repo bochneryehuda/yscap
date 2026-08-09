@@ -64,6 +64,15 @@ function pull(entry) {
 //   valueMap— name of the VALUE_MAPS table for enum comparisons
 //   our     — human hint of where the PILOT value comes from (column:… / quote:… /
 //             derive / none). Documentation for WO-B; this module never reads it.
+
+// The ONE field id this registry does not hard-code, because the owner supplies it: the Purchase
+// Advice (PA) date, which is how PILOT knows a loan has been sold (see the entry below). Read
+// straight from the environment rather than through src/config.js so this module keeps its "no
+// requires" property — every registry invariant test enumerates REGISTRY, and a config import
+// would drag the whole config graph into a pure data map. Blank/unset → null, and the entry is
+// then simply absent: nothing sends a placeholder id, and nothing pretends to know the answer.
+const PA_DATE_FIELD_ID = String(process.env.ENCOMPASS_PA_DATE_FIELD_ID || '').trim() || null;
+
 const REGISTRY = Object.freeze([
   // ── Identity / program / vesting ──────────────────────────────────────────
   pull({ key: 'ys_loan_number', encompassFieldId: '364', loanPath: 'loanNumber', type: 'text', category: 'program', compare: 'text', gate: GATE.BLOCK, our: 'column:ys_loan_number', note: 'Loan number — the natural key; MATCHED (must equal Encompass Loan.LoanNumber, field 364)' }),
@@ -165,6 +174,20 @@ const REGISTRY = Object.freeze([
   // closingDocument.fundingDate — verify the tenant populates it on a live funded
   // loan before the closing gate treats a present value as authoritative.
   pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
+  // THE PURCHASE ADVICE (PA) DATE — the SOLD signal (owner-directed 2026-08-09: "I'm going to
+  // give you the exact field ID that you should use from Encompass, which is the PA date, and
+  // that's going to tell you if it was sold or not. If a file doesn't have a PA date yet, it
+  // means it was not sold yet"). Present = the loan has been sold to the investor.
+  //
+  // It is REFERENCE-gated, so it is read and shown and NEVER compared, never a finding and never
+  // a term-sheet hold — it exists only to answer "has this been sold?" for the draw release
+  // party (src/sitewire/release-party.js), which asks a question and never changes anything.
+  //
+  // THE FIELD ID IS SUPPLIED BY THE OWNER and arrives as configuration, not as a deploy:
+  // ENCOMPASS_PA_DATE_FIELD_ID. Until it is set the id is null, so `allFieldIds()` (which
+  // filters falsy) never sends a made-up id to the fieldReader — a wrong id would 400 the whole
+  // batch — and the sold status honestly reads "we cannot tell", which shows the warning.
+  ...(PA_DATE_FIELD_ID ? [pull({ key: 'purchase_advice_date', encompassFieldId: PA_DATE_FIELD_ID, type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'column:purchase_advice_date', note: 'Purchase advice date — read-only reference. Present = the loan was sold to the investor; blank = not sold yet. Drives the draw "this loan isn\'t sold yet" warning only; gates nothing. Field id comes from ENCOMPASS_PA_DATE_FIELD_ID (owner-supplied) — verify against the live tenant once set' })] : []),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
   // A FIRST-TIME BORROWER IS A ZERO, NOT A BLANK (owner-reported 2026-08-07:
@@ -777,6 +800,7 @@ function compareField(entryOrKey, ourValue, encValue) {
 
 module.exports = {
   REGISTRY,
+  PA_DATE_FIELD_ID,
   BY_KEY,
   BY_FIELD_ID,
   IDENTITY_MAP,

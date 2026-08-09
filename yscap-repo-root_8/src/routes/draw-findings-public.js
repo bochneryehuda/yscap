@@ -27,6 +27,7 @@ const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const notify = require('../lib/notify');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const borrowerSafe = require('../lib/borrower-safe');
 const storage = require('../lib/storage');
 const drawReport = require('../sitewire/draw-report');
@@ -166,7 +167,8 @@ router.post('/:token/accept', tokenThrottleMutation, async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='email', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)', badge: { text: 'Accepted', tone: 'positive' },
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)',
+    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }), badge: { text: 'Accepted', tone: 'positive' },
     body: `The borrower accepted the inspection results from the email — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
@@ -204,7 +206,8 @@ router.post('/:token/dispute', tokenThrottleMutation, async (req, res) => {
     await db.query(`UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, updated_at=now() WHERE id=$1`, [u.line_id, u.desired, u.note]);
   }
   const count = updates.length;
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw (email)', badge: { text: 'Disputed', tone: 'action' },
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw (email)',
+    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }), badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower pushed back on ${count} item(s) on their draw results from the email. A draw coordinator needs to review — the borrower can add photo evidence from their portal.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
 });

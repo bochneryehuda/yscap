@@ -21,6 +21,7 @@
  */
 const db = require('../db');
 const notify = require('./notify');
+const drawLabel = require('./draw-label');   // "Draw 2" / "Draws 2, 3" — the ONE way a draw is named in a subject
 const workflow = require('./workflow');
 const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
@@ -917,6 +918,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
        -- file has exactly one result waiting: with two, a single draw's figures would headline
        -- one of them and quietly misrepresent the other.
        SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest,
+              array_agg(f.sitewire_draw_id) AS draw_ids,
               CASE WHEN count(*) = 1 THEN min(f.sitewire_draw_id) END AS one_draw
          FROM draw_findings f
          JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
@@ -931,7 +933,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
      -- nudges = how many borrower reminders were already sent THIS delivered episode (since the
      -- oldest currently-delivered finding). Stamps from a prior, already-accepted draw are before
      -- that oldest delivery, so a new delivery always starts the borrower over with a fresh CAP.
-     SELECT d.application_id, d.n, d.oldest, d.one_draw,
+     SELECT d.application_id, d.n, d.oldest, d.one_draw, d.draw_ids,
             (SELECT count(*) FROM audit_log l
                WHERE l.entity_type='application' AND l.action='${DIGEST_ACTION.DRAW_FINDINGS_REMINDER}'
                  AND l.entity_id=d.application_id AND l.created_at >= d.oldest)::int AS nudges
@@ -956,6 +958,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
         await notify.notifyAppBorrowers(r.application_id, {
           type: 'draw_findings',
           title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
+          drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
           badge: { text: 'Action needed', tone: 'action' },
           figures: (blocks && blocks.figures) || null,
           facts: (blocks && blocks.facts) || null,
@@ -973,7 +976,8 @@ async function drawFindingsAwaitingBorrowerOnce() {
         const coords = await drawRecipients.coordinatorsOrDesk(r.application_id);
         const stuckTitle = r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`;
         const stuckBody = `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`;
-        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle, body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
+        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle,
+          drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids), body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
         if (coords.length) {
           for (const c of coords) {
             try { await notify.notifyStaff(c.id, { ...stuckOpts, emailTo: c.email }); }
@@ -1014,7 +1018,8 @@ async function trustpointUnreleasedOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest
+      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest,
+              array_agg(t.number) AS draw_numbers
          FROM trustpoint_draws t
          JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE t.status='APPROVED' AND t.disbursed_at IS NULL
@@ -1041,6 +1046,7 @@ async function trustpointUnreleasedOnce() {
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'Approved draw not released yet' : `${r.n} approved draws not released yet`,
+        drawTag: drawLabel.drawTagFor(r.draw_numbers),
         badge: { text: 'Chase release', tone: 'action' },
         body: `${r.n === 1 ? 'A draw' : `${r.n} draws`} on this file ${r.n === 1 ? 'was' : 'were'} approved by the draw administrator ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}but no funds release has been observed yet. The wire comes from the note buyer's side — please follow up with them so the borrower isn't left waiting.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
@@ -1054,7 +1060,8 @@ async function trustpointUnreleasedOnce() {
 async function drawReleaseOverdueOnce() {
   let sent = 0;
   const rows = (await db.query(
-    `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due
+    `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due,
+            array_agg(f.sitewire_draw_id) AS draw_ids
        FROM draw_findings f
        JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
@@ -1077,6 +1084,7 @@ async function drawReleaseOverdueOnce() {
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'Draw release overdue' : `${r.n} draw releases overdue`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Overdue', tone: 'action' },
         body: `The borrower accepted ${r.n === 1 ? 'a draw' : `${r.n} draws`} and the release ${d != null && d > 0 ? `is ${d} day${d === 1 ? '' : 's'} past the target` : 'is now due'}, but no release has been recorded in PILOT yet. Please confirm the wire and record the release.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
@@ -1138,7 +1146,8 @@ async function orderTrustpointOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest
+      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest,
+              array_agg(p.id) AS portal_ids
          FROM portal_draw_requests p
          JOIN applications a ON a.id=p.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE p.platform='trustpoint' AND p.status='submitted' AND p.tp_draw_id IS NULL
@@ -1154,6 +1163,7 @@ async function orderTrustpointOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is waiting to be entered into TrustPoint' : `${r.n} draws are waiting to be entered into TrustPoint`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.portal_ids, 'portal'),
         badge: { text: 'Enter in TrustPoint', tone: 'action' },
         body: `The borrower submitted ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it has' : 'they have'} not been entered into TrustPoint yet. Please enter ${r.n === 1 ? 'it' : 'them'} so the inspection can be ordered and the borrower's draw can move forward.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trustpoint');
@@ -1173,7 +1183,8 @@ async function orderTrinityOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest
+      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest,
+              array_agg(t.portal_draw_request_id) AS portal_ids
          FROM trinity_inspection_orders t
          JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE t.status='requested'
@@ -1189,6 +1200,7 @@ async function orderTrinityOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A physical inspection is waiting to be ordered on Trinity' : `${r.n} physical inspections are waiting to be ordered on Trinity`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.portal_ids, 'portal'),
         badge: { text: 'Order on Trinity', tone: 'action' },
         body: `${r.n === 1 ? 'A physical inspection has' : `${r.n} physical inspections have`} been requested on this file but not yet ordered from Trinity. Please place the order so the borrower's draw can move forward.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trinity');
@@ -1211,7 +1223,8 @@ async function investorPendingDeliveryOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest
+      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest,
+              array_agg(f.sitewire_draw_id) AS draw_ids
          FROM draw_findings f
          JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE f.status IN ('accepted','resolved')
@@ -1232,6 +1245,7 @@ async function investorPendingDeliveryOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is approved and ready to send to the investor' : `${r.n} draws are approved and ready to send to the investor`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Deliver to investor', tone: 'action' },
         body: `The borrower has agreed to ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it is' : 'they are'} waiting to be delivered to the investor. Please send the delivery so the borrower's funds are not held up.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'investor-pending');
@@ -1298,7 +1312,8 @@ async function withInvestorOnce() {
             AND ${activeManagedLink('dl.application_id')}
             AND ${notThrottled('dl.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
        )
-       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered
+       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered,
+              array_agg(sitewire_draw_id) AS draw_ids
          FROM with_inv
         WHERE last_send < now() - interval '48 hours'
         GROUP BY application_id
@@ -1312,6 +1327,7 @@ async function withInvestorOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is with the investor awaiting funding' : `${r.n} draws are with the investor awaiting funding`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Awaiting investor', tone: 'action' },
         body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} delivered to the investor ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}and no funding has come back yet. Please follow up with the investor so the borrower is not left waiting.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'with-investor');

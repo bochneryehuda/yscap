@@ -30,6 +30,7 @@ const drawReport = require('./draw-report');
 const { buildDrawPacket } = require('./draw-packet');
 const { buildXlsx } = require('../lib/xlsx');
 const recipients = require('../lib/draw-recipients');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named
 const fieldRegistry = require('../lib/conditions/field-registry');
 const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
@@ -304,6 +305,12 @@ async function deliveryPreview(appId, drawId) {
     const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
     if (d) { money = ID.investorMoney(d, mode); drawNumber = d.number; }
   } catch (_) { /* the preview still renders; the blockers below say what is missing */ }
+  // The rollup is the fast path; when it could not be read (or carries no number for this draw)
+  // fall back to the ONE number resolver, so the investor's subject stops silently degrading to
+  // the anonymous "Draw request". Still never guesses — null stays null.
+  if (drawNumber == null) {
+    drawNumber = await drawLabel.drawNumberFor(db, appId, { sitewireDrawId: drawId });
+  }
 
   const contacts = await contactsForNoteBuyer(app.note_buyer);
   const wireForm = await wireFormStatus(appId);

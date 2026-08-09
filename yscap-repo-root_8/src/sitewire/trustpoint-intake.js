@@ -25,6 +25,7 @@
 const db = require('../db');
 const workflow = require('../lib/workflow');
 const notify = require('../lib/notify');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -123,7 +124,12 @@ async function maybeOpenImportTask(appId, { drawId, drawNumber, status, addrText
     // coordinator exists) + the draws@ desk copy with the per-line table.
     const opts = {
       type: 'trustpoint_import',
-      title: `Draw #${nLabel} needs to be entered into TrustPoint`,
+      // The draw leads the subject; the title stops repeating the number inside the sentence.
+      // A draw the platform never numbered carries no tag rather than a guessed one, so the
+      // fallback title keeps saying what it always did.
+      title: drawLabel.drawLabel(drawNumber) ? 'A draw needs to be entered into TrustPoint'
+        : `Draw #${nLabel} needs to be entered into TrustPoint`,
+      drawTag: drawLabel.drawLabel(drawNumber),
       body: `A draw was submitted for ${addrText || 'the property'} (${usd(total)} requested across ${lines.length} line${lines.length === 1 ? '' : 's'}). `
         + 'This file\'s draws are administered on TrustPoint — enter it there as a REGULAR workflow draw (never TrustPoint\'s "imported draw" option, which sends no updates back). '
         + 'The line-by-line amounts are in your Workflow item and the desk email.',
@@ -144,7 +150,8 @@ async function maybeOpenImportTask(appId, { drawId, drawNumber, status, addrText
         `SELECT ys_loan_number, property_address->>'oneLine' AS addr FROM applications WHERE id=$1`, [appId])).rows[0] || {};
       await mail.deliver(
         mail.trustpointImport({
-          drawNumber: nLabel, propertyLabel: row.addr || addrText || null,
+          drawNumber: nLabel, drawTag: drawLabel.drawLabel(drawNumber),
+          propertyLabel: row.addr || addrText || null,
           loanNumber: row.ys_loan_number || null, lines, totalCents: total,
         }),
         ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId), applicationId: appId, type: 'trustpoint_import', audience: 'staff' });

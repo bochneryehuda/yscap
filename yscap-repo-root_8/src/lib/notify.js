@@ -156,6 +156,12 @@ function buildEmail(opts, audience) {
     title:     opts.title,
     // The file tag rides in the SUBJECT only (the in-body H1 stays clean).
     subjectTag: opts.subjectTag || '',
+    // WHICH DRAW ("Draw 2"), at the FRONT of the subject (owner-directed
+    // 2026-08-09). Passed straight through from the call site — the ONE place a
+    // draw email has to remember is `drawTag`, and every draw email present and
+    // future gets the same treatment because every one of them renders here.
+    // Built by src/lib/draw-label.js, which answers null rather than guess.
+    drawTag:   opts.drawTag || '',
     // A small category eyebrow above the headline for scannability.
     kicker:    opts.kicker || KICKER_OF[opts.type] || '',
     preheader: opts.emailBody || opts.body || opts.title,

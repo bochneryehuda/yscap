@@ -25,6 +25,14 @@ const rollupMod = require('../sitewire/rollup');
 const drawTimeline = require('../sitewire/draw-timeline');
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 const drawEmail = require('../lib/email/draw-email'); // the ONE money formatter for a draw email
+const drawLabel = require('../lib/draw-label');        // "Draw 2" — the ONE way a draw is named in a subject
+// Investor delivery + the release party. Required at the TOP rather than beside their route
+// section further down: the rules route and the rollup route (both far above that section) now
+// read them, and a route handler that reaches for a `const` declared later in the file works only
+// because handlers run after the module finishes loading — too subtle to rely on.
+const investorDelivery = require('../sitewire/investor-delivery');
+const investorSend = require('../sitewire/investor-delivery-send');
+const releaseParty = require('../sitewire/release-party'); // who releases the money, which level said so, and is it sold yet
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
@@ -552,10 +560,15 @@ router.post('/files/:id/messages/reply', requirePermission('manage_draws'), draw
   if (!body) return res.status(400).json({ error: 'Type a message to send.' });
   if (body.length > 8000) return res.status(400).json({ error: 'That message is too long.' });
   const subject = req.body && req.body.subject ? String(req.body.subject).slice(0, 200) : 'A message about your draw';
+  // A coordinator writing about ONE draw may say which (the desk sends the draw it is open on).
+  // Optional by design: a general message about the project carries no draw tag rather than a
+  // wrong one, and the id is validated here because it reaches a bigint column.
+  const msgDrawId = req.body && /^\d+$/.test(String(req.body.sitewire_draw_id || '')) ? String(req.body.sitewire_draw_id) : null;
   try {
     const ids = await notify.notifyAppBorrowers(appId, {
       type: 'draw_message', major: true,
       title: subject, body,
+      drawTag: msgDrawId ? await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: msgDrawId }) : null,
       badge: { text: 'From your loan team', tone: 'teal' },
       applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
     });
@@ -1280,8 +1293,12 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
         // desk on an invisible Bcc nobody could reply-all to — is no longer needed here.
         await notify.notifyAppThread(application_id, {
           type: 'draw',
-          title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
-          staffTitle: `Draw funds released${own.number != null ? ` — draw #${own.number}` : ''}`,
+          // The draw number leads the SUBJECT (drawTag) rather than sitting inside the
+          // sentence: three draws on one property otherwise produce three identical
+          // subjects. The inline `#N` is gone from both titles so it is never printed twice.
+          drawTag: drawLabel.drawLabel(own.number),
+          title: 'Your construction draw has been released',
+          staffTitle: 'Draw funds released',
           staffBody: `A construction draw of ${amt} was released to the borrower on this file.`,
           figures: (blocks && blocks.figures) || null,
           facts: (blocks && blocks.facts) || null,
@@ -1556,13 +1573,25 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   // A negative physical fee is invalid → null (falls back to the virtual fee downstream), matching the
   // virtual guard above. Never store a negative fee — it would push a negative processing_fee_cents.
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
+  // WHO RELEASES THE MONEY for this capital provider (owner-directed 2026-08-09: "we should also
+  // have settings where we should be able to set that by capital provider"). NULL = no answer at
+  // this level, which falls through to the company default — a rule that was never given an answer
+  // must not silently start deciding where money goes. A typo is REFUSED here rather than left to
+  // the column's CHECK, which would surface as an unexplained 500. Like every other field on this
+  // route it is written from EXCLUDED, so a save can also CLEAR it (handing the decision back to
+  // the company default) — which means any screen that saves a rule must send this field.
+  const rawFund = b.investor_funding_mode;
+  const investorFundingMode = (rawFund == null || String(rawFund).trim() === '') ? null : String(rawFund).trim();
+  if (investorFundingMode && !investorDelivery.MODES.includes(investorFundingMode)) {
+    return res.status(400).json({ error: 'Pick who releases the money for this capital provider, or leave it on the company default.' });
+  }
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally, draw_platform, markup_cents)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, draw_platform=EXCLUDED.draw_platform, markup_cents=EXCLUDED.markup_cents, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally, draw_platform, markup_cents, investor_funding_mode)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, draw_platform=EXCLUDED.draw_platform, markup_cents=EXCLUDED.markup_cents, investor_funding_mode=EXCLUDED.investor_funding_mode, updated_at=now()
        RETURNING *`,
-      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally, drawPlatform, markupCents])).rows[0];
+      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally, drawPlatform, markupCents, investorFundingMode])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1836,7 +1865,13 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // lien waivers are OFF by default and only surface once turned on (globally OR for this
     // project) — the panel shows only when enabled or already in use.
     const lienWaiversEnabled = await lienGateEnabled(appId);
-    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers,
+    // WHO RELEASES THE MONEY — the answer, WHICH level gave it (this project / this capital
+    // provider / the company default), whether the loan has been sold yet, and the "it isn't sold
+    // yet — release it yourself?" question when the two disagree. It rides the rollup so the desk
+    // card needs no second call. Best-effort: the card simply does not render if it cannot be read.
+    let release = null;
+    try { release = await releaseParty.releaseStateFor(db, appId); } catch (_) {}
+    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
       // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
@@ -2373,6 +2408,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       // in-app-only staff marker below stays, so nobody on the file loses the event.
       await notify.notifyAppThread(appId, {
         type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+        // "Draw 2 · Your inspection is complete …" — the borrower and the coordinator are both
+        // on this thread and a property with three draws otherwise sends three identical subjects.
+        drawTag: await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: drawId }),
         badge: { text: 'Please confirm', tone: 'action' },
         figures: (blocks && blocks.figures) || null,
         facts: (blocks && blocks.facts) || null,
@@ -2549,6 +2587,7 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
       const blocks = await drawEmailBlocks(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id, borrower: true });
       await notify.notifyAppBorrowers(f.application_id, {
         type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute',
+        drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }),
         badge: { text: 'Reviewed', tone: approvedN ? 'positive' : 'neutral' },
         figures: (blocks && blocks.figures) || null,
         facts: (blocks && blocks.facts) || null,
@@ -2564,9 +2603,8 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
 // ===================================================================================
 //  INVESTOR DELIVERY — send the agreed draw to the note buyer who funds it
 //  (owner-directed 2026-08-03). See src/sitewire/investor-delivery.js for the rules.
+//  (`investorDelivery` / `investorSend` / `releaseParty` are required at the top of the file.)
 // ===================================================================================
-const investorDelivery = require('../sitewire/investor-delivery');
-const investorSend = require('../sitewire/investor-delivery-send');
 
 // ---- POST /files/:id/findings/:findingId/mark-accepted ----
 // The borrower agreed OUTSIDE the portal — verbally, or by email. That is a real acceptance, so it
@@ -2619,7 +2657,43 @@ router.post('/files/:id/draws/:drawId/funding-mode', requirePermission('manage_d
     const upd = await db.query(`UPDATE draw_findings SET funding_mode=$3, updated_at=now() WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, drawId, mode]);
     if (!upd.rowCount) return res.status(409).json({ error: 'Deliver the inspection findings first — the funding choice is recorded against them.' });
   }
-  res.json({ ok: true, mode });
+  res.json({ ok: true, mode, release: await releaseParty.releaseStateFor(db, appId, { sitewireDrawId: drawId }).catch(() => null) });
+});
+
+// ---- GET/POST /files/:id/release-party — "who releases the money" for the whole PROJECT ----
+// The per-draw switch above needs a draw to exist and a findings row to hang the choice on. This
+// is the PROJECT-level answer the owner asked for ("we should be able to set every property … by
+// default … released by the investor or released by us"), so it can be set the moment the file
+// has a draw project — before the first draw, and for every draw after it. The capital-provider
+// and company levels are set in the admin Draw Settings screen; this one belongs to the file.
+router.get('/files/:id/release-party', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const drawId = String((req.query && req.query.drawId) || '');
+  const state = await releaseParty.releaseStateFor(db, appId, { sitewireDrawId: /^\d+$/.test(drawId) ? drawId : null });
+  res.json({ ...state, modes: investorDelivery.MODES.map((m) => ({ mode: m, label: investorDelivery.MODE_LABEL[m], help: investorDelivery.MODE_HELP[m] })) });
+});
+
+router.post('/files/:id/release-party', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const raw = req.body && req.body.mode;
+  // An explicit blank CLEARS the project's answer, which is a real choice: it hands the decision
+  // back to the capital provider's setting (and then the company default), so a coordinator can
+  // undo a per-project override rather than being stuck with whatever they picked once.
+  const clear = raw === null || raw === '' || raw === undefined;
+  const mode = String(raw || '');
+  if (!clear && !investorDelivery.MODES.includes(mode)) return res.status(400).json({ error: 'Pick who releases the money on this project.' });
+  const upd = await db.query(
+    `UPDATE sitewire_property_links SET investor_funding_mode=$2, updated_at=now()
+      WHERE application_id=$1 AND matched_by='created' RETURNING application_id`,
+    [appId, clear ? null : mode]);
+  if (!upd.rowCount) return res.status(409).json({ error: 'This file has no draw project yet — start the draw process first.' });
+  try {
+    await orchestrator.journal({ appId, entity: 'file', entityId: appId, field: 'investor_funding_mode',
+      oldValue: null, newValue: { mode: clear ? null : mode, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) {}
+  res.json({ ok: true, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
 });
 
 // ---- GET /files/:id/draws/:drawId/investor-delivery — the preview behind the button ----
@@ -2631,7 +2705,11 @@ router.get('/files/:id/draws/:drawId/investor-delivery', requirePermission('mana
   if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
   try {
     const preview = await investorSend.deliveryPreview(appId, drawId);
-    res.json({ ...preview, modes: investorDelivery.MODES.map((m) => ({ mode: m, label: investorDelivery.MODE_LABEL[m], help: investorDelivery.MODE_HELP[m] })) });
+    // The same release answer the draw desk shows, so the "this loan isn't sold yet — do you want
+    // to release it yourself?" question is in front of the coordinator on the screen where they
+    // are about to ask an investor to wire money, not only back on the desk.
+    const release = await releaseParty.releaseStateFor(db, appId, { sitewireDrawId: drawId }).catch(() => null);
+    res.json({ ...preview, release, modes: investorDelivery.MODES.map((m) => ({ mode: m, label: investorDelivery.MODE_LABEL[m], help: investorDelivery.MODE_HELP[m] })) });
   } catch (e) { console.warn('[sitewire] investor preview:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
