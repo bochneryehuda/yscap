@@ -134,6 +134,9 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
     try {
       await client.query('BEGIN');
       await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`sw-disb:${appId}`]);
+      // Read exactly as the manual release route reads it — unscoped is unambiguous here because
+      // `application_id` is UNIQUE on this table, and the two paths writing one ledger must never
+      // disagree about the floor.
       const floorCents = Number(((await client.query(`SELECT oop_floor_cents FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0] || {}).oop_floor_cents) || 0;
       const priorApproved = Number((await client.query(`SELECT COALESCE(sum(approved_cents),0) s FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].s) || 0;
       const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct, oopFloorCents: floorCents, priorApprovedCents: priorApproved });

@@ -2188,10 +2188,16 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // WHAT'S LEFT ON THIS DRAW — the same facts the refusals are built from, stated FORWARD, so a
     // coordinator sees what is missing without having to press a button and be refused. It is a
     // DESCRIPTION and never a gate: the real refusals stay exactly where they are. Also the plain
-    // status, which now says "unknown" instead of quietly reading as progress. Best-effort per draw
-    // and bounded to the live ones — a long-finished project should not re-read every step.
-    const CHECKLIST_MAX = 12;
-    for (const d of rollup.draws.slice(0, CHECKLIST_MAX)) {
+    // status, which now says "unknown" instead of quietly reading as progress.
+    //
+    // Best-effort per draw, and skewed to the draws somebody is actually working. Each checklist is
+    // ~10 small reads, so computing one for every draw on a long-running project would put a hundred
+    // queries behind one desk load for cards nobody is looking at. A draw that is finally approved
+    // AND has its money recorded is finished — its checklist would be all-green — so it is skipped,
+    // and the cap catches the rest.
+    const CHECKLIST_MAX = 8;
+    const needsChecklist = rollup.draws.filter((d) => !(d.is_final_approved && d.released)).slice(0, CHECKLIST_MAX);
+    for (const d of needsChecklist) {
       try {
         const c = await drawChecklist.checklistFor(db, appId, d.sitewire_draw_id, { stage: d.approval_stage });
         if (c) {
@@ -2204,7 +2210,11 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // The stage HISTORY (when each draw actually reached each step) + how long it has sat where it
     // is. Absent history reads as null, never as "0 days" — a draw whose stages predate the history
     // is unknown, not brand new.
-    for (const d of rollup.draws.slice(0, CHECKLIST_MAX)) {
+    // Its own bound, deliberately WIDER than the checklist's: history is ONE indexed read, and a
+    // FINISHED draw is exactly where "how long did this actually take?" gets answered — so unlike
+    // the checklist it is not skipped once a draw is done.
+    const HISTORY_MAX = 24;
+    for (const d of rollup.draws.slice(0, HISTORY_MAX)) {
       try {
         const h = await stageEvents.historyFor(appId, { sitewireDrawId: d.sitewire_draw_id });
         d.stage_history = h;
