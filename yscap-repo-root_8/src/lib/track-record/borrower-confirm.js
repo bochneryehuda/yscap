@@ -50,7 +50,16 @@ const str = (v) => String(v == null ? '' : v).trim();
 const SAFE_FIELDS = [
   'id', 'address', 'purchaseDate', 'purchasePrice', 'saleDate', 'salePrice',
   'entityName', 'alreadyOnRecord', 'answered', 'answer',
+  'dealType', 'dealTypeDerived', 'dealTypeWhy',
 ];
+/* The allowlist is ENFORCED, not aspirational (2026-08-09 audit: the header
+   claimed "the projection is built from it" while `shape()` was hand-written —
+   dealType had already been added to the payload without touching this list,
+   which is exactly the drift the list exists to stop). Every borrower-facing
+   candidate object passes through here; a field not named above is dropped, so
+   a future internal column (vendor raw, match confidence, decided_by) can
+   never leak by being added to `shape()` alone. */
+const pickSafe = (o) => { const out = {}; for (const k of SAFE_FIELDS) if (o[k] !== undefined) out[k] = o[k]; return out; };
 
 const ANSWERS = ['mine', 'not_mine'];
 
@@ -111,7 +120,7 @@ async function loadForBorrower(borrowerId, client) {
     dealTypeWhy: IMPORTER.dealTypeFromRecords(r).why,
   });
 
-  const all = rows.map(shape);
+  const all = rows.map((r) => pickSafe(shape(r)));
   const answered = all.filter((x) => x.answered).length;
 
   // Mark what they are being shown, once, so progress is a server fact.

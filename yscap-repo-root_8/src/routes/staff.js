@@ -10215,7 +10215,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols, trackRecordMissing, trackRecordEnteredCols } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing, trackRecordEnteredCols, trackRecordSentOnly } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -10275,7 +10275,12 @@ router.put('/track-records/:id', async (req, res) => {
   // owner's rule: "Every single detail of a track record you need to click on verify."
   // db/485's trigger enforces it for every writer including the imports; this door
   // states it too so the intent is readable where the edit happens.
-  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
+  /* AN EDIT ONLY TOUCHES WHAT THE REQUEST ACTUALLY SAID — the shared
+     `trackRecordSentOnly` guard (see borrower.js, 2026-08-09 audit): a partial
+     body used to null every absent figure and reset an absent dealType to
+     'flip', and each of those "changes" is material to db/485, so the line was
+     un-verified over columns the caller never mentioned. */
+  const cols = trackRecordSentOnly({ ...trackRecordCols(b), ...trackRecordEnteredCols('staff') }, b);
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {
     if (b.llcId) {
