@@ -163,6 +163,83 @@ const ORIG_1_0 = changesAt(1.0);
     ok(await blocks() === false, 'deciding the escalation is what unblocks issuance');
     ok(await held(reg6) === false, '…and the stored record now agrees with the decision');
 
+    /* ---- 7. THE CROSS-FILE GUARD (post-merge audit #2) -----------------------
+       `AND application_id=$2` is the only thing standing between a corrupt or
+       hand-edited escalation row and a write to ANOTHER borrower's file. Production
+       cannot produce one (both doors record the row they just inserted for the same
+       file), so it is forged here — the guard was previously removable with the whole
+       suite still green, which is the one state a safety check must never be in. */
+    {
+      const otherBor = (await db.query(
+        `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Other','File',$1) RETURNING id`,
+        [`hold-other-${sfx}@test.local`])).rows[0].id;
+      const otherApp = (await db.query(
+        `INSERT INTO applications (borrower_id,status,loan_type) VALUES ($1,'underwriting','Purchase') RETURNING id`,
+        [otherBor])).rows[0].id;
+      const otherReg = (await db.query(
+        `INSERT INTO product_registrations
+           (application_id, program, status, total_loan, inputs, quote, is_current, needs_approval)
+         VALUES ($1,'standard','ELIGIBLE',500000,'{}'::jsonb,'{}'::jsonb,true,true) RETURNING id`,
+        [otherApp])).rows[0].id;
+      // An escalation on OUR file naming the OTHER file's registration.
+      const out = await mp.releaseApprovalHold({ application_id: appId, registration_id: otherReg });
+      ok(out.released === false, 'an escalation naming another file\u2019s registration releases nothing');
+      ok(out.reason === 'registration_not_on_this_file',
+        `\u2026and it says the registration is not on this file (got ${out.reason})`);
+      const otherStill = (await db.query(
+        `SELECT COALESCE(needs_approval,false) h FROM product_registrations WHERE id=$1`, [otherReg])).rows[0].h;
+      ok(otherStill === true, '\u2026and the OTHER file\u2019s registration is untouched');
+      try { await db.query(`DELETE FROM applications WHERE id=$1`, [otherApp]); } catch (_) { }
+      try { await db.query(`DELETE FROM borrowers WHERE id=$1`, [otherBor]); } catch (_) { }
+    }
+
+    /* ---- 8. THE SAVEPOINT ACTUALLY PROTECTS THE CALLER (audit #3) ------------
+       Every other case here runs on the autocommit pool, so the savepoint branch
+       never executed under test and could be deleted with the suite still green.
+       The regression that would reintroduce: a swallowed pg error leaves the
+       caller's transaction ABORTED (25P02), so its COMMIT silently becomes a
+       rollback and the DECISION ITSELF is lost. Forced by pointing the escalation's
+       registration at a non-UUID so the UPDATE raises 22P02 inside the release. */
+    {
+      const reg8 = await (async () => { await retire(); return mkReg(ORIG_1_0, 400000); })();
+      const esc8 = await mkEsc(reg8, ORIG_1_0, 400000);
+      const client = await db.pool.connect();
+      let committed = false, decided = null;
+      try {
+        await client.query('BEGIN');
+        // A caller-owned write in the same transaction, to prove it survives.
+        await client.query(`UPDATE applications SET status='underwriting' WHERE id=$1`, [appId]);
+        const wrapped = {
+          query: (sql, params) => client.query(sql, params),
+          pool: db.pool,
+        };
+        // Force the inner UPDATE to fail: hand back a row whose registration_id is junk.
+        const orig = wrapped.query;
+        wrapped.query = (sql, params) => {
+          if (/UPDATE product_registrations SET needs_approval=false/.test(String(sql))) {
+            return orig('UPDATE product_registrations SET needs_approval=false WHERE id=$1::uuid RETURNING id', ['not-a-uuid']);
+          }
+          return orig(sql, params);
+        };
+        decided = await mp.decideEscalation(esc8, 'approved', null, 'ok', wrapped);
+        await client.query('COMMIT');
+        committed = true;
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch (_) { }
+        console.log('  (savepoint case threw:', e.message, ')');
+      } finally { client.release(); }
+      ok(committed === true,
+        'a failed stamp release does NOT abort the caller\u2019s transaction \u2014 the COMMIT still succeeds');
+      ok(decided && decided.status === 'approved' && decided.holdRelease
+        && decided.holdRelease.reason === 'error',
+        '\u2026and it reports the failure rather than claiming a release');
+      const stillDecided = (await db.query(
+        `SELECT status FROM manual_program_escalations WHERE id=$1`, [esc8])).rows[0];
+      ok(stillDecided && stillDecided.status === 'approved',
+        '\u2026and THE DECISION SURVIVED the commit (the 25P02 regression this guards)');
+      ok(await held(reg8) === true, '\u2026while the stamp was correctly left alone');
+    }
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\ntest-approval-releases-hold-db: ALL PASS');
     process.exitCode = failures ? 1 : 0;
   } catch (e) {
