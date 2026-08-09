@@ -138,6 +138,12 @@ const FILLABLE = [
   'property_address', 'deal_type', 'purchase_price', 'purchase_date',
   'sale_price', 'sale_date', 'entity_name',
   'rent_amount', 'rent_date', 'refi_amount', 'refi_date',
+  /* The entity LINK fills too (pre-merge audit 2026-08-09: the proposed_llc_id
+     ternary in matchExisting/compareCandidate was DEAD without this entry —
+     the loop walks FILLABLE, so a fill the list does not name never runs).
+     llc_id is already in MATERIAL, so filling it onto a verified line engages
+     the would_reopen confirm exactly like a figure. */
+  'llc_id',
 ];
 
 /** The property a vendor row is about. `addresses[]` is the canonical shape
@@ -238,14 +244,35 @@ function candidatesFrom(research, entityNames) {
       c.purchase_date = ymd(d.date) || c.purchase_date;
       c.purchase_price = (d.amount == null ? null : num(d.amount)) ?? c.purchase_price;
       c.entity_name = c.entity_name || firstOurName(d.grantees, names);
+      /* THE OTHER SIDE OF THE DEED IS EVIDENCE, NOT NOISE (2026-08-09 A-to-Z
+         audit M3): the SELLER on the acquisition is what the related-party
+         control reads — a "purchase" from the borrower's own other company is
+         the exact churn shape db/499 added `seller_name` for, and the importer
+         had been discarding it. Kept on the candidate's raw and written to the
+         line at import. */
+      c.raw.counterparty = c.raw.counterparty || firstOtherName(d.grantors, names);
     }
     if (sold) {
       c.sale_date = ymd(d.date) || c.sale_date;
       c.sale_price = (d.amount == null ? null : num(d.amount)) ?? c.sale_price;
       c.entity_name = c.entity_name || firstOurName(d.grantors, names);
+      c.raw.buyer_name = c.raw.buyer_name || firstOtherName(d.grantees, names);
     }
     c.raw.deeds.push(d);
     if (!existing) byKey.set(addrKey, c);
+  }
+  /* THE KEY IS ORDER-STABLE (audit H2b). It used to be minted from whichever
+     deed row the vendor returned FIRST, so a buy+sell pair keyed as
+     `doc:<buyId>` on one search and `doc:<sellId>` on another that paged
+     differently — and the durable decline stored under one never matched the
+     other. Recomputed here from the SORTED set of every document id the
+     candidate's deeds carry, the key is the same whatever order the rows
+     arrived in. (Legacy single-id keys in the book are covered by the
+     address-level decline check at staging.) */
+  for (const c of byKey.values()) {
+    const ids = (c.raw.deeds || [])
+      .map((d) => str(d.countyDocumentId || d.documentId || d.id)).filter(Boolean).sort();
+    if (ids.length) c.dedupe_key = `doc:${ids.join('+')}`.slice(0, 200);
   }
 
   /* ═══ THE MORTGAGES WERE PAID FOR AND THROWN AWAY — no longer (2026-08-09).
@@ -331,6 +358,22 @@ function firstOurName(list, names) {
     for (const n of names) {
       try { if (entityLib.promotionMatch(nm, n)) return str(nm); } catch (_) { /* not a match */ }
     }
+  }
+  return null;
+}
+
+/* The first party on the list that is NOT one of the borrower's names — the
+   counterparty. Null when every name is theirs (which is itself the
+   related-party signal, preserved as such) or the list is empty. */
+function firstOtherName(list, names) {
+  for (const p of (Array.isArray(list) ? list : [list])) {
+    const nm = typeof p === 'string' ? p : (p && (p.name || p.partyName));
+    if (!str(nm)) continue;
+    let ours = false;
+    for (const n of names) {
+      try { if (entityLib.promotionMatch(nm, n)) { ours = true; break; } } catch (_) { /* not a match */ }
+    }
+    if (!ours) return str(nm).slice(0, 160);
   }
   return null;
 }
@@ -529,10 +572,33 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
      while the first is still `staged`, so without this a declined property
      comes straight back on the next search — which is the one thing "not this
      borrower's" is supposed to prevent. Snoozed counts until its date passes. */
-  const prior = (await db.query(
+  let prior = (await db.query(
     `SELECT status, snoozed_until FROM track_record_candidates
       WHERE borrower_id=$1 AND dedupe_key=$2
       ORDER BY created_at DESC LIMIT 1`, [borrowerId, key])).rows[0];
+  /* THE DECLINE IS DURABLE BY PLACE, NOT ONLY BY KEY (2026-08-09 A-to-Z audit
+     H2). The dedupe key has two families — `doc:` when the vendor named a
+     document id, `addr:` otherwise — and the doc form used to depend on which
+     deed row the vendor returned FIRST, so the same declined house could come
+     back under a sibling key on the very next search: paged differently, or
+     surfaced through a mortgage instead of a deed. So when the key finds no
+     prior, the ADDRESS is asked too — narrowly: only a prior DECLINE (the
+     durable "not their property", the one answer that must never be re-asked)
+     and a live STAGED twin (the partial unique index is keyed on dedupe_key,
+     so a sibling key would otherwise stage the same house twice). A prior
+     import/merge deliberately does NOT suppress by address: a genuinely new
+     deal on a previously-owned house is real, and the matcher will band it
+     "already on the record" for a human anyway. */
+  if (!prior) {
+    const addrKey = TRK.trackRecordKey(candidate.property_address) || null;
+    if (addrKey) {
+      const others = await db.query(
+        `SELECT status, property_address FROM track_record_candidates
+          WHERE borrower_id=$1 AND status IN ('declined','staged')
+          ORDER BY created_at DESC LIMIT 2000`, [borrowerId]);
+      prior = others.rows.find((r) => TRK.trackRecordKey(r.property_address) === addrKey) || null;
+    }
+  }
   if (prior) {
     if (prior.status === 'declined') {
       return { staged: false, reason: 'declined_before', why: 'Somebody already said this is not their property.' };
@@ -665,7 +731,13 @@ async function loadQueue(borrowerId, client, opts) {
   });
 
   return {
-    toReview: rows.filter((r) => r.status === 'staged').map(shape),
+    /* An EXPIRED snooze is back in the queue — the SQL only ever returns a
+       snoozed row once its date has passed, and bucketing on 'staged' alone
+       filed those rows into NO bucket at all: fetched, rendered nowhere, a
+       real property silently gone from review forever (2026-08-09 A-to-Z
+       audit M4 — "hidden until a date, then back in the queue" is the verb's
+       own documented contract). */
+    toReview: rows.filter((r) => r.status === 'staged' || r.status === 'snoozed').map(shape),
     alreadyHere: rows.filter((r) => r.status === 'merged' || r.status === 'imported').map(shape),
     declined: rows.filter((r) => r.status === 'declined').map(shape),
     lastSearch: last,
@@ -858,8 +930,8 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
        (borrower_id, llc_id, property_address, address_key, deal_type,
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
         rent_amount, rent_date, refi_amount, refi_date,
-        origin, entered_by_kind, entered_at, notes)
-     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15)
+        origin, entered_by_kind, entered_at, notes, seller_name)
+     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15,$17)
      RETURNING id, is_verified, verification_status`,
     [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
       TRK.trackRecordKey(c.property_address) || '', effectiveDealType,
@@ -872,7 +944,10 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
       (enteredByKind === 'borrower'
         ? 'The borrower confirmed this one from the public records.'
         : 'Brought on from the public records.') + contradictionNote,
-      enteredByKind]);
+      enteredByKind,
+      // The counterparty the deed named (audit M3) — what the related-party
+      // control reads. Null when the records named nobody but the borrower.
+      (c.raw && str(c.raw.counterparty)) || null]);
 
   const row = ins.rows[0];
   /* EXACTLY ONE DECIDER (db/504's `trc_one_decider_check`): a staffer or a
@@ -924,7 +999,12 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
   const fills = {};
   for (const f of FILLABLE) {
     const ours = t[f];
-    const theirs = c[f];
+    /* THE CANDIDATE'S ENTITY LINK LIVES IN `proposed_llc_id` — candidates have
+       no `llc_id` column, so `c.llc_id` read undefined and a match NEVER linked
+       the entity even when the search had already resolved which of the
+       borrower's companies held the deed (2026-08-09 audit: the one fill that
+       carries Check A over to the ownership pillar was silently skipped). */
+    const theirs = f === 'llc_id' ? c.proposed_llc_id : c[f];
     const oursBlank = ours == null || ours === '' || (f === 'property_address' && !addressLabel(ours));
     if (oursBlank && theirs != null && theirs !== '') fills[f] = theirs;
   }
@@ -996,8 +1076,16 @@ async function compareCandidate(candidateId, client) {
 
   const rows = FILLABLE.map((f) => {
     const ours = show(f, t[f]);
-    const theirs = show(f, c[f]);
-    const conflict = !!ours && !!theirs && ours !== theirs;
+    const theirs = show(f, f === 'llc_id' ? c.proposed_llc_id : c[f]);
+    /* THE ADDRESS IS COMPARED BY PLACE, NEVER BY SPELLING (2026-08-09 audit):
+       the candidate matched this line THROUGH the address matcher, so showing
+       its own two spellings ("26 South 10th Street…" vs "26 S 10th St…") as a
+       CONFLICT told the reviewer the records disagree about the one fact the
+       match already proved they agree on. Same-place spellings render side by
+       side as agreement; a genuinely different place still conflicts. */
+    const samePlace = f === 'property_address' && !!ours && !!theirs
+      && (() => { try { return require('../address').sameAddress(t[f], c[f]); } catch (_) { return false; } })();
+    const conflict = !!ours && !!theirs && ours !== theirs && !samePlace;
     return {
       field: f,
       ours, theirs,
@@ -1009,7 +1097,9 @@ async function compareCandidate(candidateId, client) {
       material: MATERIAL.includes(f),
       note: conflict
         ? 'Both hold a value and they disagree — the line keeps yours. Change it by hand if the records are right.'
-        : (!ours && theirs ? 'Blank here, so this fills in.' : (ours && !theirs ? 'The records hold nothing — yours is kept.' : 'Neither holds anything.')),
+        : (samePlace && ours !== theirs
+          ? 'The same place, spelled two ways — not a disagreement. The line keeps its spelling.'
+          : (!ours && theirs ? 'Blank here, so this fills in.' : (ours && !theirs ? 'The records hold nothing — yours is kept.' : (ours && theirs ? 'They agree.' : 'Neither holds anything.')))),
     };
   });
 
