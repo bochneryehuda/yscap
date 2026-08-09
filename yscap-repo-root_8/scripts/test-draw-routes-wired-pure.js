@@ -70,10 +70,17 @@ for (const r of WIRED) {
 
 // ─────────────────────────────────────────── deliberately server-only, with the reason
 const SERVER_ONLY = [
-  { match: '/findings/public', why: 'the borrower opens it from an emailed token link, not from the portal bundle' },
+  { mount: '/api/public/draw-findings',
+    file: 'src/routes/draw-findings-public.js',
+    why: 'the borrower opens it from a token link in their email, so it is reached without the portal bundle ever loading' },
 ];
 for (const r of SERVER_ONLY) {
-  ok(typeof r.why === 'string' && r.why.length > 20, `a server-only route records WHY nothing calls it (${r.match})`);
+  ok(typeof r.why === 'string' && r.why.length > 20, `a server-only route records WHY nothing calls it (${r.mount})`);
+  // The record has to describe something real, or it is a comment pretending to be a check.
+  const src = fs.readFileSync(path.join(ROOT, r.file), 'utf8');
+  ok(/router\.(get|post)\(/.test(src), `${r.file} really is a router — the server-only record names a live file`);
+  const server = fs.readFileSync(path.join(ROOT, 'src', 'server.js'), 'utf8');
+  ok(server.includes(r.mount), `…and it is mounted at ${r.mount}, so the recorded path is the real one`);
 }
 
 // ─────────────────────────────────────────── the two the desk cannot render without

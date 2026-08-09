@@ -3092,13 +3092,10 @@ router.post('/files/:id/draws/:drawId/funding-mode', requirePermission('manage_d
 // default … released by the investor or released by us"), so it can be set the moment the file
 // has a draw project — before the first draw, and for every draw after it. The capital-provider
 // and company levels are set in the admin Draw Settings screen; this one belongs to the file.
-router.get('/files/:id/release-party', requirePermission('manage_draws'), async (req, res) => {
-  const appId = req.params.id;
-  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  const drawId = String((req.query && req.query.drawId) || '');
-  const state = await releaseParty.releaseStateFor(db, appId, { sitewireDrawId: /^\d+$/.test(drawId) ? drawId : null });
-  res.json({ ...state, modes: investorDelivery.MODES.map((m) => ({ mode: m, label: investorDelivery.MODE_LABEL[m], help: investorDelivery.MODE_HELP[m] })) });
-});
+// NOTE: there is deliberately no standalone GET here. The card is fed by `release` on the rollup —
+// one read for the whole desk instead of two — and a per-draw variant was removed rather than left
+// with no caller, which is the exact thing `test-draw-routes-wired-pure.js` exists to catch. If a
+// per-draw override ever gets a surface, bring the route back together with the screen that calls it.
 
 router.post('/files/:id/release-party', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
