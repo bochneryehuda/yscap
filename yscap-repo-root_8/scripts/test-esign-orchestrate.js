@@ -9,7 +9,7 @@
  * download + store signed PDFs -> clear conditions.
  *
  * Run (PG on the demo socket):
- *   PGHOST=/tmp PGPORT=5433 PGUSER=postgres node scripts/test-esign-orchestrate.js
+ *   DATABASE_URL=postgres://user:pw@localhost:5432/anydb node scripts/test-esign-orchestrate.js
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -17,10 +17,44 @@ const path = require('path');
 const { Client, Pool } = require('pg');
 
 const R = path.resolve(__dirname, '..');
-const HOST = process.env.PGHOST || '/tmp';
-const PORT = parseInt(process.env.PGPORT || '5433', 10);
-const USER = process.env.PGUSER || 'postgres';
-const PW = process.env.PGPASSWORD || 'postgres';
+
+/* WHERE POSTGRES IS.
+   ==========================================================================
+   This defaulted to a Unix socket at /tmp on port 5433 — one developer's local
+   demo setup — so it could only ever run on that machine. It was never in the
+   `npm test` chain, so nothing said so: it simply sat there failing with
+   `connect ENOENT /tmp/.s.PGSQL.5433` for anyone who ran it, which is exactly
+   how it stayed broken.
+   DATABASE_URL is the repo's one way of naming a database, and it is what CI
+   sets, so read that first and keep the PG* variables as the manual override.
+   NOTE this test still creates its OWN throwaway database (below) and never
+   touches the one DATABASE_URL points at — it only borrows the server address
+   and credentials from it. */
+function pgTarget() {
+  const url = process.env.DATABASE_URL;
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return {
+      host: process.env.PGHOST || decodeURIComponent(u.hostname || '127.0.0.1'),
+      port: parseInt(process.env.PGPORT || u.port || '5432', 10),
+      user: process.env.PGUSER || decodeURIComponent(u.username || 'postgres'),
+      password: process.env.PGPASSWORD || decodeURIComponent(u.password || ''),
+    };
+  } catch (_) { return null; }
+}
+
+/* CI runs `npm test` TWICE — once with a database and once WITHOUT. This test
+   needs one, so in the no-database job it must say so and exit 0; a hard
+   failure there would break the build for everyone over a missing service
+   rather than a real defect. Same contract every *-db.js test in this repo
+   follows: decide on DATABASE_URL BEFORE anything opens a connection. */
+const TARGET = pgTarget();
+if (!TARGET) {
+  console.log('SKIP test-esign-orchestrate (no DATABASE_URL — needs a real Postgres to build its fixture database)');
+  process.exit(0);
+}
+const { host: HOST, port: PORT, user: USER, password: PW } = TARGET;
 const DBNAME = 'esign_it_test';
 
 // Force sends ON + a permissive allow-list so the gate doesn't block the test

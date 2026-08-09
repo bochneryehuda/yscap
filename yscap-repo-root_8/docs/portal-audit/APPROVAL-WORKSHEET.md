@@ -78,7 +78,7 @@ control gaps.)
 
 ### 🔴 S1-04 — A borrower can rewrite the price of their own loan
 - **Happens:** a borrower who sends a certain "admin key" can lower our margin/fees on their own loan and lock it in.
-- **Issue:** that key is hard-coded in the source as `Yscg@12345`, so effectively everyone has it.
+- **Issue:** that key is hard-coded in the source as `REDACTED`, so effectively everyone has it.
 - **Fix:** delete the built-in key so the feature is off unless a real private key is set; better, never accept margin/fee changes from a borrower session at all.
 
 ### 🔴 S3-01 — A loan officer can "Clear" (complete) a loan's funding conditions

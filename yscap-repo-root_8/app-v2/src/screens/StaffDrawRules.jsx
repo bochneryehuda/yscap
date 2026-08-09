@@ -318,7 +318,13 @@ function InvestorContacts() {
       <div className="inv-add">
         <div className="act-label" style={{ marginBottom: 6 }}>Add a contact</div>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input className="input" style={{ width: 160 }} placeholder="Note buyer (e.g. Fidelis)" value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
+          {/* NO REAL NOTE BUYER IN THE PLACEHOLDER (audit 2026-08-03). This is a
+              staff-only screen, and a staff screen may name a note buyer — but
+              app-v2 builds ONE bundle that BOTH portals load, so a name typed
+              into any source string here is downloaded by every borrower's
+              browser. The example named a live capital partner and bought
+              nothing: the field is already labelled. */}
+          <input className="input" style={{ width: 160 }} placeholder="Note buyer" value={draft.label} onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))} />
           <input className="input" style={{ width: 240 }} placeholder="email@investor.com" value={draft.email} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))} />
           <input className="input" style={{ width: 150 }} placeholder="Name (optional)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
           <input className="input" style={{ width: 150 }} placeholder="Role (optional)" value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))} />

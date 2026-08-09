@@ -248,9 +248,15 @@ export default function PayoffCard({ appId, app, onSaved }) {
             )}
             <label className="field">
               <span>Lender being paid off</span>
+              {/* The example names no lender on borrower-safe's capital-partner
+                  list (audit 2026-08-03). This is a staff screen, but app-v2
+                  builds ONE bundle both portals load, so a partner name typed
+                  into any source string ships to every borrower's browser — and
+                  "Kiavi" is on that list. A bank plus "a private lender" says
+                  the same thing. */}
               <input className="input" value={form.payoffLender} maxLength={200}
                 onChange={(ev) => setForm((f) => ({ ...f, payoffLender: ev.target.value }))}
-                placeholder="e.g. Chase, Kiavi, a private lender" />
+                placeholder="e.g. Chase, or a private lender" />
               <small style={{ color: MUTED }}>Who holds the loan today — the payoff request goes to them.</small>
             </label>
             <label className="field">

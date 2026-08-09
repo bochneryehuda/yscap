@@ -349,9 +349,15 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
      dropped off the updates.
 
      A REASON BOX, not a confirm dialog. The reason goes INTO the email counsel receives ("this is
-     a brokered file, it is closing with RCN"), which is the single most useful line on it — and a
-     browser confirm cannot collect one. `reopen` keeps its one-click path: putting an order back
-     on the desk emails nobody and needs no explanation. */
+     a brokered file, it is closing with another lender"), which is the single most useful line on
+     it — and a browser confirm cannot collect one. `reopen` keeps its one-click path: putting an
+     order back on the desk emails nobody and needs no explanation.
+
+     THE EXAMPLE NAMES NO CAPITAL PARTNER, and that is not squeamishness: app-v2 compiles ONE
+     bundle and the BORROWER's browser downloads it in full, so a note-buyer name typed into any
+     source string here reaches every borrower however staff-only the screen is. A live partner
+     used as a decorative example buys nothing this field's own label does not already say.
+     Guarded by `scripts/test-portal-bundle-partner-names.js`. */
   const cancel = async (reopen) => {
     setBusy('cancel'); setMsg(null);
     try {
@@ -535,7 +541,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
             Why (optional — this goes in the email they receive)
           </label>
           <textarea className="input" rows={2} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
-            placeholder="e.g. This is a brokered file — it is closing with RCN." />
+            placeholder="e.g. This is a brokered file — it is closing with another lender." />
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
             <button className="btn primary small" disabled={busy === 'cancel'}
               style={{ background: 'var(--danger, #B24A2B)', borderColor: 'var(--danger, #B24A2B)' }}
