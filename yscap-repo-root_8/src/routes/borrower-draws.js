@@ -29,6 +29,7 @@ const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a 
 const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
+const drawAttachments = require('../sitewire/draw-attachments');   // photos/invoices/receipts on a draw
 const storage = require('../lib/storage');
 const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
 const { stripLocationExif } = require('../lib/image-exif');
@@ -241,11 +242,49 @@ router.post('/draws/:appId/request', async (req, res) => {
       source: 'borrower', borrowerId: me(req),
       note: req.body && req.body.note ? String(req.body.note) : null,
     });
-    res.json({ ok: true, request: { id: row.id, status: row.status, total_requested_cents: Number(row.total_requested_cents), created_at: row.created_at } });
+    // THE BORROWER CAN ATTACH TOO (owner-directed 2026-08-09) — photos, invoices and receipts WITH
+    // the request, not only as dispute evidence. Best-effort: the request itself has already been
+    // created, so a file that would not store must never fail the draw they just submitted. What
+    // did not land comes back with a reason so they can try that file again.
+    let attached = null;
+    try {
+      const items = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
+      if (items.length) {
+        const out = await drawAttachments.attach(appId, { portalRequestId: row.id }, items, {
+          by: { kind: 'borrower', id: me(req) }, supports: 'Attached with the draw request',
+        });
+        attached = { attached: out.added.length, attachments_skipped: out.skipped };
+      }
+    } catch (_) { /* the request stands either way */ }
+    res.json({ ok: true, request: { id: row.id, status: row.status, total_requested_cents: Number(row.total_requested_cents), created_at: row.created_at }, ...(attached || {}) });
   } catch (e) {
     if (e && e.status) return res.status(e.status).json({ error: scrub(e.message) });
     res.status(500).json({ error: 'Something went wrong — please try again.' });
   }
+});
+
+// ---- POST /draws/:appId/attachments — add a photo, invoice or receipt to a draw ----
+// The borrower's own supporting documents. Scoped to THEIR file and to a draw ON that file, so a
+// draw id from somebody else's loan can never be filed against. Their uploads are NOT born
+// accepted — a reviewer decides — so nothing they attach travels to an investor unvetted.
+router.post('/draws/:appId/attachments', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  let ref = null;
+  if (b.sitewire_draw_id != null && /^\d+$/.test(String(b.sitewire_draw_id))) {
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [String(b.sitewire_draw_id), appId]);
+    if (own.rowCount) ref = { sitewireDrawId: String(b.sitewire_draw_id) };
+  } else if (b.portal_request_id != null && /^\d+$/.test(String(b.portal_request_id))) {
+    const own = await db.query(`SELECT 1 FROM portal_draw_requests WHERE id=$1 AND application_id=$2`, [String(b.portal_request_id), appId]);
+    if (own.rowCount) ref = { portalRequestId: String(b.portal_request_id) };
+  }
+  if (!ref) return res.status(404).json({ error: 'We could not find that draw on your loan.' });
+  const items = Array.isArray(b.files) ? b.files : (b.dataBase64 ? [b] : []);
+  if (!items.length) return res.status(400).json({ error: 'Choose at least one file to attach.' });
+  const out = await drawAttachments.attach(appId, ref, items, { by: { kind: 'borrower', id: me(req) }, supports: 'Added by the borrower' });
+  if (!out.added.length) return res.status(400).json({ error: out.skipped[0] ? `${out.skipped[0].what}: ${out.skipped[0].reason}` : 'Nothing could be attached.', ...out });
+  res.json({ ok: true, ...out });
 });
 
 // ---- GET /draws/:appId/findings — inspection findings delivered for this file ----

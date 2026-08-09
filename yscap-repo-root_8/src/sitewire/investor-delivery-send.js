@@ -34,6 +34,7 @@ const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a 
 const fieldRegistry = require('../lib/conditions/field-registry');
 const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
+const drawAttachments = require('./draw-attachments');   // invoices/receipts/photos filed on a draw
 
 const N = (x) => Number(x || 0) || 0;
 
@@ -208,6 +209,32 @@ async function gatherAttachments(appId, drawId, mode) {
       // nothing to attach, and nothing to report as missing.
     } catch (_) { /* the OA is an extra only on a new-entity wire — never block the delivery */ }
   }
+
+  // --- 6. the supporting documents attached to this draw --------------------------------
+  // Invoices, receipts and extra photos a coordinator (or the borrower) filed on the draw —
+  // typically the proof behind an override (owner-directed 2026-08-09: "when we override
+  // something, we should be able to add invoices, receipts, or additional photos, and that should
+  // also be delivered to the investor on investor delivery"). They sit AFTER the reports in
+  // priority order deliberately: the inspector's report and ours are what the investor funds
+  // against; these are the backup. Only an ACCEPTED document travels — a borrower's upload nobody
+  // has reviewed is not something we vouch for to an investor (db/424).
+  try {
+    const rows = (await db.query(
+      `SELECT da.category, da.note, d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider, d.review_status
+         FROM draw_attachments da JOIN documents d ON d.id = da.document_id
+        WHERE da.application_id=$1 AND da.sitewire_draw_id=$2 AND d.is_current
+        ORDER BY da.created_at ASC, da.id ASC`, [appId, drawId])).rows;
+    for (const a of rows) {
+      const label = `${drawAttachments.CATEGORY_LABEL[a.category] || 'Supporting document'} — ${a.filename}`;
+      if (a.review_status !== 'accepted') {
+        skipped.push({ what: label, reason: 'it has not been accepted yet — review it first and re-send' });
+        continue;
+      }
+      const buf = await readDoc(a);
+      if (!buf) { skipped.push({ what: label, reason: 'the stored copy could not be read' }); continue; }
+      items.push({ what: label, filename: a.filename, contentType: a.content_type || 'application/octet-stream', buf });
+    }
+  } catch (_) { /* an older database has no draw_attachments — never block the delivery */ }
 
   // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.
   const budget = budgetBytes();

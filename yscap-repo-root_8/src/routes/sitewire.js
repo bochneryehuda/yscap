@@ -35,6 +35,30 @@ const investorSend = require('../sitewire/investor-delivery-send');
 const releaseParty = require('../sitewire/release-party'); // who releases the money, which level said so, and is it sold yet
 const autoRelease = require('../sitewire/auto-release');   // final approve writes the ledger when the INVESTOR releases
 const stageEvents = require('../sitewire/stage-events');   // when each draw reached each step, forward-only
+const drawAttachments = require('../sitewire/draw-attachments'); // invoices/receipts/photos ON a draw
+
+/**
+ * EVERY OVERRIDE CAN CARRY ITS PROOF (owner-directed 2026-08-09: "when we override something, we
+ * should be able to add invoices, receipts, or additional photos").
+ *
+ * A shared tail for the four override paths — approving more than the borrower requested,
+ * releasing more than was approved, amending, reopening. The super-admin gate and the typed note
+ * on those paths are UNCHANGED: attachments are additional evidence, never a substitute for either.
+ *
+ * Best-effort by design: the override itself has already been journaled and written, so a storage
+ * hiccup while filing an invoice must never unwind a money decision. What did NOT land comes back
+ * in `skipped` with a reason, so the person who attached it is told rather than left guessing.
+ */
+async function attachOverrideEvidence(appId, drawId, body, actorId, supports) {
+  try {
+    const items = Array.isArray(body && body.attachments) ? body.attachments : [];
+    if (!items.length || drawId == null) return null;
+    const out = await drawAttachments.attach(appId, { sitewireDrawId: drawId }, items, {
+      by: { kind: 'staff', id: actorId || null }, supports,
+    });
+    return { attached: out.added.length, attachments_skipped: out.skipped };
+  } catch (_) { return null; }
+}
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
@@ -1062,7 +1086,7 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
   // know whether the job item is a media/inspection-gate row (is_media_item=true) — those carry no
   // money and must never accept a non-zero approved amount even from a raw API call bypassing the UI.
   const own = (await db.query(
-    `SELECT r.sitewire_request_id, r.requested_cents, d.application_id,
+    `SELECT r.sitewire_request_id, r.requested_cents, d.application_id, d.sitewire_draw_id,
             COALESCE(jil.is_media_item, false) AS is_media_item, jil.name AS crosswalk_name
        FROM sitewire_draw_requests r
        JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
@@ -1080,6 +1104,7 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
   // `override:true` is a MONEY escalation (approved > requested is the coordinator overriding the
   // inspector's number), so restrict it to super_admin AND require a note documenting why. Journal
   // every override so the audit trail explains any approved-over-requested figure on this line.
+  let overrideEvidence = null;
   if (approvedCents > own.requested_cents) {
     if (!req.body.override) {
       return res.status(422).json({ error: `approved ${T.usd(approvedCents)} exceeds requested ${T.usd(own.requested_cents)} — pass override:true (super_admin only, with a note) to allow` });
@@ -1093,6 +1118,10 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
     }
     // Best-effort journal BEFORE the write so the intent is captured even if the Sitewire push then fails.
     try { await orchestrator.journal({ appId: own.application_id, entity: 'request', entityId: Number(reqId), field: 'override_approve', oldValue: { requested_cents: own.requested_cents }, newValue: { approved_cents: approvedCents, note: overrideNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
+    // …and the PROOF behind it — the invoice or receipt that justifies approving more than was
+    // asked for. Filed on the draw, so it travels to the investor with everything else.
+    overrideEvidence = await attachOverrideEvidence(own.application_id, own.sitewire_draw_id, req.body, req.actor && req.actor.id,
+      `Approved ${T.usd(approvedCents)} on a line the borrower requested ${T.usd(own.requested_cents)} for`);
   }
   try {
     await orchestrator.circuitCheck(1);
@@ -1105,9 +1134,9 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
       try { const fresh = await client.getRequest(reqId); if (fresh && fresh.approved_cents != null) saved = fresh.approved_cents; } catch (_) {}
       await db.query(`UPDATE sitewire_draw_requests SET approved_cents=$2, lender_comments=COALESCE($3,lender_comments), updated_at=now() WHERE sitewire_request_id=$1`, [reqId, saved, lenderComments || null]);
       await orchestrator.journal({ appId: own.application_id, entity: 'request', entityId: Number(reqId), field: 'approved_cents', newValue: approvedCents, source: 'push' });
-      return res.json({ ok: true, approved_cents: saved });
+      return res.json({ ok: true, approved_cents: saved, ...(overrideEvidence || {}) });
     }
-    res.json({ dryrun: true, approved_cents: approvedCents });
+    res.json({ dryrun: true, approved_cents: approvedCents, ...(overrideEvidence || {}) });
   } catch (e) {
     // A genuine Sitewire refusal (422 bad value / 403 not authorized) shows its specific reason and is NOT
     // parked for retry — retrying won't change a "no". Matches the draw-transition route's 422/403 handling.
@@ -1239,12 +1268,19 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
     // FINAL APPROVE FINISHES THE DRAW. Everything below runs AFTER the Sitewire transition and the
     // reconcile — nothing about that call changes — and every piece is best-effort: an approval that
     // already happened in Sitewire must never be reversed or 500'd by our own bookkeeping.
+    // An AMEND or a REOPEN takes a draw the lender already decided on and sends it back for another
+    // round — the note says why, and an attached invoice/receipt/photo says what changed.
+    let evidence = null;
+    if ((action === 'amend' || action === 'reopen') && !(r && r.__dryrun)) {
+      evidence = await attachOverrideEvidence(own.application_id, drawId, req.body, req.actor && req.actor.id,
+        `${action === 'amend' ? 'Amended' : 'Reopened'} this draw — ${String(note || '').slice(0, 200)}`);
+    }
     let finished = null;
     if (action === 'approve' && !(r && r.__dryrun)) {
       finished = await finishFinalApprove(own.application_id, drawId, req.actor && req.actor.id, note)
         .catch((e) => { console.warn('[sitewire] final-approve follow-through:', e && e.message); return null; });
     }
-    res.json({ ok: true, status: r && r.status, ...(finished || {}) });
+    res.json({ ok: true, status: r && r.status, ...(finished || {}), ...(evidence || {}) });
   } catch (e) {
     if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${action} refused: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
     // G1: a TRANSIENT/outage failure must not silently drop the transition — park it (retryable) so the
@@ -1292,6 +1328,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // — so restrict to super_admin AND require a note. Every override is journaled so a future audit can
   // reconstruct why any release exceeded the approval.
   const drawApproved = Number(own.total_approved_cents) || 0;
+  let releaseEvidence = null;
   if (drawApproved > 0 && approved > drawApproved) {
     if (!req.body.override) {
       return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true (super_admin only, with a note) to record it anyway.` });
@@ -1304,6 +1341,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       return res.status(400).json({ error: 'An override note (at least 8 characters) is required to release more than the approved amount.' });
     }
     try { await orchestrator.journal({ appId: application_id, entity: 'draw', entityId: Number(drawId), field: 'override_disbursement', oldValue: { approved_on_draw_cents: drawApproved }, newValue: { released_cents: approved, note: overrideNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
+    // …and the PROOF behind releasing more than was approved. Filed on the draw before the money
+    // transaction opens, so nothing is held while bytes are written to storage.
+    releaseEvidence = await attachOverrideEvidence(application_id, drawId, req.body, req.actor && req.actor.id,
+      `Released ${T.usd(approved)} against ${T.usd(drawApproved)} approved on this draw`);
   }
   // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
   // belt-and-suspenders). A duplicate would double-count into the retainage pool.
@@ -1385,7 +1426,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
           applicationId: application_id, link: `/app/${application_id}`, ctaLabel: 'View your draws' });
       } catch (_) { /* milestone email is best-effort */ }
     }
-    res.json({ ok: true, disbursement: row });
+    res.json({ ok: true, disbursement: row, ...(releaseEvidence || {}) });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* connection already unwound */ }
     // db/148 unique index — a second draw release raced past the pre-check
@@ -1488,10 +1529,27 @@ router.patch('/waivers/:wid', requirePermission('manage_draws'), async (req, res
   if (!/^\d+$/.test(req.params.wid)) return res.status(404).json({ error: 'not found' });
   const status = ['required', 'received', 'waived', 'na'].includes(req.body.status) ? req.body.status : null;
   if (!status) return res.status(400).json({ error: 'status must be required, received, waived, or na' });
-  const w = (await db.query(`SELECT application_id FROM draw_lien_waivers WHERE id=$1`, [req.params.wid])).rows[0];
+  const w = (await db.query(`SELECT application_id, sitewire_draw_id, tier, party_name, kind FROM draw_lien_waivers WHERE id=$1`, [req.params.wid])).rows[0];
   if (!w || !(await canSeeFile(req, w.application_id))) return res.status(403).json({ error: 'forbidden' });
+  // THE WAIVER ITSELF. `draw_lien_waivers.document_id` has existed since the money model shipped and
+  // nothing ever filled it, so "received" was a word with no paper behind it — on the one gate that
+  // stands between a contractor's claim and a release. The signed waiver is filed on the draw like
+  // any other supporting document (so it reaches the investor and SharePoint) and the row is pointed
+  // at it. A waiver with no draw has nowhere to file, so it records the status alone, as before.
+  let filed = null;
+  const upload = (req.body && (req.body.document || (req.body.dataBase64 ? req.body : null))) || null;
+  if (upload && w.sitewire_draw_id != null) {
+    const out = await drawAttachments.attach(w.application_id, { sitewireDrawId: w.sitewire_draw_id }, [{ ...upload, category: 'other' }], {
+      by: { kind: 'staff', id: req.actor.id },
+      supports: `Lien waiver — ${w.tier || 'party'}${w.party_name ? ' ' + w.party_name : ''} (${w.kind || 'conditional'})`,
+    });
+    filed = { attached: out.added.length, attachments_skipped: out.skipped };
+    if (out.added[0]) {
+      await db.query(`UPDATE draw_lien_waivers SET document_id=$2 WHERE id=$1`, [req.params.wid, out.added[0].document_id]).catch(() => {});
+    }
+  }
   await db.query(`UPDATE draw_lien_waivers SET status=$2, received_at=CASE WHEN $2 IN ('received','waived') THEN now() ELSE NULL END, note=COALESCE($3,note), updated_at=now() WHERE id=$1`, [req.params.wid, status, req.body.note ? String(req.body.note).slice(0, 2000) : null]);
-  res.json({ ok: true, status });
+  res.json({ ok: true, status, ...(filed || {}) });
 });
 
 // ---- GET /files/:id/gl-export — the release ledger as a GL/accounting Excel workbook ----
@@ -1529,6 +1587,77 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     res.setHeader('Content-Disposition', `attachment; filename="draw-gl-${req.params.id}.xlsx"`);
     res.send(buf);
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ===================================================================================
+//  SUPPORTING DOCUMENTS ON A DRAW — invoices, receipts, extra photos
+//  (owner-directed 2026-08-09). They live on the draw, they travel to the investor,
+//  and they are what turns a typed override note into actual proof.
+//  (`drawAttachments` is required at the top of the file — the override routes above
+//  read it too.)
+// ===================================================================================
+
+// A draw the caller is allowed to touch, in ONE place: the file must be visible AND the draw must
+// belong to that file. Reading the draw id straight from the URL without this is the IDOR that
+// would let one file's attachment be filed onto another's draw.
+async function ownedDraw(req, appId, drawId) {
+  if (!/^\d+$/.test(String(drawId))) return null;
+  if (!(await canSeeFile(req, appId))) return 'forbidden';
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+  return own.rowCount ? { sitewireDrawId: String(drawId) } : null;
+}
+
+router.get('/files/:id/draws/:drawId/attachments', requirePermission('manage_draws'), async (req, res) => {
+  const ref = await ownedDraw(req, req.params.id, req.params.drawId);
+  if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
+  if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
+  res.json({
+    attachments: await drawAttachments.listFor(req.params.id, ref),
+    categories: drawAttachments.CATEGORIES.map((c) => ({ value: c, label: drawAttachments.CATEGORY_LABEL[c] })),
+    max_bytes: drawAttachments.MAX_BYTES, max_per_upload: drawAttachments.MAX_PER_CALL,
+  });
+});
+
+router.post('/files/:id/draws/:drawId/attachments', requirePermission('manage_draws'), async (req, res) => {
+  const ref = await ownedDraw(req, req.params.id, req.params.drawId);
+  if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
+  if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
+  const b = req.body || {};
+  const items = Array.isArray(b.files) ? b.files : (b.dataBase64 ? [b] : []);
+  if (!items.length) return res.status(400).json({ error: 'Attach at least one file.' });
+  const out = await drawAttachments.attach(req.params.id, ref, items, {
+    by: { kind: 'staff', id: req.actor.id }, supports: b.supports || null,
+  });
+  // Not a 4xx when SOME files landed: the caller needs the per-file reasons either way, and the
+  // ones that did land really are on the draw. A call where NOTHING landed is a real failure.
+  if (!out.added.length) return res.status(400).json({ error: out.skipped[0] ? `${out.skipped[0].what}: ${out.skipped[0].reason}` : 'Nothing could be attached.', ...out });
+  res.json({ ok: true, ...out, attachments: await drawAttachments.listFor(req.params.id, ref) });
+});
+
+router.delete('/files/:id/draws/:drawId/attachments/:attId', requirePermission('manage_draws'), async (req, res) => {
+  const ref = await ownedDraw(req, req.params.id, req.params.drawId);
+  if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
+  if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
+  if (!/^\d+$/.test(String(req.params.attId))) return res.status(404).json({ error: 'not found' });
+  const r = await drawAttachments.detach(req.params.id, req.params.attId);
+  if (!r.removed) return res.status(404).json({ error: 'not found' });
+  // The BYTES are not deleted — the document stays on the file (and in SharePoint, which never
+  // deletes). Only the binding to this draw is removed, so it stops travelling to the investor.
+  res.json({ ok: true, attachments: await drawAttachments.listFor(req.params.id, ref) });
+});
+
+// Stream one attachment back. Scoped through the same draw ownership check, so an attachment id
+// from another file can never be fetched by guessing.
+router.get('/files/:id/draws/:drawId/attachments/:attId/file', requirePermission('manage_draws'), async (req, res) => {
+  const ref = await ownedDraw(req, req.params.id, req.params.drawId);
+  if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
+  if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
+  const row = (await db.query(
+    `SELECT d.* FROM draw_attachments da JOIN documents d ON d.id=da.document_id
+      WHERE da.id=$1 AND da.application_id=$2 AND da.sitewire_draw_id=$3`,
+    [req.params.attId, req.params.id, req.params.drawId])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  return serveDocument(res, row, { inline: true });
 });
 
 // ===================================================================================

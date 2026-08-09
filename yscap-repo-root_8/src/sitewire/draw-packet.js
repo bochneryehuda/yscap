@@ -109,6 +109,32 @@ async function buildDrawPacket(appId, drawId) {
     rows.push(['Tier', 'Party', 'Type', 'Scope', 'Amount', 'Status']);
     for (const w of waivers) rows.push([w.tier, w.party_name || '', w.kind, w.scope, c(w.amount_cents), w.status]);
   }
+
+  // SUPPORTING DOCUMENTS ON THIS DRAW — the invoices, receipts and photos a human filed, usually
+  // as the proof behind an override (owner-directed 2026-08-09). Listed, not embedded: the packet
+  // is a spreadsheet and the bytes travel with the investor email and the branded report. Every
+  // one is named with what it backs up, so the row explains itself. Guarded so an older database
+  // without the table simply produces no section.
+  try {
+    const atts = (await db.query(
+      `SELECT da.category, da.note, da.supports, da.uploaded_by_kind, da.created_at,
+              d.filename, d.review_status
+         FROM draw_attachments da JOIN documents d ON d.id = da.document_id
+        WHERE da.application_id=$1 AND da.sitewire_draw_id=$2 AND d.is_current
+        ORDER BY da.created_at ASC, da.id ASC`, [appId, drawId])).rows;
+    if (atts.length) {
+      const CAT = require('./draw-attachments').CATEGORY_LABEL;
+      rows.push([]); rows.push(['SUPPORTING DOCUMENTS']);
+      rows.push(['Type', 'File', 'Supports', 'Note', 'Added by', 'Added', 'Review']);
+      for (const a of atts) {
+        rows.push([CAT[a.category] || 'Supporting document', a.filename || '', a.supports || '', a.note || '',
+          a.uploaded_by_kind === 'borrower' ? 'Borrower' : 'Our team',
+          a.created_at ? String(new Date(a.created_at).toISOString()).slice(0, 10) : '',
+          a.review_status === 'accepted' ? 'Accepted' : 'Awaiting review']);
+      }
+    }
+  } catch (_) { /* the packet is still complete without this section */
+  }
   return rows;
 }
 

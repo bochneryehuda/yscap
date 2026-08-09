@@ -96,6 +96,7 @@ const C = {
   SOW: 'Scope of Work',
   TERMSHEET: 'Term Sheet',
   TITLE: 'TITLE',
+  DRAWS: 'Draws',
   OTHER: 'Other Documents',
 };
 
@@ -185,6 +186,12 @@ function categoryFor(d) {
   if (kind.indexOf('appraisal_') === 0) return C.APPRAISAL;   // appraisal_pdf/xml/photo
   if (kind === 'title_order_return') return C.TITLE;
   if (kind === 'insurance_order_return') return C.INSURANCE;
+  // Construction-draw artifacts get their OWN folder in the SharePoint mirror (which shares this
+  // categorizer) instead of landing in "Other Documents" among the loan's origination paperwork —
+  // a draw's invoices, receipts and reports are a different chapter of the file's life. They are
+  // DELIBERATELY NOT in the investor TPR package: TPR_DOC_SELECT excludes draw_inspection_report /
+  // draw_packet by doc_kind, and draw_support joins them there, so this only ever decides a folder.
+  if (kind === 'draw_support' || kind === 'draw_inspection_report' || kind === 'draw_packet') return C.DRAWS;
 
   // 2) Entity (vesting LLC + layered owning LLCs) — any doc carrying an llc_id.
   if (d.llc_id) return C.LLC;
@@ -375,7 +382,7 @@ const TPR_DOC_SELECT_FOR = (reviewTest) => `
      -- printouts, the PILOT-branded draw inspection reports) are not source
      -- documents — and re-packing a regenerable export inside the next one must
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
-     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet')
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet','draw_support')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- Closing-chain CORRESPONDENCE (whatever the attorney's chain mailed us) is a
      -- running record, not a source document, and much of it is drafts and internal
