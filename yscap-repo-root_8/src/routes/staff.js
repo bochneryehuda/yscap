@@ -11226,6 +11226,54 @@ router.get('/track-records/:id/workspace', async (req, res) => {
     res.json(out);
   } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
+/* ── THE IMPORTER (blueprint §9.1–9.3) ──────────────────────────────────────
+   Search the public records, STAGE what comes back, and let a person bring
+   properties on ONE AT A TIME. Nothing found ever lands on the track record by
+   itself: a staged candidate is in a DIFFERENT TABLE, so it is invisible to
+   every experience count, and promoting it still lands `pending`.
+   See src/lib/track-record/importer.js. */
+router.post('/borrowers/:id/track-record-search', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/importer').runSearch({
+      borrowerId: req.params.id, staffId: req.actor.id, states: (req.body || {}).states,
+    });
+    await audit(req, 'track_record_search', 'borrower', req.params.id,
+      { found: out.found, staged: out.staged, skipped: out.skipped, apiCalls: out.apiCalls });
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.get('/borrowers/:id/track-record-candidates', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/track-record/importer').loadQueue(req.params.id));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.get('/track-record-candidates/:id/compare', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/track-record/importer').compareCandidate(req.params.id));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/decide', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/importer').decideCandidate(req.params.id, {
+      action: b.action, staffId: req.actor.id, note: b.note, snoozeDays: b.snoozeDays,
+      dealType: b.dealType, confirmReopen: b.confirmReopen === true,
+    });
+    await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,
+      { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields }); }
+});
+
 /* THE VERIFY BUTTON — read the public records for ONE property, on a click.
    NOTHING SWEEPS: the vendor's hourly allowance is shared by the whole
    organization, and a background pass writing to borrowers' records unattended
