@@ -318,6 +318,61 @@ async function main() {
   ok(crossFile.status === 404,
      'an order id from ANOTHER file is not reachable, even by a staffer who can see both');
 
+  const huge = await call('GET', `/api/class/files/${appId}/orders/999999999999999999999/thread`);
+  ok(huge.status === 404,
+     'an order id too big to BE an order is "no such order", not a 500 that reads as PILOT being broken');
+
+  // =========================================================================
+  // A DELIVERY WE CANNOT STORE VERBATIM IS STILL STORED, AND STILL DISTINCT.
+  // Each of these was a real defect found by the pre-merge security audit; each
+  // assertion below fails on the code as it was written.
+  console.log('\n--- a body we cannot store as-is is still recorded, and never merged with another ---');
+
+  const NUL = String.fromCharCode(0);
+  const countFor = async (name) => Number((await db.query(
+    'SELECT count(*) c FROM class_callback_events WHERE event_name = $1', [name])).rows[0].c);
+
+  // 1. A NUL byte in any of the three indexed fields. Postgres refuses a NUL in text,
+  //    and this router sits ABOVE the global stripper — so before the fix each of
+  //    these 500'd, and a 500 is a retry, forever, for a body that can never store.
+  for (const [field, body] of [
+    ['eventName', { eventName: `NulEvent${NUL}-${tag}`, orderId: `cls26-${tag}` }],
+    ['orderId', { eventName: `NulOrder-${tag}`, orderId: `cls26-${tag}${NUL}x` }],
+    ['referenceNumber', { eventName: `NulRef-${tag}`, referenceNumber: `REF${NUL}-${tag}` }],
+  ]) {
+    const r = await post(body, { Authorization: basic });
+    ok(r.status === 200, `a NUL byte in ${field} is accepted and stored, never a permanent 500`);
+  }
+
+  // 2. An oversize id cannot ride through the guard that exists to keep the row small.
+  await post({ eventName: `BigId-${tag}`, orderId: 'Z'.repeat(500000) }, { Authorization: basic });
+  const bigIdRow = (await db.query(
+    `SELECT length(class_order_id) idlen, length(payload::text) plen
+       FROM class_callback_events WHERE event_name = $1`, [`BigId-${tag}`])).rows[0];
+  ok(bigIdRow && bigIdRow.idlen <= 256 && bigIdRow.plen < 200000,
+     `a 500KB order id is capped, and the stored row stays small (id ${bigIdRow && bigIdRow.idlen}, row ${bigIdRow && bigIdRow.plen})`);
+
+  // 3. THE ONE THAT LOST DATA. Two DIFFERENT oversize deliveries on the SAME order:
+  //    the marker used to be a pure function of the envelope, so both hashed the same,
+  //    the unique index dropped the second, and we answered 200 — so the vendor never
+  //    retried. Two distinct events must remain two rows.
+  // The blob must genuinely clear the 200KB guard, or this whole section passes for
+  // the wrong reason — both bodies store verbatim, stay distinct, and prove nothing.
+  const big = (fill) => ({ eventName: `Oversize-${tag}`, orderId: `cls26-${tag}`, data: { blob: fill.repeat(260000) } });
+  const o1 = await post(big('a'), { Authorization: basic });
+  const o2 = await post(big('b'), { Authorization: basic });
+  ok(o1.status === 200 && o2.status === 200, 'both oversize deliveries are accepted');
+  ok(await countFor(`Oversize-${tag}`) === 2,
+     'two DIFFERENT oversize deliveries stay two rows — the marker carries a digest of what actually arrived');
+
+  // ...and a genuine RETRY of one of them still collapses, which is the whole point of
+  // the dedupe. Distinguishing these two cases is exactly what the digest buys.
+  await post(big('a'), { Authorization: basic });
+  ok(await countFor(`Oversize-${tag}`) === 2,
+     'but a real retry of the same oversize body still collapses — dedupe is not lost to the fix');
+
+  await db.query('DELETE FROM class_callback_events WHERE event_name LIKE $1', [`%${tag}`]);
+
   // ---- cleanup ------------------------------------------------------------
   server.close();
   await db.query('DELETE FROM applications WHERE id=$1', [otherApp]);

@@ -41,7 +41,20 @@ const cfg = require('../config');
 const { rateLimit } = require('../lib/rate-limit');
 
 router.use(rateLimit({ bucket: 'class-webhook', windowMs: 60000, max: 240 }));
-router.use(express.json({ limit: '2mb' }));
+// `verify` sees the RAW bytes before they are parsed, which is the only place a body
+// can be measured and fingerprinted exactly. That fingerprint is what keeps two
+// different un-storable deliveries apart (see `marker` below); deriving one from the
+// PARSED object cannot do the job, because the bodies that need a marker are precisely
+// the ones that re-serializing fails or distorts.
+router.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => {
+    try {
+      req.rawBodyBytes = buf ? buf.length : 0;
+      req.rawBodyDigest = crypto.createHash('sha256').update(buf || Buffer.alloc(0)).digest('hex');
+    } catch (_) { /* never block parsing over bookkeeping */ }
+  },
+}));
 
 // Constant-time compare of two strings via their digests — length-oblivious, so a
 // wrong password cannot be distinguished from a wrong-length one by timing.
@@ -84,8 +97,21 @@ function authed(req) {
 }
 
 // Their events all carry the same envelope; these are the only fields we index on.
+//
+// Every one of these three lands in a `text` column, so each is stripped of NUL and
+// capped HERE rather than at the INSERT. Both halves matter and neither is theoretical:
+// Postgres refuses a NUL in text with 22021, and this router is mounted ABOVE the
+// global NUL stripper (it has to be — it needs its own small JSON parser), so nothing
+// else in the stack catches one. An uncapped id is worse than untidy: the oversize
+// guard below re-embeds these values, so a 2 MB `orderId` would sail straight through
+// the very guard that exists to keep the row small.
+const ENV_MAX = 256;
 function envelope(p) {
-  const s = (v) => { const t = v == null ? '' : String(v).trim(); return t || null; };
+  const s = (v) => {
+    if (v == null) return null;
+    const t = String(v).replace(/\u0000/g, '').trim();
+    return t ? t.slice(0, ENV_MAX) : null;
+  };
   return {
     eventName: s(p.eventName || p.EventName),
     classOrderId: s(p.orderId != null ? p.orderId : p.OrderId),
@@ -109,15 +135,34 @@ async function receive(req, res) {
     const env = envelope(p);
     if (!env.eventName) return res.status(400).json({ error: 'missing eventName' });
 
-    let payload = F.jsonbText(p);
-    // NEVER slice a JSON string — an invalid fragment fails the ::jsonb cast and 500s
-    // the receive, and a non-2xx is a delivery they will eventually stop retrying.
-    // Oversize becomes a marker object that still records what arrived.
-    if (payload.length > 200000) {
-      payload = F.jsonbText({
-        truncated: true, eventName: env.eventName,
-        orderId: env.classOrderId, referenceNumber: env.referenceNumber,
-      });
+    // A marker stands in for a body we cannot store as-is. It always carries
+    // `bodyDigest` — a digest of what actually arrived — and that field is the whole
+    // point of it, not decoration: the dedupe hash below is computed over the stored
+    // payload, so WITHOUT it every oversize delivery on one order collapses to the
+    // same bytes, the unique index drops the second, and we answer 200 so the vendor
+    // never retries. That is silent event loss on the one path that must never lose a
+    // delivery. With it, two different bodies stay two different rows.
+    const marker = (why) => F.jsonbText({
+      truncated: true, reason: why,
+      eventName: env.eventName,
+      orderId: env.classOrderId, referenceNumber: env.referenceNumber,
+      bodyBytes: req.rawBodyBytes == null ? null : req.rawBodyBytes,
+      bodyDigest: req.rawBodyDigest || null,
+    });
+
+    let payload;
+    try {
+      payload = F.jsonbText(p);
+      // NEVER slice a JSON string — an invalid fragment fails the ::jsonb cast and 500s
+      // the receive, and a non-2xx is a delivery they will eventually stop retrying.
+      if (payload.length > 200000) payload = marker('oversize');
+    } catch (e) {
+      // Serializing the body itself failed — a pathologically nested payload overflows
+      // the stack inside the recursive NUL strip, and an exotic value would throw here
+      // too. A 500 would be exactly wrong: their retry replays the SAME body, so it can
+      // never succeed, and we would have taught a poison delivery to retry forever.
+      // Record that it arrived, at its digest, and take it off their hands.
+      payload = marker(`unserializable: ${(e && e.message) || 'error'}`.slice(0, 200));
     }
 
     // Dedupe. Their retries repeat a delivery verbatim, so the same bytes on the same

@@ -233,9 +233,24 @@ router.get('/files/:id/orders', async (req, res) => {
 // trusting an id in the URL: an order row id is a bigserial, so without that check a
 // staffer on file A could message about file B's order by guessing a number.
 // ---------------------------------------------------------------------------
+// The id is checked for RANGE before it is bound, not only for shape. A number past
+// bigint reaches Postgres, raises 22003, and the catch-all turns that into a 500
+// "something went wrong on our end" — which reads as PILOT being broken rather than as
+// a bad id. `id` is a bigserial, so anything outside it is simply not an order of ours
+// and belongs on the same "no such order here" path as a wrong-file id.
+const MAX_BIGINT = 9223372036854775807n;
+function bigintId(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!/^[0-9]{1,19}$/.test(s)) return null;
+  const n = BigInt(s);
+  return n > 0n && n <= MAX_BIGINT ? s : null;
+}
+
 async function orderOnFile(appId, orderRowId) {
+  const id = bigintId(orderRowId);
+  if (!id) return false;
   const r = await db.query('SELECT id FROM class_orders WHERE id = $1 AND application_id = $2',
-    [orderRowId, appId]);
+    [id, appId]);
   return r.rowCount > 0;
 }
 
