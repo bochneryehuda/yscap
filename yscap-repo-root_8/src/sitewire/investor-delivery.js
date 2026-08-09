@@ -26,6 +26,8 @@
  * database, exactly like ./approval and ./draw-packet.
  */
 
+const DRAW_LABEL = require('../lib/draw-label');   // pure: "Draw 2"
+
 const N = (x) => Number(x || 0) || 0;
 
 const MODES = ['reimbursement', 'investor_direct', 'manual'];
@@ -55,16 +57,90 @@ const MODE_HELP = {
     + 'this draw was delivered, so the reminders stop.',
 };
 
+// WHERE an answer can be given, most specific FIRST. Each entry is [level, argument].
+// The middle two are the levels the owner asked for by name (2026-08-09): "we should have a
+// setting where we should be able to set every property … whether this property, by default, is
+// released by the investor or released by us. We should also have settings where we should be
+// able to set that by capital provider."
+const MODE_LEVELS = [
+  ['draw', 'drawMode'],                 // this one draw, set on the desk
+  ['project', 'fileMode'],              // this property/file
+  ['capital_provider', 'ruleMode'],     // every file with this note buyer
+  ['company', 'companyMode'],           // the company-wide default in Draw Settings
+];
+
+// How each level reads on a screen — "where did this answer come from?".
+const LEVEL_LABEL = {
+  draw: 'set on this draw',
+  project: 'set on this project',
+  capital_provider: 'set for this capital provider',
+  company: 'the company default',
+  default: 'the built-in default',
+};
+
 /**
- * Which way is THIS draw funded? A per-draw choice wins; otherwise the file's default; otherwise
- * the system default. An unrecognised stored value can never take effect (it falls through to the
- * next source) — a typo in the database must not silently change who gets wired.
+ * Which way is THIS draw funded, AND which level decided it?
+ *
+ * Most specific wins: this draw → this project → this capital provider → the company default →
+ * the built-in default. An unrecognised stored value can never take effect — it falls through to
+ * the next level rather than being honoured — because a typo in the database must never silently
+ * change who gets wired.
+ *
+ * Returns { mode, level } where level is a MODE_LEVELS key or 'default'.
  */
-function resolveFundingMode({ drawMode = null, fileMode = null } = {}) {
-  for (const v of [drawMode, fileMode]) {
-    if (MODES.includes(String(v || ''))) return String(v);
+function resolveFundingModeAt(opts = {}) {
+  for (const [level, key] of MODE_LEVELS) {
+    const v = opts[key];
+    if (MODES.includes(String(v || ''))) return { mode: String(v), level };
   }
-  return DEFAULT_MODE;
+  return { mode: DEFAULT_MODE, level: 'default' };
+}
+
+/** The mode alone — the shape every existing caller already passes and reads. */
+function resolveFundingMode({ drawMode = null, fileMode = null, ruleMode = null, companyMode = null } = {}) {
+  return resolveFundingModeAt({ drawMode, fileMode, ruleMode, companyMode }).mode;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT THE INVESTOR SAID BACK
+// ---------------------------------------------------------------------------
+
+// The three real outcomes. 'questioned' is NOT a soft decline: an investor asking for one more
+// photo is the common case, and folding it into 'declined' would make the draw look dead on every
+// screen and stop the coordinator chasing the one thing that would unblock it.
+const ANSWERS = ['approved', 'questioned', 'declined'];
+
+const ANSWER_LABEL = {
+  approved: 'Approved — funding it',
+  questioned: 'Came back with a question',
+  declined: 'Declined',
+};
+
+// What each answer means for the draw, in one sentence, and what the desk should do next.
+const ANSWER_NEXT = {
+  approved: 'The investor is funding this draw. Record the release when the money moves — or, if they release directly, final approve to record it.',
+  questioned: 'The investor needs something before they will fund it. Answer their question, attach whatever they asked for, and re-send.',
+  declined: 'The investor will not fund this draw as it stands. Work out why with them, then either re-send or take it back to the borrower.',
+};
+
+/**
+ * Is this a real answer, and does it need anything with it?
+ * Returns { ok } or { ok:false, error } — a plain sentence the desk can show.
+ *
+ * A QUESTION OR A DECLINE MUST SAY WHAT THE INVESTOR ASKED. Recording "declined" with no reason
+ * gives the next person nothing to act on, which is the state this whole feature exists to end.
+ * An approval needs no note — the money speaks for itself.
+ */
+function answerProblem({ answer, note = null } = {}) {
+  const a = String(answer || '');
+  if (!ANSWERS.includes(a)) return { ok: false, error: 'Pick what the investor said: approved, came back with a question, or declined.' };
+  const n = String(note || '').trim();
+  if ((a === 'questioned' || a === 'declined') && n.length < 4) {
+    return { ok: false, error: a === 'questioned'
+      ? 'Write down what the investor asked for, so whoever picks this up knows what to send them.'
+      : 'Write down why the investor declined, so whoever picks this up knows what happened.' };
+  }
+  return { ok: true };
 }
 
 /**
@@ -119,7 +195,10 @@ const usd = (c) => '$' + (Math.round(N(c)) / 100).toLocaleString('en-US', { mini
 function deliveryEmail(d = {}, money = {}) {
   const mode = MODES.includes(String(money.mode || '')) ? String(money.mode) : DEFAULT_MODE;
   const addr = String(d.address || '').trim() || 'the subject property';
-  const drawNo = d.drawNumber != null && d.drawNumber !== '' ? `Draw #${d.drawNumber}` : 'Draw request';
+  // "Draw 2" — the owner's own wording, and the SAME label every other draw email now leads
+  // with (owner-directed 2026-08-09), so an investor's inbox and our own read alike. drawLabel is
+  // pure (no DB, no requires of its own), so this module stays unit-testable with no database.
+  const drawNo = DRAW_LABEL.drawLabel(d.drawNumber) || 'Draw request';
   const loanBit = d.loanNo ? ` — Loan ${d.loanNo}` : '';
 
   const subject = `${drawNo} — ${addr}${loanBit}`;
@@ -246,6 +325,8 @@ function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = n
 
 module.exports = {
   MODES, DEFAULT_MODE, EMAILED_MODES, MODE_LABEL, MODE_HELP, AGREED_STATUSES,
-  resolveFundingMode, investorMoney, deliveryEmail, composeRecipients, deliveryBlockers,
+  MODE_LEVELS, LEVEL_LABEL,
+  ANSWERS, ANSWER_LABEL, ANSWER_NEXT, answerProblem,
+  resolveFundingMode, resolveFundingModeAt, investorMoney, deliveryEmail, composeRecipients, deliveryBlockers,
   _internals: { clean, usd },
 };

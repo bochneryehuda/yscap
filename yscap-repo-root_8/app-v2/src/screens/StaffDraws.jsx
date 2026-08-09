@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askConfirm } from '../lib/dialog.js';
 import PortfolioInsights from '../components/PortfolioInsights.jsx';
 
 /* Sitewire draw desk — the lender's construction-draw dashboard. Mirrors every draw
@@ -28,6 +29,13 @@ export default function StaffDraws() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [filter, setFilter] = useState('all');
+  const [fees, setFees] = useState(null);
+
+  // The fees list is loaded on its OWN, not inside the Promise.all above: it is a side report, and a
+  // failure to read it must never take the whole draw desk down with it.
+  const loadFees = useCallback(() => {
+    api.get('/api/sitewire/fees-owed').then(setFees).catch(() => setFees(null));
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -41,6 +49,8 @@ export default function StaffDraws() {
       .finally(() => live && setLoading(false));
     return () => { live = false; };
   }, []);
+
+  useEffect(() => { loadFees(); }, [loadFees]);
 
   const shown = useMemo(() => {
     if (filter === 'active') return draws.filter((d) => (d.lifecycle_state || 'active') === 'active');
@@ -127,6 +137,9 @@ export default function StaffDraws() {
 
         {/* Exposure by capital partner — where committed capital sits per note buyer (staff-only) */}
         {portfolio && Array.isArray(portfolio.by_partner) && portfolio.by_partner.length > 0 && <PartnerExposure byPartner={portfolio.by_partner} />}
+
+        {/* Fees the investors owe US — a report accounting chases, never a gate on anything */}
+        {fees && fees.count > 0 && <FeesOwed fees={fees} onChanged={loadFees} />}
 
         {/* Attention needed */}
         {alertFiles.length > 0 && (
@@ -397,6 +410,119 @@ function PartnerExposure({ byPartner }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* FEES OWED BY INVESTORS — the receivable side of an investor-released draw (owner-directed
+   2026-08-09: "the money ledger should just save our fee and this date related to this property,
+   how much money we're supposed to make from the investor directly").
+
+   On an investor-released draw the investor wires the borrower the net and wires US our draw fee
+   separately, so final approve records a fee we are OWED. This is the list accounting chases. It is
+   a REPORT and gates nothing — no draw, no release and no file ever waits on a row here, which is
+   why a read failure simply hides the card rather than showing an error on the draw desk.
+
+   The server scopes it exactly like the portfolio, so an officer sees the files they may see. Rows
+   arrive oldest-first (longest outstanding), which is the order somebody chasing them wants. */
+function FeesOwed({ fees, onChanged }) {
+  const [busy, setBusy] = useState(null);
+  const [err, setErr] = useState('');
+  const rows = Array.isArray(fees.rows) ? fees.rows : [];
+  const buyers = Array.isArray(fees.by_buyer) ? fees.by_buyer : [];
+  // The chase threshold comes from the SERVER, resolved from the same setting the reminder sweep
+  // reads, so the screen and the email can never call different fees overdue. A 0 (or an unreadable
+  // setting) means the chase is switched off, and then nothing here is marked late either.
+  const LATE_DAYS = Number(fees.chase_days) > 0 ? Number(fees.chase_days) : 0;
+  const late = LATE_DAYS > 0 ? rows.filter((r) => (Number(r.days_outstanding) || 0) >= LATE_DAYS).length : 0;
+  const isLate = (d) => LATE_DAYS > 0 && d >= LATE_DAYS;
+
+  const markReceived = async (row) => {
+    setErr('');
+    const ok = await askConfirm(
+      `Mark our ${usd(row.fee_receivable_cents)} draw fee on ${row.address || row.ys_loan_number || 'this file'} as received?\n\n` +
+      'This records that the investor paid it. It does not move any money and it changes nothing on the draw.',
+      { confirmLabel: 'Mark received' },
+    );
+    if (!ok) return;
+    setBusy(row.id);
+    try {
+      await api.post(`/api/sitewire/fees-owed/${row.id}/received`, {});
+      onChanged();
+    } catch (e) {
+      // A 409 here is the server saying it was already settled — worth reading, not worth a crash.
+      setErr(e?.data?.error || e.message || 'Could not mark that fee received.');
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><Icon name="pulse" /></span>
+          <div>
+            <h3>Fees owed by investors</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>
+              Our draw fee on draws the investor released — they wire the borrower the net and wire this to us separately.
+            </div>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+          <div style={{ fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 700, color: '#141B22', fontVariantNumeric: 'tabular-nums' }}>{usd(fees.total_cents)}</div>
+          <div className="dd-sub">{fees.count} fee{fees.count === 1 ? '' : 's'}{late > 0 ? ` · ${late} over ${LATE_DAYS} days` : ''}</div>
+        </div>
+      </div>
+
+      {/* Who owes us what — the question an accountant actually asks first. */}
+      {buyers.length > 1 && (
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' }}>
+          {buyers.map((b) => (
+            <span key={b.key} className="pill sw-draft" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {b.label} · <b>{usd(b.cents)}</b> ({b.count})
+            </span>
+          ))}
+        </div>
+      )}
+
+      {err ? <div className="small" style={{ color: 'var(--danger)', marginBottom: 8 }}>{err}</div> : null}
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="dd-table" style={{ minWidth: 720 }}>
+          <thead><tr>
+            <th>Property</th><th>Draw</th><th>Investor</th>
+            <th className="num">Fee</th><th>Released</th><th className="num">Days</th><th></th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const days = Number(r.days_outstanding) || 0;
+              return (
+                <tr key={r.id}>
+                  <td>
+                    <Link to={`/internal/app/${r.application_id}/draws`}
+                      title={r.address || 'Open the construction-draw screen'}
+                      style={{ display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--teal-br)', textDecoration: 'none', fontWeight: 500 }}>
+                      {r.address || r.ys_loan_number || 'Open draws'}
+                    </Link>
+                  </td>
+                  {/* The draw NUMBER, not the platform id — "Draw 2" is what everything else says. */}
+                  <td style={{ whiteSpace: 'nowrap' }}>{r.draw_number != null ? `Draw ${r.draw_number}` : '—'}</td>
+                  <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.note_buyer_label || r.lender || 'Unknown investor'}
+                  </td>
+                  <td className="num" style={{ fontWeight: 600 }}>{usd(r.fee_receivable_cents)}</td>
+                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(r.release_date || r.created_at)}</td>
+                  <td className="num" style={{ fontWeight: isLate(days) ? 700 : 500, color: isLate(days) ? 'var(--danger)' : undefined }}>{days}</td>
+                  <td>
+                    <button className="btn btn-sm soft" disabled={busy === r.id} onClick={() => markReceived(r)}>
+                      {busy === r.id ? 'Saving…' : 'Mark received'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

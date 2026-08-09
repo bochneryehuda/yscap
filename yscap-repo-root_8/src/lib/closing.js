@@ -458,7 +458,7 @@ async function getClosingWorkspace(appId, client) {
   const c = client || db;
   const app = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.llc_id, a.status, a.funded_date, a.actual_closing,
-            a.expected_closing, a.closer_id, s.full_name AS closer_name
+            a.expected_closing, a.closer_id, a.lender, s.full_name AS closer_name
        FROM applications a LEFT JOIN staff_users s ON s.id = a.closer_id
       WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
   if (!app) return null;
@@ -492,12 +492,41 @@ async function getClosingWorkspace(appId, client) {
     notes,
     reconciliation,
     warehouses: WAREHOUSES,
+    // THE USUAL ANSWER FOR THIS NOTE BUYER — a SUGGESTION for the closer, never a decision
+    // (owner-directed 2026-08-09: "most of the properties that have Fidelis as a note buyer should
+    // be defaulted to table funding … but there are a few Fidelis deals that are not being table
+    // funded"). Nothing writes it: the screen offers it while the warehouse is still unset and the
+    // closer picks, so the exceptions the owner named stay one click away. It is deliberately
+    // computed from the note buyer rather than stored, so a file whose buyer changes gets the right
+    // suggestion without anything having to notice.
+    warehouseSuggestion: warehouseSuggestionFor(app.lender, closing && closing.warehouse),
   };
+}
+
+/**
+ * The warehouse line a closer would usually pick for this note buyer, or null.
+ *
+ * Returns null the moment a warehouse is ALREADY set — a suggestion has nothing to say about a
+ * decision somebody already made, and re-suggesting over one would read as PILOT disagreeing with
+ * the closer. Only Fidelis has a default today (funding-channel.defaultChannelFor is the one place
+ * that says so); every other buyer gets no suggestion at all rather than a guess.
+ */
+function warehouseSuggestionFor(noteBuyer, currentWarehouse) {
+  if (currentWarehouse) return null;
+  try {
+    const FC = require('./funding-channel');
+    if (FC.defaultChannelFor(FC.toBuyerKey(noteBuyer)) !== FC.CHANNEL.TABLE_FUNDING) return null;
+    return {
+      warehouse: TABLE_FUNDING,
+      why: `${FC.label(FC.toBuyerKey(noteBuyer))} deals are usually table funded — sold right at the closing table. Pick a different line if this one is not.`,
+    };
+  } catch (_) { return null; }
 }
 
 module.exports = {
   CLOSER_ONLY_CLOSING_FIELDS,
   tableFundedFor,
+  warehouseSuggestionFor,
   WAREHOUSES,
   TABLE_FUNDING,
   CLOSING_RETIRED_SQL,
