@@ -113,8 +113,35 @@ const FITTING = [
   "Rothschild Holdings LLC",
 ];
 
+
+/* ------- the recipient block's ONE-LINE property + expiry (2026-08-09) ------
+   "Property: <address>   .   Valid through <date>", drawn at M=40 on Letter so
+   the whole width of the page is the slot (532pt), helvetica normal 8pt. It is
+   ONE baseline that cannot stack (the "Prepared by" block sits 10.5pt under
+   it), so the answer here is to shorten the ADDRESS and keep the head and the
+   expiry WHOLE. It takes roughly a 90-character address to overflow, which is
+   why nobody had hit it — but nothing capped it either, so a long one ran off
+   the edge of the page with no warning. */
+const ONE_LINE = {
+  maxW: 612 - 2 * 40, size: 8,
+  head: "Property: ",
+  tail: "   \u00b7   Valid through Aug 9, 2026",
+};
+const ONE_LINE_ADDRESSES = [
+  "3091 Patricia Court, Manchester Township, NJ 08759, NJ",
+  "1727 South Second Street, Piscataway Township, NJ 08854, NJ",
+  "5701 15th Avenue Apartment 4D, Brooklyn, NY 11219, NY",
+  "18 Saint Andrews Country Club Drive, Hasbrouck Heights Township, NJ 07604, NJ",
+  "1200 Northwest Kensington Boulevard Apartment 12B, Croton-on-Hudson, NY 10520, NY",
+  // These two DO overflow 532pt. The first is rescued by dropping the ZIP
+  // alone; the second needs the ladder to keep dropping trailing parts.
+  "1200 Northwest Kensington Boulevard Apartment 12B, Croton-on-Hudson-upon-Thames Township, NY 10520-4417, NY",
+  "8875 Southwest Commonwealth Preservation Parkway Building C Suite 1400, Rancho Santa Margarita Township, CA 92688-3312, CA",
+];
+
 const jsPDF = loadJsPDF();
 let firstSource = null;
+let firstOneSource = null;
 
 for (const rel of COPIES) {
   console.log(`\n=== ${rel} ===`);
@@ -232,6 +259,85 @@ for (const rel of COPIES) {
       ok(oldFirstLineOnly !== v && v.startsWith(oldFirstLineOnly.trim().slice(0, 10)),
         `the OLD code dropped the tail of "${v.slice(0, 34)}…" (it drew only "${oldFirstLineOnly.slice(0, 40)}…")`);
     }
+  }
+
+  /* =====================================================================
+     THE RECIPIENT BLOCK'S PROPERTY + EXPIRY LINE (fitOneLine)
+     The last unbounded value on the term sheet. Unlike the two slots above
+     it cannot stack, so the rule is different: shorten the ADDRESS and keep
+     the head and the "Valid through" tail WHOLE, because the expiry is the
+     legally meaningful half of that sentence.
+     ===================================================================== */
+  console.log(`  -- recipient block property line (${ONE_LINE.maxW}pt, ${ONE_LINE.size}pt) --`);
+  let oneSource;
+  try { oneSource = extractFn(src, "fitOneLine"); }
+  catch (e) { ok(false, `fitOneLine() is present: ${e.message}`); continue; }
+  if (firstOneSource === null) firstOneSource = oneSource;
+  else ok(oneSource === firstOneSource, "fitOneLine() is byte-identical to the other copy");
+
+  // It must actually be WIRED UP — a helper nobody calls fixes nothing, and
+  // the old unbounded concatenation must be gone.
+  // Escaping differs between the two copies (V1 spells the middot \\u00b7, V2
+  // uses the character), so this matches on the words and asserts that EVERY
+  // draw of the expiry line goes through the helper.
+  const expiryDraws = src.split("\n").filter(l => /doc\.text\(/.test(l) && /Valid through/.test(l));
+  ok(expiryDraws.length > 0, "the recipient block still draws the property + expiry line");
+  ok(expiryDraws.every(l => /fitOneLine\(/.test(l)), "every draw of that line goes through fitOneLine()");
+
+  const one = compileFn(oneSource, "fitOneLine");
+  const oneDoc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
+  const oneW = (line) => { oneDoc.setFont("helvetica", "normal"); oneDoc.setFontSize(ONE_LINE.size); return oneDoc.getTextWidth(line); };
+  const runOne = (addr) => one(oneDoc, ONE_LINE.head, addr, ONE_LINE.tail, ONE_LINE.maxW, "helvetica", "normal", ONE_LINE.size);
+
+  // (A) THE BATTERY MUST REACH THE BUG — it takes a ~90-character address, so
+  //     a battery of ordinary ones would prove nothing.
+  const oneOverflow = ONE_LINE_ADDRESSES.filter(a => oneW(ONE_LINE.head + a + ONE_LINE.tail) > ONE_LINE.maxW);
+  ok(oneOverflow.length > 0, `the battery contains an address that really runs off the page (${oneOverflow.length} of ${ONE_LINE_ADDRESSES.length})`);
+
+  for (const addr of ONE_LINE_ADDRESSES) {
+    const out = runOne(addr);
+    const fits = oneW(ONE_LINE.head + addr + ONE_LINE.tail) <= ONE_LINE.maxW;
+    // (B) NOTHING is drawn past the page.
+    ok(oneW(out) <= ONE_LINE.maxW + 0.01, `"${addr.slice(0, 34)}…" stays inside the page (${oneW(out).toFixed(1)}pt of ${ONE_LINE.maxW}pt)`);
+    // (C) The head and the expiry ALWAYS survive whole — only the address may
+    //     be shortened. This is the promise the whole helper exists to keep.
+    ok(out.startsWith(ONE_LINE.head), `"${addr.slice(0, 34)}…" keeps the "Property:" label`);
+    ok(out.endsWith(ONE_LINE.tail), `"${addr.slice(0, 34)}…" keeps the "Valid through" date`);
+    // (D) An address that already fits is BYTE-FOR-BYTE unchanged, so every
+    //     term sheet that lays out correctly today is untouched.
+    if (fits) eq(out, ONE_LINE.head + addr + ONE_LINE.tail, `"${addr.slice(0, 34)}…" fits, so it is verbatim`);
+    // (E) An address that does NOT fit is shortened from the END — the street
+    //     number and street name, the part that identifies the property, are
+    //     never the first thing lost.
+    else ok(out.indexOf(addr.split(",")[0].trim()) === ONE_LINE.head.length,
+      `"${addr.slice(0, 34)}…" keeps the street whole and shortens from the end`);
+  }
+
+  // (F) THE ZIP GOES FIRST. An address that overflows by only a little is
+  //     rescued by dropping the ZIP alone, so the city and state survive —
+  //     the same ladder the e-sign subject shortener uses.
+  const zipCase = "1200 Northwest Kensington Boulevard Apartment 12B, Croton-on-Hudson-upon-Thames Township, NY 10520-4417, NY";
+  const zipOut = runOne(zipCase);
+  ok(oneW(ONE_LINE.head + zipCase + ONE_LINE.tail) > ONE_LINE.maxW, "the ZIP case really does overflow to begin with");
+  ok(!/10520-4417/.test(zipOut), "the ZIP is the first thing dropped");
+  ok(/Croton-on-Hudson-upon-Thames Township/.test(zipOut), "the city survives the ZIP being dropped");
+
+  // (G) THE addrTBD SHAPE — no address at all — is untouched.
+  eq(one(oneDoc, "Property: To be determined", "", ONE_LINE.tail, ONE_LINE.maxW, "helvetica", "normal", ONE_LINE.size),
+    "Property: To be determined" + ONE_LINE.tail, "a to-be-determined property line is unchanged");
+
+  // (H) A pathological unbreakable run cannot be laddered, so it must be
+  //     VISIBLY clamped — never allowed to run off the page in silence.
+  const runOnOne = runOne("X".repeat(400));
+  ok(oneW(runOnOne) <= ONE_LINE.maxW + 0.01, "a pathological address stays inside the page");
+  ok(/\.\.\./.test(runOnOne), "a pathological address is VISIBLY truncated");
+  ok(runOnOne.endsWith(ONE_LINE.tail), "a pathological address still keeps the expiry date");
+
+  // (I) PROVE THE OLD BEHAVIOR WAS WRONG — the plain concatenation the code
+  //     used to draw really did run past the edge of the page.
+  for (const addr of oneOverflow) {
+    ok(oneW(ONE_LINE.head + addr + ONE_LINE.tail) > ONE_LINE.maxW,
+      `the OLD code ran "${addr.slice(0, 34)}…" off the page (${oneW(ONE_LINE.head + addr + ONE_LINE.tail).toFixed(1)}pt of ${ONE_LINE.maxW}pt)`);
   }
 }
 
