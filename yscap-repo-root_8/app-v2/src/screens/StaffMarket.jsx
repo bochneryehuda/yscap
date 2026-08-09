@@ -417,7 +417,7 @@ function ReportsStrip({ series }) {
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', color: MUTED, fontSize: 10, marginTop: 3 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', color: MUTED, fontSize: 11, marginTop: 3 }}>
         <span>{monthLabel(series[0].month)}</span>
         <span>{monthLabel(series[series.length - 1].month)}</span>
       </div>

@@ -42,7 +42,7 @@ function btn(primary, danger) {
 function Fact({ label, value, sub }) {
   return (
     <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{label}</div>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 600, fontFamily: 'var(--serif,Georgia,serif)', overflowWrap: 'anywhere' }}>{value}</div>
       {sub && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{sub}</div>}
     </div>
@@ -55,7 +55,7 @@ function Pips({ label, code }) {
   const n = m ? Number(m[1]) : 0;
   return (
     <div>
-      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{label}</div>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
         {[1, 2, 3, 4, 5, 6].map((i) => (
           <span key={i} style={{ width: 13, height: 7, borderRadius: 3, background: n && i <= n ? 'var(--teal,#2F7F86)' : 'var(--line,#E7E1D3)' }} />
@@ -339,7 +339,7 @@ function DataComparison({ comparison }) {
   if (!comparison || !Array.isArray(comparison.rows) || !comparison.rows.length) return null;
   const s = comparison.summary || {};
   const rows = onlyDiff ? comparison.rows.filter((r) => r.status === 'disagree') : comparison.rows;
-  const th = { padding: '7px 10px', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
+  const th = { padding: '7px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
     color: '#4B585C', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
   return (
     <div className="appr-avoid" style={{ marginBottom: 24 }}>
@@ -408,7 +408,7 @@ function DCard({ title, tag, children, dashed }) {
     <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: `1px ${dashed ? 'dashed' : 'solid'} var(--line,#E7E1D3)`, borderRadius: 14, padding: 18, minWidth: 0 }}>
       <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15.5, margin: '0 0 12px', fontWeight: 600, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         <span>{title}</span>
-        {tag && <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>{tag}</span>}
+        {tag && <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>{tag}</span>}
       </h3>
       {children}
     </div>
@@ -895,15 +895,15 @@ function CompRow({ c }) {
         <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
         <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}
           {c.sale_status && c.sale_status !== 'closed' && (
-            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }}>
+            <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }}>
               {c.sale_status === 'pending' ? 'Pending' : 'Active'}
             </span>
           )}
           {distress && (
-            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--crit,#B4483C)', border: '1px solid var(--crit,#B4483C)', borderRadius: 4, padding: '0 4px' }}>{distress}</span>
+            <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--crit,#B4483C)', border: '1px solid var(--crit,#B4483C)', borderRadius: 4, padding: '0 4px' }}>{distress}</span>
           )}
           {adverse && (
-            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }} title={`Appraiser rated this comp's ${adverse} adverse`}>Adv {adverse}</span>
+            <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }} title={`Appraiser rated this comp's ${adverse} adverse`}>Adv {adverse}</span>
           )}
           {c.prior_sale_amount != null && (
             <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
@@ -1212,7 +1212,7 @@ function ScoreCard({ score }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               <div style={{ flex: 'none', width: 58, height: 58, borderRadius: 12, background: t.bg, color: t.fg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--serif,Georgia,serif)', lineHeight: 1 }}>
                 <span style={{ fontSize: 24, fontWeight: 700 }}>{col.score}</span>
-                <span style={{ fontSize: 10, opacity: .8 }}>/ 5</span>
+                <span style={{ fontSize: 11, opacity: .8 }}>/ 5</span>
               </div>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>PILOT collateral read</div>

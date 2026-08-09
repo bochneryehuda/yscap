@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=tsprog1">
+<link rel="stylesheet" href="../suite.css?v=aa1">
 <!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
      embeds into (Products & Pricing / Term Sheet Studio), so we force the light
      theme before first paint regardless of any stale saved 'dark' preference. The
@@ -181,7 +181,7 @@
   .ts-lev-slider::-moz-range-thumb{ width:22px; height:22px; border-radius:50%; background:var(--ivory); border:3px solid var(--gold); cursor:pointer; }
   .ts-lev-slider:disabled{ opacity:.5; cursor:not-allowed; }
   .ts-lev-ends{ display:flex; justify-content:space-between; font-size:.66rem; color:var(--muted-2); line-height:1.25; }
-  .ts-lev-ends em{ font-style:normal; color:var(--gold); }
+  .ts-lev-ends em{ font-style:normal; color:var(--gold-ink); }
   .ts-lev-ends span:first-child{ text-align:left; } .ts-lev-ends span:last-child{ text-align:right; align-self:flex-end; }
   .ts-lev-hint{ margin-top:.55rem; font-size:.76rem; color:var(--muted); line-height:1.45; }
   .ts-lev-hint b{ color:var(--ivory); }
@@ -202,7 +202,7 @@
      right-aligned on either line. */
   .pcard-top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.3rem .5rem; margin-bottom:.65rem; min-width:0; }
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
-  .pcard.gold .pcard-name{ color:var(--gold); }
+  .pcard.gold .pcard-name{ color:var(--gold-ink); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
   .pcard.manual .pcard-name{ color:var(--teal-br,#7FA9B0); }
   /* The badge is a CHIP inside a 249px card, so it can never be allowed to set
@@ -212,13 +212,13 @@
      three properties together. The cap is 100% (not 58%) because .pcard-top now
      WRAPS: a chip that cannot fit beside the name takes its own full-width line
      and reads in full, so the ellipsis is a last resort instead of routine. */
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; margin-left:auto; }
+  .pcard-badge{ font-size:.7rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; margin-left:auto; }
   .pcard-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
-  .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
+  .pcard-loanlbl{ font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
-  .pcard.gold .pcard-loan{ color:var(--gold); }
+  .pcard.gold .pcard-loan{ color:var(--gold-ink); }
   .pcard.silver .pcard-loan{ color:#8A99A8; }
   .pcard.manual .pcard-loan{ color:var(--teal-br,#7FA9B0); }
   .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
@@ -239,12 +239,12 @@
   .pcard-statnum[data-fit="2"]{ font-size:1.16rem; }
   .pcard-statnum[data-fit="3"]{ font-size:1.02rem; }
   .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
-  .pcard.gold .pcard-statnum{ color:var(--gold); }
+  .pcard.gold .pcard-statnum{ color:var(--gold-ink); }
   .pcard.silver .pcard-statnum{ color:#8A99A8; }
   .pcard.manual .pcard-statnum{ color:var(--teal-br,#7FA9B0); }
   /* The label may WRAP to two lines (acceptable — owner-directed), but it must
      never overlap or clip the number above it, and never widen the stat. */
-  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
+  .pcard-statlbl{ font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
   .pcard-statlbl > span[id$="OrigPts"]{ white-space:nowrap; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(47,127,134,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
@@ -272,7 +272,7 @@
   .pcard.pcard-off{ cursor:default; }
   .pcard.pcard-off:hover{ transform:none; border-color:var(--line-2); }
   .pcard-cta{ margin-top:.7rem; font-size:.72rem; font-weight:700; letter-spacing:.02em; color:var(--teal-br,#7FA9B0); }
-  .pcard.gold .pcard-cta{ color:var(--gold); }
+  .pcard.gold .pcard-cta{ color:var(--gold-ink); }
   .pcard.silver .pcard-cta{ color:#8A99A8; }
   .pcard.manual .pcard-cta{ color:var(--teal-br,#7FA9B0); }
   .pcard.pcard-off .pcard-cta{ display:none; }
@@ -282,7 +282,7 @@
   .prog-back:hover{ color:var(--ivory); border-color:var(--muted-2); }
   /* info tooltips ("small eyes") — plain-language explanations on hover/tap */
   .tip{ position:relative; display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%; border:1px solid var(--muted); color:var(--muted); font-size:9px; font-style:normal; font-weight:700; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; transition:color .15s, border-color .15s; }
-  .tip:hover, .tip:focus-visible, .tip.tip-open{ border-color:var(--gold); color:var(--gold); outline:none; }
+  .tip:hover, .tip:focus-visible, .tip.tip-open{ border-color:var(--gold); color:var(--gold-ink); outline:none; }
   .tip-bub{ position:absolute; bottom:150%; left:50%; transform:translateX(-50%); width:min(230px,72vw); background:var(--ink-2); border:1px solid var(--line); border-radius:9px; padding:.6rem .72rem; font-size:.72rem; font-style:normal; font-weight:400; line-height:1.5; letter-spacing:.005em; color:var(--ivory); box-shadow:0 10px 30px rgba(0,0,0,.45); opacity:0; visibility:hidden; transition:opacity .14s; z-index:60; text-align:left; pointer-events:none; white-space:normal; }
   .tip-bub::after{ content:""; position:absolute; top:100%; left:50%; transform:translateX(-50%); border:6px solid transparent; border-top-color:var(--ink-2); }
   .tip:hover .tip-bub, .tip:focus-visible .tip-bub, .tip.tip-open .tip-bub{ opacity:1; visibility:visible; }
@@ -323,7 +323,7 @@
   .ts-admin-sub{ font-size:.78rem; color:var(--muted); line-height:1.5; margin:0 0 .85rem; }
   .ts-admin-fields{ display:flex; flex-direction:column; gap:.7rem; }
   .ts-admin-fields .field label{ font-size:.8rem; color:var(--muted); margin-bottom:.3rem; display:block; }
-  .ts-admin-group{ font-family:var(--font-b); font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); margin:.95rem 0 .5rem; }
+  .ts-admin-group{ font-family:var(--font-b); font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); margin:.95rem 0 .5rem; }
   .ts-admin-group:first-of-type{ margin-top:.15rem; }
   .ts-admin-note{ font-weight:500; text-transform:none; letter-spacing:0; color:var(--muted-2); }
   .ts-admin-grid2{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem .6rem; }
@@ -539,7 +539,7 @@
             </div>
             <div class="field-rows two-col">
                 <div class="field">
-                    <label for="propState">Property state <em style="font-style:normal;color:var(--gold)">• required</em></label>
+                    <label for="propState">Property state <em style="font-style:normal;color:var(--gold-ink)">• required</em></label>
                     <div class="input select"><select id="propState">
                         <option value="">Select state…</option>
                         <option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>DC</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option>

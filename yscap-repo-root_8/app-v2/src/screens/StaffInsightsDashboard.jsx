@@ -202,7 +202,7 @@ export default function StaffInsightsDashboard() {
             </span>
             <Link to={`/internal/app/${r.application_id}?focus=ai-findings`}
               title="Jump to the AI Findings panel on this file"
-              style={{ fontSize: 10.5, padding: '2px 6px', borderRadius: 8, border: `1px solid ${tint}`, color: tint, textDecoration: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}>
+              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 8, border: `1px solid ${tint}`, color: tint, textDecoration: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}>
               Review AI →
             </Link>
             <span style={{ color: tint, fontWeight: 700, minWidth: 24, textAlign: 'right' }}>{r.open_fatal}</span>
@@ -314,7 +314,7 @@ function AiStackTile() {
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {Object.entries(av.versions).map(([k, val]) => (
               <span key={k} title={`${k}: ${val}`}
-                style={{ padding: '1px 6px', borderRadius: 6, fontSize: 10.5, fontFamily: 'ui-monospace,monospace', border: '1px solid var(--paper,#E9E4D3)', color: 'var(--muted,#4B585C)' }}>
+                style={{ padding: '1px 6px', borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace,monospace', border: '1px solid var(--paper,#E9E4D3)', color: 'var(--muted,#4B585C)' }}>
                 {k}:{val}
               </span>
             ))}
@@ -387,7 +387,7 @@ function FilesLink({ bucket }) {
   };
   return (
     <>
-      <button className="btn ghost" onClick={toggle} disabled={busy} style={{ fontSize: 10, padding: '2px 6px' }}>
+      <button className="btn ghost" onClick={toggle} disabled={busy} style={{ fontSize: 11, padding: '2px 6px' }}>
         {open ? 'hide' : (busy ? '…' : 'files →')}
       </button>
       {open && rows && (

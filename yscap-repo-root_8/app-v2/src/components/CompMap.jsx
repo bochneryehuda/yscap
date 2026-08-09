@@ -403,7 +403,7 @@ export default function CompMap({
         )}
 
         <div style={{
-          position: 'absolute', right: 4, bottom: 2, fontSize: 10, color: '#4B585C',
+          position: 'absolute', right: 4, bottom: 2, fontSize: 11, color: '#4B585C',
           background: 'rgba(255,255,255,.75)', padding: '0 4px', borderRadius: 3, pointerEvents: 'none',
         }}>{base.attribution}</div>
       </div>

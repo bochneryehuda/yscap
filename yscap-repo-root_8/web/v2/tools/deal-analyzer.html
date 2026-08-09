@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot4">
+<link rel="stylesheet" href="../suite.css?v=aa1">
 <style>
 /* =====================================================================
    YS DEAL ANALYZER — editorial reskin (blueprint: /preview/deal-analyzer)
@@ -49,7 +49,7 @@
 #daBar .topbar-actions .back:hover::after{ transform:scaleX(1); }
 #daBar .topbar-crumb .here{ color:var(--ivory); font-weight:600; }
 #daBar .topbar-actions .btn{ font-size:.86rem; padding:.6rem 1.15rem; }
-#daBar .topbar-actions .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+#daBar .topbar-actions .btn-line:hover{ border-color:var(--gold); color:var(--gold-ink); }
 
 /* ---------- hero ---------- */
 #da{ position:relative; z-index:2; }
@@ -57,14 +57,14 @@
   max-width:1240px; margin:0 auto; padding:4rem 1.5rem 2rem; text-align:left;
 }
 #da .suite-eyebrow{
-  color:var(--gold); font-size:.72rem; letter-spacing:.24em; font-weight:700;
+  color:var(--gold-ink); font-size:.72rem; letter-spacing:.24em; font-weight:700;
   text-transform:uppercase; margin-bottom:1rem;
 }
 #da .tool-hero h1{
   font-family:var(--font-d); font-weight:500; letter-spacing:-.018em; line-height:1.02;
   font-size:clamp(2.7rem,5.4vw,4.25rem); color:var(--ivory); margin:.1em 0 .18em;
 }
-#da .tool-hero h1 .tm{ font-size:.32em; color:var(--gold); vertical-align:super; font-weight:600; }
+#da .tool-hero h1 .tm{ font-size:.32em; color:var(--gold-ink); vertical-align:super; font-weight:600; }
 #da .tool-tagline{
   font-family:var(--font-d); font-style:italic; color:var(--muted);
   font-size:clamp(1.1rem,2vw,1.4rem); margin:0;
@@ -111,7 +111,7 @@
 #da .panel h2 em{ font-style:italic; color:var(--muted-2); font-weight:400; }
 #da .panel .panel-num{
   display:inline-grid; place-items:center; width:26px; height:26px; flex:none;
-  font-family:var(--font-d); font-size:.85rem; font-weight:600; color:var(--gold);
+  font-family:var(--font-d); font-size:.85rem; font-weight:600; color:var(--gold-ink);
   border:1px solid rgba(174,135,70,.4); border-radius:8px; background:rgba(174,135,70,.07);
 }
 #da .panel .panel-tag{
@@ -157,11 +157,11 @@
   padding:.95rem 1.5rem; border-bottom:1px solid var(--line-2);
 }
 #da .result-hero .rh-top .rh-ey{
-  font-size:.68rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700; color:var(--muted-2);
+  font-size:.7rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700; color:var(--muted-2);
 }
 #da .result-hero .rh-top .rh-live{
-  display:inline-flex; align-items:center; gap:.45rem; font-size:.68rem; letter-spacing:.14em;
-  text-transform:uppercase; font-weight:700; color:var(--teal);
+  display:inline-flex; align-items:center; gap:.45rem; font-size:.7rem; letter-spacing:.14em;
+  text-transform:uppercase; font-weight:700; color:var(--teal-br);
 }
 #da .result-hero .rh-top .rh-live::before{
   content:""; width:7px; height:7px; border-radius:50%; background:var(--teal);
@@ -174,7 +174,7 @@
 #da .result-hero .rh-value{
   font-family:var(--font-d); font-weight:500; font-variant-numeric:tabular-nums;
   font-size:clamp(2.9rem,6vw,3.7rem); line-height:1; letter-spacing:-.02em;
-  color:var(--gold); margin:.4rem 0 0; padding:0 1.5rem;
+  color:var(--gold-ink); margin:.4rem 0 0; padding:0 1.5rem;
 }
 #da .result-hero .rh-value.pos{ color:var(--teal-br); }
 #da .result-hero .rh-value.neg{ color:var(--bad); }
@@ -204,7 +204,7 @@
 }
 #da .result:hover{ background:var(--ink); }
 #da .result .r-label{
-  font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700;
+  font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700;
   line-height:1.3;
 }
 #da .result .r-label em{ font-style:normal; color:var(--muted-2); }
@@ -223,7 +223,7 @@
 }
 #da .apply-strip p{ font-family:var(--font-d); font-size:1.08rem; color:var(--ivory); margin:0 auto 0 0; flex:1 1 12rem; line-height:1.3; }
 #da .apply-strip .btn{ font-size:.88rem; }
-#da .apply-strip .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+#da .apply-strip .btn-line:hover{ border-color:var(--gold); color:var(--gold-ink); }
 
 /* ---------- dark footer band (explicit light text — invariant b) ---------- */
 #daFoot{
@@ -233,7 +233,7 @@
 #daFoot .sf-inner{ max-width:1240px; margin:0 auto; }
 #daFoot .sf-top{ display:flex; align-items:center; gap:1.1rem; flex-wrap:wrap; padding-bottom:1.4rem; border-bottom:1px solid rgba(244,240,231,.12); }
 #daFoot .sf-top .logo{ height:52px; width:auto; }
-#daFoot .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--gold); font-size:1.05rem; }
+#daFoot .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--gold-ink); font-size:1.05rem; }
 #daFoot .sf-marks{ margin-left:auto; display:flex; align-items:center; gap:1.1rem; }
 #daFoot .sf-marks img{ height:38px; width:auto; opacity:.9; }
 #daFoot .sf-meta{ color:rgba(244,240,231,.72); font-size:.86rem; margin-top:1.4rem; line-height:1.7; }

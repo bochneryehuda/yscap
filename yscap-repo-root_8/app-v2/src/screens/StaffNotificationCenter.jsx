@@ -610,7 +610,7 @@ function DraftPreview({ draft, subject, body, note, setSubject, setBody, setNote
           </button>
         ))}
         {dirty && canEdit && (
-          <div style={{ marginLeft: 'auto', padding: '10px 14px', fontSize: 12, color: 'var(--gold)', fontStyle: 'italic' }}>
+          <div style={{ marginLeft: 'auto', padding: '10px 14px', fontSize: 12, color: 'var(--gold-ink)', fontStyle: 'italic' }}>
             You have unsaved edits — they apply when you Send.
           </div>
         )}
@@ -747,7 +747,7 @@ function EmptyState({ kind }) {
   return (
     <div className="panel" style={{ textAlign: 'center', padding: '48px 24px' }}>
       <div style={{ width: 56, height: 56, margin: '0 auto 14px', borderRadius: '50%',
-        background: 'var(--gold-soft)', color: 'var(--gold)',
+        background: 'var(--gold-soft)', color: 'var(--gold-ink)',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
         <Icon name={cfg.icon} size={26} />
       </div>

@@ -32,7 +32,7 @@ const STATUS_LABEL = {
   completed: 'Completed', cancelled: 'Cancelled',
 };
 const STATUS_TONE = {
-  not_ordered: { borderColor: 'var(--gold)', color: 'var(--gold)' },
+  not_ordered: { borderColor: 'var(--gold)', color: 'var(--gold-ink)' },
   ordered: { borderColor: 'var(--teal, #2F7F86)', color: 'var(--teal, #2F7F86)' },
   documents_in: { borderColor: 'var(--teal, #2F7F86)', color: 'var(--teal, #2F7F86)' },
   completed: { borderColor: 'var(--ok)', color: 'var(--ok)' },
@@ -272,7 +272,7 @@ function ReturnedDoc({ appId, kind, doc, slots, conditionSlots, canAccept, onCha
         <div className="muted small">{KB(doc.size_bytes)} · {new Date(doc.created_at).toLocaleDateString()}</div>
         {err && <div className="small" style={{ color: 'var(--danger)' }}>{err}</div>}
       </div>
-      <span className="pill" style={unassigned ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : { borderColor: 'var(--teal,#2F7F86)', color: 'var(--teal,#2F7F86)' }}>
+      <span className="pill" style={unassigned ? { borderColor: 'var(--gold)', color: 'var(--gold-ink)' } : { borderColor: 'var(--teal,#2F7F86)', color: 'var(--teal,#2F7F86)' }}>
         {unassigned ? 'Unassigned' : doc.slot_label}
       </span>
       <span className="pill" style={rsTone}>{rs}</span>

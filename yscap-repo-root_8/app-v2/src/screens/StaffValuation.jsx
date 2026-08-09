@@ -759,7 +759,7 @@ function Grid({ d, isFinal, onChange, onRemove }) {
                         // we paid for)") — so cutting it at 70 characters kept the
                         // arithmetic and threw away the provenance, which is the
                         // half a reviewer needs. A tooltip does not count as shown.
-                        <div style={{ fontSize: 10, color: MUTED, marginTop: 2, lineHeight: 1.3 }}>
+                        <div style={{ fontSize: 11, color: MUTED, marginTop: 2, lineHeight: 1.3 }}>
                           {l.source === 'suggested' ? 'suggested: ' : ''}{l.note}
                         </div>
                       )}
