@@ -432,6 +432,86 @@ async function pendingCount(client = db) {
  *  can decide without waiting for the loan officer to act on the counter).
  *  Returns the row, or null if it was already decided / no longer exists.
  */
+/* AN APPROVAL CLEARS THE APPROVAL STAMP ON THE REGISTRATION IT WAS GRANTED FOR
+   (owner-directed 2026-08-07: "if the appraisal comes in and you re-register, and
+   then the admin approves, you should not need another re-register").
+
+   READ THIS BEFORE CHANGING IT — THIS DOES NOT UNBLOCK A TERM SHEET.
+   An earlier version of this comment said the stamp was what held the package and
+   that clearing it was the fix. That was wrong, and a pre-merge audit caught it.
+   `esign/gate.js:73-88` raises `manual_approval` only while `pendingForApp()` still
+   finds an OPEN escalation — its own comment: "it is approved only when there is NO
+   open/countered escalation for the file". So DECIDING the escalation is what
+   unblocks issuance; by the time this runs the blocker is already gone either way.
+   Do not re-describe this as a safety mechanism: `pendingForApp` is the authority on
+   whether an approval is outstanding, and the stamp's own consumer is the `/pricing`
+   history display (see borrower.js:1275).
+
+   BUT THE STAMP IS NOT INERT, AND THAT IS EXACTLY WHY THE KEY BELOW MATTERS.
+   On a PRICING-OVERRIDE-ONLY registration (status ELIGIBLE, is_manual false) the
+   stamp is the ONLY reason `needsSuperAdminApproval` returns true, so it is what
+   makes the gate ask the pending question at all — clear it while an escalation is
+   still OPEN and that file becomes issuable with an approval outstanding. (On a
+   MANUAL / manual-program row `status`/`is_manual` derive it and the stamp changes
+   nothing.) Pinned by section 6 of the test. So this must only ever run at the
+   moment a decision is recorded, on the registration that decision belongs to, and
+   only while that registration is still current — never as a sweep, a backfill, or
+   a "tidy up the flags" pass.
+
+   THE KEY IS `escalation.registration_id`, AND THAT IS THE WHOLE SAFETY STORY.
+   An approval belongs to the registration it was OPENED FOR — both register doors
+   always record it (staff.js:3049, borrower.js:1288) — so this clears THAT row and
+   no other. Keying on "whatever is current" instead was the first cut, and it was
+   wrong three ways: it could credit an approval to a registration nobody approved,
+   it lost a supersede race (clearing a row `persistProductRegistration` had just
+   retired, while reporting success), and it had to ask `exceptionCoveredByGrant`
+   whether the grant covered the row — a question that could not be answered,
+   because a registration does not store the guideline reasons that made it MANUAL,
+   so the check compared the grant's reasons against themselves and was dead code.
+   Keying on the escalation's own registration makes all three impossible and needs
+   no coverage walk: the escalation was opened FOR these exact terms.
+
+   BOTH OF THE OWNER'S ORDERS STILL SETTLE THE SAME WAY. Re-register-then-approve:
+   the re-register opens a fresh escalation for the new row and supersedes the old,
+   so approving it clears the row it belongs to. Approve-then-re-register: the
+   register door itself recognises the standing grant through the UNCHANGED exception
+   stickiness (2026-08-05) and never sets the stamp in the first place.
+
+   IF THE REGISTRATION IS NO LONGER CURRENT, NOTHING IS RELEASED — an officer who
+   re-registered while this sat pending has a NEW row carrying its OWN escalation,
+   and that is the row an approval has to be granted for. Best-effort throughout: an
+   approval a super-admin has granted must never be rolled back by a bookkeeping
+   write. */
+async function releaseApprovalHold(escalation, client = db) {
+  const appId = escalation && escalation.application_id;
+  if (!appId) return { released: false, reason: 'no_application' };
+  // No recorded registration means we cannot say WHICH terms were approved. Every
+  // production door records one; a row without it is not something to guess at.
+  const regId = escalation.registration_id || null;
+  if (!regId) return { released: false, reason: 'no_registration' };
+  const cur = (await client.query(
+    `UPDATE product_registrations SET needs_approval=false
+      WHERE id=$1 AND application_id=$2 AND is_current AND COALESCE(needs_approval,false)
+      RETURNING id`, [regId, appId])).rows[0];
+  if (cur) return { released: true, registrationId: cur.id, reason: 'approved_for_this_registration' };
+  /* Nothing cleared: already cleared, retired, or another file's. The condition is
+     re-checked inside the UPDATE, so a concurrent supersede can never be reported as
+     a release. Tell the two apart, because they mean opposite things to the person
+     who just clicked Approve: a file RE-REGISTERED after this request went out has a
+     newer registration carrying its OWN outstanding request, and somebody has to
+     approve that one — which is worth saying, unlike "already cleared", which needs
+     no action at all. Best-effort: if the follow-up read fails, say the vague thing
+     rather than invent the specific one. */
+  try {
+    const newer = (await client.query(
+      `SELECT id FROM product_registrations
+        WHERE application_id=$1 AND is_current AND COALESCE(needs_approval,false) AND id <> $2
+        LIMIT 1`, [appId, regId])).rows[0];
+    if (newer) return { released: false, reason: 'superseded', registrationId: newer.id };
+  } catch (_) { /* fall through to the plain answer */ }
+  return { released: false, reason: 'nothing_on_hold' };
+}
+
 async function decideEscalation(id, decision, staffId, note, client = db) {
   const status = decision === 'approved' ? 'approved' : 'declined';
   const r = await client.query(
@@ -441,7 +521,27 @@ async function decideEscalation(id, decision, staffId, note, client = db) {
       WHERE id=$1 AND status IN ('pending','countered')
       RETURNING *`,
     [id, status, staffId || null, note ? String(note).slice(0, 500) : null]);
-  return r.rows[0] || null;
+  const row = r.rows[0] || null;
+  /* Only an APPROVAL clears the stamp. A decline must leave it exactly where it is.
+     INSIDE A SAVEPOINT, because this is best-effort inside a caller's transaction:
+     a swallowed pg error still leaves that transaction ABORTED (25P02), so the
+     caller's COMMIT would silently become a rollback and lose the decision itself.
+     Same discipline (and same reason) as underwriting/finding-decisions.js. The
+     only production caller today passes no client — the pool, autocommit — but the
+     accept-counter path is transactional and is the obvious next caller. */
+  if (row && status === 'approved') {
+    const inTx = client !== db;
+    try {
+      if (inTx) await client.query('SAVEPOINT release_approval_hold');
+      row.holdRelease = await releaseApprovalHold(row, client);
+      if (inTx) await client.query('RELEASE SAVEPOINT release_approval_hold');
+    } catch (e) {
+      row.holdRelease = { released: false, reason: 'error' };
+      if (inTx) { try { await client.query('ROLLBACK TO SAVEPOINT release_approval_hold'); } catch (_) { /* nothing left to save */ } }
+      console.warn('[manual-program] approval stamp release failed:', db.describeError ? db.describeError(e) : e.message);
+    }
+  }
+  return row;
 }
 
 /** Counter-offer an escalation (owner-directed 2026-07-21). Instead of a plain
@@ -478,6 +578,7 @@ module.exports = {
   exceptionCoveredByGrant, latestApprovedGrant,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
   openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation, counterEscalation,
+  releaseApprovalHold,
   // exported for tests
   _internals: { itemsFromChanges, itemsFromSlim, canonValue },
 };

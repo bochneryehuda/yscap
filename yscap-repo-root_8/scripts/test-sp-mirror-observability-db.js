@@ -52,21 +52,43 @@ const openCard = async (id) => (await db.query(
   assert.ok(snap.oldest_claimable_secs >= 0 && snap.max_attempts >= 3, 'oldest-claimable + attempt distribution present');
   ok('healthSnapshot returns per-state counts, orphaned-lease count, oldest-claimable age, attempt max');
 
-  // ---- 2. dead-letter + expired-lease lists ---------------------------------
-  const dl = await q.deadLetterList(100);
+  /* ---- 2. dead-letter + expired-lease lists ---------------------------------
+     THE LIMIT IS SIZED FROM THE LIVE POPULATION, NEVER HARD-CODED. Both lists are
+     PAGING surfaces — `deadLetterList` is `ORDER BY created_at ASC LIMIT n`, the
+     OLDEST n — so asking for a fixed 100 and expecting a fixture inside it is only
+     true while the table holds fewer than 100 older rows of that state. CI runs on
+     a fresh database so it always held; on a long-lived database it stops holding
+     the moment sibling suites (which seed aged DEAD/IN_PROGRESS fixtures and do not
+     clean them up) accumulate past the page. Measured on a real database at the
+     time of writing: 148 DEAD rows, 142 of them older than this fixture's 20 hours,
+     so the fixture sorted past position 100 and the assertion failed — a pure
+     test-isolation defect that says nothing about the code under test. Sizing the
+     page off the current count exercises the REAL function and weakens nothing.
+     Do not "simplify" these back to a literal. */
+  const liveCount = async (sql) => (await db.query(sql)).rows[0].c;
+  const deadN = await liveCount(`SELECT count(*)::int c FROM documents WHERE sharepoint_mirror_status='DEAD'`);
+  const dl = await q.deadLetterList(deadN + 10);
   assert.ok(dl.some((r) => String(r.id) === String(dead1)), 'dead-letter list includes the DEAD doc');
   assert.ok(dl.every((r) => 'dead_reason' in r && 'attempts' in r), 'dead-letter rows carry reason + attempts');
-  const el = await q.expiredLeaseList(100);
+  const leaseN = await liveCount(
+    `SELECT count(*)::int c FROM documents
+      WHERE sharepoint_mirror_status='IN_PROGRESS' AND sharepoint_lease_expires_at < now()`);
+  const el = await q.expiredLeaseList(leaseN + 10);
   assert.ok(el.some((r) => String(r.id) === String(orphan)), 'expired-lease list includes the orphaned IN_PROGRESS doc');
   ok('deadLetterList and expiredLeaseList surface the page-worthy rows with context');
 
-  // ---- 3. every DEAD doc gets a Sync-review card (OWNER REQUIREMENT) ---------
+  /* ---- 3. every DEAD doc gets a Sync-review card (OWNER REQUIREMENT) ---------
+     Same page-size discipline as section 2: `cardDeadLetter` is `LIMIT n` (default
+     200) over every un-carded DEAD row, so on a database already holding more than
+     that this fixture would never be reached and "every dead-letter doc gets a
+     card" would fail for want of a page, not for want of the behaviour. */
+  const cardAll = () => q.cardDeadLetter(deadN + 50);
   assert.strictEqual(await openCard(dead1), 0, 'no card yet');
-  const carded = await q.cardDeadLetter();
+  const carded = await cardAll();
   assert.ok(carded >= 1, 'cardDeadLetter opened at least one card');
   assert.strictEqual(await openCard(dead1), 1, 'the DEAD doc now has exactly one open Sync-review card');
   // idempotent: a second pass opens no new card (queueReview dedups per doc)
-  const carded2 = await q.cardDeadLetter();
+  const carded2 = await cardAll();
   assert.strictEqual(await openCard(dead1), 1, 'still exactly one card after a second pass (idempotent)');
   assert.ok(!carded2 || carded2 === 0, 'no duplicate cards on re-run');
   ok('cardDeadLetter cards EVERY dead-letter doc into Sync review (manual-review preserved), idempotently');
@@ -74,7 +96,7 @@ const openCard = async (id) => (await db.query(
   // a DEAD row that actually mirrored (backed_up_at set — a raced success the next
   // reconcile will heal to DONE) must NOT be carded (would be a spurious alarm).
   const racedDead = await seed({ status: 'DEAD', attempts: 8, backedUp: true });
-  await q.cardDeadLetter();
+  await cardAll();
   assert.strictEqual(await openCard(racedDead), 0, 'a raced-success DEAD (backed_up_at set) is NOT carded');
   ok('cardDeadLetter never cards a raced success (DEAD-with-backed_up_at) — no false alarm');
 
