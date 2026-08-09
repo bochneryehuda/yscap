@@ -517,6 +517,31 @@ module.exports = {
   // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
   trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
 
+  // ---- Elementix (recorded deeds / mortgages, reached over MCP). READ-ONLY. ----
+  // No API key is bought: the endpoint uses the standard MCP OAuth flow, so PILOT
+  // signs in on the seat the owner already pays for, approved once in a browser.
+  // Auth lives in src/elementix/oauth.js; the guarded client is src/elementix/client.js.
+  // Capability map + the county-by-county coverage caveats: docs/ELEMENTIX-RESEARCH.md.
+  elementix: {
+    url:          (process.env.ELEMENTIX_URL || 'https://app.elementix.com/api/mcp').replace(/\/+$/, ''),
+    enabled:      process.env.ELEMENTIX_ENABLED === '1',   // master switch (default off)
+    dryrun:       process.env.ELEMENTIX_DRYRUN === '1',    // log the intended call, send nothing
+    // Only needed if Elementix declines self-registration and hands us a client id
+    // instead. Render env ONLY, never committed.
+    clientId:     process.env.ELEMENTIX_CLIENT_ID || null,
+    clientSecret: process.env.ELEMENTIX_CLIENT_SECRET || null,
+    // Escape hatch for when the endpoint publishes no discoverable metadata.
+    authServer:   process.env.ELEMENTIX_AUTH_SERVER || null,
+    // At-rest key for the stored tokens; falls back to the SSN key. Changing it
+    // does not lose anything dangerous — somebody re-approves once.
+    tokenKey:     process.env.ELEMENTIX_TOKEN_KEY || null,
+    // Self-cap well under the platform ceiling of 1,000 requests/hour, which is
+    // shared by the WHOLE organization across every connected client — every
+    // officer's session and every background job draw from the same bucket.
+    maxPerHour:   parseInt(process.env.ELEMENTIX_MAX_PER_HOUR || '400', 10),
+    maxPerSec:    parseInt(process.env.ELEMENTIX_MAX_PER_SEC || '3', 10),
+  },
+
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
   sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
   // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.

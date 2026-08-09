@@ -69,6 +69,12 @@ const SWITCHES = [
   { key: 'CLASS_ENABLED', integration: 'class', label: 'Order appraisals from Class Valuation (reading)', dangerous: false, resume: true, envDefault: () => !!(cfg.class && cfg.class.enabled) },
   { key: 'CLASS_DRYRUN', integration: 'class', label: 'Class Valuation orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.dryrun) },
   { key: 'CLASS_OUTBOUND_ENABLED', integration: 'class', label: 'Place appraisal orders with Class Valuation (write)', dangerous: true, envDefault: () => !!(cfg.class && cfg.class.outboundEnabled) },
+
+  // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
+  // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact
+  // enrichment, which is a per-person human click and can never be turned on globally.
+  { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
+  { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

@@ -656,6 +656,49 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     Number(to.deferredOrigPct) > 0 ? { label: 'Deferred origination fee (paid at payoff)', value: Number(to.deferredOrigPct) + '%' } : null,
     officerLine ? { label: 'Your loan officer', value: officerLine } : null,
   ].filter(Boolean);
+  /* ---------------- ESTIMATED CLOSING COSTS ----------------
+     Owner-directed 2026-08-07, on this exact email: *"like this, we need to have added the
+     origination fees, the legal fees, closing costs, underwriting fees, and stuff like that."*
+
+     The email said "the full term sheet, with every estimated closing cost, is in your portal" —
+     i.e. it named the thing the borrower wants and then made them go somewhere else for it. Every
+     one of these figures was ALREADY on the registered quote (`quote.closingCosts`, built by
+     pricing.normalize) and simply never rendered.
+
+     NOTHING IS COMPUTED HERE — each row is a figure off the quote, and the only arithmetic is the
+     TOTAL, which is `closingCosts.dueAtClosing`, also from the quote. The LABELS are copied
+     verbatim from the term-sheet PDF's own closing-cost table (`web/v2/tools/termsheet.js`) so the
+     email and the document the borrower signs can never call the same fee two different things.
+
+     The appraisal is listed SEPARATELY and below the total on purpose: it is paid outside closing
+     (the card on file is charged when it is ordered), so folding it into "due at closing" would
+     overstate what they bring to the table. */
+  const feeRows = [];
+  const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money(amount)]); };
+  const origPctStr = quote.origPct != null
+    ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
+  feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
+  feeRow('Underwriting / processing / legal', cc.lenderFee);
+  feeRow('Credit report', cc.creditFee);
+  feeRow('Title & settlement (estimated)', cc.titleAndSettlement);
+  for (const f of (Array.isArray(cc.extraFees) ? cc.extraFees : [])) {
+    if (f && f.name) feeRow(f.name, f.amount);
+  }
+  const feeTable = feeRows.length && num(cc.dueAtClosing) > 0
+    ? {
+      title: 'Estimated closing costs',
+      head: ['Fee', 'Amount'],
+      align: ['left', 'right'],
+      rows: [
+        ...feeRows,
+        ['Total due at closing', money(cc.dueAtClosing)],
+        ...(num(cc.appraisalPoc) > 0 ? [['Appraisal (paid when ordered, not at closing)', money(cc.appraisalPoc)]] : []),
+        ...(Number(to.deferredOrigPct) > 0 ? [[`Deferred origination fee (${Number(to.deferredOrigPct)}% — paid at payoff, not at closing)`, '—']] : []),
+      ],
+      note: 'These are estimates. Title and settlement charges are set by your title company and are confirmed on your closing disclosure; your own attorney’s fees are separate and are paid by you.',
+    }
+    : null;
+
   const lines = [
     'This reflects the structure your loan team registered. Open your portal to review the full term sheet, including all estimated closing costs.',
   ];
@@ -671,6 +714,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     badge: { text: 'Terms ready', tone: 'gold' },
     body: `Your ${programLabel} is registered. Here are your current terms — the full term sheet, with every estimated closing cost, is in your portal.`,
     lines,
+    table: feeTable,
     meta,
     ctaLabel: 'Review your full term sheet',
   };

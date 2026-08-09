@@ -1,5 +1,5 @@
 -- ============================================================================
--- 488 — Class Valuation appraisal ordering: the placed order, and their callbacks.
+-- 490 — Class Valuation appraisal ordering: the placed order, and their callbacks.
 --
 -- Class is the SECOND appraisal vendor (AppraisalScope / NAN is the first, db/480).
 -- Unlike the AMC, Class PUSHES: we register a callback URL once, and they POST an

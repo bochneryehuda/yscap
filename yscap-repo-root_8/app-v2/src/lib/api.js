@@ -663,7 +663,9 @@ export const api = {
   staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
   staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
   staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
-  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
+  // `reason` rides only on a CANCEL — it goes into the email outside counsel receives. A reopen
+  // emails nobody, so it carries none.
+  staffCancelClosingPrep:   (appId, reopen, reason) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : (reason ? { reason } : {})),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -1000,6 +1002,15 @@ export const api = {
   sharepointReconciliation: () => req('GET', '/api/admin/sharepoint/reconciliation'),
   sharepointRunSweep:  () => req('POST', '/api/admin/sharepoint/mirror', {}),
   sharepointRetryStuck: () => req('POST', '/api/admin/sharepoint/retry-exhausted', {}),
+  // Elementix (recorded deeds / mortgages). The connection is approved ONCE in a
+  // browser and then renews itself. `elementixConnect` returns the sign-in URL as
+  // JSON rather than a redirect ON PURPOSE — a 302 inside fetch() is followed
+  // invisibly, and this hand-off has to happen in the address bar so the person
+  // actually sees Elementix's own sign-in page.
+  elementixStatus:     () => req('GET', '/api/admin/elementix/status'),
+  elementixDiscover:   () => req('GET', '/api/admin/elementix/discover'),
+  elementixConnect:    () => req('GET', '/api/admin/elementix/connect'),
+  elementixDisconnect: () => req('POST', '/api/admin/elementix/disconnect', {}),
   integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
   integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
   integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),

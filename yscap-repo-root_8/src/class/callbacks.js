@@ -24,7 +24,7 @@
  *
  * So the rule is: **the version comes from OUR order row, never from the event, and
  * never from the current default.** `class_orders.api_version` is written when the
- * order is placed (db/488). When it is genuinely unknown — an order placed before
+ * order is placed (db/490). When it is genuinely unknown — an order placed before
  * that table existed, or an event for an order we never placed — the event is still
  * RECORDED and any version-specific call is DECLINED rather than guessed. Falling
  * back to the configured default would be the worst of the three options: it is
