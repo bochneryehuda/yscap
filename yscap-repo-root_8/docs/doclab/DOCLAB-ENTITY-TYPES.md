@@ -21,7 +21,7 @@ Every borrowing entity, whatever kind it is, goes out through the same handful:
 | `signatory_title` | 14 | each owner's `member_title` |
 
 A partnership and a trust travel the **percentage** road, exactly as an LLC does. Only a corporation
-takes the shares road. That was already wired by `db/506` and `src/lib/entity-type.js`.
+takes the shares road. That was already wired by `db/509` and `src/lib/entity-type.js`.
 
 So this document is mostly about the thing the research actually turned up, which is on **our** side.
 
@@ -50,7 +50,7 @@ dead end, not an inconvenience, and it is what `entity_subtype` fixes.
 
 ## What we added, and why each piece earns its place
 
-### `llcs.entity_subtype` (db/508)
+### `llcs.entity_subtype` (db/511)
 
 One column, `NULL` everywhere on the back book. Only a partnership or a trust can carry a value at
 all — the CHECK is written per type, so `revocable` cannot be stored on a partnership and `general`

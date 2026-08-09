@@ -18,6 +18,7 @@ const risk = require('./risk');
 const M = require('./mapper');
 const routing = require('./routing');
 const tpIntake = require('./trustpoint-intake');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const EV = require('./inspection-evidence');
 const { inboundDrawCopy } = require('./draw-inbound-copy');
 
@@ -266,6 +267,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       const b = await drawBlocks();
       await notify.notifyAppStaffThread(appId, {
         type: 'draw_inbound', title: 'A new draw request came in',
+        drawTag: drawLabel.drawLabel(draw.number),
         badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'New draw', tone: 'gold' },
         body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
         ...moneyOpts(b),
@@ -297,7 +299,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       if (r) {
         const b = await drawBlocks();
         await notify.notifyAppStaffThread(appId, {
-          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
@@ -317,7 +319,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       if (r) {
         const b = await drawBlocks();
         await notify.notifyAppStaffThread(appId, {
-          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }

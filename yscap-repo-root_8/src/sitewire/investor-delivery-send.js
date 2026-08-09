@@ -30,9 +30,11 @@ const drawReport = require('./draw-report');
 const { buildDrawPacket } = require('./draw-packet');
 const { buildXlsx } = require('../lib/xlsx');
 const recipients = require('../lib/draw-recipients');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named
 const fieldRegistry = require('../lib/conditions/field-registry');
 const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
+const drawAttachments = require('./draw-attachments');   // invoices/receipts/photos filed on a draw
 
 const N = (x) => Number(x || 0) || 0;
 
@@ -208,6 +210,32 @@ async function gatherAttachments(appId, drawId, mode) {
     } catch (_) { /* the OA is an extra only on a new-entity wire — never block the delivery */ }
   }
 
+  // --- 6. the supporting documents attached to this draw --------------------------------
+  // Invoices, receipts and extra photos a coordinator (or the borrower) filed on the draw —
+  // typically the proof behind an override (owner-directed 2026-08-09: "when we override
+  // something, we should be able to add invoices, receipts, or additional photos, and that should
+  // also be delivered to the investor on investor delivery"). They sit AFTER the reports in
+  // priority order deliberately: the inspector's report and ours are what the investor funds
+  // against; these are the backup. Only an ACCEPTED document travels — a borrower's upload nobody
+  // has reviewed is not something we vouch for to an investor (db/424).
+  try {
+    const rows = (await db.query(
+      `SELECT da.category, da.note, d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider, d.review_status
+         FROM draw_attachments da JOIN documents d ON d.id = da.document_id
+        WHERE da.application_id=$1 AND da.sitewire_draw_id=$2 AND d.is_current
+        ORDER BY da.created_at ASC, da.id ASC`, [appId, drawId])).rows;
+    for (const a of rows) {
+      const label = `${drawAttachments.CATEGORY_LABEL[a.category] || 'Supporting document'} — ${a.filename}`;
+      if (a.review_status !== 'accepted') {
+        skipped.push({ what: label, reason: 'it has not been accepted yet — review it first and re-send' });
+        continue;
+      }
+      const buf = await readDoc(a);
+      if (!buf) { skipped.push({ what: label, reason: 'the stored copy could not be read' }); continue; }
+      items.push({ what: label, filename: a.filename, contentType: a.content_type || 'application/octet-stream', buf });
+    }
+  } catch (_) { /* an older database has no draw_attachments — never block the delivery */ }
+
   // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.
   const budget = budgetBytes();
   const fit = [];
@@ -304,6 +332,12 @@ async function deliveryPreview(appId, drawId) {
     const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
     if (d) { money = ID.investorMoney(d, mode); drawNumber = d.number; }
   } catch (_) { /* the preview still renders; the blockers below say what is missing */ }
+  // The rollup is the fast path; when it could not be read (or carries no number for this draw)
+  // fall back to the ONE number resolver, so the investor's subject stops silently degrading to
+  // the anonymous "Draw request". Still never guesses — null stays null.
+  if (drawNumber == null) {
+    drawNumber = await drawLabel.drawNumberFor(db, appId, { sitewireDrawId: drawId });
+  }
 
   const contacts = await contactsForNoteBuyer(app.note_buyer);
   const wireForm = await wireFormStatus(appId);
@@ -320,6 +354,20 @@ async function deliveryPreview(appId, drawId) {
   });
 
   const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
+
+  // HAS THIS LOAN ACTUALLY BEEN SOLD? A WARNING, NEVER A BLOCKER — this is the exact moment the
+  // owner named (2026-08-09: "default should be like it was sold already, but it should give you a
+  // warning that it doesn't have a PA date if you're sure you want to do investor delivery"). It is
+  // deliberately kept OUT of `blockers`, so `can_send` is untouched and the send is never refused
+  // over it; the screen shows it beside the button and the coordinator decides.
+  //
+  // A table-funded loan was sold at the closing table and produces NO warning at all, which is the
+  // whole point — otherwise every Fidelis delivery would carry a nag about a date that is never
+  // coming. Best-effort: an unreadable state simply shows nothing rather than blocking a send or
+  // inventing a doubt.
+  let soldState = null;
+  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
+  catch (_) { soldState = null; }
 
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
@@ -343,7 +391,14 @@ async function deliveryPreview(appId, drawId) {
     wire_form: wireForm,
     to: rcpt.to, cc: rcpt.cc,
     blockers,
+    // `can_send` reads ONLY the blockers. The sold warning below is advisory by the owner's own
+    // rule and must never creep into this — if it ever needs to stop a send, that is a new
+    // owner decision, not a line moved.
     can_send: blockers.length === 0,
+    sold: soldState ? soldState.sold : null,
+    sold_label: soldState ? soldState.soldLabel : null,
+    sold_via: soldState ? soldState.soldVia : null,
+    sold_warning: soldState ? soldState.warning : null,
     history,
   };
 }

@@ -29,6 +29,9 @@ const PN = require('../lib/person-name');
 // The ONE "is this the same place?" address comparer (Street≡St, Avenue≡Ave,
 // ordinals, ZIP+4, units, case). Pure (no pg), safe to require eagerly.
 const ADDR = require('../lib/address');
+// Which note buyers may fund on which channel, and what "table funded" means for the
+// sold status. Pure (it requires only the field map above), so eager is safe.
+const FC = require('../lib/funding-channel');
 
 // Our-side deal type is NOT a column — applications stores it as `program`
 // ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
@@ -136,6 +139,22 @@ function buildOurValues(app, quote, llcName) {
     // Individual there is no LLC name, so vesting_llc (1859) goes not-applicable.
     vesting_title_role: a.llc_id ? 'Officer' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
+    // THE FUNDING CHANNEL — our side is the CLOSER'S WAREHOUSE PICK, and it does not
+    // exist until funding. `table_funded` on closing_workflow is itself derived from
+    // the warehouse (closing.tableFundedFor), so this reads the same single source the
+    // purchasing fork does rather than a second opinion about how the loan funded.
+    //
+    // FALSE IS A REAL ANSWER, undefined is not: once a warehouse is chosen, "not table
+    // funding" is a statement (this loan will be sold later), so it compares. Before
+    // that there is no closing_workflow row at all, `table_funded` is null/undefined,
+    // and the field's `naWhenOursMissing` makes the row read "Doesn't apply" instead of
+    // holding the term sheet on every file in the pipeline. Encompass's own vocabulary
+    // is what we emit — 'Table Funding' / 'Direct RTL' — so the enum compare maps both
+    // sides through ONE table. We cannot tell delegated from TPR from a warehouse pick,
+    // and we deliberately do not try: 'Direct RTL' maps to the coarse `direct` token,
+    // which is the honest reading of what the closing desk actually recorded.
+    funding_channel: a.table_funded === true ? 'Table Funding'
+      : (a.table_funded === false ? 'Direct RTL' : undefined),
 
     // loan amount / initial advance / rehab (money)
     loan_amount: nz(a.loan_amount),
@@ -872,6 +891,103 @@ async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
 // Loads the pulled loan + our row + current quote + resolutions and returns the
 // full comparison. Never throws on missing data — an un-numbered / un-pulled /
 // un-priced file simply yields no loan (or "not comparable" fields).
+/**
+ * THE NOTE BUYER'S OWN RULE ABOUT HOW A LOAN MAY FUND (owner-directed 2026-08-09): "any file that
+ * is Blue Lake or emcap or corrfirst it should never be table funding — it should always be direct
+ * RTL / delegate or direct RTL / w tpr; it needs to follow this rule in order to pass Encompass
+ * Sync." Returns [] or ONE synthetic panel row.
+ *
+ * WHY THIS IS NOT A REGISTRY ENTRY. Every registry row asks "do our two copies of this value
+ * agree?", and both sides have to exist for the question to mean anything. This asks something
+ * else entirely: is the value Encompass holds LEGAL for this file's note buyer? It is about one
+ * side alone, it must fire long before our closing desk has an opinion (that is the point — the
+ * channel is set in Encompass at origination, and the whole reason to check it is to catch it
+ * being wrong EARLY), and it is keyed on a second field. So it is its own row, in the shape
+ * compareIdentity already established for non-registry findings, and it joins the same summary.
+ *
+ * BLOCK-gated, because the owner said it must be followed to pass the sync — and safe to gate
+ * because src/lib/funding-channel.js only ever reports a violation on a POSITIVE reading (a
+ * recognised buyer with a rule, and Encompass positively saying table funding). A blank channel,
+ * an unknown buyer, a buyer with no rule and an unrecognised channel value all produce nothing or
+ * an informational row that matches. The recorded way past a genuine violation is the same
+ * super-admin field exception every other row on this panel already has — `applyFieldExceptions`
+ * keys on `field_key`, so this row gets that for free.
+ *
+ * PURE — takes the already-extracted values. No DB, no network, never throws.
+ */
+function compareFundingChannel(ourBuyer, theirBuyer, theirChannel, ourTableFunded) {
+  const out = [];
+
+  // (b) DO THE CLOSING DESK AND ENCOMPASS AGREE ABOUT HOW THIS LOAN FUNDED? Advisory, and emitted
+  // ONLY when BOTH sides are positively readable and they actually disagree. Silence otherwise —
+  // an unpicked warehouse (every file before funding) and an Encompass value the shared table does
+  // not carry both produce nothing at all, which is what keeps an unverified tenant value from
+  // ever holding a term sheet or a tape.
+  try {
+    const ch = FC.channelKey(theirChannel);
+    if (ch && (ourTableFunded === true || ourTableFunded === false)) {
+      const oursTable = ourTableFunded === true;
+      const theirsTable = FC.isTableFunding(ch);
+      if (oursTable !== theirsTable) {
+        out.push({
+          key: 'funding_channel_agreement',
+          encompassFieldId: 'CX.TABLEFUNDER',
+          label: 'How the loan funded — closing desk vs Encompass',
+          category: 'program',
+          compare: 'rule',
+          gate: map.GATE.ADVISORY,
+          ours: oursTable ? 'Table Funding (the warehouse line the closer funded on)' : 'Direct RTL (a warehouse line, not table funding)',
+          theirs: String(theirChannel),
+          oursNorm: oursTable ? 'table_funding' : 'direct',
+          theirsNorm: ch,
+          status: 'mismatch',
+          detail: oursTable
+            ? 'Our closing desk funded this on the Table Funding line — sold at the closing table — but Encompass does not say table funding. One of the two is wrong; the loan is either already sold or still to be sold.'
+            : 'Encompass says this loan was table funded — sold at the closing table — but our closer funded it on a warehouse line, which means it still has to be sold. One of the two is wrong.',
+          writable: false,
+          open: true,
+          resolution: null,
+        });
+      }
+    }
+  } catch (_) { /* advisory only — never let this throw into the panel */ }
+
+  // (a) IS THE ENCOMPASS CHANNEL EVEN ALLOWED FOR THIS NOTE BUYER? The owner's hard rule.
+  let p = null;
+  try {
+    // OUR note buyer decides whose rule applies, falling back to Encompass's copy when our column
+    // is blank. Ours first deliberately: `applications.lender` is the value every other note-buyer
+    // behaviour in this codebase keys on (the 5% SOW contingency, the bank-statement months, the
+    // data-tape gate), so the sync must not apply a DIFFERENT buyer's rule than the rest of PILOT
+    // is applying to the same file. Falling back to theirs only helps a file we have not filled in.
+    p = FC.channelProblem({ buyer: ourBuyer || theirBuyer || null, channelRaw: theirChannel });
+  } catch (_) { return out; }
+  if (!p) return out;
+  out.push({
+    key: 'funding_channel_rule',
+    encompassFieldId: 'CX.TABLEFUNDER',
+    label: `Funding channel allowed for ${FC.label(p.buyer)}`,
+    category: 'program',
+    compare: 'rule',
+    gate: map.GATE.BLOCK,
+    // `ours` is the RULE, not a value we hold — this row has no second copy of anything. Saying so
+    // in words is what stops the panel reading as "PILOT and Encompass disagree about a field".
+    ours: `Must be ${FC.DIRECT_ONLY_WORDING}`,
+    theirs: p.channelRaw || null,
+    oursNorm: 'direct',
+    theirsNorm: p.channel || null,
+    // An unrecognised channel value is NOT reported as a failure — a dropdown option nobody has
+    // enumerated yet must never hold a term sheet. It rides as a matching row carrying its own
+    // explanation, so a human sees the wording and can have it added.
+    status: p.violation ? 'mismatch' : 'match',
+    detail: p.message,
+    writable: false,
+    open: !!p.violation,
+    resolution: null,
+  });
+  return out;
+}
+
 async function computeFindings(appId, dbc, opts) {
   const c = dbc || require('../db');
   const row = (await c.query(
@@ -890,11 +1006,16 @@ async function computeFindings(appId, dbc, opts) {
             cb.first_name AS cb_first_name, cb.last_name AS cb_last_name,
             cb.middle_name AS cb_middle_name, cb.name_suffix AS cb_name_suffix,
             cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone,
-            cb.ssn_hash AS cb_ssn_hash, cb.ssn_last4 AS cb_ssn_last4, cb.ssn_encrypted AS cb_ssn_encrypted
+            cb.ssn_hash AS cb_ssn_hash, cb.ssn_last4 AS cb_ssn_last4, cb.ssn_encrypted AS cb_ssn_encrypted,
+            -- The closer's warehouse pick, as the derived table-funded flag (closing.tableFundedFor).
+            -- LEFT JOINed, so a file that has not reached the closing desk simply has no answer and
+            -- the funding_channel row reads "Doesn't apply" rather than "no data to compare".
+            cw.table_funded AS table_funded
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+       LEFT JOIN closing_workflow cw ON cw.application_id = a.id
       WHERE a.id = $1 AND a.deleted_at IS NULL
       LIMIT 1`, [appId])).rows[0];
   if (!row) return { found: false, hasLoan: false, fields: [], summary: summarize([]) };
@@ -936,7 +1057,10 @@ async function computeFindings(appId, dbc, opts) {
   // loan is pulled. They are compare-only + BLOCK-gated and fold into the same
   // summary so "everything matches" includes them.
   const idFields = loan ? compareIdentity(row, loan) : [];
-  const fields = econFields.concat(idFields);
+  // The note buyer's own funding-channel rule. Only when a loan is pulled — with no Encompass copy
+  // there is no channel to judge, and an absent value is never a violation.
+  const ruleFields = loan ? compareFundingChannel(row.lender, theirs.capital_provider, theirs.funding_channel, row.table_funded) : [];
+  const fields = econFields.concat(idFields, ruleFields);
   // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
   // data to compare" field can be escalated to a super admin, who GRANTS an exception
   // (resolution 'excepted') so it no longer blocks the term sheet — or a staffer has
@@ -1336,5 +1460,5 @@ module.exports = {
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues, applyFieldExceptions },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, compareFundingChannel, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues, applyFieldExceptions },
 };

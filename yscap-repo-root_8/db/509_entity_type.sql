@@ -1,4 +1,4 @@
--- 506_entity_type.sql — AN ENTITY IS NOT ALWAYS AN LLC (owner-directed 2026-08-09).
+-- 509_entity_type.sql — AN ENTITY IS NOT ALWAYS AN LLC (owner-directed 2026-08-09).
 --
 -- PILOT's table for a borrowing company is called `llcs` and every line of code
 -- around it assumed the name was the whole truth. It is not, and three things

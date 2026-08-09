@@ -27,12 +27,36 @@ const DRAW_STATUS = {
   pending_capital_partner: { label: 'Final review', cls: 'sw-insp' }, approved: { label: 'Approved & released', cls: 'sw-approved' },
 };
 
+/* WHAT HAPPENS NEXT, AND WHEN — the one line a borrower actually wants (owner-directed
+   2026-08-09). It shows the SOONEST thing still ahead, and nothing at all when there is nothing to
+   promise: a date with no start to count from would be a guess, and a guess in front of somebody
+   waiting on their money is worse than saying nothing. The booked inspection visit leads when
+   there is one — it has been mirrored for months and simply never shown to the person standing at
+   the property. */
+function NextUp({ d }) {
+  if (!d) return <span className="dd-sub">—</span>;
+  const fmt = (iso) => { try { return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); } catch (_) { return iso; } };
+  if (d.visit_scheduled_at) {
+    const day = String(new Date(d.visit_scheduled_at).toISOString()).slice(0, 10);
+    return <span>Inspection visit <b>{fmt(day)}</b></span>;
+  }
+  for (const [label, v] of [['Inspection', d.inspection], ['Decision', d.decision], ['Funds', d.release]]) {
+    if (v && v.date && !v.actual) {
+      return <span>{label} <b>{fmt(v.date)}</b>{v.late ? <span className="dd-sub"> (running late — we’re on it)</span> : ''}</span>;
+    }
+  }
+  return <span className="dd-sub">—</span>;
+}
+
 export default function BorrowerDraws({ appId }) {
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
   const [eligibility, setEligibility] = useState(null);
   const [loading, setLoading] = useState(true);
   const [has, setHas] = useState(true);
+  // WHAT HAPPENS NEXT, AND WHEN (owner-directed 2026-08-09) — keyed by draw. Only the three dates
+  // and the booked visit; never the internal checklist, which names our own work.
+  const [dates, setDates] = useState({});
 
   const load = useCallback(() => {
     setLoading(true);
@@ -42,6 +66,7 @@ export default function BorrowerDraws({ appId }) {
       api.get(`/api/borrower/draws/${appId}/eligibility`).catch(() => null),
     ]).then(([r, f, e]) => {
       setRollup(r && r.rollup ? r.rollup : null);
+      setDates((r && r.dates) || {});
       setFindings((f && f.findings) || []);
       setEligibility(e || null);
       setHas(!!(r && r.rollup && r.rollup.project && r.rollup.project.budget > 0));
@@ -103,7 +128,7 @@ export default function BorrowerDraws({ appId }) {
                 inspector signed off; this is the money that actually reaches the borrower, after
                 the draw fee. It comes straight off the rollup, the same source their PDF report is
                 built from, so the two can never quote different numbers. */}
-            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
+            <thead><tr><th>Draw</th><th>Status</th><th>What’s next</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
             <tbody>
               {rollup.draws.map((d) => {
                 const s = DRAW_STATUS[d.status] || { label: d.status, cls: 'sw-insp' };
@@ -111,6 +136,7 @@ export default function BorrowerDraws({ appId }) {
                   <tr key={d.sitewire_draw_id}>
                     <td style={{ fontWeight: 600 }}>#{d.number ?? '—'}</td>
                     <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : s.cls)}>{s.label}</span></td>
+                    <td><NextUp d={dates[d.sitewire_draw_id]} /></td>
                     <td className="num">{usd2(d.requested_cents)}</td>
                     <td className="num">{usd2(d.approved_cents)}</td>
                     <td className="num" style={{ fontWeight: 700 }}>{d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
@@ -120,6 +146,12 @@ export default function BorrowerDraws({ appId }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Documents turn up after a request is in — an invoice arrives, the contractor sends a
+          photo — so attaching is not only possible at the moment of submitting. */}
+      {rollup && Array.isArray(rollup.draws) && rollup.draws.length > 0 && (
+        <AttachToDraw appId={appId} draws={rollup.draws} onChanged={load} />
       )}
 
       {/* whole-project inspection report (PDF) — all draws in one branded, borrower-safe document */}
@@ -132,6 +164,70 @@ export default function BorrowerDraws({ appId }) {
         <FindingCard key={f.id} finding={f} appId={appId} onChanged={load}
           money={drawMoney.get(String(f.sitewire_draw_id)) || null} />
       ))}
+    </div>
+  );
+}
+
+/* ADD A DOCUMENT TO A DRAW ALREADY IN FLIGHT (owner-directed 2026-08-09). The composer takes files
+   WITH a request; this covers the invoice that arrives two days later. Same upload contract, same
+   server door, and the same rule at the other end: a borrower's upload is NOT born accepted, so
+   nothing they add here travels to an investor until somebody reviews it. */
+function AttachToDraw({ appId, draws, onChanged }) {
+  const [drawId, setDrawId] = useState(String(draws[0] && draws[0].sitewire_draw_id) || '');
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [done, setDone] = useState('');
+
+  async function send() {
+    if (busy || !files.length || !drawId) return;
+    setBusy(true); setErr(''); setDone('');
+    try {
+      const r = await api.post(`/api/borrower/draws/${appId}/attachments`, {
+        sitewire_draw_id: drawId,
+        files: files.map(({ filename, contentType, dataBase64 }) => ({ filename, contentType, dataBase64 })),
+      });
+      const skipped = Array.isArray(r && r.skipped) ? r.skipped : [];
+      // Never claim more than actually landed, and always name what did not.
+      setDone(`Added ${r.added ? r.added.length : 0} document${(r.added && r.added.length) === 1 ? '' : 's'} to your draw.`
+        + (skipped.length ? ` ${skipped.length} could not be added — ${skipped.map((s) => `${s.what}: ${s.reason}`).join('; ')}.` : ''));
+      setFiles([]);
+      onChanged && onChanged();
+    } catch (e) { setErr(e?.data?.error || e.message || 'That didn’t work — please try again.'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="small" style={{ fontWeight: 700 }}>Add a document to a draw</div>
+      <div className="small" style={{ color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+        An invoice, a receipt or a progress photo for a draw you’ve already requested. Your team sees it on that draw.
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+        <select className="input" value={drawId} disabled={busy} onChange={(e) => setDrawId(e.target.value)} style={{ maxWidth: 180 }}>
+          {draws.map((d) => (
+            <option key={d.sitewire_draw_id} value={String(d.sitewire_draw_id)}>Draw {d.number ?? '—'}</option>
+          ))}
+        </select>
+        <input type="file" multiple accept="image/*,application/pdf" disabled={busy}
+          onChange={async (e) => { setFiles((await filesToBase64(e.target.files)).filter(Boolean)); e.target.value = ''; }} />
+        <button className="btn btn-sm primary" disabled={busy || !files.length} onClick={send}>
+          {busy ? 'Adding…' : `Add ${files.length || ''} document${files.length === 1 ? '' : 's'}`.trim()}
+        </button>
+      </div>
+      {files.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+          {files.map((f, i) => (
+            <span key={i} className="pill sw-draft" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: 220 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
+              <button type="button" className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} disabled={busy}
+                aria-label={`Remove ${f.filename}`} onClick={() => setFiles((cur) => cur.filter((_, j) => j !== i))}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      {err && <div className="small" style={{ marginTop: 6, color: 'var(--danger, #b3261e)' }}>{err}</div>}
+      {done && <div className="small" style={{ marginTop: 6, color: 'var(--text-muted)' }}>{done}</div>}
     </div>
   );
 }
@@ -263,19 +359,36 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Invoices, receipts and progress photos sent WITH the request (owner-directed 2026-08-09) — the
+  // borrower could previously only attach evidence when DISPUTING a result, which is the one moment
+  // it is already too late to help.
+  const [files, setFiles] = useState([]);
+  const [note2, setNote2] = useState('');   // what did not attach, in their words
   const lines = Array.isArray(composer.lines) ? composer.lines : [];
   const cents = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
   const totalCents = lines.reduce((s, l) => s + cents(amounts[l.sitewire_job_item_id]), 0);
   const overLine = lines.find((l) => cents(amounts[l.sitewire_job_item_id]) > Number(l.remaining_cents || 0));
   async function submit() {
     if (busy) return;
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setNote2('');
     try {
       const entries = lines
         .map((l) => ({ sitewire_job_item_id: l.sitewire_job_item_id, requested_cents: cents(amounts[l.sitewire_job_item_id]) }))
         .filter((x) => x.requested_cents > 0);
-      await api.post(`/api/borrower/draws/${appId}/request`, note.trim() ? { entries, note: note.trim() } : { entries });
-      setOpen(false); setAmounts({}); setNote('');
+      const body = { entries };
+      if (note.trim()) body.note = note.trim();
+      // The local `preview` data-URL is for the thumbnail only and never goes to the server — the
+      // upload contract is {filename, contentType, dataBase64}.
+      if (files.length) body.attachments = files.map(({ filename, contentType, dataBase64 }) => ({ filename, contentType, dataBase64 }));
+      const r = await api.post(`/api/borrower/draws/${appId}/request`, body);
+      // The request is created BEFORE the files are stored, so a file that would not store never
+      // fails the draw — but it must never fail SILENTLY either. Say which one, and why.
+      const skipped = Array.isArray(r && r.attachments_skipped) ? r.attachments_skipped : [];
+      if (skipped.length) {
+        setNote2(`Your draw request was submitted. ${skipped.length} file${skipped.length === 1 ? '' : 's'} could not be attached — ${skipped.map((s) => `${s.what}: ${s.reason}`).join('; ')}. You can add ${skipped.length === 1 ? 'it' : 'them'} again below.`);
+      } else {
+        setOpen(false); setAmounts({}); setNote(''); setFiles([]);
+      }
       onChanged && onChanged();
     } catch (e2) { setErr(e2?.data?.error || e2.message || 'That didn’t work — please try again.'); }
     finally { setBusy(false); }
@@ -314,6 +427,38 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
           </div>
           <textarea className="small" rows={2} value={note} onChange={(ev) => setNote(ev.target.value)}
             placeholder="Anything your team should know about this draw (optional)" style={{ width: '100%', marginTop: 8 }} maxLength={500} />
+
+          {/* INVOICES, RECEIPTS AND PHOTOS, WITH THE REQUEST. Optional — a draw is never held up
+              for want of one — but sending the proof now is what stops the back-and-forth later. */}
+          <div style={{ marginTop: 10 }}>
+            <label className="small" style={{ fontWeight: 700, display: 'block', marginBottom: 4 }}>
+              Add invoices, receipts or photos (optional)
+            </label>
+            <div className="small" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>
+              Anything that shows the work is done. Your team sees these with your request.
+            </div>
+            <input type="file" multiple accept="image/*,application/pdf" disabled={busy}
+              onChange={async (ev) => {
+                const picked = (await filesToBase64(ev.target.files)).filter(Boolean);
+                // Replacing rather than appending keeps what is on screen equal to what will be
+                // sent — the picker always reports the whole current selection.
+                setFiles(picked);
+                ev.target.value = '';
+              }} />
+            {files.length > 0 && (
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                {files.map((f, i) => (
+                  <span key={i} className="pill sw-draft" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: 220 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
+                    <button type="button" className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} disabled={busy}
+                      aria-label={`Remove ${f.filename}`}
+                      onClick={() => setFiles((cur) => cur.filter((_, j) => j !== i))}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="act-bar" style={{ alignItems: 'center' }}>
             <span className="small" style={{ fontWeight: 700 }}>Total: {usd2(totalCents)}</span>
             {overLine && <span className="small" style={{ color: 'var(--warning, #b8860b)' }}>“{overLine.name}” only has {usd2(overLine.remaining_cents)} left.</span>}
@@ -324,6 +469,8 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
             </button>
           </div>
           {err && <div className="small" style={{ marginTop: 6, color: 'var(--danger, #b3261e)' }}>{err}</div>}
+          {/* The request went through and a file did not — not an error, but never silent. */}
+          {note2 && <div className="small" style={{ marginTop: 6, color: 'var(--warning, #b8860b)' }}>{note2}</div>}
         </div>
       )}
       <div className="small muted" style={{ marginTop: 10 }}>

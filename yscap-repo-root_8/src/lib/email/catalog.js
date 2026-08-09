@@ -446,7 +446,7 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
 // phase 1, 2026-07-24). STAFF-ONLY — TrustPoint/note-buyer names never reach a borrower
 // surface; this goes to the draws desk + coordinator only. Carries the copy-ready
 // per-line table so the manual TrustPoint entry takes minutes.
-function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
+function trustpointImport({ drawNumber, drawTag = null, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
   const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const meta = [];
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
@@ -461,7 +461,13 @@ function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], t
   const shown = lines.slice(0, CAP);
   return render({
     audience: 'staff',
-    title: `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    // The draw LEADS the subject ("Draw 2 · A draw needs to be entered…") — owner-directed
+    // 2026-08-09, so a coordinator with three of these open can tell them apart in the inbox.
+    // The caller resolves the tag through lib/draw-label (which answers null rather than guess);
+    // with no tag the number stays in the title, which is what this email always said.
+    title: drawTag ? 'A draw needs to be entered into TrustPoint'
+      : `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    drawTag: drawTag || '',
     subjectTag: fileTag(loanNumber, propertyLabel),
     badge: { text: 'Enter in TrustPoint', tone: 'gold' },
     replyable: true,

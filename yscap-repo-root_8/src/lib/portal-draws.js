@@ -19,6 +19,7 @@
 const db = require('../db');
 const workflow = require('./workflow');
 const notify = require('./notify');
+const drawLabel = require('./draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const routing = require('../sitewire/routing');
 // The ONE draw-email composer (CLAUDE.md draw rule 15). A portal request has no Sitewire draw to
 // read yet, so its own row is the money source — converted through the same `drawMoney` as every
@@ -182,6 +183,7 @@ async function createRequest(appId, entries, opts = {}) {
       + (isTp ? 'Enter it in TrustPoint as a REGULAR workflow draw — the line-by-line amounts are in your Workflow item.'
               : 'Order the physical inspection from Trinity, then record the findings when the report comes back.'),
     badge: { text: isTp ? 'Enter in TrustPoint' : 'Order inspection', tone: 'gold' },
+    drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
     applicationId: appId, link: '/internal/workflow', ctaLabel: 'Open my Workflow',
   };
   try {
@@ -193,7 +195,8 @@ async function createRequest(appId, entries, opts = {}) {
     const { fileReplyTo } = require('./file-address');
     await mail.deliver(
       mail.trustpointImport({
-        drawNumber: `P${row.id}`, propertyLabel: addr.addr || null, loanNumber: addr.ys_loan_number || null,
+        drawNumber: `P${row.id}`, drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
+        propertyLabel: addr.addr || null, loanNumber: addr.ys_loan_number || null,
         lines: picked.map((l) => ({ name: l.name, requested_cents: l.requested_cents })), totalCents: total,
       }),
       ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId), applicationId: appId, type: 'trustpoint_import', audience: 'staff' });
@@ -208,6 +211,7 @@ async function createRequest(appId, entries, opts = {}) {
     const blocks = await drawEmailBlocks(db, appId, { portalRequest: row, borrower: true });
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: 'Your draw request was received',
+      drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
       badge: { text: 'Received', tone: 'gold' },
       figures: (blocks && blocks.figures) || null,
       facts: (blocks && blocks.facts) || null,
@@ -438,6 +442,7 @@ async function cancelRequest(appId, portalRequestId, { staffId = null, reason = 
     const blocks = await drawEmailBlocks(db, appId, { borrower: true });
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: 'Your draw request was cancelled',
+      drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: pr.id }),
       badge: { text: 'Cancelled', tone: 'neutral' },
       facts: (blocks && blocks.facts) || null,
       body: `Your draw request for ${usd(pr.total_requested_cents)} was cancelled by your loan team${reason ? `: ${String(reason).slice(0, 200)}` : ''}. Nothing was released and none of your construction budget was used — you can submit a new request whenever you're ready, or reply to this email with any questions.`,
@@ -521,6 +526,7 @@ async function approveTrinityRequest(appId, portalRequestId, entries, { staffId 
   const blocks = await drawEmailBlocks(db, appId, { portalRequest: row, borrower: true });
   await notify.notifyAppBorrowers(appId, {
     type: 'draw', title: 'Your inspection is complete — here is what was approved',
+    drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: pr.id }),
     badge: { text: 'Inspector approved', tone: 'positive' },
     figures: (blocks && blocks.figures) || null,
     facts: (blocks && blocks.facts) || null,

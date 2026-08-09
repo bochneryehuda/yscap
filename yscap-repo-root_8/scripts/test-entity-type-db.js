@@ -275,14 +275,14 @@ const slotOf = async (c, llcId, code) => (await c.query(
 
     /* ───────────── F. the condition wording ───────────── */
     console.log('\nF. the condition lists say entity, not LLC');
-    /* db/507 IS RUN HERE, INSIDE THE TRANSACTION, rather than trusting whatever
+    /* db/510 IS RUN HERE, INSIDE THE TRANSACTION, rather than trusting whatever
        state the database happens to be in. Three earlier migrations (db/012,
        db/033, db/057) re-assert this condition's old "LLC" wording on every
-       boot and db/507 is what re-asserts the new wording over them — so what
+       boot and db/510 is what re-asserts the new wording over them — so what
        must be proven is that 507 CONVERGES from any of those, not that some
        other suite happened to leave the row tidy. Re-running it also proves it
        is idempotent, and the rollback leaves nothing behind. */
-    const sqlPath = require('path').join(__dirname, '..', 'db', '507_entity_condition_wording.sql');
+    const sqlPath = require('path').join(__dirname, '..', 'db', '510_entity_condition_wording.sql');
     const sql507 = require('fs').readFileSync(sqlPath, 'utf8');
     // Start from the worst case: the wording db/057 writes on every boot.
     await c.query(

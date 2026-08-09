@@ -23,7 +23,7 @@
  *
  * SCOPED TO THE ENTITIES THAT CAN DISAGREE. An `llc` entity's correct wording IS
  * the template's, so db/033 doing its thing to those rows is a no-op and they are
- * never selected — which keeps this pass tiny for the whole back book (db/506
+ * never selected — which keeps this pass tiny for the whole back book (db/509
  * stamped every existing entity `llc`) and means it does real work only for the
  * handful of corporations, partnerships and trusts that exist.
  *

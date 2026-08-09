@@ -681,7 +681,7 @@ async function getClosingPrepData(applicationId) {
     hasEntity: !!a.llc_id,
     entityId: a.llc_id || null,
     /* WHAT KIND OF COMPANY IT IS, and whether anybody actually SAID SO
-       (owner-directed 2026-08-09). db/506 stamped the whole back book `llc`
+       (owner-directed 2026-08-09). db/509 stamped the whole back book `llc`
        without a person choosing it, so `entityTypeConfirmed` is the difference
        between a fact and our assumption — and the closing desk is the last place
        that difference is cheap to fix, because a corporation signs its documents
@@ -839,7 +839,7 @@ function dealMeta(data) {
   /* WHAT KIND OF COMPANY, stated ONLY when somebody actually chose it
      (owner-directed 2026-08-09). The type decides which governing document
      counsel drafts around — bylaws for a corporation, an operating agreement
-     for an LLC — so it is worth saying. But db/506 stamped the whole back book
+     for an LLC — so it is worth saying. But db/509 stamped the whole back book
      `llc` without a person choosing it, and telling outside counsel "limited
      liability company" about a corporation because of our own back-fill is
      exactly the kind of confident wrong answer this file exists to avoid.

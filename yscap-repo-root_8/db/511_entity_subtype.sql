@@ -1,4 +1,4 @@
--- 508_entity_subtype.sql — A PARTNERSHIP AND A TRUST ARE NOT ONE THING EACH
+-- 511_entity_subtype.sql — A PARTNERSHIP AND A TRUST ARE NOT ONE THING EACH
 -- (owner-directed 2026-08-09: "do research what else DocLab needs for
 -- partnership and trust, let's set up that tables as well").
 --
@@ -12,7 +12,7 @@
 --     membership_interest_percentage  |  number_of_shares + certificate_number
 --     signatory_title
 --
--- and db/506 already wired all of them. So nothing new is needed to SEND a
+-- and db/509 already wired all of them. So nothing new is needed to SEND a
 -- partnership or a trust to DocLab.
 --
 -- THE REAL GAP IS ON OUR SIDE, AND IT IS A DEAD END. `llc.missingForVerification`
@@ -43,7 +43,7 @@
 -- "nobody has said", and the requirements RELAX rather than tighten on an
 -- unstated sub-kind — so no entity that could be verified yesterday becomes
 -- unverifiable today. Only a partnership or a trust can carry a value at all,
--- and db/506 stamped the whole back book `llc`.
+-- and db/509 stamped the whole back book `llc`.
 
 ALTER TABLE llcs ADD COLUMN IF NOT EXISTS entity_subtype text;
 
@@ -64,6 +64,6 @@ END $$;
 
 -- A partnership or a trust whose sub-kind is not yet stated is what the closing
 -- desk is nudged about, and what the entity screens ask for. Tiny by definition
--- (db/506 made the whole back book an LLC), so a plain partial index is enough.
+-- (db/509 made the whole back book an LLC), so a plain partial index is enough.
 CREATE INDEX IF NOT EXISTS idx_llcs_entity_subtype ON llcs (entity_type, entity_subtype)
   WHERE entity_type IN ('partnership','trust');

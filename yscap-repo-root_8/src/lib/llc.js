@@ -633,7 +633,7 @@ async function applyEntitySlotWording(llcId, client = db) {
       const okBorrower = Array.from(new Set(ours.map((w) => w.borrowerLabel)));
       const okHints = Array.from(new Set(ours.map((w) => w.hint).filter(Boolean)));
       /* THE TEMPLATE'S OWN CURRENT WORDING COUNTS AS OURS TO REPLACE, and that
-         is not a nicety: a fresh slot INHERITS the template's label, which db/506
+         is not a nicety: a fresh slot INHERITS the template's label, which db/509
          deliberately made type-neutral ("Governing document (operating agreement
          / bylaws)"). Without `OR ci.label = t.label` the guard would refuse to
          touch a brand-new corporation's slot — the exact row this function
@@ -708,7 +708,7 @@ async function applyEntitySlotWording(llcId, client = db) {
  * RECORD WHAT KIND OF COMPANY THIS IS, WHEN A HUMAN ACTUALLY SAYS SO.
  *
  * Owner-directed 2026-08-09: *"everything created till now should automatically
- * be default LLC, only going forward this change to go in effect."* db/506 did
+ * be default LLC, only going forward this change to go in effect."* db/509 did
  * that — every entity on file is stamped `llc`, `entity_type_confirmed = false`
  * — and this is the other half: the moment a person picks a type on any door,
  * the ASSUMPTION becomes a STATEMENT.

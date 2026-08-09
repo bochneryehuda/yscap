@@ -53,7 +53,7 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
   const choose = (l) => {
     setName(l.llc_name); setOpen(false); setPicked(true);
     /* An entity they already have keeps the type it was set up with — never
-       re-asked. But only a type somebody CONFIRMED travels: db/494 stamped the
+       re-asked. But only a type somebody CONFIRMED travels: db/509 stamped the
        whole back book as an LLC with nobody choosing, and carrying that
        assumption out of the picker would let simply SELECTING an old entity
        record it as a human's answer. An unconfirmed one carries nothing, and the

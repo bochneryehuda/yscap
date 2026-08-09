@@ -26,7 +26,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  * THE BACK BOOK IS LLC, AND THAT IS A DELIBERATE FICTION WE RECORD AS SUCH.
  * Owner-directed: *"everything created till now should automatically be default
- * LLC, only going forward this change to go in effect."* So db/506 stamps every
+ * LLC, only going forward this change to go in effect."* So db/509 stamps every
  * existing entity `llc` — but it also stamps `entity_type_confirmed = false`,
  * because "we assumed" and "somebody chose" are different facts and only one of
  * them is safe to print on a mortgage. Anything drafting real documents should
@@ -236,7 +236,7 @@ function normalizeKey(v) {
  * on a blank (so every consumer does not write its own `|| 'llc'`), so asking it
  * about an empty box gives a perfectly valid 'llc' back. Reading that as an
  * answer is exactly how a form nobody filled in gets filed as an LLC that
- * somebody vouched for — which is the difference db/506 exists to keep.
+ * somebody vouched for — which is the difference db/509 exists to keep.
  */
 function isRecognized(v) {
   const raw = String(v == null ? '' : v).trim();

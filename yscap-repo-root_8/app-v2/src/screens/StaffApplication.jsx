@@ -1813,7 +1813,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     setEf({ llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
       formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
       ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct),
-      // Blank until somebody CHOSE one — db/494 stamped the back book as an LLC
+      // Blank until somebody CHOSE one — db/509 stamped the back book as an LLC
       // with nobody saying so, and pre-selecting that assumption would turn it
       // into a stated fact the first time anyone pressed Save.
       entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',

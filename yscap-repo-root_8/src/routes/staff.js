@@ -1595,7 +1595,7 @@ router.get('/applications/:id', async (req, res) => {
     `SELECT a.*, b.first_name,b.last_name,b.middle_name,b.name_suffix,b.full_name,b.name_review_needed,b.name_review_reason,b.email,b.cell_phone,b.fico,
             l.llc_name AS entity_name, l.is_verified AS entity_verified,
             -- WHAT KIND OF COMPANY the file vests in, and whether anybody actually
-            -- chose it (db/506 stamped the whole back book as an LLC with nobody
+            -- chose it (db/509 stamped the whole back book as an LLC with nobody
             -- choosing). The file screen needs both: one to word the entity section,
             -- the other to admit it is assuming rather than state a guess as a fact.
             l.entity_type, l.entity_type_confirmed, l.entity_subtype,

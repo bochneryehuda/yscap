@@ -118,7 +118,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
         ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct),
         // WHAT KIND OF COMPANY (owner-directed 2026-08-09). Blank when nobody has
-        // chosen — db/494 stamped the back book as an LLC without anybody saying
+        // chosen — db/509 stamped the back book as an LLC without anybody saying
         // so, and showing that assumption pre-selected would turn it into a fact
         // the first time somebody pressed Save without looking at it.
         entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',

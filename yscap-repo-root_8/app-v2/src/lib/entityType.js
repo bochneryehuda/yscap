@@ -132,7 +132,7 @@ export function titlesFor(type) {
 }
 
 /**
- * True when nobody has actually CHOSEN this entity's type — db/506 stamped the
+ * True when nobody has actually CHOSEN this entity's type — db/509 stamped the
  * whole back book `llc` so the loans already in flight kept working, and
  * "we assumed" is a different fact from "a person said so". A screen about to
  * act on the type should say which it is holding rather than state a guess.

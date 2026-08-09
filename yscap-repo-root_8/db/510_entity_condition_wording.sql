@@ -1,4 +1,4 @@
--- 507_entity_condition_wording.sql — THE CONDITION IS ABOUT AN ENTITY, NOT AN LLC
+-- 510_entity_condition_wording.sql — THE CONDITION IS ABOUT AN ENTITY, NOT AN LLC
 -- (owner-directed 2026-08-09: "everywhere I shouldn't say LLC, say entity …
 -- we have three tables for conditions — all conditions, on the right, conditions
 -- that we have — LLC, that also should be changed to be called entity").
@@ -74,7 +74,7 @@ UPDATE checklist_items ci
    AND ci.borrower_label IS DISTINCT FROM t.borrower_label;
 
 -- ───────────────── the entity-documents bank-account condition ─────────────────
--- `rtl_cond_entity_docs` was already type-neutral in its LABEL and db/506 made
+-- `rtl_cond_entity_docs` was already type-neutral in its LABEL and db/509 made
 -- its HINTS type-neutral too. Nothing to do here — recorded so the next person
 -- does not go looking for it. db/400 re-asserts that label every boot, which is
 -- why it is left alone (the trap db/191/db/398 documents).

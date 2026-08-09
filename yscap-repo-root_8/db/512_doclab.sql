@@ -1,4 +1,4 @@
--- 509_doclab.sql — DOCLAB (Private Lender Law) loan-document drafting. FOUNDATIONS.
+-- 512_doclab.sql — DOCLAB (Private Lender Law) loan-document drafting. FOUNDATIONS.
 --
 -- DocLab drafts the loan documents. It is the API form of a step this repo already
 -- automates by email: `lib/closing-prep.js` sends the closing package to
