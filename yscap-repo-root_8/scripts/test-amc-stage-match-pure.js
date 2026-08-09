@@ -106,16 +106,77 @@ for (const n of [1, 2, 3]) {
             // A filename identifies a file when no SIBLING carries the identical string.
             const nameIdentifies = (i) => files.filter(
               (f) => f.fileName === files[i].fileName).length === 1;
-            // A REWRITE THAT LANDS ON A SIBLING'S REAL NAME IS NOT A TRUTHFUL LABEL.
-            // The vendor meant this file, but the string it produced is byte-for-byte
-            // what another of our files is actually called — taken at face value it
-            // points there, and nothing can see past that. Undefendable, like a lying
-            // part number with no filename to check it against.
-            const rewriteCollides = fnMode === 'sanitized' && order.some((truth) =>
-              files.some((f, j) => j !== truth && f.fileName === rewrite(files[truth].fileName)));
-            const truthful = !rewriteCollides
-              && ((nameMode === 'orig' && fnMode !== 'other')
-                || (echoed && files.every((_, i) => nameIdentifies(i))));
+            // WHAT THE EMITTED LABELS POINT AT — the honest form of this question, and
+            // the third one tried. Judging it by MODE ("a sanitized echo is truthful")
+            // was wrong in both directions: it excused a batch whose part numbers were
+            // perfectly true because some rewrite happened to collide elsewhere, and it
+            // demanded a match where every label pointed at the wrong file.
+            //
+            // So ask it directly, of each answer: does either label, READ AT FACE VALUE,
+            // point at the file this answer is really about? If one does, the matcher had
+            // something to go on and must not mis-file. If NEITHER does, every piece of
+            // evidence in existence points somewhere else and no rule can do better —
+            // demanding otherwise would be demanding a guess.
+            //
+            // `bestFit` is written from the files, not borrowed from the module under
+            // test: the exact spelling beats a match of meaning, and a tie fits nothing
+            // in particular. An oracle that called the matcher's own helper would agree
+            // with a bug by construction, which is how three of these shipped.
+            const norm = (v) => String(v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+            // A label INDICATES a file only when it fits that file and no other, at any
+            // strength. "CONTRACT.PDF" against a loan carrying both "CONTRACT.PDF" and
+            // "contract.pdf" fits one exactly and the other in meaning — and whether it
+            // is the first file's real name or the second's, upper-cased on the way in,
+            // is not knowable. Two files fit; it indicates neither.
+            const bestFit = (fn) => {
+              let hit = -1, fits = 0;
+              for (let j = 0; j < files.length; j++) {
+                if (files[j].fileName === fn || norm(files[j].fileName) === norm(fn)) { fits++; hit = j; }
+              }
+              return fits === 1 ? hit : -1;
+            };
+            // …and the labels must not CONTRADICT each other. A true part number beside a
+            // filename naming a different file is byte-for-byte indistinguishable from a
+            // renumbered part beside a TRUE filename — one of the two is lying and
+            // nothing says which, so a mis-file there is not a defect. What is required
+            // is that no label points away from the truth, and that at least one points
+            // at it.
+            const nameSays = (a) => (/^part\d+$/.test(String(a.name || '')) ? Number(String(a.name).slice(4)) : -1);
+            const fnSays = (a) => (a.fileName == null ? -1 : bestFit(a.fileName));
+            // HOW CLOSELY a label fits a file: its exact spelling (2) beats a match of
+            // meaning (1) beats nothing (0).
+            const fitW = (fn, j) => (files[j].fileName === fn ? 2
+              : (norm(files[j].fileName) === norm(fn) ? 1 : 0));
+            // Does this label point AWAY from file i? It does when some OTHER file's
+            // name fits it more closely than file i's name does.
+            //
+            // A TIE AMONG THE OTHERS STILL POINTS AWAY, and getting that backwards is
+            // what left this sweep demanding a match the matcher was right to refuse.
+            // Three files named CONTRACT.PDF / contract.pdf / CONTRACT.PDF, and an
+            // answer for the middle one carrying "CONTRACT.PDF" — the vendor's
+            // upper-cased rewrite of its own name. That string is the EXACT spelling of
+            // two other files and merely the meaning of this one. It cannot say which of
+            // the two, so it identifies nobody; but it plainly fits them better than it
+            // fits this one, and reading "leans at no single file" as "leans nowhere"
+            // turned that into permission to trust the part number beside it. One of the
+            // two readings — a rewrite of the middle file's name, or the first file's
+            // real name — files the document on the wrong loan, and nothing separates
+            // them. Refusing is correct; the demand was wrong.
+            const pointsAway = (fn, i) => {
+              const mine = fitW(fn, i);
+              for (let j = 0; j < files.length; j++) {
+                if (j !== i && fitW(fn, j) > mine) return true;
+              }
+              return false;
+            };
+            const pointsAtTruth = (a) => {
+              const nm = nameSays(a);
+              const fn = fnSays(a);
+              if (nm >= 0 && nm !== a.truth) return false;   // its number names another file
+              if (fn >= 0 && fn !== a.truth) return false;   // its name names another file
+              return nm === a.truth || fn === a.truth;       // and something names this one
+            };
+            const truthful = answers.every(pointsAtTruth);
 
             // (1) NEVER WRONG — held wherever the evidence could have told us.
             if (truthful) {
@@ -143,16 +204,24 @@ for (const n of [1, 2, 3]) {
             for (let i = 0; i < n; i++) {
               const mine = answers.find((a) => a.truth === i);
               if (!mine || got[i]) continue;
-              const uniqueName = echoed && !rewriteCollides
-                && files.filter((f) => f.fileName === files[i].fileName).length === 1;
-              // A part number is only IDENTIFYING while nothing contradicts it. When the
-              // echoed filename means one of our OTHER files the two labels disagree,
-              // either could be the lie, and refusing is the correct answer — demanding
-              // a match there would be demanding a guess.
-              const trustedPart = nameMode === 'orig' && keep.length === n
-                && fnMode !== 'other' && !rewriteCollides;
-              // eslint-disable-line -- kept explicit: a contradicted part number is not
-              // identifying, for the same reason `truthful` excludes it above.
+              // IDENTIFIABLE means this file's answer carries a name that picks out
+              // THIS file and no other — the same question `bestFit` answers.
+              const uniqueName = mine.fileName != null && bestFit(mine.fileName) === i;
+              // A part number is only IDENTIFYING while nothing contradicts it: the
+              // batch is complete (so the numbering is still ours) and this answer's own
+              // filename does not point away from this file. When the two labels
+              // disagree either could be the lie, and refusing is the correct answer —
+              // demanding a match there would be demanding a guess.
+              //
+              // RELAXING THIS DEMAND IS SAFE IN THE ONE DIRECTION THAT MATTERS, and that
+              // is why it is not the mistake the eleventh audit caught. This counter only
+              // ever asserts the matcher should have placed MORE; the NEVER-WRONG
+              // assertion above is a separate test over a separate condition and is
+              // untouched. Weakening `truthful` to excuse a mis-file — which is what was
+              // done, and rightly called out — switches OFF the only assertion that
+              // protects a document. Weakening this one asks for less optimism.
+              const trustedPart = mine.name === 'part' + i && keep.length === n
+                && (mine.fileName == null || !pointsAway(mine.fileName, i));
               if (uniqueName || trustedPart) {
                 identifiableMissed++;
                 if (missedShapes.length < 5) {
@@ -215,20 +284,43 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
      'a vendor-rewritten filename does not overrule the part number we assigned');
   ok(got[1] && got[1].retrievalUrl === 'URL-contract', 'and the untouched one still matches');
 }
-// THE SWAP THE TENTH AUDIT FOUND — comparing ONLY by meaning caused it. This loan has
-// two real documents whose names differ only in case (the purchase contract and the
-// assignment), which normalizes to one name: both files stop discriminating, the veto
-// that would have placed them cannot fire, and a reordered batch swaps them. The exact
-// spelling settles it, so the exact name is the evidence wherever it can be.
+// THE SWAP THE TENTH AUDIT FOUND, and the ELEVENTH audit's correction to the fix for it.
+// This loan carries two real documents whose names differ only in case — the purchase
+// contract and the assignment — so a normalized comparison collapses them into one name.
+// The tenth audit found that reading them by meaning alone SWAPPED them. The tenth fix
+// was to let the exact spelling settle it, and the eleventh audit found that the fix
+// re-created the same swap one layer sideways: with these two files, "contract.pdf" is
+// the exact spelling of one AND a plausible lower-cased rewrite of the other, and a
+// vendor rewriting names on the way in is ordinary. Nothing separates those readings.
+//
+// So a batch whose PART NUMBERS have been renumbered is refused here, deliberately.
+// Refusing costs a retry, which is always available; the swap records both documents as
+// delivered, greys them out in the picker, and makes the one nobody received impossible
+// to send again. The property being asserted is the one that matters, and it is the
+// tenth audit's actual finding: neither file may ever be given the other's link.
 {
   const files = F('Contract.pdf', 'contract.pdf');
   const got = matchStaged(files, [
     { name: 'part0', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
     { name: 'part1', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
   ]);
+  ok(!got[0] || got[0].retrievalUrl !== 'ASSIGNMENT',
+     'a case-different sibling never receives the other document’s link');
+  ok(!got[1] || got[1].retrievalUrl !== 'PURCHASE', 'and the swap cannot happen the other way');
+  ok(got[0] === null && got[1] === null,
+     'and where the exact spelling is also a plausible rewrite of its sibling, nothing is guessed');
+}
+// The SAME two files with TRUTHFUL part numbers still place — the case above costs a
+// retry only when the vendor renumbered, not on an ordinary answer.
+{
+  const files = F('Contract.pdf', 'contract.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
+    { name: 'part1', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
+  ]);
   ok(got[0] && got[0].retrievalUrl === 'PURCHASE',
-     'two files whose names differ only in case are still told apart');
-  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and neither gets the other’s link');
+     'two files whose names differ only in case are still told apart when the numbering holds');
+  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and each keeps its own link');
 }
 // THE SWAP the ninth audit found, and the reason filenames are compared by MEANING.
 // The vendor reordered the parts, numbered them by their own position, and rewrote the

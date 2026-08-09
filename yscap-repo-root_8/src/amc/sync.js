@@ -25,6 +25,7 @@ const db = require('../db');
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
 const cdg = require('./cdg');
+const { storedNackNote } = require('../lib/appraisal-messages');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
@@ -66,7 +67,7 @@ async function applyStatusResponse(dbh, order, resp) {
     // A stale api key surfaces as an auth NACK — drop it so the next call re-logs in.
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await dbh.query(`UPDATE amc_orders SET last_error=$2, last_polled_at=now(), updated_at=now() WHERE id=$1`,
-      [order.id, err.description || err.code || 'AMC status NACK']);
+      [order.id, storedNackNote(err, 'a status check on the order')]);
     return { error: err };
   }
   const st = cdg.parseStatus(resp);
@@ -119,7 +120,7 @@ async function ingestDocuments(dbh, order, deps = {}) {
   const err = cdg.parseError(resp);
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
-    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, err.description || err.code]);
+    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, storedNackNote(err, 'a request for the documents')]);
     return { ok: false, error: err };
   }
 

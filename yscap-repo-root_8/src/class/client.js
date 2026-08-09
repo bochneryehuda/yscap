@@ -312,6 +312,35 @@ function maskSafe(v) {
   return out;
 }
 
+// THE WHOLE CATALOGUE, ONCE — the shape a caller with SEVERAL ids to name needs.
+//
+// `productTitle` answers null both when the fetch failed and when the id is simply not
+// in the catalogue, and those two are opposite instructions: one means "stop, the vendor
+// is unreachable and every further lookup is another 60-second timeout", the other means
+// "that one id is unknown, carry on". A caller naming a LIST cannot tell them apart from
+// a null, and the one that tried inferred it from the first row — so a single retired
+// product id on the newest order stopped every other order on that file from ever being
+// named. This returns the map, or null when the catalogue could not be read, which is
+// the distinction stated rather than guessed at.
+//
+// NEVER throws and never blocks an order: a number with no name is still a placeable
+// order, it just reads worse.
+async function productTitles() {
+  try {
+    const now = Date.now();
+    if (!_productCache || now - _productCache.at > PRODUCT_CACHE_MS) {
+      const r = await get('/products', { limit: 500 }, 'products');
+      const list = (r && (r.products || r.data)) || [];
+      const byId = new Map();
+      for (const p of Array.isArray(list) ? list : []) {
+        if (p && p.id != null) byId.set(String(p.id), text(p.title || p.name || p.productName));
+      }
+      _productCache = { at: now, byId };
+    }
+    return _productCache.byId;
+  } catch (_) { return null; }
+}
+
 // ---- the documented surface, each a thin named call -----------------------
 const get  = (path, query, label) => request('GET', path, { query, label });
 const post = (path, body, opts = {}) => request('POST', path, { body, write: true, ...opts });
@@ -320,27 +349,20 @@ module.exports = {
   configured, hosts, invalidateToken, getAccessToken, request, get, post,
   // READS (master switch only)
   products: (query) => get('/products', query, 'products'),
-  // The chosen form's NAME, not just its number. Their catalogue is small and
-  // changes rarely, so it is cached briefly: the order screen asks for this on
-  // every preview, and re-fetching a price list per keystroke would be absurd.
-  // NEVER throws and never blocks an order — a number with no name is still a
-  // placeable order, it just reads worse.
+  // Their catalogue is small and changes rarely, so it is cached briefly: the order
+  // screen asks for a name on every preview, and re-fetching a price list per keystroke
+  // would be absurd. The whole map, or null when it could not be read — see above.
+  productTitles,
+  // The chosen form's NAME, not just its number — the single-id form, and deliberately
+  // a thin wrapper over the map above so the cache and its expiry live in ONE place.
   productTitle: async (id) => {
     const key = String(id == null ? '' : id).trim();
     if (!key) return null;
-    try {
-      const now = Date.now();
-      if (!_productCache || now - _productCache.at > PRODUCT_CACHE_MS) {
-        const r = await get('/products', { limit: 500 }, 'products');
-        const list = (r && (r.products || r.data)) || [];
-        const byId = new Map();
-        for (const p of Array.isArray(list) ? list : []) {
-          if (p && p.id != null) byId.set(String(p.id), text(p.title || p.name || p.productName));
-        }
-        _productCache = { at: now, byId };
-      }
-      return _productCache.byId.get(key) || null;
-    } catch (_) { return null; }
+    // NOT `this.productTitles()` — a caller that destructures (`const { productTitle }
+    // = require(...)`) would lose the receiver and throw. The hoisted function is the
+    // one definition either way.
+    const byId = await productTitles();
+    return (byId && byId.get(key)) || null;
   },
   // READING AN ORDER IS VERSION-SPECIFIC. `GET /orders/{id}` and `GET /v2/orders/{id}`
   // describe the SAME order with different field names (propertyTypeEnum vs

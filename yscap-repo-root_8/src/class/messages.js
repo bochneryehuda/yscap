@@ -38,7 +38,7 @@ const client = require('./client');
 const reasons = require('./revision-reasons');
 // The SAME wording both desks use — see src/lib/appraisal-messages.js. Four hand-typed
 // copies lived here, and one of them told a READ path that nothing had been sent.
-const { sendFailMessage } = require('../lib/appraisal-messages');
+const { sendFailMessage, storedFailNote, TEST_MODE_PREFIX } = require('../lib/appraisal-messages');
 
 const text = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
 
@@ -76,7 +76,7 @@ async function note(orderRowId, content, { staffId } = {}) {
     const out = await client.addNote(order.class_order_id, { content: body });
     if (out && out.__dryrun) {
       await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
-        [rowId, 'TEST MODE — written here, not sent to Class.']);
+        [rowId, TEST_MODE_PREFIX + 'written here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId };
     }
     await db.query('UPDATE class_notes SET sent_at = now(), send_error = NULL, class_note_id = $2 WHERE id = $1',
@@ -84,7 +84,7 @@ async function note(orderRowId, content, { staffId } = {}) {
     return { ok: true, id: rowId, noteId: out && out.noteId };
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
+      [rowId, storedFailNote(e)]).catch(() => {});
     return { ok: false, error: e.code || 'send_failed', id: rowId, message: sendFailMessage(e, 'Your message') };
   }
 }
@@ -198,7 +198,7 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
     const out = await client.requestRevision(order.class_order_id, { reasons: clean });
     if (out && out.__dryrun) {
       await db.query('UPDATE class_revisions SET status = $2, last_error = $3 WHERE id = $1',
-        [rowId, 'requested', 'TEST MODE — recorded here, not sent to Class.']);
+        [rowId, 'requested', TEST_MODE_PREFIX + 'recorded here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId, kind: recordedKind, reasons: clean };
     }
     await db.query(
@@ -208,7 +208,7 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
     return { ok: true, id: rowId, kind: recordedKind, reasons: clean, transactionId: out && out.transactionId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
+      [rowId, storedFailNote(e)]).catch(() => {});
     return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }
@@ -235,7 +235,7 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
       // badged a live cancellation request at Class that was never sent. Marked the
       // same way requestRevision marks its own dry run — the two must read alike.
       await db.query(`UPDATE class_revisions SET last_error=$2 WHERE id=$1`,
-        [rowId, 'TEST MODE — recorded here, not sent to Class.']).catch(() => {});
+        [rowId, TEST_MODE_PREFIX + 'recorded here, not sent to Class.']).catch(() => {});
       return { ok: true, dryrun: true, id: rowId };
     }
     await db.query(`UPDATE class_revisions SET status='sent', sent_at=now(), vendor_response=$2::jsonb WHERE id=$1`,
@@ -245,7 +245,7 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
     return { ok: true, id: rowId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status='error', last_error=$2 WHERE id=$1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
+      [rowId, storedFailNote(e)]).catch(() => {});
     return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }

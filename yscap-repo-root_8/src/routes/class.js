@@ -306,30 +306,27 @@ const { bigintId } = require('../lib/bigint-id');
 async function nameClassOrders(rows) {
   const need = rows.filter((o) => o && !o.product_title && o.product_id != null);
   if (!need.length || !client.configured().enabled) return rows;
-  // ONE ATTEMPT FOR THE WHOLE LIST, however many rows need naming.
+  // ONE FETCH FOR THE WHOLE LIST, then a map read per row — the shape the AMC twin
+  // already had, and the reason this is not a loop of lookups.
   //
-  // `productTitle` caches the catalogue — but only on SUCCESS: the cache is assigned
-  // after the fetch returns, so a failure is never remembered and the next id re-runs
-  // the whole thing. And `client.request` retries three times with backoff at a
-  // 60-second timeout, so a loop over five unnamed orders is fifteen minutes of a
-  // BLOCKED orders read — on a route that fires on mount and after every note, sync,
+  // The catalogue is cached only on SUCCESS (the cache is assigned after the fetch
+  // returns), and `client.request` retries three times with backoff at a 60-second
+  // timeout — so a loop that asks per id turns a vendor outage into minutes of a
+  // BLOCKED orders read, on a route that fires on mount and after every note, sync,
   // revision and placed order. Measured at a 20 ms timeout it was already linear:
   // 1 row 1.7s, 3 rows 5.7s, 5 rows 8.6s.
   //
-  // So the first id decides for all of them. If it answers, the catalogue is warm and
-  // every remaining lookup is a map read; if it does not, we stop — a number with no
-  // name still reads, and naming is a nicety that may never hold up a screen.
-  let warm = true;
+  // The version this replaces asked per id and stopped everything if the FIRST id came
+  // back null — which conflated "the vendor is unreachable" with "that one id is not in
+  // the catalogue". They are not the same: one retired product on the newest order left
+  // every other order on the file showing a bare number, on every read, forever.
+  // `productTitles` answers null only for the first of those, so the question is
+  // asked once and answered honestly.
+  const byId = await client.productTitles();
+  if (!byId) return rows;   // catalogue unreachable — a number with no name still reads
   for (const o of need) {
-    if (!warm) break;
-    try {
-      const nm = await client.productTitle(o.product_id);
-      // `productTitle` swallows its own errors and answers null both when the fetch
-      // failed and when the id is simply not in the catalogue. Only the FIRST null is
-      // treated as "the catalogue is not reachable"; by then a success has warmed it,
-      // so a later null is genuinely an unknown id and costs nothing.
-      if (nm) o.product_title = nm; else if (o === need[0]) warm = false;
-    } catch (_) { warm = false; }
+    const nm = byId.get(String(o.product_id));
+    if (nm) o.product_title = nm;
   }
   return rows;
 }

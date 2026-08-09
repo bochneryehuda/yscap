@@ -34,9 +34,12 @@ const FILES = [
   'src/amc/revisions.js', 'src/amc/rov.js', 'src/amc/session.js',
   'src/class/order-service.js', 'src/class/messages.js', 'src/class/callbacks.js',
   'src/routes/amc.js', 'src/routes/class.js',
+  // The shared wording itself. It was NOT on this list, so the one module whose entire
+  // job is what a person reads was the one module nothing checked.
+  'src/lib/appraisal-messages.js',
 ].filter((f) => fs.existsSync(path.join(ROOT, f)));
 
-ok(FILES.length >= 9, 'both desks are actually being read (a shrunken list would pass vacuously)');
+ok(FILES.length >= 10, 'both desks are actually being read (a shrunken list would pass vacuously)');
 
 // ---------------------------------------------------------------------------
 // (1) A REFUSAL CARRIES PLAIN WORDS, NOT ONLY A CODE.
@@ -67,6 +70,19 @@ function objectAt(src, openIdx) {
   }
   return null;   // unbalanced — report nothing rather than a runaway slice
 }
+
+// WHAT COUNTS AS "the exception's own text". `String(e)`, `e.message`, `e.stack`,
+// `e.body` — the transport's words, written for us.
+//
+// `err.description` is DELIBERATELY NOT on this list and must not be: that is the
+// APPRAISAL COMPANY's own refusal ("Loan number already exists"), which tells the person
+// exactly what to do, and `nackMessage` exists to frame and bound it. So the test is
+// `String(` followed by the exception ITSELF — closed, combined with `&&`/`||`, or
+// reduced to one of its transport fields — never `String(err.<anything>)`, which was the
+// first cut and flagged all three of the shared wording helpers.
+const RAW_EXPR = /String\(\s*\(?\s*e(?:rr)?\s*(?:\)|&&|\|\||\.(?:message|stack|body)\b)/;
+const RAW_FIELD = /\be(?:rr)?\.(?:message|stack|body)\b/;
+const looksRaw = (expr) => RAW_EXPR.test(expr) || RAW_FIELD.test(expr);
 
 const missingWords = [];
 const rawText = [];
@@ -125,9 +141,36 @@ for (const rel of FILES) {
   const re3 = /message\s*:\s*([^,\n}]+)/g;
   while ((m = re3.exec(src))) {
     const val = m[1];
-    if (/String\(\s*e(?:rr)?\b/.test(val) || /\be(?:rr)?\.message\b/.test(val)
-        || /\be\.stack\b/.test(val) || /\be\.body\b/.test(val)) {
-      rawText.push(`${rel}:${lineOf(m.index)} — ${val.trim()}`);
+    if (looksRaw(val)) rawText.push(`${rel}:${lineOf(m.index)} — ${val.trim()}`);
+  }
+
+  // ---- (2b) …AND NEITHER DOES A SENTENCE THAT IS RETURNED DIRECTLY.
+  // `session.signInMessage` builds the desk's wording and RETURNS it as a string — no
+  // `message:` key anywhere — so every check above walked straight past it while it
+  // ended with `' (' + raw.slice(0, 160) + ')'`, putting "AMC DoLogin failed: HTTP 502"
+  // on the appraisal desk. A wording helper is exactly where this is most likely to
+  // hide, because it is the one place holding the exception ON PURPOSE.
+  //
+  // The exception arrives under a local name (`const raw = String(e.message || '')`),
+  // so the assignment is traced first — only the simple one-line form, which is the
+  // shape these helpers use, and the limit is stated rather than pretended away.
+  const tainted = new Set();
+  const re4 = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g;
+  while ((m = re4.exec(src))) {
+    const val = m[2];
+    if (looksRaw(val)) tainted.add(m[1]);
+  }
+  // …then every `return` whose expression BUILDS a sentence (it contains a quoted
+  // string) and also mentions one of those names, or the exception itself.
+  const re5 = /\breturn\s+([^;]*);/g;
+  while ((m = re5.exec(src))) {
+    const expr = m[1];
+    if (!/['"`]/.test(expr)) continue;                 // not a sentence being built
+    const names = [...tainted].filter((nm) => new RegExp(`\\b${nm}\\b`).test(expr));
+    const direct = looksRaw(expr);
+    if (names.length || direct) {
+      rawText.push(`${rel}:${lineOf(m.index)} — returned sentence built from `
+        + (names.length ? names.join(', ') : 'the exception') );
     }
   }
 }
@@ -157,13 +200,24 @@ if (shouty.length) console.error('  jargon: ' + shouty.join('\n    '));
 ok(shouty.length === 0, 'and every one of them reads as ordinary English');
 
 // A guard on the guard: the scan must be able to SEE a bad refusal, or it proves
-// nothing. Feed it the two shapes this file exists to catch.
+// nothing. Feed it every shape this file exists to catch — and, just as important, the
+// shapes it must NOT catch, because a check that flags the vendor's own refusal would
+// be pushing the wording back towards saying nothing.
 {
   const bad = "return { ok: false, error: 'nope' };";
   const idx = bad.indexOf('{');
   ok(!/\bmessage\s*:/.test(objectAt(bad, idx)), 'the scan recognises a refusal with no plain words');
-  ok(/String\(\s*e\b/.test("message: String(e.message || e)"),
+  ok(looksRaw('message: String(e.message || e)'),
      'and recognises the exception’s own text being pasted in');
+  ok(looksRaw("const raw = String((e && e.message) || '')"),
+     'including where it is parked in a local first');
+  ok(looksRaw('String(e)') && looksRaw('String(err)') && looksRaw('e.stack') && looksRaw('err.body'),
+     'in each of the forms the transport hands it over in');
+  // THE OTHER DIRECTION. `err.description` is the appraisal company's own words and is
+  // meant to be shown; `e.code` is a machine code that a helper legitimately branches
+  // on. Flagging either would make this check argue against the rule it enforces.
+  ok(!looksRaw('String(err.description).trim()'), 'and never mistakes the vendor’s own refusal for it');
+  ok(!looksRaw('e && e.code ? String(e.code) : \'\''), 'nor the code a helper branches on');
 }
 
 console.log(`\n[test-appraisal-refusals-speak-pure] ${pass} passed, ${fail} failed`);

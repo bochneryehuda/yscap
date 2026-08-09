@@ -273,19 +273,36 @@ const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleStr
 // on the very screen this branch first put a property-access person on.
 function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 
-// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT.
-// `class_notes.send_error` and `class_revisions.last_error` hold whatever the transport
-// threw, truncated — "Class addNote failed: HTTP 502", "connect ECONNREFUSED 10.0.0.4:443",
-// "class: the UAD version of this order is unknown…". Rendering that put the raw text on
-// the owner's screen PERMANENTLY (it is persisted on the row), directly under a banner
-// that had just said the same thing in plain words. The row says what happened and what
-// it means for the message; the text itself stays in the database for us.
+// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT — and the deciding is now the
+// SERVER'S, at the moment of writing (`src/lib/appraisal-messages.storedFailNote`), so
+// the column holds a plain sentence and this only chooses a TONE. Two things were wrong
+// with translating it here instead, and both put a false statement on the screen:
+//
+//   • TEST MODE. On the dry-run path the server deliberately writes
+//     "TEST MODE — recorded here, not sent to Class." to mark a row that is fine. This
+//     rewrote it to "not delivered — it will be retried" IN RED, so the one marker that
+//     exists to say "this is a rehearsal" was replaced by an alarm about a real failure.
+//   • "IT WILL BE RETRIED" was never true. Nothing retries these rows — a person presses
+//     Send again — and a message they think is queued is a message nobody sends. It also
+//     said the same thing about a refusal Class had ANSWERED, where sending the identical
+//     text again cannot work, so it sent people to wait for something that never happens.
+//
+// Legacy rows still hold the raw exception text ("Class addNote failed: HTTP 502",
+// "connect ECONNREFUSED 10.0.0.4:443"). Those are recognised by their own shape and
+// translated rather than shown, which is what this function was originally for.
+const RAW_EXCEPTION_RE = /HTTP \d{3}|ECONN\w*|ETIMEDOUT|fetch failed|failed:|[A-Z][A-Z0-9]*_[A-Z0-9_]+/;
+
 function failNote(stored) {
   if (!stored) return null;
-  const t = String(stored);
-  // The one distinction a person can act on: a switch of ours versus their end.
-  if (/switched off|disabled/i.test(t)) return 'not delivered — the connection is switched off';
-  return 'not delivered — it will be retried';
+  const t = String(stored).trim();
+  if (!t) return null;
+  if (/^TEST MODE\b/.test(t)) return { text: 'test mode — recorded here, not sent to Class', bad: false };
+  // A sentence the server wrote: show it as it is. It already names the state and the
+  // next step, and re-deciding either here would be a second place for them to live.
+  if (!RAW_EXCEPTION_RE.test(t)) return { text: t.replace(/^Not sent — /, 'not sent — '), bad: true };
+  // Legacy raw text. The one distinction a person can act on is a switch of ours.
+  if (/switched off|disabled/i.test(t)) return { text: 'not sent — the connection is switched off', bad: true };
+  return { text: 'not sent — you can send it again', bad: true };
 }
 
 // The form's NAME on an order, or null. The server fills it in on read for orders
@@ -450,11 +467,19 @@ function OrderDetail({ appId, order, onChanged }) {
                   }}>
                     {n.content || <span style={{ color: MUTED }}>(no text)</span>}
                   </div>
-                  <div style={{ fontSize: 11, color: n.send_error ? BAD : MUTED, marginTop: 2 }}>
-                    {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
-                    {n.send_error ? ` · ${failNote(n.send_error)}` : ''}
-                    {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
-                  </div>
+                  {(() => {
+                    // A test-mode row is not a failure, so it must not be painted like
+                    // one — the tone comes from the note, never from the column merely
+                    // being filled in.
+                    const note = failNote(n.send_error);
+                    return (
+                      <div style={{ fontSize: 11, color: note && note.bad ? BAD : MUTED, marginTop: 2 }}>
+                        {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
+                        {note ? ` · ${note.text}` : ''}
+                        {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             }) : <div style={{ color: MUTED, fontSize: 13 }}>Nothing said yet.</div>}
@@ -487,7 +512,11 @@ function OrderDetail({ appId, order, onChanged }) {
               <ul style={{ margin: '4px 0 0 18px', padding: 0, color: MUTED, fontSize: 13 }}>
                 {(r.reasons || []).map((x, j) => <li key={j}>{x.reason || x.reasonType}</li>)}
               </ul>
-              {r.last_error ? <div style={{ fontSize: 12, color: BAD, marginTop: 4 }}>{failNote(r.last_error)}</div> : null}
+              {(() => {
+                const note = failNote(r.last_error);
+                if (!note) return null;
+                return <div style={{ fontSize: 12, color: note.bad ? BAD : MUTED, marginTop: 4 }}>{note.text}</div>;
+              })()}
             </div>
           )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>We haven’t asked Class for anything on this order.</div>}
         </div>

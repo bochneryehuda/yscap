@@ -27,7 +27,7 @@ const formSelect = require('./form-select');
 const orderBuild = require('./order-build');
 const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
 // One definition for both desks — never a pasted copy; see the module header.
-const { sendFailMessage, nackMessage } = require('../lib/appraisal-messages');
+const { sendFailMessage, nackMessage, storedFailNote, storedNackNote } = require('../lib/appraisal-messages');
 
 
 // ---------------------------------------------------------------------------
@@ -441,8 +441,11 @@ async function createOrder(db, appId, opts = {}) {
     // ever forces the dry run on.
     resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction, dryrun });
   } catch (e) {
+    // The ROW keeps a sentence, never the exception's own text — see
+    // lib/appraisal-messages.storedFailNote. The raw text goes to the journal below,
+    // which is where we read it.
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
-      [order.id, String(e.message || e)]);
+      [order.id, storedFailNote(e)]);
     await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: String(e.message || e), staffId: opts.staffId });
     return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'The order') };
   }
@@ -459,7 +462,7 @@ async function createOrder(db, appId, opts = {}) {
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, last_status_response = $3, updated_at = now() WHERE id = $1`,
-      [order.id, err.description || err.code || 'AMC error', JSON.stringify(resp)]);
+      [order.id, storedNackNote(err, 'the order'), JSON.stringify(resp)]);
     await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: false, error: err.description || err.code, staffId: opts.staffId });
     return { ok: false, error: 'amc_nack', message: nackMessage(err, 'the order') };
   }

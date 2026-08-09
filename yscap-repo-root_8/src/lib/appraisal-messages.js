@@ -55,4 +55,60 @@ function nackMessage(err, what) {
   return `The appraisal company would not accept ${what}: ${d.slice(0, 300)}`;
 }
 
-module.exports = { sendFailMessage, nackMessage };
+/**
+ * WHAT GETS WRITTEN ONTO THE ROW when a send fails — and it is not the same job as
+ * `sendFailMessage`, which answers the person who just pressed the button.
+ *
+ * A stored note is PERMANENT and is read later, by somebody who was not there. Both
+ * desks were storing `String(e.message)` — "Class addNote failed: HTTP 502",
+ * "connect ECONNREFUSED 10.0.0.4:443" — into a column, which put the exception's own
+ * text one render away from the screen forever. So the interpreting happens HERE, once,
+ * at the moment of writing, where the exception still is; the column then holds a
+ * sentence, and a panel showing it needs no rule of its own.
+ *
+ * THE THREE STATES ARE CHOSEN BY WHAT THE READER SHOULD DO NEXT, which is the only
+ * thing the distinction is for:
+ *   • a switch of ours is off — retrying forever will not turn it on;
+ *   • they ANSWERED and refused — sending the identical thing again cannot work, so
+ *     saying "it will be retried" sends somebody to wait for a thing that never happens;
+ *   • anything else — it did not get there, and trying again is exactly right.
+ * Nothing here ever claims an automatic retry. Nothing retries these rows: a person
+ * presses the button again, and the note says so.
+ */
+const TEST_MODE_PREFIX = 'TEST MODE — ';
+
+function storedFailNote(e) {
+  const code = e && e.code ? String(e.code) : '';
+  if (/_NOT_CONFIGURED$/.test(code)) {
+    return 'Not sent — the appraisal company connection is not set up yet.';
+  }
+  if (/_DISABLED$/.test(code) || code === 'disabled') {
+    return /OUTBOUND/.test(code)
+      ? 'Not sent — sending to the appraisal company is switched off. Switch it on, then send it again.'
+      : 'Not sent — the appraisal company connection is switched off. Switch it on, then send it again.';
+  }
+  // THEY ANSWERED AND SAID NO. `retryable` is set by the transport for exactly this
+  // question, so it is read rather than a status range being re-derived here — and it
+  // must be a real `false`, never a missing one, or every network failure without a
+  // status would be reported as a permanent refusal.
+  if (e && e.retryable === false && Number(e.status) >= 400 && Number(e.status) < 500) {
+    return 'Not sent — the appraisal company would not accept it. Sending the same thing again will not help.';
+  }
+  return 'Not sent — the appraisal company could not be reached. You can send it again.';
+}
+
+/**
+ * A NACK stored on a row. Their refusal is worth keeping in their own words (a bare
+ * code says nothing to anybody), bounded and framed — the same rule `nackMessage`
+ * applies to the live answer, so the row and the button never disagree.
+ */
+function storedNackNote(err, what) {
+  const d = err && err.description != null ? String(err.description).trim() : '';
+  const subject = what || 'it';
+  if (!d) return `The appraisal company would not accept ${subject}.`;
+  return `The appraisal company would not accept ${subject}: ${d.slice(0, 300)}`;
+}
+
+module.exports = {
+  sendFailMessage, nackMessage, storedFailNote, storedNackNote, TEST_MODE_PREFIX,
+};

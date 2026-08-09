@@ -213,10 +213,18 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
       // on this file — ours to work out, not a refusal they made. Only an entry they
       // actually returned can carry `stage_rejected`.
       const reason = st ? 'stage_rejected' : 'unmatched_answer';
+      // `errorTraceID` IS A SUPPORT REFERENCE, NOT AN EXPLANATION — a CoreLogic trace
+      // GUID. It was used as the human `detail`, which composes into the batch
+      // `message` and into the poller's log, so a refusal reached the appraisal desk
+      // reading "Scope of Work.pdf — 6f1c9a02-3e4d-4b77-9a10-5c8e2d0b7f31" in red: a
+      // person cannot act on it, and it displaced the sentence that says what happened.
+      // It is KEPT on the record as its own field — that is the number their support
+      // asks for — and journaled below; it just never becomes the wording.
       skipped.push({ documentId: specs[i].documentId,
         filename: specs[i].filename,
         reason,
-        detail: stated || (st && st.errorTraceID)
+        traceId: (st && st.errorTraceID) ? String(st.errorTraceID) : null,
+        detail: stated
           || (st ? 'the appraisal company returned no link for this file' : reasonText('unmatched_answer')) });
       continue;
     }
@@ -241,6 +249,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
         ? 'The appraisal company would not accept ' + (skipped.length === 1 ? 'that document' : 'any of those documents')
         : 'Nothing could be sent');
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false,
+      response: { staged, skipped },
       error: theirs.length ? 'every file was rejected at staging' : 'no answer could be matched to a file', staffId });
     return {
       // The CODE follows the same rule the per-file reasons do — a batch nobody refused
@@ -284,7 +293,13 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
       [order.id, sendable[i].documentId, documents[i].documentType, documents[i].objectName, amcAction, sendable[i].staged.retrievalUrl, dry ? 'pending' : 'uploaded']);
     uploaded.push({ documentId: sendable[i].documentId, objectName: documents[i].objectName });
   }
-  await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, response: dry ? { dryrun: true } : resp, ok: true, staffId });
+  // A PARTIAL batch still has to record why the rest was held back — including each
+  // vendor trace id, which is deliberately no longer in the wording the desk reads and
+  // would otherwise exist nowhere at all. It rides INSIDE `response`: `journal`
+  // destructures a fixed set of keys, so a new top-level one is silently dropped.
+  const answered = dry ? { dryrun: true } : resp;
+  await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built,
+    response: skipped.length ? { answered, held: skipped } : answered, ok: true, staffId });
   return { ok: true, dryrun: dry || undefined, uploaded, skipped };
 }
 

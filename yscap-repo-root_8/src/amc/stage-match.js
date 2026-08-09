@@ -77,20 +77,42 @@ function matchStaged(files, staged) {
   const countExact = (v) => (v == null ? 0 : fileExact.filter((x) => x === v).length);
   const countKey = (v) => (v == null ? 0 : fileKey.filter((x) => x === v).length);
 
+  // HOW WELL a name fits a file: its exact spelling (2) beats a match of meaning (1)
+  // beats nothing (0). Used both to identify and — with a lower bar, see below — to
+  // contradict.
+  const strengthFor = (s, j) => {
+    if (!s || s.fileName == null) return 0;
+    if (fileExact[j] != null && exactOf(s.fileName) === fileExact[j]) return 2;
+    if (fileKey[j] != null && keyOf(s.fileName) === fileKey[j]) return 1;
+    return 0;
+  };
+
   // Does this answer's filename identify file i, and how strongly? 'exact' beats 'key';
-  // null means it says nothing about file i. A key is only allowed to identify when it
-  // picks out exactly one of our files.
+  // null means it says nothing about file i.
+  //
+  // IDENTIFICATION IS EXCLUSIVE: the name must fit file i AND FIT NO OTHER FILE AT ALL,
+  // at any strength. Accepting an exact match while a sibling merely matched by key
+  // re-created the swap for the third time, and the shape is worth spelling out because
+  // it looks harmless:
+  //
+  //     files   : Contract.pdf  (purchase) , contract.pdf  (assignment)
+  //     answer  : part0, fileName "contract.pdf"   ← the vendor lower-cased FILE 0's name
+  //
+  // Read as an exact match that no other file shares, that answer "identifies" file 1 —
+  // the one document the vendor never staged — and outranks its own true part number, so
+  // file 1 was recorded delivered carrying file 0's bytes.
+  //
+  // The two readings (a rewrite of file 0's name, or file 1's real name) are genuinely
+  // indistinguishable, and that is exactly when this module refuses. NEVER WRONG is
+  // absolute; being unplaced costs a retry, and a retry is always available.
   function identifies(s, i) {
     if (!s || s.fileName == null) return null;
-    // An exact name TWO OF OUR FILES SHARE identifies neither of them — the purchase and
-    // the assignment are both literally "Contract.pdf". The key branch below always
-    // asked this; the exact branch did not, so a duplicate-named pair was placed by
-    // position dressed up as evidence.
-    const e = exactOf(s.fileName);
-    if (e != null && fileExact[i] != null && e === fileExact[i] && countExact(e) === 1) return 'exact';
-    const k = keyOf(s.fileName);
-    if (k != null && fileKey[i] != null && k === fileKey[i] && countKey(k) === 1) return 'key';
-    return null;
+    const here = strengthFor(s, i);
+    if (!here) return null;
+    for (let j = 0; j < files.length; j++) {
+      if (j !== i && strengthFor(s, j) > 0) return null;   // fits a sibling too — says nothing
+    }
+    return here === 2 ? 'exact' : 'key';
   }
   // CONTRADICTING TAKES LESS EVIDENCE THAN IDENTIFYING, and the two must not share a
   // bar. `identifies` demands uniqueness, because placing a document on the strength of
@@ -102,12 +124,6 @@ function matchStaged(files, staged) {
   // So a filename contradicts file i when it fits some OTHER file BETTER than it fits
   // file i — exact spelling beats a mere match of meaning, which beats nothing at all.
   // Ties never contradict: a name matching two files equally says nothing about either.
-  const strengthFor = (s, j) => {
-    if (!s || s.fileName == null) return 0;
-    if (fileExact[j] != null && exactOf(s.fileName) === fileExact[j]) return 2;
-    if (fileKey[j] != null && keyOf(s.fileName) === fileKey[j]) return 1;
-    return 0;
-  };
   function namesAnotherFile(s, i) {
     const mine = strengthFor(s, i);
     for (let j = 0; j < files.length; j++) {
