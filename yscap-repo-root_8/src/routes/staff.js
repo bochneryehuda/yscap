@@ -11258,14 +11258,23 @@ router.post('/borrowers/:id/track-record-candidates/claim', async (req, res) => 
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const CLAIMS = require('../lib/track-record/claims');
     const b = req.body || {};
+    /* THE BORROWER FROM THE PATH IS PASSED DOWN AND RE-ASSERTED ON EVERY ROW.
+       `canSeeBorrower` proves you may look at THIS borrower's queue; it says
+       nothing about the ids in the body, which are a guessable bigserial. See
+       the header of track-record/claims.js. */
     const out = b.release === true
-      ? { released: await CLAIMS.releaseClaims(b.ids, req.actor.id) }
-      : await CLAIMS.claimForReview(b.ids, req.actor.id);
+      ? { released: await CLAIMS.releaseClaims(b.ids, req.actor.id, req.params.id) }
+      : await CLAIMS.claimForReview(b.ids, req.actor.id, req.params.id);
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
+/* The candidate id is a bigint; a path id that cannot be one ('abc', 20+
+   digits) would raise 22P02/22003 at the bind and read as a 500. It is simply
+   an id that matches nothing: 404. */
+const CANDIDATE_ID_RE = /^\d{1,18}$/;
 router.get('/track-record-candidates/:id/compare', async (req, res) => {
   try {
+    if (!CANDIDATE_ID_RE.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -11274,6 +11283,7 @@ router.get('/track-record-candidates/:id/compare', async (req, res) => {
 });
 router.post('/track-record-candidates/:id/decide', async (req, res) => {
   try {
+    if (!CANDIDATE_ID_RE.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const own = await db.query(`SELECT borrower_id FROM track_record_candidates WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -11286,7 +11296,7 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
       { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });
     require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json(out);
-  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields, why: e.why }); }
 });
 
 /* THE VERIFY BUTTON — read the public records for ONE property, on a click.

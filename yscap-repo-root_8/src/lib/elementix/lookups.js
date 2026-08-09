@@ -69,6 +69,12 @@ const TOOLS = new Set([
   'get_entity_related_addresses', 'get_entity_co_occurring_entities',
   'get_address', 'get_address_ownership', 'get_address_transactions',
   'get_person_entities', 'get_person_properties',
+  /* The PERSON's own county records — a deal bought in a personal name has no
+     entity to search under, and searching entities only was reading a whole
+     class of borrowers as having no history (owner-reported 2026-08-09). Same
+     row shapes as the entity twins, with the one spelling difference
+     `shapes.addressesOf` documents (propertyAddresses). */
+  'get_person_deeds', 'get_person_mortgages',
   'get_document',
   'get_coverage',
   // Reads a person's UNLOCK STATE. Free, and the gate in front of any contact
@@ -150,6 +156,16 @@ async function call(tool, args, opts = {}) {
     // suspender, because a research lookup must never 500 a screen.
     out = bad('error', (e && e.message) || 'The lookup failed.');
   }
+  /* A DRY RUN IS NOT AN EMPTY COUNTY. The client answers a dry run
+     `{ok:true, data:null}`, which every research consumer read as "searched,
+     found nothing" — so with the dry-run switch on, the screen told the owner
+     "the county does not publish online" about a search that never left the
+     building (owner-reported 2026-08-09). For RESEARCH purposes a dry run is
+     a refusal with a reason, like disabled or rate-limited. */
+  if (out && out.ok && out.dryRun) {
+    return bad('dry_run',
+      'Dry-run mode is ON, so the lookup was logged but never sent. Turn dry-run OFF on the API Health page to really search.');
+  }
   /* THE LEDGER IS WRITTEN BY THE CLIENT, not here. It is the only module that
      talks to Elementix, so it is the only one that should record — two writers
      would double-count the very number the hourly guard reads, and the guard
@@ -212,6 +228,108 @@ async function entityMortgages(entityId, opts = {}) {
 async function entityPeople(entityId, opts = {}) {
   if (!isUuid(entityId)) return bad('bad_args', 'That is not an entity id from a search result.');
   return call('get_entity_associated_people', { id: entityId }, opts);
+}
+
+async function personDeeds(personId, opts = {}) {
+  if (!isUuid(personId)) return bad('bad_args', 'That is not a person id from a search result.');
+  return call('get_person_deeds', { id: personId, ...pageArgs(opts) }, opts);
+}
+
+async function personMortgages(personId, opts = {}) {
+  if (!isUuid(personId)) return bad('bad_args', 'That is not a person id from a search result.');
+  return call('get_person_mortgages', { id: personId, ...pageArgs(opts) }, opts);
+}
+
+/**
+ * Find THE PERSON — with a name discipline stricter than the entity one,
+ * because the failure mode is worse: an LLC name is distinctive, a person's
+ * name is not, and a near-name here puts a STRANGER'S deeds on this
+ * borrower's record.
+ *
+ * Two steps, verified live 2026-08-09: `match_person` is the vendor's exact
+ * matcher and answers `none` even for names that appear on real deeds, so it
+ * cannot be the only route; `search` with `entityFilter:'person'` finds
+ * people but returns NEAR names too ("Frank Pereira" → "FRANKY PEREIRA" — a
+ * different human). So the search fallback keeps ONLY rows whose name equals
+ * ours word-for-word, order-blind ("KAMARA PATRICK" ≡ "PATRICK KAMARA" — the
+ * county reverses names routinely), and a name the vendor scores too common
+ * to identify anybody is refused the same way `searchEntity` refuses it.
+ */
+function samePersonName(a, b) {
+  const words = (s) => str(s).toUpperCase().replace(/[^A-Z ]+/g, ' ').split(/\s+/).filter(Boolean).sort();
+  const wa = words(a); const wb = words(b);
+  return wa.length > 0 && wa.length === wb.length && wa.every((w, i) => w === wb[i]);
+}
+
+async function searchPerson(name, state, opts = {}) {
+  const n = str(name);
+  if (!n) return bad('bad_args', 'Say whose name to look for.');
+  const st = stateCode(state);
+
+  const exact = await call('match_person', st ? { name: n, state: st } : { name: n }, opts);
+  let calls = 1;
+  if (exact.ok) {
+    const hit = exact.data && exact.data.match;
+    const id = hit && (hit.id || hit.personId || hit.uuid);
+    if (isUuid(id)) {
+      return { ok: true, calls, data: [{ ...hit, id, name: str(hit.name) || str(hit.normalizedName) || n }] };
+    }
+  }
+
+  const found = await call('search', {
+    query: n, entityFilter: 'person', ...(st ? { state: st } : {}),
+  }, opts);
+  calls += 1;
+  if (!found.ok) return { ...found, calls };
+  const rows = rowsOf(found.data)
+    .filter((r) => samePersonName(r.name || r.searchText, n))
+    .map((r) => ({ ...r, _nameCommonness: nameCommonness(r), _tooCommon: nameTooCommon(r) }));
+  return {
+    ok: true, calls,
+    data: rows,
+    /* Two people with the exact same name in the same state is a human
+       question — the same one-or-nothing rule as the entity route. */
+    ambiguous: rows.length > 1,
+  };
+}
+
+/**
+ * THE PERSON-FIRST SEQUENCE — the records a borrower holds in their OWN name.
+ *
+ * Same contract as `researchProperty`: canonical shapes out, every failure in
+ * `errors` with its reason, `searched` true only when a records list actually
+ * came back, and `truncated` naming any list the vendor said has more pages —
+ * a short answer must never read as a complete one.
+ */
+async function researchPerson({ personName, state, staffId, db }, opts = {}) {
+  const o = { staffId, db, perPage: 100 };
+  const out = {
+    ok: true, calls: 0, errors: [], searched: false, truncated: [],
+    deeds: [], mortgages: [], person: null, ambiguousPerson: false, tooCommon: false,
+  };
+  const note = (step, r) => { out.calls += (r && r.calls) || 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
+
+  const p = note('match_person', await searchPerson(personName, state, o));
+  if (p.ok) {
+    const rows = p.data || [];
+    out.ambiguousPerson = !!p.ambiguous;
+    out.tooCommon = rows.some((r) => r._tooCommon);
+    out.person = rows.length === 1 && !out.tooCommon ? rows[0] : null;
+  }
+  const personId = out.person && (out.person.id || out.person.personId || out.person.uuid);
+  if (isUuid(personId)) {
+    const d = note('get_person_deeds', await personDeeds(personId, o));
+    if (d.ok) {
+      out.deeds = SHAPES.deeds(rowsOf(d.data)); out.searched = true;
+      if (d.data && d.data.nextPage) out.truncated.push({ list: 'deeds', shown: out.deeds.length });
+    }
+    const m = note('get_person_mortgages', await personMortgages(personId, o));
+    if (m.ok) {
+      out.mortgages = SHAPES.mortgages(rowsOf(m.data)); out.searched = true;
+      if (m.data && m.data.nextPage) out.truncated.push({ list: 'mortgages', shown: out.mortgages.length });
+    }
+  }
+  return out;
 }
 
 async function coOccurringEntities(entityId, opts = {}) {
@@ -368,9 +486,15 @@ function pageArgs(opts = {}) {
  * between has to translate the vendor's fields twice.
  */
 async function researchProperty({ entityName, state, address, borrowerNames, staffId, db }, opts = {}) {
-  const o = { staffId, db };
+  /* `perPage` IS LOAD-BEARING. Without it the vendor serves its DEFAULT PAGE
+     OF FIVE (proven — see pageArgs), nothing here read `nextPage`, and a
+     29-property portfolio read as five with no error anywhere: the exact
+     "quietly returns 3 of 11" failure db/496's header promises never happens.
+     100 is the vendor's page ceiling; anything past it is REPORTED in
+     `truncated` so a short answer can never pass as a complete one. */
+  const o = { staffId, db, perPage: 100 };
   const out = {
-    ok: true, calls: 0, errors: [], searched: false,
+    ok: true, calls: 0, errors: [], searched: false, truncated: [],
     deeds: [], mortgages: [], satisfactions: [], ownerships: [], currentOwner: null, coverage: null,
     entity: null, people: [], ambiguousEntity: false, tooCommon: false,
   };
@@ -398,9 +522,15 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
        name, or that the property address is `addresses[{addressFull}]` and
        never `address`. Reading a raw row is what made the engine dark. */
     const d = note('get_entity_deeds', await entityDeeds(entityId, o));
-    if (d.ok) { out.deeds = SHAPES.deeds(rowsOf(d.data)); out.searched = true; }
+    if (d.ok) {
+      out.deeds = SHAPES.deeds(rowsOf(d.data)); out.searched = true;
+      if (d.data && d.data.nextPage) out.truncated.push({ list: 'deeds', shown: out.deeds.length });
+    }
     const m = note('get_entity_mortgages', await entityMortgages(entityId, o));
-    if (m.ok) { out.mortgages = SHAPES.mortgages(rowsOf(m.data)); out.searched = true; }
+    if (m.ok) {
+      out.mortgages = SHAPES.mortgages(rowsOf(m.data)); out.searched = true;
+      if (m.data && m.data.nextPage) out.truncated.push({ list: 'mortgages', shown: out.mortgages.length });
+    }
     const p = note('get_entity_associated_people', await entityPeople(entityId, o));
     if (p.ok) out.people = rowsOf(p.data);
   }
@@ -428,6 +558,7 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
           else if (row.kind === 'satisfaction') out.satisfactions.push(row);
           else out.deeds.push(row);
         }
+        if (t.data && t.data.nextPage) out.truncated.push({ list: 'transactions', shown: rowsOf(t.data).length });
       }
       /* WHO HOLDS IT NOW — the input to the most valuable check there is: they
          say they sold it and the record still shows them owning it. The tool
@@ -450,9 +581,13 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
 module.exports = {
   call,
   searchEntity,
+  searchPerson,
   entityDeeds,
   entityMortgages,
   entityPeople,
+  personDeeds,
+  personMortgages,
+  researchPerson,
   coOccurringEntities,
   matchAddress,
   addressOwnership,

@@ -48,7 +48,7 @@ const tag = `trclaim_${process.pid}`;
   console.log('\n1. A claim is recorded, and it names the person');
   const c1 = await mkCandidate('1 First St, Lakewood, NJ 08701');
   {
-    const out = await CLAIMS.claimForReview([c1], alice);
+    const out = await CLAIMS.claimForReview([c1], alice, borrowerId);
     ok(out.claimed.length === 1 && out.claimed[0] === c1, 'the reviewer takes the property');
     ok(out.heldByOthers.length === 0, '…and nobody else is reported as holding it');
 
@@ -73,8 +73,8 @@ const tag = `trclaim_${process.pid}`;
     /* Fired together on purpose: the read-then-write shape hands the same rows
        to both, which is the db/401 race in a different table. */
     const [a, b] = await Promise.all([
-      CLAIMS.claimForReview(ids, alice),
-      CLAIMS.claimForReview(ids, bob),
+      CLAIMS.claimForReview(ids, alice, borrowerId),
+      CLAIMS.claimForReview(ids, bob, borrowerId),
     ]);
     const overlap = a.claimed.filter((id) => b.claimed.includes(id));
     ok(overlap.length === 0, 'no property is handed to both reviewers');
@@ -89,15 +89,15 @@ const tag = `trclaim_${process.pid}`;
   console.log('\n3. An abandoned claim expires; my own claim refreshes');
   const c3 = await mkCandidate('55 Stale Rd, Lakewood, NJ 08701');
   {
-    await CLAIMS.claimForReview([c3], alice);
-    const stale = await CLAIMS.claimForReview([c3], bob);
+    await CLAIMS.claimForReview([c3], alice, borrowerId);
+    const stale = await CLAIMS.claimForReview([c3], bob, borrowerId);
     ok(stale.claimed.length === 0, 'a LIVE claim is not taken from the person holding it');
 
     /* Age it past the window — a closed tab, a reviewer who went home. */
     await db.query(
       `UPDATE track_record_candidates SET claimed_at = now() - interval '${CLAIMS.STALE_MINUTES + 5} minutes' WHERE id=$1`,
       [c3]);
-    const took = await CLAIMS.claimForReview([c3], bob);
+    const took = await CLAIMS.claimForReview([c3], bob, borrowerId);
     ok(took.claimed.length === 1, 'an abandoned claim is taken over — a closed tab never parks a property');
 
     const row = (await db.query(`SELECT claimed_by, claimed_at FROM track_record_candidates WHERE id=$1`, [c3])).rows[0];
@@ -108,7 +108,7 @@ const tag = `trclaim_${process.pid}`;
     await db.query(
       `UPDATE track_record_candidates SET claimed_at = now() - interval '${CLAIMS.STALE_MINUTES - 2} minutes' WHERE id=$1`,
       [c3]);
-    await CLAIMS.claimForReview([c3], bob);
+    await CLAIMS.claimForReview([c3], bob, borrowerId);
     const fresh = (await db.query(
       `SELECT claimed_at > now() - interval '1 minute' AS recent FROM track_record_candidates WHERE id=$1`, [c3])).rows[0];
     ok(fresh.recent === true, 're-claiming my own refreshes the clock, so a long run never expires under me');
@@ -117,7 +117,7 @@ const tag = `trclaim_${process.pid}`;
   console.log('\n4. A CLAIM NEVER BLOCKS A DECISION — the rule that carries this file');
   const c4 = await mkCandidate('9 Blocked Way, Lakewood, NJ 08701');
   {
-    await CLAIMS.claimForReview([c4], alice);
+    await CLAIMS.claimForReview([c4], alice, borrowerId);
     /* Bob decides a property Alice is holding. This must go through: a claim is
        a label, and the durable status guard is what stops a double-decide. */
     let threw = null;
@@ -133,10 +133,10 @@ const tag = `trclaim_${process.pid}`;
   console.log('\n5. Releasing gives back only MY claims');
   const c5 = await mkCandidate('7 Release Ct, Lakewood, NJ 08701');
   {
-    await CLAIMS.claimForReview([c5], alice);
-    const wrong = await CLAIMS.releaseClaims([c5], bob);
+    await CLAIMS.claimForReview([c5], alice, borrowerId);
+    const wrong = await CLAIMS.releaseClaims([c5], bob, borrowerId);
     ok(wrong === 0, 'releasing is not a way to take a property off a colleague');
-    const mine = await CLAIMS.releaseClaims([c5], alice);
+    const mine = await CLAIMS.releaseClaims([c5], alice, borrowerId);
     ok(mine === 1, '…and the holder can give their own back');
     const row = (await db.query(`SELECT claimed_by FROM track_record_candidates WHERE id=$1`, [c5])).rows[0];
     ok(row.claimed_by === null, '…leaving the property free for anyone');
@@ -155,7 +155,7 @@ const tag = `trclaim_${process.pid}`;
     /* A decided property has left the queue; claiming it would be meaningless. */
     const done = await mkCandidate('3 Done Dr, Lakewood, NJ 08701');
     await db.query(`UPDATE track_record_candidates SET status='imported' WHERE id=$1`, [done]);
-    const out = await CLAIMS.claimForReview([done], alice);
+    const out = await CLAIMS.claimForReview([done], alice, borrowerId);
     ok(out.claimed.length === 0, 'a property already decided cannot be claimed');
   }
 
@@ -165,6 +165,42 @@ const tag = `trclaim_${process.pid}`;
       .loadForBorrower(borrowerId, db);
     const leaked = JSON.stringify(forBorrower).match(/claimed_by|claimed_at|Alice Reviewer|Bob Reviewer/);
     ok(!leaked, 'no reviewer name or claim stamp reaches the borrower');
+  }
+
+  console.log('\n8. THE BORROWER IS PART OF THE KEY — another borrower\'s ids do nothing');
+  {
+    /* The audit's attack: the route authorises the borrower in the PATH, and
+       candidate ids are a guessable bigserial — so a staffer used to be able
+       to post ANOTHER borrower's ids to their own borrower's claim URL and
+       read back the property address + the reviewer's name. Every statement
+       in claims.js now re-asserts the borrower, so ids that are not this
+       borrower's match nothing: not claimed, not named, not released. */
+    const otherBorrower = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Other','Person',$1) RETURNING id`,
+      [`other+${tag}@x.test`])).rows[0].id;
+    const theirs = (await db.query(
+      `INSERT INTO track_record_candidates (borrower_id, property_address, dedupe_key, status, raw)
+       VALUES ($1,$2,$3,'staged','{}'::jsonb) RETURNING id`,
+      [otherBorrower, JSON.stringify({ oneLine: '400 Secret Blvd, Toms River, NJ 08753' }),
+        `${tag}:secret`])).rows[0].id;
+    await CLAIMS.claimForReview([theirs], alice, otherBorrower);   // Miriam-shape: really being worked
+
+    const attack = await CLAIMS.claimForReview([theirs], bob, borrowerId);
+    ok(attack.claimed.length === 0, 'a claim through the WRONG borrower takes nothing');
+    ok(attack.heldByOthers.length === 0,
+      '…and reveals nothing — no address, no reviewer name, for a borrower the ids do not belong to');
+
+    const strip = await CLAIMS.releaseClaims([theirs], alice, borrowerId);
+    ok(strip === 0, 'a release through the wrong borrower strips nothing, even one\'s own claim');
+    const still = (await db.query(
+      `SELECT claimed_by FROM track_record_candidates WHERE id=$1`, [theirs])).rows[0];
+    ok(String(still.claimed_by) === String(alice), '…the real claim stands untouched');
+
+    ok((await CLAIMS.claimForReview([theirs], bob)).claimed.length === 0,
+      'a call with NO borrower claims nothing — the subject is required, not optional');
+
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [otherBorrower]);
+    await db.query(`DELETE FROM borrowers WHERE id=$1`, [otherBorrower]);
   }
 
   await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
