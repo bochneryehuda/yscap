@@ -62,6 +62,17 @@ const SWITCHES = [
   // write gate (checked first), so it is always safe to leave on while verifying.
   { key: 'AMC_DRYRUN', integration: 'amc', label: 'AMC orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.amc && cfg.amc.dryrun) },
   { key: 'AMC_OUTBOUND_ENABLED', integration: 'amc', label: 'Place appraisal orders / message the AMC / upload documents (write)', dangerous: true, envDefault: () => !!(cfg.amc && cfg.amc.outboundEnabled) },
+
+  // Class Valuation — the SECOND appraisal vendor. Its own switches on purpose:
+  // the two vendors are turned on and off independently, and one being live must
+  // never imply anything about the other. Same three-stage shape as the AMC.
+  // No `resume` flag: both consumers (the poller and the client) read the switch at
+  // CALL time, so turning it back on takes effect immediately. Claiming otherwise
+  // would tell an admin a redeploy is needed when it is not.
+  { key: 'CLASS_ENABLED', integration: 'class', label: 'Order appraisals from Class Valuation (reading)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.enabled) },
+  { key: 'CLASS_DRYRUN', integration: 'class', label: 'Class Valuation orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.dryrun) },
+  { key: 'CLASS_OUTBOUND_ENABLED', integration: 'class', label: 'Place appraisal orders with Class Valuation (write)', dangerous: true, envDefault: () => !!(cfg.class && cfg.class.outboundEnabled) },
+
   // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
   // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact
   // enrichment, which is a per-person human click and can never be turned on globally.
