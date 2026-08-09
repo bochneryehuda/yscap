@@ -4391,6 +4391,19 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   background:rgba(20,27,34,.06);border-radius:4px;padding:1px 5px;overflow-wrap:anywhere}
 .ah-note b{font-weight:700}
 
+/* ---- the down-alert monitor banner: text on the left, the real control on the right ---- */
+.ah-monitor{display:flex;gap:12px;align-items:flex-start;margin-top:0}
+.ah-monitor-ic{width:18px;height:18px;flex:0 0 auto;margin-top:1px}
+.ah-monitor-t{flex:1 1 auto;min-width:0}
+.ah-monitor-act{flex:0 0 auto;display:flex;align-items:center;gap:8px}
+/* On a phone the toggle would be squeezed against a three-line paragraph; give it its own
+   row under the text, aligned left where the thumb already is. */
+@media(max-width:640px){
+  .ah-monitor{flex-wrap:wrap}
+  .ah-monitor-t{flex:1 1 100%}
+  .ah-monitor-act{width:100%;margin-top:4px}
+}
+
 /* ---- scoreboard tiles (the document mirror) ---- */
 .ah-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-top:4px}
 .ah-tile{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--surface);
