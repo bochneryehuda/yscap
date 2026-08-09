@@ -589,6 +589,20 @@ export const api = {
   // Deals a BORROWER typed that nobody has reviewed yet — the track-record
   // review queue (db/458). Scoped server-side to the borrowers this staffer sees.
   staffTrackRecordReviews: () => req('GET', '/api/staff/track-record-reviews'),
+  /* THE WORKSPACE (phase 5). Every next step, refusal and readiness sentence in
+     these payloads is computed by src/lib/track-record/pillar-actions.js — the
+     screen renders them verbatim and never re-decides one. */
+  staffTrackRecordWorkspace: (q = {}) =>
+    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`),
+  staffTrackRecordLine: (id) => req('GET', `/api/staff/track-records/${id}/workspace`),
+  staffDecidePillar: (pillarId, body) => req('POST', `/api/staff/track-record-pillars/${pillarId}/decide`, body),
+  staffBulkConfirmPillars: (id, body) => req('POST', `/api/staff/track-records/${id}/pillars/bulk-confirm`, body || {}),
+  staffTrackRecordDocTypes: () => req('GET', '/api/staff/track-record-doc-types'),
+  staffRequestTrackRecordDocTyped: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc`, body),
+  staffTrackRecordRequestPreview: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc/preview`, body),
+  staffAddTrackRecordNote: (body) => req('POST', '/api/staff/track-record-notes', body),
+  staffTrackRecordNotes: (kind, id) =>
+    req('GET', `/api/staff/track-record-notes?subjectKind=${encodeURIComponent(kind)}&subjectId=${encodeURIComponent(id)}`),
   staffTrackRecordReviewsCount: () => req('GET', '/api/staff/track-record-reviews/count'),
   // In-file verify set: the file's vesting entity + this borrower's track-record
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.

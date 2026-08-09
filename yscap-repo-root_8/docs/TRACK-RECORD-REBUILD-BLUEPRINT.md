@@ -1046,6 +1046,21 @@ Removing the iframe silently breaks the borrower's downloadable saved copy, whic
 regenerates. `track-record-export.js` already has the HTML builder. Move generation server-side and
 call it from every write path.
 
+> **STATUS after phase 5 (2026-08-09): DELIBERATELY NOT DONE, and the reason is that its
+> precondition did not happen.** The workspace replaced the STAFF review screen, which never
+> embedded the tool — the borrower's `TrackRecordScreen` iframe is untouched, so the saved copy
+> still regenerates exactly as it did before and nothing was silently broken. Two corrections to
+> the paragraph above, for whoever picks this up: `track-record-export.js` does **not** have an
+> HTML builder (it has `buildTrackRecordPdf` and `trackRecordAoa` — a PDF builder and an xlsx
+> one), and `track-record-snapshot.saveSnapshot` takes the HTML from the CLIENT. So this is a
+> real piece of work, not a move: a server-side HTML generator has to be written first.
+>
+> The underlying gap is real and worth doing on its own merits — a staff edit that never opens
+> the tool leaves the borrower's saved copy stale — but it is a separate change with its own
+> risk, and bundling an unwritten HTML generator into the workspace PR would have been the
+> wrong trade. Do it when the borrower iframe is actually retired, or sooner if the stale
+> snapshot is reported.
+
 ---
 
 ## 9. THE IMPORTER

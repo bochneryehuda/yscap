@@ -11190,6 +11190,77 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
 // chokepoint as raise-issue (one condition tagged with the line item), but the
 // wording/notification is a document request, and the borrower can satisfy it
 // by uploading either on the condition or straight on the line item.
+/* ── THE TRACK-RECORD WORKSPACE ─────────────────────────────────────────────
+   ONE screen, replacing the two stacked track records the back office had.
+   Every verdict, refusal and next step comes from `pillar-actions` — the same
+   pure module the React screen reads — so a button the server would refuse can
+   never be offered. See src/lib/track-record/workspace.js. */
+router.get('/track-record-workspace', async (req, res) => {
+  try {
+    const W = require('../lib/track-record/workspace');
+    // The caller's own scope, never a second definition of who may see whom.
+    const p = [];
+    let scopeSql = null;
+    /* `b` is the BORROWERS alias in the workspace query — this helper takes a
+       table alias, not a column (it reaches for `<alias>.id` and
+       `<alias>.primary_officer_id`), and it is the ONE definition of who may
+       see whom. Never re-inline it. */
+    if (!can(req.actor, 'see_all_files')) { p.push(req.actor.id); scopeSql = VISIBLE_BORROWER_SQL('b', `$${p.length}`); }
+    res.json(await W.loadQueue({
+      visibleBorrowerSql: scopeSql, params: p,
+      limit: Number(req.query.limit) || 40,
+      filter: req.query.filter === 'all' ? 'all' : 'open',
+      staffId: req.actor.id,
+    }));
+  } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+router.get('/track-records/:id/workspace', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/workspace').loadLine(req.params.id, {
+      role: req.actor.role, canSignOff: can(req.actor, 'sign_off_conditions'),
+    });
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+router.post('/track-record-pillars/:id/decide', async (req, res) => {
+  try {
+    const own = await db.query(
+      `SELECT t.borrower_id FROM track_record_pillars p JOIN track_records t ON t.id=p.track_record_id WHERE p.id=$1`,
+      [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/workspace').decidePillar(req.params.id, {
+      verdict: b.verdict, note: b.note, staffId: req.actor.id,
+      role: req.actor.role, canSignOff: can(req.actor, 'sign_off_conditions'),
+    });
+    await audit(req, 'track_record_pillar_decided', 'track_record', out.trackRecordId,
+      { pillarId: req.params.id, verdict: b.verdict || null });
+    require('../lib/events').publishTrackRecordUpdate(out.borrowerId, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* Bulk is for the boring case ONLY, and THE SERVER is what refuses the rest —
+   the blueprint is explicit that this may not be a UI-only guard. */
+router.post('/track-records/:id/pillars/bulk-confirm', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/workspace').bulkConfirm(req.params.id, {
+      staffId: req.actor.id, role: req.actor.role,
+      canSignOff: can(req.actor, 'sign_off_conditions'), note: (req.body || {}).note,
+    });
+    await audit(req, 'track_record_pillars_bulk_confirmed', 'track_record', req.params.id, { confirmed: out.confirmed });
+    require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code || undefined }); }
+});
+
 // THE VOCABULARY IS SERVER-FED, so the picker can never offer a type the server
 // would refuse (the 2026-08-02 "a value we OFFER is a value we accept" rule).
 router.get('/track-record-doc-types', (_req, res) => {
