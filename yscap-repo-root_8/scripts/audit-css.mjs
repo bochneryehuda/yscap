@@ -68,7 +68,9 @@ const routes = [
   // ---- the sign-ins, and everything reachable without one ----------------
   ['borrower sign-in',            `${P}/login`,            'anon'],
   ['staff sign-in',               `${P}/internal/login`,   'anon'],
-  ['assistant sign-in',           `${P}/assistant/login`,  'anon'],
+  // /assistant/login now redirects to /login (the helper sign-in was folded
+  // into the client screen), so it is covered by 'borrower sign-in' above.
+  ['assistant accept invite',     `${P}/assistant/accept?token=demo`, 'anon'],
   ['borrower forgot password',    `${P}/forgot`,           'anon'],
   ['staff forgot password',       `${P}/internal/forgot`,  'anon'],
   ['reset password',              `${P}/reset?token=demo`, 'anon'],
