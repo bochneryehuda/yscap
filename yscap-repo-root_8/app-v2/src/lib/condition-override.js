@@ -15,6 +15,8 @@
    Pure — no React, no api client, so it can be reasoned about (and reused) on
    its own. */
 
+import { askConfirm } from './dialog.js';
+
 /* UI hint only: hide a button the server would refuse. Never a control — the
    server re-checks the role on every request. */
 export const canOverride = (role) => role === 'super_admin';
@@ -27,14 +29,21 @@ export const isCompletion = (body) =>
 /* The override ask: confirm what is about to happen (carrying the gate's own
    explanation when we have it), then require the reason the server requires.
    Returns the extra PATCH fields to merge, or null if the super admin backs out
-   at either step. */
-export function askOverride(label, { blocked } = {}) {
+   at either step.
+
+   ASYNC because the confirm is PILOT's own dialog rather than the browser's
+   (which stamps the hosting provider's hostname on the box). Every call site
+   MUST await it: without the await the caller receives a Promise, which is
+   truthy, and would clear the condition on a click the super admin never
+   confirmed. `window.prompt` has no branded replacement yet and is unchanged. */
+export async function askOverride(label, { blocked } = {}) {
   const what = label ? `“${String(label).slice(0, 90)}”` : 'this condition';
   const why = blocked ? `\n\nWhat it is still missing:\n${blocked}` : '';
-  if (!window.confirm(
+  if (!(await askConfirm(
     `Clear ${what} WITHOUT what it asks for?${why}\n\n` +
     'Only a super admin can do this. The condition is marked complete for the whole file — ' +
-    'and your name, the time and your reason are saved on it permanently.')) return null;
+    'and your name, the time and your reason are saved on it permanently.',
+    { title: 'Clear without what it asks for?', confirmLabel: 'Continue' }))) return null;
   const reason = window.prompt(
     'Why is this condition being cleared without what it asks for? ' +
     '(required — saved on the file and visible to the team)');

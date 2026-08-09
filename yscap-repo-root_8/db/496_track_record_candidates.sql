@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS track_record_searches (
 CREATE INDEX IF NOT EXISTS idx_trs_borrower ON track_record_searches(borrower_id, run_at DESC);
 
 COMMENT ON TABLE track_record_searches IS
-  'db/493. One row per public-records lookup: what was asked, what came back, what was staged, '
+  'db/496. One row per public-records lookup: what was asked, what came back, what was staged, '
   'and WHY everything else was not. Also the per-lookup audit trail and the per-lookup API-call '
   'count, which no other table records today.';
 
@@ -128,7 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_trc_decided
   ON track_record_candidates(borrower_id, dedupe_key, status);
 
 COMMENT ON TABLE track_record_candidates IS
-  'db/493. The staging area for properties found in public records. A staged row is invisible to '
+  'db/496. The staging area for properties found in public records. A staged row is invisible to '
   'every count, tier, export and gate because it is in a DIFFERENT TABLE — not because a flag says '
   'to skip it. Promotion creates a track_records row, which db/485 then forces to pending: two '
   'independent gates. Owner-directed — imports never land on the real record, because "a lot of '

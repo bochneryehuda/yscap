@@ -12,6 +12,7 @@ import { fmtDay } from '../lib/dates.js';
 // Why an order's clock is stopped, worded in ONE place and shared with the
 // cross-file Orders desk — the decision itself is the server's.
 import { dormantMarker } from '../lib/orderDormant.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -251,7 +252,7 @@ function ReturnedDoc({ appId, kind, doc, slots, conditionSlots, canAccept, onCha
     finally { setBusy(''); }
   };
   const review = async (action) => {
-    if (action === 'accept' && !doc.slot_label && !window.confirm('Accept this document without assigning a type (binder / invoice / …)? You can assign it first.')) return;
+    if (action === 'accept' && !doc.slot_label && !(await askConfirm('Accept this document without assigning a type (binder / invoice / …)? You can assign it first.'))) return;
     let reason;
     if (action === 'reject') { reason = window.prompt('Why is this document being rejected? (the reason is recorded)'); if (!reason) return; }
     setBusy('review'); setErr('');
@@ -403,8 +404,8 @@ function OrderTracking({ appId, kind, tracking, onChanged }) {
             Deliberately NOT "Cancel": that is a stand-down and it shuts the
             follow-up and reply doors, which must stay open after funding. */}
         <button className="btn link small" style={{ padding: 0 }} disabled={busy === 'done'}
-          onClick={() => {
-            if (!window.confirm('Mark this order finished?\n\nIt leaves the Orders desk and stops being chased. You can still write to the vendor and file anything else they send.')) return;
+          onClick={async () => {
+            if (!(await askConfirm('Mark this order finished?\n\nIt leaves the Orders desk and stops being chased. You can still write to the vendor and file anything else they send.'))) return;
             save('done', () => api.staffOrderComplete(appId, kind, 'marked finished on the file'));
           }}>
           {busy === 'done' ? 'Finishing…' : 'Mark finished'}
@@ -495,7 +496,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   })();
 
   const cancel = async (reopen) => {
-    if (!reopen && !window.confirm(`Cancel the ${kind} order? It won't email anyone; you can re-order afterward.`)) return;
+    if (!reopen && !(await askConfirm(`Cancel the ${kind} order? It won't email anyone; you can re-order afterward.`))) return;
     setBusy('cancel'); setMsg(null);
     try { await api.staffCancelOrder(appId, kind, reopen); onChanged && onChanged(); }
     catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update the order.' }); }

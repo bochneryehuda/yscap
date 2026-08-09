@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { InfoTip } from './FileSections.jsx';
 import { strayConditionReason, strayConfirmText } from '../lib/conditionLabel.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * Per-file "Add a condition" panel (Condition Center) — underwriters, LOs,
@@ -51,7 +52,7 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
     if (f.conditionType === 'tool' && !f.toolKey) return onError('Pick which form this condition opens.');
     const label = f.label.trim();
     const strayReason = strayConditionReason(label);
-    if (strayReason && !window.confirm(strayConfirmText(strayReason, label))) return;
+    if (strayReason && !(await askConfirm(strayConfirmText(strayReason, label)))) return;
     setBusy('add');
     try {
       await api.staffAddCustomCondition(appId, {

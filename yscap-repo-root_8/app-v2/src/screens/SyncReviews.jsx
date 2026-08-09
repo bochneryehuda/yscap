@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useFlash } from '../components/FlashToast.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Sync review queue — the human gate for PILOT ⇄ ClickUp disagreements
  * (2026-07-15). The auto-resolution engine settles the provable conflicts by
@@ -440,7 +441,7 @@ export default function SyncReviews() {
       if (e && e.data && e.data.needsConfirm) {
         const h = e.data.holder || {};
         const who = [h.borrower, h.address].filter(Boolean).join(' — ') || 'another file';
-        if (window.confirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove it to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review.`)) {
+        if (await askConfirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove it to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review.`)) {
           setBusyId(null);
           return relinkFromRow(id, true);
         }
@@ -623,7 +624,7 @@ export default function SyncReviews() {
                     onClick={() => sitewireAct(r.id, 'dismiss')}>Keep separate</button>
                   <button className="btn ghost btn-sm" disabled={busyId === r.id} style={{ color: 'var(--bad,#b04a3f)' }}
                     title="Only after you have DELETED the property in Sitewire — this pushes a brand-new copy PILOT will manage."
-                    onClick={() => { if (window.confirm(`Push a fresh copy to Sitewire?\n\nOnly do this if you have ALREADY deleted the existing property${r.current_value ? ` (#${r.current_value})` : ''} in Sitewire. Otherwise you will create a DUPLICATE.\n\nPILOT will then create and manage a brand-new property for this file.`)) sitewireAct(r.id, 'retry'); }}>
+                    onClick={async () => { if (await askConfirm(`Push a fresh copy to Sitewire?\n\nOnly do this if you have ALREADY deleted the existing property${r.current_value ? ` (#${r.current_value})` : ''} in Sitewire. Otherwise you will create a DUPLICATE.\n\nPILOT will then create and manage a brand-new property for this file.`)) sitewireAct(r.id, 'retry'); }}>
                     {busyId === r.id ? '…' : 'I removed it in Sitewire — push a fresh copy'}</button>
                 </div>
               </div>
@@ -648,7 +649,7 @@ export default function SyncReviews() {
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Re-push PILOT's budget to Sitewire, overwriting the change made there."
-                  onClick={() => { if (window.confirm('Restore PILOT’s budget in Sitewire?\n\nThis re-pushes the budget PILOT set, overwriting the change made directly in Sitewire.')) sitewireAct(r.id, 'restore'); }}>{busyId === r.id ? '…' : 'Restore PILOT’s budget'}</button>
+                  onClick={async () => { if (await askConfirm('Restore PILOT’s budget in Sitewire?\n\nThis re-pushes the budget PILOT set, overwriting the change made directly in Sitewire.')) sitewireAct(r.id, 'restore'); }}>{busyId === r.id ? '…' : 'Restore PILOT’s budget'}</button>
                 <button className="btn btn-sm" disabled={busyId === r.id}
                   title="Keep Sitewire's value — close this without pushing. Handle any downstream (e.g. re-register) yourself."
                   onClick={() => sitewireAct(r.id, 'accept')}>Accept Sitewire’s value</button>
@@ -753,28 +754,28 @@ export default function SyncReviews() {
                           escape hatch beside it, so it never renders as the primary button. */}
                       <button className={`btn btn-sm ${(a.adminOnly || a.action === 'accept_clickup_figures') ? '' : 'primary'}`} title={a.title}
                         disabled={busyId === r.id || (needsPick && !picked) || (needsTask && !typed)}
-                        onClick={() => {
+                        onClick={async () => {
                           if (needsTask) return relinkFromRow(r.id, false);
                           // Overriding the lock is consequential — confirm first.
-                          if (a.action === 'accept_clickup_figures' && !window.confirm(
+                          if (a.action === 'accept_clickup_figures' && !(await askConfirm(
                             'Use ClickUp’s figures and update this LOCKED file?\n\n' +
                             'This overrides the lock and changes the loan figures on the file to match ClickUp. ' +
                             'The pricing / Scope-of-Work conditions will reopen because the registered numbers changed.\n\n' +
-                            'Only do this for a file that was reconciled/closed in ClickUp and should now match.')) return;
+                            'Only do this for a file that was reconciled/closed in ClickUp and should now match.'))) return;
                           // Moving to Clear to Close locks the file + notifies the borrower — confirm first.
-                          if (a.action === 'confirm_ctc' && !window.confirm(
+                          if (a.action === 'confirm_ctc' && !(await askConfirm(
                             'Move this file to Clear to Close in PILOT?\n\n' +
                             'This is a major milestone: it locks the file’s loan structure and notifies the borrower ' +
-                            'that they’re clear to close. Only confirm if the file really is clear to close.')) return;
+                            'that they’re clear to close. Only confirm if the file really is clear to close.'))) return;
                           // The override advances a file PILOT has judged UNFINISHED — the
                           // exact thing the gate exists to stop happening by accident. Name
                           // the consequence, and say plainly that it is recorded.
-                          if (a.action === 'confirm_ctc_override' && !window.confirm(
+                          if (a.action === 'confirm_ctc_override' && !(await askConfirm(
                             'Move this file to Clear to Close even though it is NOT finished?\n\n' +
                             'PILOT checked and things are still outstanding on this file (listed above) — that can ' +
                             'include the signed term sheet package never having been executed.\n\n' +
                             'This locks the file’s loan structure and tells the borrower they’re clear to close. ' +
-                            'Your name and everything that was still outstanding are recorded on the file.')) return;
+                            'Your name and everything that was still outstanding are recorded on the file.'))) return;
                           return act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined });
                         }}>
                         {busyId === r.id ? '…' : a.label}

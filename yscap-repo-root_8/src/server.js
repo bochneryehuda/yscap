@@ -53,6 +53,10 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
+// Class Valuation callbacks — the appraisal vendor PUSHES order events to us. Same
+// discipline as the three above: its own small JSON parser + rate limit, mounted
+// before the global one, HTTP Basic (their contract) and failing closed.
+app.use('/api/class/callbacks', require('./routes/class-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -378,6 +382,21 @@ app.use('/api/apply', require('./routes/apply'));
 // after signing; resolves the real destination from our DB and 302s into the
 // portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
 app.use('/api/esign', require('./routes/esign-public'));
+// The Elementix approval's RETURN leg. PUBLIC on purpose and mounted HERE rather
+// than inside the admin staff wall below: Elementix completes the approval by
+// redirecting the person's BROWSER back to us, and a top-level navigation from
+// another origin cannot carry the portal's token (it lives in localStorage and
+// rides on fetch calls). Behind the wall this route could never run — the owner
+// signed in at Elementix and got "unauthenticated" back (2026-08-09). Its
+// credential is the single-use, 15-minute, 192-bit `state` plus the PKCE verifier
+// that never leaves our database, so holding the returned code is not enough to
+// plant an authorization. The rate limit exists only so this door cannot be used
+// to hammer the vendor's token endpoint. It must stay AHEAD of the gated
+// `/api/admin/elementix` and `/api/admin` mounts; the path itself is fixed — it is
+// the redirect_uri already registered with Elementix and stored on pending rows.
+app.use('/api/admin/elementix/callback',
+  rateLimit({ bucket: 'elementix-callback', windowMs: 60000, max: 30 }),
+  require('./routes/admin-elementix-callback'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
@@ -410,6 +429,9 @@ app.use('/api/appraisal', require('./routes/appraisal'));
 // auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
 // (src/amc/**, db/480); RTL only.
 app.use('/api/amc', require('./routes/amc'));
+// The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
+// Each answers only for itself; nothing here picks between them.
+app.use('/api/class', require('./routes/class'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -449,6 +471,11 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // Elementix (recorded deeds / mortgages over MCP) — the one-time OAuth approval,
   // the read-only capability probe, and the connection status. READ-ONLY vendor:
   // there is no write path to Elementix anywhere in this codebase.
+  // NOTE: the Elementix approval's RETURN leg (`/api/admin/elementix/callback`)
+  // is mounted PUBLICLY, further up with the other public routes, and is
+  // deliberately NOT part of this staff wall — Elementix brings the person back
+  // by redirecting their browser, which carries no portal token. See the comment
+  // at that mount; everything else about the connection stays gated here.
   app.use('/api/admin/elementix', requireAuth, requireStaff, require('./routes/admin-elementix'));
   // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
   // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
@@ -1037,6 +1064,11 @@ if (require.main === module) {
     // + the API key; read-only toward TrustPoint (webhook registration is the one
     // journaled write, and it only happens from the admin route).
     try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
+    // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
+    // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
+    // for the next unrelated callback to sweep it up, and on a quiet file there may
+    // not be one. Self-gated by CLASS_ENABLED, bounded, and it never throws.
+    try { require('./class/poller').start(); } catch (e) { console.warn('class poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY

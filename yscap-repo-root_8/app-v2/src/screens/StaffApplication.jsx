@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -55,6 +55,7 @@ import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
+import ClassAppraisalPanel from '../components/ClassAppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -1142,8 +1143,8 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
     } finally { setBusy(false); }
   }
 
-  function reorder() {
-    if (!window.confirm('This places a NEW flood order with Xactus and we will be charged again.\n\nOnly do this if the determination on file is wrong (for example the property address was corrected). Continue?')) return;
+  async function reorder() {
+    if (!(await askConfirm('This places a NEW flood order with Xactus and we will be charged again.\n\nOnly do this if the determination on file is wrong (for example the property address was corrected). Continue?'))) return;
     placeOrder(true);
   }
 
@@ -1901,7 +1902,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     if (!verified) {
       reason = window.prompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
       if (reason === null || !reason.trim()) return;   // reason is required (#125)
-    } else if (!window.confirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`)) return;
+    } else if (!(await askConfirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`))) return;
     setBusy(llc.id); setErr('');
     try {
       await api.staffVerifyLlc(llc.id, verified ? { verified: true } : { verified: false, reason: reason || undefined });
@@ -2536,7 +2537,7 @@ function StaffTrackRecordPanel({ app, role }) {
   const reviewTrDoc = useCallback(async (doc, action) => {
     let reason;
     if (action === 'delete') {
-      if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+      if (!(await askConfirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`))) return;
       setTrBusy(doc.id); setTrMsg('');
       try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); reloadAll(); }
       catch (e) { setTrMsg(e.message || 'Could not delete the document'); }
@@ -2957,7 +2958,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
     } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
   }
   async function remove() {
-    if (!window.confirm('Remove the co-borrower from this file? The borrower record is kept for other files.')) return;
+    if (!(await askConfirm('Remove the co-borrower from this file? The borrower record is kept for other files.'))) return;
     setBusy(true); setErr('');
     try { await api.staffSetCoBorrower(appId, { unlink: true }); await onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove the co-borrower'); } finally { setBusy(false); }
@@ -3222,7 +3223,7 @@ function ManualConditionDelete({ it, appId, onChanged }) {
   const [busy, setBusy] = useState(false);
   if (!isManualCondition(it)) return null;
   async function doDelete() {
-    if (!window.confirm(`Delete "${it.label}"? This removes the condition from the file.`)) return;
+    if (!(await askConfirm(`Delete "${it.label}"? This removes the condition from the file.`))) return;
     setBusy(true);
     try {
       await api.staffDeleteCondition(appId, it.id);
@@ -3230,7 +3231,7 @@ function ManualConditionDelete({ it, appId, onChanged }) {
     } catch (e) {
       if (e && e.status === 403 && e.data && e.data.code === 'needs_delete_request') {
         const who = e.data.creatorName || 'the person who added it';
-        if (window.confirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
+        if (await askConfirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
           const reason = window.prompt('Add a short note for them (optional):', '') || '';
           try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); showMessage(`Asked ${who} to delete it. They'll get a prompt.`); }
           catch (_) { showMessage('Could not send the request.'); }
@@ -3804,7 +3805,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       shows for it; this is its own always-available waive. */}
                   {(isLO || completer) && !signed && it.status !== 'satisfied' && !it.waived_at && (
                     <button className="btn ghost small" title="Waive the credit-card-for-appraisal condition (e.g. the appraisal is paid another way) — clears it without a card"
-                      onClick={() => { if (window.confirm('Waive the credit-card-for-appraisal condition? It clears without a card on file.')) onPatch(it.id, { waived: true }); }}>Waive</button>
+                      onClick={async () => { if (await askConfirm('Waive the credit-card-for-appraisal condition? It clears without a card on file.')) onPatch(it.id, { waived: true }); }}>Waive</button>
                   )}
                 </div>
               )}
@@ -4068,7 +4069,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
   // ADMIN: detach this file from its ClickUp card. Plain-language confirm; the
   // card is never deleted, the file just stops syncing until it is relinked.
   async function doUnlink() {
-    if (!window.confirm(`Unlink this file from its ClickUp card?\n\nThe ClickUp card is NOT deleted — the file just stops syncing with it until you link a card again. Use this when the wrong file is connected to the card.`)) return;
+    if (!(await askConfirm(`Unlink this file from its ClickUp card?\n\nThe ClickUp card is NOT deleted — the file just stops syncing with it until you link a card again. Use this when the wrong file is connected to the card.`))) return;
     setBusy('unlink'); setNote('');
     try {
       await api.clickupUnlink(app.id);
@@ -4093,7 +4094,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
       if (e && e.data && e.data.needsConfirm) {
         const h = e.data.holder || {};
         const who = [h.borrower, h.address].filter(Boolean).join(' — ') || 'another file';
-        if (window.confirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove the card to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review/archive.`)) {
+        if (await askConfirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove the card to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review/archive.`)) {
           return doRelink(true);
         }
         setNote('Move cancelled — nothing changed.');
@@ -4162,6 +4163,21 @@ const IconBell = () => (
 // mistake, then re-lock it. Shows the lock state to everyone; the Unlock / Re-lock
 // buttons are super-admin-only (the server enforces this too).
 const STRUCTURAL_LOCK_STATUSES = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
+// Names the vendor a desk belongs to. The Appraisal section carries TWO of them and
+// neither is the default, so each one has to say whose it is on its face — a person
+// must never be able to place an order without knowing which company gets it.
+function VendorHeading({ children }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 8px',
+      color: '#141B22', fontWeight: 700, fontSize: 15,
+    }}>
+      <span style={{ width: 4, height: 16, borderRadius: 2, background: '#AE8746', display: 'inline-block' }} />
+      {children}
+    </div>
+  );
+}
+
 function StructuralLockBanner({ app, role, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -4560,7 +4576,7 @@ export default function StaffApplication() {
       // carrying the gate's own explanation into the confirmation. Every
       // condition gets this for free: every refusal on this screen lands here.
       if (completing && !body.adminOverride && canOverride(role)) {
-        const extra = askOverride((items.find((x) => x.id === itemId) || {}).label, { blocked: msg });
+        const extra = await askOverride((items.find((x) => x.id === itemId) || {}).label, { blocked: msg });
         if (!extra) { setErr(msg); return; }
         return patch(itemId, { ...body, ...extra });
       }
@@ -4601,7 +4617,7 @@ export default function StaffApplication() {
     // Permanent delete — for a mistake-upload. Removes it for good (bytes + row)
     // and, crucially, keeps it out of SharePoint (a deleted doc was never needed).
     if (action === 'delete') {
-      if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+      if (!(await askConfirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`))) return;
       setBusyAct('review');
       try { await api.staffDeleteDoc(doc.id); flash('Document deleted for good.'); await load(); }
       catch (e) { setErr(e.message); }
@@ -4701,7 +4717,7 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Could not restore'); }
   }
   async function purgeApp() {
-    const ok1 = window.confirm('Delete this file PERMANENTLY? This removes the loan file and every document, condition and message under it, and it will disappear from all figures. This cannot be undone.');
+    const ok1 = await askConfirm('Delete this file PERMANENTLY? This removes the loan file and every document, condition and message under it, and it will disappear from all figures. This cannot be undone.');
     if (!ok1) return;
     const typed = window.prompt('This is permanent. Type DELETE to confirm.');
     if (typed !== 'DELETE') { if (typed !== null) setErr('Not deleted — you must type DELETE to confirm.'); return; }
@@ -4723,7 +4739,7 @@ export default function StaffApplication() {
           ...b.conditions.map(c => `• Condition: ${c.title} (${String(c.severity).replace(/_/g, ' ')})`),
           ...b.gates.map(g => `• Gate: ${g.label}`),
         ].join('\n');
-        if (isAdmin && window.confirm(`This file isn't ready for "${APP_STATUS_LABEL[status]}":\n\n${lines}\n\nOverride as admin and advance anyway?`)) {
+        if (isAdmin && await askConfirm(`This file isn't ready for "${APP_STATUS_LABEL[status]}":\n\n${lines}\n\nOverride as admin and advance anyway?`)) {
           try { await api.staffSetStatus(id, status, true); flash(`Status → ${APP_STATUS_LABEL[status]} (admin override).`); await load(); }
           catch (e2) { setErr(e2.message || 'Could not update status'); }
         } else {
@@ -4777,7 +4793,7 @@ export default function StaffApplication() {
     const title = cForm.title.trim();
     if (!title || busyAct) return;   // double-submit created the condition twice
     const reason = strayConditionReason(title);
-    if (reason && !window.confirm(strayConfirmText(reason, title))) return;
+    if (reason && !(await askConfirm(strayConfirmText(reason, title)))) return;
     setBusyAct('addcond');
     try {
       await api.staffAddLoanCondition(id, {
@@ -4797,7 +4813,7 @@ export default function StaffApplication() {
   // "override" means one thing on this screen (owner-directed 2026-07-27).
   async function overrideCond(cid, title) {
     if (busyAct) return;
-    const x = askOverride(title);
+    const x = await askOverride(title);
     if (!x) return;
     setBusyAct('cond:' + cid);
     try { await api.staffClearCondition(cid, x); flash('Cleared by override ✓ — recorded on the file'); await load(); }
@@ -4809,7 +4825,7 @@ export default function StaffApplication() {
     const label = newCond.trim();
     if (!label) return;
     const reason = strayConditionReason(label);
-    if (reason && !window.confirm(strayConfirmText(reason, label))) return;
+    if (reason && !(await askConfirm(strayConfirmText(reason, label)))) return;
     try { await api.staffAddCondition(id, { label, audience: 'staff', confirmStrayLabel: reason ? true : undefined }); setNewCond(''); flash('Added ✓'); await load(); }
     catch (e) { setErr(e.message || 'Failed'); }
   }
@@ -5968,8 +5984,16 @@ export default function StaffApplication() {
       </Section>
 
       <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
-        info="Order the appraisal directly from the AMC (AppraisalScope) with every field filled in and the right form picked automatically. Track its status, message the AMC back and forth, request revisions or dispute the value (ROV) with comps from the Property Research Center, and send documents up. Turns on once the CoreLogic login is set up.">
+        info="Order the appraisal with every field filled in and shown to you first. Two places can do it — AppraisalScope / NAN and Class Valuation — and you pick which one per file; neither is the default. Track the status, message them back and forth, request revisions or dispute the value, and send documents up. Each turns on once its login is set up.">
+      {/* TWO VENDORS, SIDE BY SIDE, NEITHER THE DEFAULT. The owner has not picked one
+          ("we don't need to set a default … none of them are ready right now"), so the
+          two desks sit next to each other under their own names and a person chooses.
+          Do NOT quietly grow a default here, and do NOT merge the two panels — each
+          answers only for its own vendor. */}
+      <VendorHeading>AppraisalScope / NAN</VendorHeading>
       <AmcAppraisalPanel appId={id} />
+      <VendorHeading>Class Valuation</VendorHeading>
+      <ClassAppraisalPanel appId={id} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"

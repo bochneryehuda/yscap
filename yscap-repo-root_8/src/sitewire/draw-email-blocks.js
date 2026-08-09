@@ -57,6 +57,46 @@ function moneyFromTrustpoint(row) {
 }
 
 /**
+ * A PORTAL-originated draw request, expressed in the ONE money vocabulary.
+ *
+ * A portal request (§5B — the borrower's or the staff composer's line-item pick on a physical-
+ * inspection file) does not exist in Sitewire until it is closed out as a historical draw, so it
+ * has no rollup entry to read. Its OWN row is the source of record in the meantime, and it is
+ * converted here — through the same `drawMoney` — rather than the caller hand-building figures.
+ *
+ * THE STATUS IT IS GIVEN IS DELIBERATE. An approved portal request is NOT passed as `approved`
+ * (which `drawMoney` reads as our FINAL approval): that would make the composer lead with a
+ * "to be released" headline and, with no fee resolved on this path, state "no draw fee on this
+ * release" — a claim we cannot make, because the file's draw fee is netted out later by the
+ * close-out. `pending_capital_partner` is the honest reading: a decision has been recorded and
+ * the release has not happened yet, so the APPROVED amount leads and no net is promised.
+ */
+function moneyFromPortalRequest(row) {
+  if (!row) return null;
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const decided = row.status === 'approved' || row.status === 'closed_out';
+  const lines = Array.isArray(row.lines) ? row.lines : [];
+  const m = APPROVAL.drawMoney({
+    draw: {
+      total_requested_cents: n(row.total_requested_cents),
+      total_approved_cents: row.approved_cents != null ? n(row.approved_cents) : 0,
+      status: decided ? 'pending_capital_partner' : 'inspecting',
+    },
+    // The per-line decision, once there is one. A null approved amount on a line means "not
+    // answered yet" and must stay null — `inspectorApproved` reads that as "no amounts", never
+    // as a confident $0.
+    requests: decided
+      ? lines.map((l) => ({
+        requested_cents: n(l && l.requested_cents),
+        approved_cents: (l && l.approved_cents != null) ? n(l.approved_cents) : null,
+      }))
+      : [],
+  });
+  m.number = `P${row.id}`;
+  return m;
+}
+
+/**
  * Build {figures, facts, stage, copy, money} for one draw, or null if it cannot be resolved.
  *
  * @param db              a pg pool/client
@@ -65,8 +105,10 @@ function moneyFromTrustpoint(row) {
  *                        project's budget picture, with no per-draw money, because there is no
  *                        single draw to be the headline)
  * @param borrower        borrower voice (never names the capital partner) vs the staff voice
+ * @param tpDraw          a `trustpoint_draws` row, for a TrustPoint-administered draw
+ * @param portalRequest   a `portal_draw_requests` row, for a draw that has not reached Sitewire yet
  */
-async function drawEmailBlocks(db, appId, { sitewireDrawId = null, borrower = false, tpDraw = null } = {}) {
+async function drawEmailBlocks(db, appId, { sitewireDrawId = null, borrower = false, tpDraw = null, portalRequest = null } = {}) {
   try {
     // The SOW state supplies the human labels for the budget lines. Optional everywhere else, so
     // a file whose Scope of Work has not been built still rolls up.
@@ -88,7 +130,7 @@ async function drawEmailBlocks(db, appId, { sitewireDrawId = null, borrower = fa
     // platform. NEVER match a tp_draw_id against sitewire_draw_id — different id spaces.
     const money = (sitewireDrawId != null
       ? draws.find((d) => Number(d.sitewire_draw_id) === Number(sitewireDrawId)) || null
-      : null) || moneyFromTrustpoint(tpDraw);
+      : null) || moneyFromTrustpoint(tpDraw) || moneyFromPortalRequest(portalRequest);
 
     // The dates a draw email should carry. Read from the draw row itself rather than the rollup,
     // which is a money view and deliberately carries no inspection/release timestamps.
@@ -133,4 +175,4 @@ async function drawEmailBlocks(db, appId, { sitewireDrawId = null, borrower = fa
   }
 }
 
-module.exports = { drawEmailBlocks };
+module.exports = { drawEmailBlocks, _internals: { moneyFromTrustpoint, moneyFromPortalRequest } };

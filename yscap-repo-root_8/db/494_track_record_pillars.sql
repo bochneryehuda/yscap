@@ -107,7 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_trp_expiring
   WHERE expires_at IS NOT NULL;
 
 COMMENT ON TABLE track_record_pillars IS
-  'db/491. Three verification pillars per track-record line: recency, ownership, exit. '
+  'db/494. Three verification pillars per track-record line: recency, ownership, exit. '
   'auto_* is what PILOT observed; human_* is what a person decided; they are different facts '
   'and never collapse. The sign-off gate reads human_verdict ONLY — nothing automatic '
   'satisfies a pillar, the same doctrine as db/485 and the advisory-only AI findings.';

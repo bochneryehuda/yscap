@@ -206,7 +206,7 @@ export default function ConditionActions({
                 <div className="cond-more-sep" />
                 <button className="btn ghost small" style={{ color: '#8A6D3B' }}
                   title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
-                  onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>
+                  onClick={async () => { const x = await askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>
                   Override — clear without meeting it
                 </button>
               </>

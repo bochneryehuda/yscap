@@ -10,10 +10,10 @@
  * disagree with reality. These drive `address-heal.healColumn` and
  * `ingest.upsertTrackRecord` themselves.
  *
- * 1. D3 — the boot address-heal must not un-verify the book. db/490 handed the
+ * 1. D3 — the boot address-heal must not un-verify the book. db/493 handed the
  *    comparison to `pilot_address_same_place`, whose key could not READ the one
  *    shape address-heal repairs (a geocoder's one-line puts a comma after the
- *    house number, which made the key empty and the guard fail closed). db/494
+ *    house number, which made the key empty and the guard fail closed). db/497
  *    fixes the key. These fixtures are the shapes address-heal's own WHERE clause
  *    selects, not invented ones.
  *

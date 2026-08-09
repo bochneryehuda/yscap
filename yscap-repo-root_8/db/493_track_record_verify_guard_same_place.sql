@@ -127,7 +127,7 @@ CREATE TRIGGER trg_track_record_verify_guard
   FOR EACH ROW EXECUTE FUNCTION track_record_verify_guard();
 
 COMMENT ON FUNCTION track_record_verify_guard() IS
-  'db/485 + db/490. Nothing lands verified; a MATERIAL edit returns a row to pending. '
+  'db/485 + db/493. Nothing lands verified; a MATERIAL edit returns a row to pending. '
   'The address comparison is SEMANTIC (pilot_address_same_place, db/415): a re-spelling '
   'of the same place is a repair, not a restatement, so the boot address-heal no longer '
   'un-verifies every line it fixes.';
@@ -150,7 +150,7 @@ BEGIN
   SELECT count(*) INTO bad FROM track_records
    WHERE verification_status NOT IN ('pending','docs','verified','limited');
   IF bad > 0 THEN
-    RAISE NOTICE 'db/490: % track_records row(s) carry an unknown verification_status; '
+    RAISE NOTICE 'db/493: % track_records row(s) carry an unknown verification_status; '
                  'leaving track_records_verification_status_check NOT VALID. '
                  'Fix the rows, then run: ALTER TABLE track_records VALIDATE CONSTRAINT '
                  'track_records_verification_status_check;', bad;
@@ -163,5 +163,5 @@ END $$;
 
 COMMENT ON COLUMN track_records.verification_status IS
   'pending | docs | verified | limited. ''verified'' and ''limited'' both COUNT toward '
-  'experience (track_record_counts_as_verified). Constrained by db/490; the authority on '
+  'experience (track_record_counts_as_verified). Constrained by db/493; the authority on '
   'whether a line counts is still is_verified, which only POST /track-records/:id/verify sets.';

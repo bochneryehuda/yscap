@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api.js';
 import DashboardCard from '../components/DashboardCard.jsx';
 import DashboardCardEditor from '../components/DashboardCardEditor.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * One dashboard: the hero row, the cards below it, and — for a dashboard you own — the
@@ -76,7 +77,7 @@ export default function StaffDashboard() {
 
   async function dropCard() {
     if (editing === 'new' || !editing) { setEditing(null); return; }
-    if (!window.confirm(`Remove "${editing.title}" from this dashboard?`)) return;
+    if (!(await askConfirm(`Remove "${editing.title}" from this dashboard?`))) return;
     await api.dashboardDropCard(dash.id, editing.id);
     setEditing(null);
     await load();

@@ -139,7 +139,7 @@ console.log('\n5b. D5 — a merge carries figures into the keeper, so the keeper
 
   /* The guard's material list, read out of the MIGRATION rather than restated
      here — a copy in the test would agree with itself forever. */
-  const sql = read('../db/490_track_record_verify_guard_same_place.sql');
+  const sql = read('../db/493_track_record_verify_guard_same_place.sql');
   const guard = sql.slice(sql.indexOf('IF addr_restated'), sql.indexOf('THEN\n    NEW.is_verified := false'));
   const material = new Set([...guard.matchAll(/NEW\.(\w+)\s+IS DISTINCT FROM/g)].map((m) => m[1]));
   ok(material.size >= 15, `the guard still watches ${material.size} named columns (plus the address)`);

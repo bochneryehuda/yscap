@@ -176,6 +176,48 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ok('D2 and carries NO visible Cc — this change is scoped to the draw process',
     !nonDraw || ![].concat(nonDraw.cc || []).length);
 
+  // ================================================ E. the rest of the draw emails
+  // Every remaining draw notification was converted to the same composer. These two prove the
+  // parts a pure test cannot reach: the real COLUMNS behind each money source, both read inside
+  // the same swallowing catch as everything else in `drawEmailBlocks`.
+  {
+    // A PORTAL request (§5B) — no Sitewire draw exists yet, so its own row is the money source.
+    const pr = (await db.query(
+      `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents)
+       VALUES ($1,'borrower','trinity',$2::jsonb,5000000) RETURNING *`,
+      [app, JSON.stringify([{ sitewire_job_item_id: JI, name: 'Roof', requested_cents: 5000000 }])])).rows[0];
+    const pb = await drawEmailBlocks(db, app, { portalRequest: pr, borrower: true });
+    ok('E1 a portal draw request builds its own money block', !!(pb && pb.figures));
+    eq('E2 leading with the REQUESTED amount, since nothing is inspected yet',
+      pb.figures.primary.value, '$50,000');
+    ok('E3 and it still carries the project budget facts', pb.facts && pb.facts.rows.some((r) => r.label === 'Rehab budget'));
+
+    // The coordinator records the decision — the shape approveTrinityRequest writes.
+    const decided = (await db.query(
+      `UPDATE portal_draw_requests SET status='approved', approved_cents=3345000, lines=$2::jsonb
+        WHERE id=$1 RETURNING *`,
+      [pr.id, JSON.stringify([{ sitewire_job_item_id: JI, name: 'Roof', requested_cents: 5000000, approved_cents: 3345000 }])])).rows[0];
+    const db2 = await drawEmailBlocks(db, app, { portalRequest: decided, borrower: true });
+    eq('E4 once reviewed, the APPROVED amount is the headline', db2.figures.primary.value, '$33,450');
+    ok('E5 and no wire amount is promised — this path has no resolved draw fee',
+      !/wired to you|no draw fee/i.test(String(db2.figures.primary.sub || '')));
+    await db.query(`DELETE FROM portal_draw_requests WHERE id=$1`, [pr.id]);
+  }
+  {
+    // A RECORDED RELEASE — the release email's figures come from the ledger, via the rollup.
+    await db.query(
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind)
+       VALUES ($1,$2,3345000,29900,0,3315100,CURRENT_DATE,'released','draw')`, [app, DRAW]);
+    const rb = await drawEmailBlocks(db, app, { sitewireDrawId: DRAW, borrower: true });
+    ok('E6 a released draw leads with the RELEASE, read from the ledger',
+      rb.figures && /Released/.test(rb.figures.primary.label) && rb.figures.primary.value === '$33,151');
+    ok('E7 the release DATE was read (proves the disbursement date query runs)',
+      rb.facts.rows.some((r) => r.label === 'Funds released on'));
+    ok('E8 and the draw fee that was netted out is stated',
+      rb.facts.rows.some((r) => /Draw processing fee/.test(r.label) && r.value === '$299'));
+    await db.query(`DELETE FROM draw_disbursements WHERE application_id=$1`, [app]);
+  }
+
   mailer.sendMail = realSend;
 
   // ================================================ cleanup

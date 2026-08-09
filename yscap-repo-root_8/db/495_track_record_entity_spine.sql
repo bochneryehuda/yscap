@@ -15,7 +15,7 @@
 -- Ten properties across two LLCs is therefore two Check A's and ten small
 -- Check B's, not ten full investigations. Check A's answer lives HERE (on
 -- llc_borrowers, the borrower-to-entity link); Check B's lives on the ownership
--- pillar in db/491.
+-- pillar in db/494.
 --
 -- ── WHY held_from / held_to EXIST ───────────────────────────────────────────
 -- Neither `llcs` nor `llc_borrowers` records WHEN the borrower held the entity.
@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_llc_ext_proposed
   ON llc_external_links(llc_id) WHERE state = 'proposed';
 
 COMMENT ON TABLE llc_external_links IS
-  'db/492. A data vendor''s view of one of our entities, kept BESIDE ours and never merged into '
+  'db/495. A data vendor''s view of one of our entities, kept BESIDE ours and never merged into '
   'llcs — merging would make our record look corroborated when all that happened is a name match '
   '(the db/131 rule). Born ''proposed''; only a human moves it to ''confirmed''.';
 
@@ -116,7 +116,7 @@ ALTER TABLE llcs
   ADD COLUMN IF NOT EXISTS internal_notes text;
 
 -- Added as a separate guarded statement so a pre-existing row carrying an
--- unexpected value cannot fail the whole boot (the db/490 pattern).
+-- unexpected value cannot fail the whole boot (the db/493 pattern).
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'llcs_status_check') THEN
@@ -130,7 +130,7 @@ DECLARE bad bigint;
 BEGIN
   SELECT count(*) INTO bad FROM llcs WHERE status NOT IN ('active','former','dissolved');
   IF bad > 0 THEN
-    RAISE NOTICE 'db/492: % llcs row(s) carry an unknown status; leaving llcs_status_check NOT VALID.', bad;
+    RAISE NOTICE 'db/495: % llcs row(s) carry an unknown status; leaving llcs_status_check NOT VALID.', bad;
   ELSE
     ALTER TABLE llcs VALIDATE CONSTRAINT llcs_status_check;
   END IF;

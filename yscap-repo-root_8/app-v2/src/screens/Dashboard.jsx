@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
 import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
+import { askConfirm } from '../lib/dialog.js';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -52,7 +53,7 @@ export default function Dashboard() {
     try { await api.unarchiveDraft(id); load(); } catch (e) { setErr(e.message || 'Could not restore'); } finally { setDraftBusy(null); }
   }
   async function removeDraft(id, label) {
-    if (!window.confirm(`Delete "${label || 'this draft application'}"? This can't be undone.`)) return;
+    if (!(await askConfirm(`Delete "${label || 'this draft application'}"? This can't be undone.`))) return;
     setDraftBusy(id);
     try { await api.deleteDraft(id); load(); } catch (e) { setErr(e.message || 'Could not delete'); } finally { setDraftBusy(null); }
   }
@@ -72,7 +73,7 @@ export default function Dashboard() {
     } catch (e) { setErr(e.message || 'Could not start the loan'); setScenBusy(null); }
   }
   async function removeScenario(s) {
-    if (!window.confirm(`Delete the saved scenario "${s.label}"?`)) return;
+    if (!(await askConfirm(`Delete the saved scenario "${s.label}"?`))) return;
     setScenBusy(s.id);
     try { await api.deletePricingScenario(s.id); load(); } catch (e) { setErr(e.message || 'Could not delete the scenario'); } finally { setScenBusy(null); }
   }

@@ -702,7 +702,7 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
 
        So the test is SEMANTIC, not positional: ask whether the incoming address
        is the same place we already hold, using the same `pilot_address_same_place`
-       db/490's verify guard uses, so the two can never disagree about what a
+       db/493's verify guard uses, so the two can never disagree about what a
        re-spelling is.
          · same place        -> write nothing. No churn, no un-verify. (D2)
          · a different place -> write it. A real correction lands, and it

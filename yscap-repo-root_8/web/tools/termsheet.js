@@ -1466,6 +1466,36 @@
     }
     return { fs: fs, lines: lines };
   }
+  /* ---------- a ONE-LINE slot: keep the meaning, shorten only the address -----
+     The recipient block's "Property: <address>   .   Valid through <date>" is a
+     single baseline that cannot stack (the "Prepared by" block sits 10.5pt
+     under it), so the fix here is the other half of the same family: shorten
+     the ADDRESS and keep the head and the "Valid through" tail WHOLE, because
+     the expiry is the legally meaningful part of that line.
+     The ladder mirrors the blessed one in src/lib/esign/orchestrate.js
+     fitAddress (drop the ZIP -> drop trailing parts -> ellipsis), measured in
+     PIXELS here rather than characters. A line that already fits is returned
+     byte-for-byte unchanged. */
+  function fitOneLine(doc, head, addr, tail, maxW, font, style, size) {
+    doc.setFont(font, style); doc.setFontSize(size);
+    var line = function (a) { return head + a + tail; };
+    if (doc.getTextWidth(line(addr)) <= maxW) return line(addr);
+    var parts = String(addr || "").split(",").map(function (p) { return p.trim(); }).filter(Boolean);
+    var cands = [];
+    if (parts.length > 1) {
+      var last = parts[parts.length - 1].replace(/\s+\d{5}(?:-\d{4})?$/, "").trim();   // the ZIP goes first
+      cands.push(parts.slice(0, -1).concat(last ? [last] : []).join(", "));
+      for (var n = parts.length - 1; n >= 1; n--) cands.push(parts.slice(0, n).join(", "));
+    }
+    for (var i = 0; i < cands.length; i++) if (doc.getTextWidth(line(cands[i])) <= maxW) return line(cands[i]);
+    var t = parts[0] || String(addr || "");                                            // last resort: clamp the street
+    while (t.length > 1 && doc.getTextWidth(line(t + "...")) > maxW) t = t.slice(0, -1);
+    var out = line(t + "...");
+    if (doc.getTextWidth(out) <= maxW) return out;
+    var w = line("");                                                                  // even the head + tail overflow
+    while (w.length > 1 && doc.getTextWidth(w + "...") > maxW) w = w.slice(0, -1);
+    return w + "...";
+  }
   function flash(msg) {
     var t = el("ts-toast"); if (!t) { t = document.createElement("div"); t.id = "ts-toast"; t.className = "ys-toast"; document.body.appendChild(t); }
     t.textContent = msg; t.classList.add("show"); clearTimeout(flash._t); flash._t = setTimeout(function () { t.classList.remove("show"); }, 2800);
@@ -1582,14 +1612,15 @@
         ? ("Vesting entity" + (_guar ? "  \u00b7  Guarantor" + (_tsIndiv0 && _tsCo0 ? "s" : "") + ": " + _guar : ""))
         : (_tsCo0 ? ("Borrower & co-borrower: " + _guar) : "Individual borrower");
       var purposeLabel = isRefi() ? (isCashOut() ? "Cash-out refinance" : "Rate & term refinance") : "Purchase";
-      var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
+      var whereHead = chk("addrTBD") ? "Property: To be determined" : "Property: ";
+      var whereAddr = chk("addrTBD") ? "" : ((val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
       doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(primaryName), M, y);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GOLD); doc.text(pdfSafe(progName), W - M, y, { align: "right" });
       y += 12.5;
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(partiesSub), M, y);
       doc.text(pdfSafe(purposeLabel + "  \u00b7  " + prettyStrategy(d.inp.strategy)), W - M, y, { align: "right" });
       y += 12.5;
-      doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
+      doc.text(fitOneLine(doc, pdfSafe(whereHead), pdfSafe(whereAddr), pdfSafe("   \u00b7   Valid through " + fmtD(exp)), W - 2 * M, "helvetica", "normal", 8), M, y); y += 14;
 
       if (needsManualStamp(d)) {
         // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL

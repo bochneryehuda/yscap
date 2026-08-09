@@ -4,7 +4,7 @@
 -- Found by the pre-merge audit of the 2026-08-09 track-record Phase 0 work,
 -- which ran the REAL `address-heal.healColumn` against a real database and
 -- showed that 3 of the 4 address shapes that pass actually still lost their
--- verification — the exact outcome db/490 was written to prevent.
+-- verification — the exact outcome db/493 was written to prevent.
 --
 -- ── THE ONE CHARACTER ───────────────────────────────────────────────────────
 -- `pilot_address_compare_key` (db/415) takes the house number off the front by
@@ -18,7 +18,7 @@
 -- `pilot_address_same_place` requires BOTH keys to be non-empty and equal, so an
 -- empty key fails closed — correct as a default, and exactly wrong here, because
 -- the comma form is PRECISELY what `src/lib/address-heal.js` selects for repair
--- (its own WHERE clause matches `^[0-9]+[A-Za-z]?, `). So db/490 handed the
+-- (its own WHERE clause matches `^[0-9]+[A-Za-z]?, `). So db/493 handed the
 -- comparison to a function that could not read either side of the very rewrite
 -- it was meant to forgive, and the heal went on dropping verifications.
 --
@@ -48,7 +48,7 @@
 -- test, so a street cannot be mistaken for a house number.
 --
 -- Idempotent: CREATE OR REPLACE of one function. Reads nothing, writes nothing,
--- deletes nothing. db/490's trigger picks the new behaviour up with no change,
+-- deletes nothing. db/493's trigger picks the new behaviour up with no change,
 -- because it calls the function rather than restating it.
 -- ============================================================================
 
@@ -71,7 +71,7 @@ BEGIN
 
   street_raw := COALESCE(NULLIF(btrim(v->>'line1'), ''), NULLIF(btrim(v->>'street'), ''), '');
 
-  /* db/494 — A ROW MAY CARRY ONLY A ONE-LINE ADDRESS. The audit found that the
+  /* db/497 — A ROW MAY CARRY ONLY A ONE-LINE ADDRESS. The audit found that the
      second shape `address-heal` repairs is a long geocoder one-line with NO
      `line1` at all, which returned '' here and so lost its verification on the
      very pass that fixed it.
@@ -130,7 +130,7 @@ BEGIN
   -- House number off the front. The hyphen is KEPT ("218-222" is one building
   -- written as a range) so two spellings of the same range still key alike.
   --
-  -- db/494: the TEST now runs on the token with punctuation removed — the same
+  -- db/497: the TEST now runs on the token with punctuation removed — the same
   -- string the assignment below has always used. A geocoder writes "26, South
   -- 10th Street", and testing the raw "26," failed, returned '' and made the
   -- whole address unreadable. This can only turn an unreadable address into a
@@ -177,7 +177,7 @@ BEGIN
 END; $$ LANGUAGE plpgsql IMMUTABLE;
 
 COMMENT ON FUNCTION pilot_address_compare_key(jsonb) IS
-  'db/415 + db/494. Semantic address key: house|street|state|zip5|unit. Deliberately UNDER-matches '
-  '— an address it cannot read returns '''' and fails closed. db/494 made the house-number test '
+  'db/415 + db/497. Semantic address key: house|street|state|zip5|unit. Deliberately UNDER-matches '
+  '— an address it cannot read returns '''' and fails closed. db/497 made the house-number test '
   'punctuation-insensitive so a geocoder one-line ("26, South 10th Street") is readable; without '
-  'that, db/490''s verify guard could not read the very shape address-heal repairs.';
+  'that, db/493''s verify guard could not read the very shape address-heal repairs.';
