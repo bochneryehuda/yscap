@@ -212,6 +212,11 @@ async function loadLine(trackRecordId, { role, canSignOff } = {}, client) {
       borrowerId: t.borrower_id,
       borrowerName: t.borrower_name || 'Unnamed borrower',
       address: addressLabel(t.property_address),
+      // The raw jsonb address so an inline edit can re-send it UNCHANGED (the PUT
+      // door always requires an address; db/485 only un-verifies on a real
+      // change, so re-sending the same object never resets the review or
+      // degrades the structured line1/city/state/zip to a bare one-line).
+      propertyAddressRaw: t.property_address || null,
       dealType: t.deal_type,
       purchaseDate: t.purchase_date,
       saleDate: t.sale_date,
@@ -222,6 +227,10 @@ async function loadLine(trackRecordId, { role, canSignOff } = {}, client) {
       purchasePrice: t.purchase_price,
       salePrice: t.sale_price,
       rehabAmount: t.rehab_amount,
+      rentAmount: t.rent_amount,
+      refiAmount: t.refi_amount,
+      currentValue: t.current_value,
+      ownedPersonally: t.owned_personally === true,
       isVerified: t.is_verified === true,
       verificationStatus: t.verification_status,
       docsStatus: t.docs_status,

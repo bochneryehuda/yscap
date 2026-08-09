@@ -582,20 +582,13 @@ function TrackRecord({ id, onOpenEntities }) {
       {rows.length === 0
         ? <div className="panel"><Empty t="No track-record entries." /></div>
         : (
-          <RecordLedger lens="borrower" lines={rows} docs={docsMap} todoByLine={todoByLine}
-            busyId={busy} msg={''} completer={canComplete(role)} canDelete={canDeleteDoc(role)}
-            onReviewDoc={reviewDoc} onOpenEntity={onOpenEntities ? () => onOpenEntities() : null}
-            extraActions={(t) => (
-              <>
-                <button className="btn soft small" disabled={busy === t.id} onClick={() => research(t)}
-                  title="Read the county’s public records for this property — works on any line, fills the three checks, never marks it verified by itself.">
-                  Check the records</button>
-                {t.is_verified
-                  ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
-                  : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}
-                    title="The final sign-off: makes this deal count toward experience. Needs a completed exit within 3 years.">Verify</button>}
-              </>
-            )} />
+          /* Every line opens in place into the shared <LineDetail>, which
+             carries Check-the-records / Verify / Revoke / documents / edit
+             natively — so the profile passes no lineActions, only the entity
+             cross-link. */
+          <RecordLedger lens="borrower" lines={rows} todoByLine={todoByLine}
+            maySignOff={canComplete(role)} canDelete={canDeleteDoc(role)} role={role} onChanged={reloadAll}
+            onOpenEntity={onOpenEntities ? () => onOpenEntities() : null} />
         )}
     </div>
     </>

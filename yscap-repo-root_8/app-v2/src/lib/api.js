@@ -646,6 +646,12 @@ export const api = {
   staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
+  /* Edit a line's own fields (address/entity/prices/dates/deal type) — the PUT
+     door writes ONLY the columns the body sent (trackRecordSentOnly guard), so
+     a partial edit never nulls what it did not touch, and never stamps a
+     verification (db/485 stays the one judge). Inline editing on the Track
+     Record Center (2026-08-09) instead of opening the embedded tool. */
+  staffUpdateTrackRecord:    (id, body) => req('PUT', `/api/staff/track-records/${id}`, body || {}),
   /* CHECK THE RECORDS — the per-line public-records research (verify-run.js).
      This is the button the owner expected "Verify" to be (2026-08-09): it reads
      the county's own records for THIS property and fills the three pillars; it

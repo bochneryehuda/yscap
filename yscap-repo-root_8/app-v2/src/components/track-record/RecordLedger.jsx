@@ -1,22 +1,28 @@
-import React from 'react';
+import React, { useState } from 'react';
+import LineDetail from './LineDetail.jsx';
 
-/* THE RECORD, AS A LEDGER (mega-workspace phase B/C, owner-directed
-   2026-08-09). One scroll, grouped the way the tool has always grouped it —
-   Fix & flip / Fix & hold / Ground-up, each with a count — plus the REO band:
-   every line that is NOT currently counting toward experience, each carrying
-   the REASON it is not. That band is the structural answer to "nothing should
-   get lost" (REO is DERIVED, never a fourth deal type — CLAUDE.md 2026-08-09).
+/* THE RECORD, AS A LEDGER (mega-workspace phase B/C, owner-directed 2026-08-09).
+   One scroll, grouped the way the tool has always grouped it — Fix & flip /
+   Fix & hold / Ground-up, each with a count — plus the REO band: every line
+   that is NOT currently counting toward experience, each carrying the REASON
+   it is not (REO is DERIVED, never a fourth deal type — CLAUDE.md 2026-08-09).
 
-   NOTHING HERE DECIDES ANYTHING. Which lines count, and why one does not, is
-   read off the track-record-todo endpoint (`todoLines` — the server's own
+   EVERY LINE OPENS IN PLACE (owner-directed 2026-08-09 "one screen, everything"):
+   the row shows the deal's headline figures right away, and "Open" expands the
+   SHARED <LineDetail> — the exact same component the full-screen workspace
+   renders — so the whole job (the Elementix check + the three verdicts +
+   override, verify, documents with preview/download/accept/reject/delete, edit,
+   notes) is done here without leaving the page. Which lines count, and why one
+   does not, is read off the track-record-todo endpoint (the server's own
    LINE_TODO wording, the same rule the sign-off gate uses); with the todo
-   unreadable it degrades to "verified = counting" and a generic reason. Every
-   action on a row is the SAME handler the flat list carried (request a
-   document / raise an issue / post a condition / accept-reject-delete a
-   document) — passed in, so this stays a pure arrangement of what existed. */
+   unreadable it degrades to "verified = counting" and a generic reason. */
 
 const INK = '#141B22';
 const MUTED = '#4B585C';
+
+const money = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+const day = (d) => (d ? String(d).slice(0, 10) : null);
+const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
 function bucketOf(dealType) {
   const s = String(dealType || '').toLowerCase();
@@ -43,21 +49,38 @@ function reoReason(line, todo) {
   return null; // counting
 }
 
-/* TWO LENSES, ONE LEDGER (phase D): the LOAN FILE passes the three per-line
-   file actions (request/raise/post — they mint conditions on that file) and
-   the doc review handlers; the borrower PROFILE has no file, so it omits them
-   — an absent handler simply renders no button — and passes `extraActions`
-   (verify / revoke / check-the-records, the profile's own verbs) plus
-   `onOpenEntity` so the entity pill cross-links to the Entities tab. */
+/* The headline figures shown on the collapsed row, so the money the owner
+   listed (purchase / exit / gross spread) is visible RIGHT AWAY without opening
+   the line. Computed from the row we already have — no fetch. */
+function figures(t) {
+  const pp = num(t.purchase_price);
+  const sp = num(t.sale_price);
+  const rehab = num(t.rehab_amount);
+  const bucket = bucketOf(t.deal_type);
+  const bits = [];
+  if (pp != null) bits.push(`Bought ${money(pp)}${day(t.purchase_date) ? ` · ${day(t.purchase_date)}` : ''}`);
+  if (bucket === 'hold' && num(t.rent_amount) != null) bits.push(`Rents ${money(t.rent_amount)}/mo`);
+  else if (bucket === 'hold' && num(t.refi_amount) != null) bits.push(`Refi ${money(t.refi_amount)}`);
+  else if (sp != null) bits.push(`Sold ${money(sp)}${day(t.sale_date) ? ` · ${day(t.sale_date)}` : ''}`);
+  if (sp != null && pp != null) bits.push(`Spread ${money(sp - pp - (rehab || 0))}`);
+  return bits.join('  ·  ');
+}
+
+/* TWO LENSES, ONE LEDGER: the LOAN FILE passes `lineActions` (its file verbs —
+   request/raise/post — injected into the expanded detail) ; the borrower
+   PROFILE passes none (LineDetail's own verify/check-records/revoke cover it)
+   and passes `onOpenEntity` so the entity pill cross-links to the Entities tab. */
 export default function RecordLedger({
-  lines, docs, todoByLine, busyId, msg, completer, canDelete,
-  onRequestDoc, onRaiseIssue, onPostCondition, onReviewDoc,
-  extraActions = null, onOpenEntity = null, lens = 'file',
+  lines, todoByLine, lens = 'file',
+  maySignOff, canDelete, role, onChanged,
+  onOpenEntity = null, lineActions = null,
 }) {
   const all = Array.isArray(lines) ? lines : [];
+  const [open, setOpen] = useState(() => new Set());
   if (!all.length) return null;
-  const waiting = all.filter((t) => !t.is_verified && (t.verification_status || 'pending') !== 'limited').length;
+  const toggle = (id) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
+  const waiting = all.filter((t) => !t.is_verified && (t.verification_status || 'pending') !== 'limited').length;
   const rows = all.map((t) => {
     const todo = (todoByLine && todoByLine[String(t.id)]) || null;
     return { t, todo, reo: reoReason(t, todo) };
@@ -69,59 +92,38 @@ export default function RecordLedger({
     const t = r.t;
     const pa = t.property_address || {};
     const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
-    const itemDocs = (docs && docs[t.id]) || [];
-    const openReqs = (t.doc_requests || []).filter((rq) => rq && rq.status !== 'satisfied');
+    const isOpen = open.has(t.id);
+    const figs = figures(t);
     return (
       <div key={t.id} style={{ padding: '5px 0 5px 10px', borderTop: '1px solid rgba(127,169,176,.15)', borderLeft: `3px solid ${r.reo ? 'var(--gold)' : (t.is_verified ? 'var(--teal, #2F7F86)' : 'rgba(127,169,176,.4)')}` }}>
         <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="small" style={{ flex: 1, minWidth: 160, color: INK }}>{addr}</span>
+          <button type="button" className="btn link small" style={{ padding: 0, color: INK, fontWeight: 600, flex: 1, minWidth: 160, textAlign: 'left' }}
+            aria-expanded={isOpen} onClick={() => toggle(t.id)} title="Open this project — every detail, the Elementix check, the documents, and every action">
+            {isOpen ? '▾ ' : '▸ '}{addr}
+          </button>
           {t.owned_personally
             ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
             : (t.entity_name
               ? (onOpenEntity
-                ? <button type="button" className="pill small" style={{ cursor: 'pointer' }}
-                    title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
+                ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
                 : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
               : null)}
           {t.verification_status && <span className="pill small">{t.verification_status}</span>}
-          {onRequestDoc && <button className="btn ghost small" disabled={busyId === t.id}
-            title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
-            onClick={() => onRequestDoc(t, addr)}>Request a document</button>}
-          {onRaiseIssue && <button className="btn ghost small" disabled={busyId === t.id}
-            title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
-            onClick={() => onRaiseIssue(t, addr)}>Raise an issue</button>}
-          {onPostCondition && <button className="btn ghost small" disabled={busyId === t.id}
-            title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
-            onClick={() => onPostCondition(t, addr)}>Post a condition</button>}
-          {extraActions && extraActions(t, addr)}
+          {!isOpen && <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>Open</button>}
         </div>
+        {figs && <div className="small" style={{ color: MUTED, padding: '2px 0 0 16px' }}>{figs}</div>}
         {r.reo && (
-          <div className="small" style={{ color: '#8A6D3B', padding: '1px 0 0 8px' }}>
-            Not counting: {r.reo}
+          <div className="small" style={{ color: '#8A6D3B', padding: '1px 0 0 16px' }}>Not counting: {r.reo}</div>
+        )}
+        {!isOpen && (r.todo || []).filter((x) => x.code !== 'open_request').slice(0, 2).map((x, i) => (
+          <div className="small" key={i} style={{ color: MUTED, padding: '1px 0 0 16px' }}>→ {x.title}</div>
+        ))}
+        {isOpen && (
+          <div style={{ padding: '8px 0 4px 0' }}>
+            <LineDetail trackRecordId={t.id} maySignOff={maySignOff} canDelete={canDelete} role={role}
+              onChanged={onChanged} extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
           </div>
         )}
-        {(r.todo || []).filter((x) => x.code !== 'open_request').slice(0, 2).map((x, i) => (
-          <div className="small" key={i} style={{ color: MUTED, padding: '1px 0 0 8px' }}>→ {x.title}</div>
-        ))}
-        {openReqs.map((rq) => (
-          <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
-            <span className="small muted" style={{ flex: 1, minWidth: 140 }}>↳ {rq.label}</span>
-            <span className="pill small">{rq.status}</span>
-          </div>
-        ))}
-        {itemDocs.map((d) => {
-          const rs = d.review_status || 'pending';
-          return (
-            <div className="row" key={d.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
-              <span className="small muted" style={{ flex: 1, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
-              <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-              {onReviewDoc && completer && rs !== 'accepted' && <button className="btn primary small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
-              {onReviewDoc && rs !== 'rejected' && <button className="btn link small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
-              {onReviewDoc && canDelete && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busyId === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
-              {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
-            </div>
-          );
-        })}
       </div>
     );
   };
@@ -133,16 +135,13 @@ export default function RecordLedger({
           border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: INK }}>
           <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
           Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
-          it is verified — read the closing statement, deed or lease on each one, then verify it.{' '}
+          it is verified — open each one, check the records, then verify it.{' '}
           <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
         </div>
       )}
       <div className="muted small" style={{ marginBottom: 6 }}>
-        {lens === 'borrower'
-          ? 'The record — check each past project against the county records, then verify it.'
-          : 'The record — raise a request against a specific past project and it becomes a named condition on this file.'}
+        The record — open any project to see every detail, run the Elementix check, review its documents, and verify it.
       </div>
-      {msg && <div className="small" style={{ color: 'var(--ok)', marginBottom: 6 }}>{msg}</div>}
       {GROUPS.map((g) => {
         const inGroup = counting.filter((r) => bucketOf(r.t.deal_type) === g.key);
         if (!inGroup.length) return null;

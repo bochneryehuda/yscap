@@ -2709,14 +2709,28 @@ function StaffTrackRecordPanel({ app, role }) {
         findingsOpen={((todo && todo.findings) || []).length}
         multiBorrower={people.length > 1} />
       {/* THE RECORD, AS A LEDGER — grouped the way the tool has always grouped
-          it, with the REO band carrying every not-counting line AND its reason
-          ("nothing entered is ever lost"). Same rows, same per-line handlers as
-          the flat list this replaces — the arrangement changed, the actions
-          did not. */}
-      <RecordLedger lines={trs} docs={trDocs} todoByLine={todoByLine}
-        busyId={trBusy} msg={trMsg} completer={completerTR} canDelete={canDeleteDoc(role)}
-        onRequestDoc={trRequestDoc} onRaiseIssue={trRaiseIssue}
-        onPostCondition={trPostCondition} onReviewDoc={reviewTrDoc} />
+          it, with the REO band carrying every not-counting line AND its reason.
+          Every line OPENS IN PLACE into the shared <LineDetail> (the same
+          component the full screen renders): the Elementix check, the three
+          verdicts + override, verify, documents with preview/download, and edit
+          — all here (owner-directed 2026-08-09 "one screen, everything"). The
+          loan file injects its file verbs (request/raise/post a condition on
+          THIS file) via `lineActions`; the doc review + verify are native. */}
+      <RecordLedger lines={trs} todoByLine={todoByLine} lens="file"
+        maySignOff={completerTR} canDelete={canDeleteDoc(role)} role={role} onChanged={reloadAll}
+        lineActions={(t, addr) => (
+          <>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Ask the borrower for a specific document on this past project — it becomes a condition on this file"
+              onClick={() => trRequestDoc(t, addr)}>Request a document</button>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Flag an internal issue about this past project — the borrower is NOT notified"
+              onClick={() => trRaiseIssue(t, addr)}>Raise an issue</button>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
+              onClick={() => trPostCondition(t, addr)}>Post a condition</button>
+          </>
+        )} />
       {/* THE PUBLIC-RECORDS WORKBENCH, IN THE LOAN FILE (owner-directed
           2026-08-09: "the Elementix stuff is still missing from the actual track
           record within the loan file … merge together, old information lives in
