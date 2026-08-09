@@ -151,6 +151,10 @@ export default function StaffTrackRecordWorkspace() {
         e.preventDefault();
         return;
       }
+      /* Never act on a card BEHIND an overlay, and never double-fire mid-save —
+         the on-card buttons disable while busy, so the keys match them
+         (pre-merge audit NITs 1+2). `?` and Escape are handled above. */
+      if (keysOpen || ask || busy) return;
       if (!detail || !Array.isArray(detail.cards)) return;
       const card = detail.cards[focusPillar];
       if (!card) return;
