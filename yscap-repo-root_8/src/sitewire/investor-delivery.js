@@ -101,6 +101,48 @@ function resolveFundingMode({ drawMode = null, fileMode = null, ruleMode = null,
   return resolveFundingModeAt({ drawMode, fileMode, ruleMode, companyMode }).mode;
 }
 
+// ---------------------------------------------------------------------------
+// WHAT THE INVESTOR SAID BACK
+// ---------------------------------------------------------------------------
+
+// The three real outcomes. 'questioned' is NOT a soft decline: an investor asking for one more
+// photo is the common case, and folding it into 'declined' would make the draw look dead on every
+// screen and stop the coordinator chasing the one thing that would unblock it.
+const ANSWERS = ['approved', 'questioned', 'declined'];
+
+const ANSWER_LABEL = {
+  approved: 'Approved — funding it',
+  questioned: 'Came back with a question',
+  declined: 'Declined',
+};
+
+// What each answer means for the draw, in one sentence, and what the desk should do next.
+const ANSWER_NEXT = {
+  approved: 'The investor is funding this draw. Record the release when the money moves — or, if they release directly, final approve to record it.',
+  questioned: 'The investor needs something before they will fund it. Answer their question, attach whatever they asked for, and re-send.',
+  declined: 'The investor will not fund this draw as it stands. Work out why with them, then either re-send or take it back to the borrower.',
+};
+
+/**
+ * Is this a real answer, and does it need anything with it?
+ * Returns { ok } or { ok:false, error } — a plain sentence the desk can show.
+ *
+ * A QUESTION OR A DECLINE MUST SAY WHAT THE INVESTOR ASKED. Recording "declined" with no reason
+ * gives the next person nothing to act on, which is the state this whole feature exists to end.
+ * An approval needs no note — the money speaks for itself.
+ */
+function answerProblem({ answer, note = null } = {}) {
+  const a = String(answer || '');
+  if (!ANSWERS.includes(a)) return { ok: false, error: 'Pick what the investor said: approved, came back with a question, or declined.' };
+  const n = String(note || '').trim();
+  if ((a === 'questioned' || a === 'declined') && n.length < 4) {
+    return { ok: false, error: a === 'questioned'
+      ? 'Write down what the investor asked for, so whoever picks this up knows what to send them.'
+      : 'Write down why the investor declined, so whoever picks this up knows what happened.' };
+  }
+  return { ok: true };
+}
+
 /**
  * Split ONE draw's money the way the investor needs to see it.
  *
@@ -284,6 +326,7 @@ function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = n
 module.exports = {
   MODES, DEFAULT_MODE, EMAILED_MODES, MODE_LABEL, MODE_HELP, AGREED_STATUSES,
   MODE_LEVELS, LEVEL_LABEL,
+  ANSWERS, ANSWER_LABEL, ANSWER_NEXT, answerProblem,
   resolveFundingMode, resolveFundingModeAt, investorMoney, deliveryEmail, composeRecipients, deliveryBlockers,
   _internals: { clean, usd },
 };

@@ -36,6 +36,7 @@ const releaseParty = require('../sitewire/release-party'); // who releases the m
 const autoRelease = require('../sitewire/auto-release');   // final approve writes the ledger when the INVESTOR releases
 const stageEvents = require('../sitewire/stage-events');   // when each draw reached each step, forward-only
 const drawAttachments = require('../sitewire/draw-attachments'); // invoices/receipts/photos ON a draw
+const drawSettings = require('../sitewire/draw-settings');       // every knob, its three levels, and which one won
 
 /**
  * EVERY OVERRIDE CAN CARRY ITS PROOF (owner-directed 2026-08-09: "when we override something, we
@@ -93,7 +94,7 @@ const drawWire = require('../lib/esign/draw-wire');
 // (moved verbatim, same fail-closed behaviour), because the AUTOMATIC ledger writer on final
 // approve reads them too — and two copies of a money resolver is exactly how one draw ends up with
 // two different answers about its own money on two screens.
-const { retainagePctFor, lienGateEnabled } = require('../sitewire/draw-settings');
+const { retainagePctFor, lienGateEnabled } = drawSettings;
 
 router.use(requireAuth, requireStaff);
 
@@ -1909,33 +1910,73 @@ router.post('/sync-directory', requirePermission('platform_setup'), async (req, 
 // ---- settings (wire turnaround hours, variance) ----
 router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
   const rows = (await db.query(`SELECT key, value FROM sitewire_settings`)).rows;
-  res.json({ settings: Object.fromEntries(rows.map((r) => [r.key, r.value])) });
+  // `settings` is the raw key→value map every existing caller already reads — unchanged. `catalog`
+  // is what the admin Draw Settings screen renders from: every knob, in plain words, with WHERE it
+  // can be answered, so no screen has to keep its own list (owner-directed 2026-08-09).
+  res.json({
+    settings: Object.fromEntries(rows.map((r) => [r.key, r.value])),
+    catalog: drawSettings.CATALOG,
+    company: drawSettings.resolveAll({ company: drawSettings.companyMapFrom(rows) })
+      .filter((e) => e.settable.company),
+    levels: drawSettings.LEVELS, level_labels: drawSettings.LEVEL_LABEL,
+  });
+});
+
+// ---- GET /files/:id/draw-settings — every knob for ONE file, and WHICH LEVEL decided it ----
+// The owner's "where did this come from?": a coordinator looking at a $250 fee should never have
+// to guess whether it came from the project, the capital provider or the company default.
+router.get('/files/:id/draw-settings', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const out = await drawSettings.resolvedFor(appId);
+  res.json(out);
 });
 router.patch('/settings', requirePermission('platform_setup'), async (req, res) => {
-  const allowed = new Set(['wire_turnaround_hours', 'variance_pct', 'stale_days', 'no_draw_days', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct', 'retainage_pct', 'require_lien_waivers']);
-  const PCT = new Set(['variance_pct', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct', 'retainage_pct']);
-  const DAYS = new Set(['stale_days', 'no_draw_days']);
+  // The allowlist is DERIVED from the settings catalog rather than retyped, so a knob added there
+  // is settable here in the same commit and the two can never drift (the old hard-coded list is
+  // exactly why several knobs were unreachable without a database edit).
+  const allowed = new Set(drawSettings.CATALOG.filter((e) => e.company).map((e) => e.company));
+  const byCompanyKey = new Map(drawSettings.CATALOG.filter((e) => e.company).map((e) => [e.company, e]));
+  const PCT = new Set([...allowed].filter((k) => (byCompanyKey.get(k) || {}).type === 'pct'));
+  const DAYS = new Set([...allowed].filter((k) => (byCompanyKey.get(k) || {}).type === 'days'));
+  const MONEY = new Set([...allowed].filter((k) => (byCompanyKey.get(k) || {}).type === 'money_cents'));
+  const CHOICE = new Set([...allowed].filter((k) => (byCompanyKey.get(k) || {}).type === 'choice'));
+  const BOOL = new Set([...allowed].filter((k) => (byCompanyKey.get(k) || {}).type === 'bool'));
   // Validate + coerce each value BEFORE storing — never persist garbage a reader must defensively clamp
   // (a stored "banana" / 500% / negative is a latent surprise). `undefined` = invalid → 400.
   const coerce = (k, v) => {
-    if (k === 'require_lien_waivers') {
+    if (BOOL.has(k)) {
       if (typeof v === 'boolean') return v;
       if (v === 'true' || v === 1 || v === '1') return true;
       if (v === 'false' || v === 0 || v === '0') return false;
       return undefined;
+    }
+    if (CHOICE.has(k)) {
+      const e = byCompanyKey.get(k);
+      return (e.choices || []).includes(String(v)) ? String(v) : undefined;
     }
     const n = Number(v);
     if (!Number.isFinite(n) || n < 0) return undefined;
     if (PCT.has(k)) return n <= 100 ? n : undefined;              // percentages: 0..100
     if (k === 'wire_turnaround_hours') return n <= 8760 ? Math.round(n) : undefined; // ≤ 1 year of hours
     if (DAYS.has(k)) return n <= 3650 ? Math.round(n) : undefined; // ≤ 10 years of days
+    // A money amount is integer cents, capped well under what a draw fee could ever be — a typo
+    // that stores $10,000,000 as a per-draw fee is worse than a refusal.
+    if (MONEY.has(k)) return n <= 100000000 ? Math.round(n) : undefined;
     return Math.round(n);
   };
   const updates = [];
   for (const k of Object.keys(req.body || {})) {
     if (!allowed.has(k)) continue;
     const val = coerce(k, req.body[k]);
-    if (val === undefined) return res.status(400).json({ error: `Invalid value for “${k}”. Percentages must be 0–100; hours/days a non-negative whole number; lien-waivers on/off.` });
+    if (val === undefined) {
+      const e = byCompanyKey.get(k) || {};
+      return res.status(400).json({ error: `Invalid value for “${e.label || k}”. `
+        + (CHOICE.has(k) ? `Pick one of: ${(e.choices || []).join(', ')}.`
+          : BOOL.has(k) ? 'It is on or off.'
+            : PCT.has(k) ? 'A percentage must be 0–100.'
+              : 'It must be a non-negative whole number.') });
+    }
     await db.query(`INSERT INTO sitewire_settings (key, value, updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [k, JSON.stringify(val)]);
     updates.push(k);
   }
@@ -2123,7 +2164,25 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // card needs no second call. Best-effort: the card simply does not render if it cannot be read.
     let release = null;
     try { release = await releaseParty.releaseStateFor(db, appId); } catch (_) {}
+    // WHAT THE INVESTOR SAID — the latest send per draw and the answer that came back, so the desk
+    // shows "with the investor since Tuesday" or "they asked for one more photo" instead of just
+    // "delivered". DISTINCT ON keeps the newest send per draw; a re-send is a separate row and the
+    // one being waited on is always the newest.
+    let investorDeliveries = [];
+    try {
+      investorDeliveries = (await db.query(
+        `SELECT DISTINCT ON (sitewire_draw_id)
+                id, sitewire_draw_id, funding_mode, note_buyer_label, sent_at, status,
+                answer, answered_at, answer_note, expected_funding_date,
+                investor_total_cents, to_borrower_cents, to_us_cents,
+                GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at))/86400)::int AS days_waiting
+           FROM draw_investor_deliveries
+          WHERE application_id=$1
+          ORDER BY sitewire_draw_id, sent_at DESC`, [appId])).rows;
+    } catch (_) { /* an older database has no answer columns — the desk simply shows less */ }
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
+      investor_deliveries: investorDeliveries,
+      investor_answers: investorDelivery.ANSWERS.map((a) => ({ answer: a, label: investorDelivery.ANSWER_LABEL[a], next: investorDelivery.ANSWER_NEXT[a] })),
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
       // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
@@ -3001,6 +3060,49 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
 });
 
 // ---- Investor delivery CONTACTS (per note buyer) ----
+// ---- POST /files/:id/draws/:drawId/investor-answer — what the investor said back ----
+// Until now PILOT recorded only that we SENT a draw, so "with the investor" was a dead end that
+// only a reminder ever escaped. This records the answer, the date, who wrote it down, their own
+// words, and — on an approval — when they say the money will move.
+router.post('/files/:id/draws/:drawId/investor-answer', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const chk = investorDelivery.answerProblem({ answer: b.answer, note: b.note });
+  if (!chk.ok) return res.status(400).json({ error: chk.error });
+  let funding = null;
+  if (b.expected_funding_date != null && b.expected_funding_date !== '') {
+    funding = sanitizeDateOnly(b.expected_funding_date);
+    if (!funding) return res.status(400).json({ error: 'The expected funding date must be a valid calendar date (YYYY-MM-DD).' });
+  }
+  // The answer belongs to the delivery it answers — the LATEST send for this draw. A re-send is a
+  // new row (the investor genuinely received two emails), so answering always lands on the one
+  // they are actually replying to, and an older send keeps whatever it was answered with.
+  const upd = (await db.query(
+    `UPDATE draw_investor_deliveries SET answer=$3, answered_at=now(), answered_by=$4,
+            answer_note=$5, expected_funding_date=$6
+      WHERE id = (SELECT id FROM draw_investor_deliveries
+                   WHERE application_id=$1 AND sitewire_draw_id=$2 AND status='sent'
+                   ORDER BY sent_at DESC LIMIT 1)
+      RETURNING *`,
+    [appId, drawId, String(b.answer), req.actor.id, b.note ? String(b.note).slice(0, 2000) : null, funding])).rows[0];
+  if (!upd) return res.status(409).json({ error: 'This draw has not been delivered to the investor yet — send it first, then record what they said.' });
+  try {
+    await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_answer',
+      oldValue: null, newValue: { answer: upd.answer, expected_funding_date: funding, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) {}
+  // The answer IS a stage change — it is the rung the ladder could never see.
+  try {
+    await stageEvents.record(appId, { sitewireDrawId: drawId },
+      upd.answer === 'approved' ? 'investor_approved' : 'with_investor', {
+        detail: `Investor ${investorDelivery.ANSWER_LABEL[upd.answer] || upd.answer}${upd.answer_note ? ' — ' + String(upd.answer_note).slice(0, 160) : ''}`,
+        actorStaffId: req.actor.id, source: 'pilot', force: upd.answer !== 'approved',
+      });
+  } catch (_) {}
+  res.json({ ok: true, delivery: upd, label: investorDelivery.ANSWER_LABEL[upd.answer], next: investorDelivery.ANSWER_NEXT[upd.answer] });
+});
+
 router.get('/investor-contacts', requirePermission('manage_draws'), async (req, res) => {
   try { res.json({ contacts: await investorSend.allContacts() }); }
   catch (e) { res.status(500).json({ error: 'server error' }); }

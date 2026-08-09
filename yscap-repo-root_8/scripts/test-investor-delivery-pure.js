@@ -196,4 +196,23 @@ eq(ID.deliveryBlockers({ ...OKF, mode: 'manual', wireForm: pendingWire }).filter
 eq(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct' }).length, 0,
   'G7 with no wireForm supplied the gate is skipped (pure/legacy callers)');
 
+// ---------------------------------------------------------------- H. what the investor said back
+// Until this, PILOT recorded only that we SENT a draw — "with the investor" was a dead end that
+// only a reminder ever escaped.
+eq(ID.ANSWERS.join(','), 'approved,questioned,declined', 'H1 the three real outcomes');
+ok(ID.ANSWERS.every((a) => ID.ANSWER_LABEL[a] && ID.ANSWER_NEXT[a]), 'H2 every answer says what it means AND what to do next');
+// 'questioned' is NOT a soft decline — an investor asking for one more photo is the common case,
+// and folding it into 'declined' would make the draw look dead and stop anybody chasing it.
+ok(!/declin/i.test(ID.ANSWER_LABEL.questioned), 'H3 a question is never worded as a decline');
+ok(/re-?send|send them/i.test(ID.ANSWER_NEXT.questioned), 'H4 …and its next step is to answer and re-send');
+
+ok(ID.answerProblem({ answer: 'approved' }).ok, 'H5 an approval needs no note — the money speaks for itself');
+ok(!ID.answerProblem({ answer: 'questioned' }).ok, 'H6 a question must say what they asked for');
+ok(!ID.answerProblem({ answer: 'declined' }).ok, 'H7 a decline must say why');
+ok(ID.answerProblem({ answer: 'questioned', note: 'one more roof photo' }).ok, 'H8 …and with the reason it records');
+ok(!ID.answerProblem({ answer: 'questioned', note: '   a ' }).ok, 'H9 whitespace is not a reason');
+ok(!ID.answerProblem({ answer: 'maybe', note: 'x' }).ok, 'H10 an answer outside the three is refused');
+ok(!ID.answerProblem({}).ok, 'H11 …as is no answer at all');
+ok(/what the investor said/i.test(ID.answerProblem({}).error), 'H12 every refusal is a plain sentence a person can act on');
+
 console.log(`test-investor-delivery-pure: all ${n} investor-delivery rule checks passed.`);
