@@ -231,7 +231,10 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('I8c the plain-text alternative is a string too', typeof msg.text, 'string');
   ok('I8d the HTML is a real rendered document', /<html|<table|<div/i.test(String(msg.html)));
   ok('I8e nothing rendered as [object Object]', !/\[object Object\]/.test(String(msg.html) + String(msg.text)));
-  ok('I8f the subject names the draw and the property', /Draw #1/.test(msg.subject) && /Parrish/.test(msg.subject));
+  // "Draw 1", not "Draw #1" — the owner's own wording (2026-08-09), and the SAME label every other
+  // draw email leads its subject with, so an investor's inbox reads like ours.
+  ok('I8f the subject names the draw and the property', /\bDraw 1\b/.test(msg.subject) && /Parrish/.test(msg.subject));
+  ok('I8f2 …and never the old "Draw #1" form', !/Draw\s*#/.test(String(msg.subject)));
   ok('I8g it comes from the draw desk', /draws@yscapgroup\.com/.test(String(msg.from)));
   ok('I8h replies go to the draw desk', /draws@yscapgroup\.com/.test(String(msg.replyTo)));
   ok('I8i the borrower is not on the actual message', !JSON.stringify([msg.to, msg.cc, msg.bcc]).toLowerCase().includes(email.toLowerCase()));

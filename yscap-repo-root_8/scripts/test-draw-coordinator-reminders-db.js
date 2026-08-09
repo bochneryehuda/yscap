@@ -98,8 +98,18 @@ const PARTNERS = ['BlueLake', 'Blue Lake', 'Fidelis', 'Churchill', 'RCN', 'Templ
   await db.query(
     `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, accepted_at, delivered_at)
      VALUES ($1,$2,'accepted', now()-interval '1 day', now()-interval '2 days')`, [app.id, DRAW]);
-  reset(); const cNoBuyer = await D.investorPendingDeliveryOnce();
-  assert.ok(cNoBuyer === 0 && !to(cemail), 'investor-pending: a file with no note buyer raises no deliver-to-investor nudge');
+  reset(); await D.investorPendingDeliveryOnce();
+  // SCOPED TO THIS FILE, not to the sweep's RETURN COUNT. The count is global — it answers "did
+  // any file anywhere in this database need a nudge?" — so asserting it is 0 quietly required the
+  // whole test database to hold no other deliverable draw. It held only while no other suite left
+  // one, and a suite added later (the table-funding one, whose fixtures are legitimately accepted-
+  // but-undelivered draws) made it fail with nothing wrong on either side. `cemail` is unique to
+  // this run, so the recipient check is the assertion that was always meant, and the stamp check
+  // proves the sweep did not act on THIS application either.
+  assert.ok(!to(cemail), 'investor-pending: a file with no note buyer raises no deliver-to-investor nudge');
+  assert.ok(!(await db.query(
+    `SELECT 1 FROM audit_log WHERE action='investor_pending_delivery' AND entity_id=$1 LIMIT 1`, [app.id])).rows[0],
+  'investor-pending: …and the sweep left no stamp on this file');
   // Set the note buyer → the coordinator is reminded to deliver.
   await db.query(`UPDATE applications SET lender='Fidelis' WHERE id=$1`, [app.id]);
   reset(); const cPend = await D.investorPendingDeliveryOnce();

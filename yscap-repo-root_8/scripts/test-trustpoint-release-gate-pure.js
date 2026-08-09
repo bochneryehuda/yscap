@@ -120,8 +120,14 @@ async function releaseGate() {
   const borrower = notes.find((n) => n.to === 'borrower');
   assert.ok(borrower, 'the borrower is told about a real release');
   assert.ok(/\$10,437\.50/.test(borrower.body), 'the borrower sees the stated net, not approved−fees');
-  // owner-directed: the draw number rides the SUBJECT (the template builds `title · file tag`)
-  assert.ok(/#1/.test(borrower.title), `the subject names which draw it is — got "${borrower.title}"`);
+  // OWNER-DIRECTED 2026-08-09: the draw number LEADS the subject line, and it does so as its own
+  // `drawTag` opt rather than being spelled inside the title — `template.render` prints it first
+  // ("Draw 1 · Your construction draw has been released · …"). This stub captures the notify OPTS,
+  // so the tag is what to assert; asserting on the title would now be asserting on the old shape.
+  assert.strictEqual(borrower.drawTag, 'Draw 1',
+    `the subject leads with which draw it is — got drawTag ${JSON.stringify(borrower.drawTag)}`);
+  assert.ok(!/#\s*1\b/.test(borrower.title),
+    `and the number is no longer spelled inside the title too — got "${borrower.title}"`);
   // The draw desk + officer loop-in MOVED from a per-call-site `bccExtra` to a VISIBLE Cc applied
   // centrally for every 'draws' notification (owner-directed 2026-08-03: one email, everybody on
   // it, so a reply reaches them all). This suite stubs `notify` wholesale, so it can no longer see

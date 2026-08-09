@@ -166,6 +166,24 @@ function parseRpcBody(text, contentType) {
 
 const HTTP_TIMEOUT_MS = 30000;
 
+/**
+ * The Authorization scheme that goes on the wire. Elementix's own token
+ * response spells `token_type: "bearer"` (lowercase), and its MCP endpoint
+ * then refuses that exact spelling as "No authorization provided" — verified
+ * live 2026-08-09: the SAME stored token answered 401 sent as `bearer …` and
+ * 200 sent as `Bearer …`. RFC 9110 makes the scheme case-insensitive, so the
+ * canonical spelling is also correct against every compliant server — which is
+ * why this normalizes rather than special-cases Elementix. Reconnecting can
+ * never fix this one: the vendor issues the lowercase spelling on every grant
+ * and every refresh, so the row will always store it; the wire is the one
+ * place to canonicalize, and this is the one function that composes the wire.
+ * A scheme that is not Bearer at all passes through verbatim.
+ */
+function bearerScheme(tokenType) {
+  const t = String(tokenType || '').trim();
+  return !t || /^bearer$/i.test(t) ? 'Bearer' : t;
+}
+
 async function post(body, token, tokenType) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), HTTP_TIMEOUT_MS);
@@ -173,7 +191,7 @@ async function post(body, token, tokenType) {
     const headers = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
-      authorization: `${tokenType || 'Bearer'} ${token}`,
+      authorization: `${bearerScheme(tokenType)} ${token}`,
     };
     if (session.id) headers['mcp-session-id'] = session.id;
     const r = await fetch(URL_OF(), { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
@@ -490,5 +508,5 @@ module.exports = {
   callTool, listTools, budget, paidThisMonth, usage,
   available, enabled, dryrun,
   PAID_TOOLS,
-  _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState },
+  _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState, bearerScheme },
 };
