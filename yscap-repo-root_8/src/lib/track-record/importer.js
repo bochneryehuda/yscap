@@ -608,7 +608,7 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
       confidence === 'none' ? null : (hit ? hit.id : null), confidence,
       JSON.stringify(why),
       dropped.length
-        ? `[auto] ${dropped.join(', ')} could not be stored (bigger than a real figure can be) and was left blank — the raw record still holds it.`
+        ? `[auto] ${dropped.join(', ')} could not be stored as a real figure and was left blank — the raw record still holds what the vendor sent.`
         : null]);
 
   return { staged: true, id: ins.rows[0].id };
