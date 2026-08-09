@@ -54,21 +54,59 @@ const monitor = require('../src/lib/integrations/monitor');
     if (mins == null) delete process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN; else process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN = mins;
   };
   try {
-    // describe() must read the SAME env vars start() reads, so the page can never
-    // advertise a schedule the monitor is not running.
+    // ON BY DEFAULT (owner-directed 2026-08-09, "turn on the down alerts"). An unset env var
+    // means the alerts run; only an explicit '0' turns them off.
     set(null, null);
-    assert.deepStrictEqual(monitor.describe(), { enabled: false, intervalMin: 15 }, 'unset = off, 15 min');
+    assert.deepStrictEqual(monitor.describe(),
+      { enabled: true, intervalMin: 15, switchKey: 'INTEGRATIONS_MONITOR_ENABLED' }, 'unset = ON, 15 min');
+    set('0', '15');
+    assert.strictEqual(monitor.describe().enabled, false, 'an explicit 0 turns the alerts off');
     set('1', '30');
-    assert.deepStrictEqual(monitor.describe(), { enabled: true, intervalMin: 30 }, 'env values are honoured');
+    assert.deepStrictEqual(monitor.describe().enabled, true, 'an explicit 1 is still honoured');
+    assert.strictEqual(monitor.describe().intervalMin, 30, 'the interval env value is honoured');
     // Anything under the 5-minute floor is clamped, and junk falls back — the page must
     // never print "checking every 0 minutes".
     set('1', '1');
     assert.strictEqual(monitor.describe().intervalMin, 5, 'interval is clamped to the 5-minute floor');
     set('1', 'nonsense');
     assert.strictEqual(monitor.describe().intervalMin, 15, 'unparseable interval falls back to 15');
-    // Only an exact '1' turns it on — start() refuses everything else, so describe() must too.
-    for (const v of ['0', 'true', 'yes', '']) { set(v, '15'); assert.strictEqual(monitor.describe().enabled, false, `"${v}" does not enable`); }
+    // Everything that is not the literal '0' leaves the alerts on — a typo must never
+    // silently stop the only thing watching these services.
+    for (const v of ['', 'true', 'yes', 'off']) { set(v, '15'); assert.strictEqual(monitor.describe().enabled, true, `"${v}" does not switch it off`); }
   } finally { process.env = env; }
+
+  /* THE SWITCH, not the env var, is the authority — that is what makes the toggle on the
+     API Health page work without a redeploy. The flag cache is a synchronous in-memory map,
+     so an override can be set here with no database. */
+  {
+    const env2 = { ...process.env };
+    const flags = require('../src/lib/flags');
+    const switches = require('../src/lib/integrations/switches');
+    try {
+      delete process.env.INTEGRATIONS_MONITOR_ENABLED;           // env default = ON
+      flags._internals.setOverrideForTest('INTEGRATIONS_MONITOR_ENABLED', false);
+      assert.strictEqual(monitor.describe().enabled, false, 'an admin override to OFF beats the env default');
+      assert.strictEqual(switches.effective('INTEGRATIONS_MONITOR_ENABLED').overridden, true, 'the page is told it is overridden');
+      process.env.INTEGRATIONS_MONITOR_ENABLED = '0';            // env default = OFF
+      flags._internals.setOverrideForTest('INTEGRATIONS_MONITOR_ENABLED', true);
+      assert.strictEqual(monitor.describe().enabled, true, 'an admin override to ON beats an env default of off');
+      flags._internals.clearOverrideForTest('INTEGRATIONS_MONITOR_ENABLED');
+      assert.strictEqual(monitor.describe().enabled, false, 'clearing the override falls back to the env default');
+    } finally { flags._internals.clearOverrideForTest('INTEGRATIONS_MONITOR_ENABLED'); process.env = env2; }
+  }
+
+  // It is the ONE platform-level switch: no card owns it, so the health registry's
+  // per-integration filter must never attach it to one.
+  {
+    const switches = require('../src/lib/integrations/switches');
+    const m = switches.BY_KEY.INTEGRATIONS_MONITOR_ENABLED;
+    assert.ok(m, 'the monitor switch is in the allowlist, so the toggle/reset endpoints accept it');
+    assert.strictEqual(m.integration, null, 'it belongs to no integration card');
+    assert.strictEqual(!!m.dangerous, false, 'it sends nothing outward but our own admin email — no typed confirm');
+    assert.strictEqual(!!m.resume, false, 'the timer re-reads it every tick, so it needs no restart to resume');
+    const owned = switches.list().filter((s) => s.integration === null).map((s) => s.key);
+    assert.deepStrictEqual(owned, ['INTEGRATIONS_MONITOR_ENABLED'], 'it is the only card-less switch');
+  }
 
   // downSinceFor: the row supplies HOW LONG, the live probe decides WHETHER.
   const ROW = { down_since: '2026-07-18T09:00:00.000Z' };
