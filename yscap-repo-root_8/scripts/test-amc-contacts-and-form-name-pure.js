@@ -192,7 +192,11 @@ ok(ob.missingRequired(ph).some((m) => /email or phone/i.test(m)),
 // "Keystone" and a surname "Realty" — a person who does not exist.
 const co = personFrom('PropertyAccess', { company: 'Keystone Realty', workPhone: '555-9' });
 ok(co && co.firstName === null && co.lastName === null, 'a company is never split into a fake first and last name');
-ok(co.company === 'Keystone Realty' && co.phone === undefined, 'the company travels as the company');
+// NOTE the field is `workPhone`, not `phone` — an earlier cut asserted `co.phone ===
+// undefined`, which is unconditionally true (personFrom never emits that key) and so
+// pinned nothing. A test that cannot fail is worse than no test.
+ok(co.company === 'Keystone Realty' && co.workPhone === '555-9',
+   'the company travels as the company, with its number');
 
 // (c) THE THREE ANSWERS MUST AGREE. A property contact with a company name and no way
 // to reach them used to set bestContact to 'Agent' while the screen said nobody was on
@@ -237,6 +241,33 @@ ok(splitName('').firstName === null, 'a blank name splits to nothing');
      'the order screen never falls back from the ordered form’s name to the auto-picked one');
   ok(/formLabel\(formName, code\)/.test(panel),
      'and it renders the pair through formLabel, which shows "Form #<code>" when there is no name');
+}
+
+// ---------------------------------------------------------------------------
+// 9. BOTH APPRAISAL DESKS ANSWER THE SAME QUESTION THE SAME WAY
+// ---------------------------------------------------------------------------
+// The placeholder rule was written into the SHARED module for both vendors and then
+// wired into one of them. The Class desk kept sending `noemail+…@clickup.local` as
+// the borrower's contact — and it satisfied Class's own borrower-contact gate, so an
+// order was placeable whose only way to reach the borrower goes nowhere.
+{
+  const classBuild = require('../src/class/order-build');
+  const ctx = {
+    referenceNumber: 'YSCAP1', productId: 42,
+    property: { addressLine: '1 A St', city: 'Town', state: 'NJ', postalCode: '07090', category: 'sfr', occupancy: 'investment' },
+    loan: { loanNumber: 'YSCAP1' },
+    borrower: { firstName: 'Yakov', lastName: 'Weiss', email: 'noemail+t9@clickup.local' },
+    lender: { clientName: 'YS Capital Group' },
+  };
+  const out = classBuild.buildOrder(ctx);
+  ok(!JSON.stringify(out.body).includes('clickup.local'),
+     'the Class order never carries the manufactured address either');
+  ok(out.missing.some((m) => m.field === 'contacts.reachable'),
+     'and Class refuses the order for the same reason the AMC does — a name is not a way to reach somebody');
+  // A real address still travels, on both desks.
+  const real = classBuild.buildOrder({ ...ctx, borrower: { ...ctx.borrower, email: 'y@x.com' } });
+  ok(JSON.stringify(real.body).includes('y@x.com'), 'a real address still reaches Class');
+  ok(!real.missing.some((m) => /^contacts\./.test(m.field)), 'and that order is not refused');
 }
 
 console.log(`\n[test-amc-contacts-and-form-name-pure] ${pass} passed, ${fail} failed`);

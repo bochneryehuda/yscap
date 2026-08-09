@@ -81,7 +81,7 @@ export default function ClassAppraisalPanel({ appId }) {
     try {
       const pv = await api.classPreview(appId, ov || {});
       setPreview(pv || null);
-    } catch (e) { setErr(e.message || 'Could not load the order preview.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load the order preview.'); }
   }, [appId]);
 
   const loadOrders = useCallback(async () => {
@@ -129,7 +129,7 @@ export default function ClassAppraisalPanel({ appId }) {
         setErr((out && out.message) || 'Could not place the order.');
       }
     } catch (e) {
-      setErr(e.message || 'Could not place the order.');
+      setErr(refusal(e.data) || e.message || 'Could not place the order.');
     }
     setBusy(false);
   }, [appId, overrides, load, loadOrders]);
@@ -263,6 +263,18 @@ const fmtDay = (d) => { if (!d) return null; try { return new Date(d).toLocaleDa
 const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleString('en-US'); } catch (_) { return ''; } };
 
 // The orders already placed on this file, with everything Class has told us since.
+// A refused action, in the words the SERVER used. `api.js` throws with `e.message`
+// set to the error CODE, so without reading the body the desk shows "not_connected"
+// where the server wrote a plain sentence a person can act on. Same helper, same
+// wording, as the other appraisal desk — a refusal must read the same on both.
+function refusal(out) {
+  if (!out) return '';
+  if (Array.isArray(out.missing) && out.missing.length) {
+    return 'Still needed: ' + out.missing.map((m) => (m && m.field ? (m.why || m.field) : m)).join(', ');
+  }
+  return out.message || '';
+}
+
 function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
   const rows = (data && data.orders) || [];
   if (!rows.length) return null;
@@ -323,7 +335,7 @@ function OrderDetail({ appId, order, onChanged }) {
   const [draft, setDraft] = useState('');
 
   const load = useCallback(async () => {
-    try { setThread(await api.classThread(appId, order.id)); } catch (e) { setErr(e.message || 'Could not load the conversation.'); }
+    try { setThread(await api.classThread(appId, order.id)); } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load the conversation.'); }
   }, [appId, order.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -340,7 +352,7 @@ function OrderDetail({ appId, order, onChanged }) {
       if (!(out && out.ok)) setErr((out && out.message) || 'We could not deliver that to Class. It is saved here and can be sent again.');
       await load();
     } catch (e) {
-      setErr(e.message || 'We could not deliver that to Class. It is saved here.');
+      setErr(refusal(e.data) || e.message || 'We could not deliver that to Class. It is saved here.');
       await load();
     }
     setBusy(false);
@@ -352,7 +364,7 @@ function OrderDetail({ appId, order, onChanged }) {
       const out = await api.classThreadSync(appId, order.id);
       if (!(out && out.ok)) setErr((out && out.message) || 'Could not check with Class right now.');
       await load();
-    } catch (e) { setErr(e.message || 'Could not check with Class right now.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not check with Class right now.'); }
     setBusy(false);
   };
 
@@ -482,7 +494,7 @@ function AskForm({ appId, order, kind, onDone }) {
       }
       if (onDone) await onDone();
     } catch (e) {
-      setErr(e.message || 'We could not send that to Class. It is recorded here.');
+      setErr(refusal(e.data) || e.message || 'We could not send that to Class. It is recorded here.');
       if (onDone) await onDone();
     }
     setBusy(false);
@@ -656,7 +668,7 @@ function ProductPicker({ onPick }) {
         if (r && r.available) setRows(r.products || []);
         else { setRows([]); setErr('Their list of reports could not be read right now.'); }
       } catch (e) {
-        if (alive) { setRows([]); setErr(e.message || 'Their list of reports could not be read right now.'); }
+        if (alive) { setRows([]); setErr(refusal(e.data) || e.message || 'Their list of reports could not be read right now.'); }
       }
     })();
     return () => { alive = false; };

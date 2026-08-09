@@ -251,7 +251,12 @@ router.post('/orders/:orderId/documents', async (req, res) => {
   if (!order) return;
   const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
   if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
-  const out = await amcDocuments.uploadToOrder(db, order, { staffId: req.actor.id, documentIds: ids, action: req.body.action }, {});
+  // CLAMPED to the two actions the builder accepts. `requestActionType` reaches the
+  // vendor verbatim, and every other field on that message is pinned — this one was
+  // passed straight through from the request body.
+  const UPLOAD_ACTIONS = ['UploadDocument', 'UploadDocumentMulti', 'UploadContract'];
+  const action = UPLOAD_ACTIONS.includes(req.body.action) ? req.body.action : undefined;
+  const out = await amcDocuments.uploadToOrder(db, order, { staffId: req.actor.id, documentIds: ids, action }, {});
   if (!out.ok) return res.status(400).json(out);
   res.json(out);
 });

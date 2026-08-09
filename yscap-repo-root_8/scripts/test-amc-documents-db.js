@@ -166,6 +166,63 @@ function makeDeps() {
     ok(realAfterLoop.ok && realAfterLoop.uploaded.length === 1,
       'while a REAL upload of that same document still goes through');
 
+    // =====================================================================
+    // A FILE THE VENDOR REFUSED AT STAGING IS NOT A FILE WE SENT.
+    // `/postdocuments` answers per file — {uploadStatus, retrievalUrl, errorTraceID} —
+    // inside an HTTP 200, so one document can fail antivirus or a size limit while the
+    // call succeeds. None of that was read: `objectURL: null` went to the vendor, the
+    // row was written `uploaded`, and from then on the picker greyed the checkbox out,
+    // so even the manual retry was gone. The appraiser never got it and nothing said so.
+    // =====================================================================
+    const rejectedId = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'rejected-by-vendor.pdf','application/pdf','ref-rej','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const sentBodies = [];
+    const rejDeps = makeDeps();
+    rejDeps.postDocuments = async (files) => files.map((f, i) => ({
+      name: 'part' + i, fileName: f.fileName, uploadStatus: 'Failed', retrievalUrl: null, errorTraceID: 'AV-4471',
+    }));
+    rejDeps.transport = { write: async (built) => { sentBodies.push(built); return { message: {} }; } };
+    const rej = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [rejectedId] }, rejDeps);
+    ok(rej.ok === false && rej.error === 'stage_rejected', 'a file the vendor refused is NOT reported as sent');
+    ok((rej.skipped || []).some((s) => String(s.documentId) === String(rejectedId) && s.reason === 'stage_rejected'),
+      'and it is named, with the vendor’s own reason');
+    ok(sentBodies.length === 0, 'nothing was sent to the vendor — never an objectURL of null');
+    const rejRows = await c.query(
+      `SELECT count(*)::int n FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`, [order.id, rejectedId]);
+    ok(rejRows.rows[0].n === 0, 'no row claims it was delivered');
+    const listAfterRej = await docs.listUploadable(c, appId, order.id);
+    ok(listAfterRej.find((d) => String(d.id) === String(rejectedId)).alreadyUploaded === false,
+      'so the screen still offers it');
+    const retry = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [rejectedId] }, makeDeps());
+    ok(retry.ok && retry.uploaded.length === 1, 'and the retry actually sends it');
+
+    // ONE BAD FILE MUST NOT TAKE THE GOOD ONES WITH IT — and the join between the
+    // vendor's answer and our metadata is by NAME, never by array position.
+    const goodA = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'good-a.pdf','application/pdf','ref-a','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const badB = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'bad-b.pdf','application/pdf','ref-b','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const mixed = makeDeps();
+    const mixedSent = [];
+    // Answered OUT OF ORDER, which a positional join would file under the wrong name.
+    mixed.postDocuments = async (files) => files.map((f, i) => ({
+      name: 'part' + i, fileName: f.fileName,
+      uploadStatus: f.fileName === 'bad-b.pdf' ? 'Failed' : 'Success',
+      retrievalUrl: f.fileName === 'bad-b.pdf' ? null : 'https://amc/getdoc/' + f.fileName,
+    })).reverse();
+    mixed.transport = { write: async (built) => { mixedSent.push(built); return { message: {} }; } };
+    const mix = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [goodA, badB] }, mixed);
+    ok(mix.ok === true && mix.uploaded.length === 1, 'the good file still goes');
+    ok((mix.skipped || []).some((s) => String(s.documentId) === String(badB)), 'and only the bad one is held back');
+    const urlRow = await c.query(
+      `SELECT object_name, retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`,
+      [order.id, goodA]);
+    ok(urlRow.rows[0].retrieval_url === 'https://amc/getdoc/good-a.pdf',
+      'and the link recorded for it is ITS OWN — matched by name, not by position');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

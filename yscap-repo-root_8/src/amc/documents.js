@@ -44,7 +44,7 @@ function categoryOf(row) {
 
 // The file's current Document Center documents, each with a category and whether it is
 // already uploaded to `orderId` (when given). Read-only.
-async function listUploadable(dbh, appId, orderId = null) {
+async function listUploadable(dbh, appId, orderId = null, opts = {}) {
   const r = await dbh.query(
     `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.review_status,
             d.llc_id, d.created_at, ci.label AS item_label, ct.code AS template_code
@@ -56,9 +56,15 @@ async function listUploadable(dbh, appId, orderId = null) {
   let sent = new Set();
   if (orderId) {
     const s = await dbh.query(
+      // THE SAME READING THE SEND USES. In test mode the send counts a `pending` row
+      // as done (or the poller re-stages the same document every five minutes), so a
+      // picker that ignored those offered a document the send then refused —
+      // "nothing_to_upload" on a document the screen had just shown as available.
       `SELECT document_id FROM amc_order_documents
-        WHERE order_id=$1 AND direction='outbound' AND status = 'uploaded'
-          AND document_id IS NOT NULL`, [orderId]);
+        WHERE order_id=$1 AND direction='outbound'
+          AND (status = 'uploaded' OR ($2::boolean AND status = 'pending'))
+          AND document_id IS NOT NULL`,
+      [orderId, opts.dryrun != null ? !!opts.dryrun : !!client.configured().dryrun]);
     sent = new Set(s.rows.map((x) => String(x.document_id)));
   }
   return r.rows.map((d) => ({
@@ -141,10 +147,47 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'stage_failed', message: String(e.message || e), skipped };
   }
 
-  const documents = staged.map((s, i) => ({
-    objectURL: s.retrievalUrl, objectName: s.fileName || specs[i].filename,
-    documentType: docTypeForCategory(specs[i].category),
-  }));
+  // THE VENDOR ANSWERS PER FILE, AND A FAILURE THERE IS AN HTTP 200. `/postdocuments`
+  // returns `{name, fileName, uploadStatus, retrievalUrl, errorTraceID}` for each part,
+  // and one file can fail (antivirus, size) while the call succeeds. None of that was
+  // read: a `retrievalUrl` of null went to the vendor as `objectURL: null`, the row was
+  // written `uploaded`, and from then on both the picker and the "already sent" set
+  // counted it as delivered — the checkbox greys out, so even the manual retry is gone.
+  // The appraiser never receives that document and nothing says so.
+  //
+  // THE JOIN IS BY NAME, NOT BY POSITION. `staged` is the vendor's array; assuming it
+  // comes back in the order we sent it is exactly how one document's bytes end up
+  // filed under another's name. `name` is the `part<i>` the client itself assigned, so
+  // it is the reliable key; `fileName` is the fallback.
+  const stagedFor = (i) => {
+    const byPart = staged.find((s) => s && s.name === 'part' + i);
+    if (byPart) return byPart;
+    const byName = staged.filter((s) => s && s.fileName === files[i].fileName);
+    return byName.length === 1 ? byName[0] : (staged.length === files.length ? staged[i] : null);
+  };
+  const okStage = (s) => !!(s && s.retrievalUrl
+    && !/fail|error|reject/i.test(String(s.uploadStatus == null ? '' : s.uploadStatus)));
+
+  const sendable = [];      // the specs whose bytes really are staged
+  const documents = [];
+  for (let i = 0; i < specs.length; i++) {
+    const st = stagedFor(i);
+    if (!okStage(st)) {
+      skipped.push({ documentId: specs[i].documentId,
+        reason: 'stage_rejected',
+        detail: (st && (st.uploadStatus || st.errorTraceID)) || 'the appraisal company did not accept the file' });
+      continue;
+    }
+    sendable.push({ ...specs[i], staged: st });
+    documents.push({
+      objectURL: st.retrievalUrl, objectName: st.fileName || specs[i].filename,
+      documentType: docTypeForCategory(specs[i].category),
+    });
+  }
+  if (!documents.length) {
+    await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false, error: 'every file was rejected at staging', staffId });
+    return { ok: false, error: 'stage_rejected', skipped };
+  }
   const built = cdg.buildUploadDocuments({
     action: action || (documents.length > 1 ? 'UploadDocumentMulti' : 'UploadDocument'),
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
@@ -169,14 +212,16 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     }
   }
 
+  // Only what was really staged AND really sent is recorded — walked over `sendable`,
+  // never over `staged`, so a rejected file can never be written as delivered.
   const uploaded = [];
-  for (let i = 0; i < staged.length; i++) {
+  for (let i = 0; i < sendable.length; i++) {
     await dbh.query(
       `INSERT INTO amc_order_documents
          (order_id, direction, document_id, document_type, object_name, action, retrieval_url, status)
        VALUES ($1,'outbound',$2,$3,$4,$5,$6,$7)`,
-      [order.id, specs[i].documentId, documents[i].documentType, documents[i].objectName, amcAction, staged[i].retrievalUrl, dry ? 'pending' : 'uploaded']);
-    uploaded.push({ documentId: specs[i].documentId, objectName: documents[i].objectName });
+      [order.id, sendable[i].documentId, documents[i].documentType, documents[i].objectName, amcAction, sendable[i].staged.retrievalUrl, dry ? 'pending' : 'uploaded']);
+    uploaded.push({ documentId: sendable[i].documentId, objectName: documents[i].objectName });
   }
   await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, response: dry ? { dryrun: true } : resp, ok: true, staffId });
   return { ok: true, dryrun: dry || undefined, uploaded, skipped };
@@ -187,7 +232,8 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
 // arrives). Skips HTML exports (the branded PDF/Excel + the real contract are what the
 // AMC wants). Best-effort — returns { ok, uploaded } and never throws for a refusal.
 async function autoUploadForOrder(dbh, order, deps = {}) {
-  const docs = await listUploadable(dbh, order.application_id, order.id);
+  const autoDry = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
+  const docs = await listUploadable(dbh, order.application_id, order.id, { dryrun: autoDry });
   const pick = docs.filter((d) => !d.alreadyUploaded
     && (d.category === CAT_SOW || d.category === CAT_CONTRACT)
     && !/html/i.test(String(d.contentType || ''))

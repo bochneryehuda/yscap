@@ -64,7 +64,7 @@ export default function AmcAppraisalPanel({ appId }) {
       setConfig(cfg && cfg.amc ? cfg.amc : null);
       setPreview(pv || null);
       setOrders((od && od.orders) || []);
-    } catch (e) { setErr(e.message || 'Could not load appraisal ordering.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load appraisal ordering.'); }
     setLoading(false);
   }, [appId]);
 
@@ -273,8 +273,8 @@ function Messages({ orderId }) {
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
-    try { const o = await api.amcPostComment(orderId, text.trim()); if (!o.ok) setErr(o.message || 'Could not send.'); else { setText(''); await load(); } }
-    catch (e) { setErr(e.message || 'Could not send.'); }
+    try { const o = await api.amcPostComment(orderId, text.trim()); if (!o.ok) setErr(refusal(o) || 'Could not send.'); else { setText(''); await load(); } }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Could not send.'); }
     setBusy(false);
   };
   return (
@@ -312,8 +312,8 @@ function Revisions({ appId, orderId }) {
   const sendRevision = async (kind) => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
-    try { const o = await api.amcPostRevision(orderId, { kind, body: text.trim() }); if (!o.ok) setErr(o.message || 'Could not send.'); else { setText(''); await load(); } }
-    catch (e) { setErr(e.message || 'Could not send.'); }
+    try { const o = await api.amcPostRevision(orderId, { kind, body: text.trim() }); if (!o.ok) setErr(refusal(o) || 'Could not send.'); else { setText(''); await load(); } }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Could not send.'); }
     setBusy(false);
   };
 
@@ -418,7 +418,7 @@ function RovBuilder({ appId, orderId, onCancel, onSent }) {
   const runSearch = async () => {
     setSearching(true); setErr('');
     try { const r = await api.amcRovCompSearch(appId, { q: q.trim() }); setResults((r && r.comps) || []); }
-    catch (e) { setErr(e.message || 'Search failed.'); setResults([]); }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Search failed.'); setResults([]); }
     setSearching(false);
   };
 
@@ -446,8 +446,8 @@ function RovBuilder({ appId, orderId, onCancel, onSent }) {
         opinionValue: opinionValue ? Number(opinionValue) : null,
         comps: selected, note: note.trim() || null,
       });
-      if (!o.ok) setErr(o.message || 'Could not send the dispute.'); else onSent();
-    } catch (e) { setErr(e.message || 'Could not send the dispute.'); }
+      if (!o.ok) setErr(refusal(o) || 'Could not send the dispute.'); else onSent();
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not send the dispute.'); }
     setBusy(false);
   };
 
@@ -554,8 +554,8 @@ function Documents({ appId, orderId, onChange }) {
     setBusy(true); setErr(''); setNotice('');
     try {
       const o = await api.amcUploadDocs(orderId, ids);
-      if (!o.ok) setErr(o.message || 'Could not upload.'); else { setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.'); setPick({}); await load(); if (onChange) onChange(); }
-    } catch (e) { setErr(e.message || 'Could not upload.'); }
+      if (!o.ok) setErr(refusal(o) || 'Could not upload.'); else { setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.'); setPick({}); await load(); if (onChange) onChange(); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not upload.'); }
     setBusy(false);
   };
   return (
