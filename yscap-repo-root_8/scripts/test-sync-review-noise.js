@@ -147,13 +147,24 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       // a dismissed question raised again, and two cards for one question.
       {
         const closer = require(R + '/src/lib/address-review-close');
+        // THE FIXTURE IS BACKDATED PAST EVERY REAL ROW ON PURPOSE.
+        // `closeSupersededAddressReviewsOnce` is a GLOBAL sweep over the whole
+        // queue — `ORDER BY created_at LIMIT 500` — not a per-borrower one. On a
+        // re-used database (a developer's box, a CI job that ran the suite
+        // before) a few hundred older open address reviews sit in front of these
+        // five, so a fixture dated `now() - 9 days` falls past the cap, is never
+        // looked at, and every assertion below fails with nothing wrong with the
+        // closer. The `- 9000 days` offset is applied to EVERY row, so their
+        // relative ages — which is what the older-card-survives rule turns on —
+        // are unchanged, and they are always the first rows the sweep reads.
         const mkRow = async (enc, status, ageDays) => (await db.query(
           `INSERT INTO sync_review_queue
              (borrower_id, task_id, direction, field_key, current_value, proposed_value,
               reason, clickup_value, portal_value, source, status, created_at, resolved_at)
            VALUES ($1,$2,'inbound','current_address','5701 15th Ave, Brooklyn, NY 11219',$3,
                    'encompass_address_differs: test',$3,'5701 15th Ave, Brooklyn, NY 11219','encompass',$4,
-                   now() - ($5 || ' days')::interval, CASE WHEN $4='open' THEN NULL ELSE now() END)
+                   now() - ($5 || ' days')::interval - interval '9000 days',
+                   CASE WHEN $4='open' THEN NULL ELSE now() END)
            RETURNING id`,
           [b, 'encompass:' + Math.random(), enc, status, String(ageDays)])).rows[0].id;
         const st = async (id) => (await db.query(`SELECT status FROM sync_review_queue WHERE id=$1`, [id])).rows[0].status;
@@ -170,10 +181,22 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
         ok(await st(secondCard) === 'resolved', 'the duplicate second card is retired');
         ok(await st(firstCard) === 'open', 'the ORIGINAL card survives — the question is never lost');
         ok(await st(genuine) === 'open', 'an unrelated open conflict is untouched');
-        ok(r.closedDecided === 1 && r.closedDuplicate === 1, 'both kinds are reported separately');
+        // >= 1, NOT === 1: the two counters are the sweep's GLOBAL tally, so on a
+        // re-used database they also count other borrowers' rows. The five
+        // per-row assertions above already pin exactly which of OUR rows closed
+        // and which stayed open, so nothing is weakened — this only asserts that
+        // both kinds are reported on their own counter rather than merged.
+        ok(r.closedDecided >= 1 && r.closedDuplicate >= 1, 'both kinds are reported separately');
 
-        const again = await closer.closeSupersededAddressReviewsOnce({ limit: 500 });
-        ok(!again.closedDecided && !again.closedDuplicate, 'a second pass closes nothing (idempotent)');
+        // IDEMPOTENT is asserted on OUR rows, not on the global counters — a
+        // second pass legitimately reaches other borrowers' rows the first pass's
+        // 500-row cap left behind, and counting those would fail a pass that did
+        // exactly the right thing.
+        const snap = async () => (await Promise.all(
+          [reRaised, dismissed, secondCard, firstCard, genuine].map(st))).join(',');
+        const before = await snap();
+        await closer.closeSupersededAddressReviewsOnce({ limit: 500 });
+        ok(await snap() === before, 'a second pass changes nothing (idempotent)');
         await db.query(`DELETE FROM sync_review_queue WHERE borrower_id=$1`, [b]);
       }
 
