@@ -44,8 +44,11 @@ console.log('\n1. D1 — the findings gate reads an application id that EXISTS')
   // The root cause was a mismatch between a SELECT list and a later property
   // read. Pin the SELECT so re-adding `id` (which would ALSO fix it) does not
   // quietly make the assertion above meaningless.
-  const sel = s.slice(s.indexOf('SELECT rehab_budget, borrower_id, co_borrower_id'));
-  const selHead = sel.slice(0, sel.indexOf('FROM applications'));
+  const at = s.indexOf('SELECT rehab_budget, borrower_id, co_borrower_id');
+  // ANCHOR FIRST. Without this the slice below is '' when the SELECT is merely
+  // reformatted, and the assertion passes while proving nothing (audit 2026-08-09).
+  ok(at >= 0, 'the signOffGate application SELECT is still where this test expects it');
+  const selHead = at < 0 ? 'id' : s.slice(at, s.indexOf('FROM applications', at));
   ok(!/\bid\b/.test(selHead.replace(/borrower_id|co_borrower_id/g, '')),
     'the SELECT still does not fetch `id` — so the fix must keep using item.application_id');
 }
@@ -62,10 +65,17 @@ console.log('\n2. D2 — a ClickUp re-ingest overwrites neither a human nor an a
     'deal_type is written only while the row is still `inferred` — a staffer’s correction stands');
   ok(/inferred\s*=\s*CASE WHEN inferred THEN/.test(upd),
     'and `inferred` is not resurrected either, so one human touch is permanent');
-  ok(/property_address\s*=\s*COALESCE\(property_address,/.test(upd),
-    'property_address is FILL-ONLY — the matched row is already the same place, so a rewrite is a re-spelling');
+  /* The address test is SEMANTIC, not fill-only. Fill-only was the first cut and
+     it silently DROPPED a genuine correction arriving on the `source_task_id`
+     arm, which confirms nothing about the address (audit 2026-08-09). Behaviour
+     is proven end-to-end in test-track-record-address-writes-db.js; this only
+     pins the shape so it cannot quietly revert. */
+  ok(/pilot_address_same_place\(property_address,\s*\$4::jsonb\)/.test(upd),
+    'the address is compared by MEANING against what we already hold — the same function the verify guard uses');
   ok(!/COALESCE\(\$4,\s*property_address\)/.test(upd),
-    'and never the other way round, which re-spelled the address on every webhook');
+    'and never written unconditionally, which re-spelled the address on every webhook');
+  ok(/address_key\s*=\s*CASE/.test(upd),
+    'and the address_key moves with it, so a corrected line stops carrying the old property’s key');
 }
 
 // ───────────────────────────────── 3. D4, provenance stamped by every writer
@@ -81,7 +91,13 @@ console.log('\n3. D4 — every machine writer stamps who entered the line');
     const i = s.indexOf('INSERT INTO track_records');
     ok(i >= 0, `${who} still inserts track records (guard against a silent move)`);
     const ins = s.slice(i, i + 900);
-    ok(/entered_by_kind/.test(ins) && ins.includes(kind),
+    /* ASSERT THE KIND IS THE VALUE BOUND FOR entered_by_kind, not merely present
+       somewhere in the INSERT. `ins.includes('encompass')` was already satisfied by
+       the pre-existing `origin` literal in the same statement, so that case proved
+       nothing (audit 2026-08-09). The stamp is written as a literal pair in the
+       VALUES/SELECT list, so require the kind adjacent to the timestamp. */
+    const stamped = new RegExp(`${kind}\\s*,\\s*now\\(\\)`).test(ins);
+    ok(/entered_by_kind/.test(ins) && stamped,
       `${who} stamps entered_by_kind=${kind} at INSERT, not on db/458’s next-boot backfill`);
     ok(/entered_at/.test(ins), `${who} stamps entered_at too`);
   }

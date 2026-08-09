@@ -69,10 +69,15 @@ const EXIT_DATE_SQL =
   `COALESCE(${EXIT_DATE_BASE_SQL},`
   + ` CASE WHEN ${GROUND_SQL} THEN COALESCE(sale_date, rent_date, refi_date) END)`;
 const EXIT_WINDOW_MONTHS = 36;   // frozen; the SQL below and exitCounts() both read it
+/* The window is INTERPOLATED, not restated. It used to be a hardcoded
+   INTERVAL '36 months' beside a constant whose own comment claimed "the SQL
+   below and exitCounts() both read it" — so changing the constant would have
+   moved the JS twin and left the SQL on 36, silently disagreeing about which
+   deals count (audit 2026-08-09). */
 const RECENT_EXIT_SQL =
   `${EXIT_DATE_SQL} IS NOT NULL`
   + ` AND ${EXIT_DATE_SQL} <= CURRENT_DATE`
-  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '36 months')`;
+  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '${EXIT_WINDOW_MONTHS} months')`;
 
 /* ── THE SAME TWO RULES, IN JAVASCRIPT ────────────────────────────────────────
    EXIT_DATE_SQL and RECENT_EXIT_SQL are the definition, but not every consumer

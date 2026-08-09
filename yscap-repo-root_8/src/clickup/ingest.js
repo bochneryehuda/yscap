@@ -681,18 +681,66 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
        correction to 'flip' was being reverted AND the verification dropped, every
        time ClickUp touched that card.
 
-       property_address: FILL-ONLY. `hit` came from matchTrackRecord, which already
-       confirmed sameAddress — so an incoming address on a matched row is the same
-       place, and rewriting it is a re-spelling, not a restatement. Repairing the
-       SHAPE of an old raw-ClickUp address is address-heal's job, and db/490 lets
-       it do that without un-verifying. */
+       property_address: WRITTEN ONLY WHEN IT IS A DIFFERENT PLACE.
+
+       The first cut of this fix made the address strictly FILL-ONLY, justified by
+       "`hit` came from matchTrackRecord, which already confirmed sameAddress".
+       THAT WAS ONLY TRUE OF ONE OF THE TWO ARMS. `hit` is
+       `byTask.rows[0] || matchTrackRecord(...)` — the byTask arm matches on
+       `source_task_id` and says NOTHING about the address. So a genuine
+       correction typed into the ClickUp card ("we had the wrong house") was
+       silently dropped and the line stayed pinned to the wrong property forever,
+       which is worse than the churn it was meant to stop. Caught by the pre-merge
+       audit, which drove the real function and watched the correction vanish.
+
+       Fill-only also lost the OTHER thing the old unconditional write did: it
+       repaired track records still holding the raw ClickUp location shape
+       (`{formatted_address, lat, lng}` and no `line1`). address-heal does NOT
+       cover those — `canonicalizeAddressValue` returns null for that shape — and
+       such a row renders a BLANK Property cell in the investor TPR package,
+       because `addrText` finds neither `oneLine` nor `line1`.
+
+       So the test is SEMANTIC, not positional: ask whether the incoming address
+       is the same place we already hold, using the same `pilot_address_same_place`
+       db/490's verify guard uses, so the two can never disagree about what a
+       re-spelling is.
+         · same place        -> write nothing. No churn, no un-verify. (D2)
+         · a different place -> write it. A real correction lands, and it
+                                correctly un-verifies: the line now claims a
+                                different property, which IS a restatement.
+         · unreadable either side -> `same_place` fails closed to false, so the
+                                incoming value is written. That is deliberate:
+                                the raw-shape rows above are exactly the
+                                unreadable ones, and repairing a blank Property
+                                cell is worth one re-verification. */
     await db.query(`UPDATE track_records
                        SET deal_type = CASE WHEN inferred THEN $2 ELSE deal_type END,
                            inferred  = CASE WHEN inferred THEN $3 ELSE inferred END,
-                           property_address = COALESCE(property_address, $4),
+                           property_address = CASE
+                             WHEN $4::jsonb IS NULL THEN property_address
+                             WHEN COALESCE(pilot_address_same_place(property_address, $4::jsonb), false)
+                               THEN property_address
+                             ELSE $4::jsonb END,
+                           /* THE KEY MOVES WITH THE ADDRESS, on exactly the same
+                              condition. This branch has never re-keyed, so a row
+                              whose address was corrected kept a key describing the
+                              OLD property -- and that key is what every duplicate
+                              match, the heal pass and the findings desk read, so
+                              the line would go on colliding with the wrong house.
+                              address_key is deliberately NOT material to db/485's
+                              verify guard (re-keying is a repair), so this cannot
+                              un-verify anything on its own. NOTE: no backticks in
+                              here -- this is inside a JS template literal, and one
+                              would end the string mid-query. */
+                           address_key = CASE
+                             WHEN $4::jsonb IS NULL THEN address_key
+                             WHEN COALESCE(pilot_address_same_place(property_address, $4::jsonb), false)
+                               THEN address_key
+                             ELSE $5 END,
                            updated_at = now()
                      WHERE id=$1`,
-      [exists.rows[0].id, dealType, inferred, a.property_address ? JSON.stringify(a.property_address) : null]).catch(() => {});
+      [exists.rows[0].id, dealType, inferred,
+       a.property_address ? JSON.stringify(a.property_address) : null, key]).catch(() => {});
     return exists.rows[0].id;
   }
   try {
