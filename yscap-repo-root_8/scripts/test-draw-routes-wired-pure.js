@@ -57,8 +57,10 @@ const WIRED = [
   { match: /\/release-party`/,                              what: 'who releases the money on this project' },
   { match: /\/investor-answer`/,                            what: "recording the investor's answer" },
   { match: /\/findings\/\$\{[^}]+\}\/review`/,              what: 'the inspection review stamp' },
-  { match: /\/draws\/\$\{[^}]+\}\/attachments`/,            what: 'supporting documents on a draw' },
+  { match: /\/draws\/\$\{[^}]+\}\/attachments`/,            what: 'supporting documents on a draw (staff)' },
   { match: /\/attachments\/\$\{[^}]+\}\/file`/,             what: 'opening one of those documents' },
+  { match: /\/api\/borrower\/draws\/\$\{[^}]+\}\/attachments`/, what: 'the borrower adding a document to a draw already in flight' },
+  { match: /body\.attachments\s*=/,                         what: 'the borrower attaching invoices and photos WITH the request' },
 ];
 
 for (const r of WIRED) {
