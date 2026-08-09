@@ -163,6 +163,32 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
   }
 
   /* ───────── 5. PREVIOUS FILES — the stamps the bug already wiped ───────────── */
+  /* REACH OUR OWN FILE, WHATEVER ELSE IS IN THE QUEUE.
+     `restoreBouncedUspsStampsOnce` is a GLOBAL sweep — every file that ever had
+     a `usps_verified_address_imported` audit row and has no stamp today — taken
+     `ORDER BY a.id` (a uuid, so effectively at random) with a row LIMIT. And
+     unlike the other boot sweeps it is NOT self-draining: a candidate it cannot
+     restore (no cached USPS answer, or the property genuinely changed) stays a
+     candidate forever. So on a re-used database ten strangers can sit in front
+     of our file in EVERY batch, re-running never reaches it, and the assertions
+     below fail with nothing wrong with the repair. Sizing each batch to the
+     whole candidate population is what keeps these assertions about OUR file
+     rather than about whichever files happened to sort first. */
+  const sweepAll = async () => {
+    const n = (await db.query(
+      `SELECT count(*)::int AS n FROM applications a
+        WHERE a.deleted_at IS NULL AND a.usps_imported_at IS NULL
+          AND a.property_address IS NOT NULL
+          AND a.status NOT IN ('withdrawn','cancelled','declined')
+          AND EXISTS (SELECT 1 FROM audit_log al
+                       WHERE al.entity_type='application' AND al.entity_id=a.id
+                         AND al.action='usps_verified_address_imported')`)).rows[0].n;
+    return heal.restoreBouncedUspsStampsOnce({ limit: n + 5 });
+  };
+  const restoreCount = async (appId) => (await db.query(
+    `SELECT count(*)::int AS n FROM audit_log
+      WHERE entity_id=$1 AND action='usps_stamp_restored'`, [appId])).rows[0].n;
+
   const appB = await newFile();
   await importStamp(appB);
   // A human's own import audit row is what proves the decision was already made.
@@ -181,7 +207,7 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
   const hash = uspsVerify.hashInput(uspsVerify.normInput({ line1: '21 Governor St', city: 'Providence', state: 'RI', zip: '02906' }));
   await db.query(`DELETE FROM usps_address_verifications WHERE address_hash=$1`, [hash]);
   {
-    const r = await heal.restoreBouncedUspsStampsOnce({ limit: 10 });
+    const r = await sweepAll();
     ok(r.restored === 0 && r.skipped.not_cached >= 1,
       'with no cached USPS answer the repair declines — it never invents a verification');
   }
@@ -192,7 +218,7 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
      ON CONFLICT (address_hash) DO UPDATE SET standardized=EXCLUDED.standardized, status='verified', verified_at=now()`,
     [hash, JSON.stringify({ line1: '21 Governor St', city: 'Providence', state: 'RI', zip: '02906' }), JSON.stringify(USPS_ADDRESS)]);
   {
-    const r = await heal.restoreBouncedUspsStampsOnce({ limit: 10 });
+    const r = await sweepAll();
     const s = await state(appB);
     ok(r.restored >= 1 && !!s.app.usps_imported_at && s.cond.status === 'satisfied',
       'PREVIOUS FILES: a stamp the bug wiped is put back from the file’s own audit trail plus the cached USPS answer');
@@ -203,8 +229,12 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
     ok(audited === 1, 'every restore is on the file’s own record');
   }
   {
-    const again = await heal.restoreBouncedUspsStampsOnce({ limit: 10 });
-    ok(again.restored === 0, 'the repair is idempotent — a restored file stops matching, so it drains');
+    // Scoped to OUR file, not the sweep's global tally: another borrower's file
+    // becoming restorable is not this assertion's business, and counting it
+    // would fail a pass that did exactly the right thing.
+    const again = await sweepAll();
+    ok(await restoreCount(appB) === 1,
+      `the repair is idempotent — a restored file stops matching, so it drains (${again.restored} other file(s) restored)`);
   }
   // A file whose property genuinely CHANGED is left for a human, never re-stamped
   // with a verification that was about somewhere else.
@@ -218,10 +248,13 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
             property_address=$2::jsonb WHERE id=$1`,
     [appC, JSON.stringify({ line1: '900 Elmwood Ave', city: 'Providence', state: 'RI', zip: '02907', oneLine: '900 Elmwood Ave, Providence, RI 02907' })]);
   {
-    const r = await heal.restoreBouncedUspsStampsOnce({ limit: 10 });
+    const r = await sweepAll();
     const s = await state(appC);
-    ok(!s.app.usps_imported_at && r.restored === 0,
-      'a file whose property really changed is left for a human — a stamp is never moved onto a different place');
+    // Scoped to THIS file — the sweep's global `restored` counts other
+    // borrowers' files, which say nothing about whether a stamp was moved onto
+    // a different place here.
+    ok(!s.app.usps_imported_at && await restoreCount(appC) === 0,
+      `a file whose property really changed is left for a human — a stamp is never moved onto a different place (${r.restored} other file(s) restored)`);
   }
 
   await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [b.id]);
