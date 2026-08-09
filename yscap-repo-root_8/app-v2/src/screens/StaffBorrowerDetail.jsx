@@ -11,6 +11,10 @@ import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow }
 import { fullNameOf } from '../lib/personName.js';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
+import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
+import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
+import { useAuth } from '../lib/auth.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -75,7 +79,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Overview' && <Overview b={b} onChanged={load} />}
       {tab === 'Files' && <Files id={id} />}
       {tab === 'Entities' && <Entities id={id} />}
-      {tab === 'Track record' && <TrackRecord id={id} />}
+      {tab === 'Track record' && <TrackRecord id={id} onOpenEntities={() => setTab('Entities')} />}
       {tab === 'Credit' && <Credit id={id} />}
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
@@ -444,7 +448,17 @@ function Entities({ id }) {
 }
 
 /* ---------------- track record ---------------- */
-function TrackRecord({ id }) {
+/* One readable name per loan file — the address when we have one, else the
+   loan number, never twenty anonymous "a loan file" links in a row. */
+function fileLabel(a) {
+  const one = a.property_address && a.property_address.oneLine;
+  if (one) return one;
+  const built = addr(a.property_address);
+  if (built && built !== '—') return built;
+  return a.ys_loan_number || 'a loan file';
+}
+
+function TrackRecord({ id, onOpenEntities }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerTrackRecords(id), [id]);
   const [busy, setBusy] = useState('');
   /* TWO DIFFERENT "VERIFY"s, kept apart on purpose (owner-directed 2026-08-09:
@@ -484,54 +498,105 @@ function TrackRecord({ id }) {
     catch (e) { showMessage(e.message || 'Could not revoke verification'); }
     finally { setBusy(''); }
   }
+  /* THE SHARED TRACK RECORD CENTER, BORROWER LENS (mega-workspace phase D,
+     owner-directed 2026-08-09 "continue with phases D E and F"): the profile
+     renders the SAME ledger + header the loan file renders — one arrangement
+     of the person's record, wherever it is read — with the profile's OWN
+     verbs (check the records / verify / revoke) as the per-line actions and
+     NO file verbs (there is no file here to mint a condition on). */
+  const [view, setView] = useState(null);       // { lines, verified } — the lens payload
+  const [viewKey, setViewKey] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api.staffBorrowerTrackRecordTodo(id)
+      .then((d) => { if (alive) setView(d && typeof d === 'object' ? d : null); })
+      .catch(() => { if (alive) setView(null); });
+    return () => { alive = false; };
+  }, [id, viewKey]);
+  const reloadAll = () => { reload(); setViewKey((k) => k + 1); };
+  const todoByLine = useMemo(() => {
+    const m = {};
+    for (const l of ((view && view.lines) || [])) m[String(l.id)] = l.todo || [];
+    return m;
+  }, [view]);
+  // Cross-link: which loan files read this record (the experience condition on
+  // each of the borrower's files reads this same set of lines).
+  const [files] = useLoad(() => api.staffBorrowerApplications(id), [id]);
+  const liveFiles = (files || []).filter((a) => !/declined|withdrawn|cancel/i.test(String(a.status || '')));
+
+  // Doc review, same verbs as the loan file's ledger (accept needs a completer,
+  // delete needs the delete permission — the shared rules).
+  const { actor } = useAuth();
+  const role = (actor && actor.role) || '';
+  async function reviewDoc(doc, action) {
+    let reason;
+    if (action === 'delete') {
+      if (!(await askConfirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good. Use this only for a document uploaded by mistake.`))) return;
+    }
+    if (action === 'reject') {
+      reason = await askPrompt('Why is this document being rejected? The borrower is notified and the line is un-verified until a new document is accepted.');
+      if (reason == null || !reason.trim()) return;
+    }
+    setBusy(doc.id);
+    try {
+      if (action === 'delete') await api.staffDeleteDoc(doc.id);
+      else await api.staffReviewDoc(doc.id, action, reason);
+      reloadAll();
+    } catch (e) { showMessage(e.message || 'Could not review the document'); }
+    finally { setBusy(''); }
+  }
+
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
-  /* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the case
-     where searching the public records is most useful, and hiding it behind
-     "no entries" would put the tool out of reach exactly when it is needed. */
-  if (!rows.length) {
-    return (
-      <>
-        <StaffPropertyWorkbench borrowerId={id} />
-        <div className="panel"><Empty t="No track-record entries." /></div>
-      </>
-    );
-  }
+  const docsMap = {};
+  for (const t of rows) docsMap[t.id] = Array.isArray(t.docs) ? t.docs : [];
   return (
     <>
+    {/* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the
+        case where searching the public records is most useful. */}
     <StaffPropertyWorkbench borrowerId={id} />
-    <div className="panel" style={{ padding: 0, overflowX: 'auto', marginTop: 14 }}>
-      <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr style={{ textAlign: 'left' }}>
-          {['Property', 'Type', 'Entity', 'Purchase', 'Sale/Value', 'Verified', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
-        </tr></thead>
-        <tbody>
-          {rows.map(t => (
-            <tr key={t.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
-              <td style={{ padding: '10px 12px' }}>{(t.property_address && t.property_address.oneLine) || addr(t.property_address)}</td>
-              <td style={{ padding: '10px 12px' }} className="small">{(t.deal_type || '').replace(/_/g, ' ') || '—'}</td>
-              <td style={{ padding: '10px 12px' }} className="small">{t.owned_personally ? 'Personal name' : (t.entity_name || '—')}</td>
-              <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
-              <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
-              <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>
-              <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+    <div style={{ marginTop: 14 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+        <h3 style={{ margin: 0 }}>Track record</h3>
+        <div className="spacer" />
+        <Link className="btn primary small" to={`/internal/track-record?borrower=${id}`}
+          title="This borrower's projects in the full-screen track-record workspace — every check, the documents, and the actions.">
+          Open the workspace
+        </Link>
+      </div>
+      {liveFiles.length > 0 && (
+        /* Named links, CAPPED — a borrower with twenty files must not open the
+           tab onto a paragraph of links; the Files tab is the full list. */
+        <div className="small" style={{ color: '#4B585C', margin: '2px 0 8px' }}>
+          This record feeds the experience condition on{' '}
+          {liveFiles.slice(0, 4).map((a, i) => (
+            <React.Fragment key={a.id}>
+              {i > 0 && ' · '}
+              <Link to={`/internal/app/${a.id}`}>{fileLabel(a)}</Link>
+            </React.Fragment>
+          ))}
+          {liveFiles.length > 4 && <> and {liveFiles.length - 4} more (see the Files tab)</>}.
+        </div>
+      )}
+      <ExperienceHeader lens="borrower" experience={view ? { verified: view.verified } : null} findingsOpen={0} />
+      {rows.length === 0
+        ? <div className="panel"><Empty t="No track-record entries." /></div>
+        : (
+          <RecordLedger lens="borrower" lines={rows} docs={docsMap} todoByLine={todoByLine}
+            busyId={busy} msg={''} completer={canComplete(role)} canDelete={canDeleteDoc(role)}
+            onReviewDoc={reviewDoc} onOpenEntity={onOpenEntities ? () => onOpenEntities() : null}
+            extraActions={(t) => (
+              <>
                 <button className="btn soft small" disabled={busy === t.id} onClick={() => research(t)}
                   title="Read the county’s public records for this property — works on any line, fills the three checks, never marks it verified by itself.">
                   Check the records</button>
-                {' '}
-                <Link className="btn soft small" to="/internal/approvals?tab=track-record"
-                  title="Open this borrower’s full track-record workspace — every check, the documents, and the actions.">
-                  Open</Link>
-                {' '}
                 {t.is_verified
                   ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
                   : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}
                     title="The final sign-off: makes this deal count toward experience. Needs a completed exit within 3 years.">Verify</button>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </>
+            )} />
+        )}
     </div>
     </>
   );

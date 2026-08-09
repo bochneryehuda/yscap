@@ -445,6 +445,32 @@ async function recordPaid(tool, actor) {
     [tool, actor.staffId, String(actor.personId).slice(0, 120), String(actor.reason).slice(0, 300)]);
 }
 
+/**
+ * THE BUDGET METER (mega-workspace phase F): calls this hour + paid credits
+ * this month, counted from the LEDGER — the only cross-instance truth (the
+ * in-process bucket forgets deploys and counts one instance). Best-effort:
+ * an unreadable ledger answers nulls, and the SCREEN says "unknown" — this
+ * meter informs a human, it never gates a call (the caps in callTool do).
+ */
+async function usage() {
+  const caps = {
+    hourCap: Math.max(1, Number(cfg.elementix.maxPerHour) || 400),
+    paidCap: Math.max(0, Number(cfg.elementix.paidPerMonth) || 1000),
+  };
+  try {
+    const db = require('../db');
+    const r = await db.query(
+      `SELECT count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS hour_n,
+              count(*) FILTER (WHERE paid AND created_at >= date_trunc('month', now()))::int AS paid_n
+         FROM elementix_calls
+        WHERE created_at >= date_trunc('month', now()) OR created_at > now() - interval '1 hour'`);
+    const row = r.rows[0] || {};
+    return { ok: true, callsLastHour: row.hour_n || 0, paidThisMonth: row.paid_n || 0, ...caps };
+  } catch (_) {
+    return { ok: false, callsLastHour: null, paidThisMonth: null, ...caps };
+  }
+}
+
 /** How much of our self-imposed allowance is left — for the API Health page. */
 function budget() {
   const { perSec, perHour } = bucketState();
@@ -461,7 +487,7 @@ function budget() {
 function resetSession() { session = { id: null, initialized: false, url: null }; }
 
 module.exports = {
-  callTool, listTools, budget, paidThisMonth,
+  callTool, listTools, budget, paidThisMonth, usage,
   available, enabled, dryrun,
   PAID_TOOLS,
   _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState },

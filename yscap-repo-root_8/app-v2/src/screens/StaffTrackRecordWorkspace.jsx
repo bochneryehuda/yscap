@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
@@ -65,6 +65,13 @@ export default function StaffTrackRecordWorkspace() {
   const [showAll, setShowAll] = useState(false);
   const [ask, setAsk] = useState(null);          // the typed request sheet
   const [docTypes, setDocTypes] = useState([]);
+  /* Phase F: the same workspace serves the approvals tab AND the full-screen
+     route; `?borrower=` narrows the queue to one person (the profile links
+     here), and the keyboard map (`?`) + pillar hotkeys work in both. */
+  const [params, setParams] = useSearchParams();
+  const borrowerFilter = params.get('borrower') || '';
+  const [keysOpen, setKeysOpen] = useState(false);
+  const [focusPillar, setFocusPillar] = useState(0);   // 0-2 — the card 1/2/3 aim at
 
   /* An error goes in the banner AND on the row. In a long queue the banner is
      off-screen by the time you have scrolled to the row you clicked, and a
@@ -90,9 +97,13 @@ export default function StaffTrackRecordWorkspace() {
   useEffect(() => { loadDetail(selected); }, [selected]);
   useEffect(() => { api.staffTrackRecordDocTypes().then((d) => setDocTypes((d && d.docTypes) || [])).catch(() => {}); }, []);
 
-  const flatLines = useMemo(
-    () => (queue && queue.groups ? queue.groups.flatMap((g) => g.lines) : []),
-    [queue]);
+  /* The borrower filter narrows BOTH the render and the J/K walk, so the keys
+     never move the selection onto a row the screen is not showing. */
+  const groups = useMemo(() => {
+    const all = (queue && queue.groups) || [];
+    return borrowerFilter ? all.filter((g) => String(g.borrowerId) === borrowerFilter) : all;
+  }, [queue, borrowerFilter]);
+  const flatLines = useMemo(() => groups.flatMap((g) => g.lines), [groups]);
 
   // Pick the first thing worth looking at, once.
   useEffect(() => {
@@ -115,6 +126,52 @@ export default function StaffTrackRecordWorkspace() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [flatLines, selected]);
+
+  // A new project starts the pillar focus back at check 1.
+  useEffect(() => { setFocusPillar(0); }, [selected]);
+
+  /* THE KEYBOARD MAP (phase F, blueprint §8.3): `?` shows the map; 1/2/3 focus
+     a check; C confirms and X rejects the FOCUSED check; D asks for a document
+     on it. Discipline unchanged from the buttons: a key only ever fires an
+     action the SERVER's own `next`/`other` offers for that card — a keystroke
+     must never be a way around a rule the buttons respect. Same input guard as
+     J/K so the note box never loses keystrokes. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === '?') { setKeysOpen((v) => !v); e.preventDefault(); return; }
+      if (e.key === 'Escape' && keysOpen) { setKeysOpen(false); return; }
+      const k = e.key.toLowerCase();
+      if (['1', '2', '3'].includes(k)) {
+        setFocusPillar(Number(k) - 1);
+        const el = document.querySelector(`[data-pillar-card="${Number(k) - 1}"]`);
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        e.preventDefault();
+        return;
+      }
+      if (!detail || !Array.isArray(detail.cards)) return;
+      const card = detail.cards[focusPillar];
+      if (!card) return;
+      const offered = (verdict) =>
+        (card.next && card.next.verdict === verdict) || (card.other || []).some((o) => o.verdict === verdict);
+      if (k === 'c') {
+        if (offered('confirmed')) decide(card, 'confirmed');
+        else rowError(card.pillarId, 'Confirming is not offered on this check right now — use the buttons on the card.');
+        e.preventDefault();
+      } else if (k === 'x') {
+        if (offered('rejected')) decide(card, 'rejected');
+        else rowError(card.pillarId, 'Rejecting is not offered on this check right now — use the buttons on the card.');
+        e.preventDefault();
+      } else if (k === 'd') {
+        openAsk(card.pillar);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   async function decide(card, verdict) {
     const pillarId = card.pillarId;
@@ -237,20 +294,27 @@ export default function StaffTrackRecordWorkspace() {
       <p className="muted" style={{ marginTop: 6 }}>
         Every past project has three checks: it finished in the last 3&nbsp;years, they really owned it, and the exit
         really happened. All three have to be confirmed by a person before a project counts toward experience.
-        Press <strong>J</strong> and <strong>K</strong> to move down and up the list.
+        Press <strong>J</strong> and <strong>K</strong> to move down and up the list, and <strong>?</strong> for
+        every keyboard shortcut.
       </p>
+      {borrowerFilter && (
+        <div className="notice" style={{ marginTop: 8, background: 'rgba(47,127,134,.08)' }}>
+          <span style={{ color: '#141B22' }}>Showing ONE borrower&rsquo;s projects.</span>{' '}
+          <button className="btn link small" onClick={() => setParams({}, { replace: true })}>Show every borrower</button>
+        </div>
+      )}
 
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginTop: 8 }}>{msg.text}</div>}
 
       <div className="ec-split" style={{ marginTop: 12 }}>
         {/* ── THE QUEUE, GROUPED BY PERSON ─────────────────────────────── */}
         <div>
-          {!queue.groups.length && (
+          {!groups.length && (
             <div className="panel"><p className="muted small" style={{ margin: 0 }}>
               Nothing is waiting. A project appears here the moment somebody adds one to a borrower&rsquo;s record.
             </p></div>
           )}
-          {queue.groups.map((g) => (
+          {groups.map((g) => (
             <div className="panel" key={g.borrowerId} style={{ marginBottom: 10, padding: 10 }}>
               <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <strong style={{ color: INK }}>{g.borrowerName}</strong>
@@ -375,8 +439,9 @@ export default function StaffTrackRecordWorkspace() {
                 const pillarId = c.pillarId;
                 const card = c;
                 return (
-                  <div className="panel" key={c.pillar}
-                    style={{ marginBottom: 10, borderLeft: `3px solid ${tone.border}` }}>
+                  <div className="panel" key={c.pillar} data-pillar-card={i}
+                    style={{ marginBottom: 10, borderLeft: `3px solid ${tone.border}`,
+                      outline: focusPillar === i ? '2px solid rgba(47,127,134,.55)' : 'none', outlineOffset: 2 }}>
                     <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                       <span style={{ color: tone.color, fontWeight: 700, fontSize: 16 }}>{tone.mark}</span>
                       <strong style={{ color: INK }}>{i + 1} · {PILLAR_TITLE[c.pillar]}</strong>
@@ -487,6 +552,34 @@ export default function StaffTrackRecordWorkspace() {
           )}
         </div>
       </div>
+
+      {/* ── THE KEYBOARD MAP (?) ─────────────────────────────────────── */}
+      {keysOpen && (
+        <div className="cv-modal-back" onClick={() => setKeysOpen(false)}>
+          <div className="cv-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <h3 style={{ marginTop: 0, color: INK }}>Keyboard shortcuts</h3>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}><tbody>
+              {[['J / K', 'Next / previous project in the queue'],
+                ['1 / 2 / 3', 'Focus a check, by the number on its card'],
+                ['C', 'Confirm the focused check — only when the card itself offers it'],
+                ['X', 'Reject the focused check (asks for the reason)'],
+                ['D', 'Ask for a document on the focused check'],
+                ['?', 'Show or hide this map'],
+              ].map(([key, what]) => (
+                <tr key={key}>
+                  <td style={{ padding: '6px 10px 6px 0', whiteSpace: 'nowrap' }}>
+                    <code style={{ background: 'rgba(0,0,0,.05)', borderRadius: 6, padding: '2px 8px', color: INK, fontWeight: 700 }}>{key}</code>
+                  </td>
+                  <td className="small" style={{ padding: '6px 0', color: MUTED }}>{what}</td>
+                </tr>
+              ))}
+            </tbody></table>
+            <p className="small" style={{ color: MUTED, marginBottom: 0 }}>
+              A key only ever does what the card&rsquo;s own buttons offer — nothing on the keyboard skips a rule.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── THE TYPED ASK ────────────────────────────────────────────── */}
       {ask && (

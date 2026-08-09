@@ -172,9 +172,12 @@ console.log('\nG. it is INSIDE the file, AFTER the track record');
 
 {
   const panel = screen.slice(screen.indexOf('function StaffTrackRecordPanel'));
-  const frameAt = panel.indexOf('<StaticToolFrame');
+  // "The track record itself" is the LEDGER since phase C (and the embedded
+  // iframe is retired since phase E) — the subject of this pin is unchanged:
+  // you read the record, THEN you read what is left on it.
+  const recordAt = panel.indexOf('<RecordLedger');
   const todoAt = panel.indexOf('<TrackRecordTodo');
-  ok(frameAt > 0 && todoAt > frameAt,
+  ok(recordAt > 0 && todoAt > recordAt,
     'the list renders AFTER the track record itself — the owner\'s "after the track record"');
   ok(/staffTrackRecordTodo/.test(apiJs) && /staffTrackRecordTodo/.test(screen),
     'it reads the server\'s answer');
