@@ -84,6 +84,13 @@ export default function ConfirmFoundProperties({ onChanged }) {
   const [lastAnswer, setLastAnswer] = useState(null);   // for Undo
   const [notSure, setNotSure] = useState({});           // id -> true, client-side
   const [skipped, setSkipped] = useState({});           // id -> true, client-side
+  const [kind, setKind] = useState({});                 // id -> deal type they picked
+  const [kindOverride, setKindOverride] = useState({}); // id -> they rejected our reading
+
+  /* The deal type that will actually be sent. Their pick wins over ours, and
+     rejecting our reading clears it so they must choose — never silently
+     falling back to a label they just told us was wrong. */
+  const effectiveKind = (p) => kind[p.id] || (kindOverride[p.id] ? null : p.dealType) || null;
   const headingRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -105,7 +112,11 @@ export default function ConfirmFoundProperties({ onChanged }) {
     if (busy) return;
     setBusy(true);
     try {
-      await api.answerTrackRecordCandidate(p.id, { answer: value });
+      await api.answerTrackRecordCandidate(p.id, {
+        answer: value,
+        // Only meaningful on a yes; the server refuses an import with no deal type.
+        dealType: value === 'mine' ? effectiveKind(p) : undefined,
+      });
       setLastAnswer({ id: p.id, address: p.address, value });
       await load();
       if (onChanged) onChanged();
@@ -203,6 +214,42 @@ export default function ConfirmFoundProperties({ onChanged }) {
             </div>
           ) : null}
 
+          {/* THE DEAL TYPE IS STATED, NOT ASKED, when the records answer it.
+              Asking a borrower to classify their own deal invites them to pick
+              the label that prices best; the two deeds already said it. When the
+              records do NOT say, the question appears instead — a line with no
+              deal type counts toward NOTHING and is filed under holds, so this
+              can never be left blank. */}
+          {current.dealTypeDerived && !kindOverride[current.id] ? (
+            <div style={{ marginTop: 12, fontSize: 14, color: MUTED }}>
+              We&rsquo;ll record this as a <strong style={{ color: INK }}>flip</strong> — bought and then sold.{' '}
+              <button
+                type="button" disabled={busy}
+                onClick={() => setKindOverride((s) => ({ ...s, [current.id]: true }))}
+                style={{ background: 'none', border: 0, padding: 0, color: TEAL, fontSize: 14, cursor: 'pointer' }}
+              >
+                That&rsquo;s not right
+              </button>
+            </div>
+          ) : null}
+          {(!current.dealType || kindOverride[current.id]) ? (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 14, color: INK, marginBottom: 7 }}>What did you do with this one?</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[['flip', 'Fixed it up and sold it'],
+                  ['hold', 'Kept it and rented it out'],
+                  ['ground-up', 'Built it from the ground up']].map(([v, label]) => (
+                    <button
+                      key={v} type="button" disabled={busy}
+                      onClick={() => setKind((s) => ({ ...s, [current.id]: v }))}
+                      className={kind[current.id] === v ? 'btn primary' : 'btn ghost'}
+                      style={{ minHeight: 44, fontSize: 15, color: kind[current.id] === v ? undefined : INK }}
+                    >{label}</button>
+                  ))}
+              </div>
+            </div>
+          ) : null}
+
           {/* "NOT MINE" FIRST. The first option is over-chosen, so it is the one
               whose error is cheap and reversible. Both name the property, so
               neither can be given on autopilot. */}
@@ -215,12 +262,17 @@ export default function ConfirmFoundProperties({ onChanged }) {
               Not mine — I never owned {current.address}
             </button>
             <button
-              type="button" className="btn primary" disabled={busy}
+              type="button" className="btn primary" disabled={busy || !effectiveKind(current)}
               onClick={() => answer(current, 'mine')}
               style={{ minHeight: 48, fontSize: 16, justifyContent: 'flex-start', textAlign: 'left' }}
             >
               Yes, I owned {current.address}
             </button>
+            {!effectiveKind(current) ? (
+              <div style={{ fontSize: 13, color: MUTED }}>
+                Pick what you did with it above, then say yes — otherwise it would not count toward your experience.
+              </div>
+            ) : null}
           </div>
 
           {/* Two DIFFERENT states, deliberately not merged: "I looked and I

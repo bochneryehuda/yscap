@@ -118,6 +118,64 @@ const A3 = { line1: '9 Maple Ct', city: 'Lakewood', state: 'NJ', zip: '08701' };
       'EXACTLY ONE DECIDER is recorded — a borrower id may never go in the staff column, and db/504 refuses both at once');
   }
 
+  console.log('\n2b. A CONFIRMED DEAL ACTUALLY COUNTS — the deal type is never left blank');
+  {
+    const E = require('../src/lib/experience');
+    /* THE DEFECT THIS SECTION EXISTS FOR. A line imported with deal_type NULL
+       gets a NULL exit date from `exitDateOf` (anything not a flip is sent to
+       COALESCE(rent_date, refi_date)) and is filed under HOLDS by `bucketOf`.
+       So a borrower could confirm a property they bought AND sold, and it would
+       credit nothing, in the wrong bucket, silently. */
+    ok(E.exitDateOf({ deal_type: null, purchase_date: '2025-08-02', sale_date: '2026-03-14' }) === null
+       && E.bucketOf(null) === 'holds',
+      'a blank deal type really does mean NO exit date and the holds bucket — this is the thing being prevented');
+
+    const cid = await stage({ line1: '44 Counts Ct', city: 'Lakewood', state: 'NJ', zip: '08701' },
+      { purchasePrice: 410000, purchaseDate: '2025-08-02', salePrice: 612000, saleDate: '2026-03-14' });
+    const q = await (await call('/api/borrower/track-record-candidates')).json();
+    const p = q.properties.find((x) => String(x.id) === String(cid));
+    ok(p.dealType === 'flip' && p.dealTypeDerived === true,
+      'bought AND sold is STATED as a flip, not asked — the records already said it, and asking invites picking the label that prices best');
+
+    // Answer WITHOUT naming a type, exactly as the screen does on a derived one.
+    const r = await call(`/api/borrower/track-record-candidates/${cid}/answer`, {
+      method: 'POST', body: JSON.stringify({ answer: 'mine' }) });
+    ok(r.status === 200, 'they can confirm it');
+    const out = await r.json();
+    const line = (await db.query(
+      'SELECT deal_type, purchase_date, sale_date FROM track_records WHERE id=$1', [out.trackRecordId])).rows[0];
+    ok(line.deal_type === 'flip', 'the line lands AS A FLIP rather than blank');
+    ok(E.exitDateOf(line) !== null,
+      '…so it HAS an exit date and can actually count — which a blank deal type would have silently prevented');
+    ok(E.bucketOf(line.deal_type) === 'flips', '…and is counted in the right bucket');
+  }
+
+  console.log('\n2c. When the records DO NOT say, an import is refused rather than left blank');
+  {
+    // Bought, never sold — the records genuinely do not say what the plan was.
+    const cid = await stage({ line1: '77 Unknown Way', city: 'Lakewood', state: 'NJ', zip: '08701' },
+      { purchasePrice: 250000, purchaseDate: '2025-02-01', salePrice: null, saleDate: null });
+    const q = await (await call('/api/borrower/track-record-candidates')).json();
+    const p = q.properties.find((x) => String(x.id) === String(cid));
+    ok(p.dealType === null && p.dealTypeDerived === false,
+      'a purchase with no sale is NOT guessed — it could be a rental, a build, or still owned');
+    ok(/do not say/.test(String(p.dealTypeWhy || '')), '…and the screen is told why, in words');
+
+    const r = await call(`/api/borrower/track-record-candidates/${cid}/answer`, {
+      method: 'POST', body: JSON.stringify({ answer: 'mine' }) });
+    ok(r.status === 400, 'confirming it with no deal type is REFUSED, not written blank');
+    ok((await db.query('SELECT 1 FROM track_records WHERE borrower_id=$1 AND address_key=$2',
+      [borrowerId, TRK.trackRecordKey({ line1: '77 Unknown Way', city: 'Lakewood', state: 'NJ', zip: '08701' })])).rows.length === 0,
+      '…and nothing was written');
+
+    const good = await call(`/api/borrower/track-record-candidates/${cid}/answer`, {
+      method: 'POST', body: JSON.stringify({ answer: 'mine', dealType: 'hold' }) });
+    ok(good.status === 200, 'answering the question lets it through');
+    const out = await good.json();
+    const line = (await db.query('SELECT deal_type FROM track_records WHERE id=$1', [out.trackRecordId])).rows[0];
+    ok(line.deal_type === 'hold', '…and THEIR answer is what lands, not our guess');
+  }
+
   console.log('\n3. NOTHING INTERNAL LEAKS to the borrower');
   {
     const raw = await (await call('/api/borrower/track-record-candidates')).text();

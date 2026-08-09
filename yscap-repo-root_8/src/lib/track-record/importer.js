@@ -71,6 +71,40 @@ const MATERIAL = [
   'purchase_date', 'sale_date', 'rent_date', 'refi_date',
 ];
 
+/**
+ * WHAT THE RECORDS THEMSELVES SAY THE DEAL WAS — and `null` when they do not say.
+ *
+ * A LINE WITH NO DEAL TYPE COUNTS TOWARD NOTHING, SILENTLY. `experience.exitDateOf`
+ * sends anything that is not a flip to `COALESCE(rent_date, refi_date)`, so a
+ * property that was bought and sold, imported with `deal_type = NULL`, gets a
+ * NULL exit date — it is outside the 36-month window by having no date at all —
+ * and `bucketOf(null)` files it under HOLDS. Measured, not assumed: exitDateOf
+ * returns null and bucketOf returns 'holds' on exactly that row. So the borrower
+ * (or the reviewer) does the work of confirming a deal and it credits nothing,
+ * in the wrong bucket, with nothing anywhere saying so.
+ *
+ * A DEED PAIR IS THE ONE THING THE RECORDS DO SAY. Bought and then sold is a
+ * flip — that is what the two deeds mean. Everything else is genuinely unknown:
+ * a purchase with no sale might be a rental, a ground-up under way, or simply
+ * still owned, and guessing there would put a figure on somebody's record that
+ * nobody stated. That is the same discipline `candidatesFrom` already applies
+ * when it refuses to guess a deal type at STAGING time; the difference is that
+ * by IMPORT time a human is present to answer, so the honest states are
+ * "derived, and stated" or "ask", never "left null".
+ */
+function dealTypeFromRecords(c) {
+  const bought = ymd(c && c.purchase_date);
+  const sold = ymd(c && c.sale_date);
+  if (bought && sold) {
+    return { dealType: 'flip', derived: true,
+      why: 'The records show it was bought and then sold, which is a flip.' };
+  }
+  return { dealType: null, derived: false,
+    why: sold
+      ? 'The records show a sale but not a purchase, so they do not say what the plan was.'
+      : 'The records show a purchase but no sale, so they do not say what the plan was.' };
+}
+
 /** Fields a candidate can carry onto a line. */
 const FILLABLE = [
   'property_address', 'deal_type', 'purchase_price', 'purchase_date',
@@ -434,6 +468,20 @@ async function settle(db, id, status, staffId, note) {
    the line from the queue built to surface self-reported ones. It defaults to
    'staff' so every existing caller is unchanged. */
 async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null }) {
+  /* A DEAL TYPE IS REQUIRED TO IMPORT, because a line without one counts toward
+     NOTHING and is filed under holds — see `dealTypeFromRecords`. The explicit
+     answer wins; the candidate's own value is next; the records' reading is the
+     last resort, and it only ever fires on a bought-and-sold pair. If none of
+     the three produces one, this REFUSES rather than writing a line that will
+     silently credit nobody — the caller is a screen with a human in front of
+     it, so asking is always possible. */
+  const effectiveDealType = str(dealType) || str(c.deal_type) || dealTypeFromRecords(c).dealType;
+  if (!effectiveDealType) {
+    const e = new Error('Say what kind of deal this was — a line with no deal type counts toward nothing.');
+    e.status = 400; e.code = 'deal_type_needed';
+    e.why = dealTypeFromRecords(c).why;
+    throw e;
+  }
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
@@ -450,7 +498,7 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
      VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,'public_records',$12,now(),$11)
      RETURNING id, is_verified, verification_status`,
     [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
-      TRK.trackRecordKey(c.property_address) || '', str(dealType) || c.deal_type,
+      TRK.trackRecordKey(c.property_address) || '', effectiveDealType,
       c.purchase_price, c.purchase_date, c.sale_price, c.sale_date, c.entity_name,
       enteredByKind === 'borrower'
         ? 'The borrower confirmed this one from the public records.'
@@ -603,6 +651,7 @@ module.exports = {
   compareCandidate,
   candidatesFrom,
   dedupeKeyFor,
+  dealTypeFromRecords,
   addressLabel,
   ACTIONS,
   MATERIAL,

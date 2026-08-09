@@ -88,6 +88,15 @@ async function loadForBorrower(borrowerId, client) {
     answered: r.status !== 'staged',
     answer: r.status === 'staged' ? null
       : (r.status === 'declined' ? 'not_mine' : 'mine'),
+    /* THE DEAL TYPE IS DERIVED AND STATED, NOT ASKED — when the records answer
+       it. Bought and then sold IS a flip; asking a borrower to classify their
+       own deal invites them to pick the label that prices best, and the records
+       already said it. When the records do NOT say, `dealType` is null and the
+       screen asks — because a line imported without one counts toward nothing
+       and is filed under holds (see `importer.dealTypeFromRecords`). */
+    dealType: IMPORTER.dealTypeFromRecords(r).dealType,
+    dealTypeDerived: IMPORTER.dealTypeFromRecords(r).derived,
+    dealTypeWhy: IMPORTER.dealTypeFromRecords(r).why,
   });
 
   const all = rows.map(shape);
