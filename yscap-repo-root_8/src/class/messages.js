@@ -36,6 +36,9 @@
 const db = require('../db');
 const client = require('./client');
 const reasons = require('./revision-reasons');
+// The SAME wording both desks use — see src/lib/appraisal-messages.js. Four hand-typed
+// copies lived here, and one of them told a READ path that nothing had been sent.
+const { sendFailMessage, storedFailNote, TEST_MODE_PREFIX, SENT_NOT_RECORDED } = require('../lib/appraisal-messages');
 
 const text = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
 
@@ -73,16 +76,28 @@ async function note(orderRowId, content, { staffId } = {}) {
     const out = await client.addNote(order.class_order_id, { content: body });
     if (out && out.__dryrun) {
       await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
-        [rowId, 'TEST MODE — written here, not sent to Class.']);
+        [rowId, TEST_MODE_PREFIX + 'written here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId };
     }
+    // THE RECEIPT IS WRITTEN OUTSIDE THE SEND'S OWN CATCH. It used to sit inside, so a
+    // database hiccup on this line — a lock timeout, a dropped connection — was reported
+    // as the SEND failing, and the note it wrote said "you can send it again" about a
+    // message Class had already accepted. Sending it again duplicates it at the vendor.
+    // The send succeeded; that is the answer, whatever happens to our own bookkeeping.
     await db.query('UPDATE class_notes SET sent_at = now(), send_error = NULL, class_note_id = $2 WHERE id = $1',
-      [rowId, out && out.noteId != null ? String(out.noteId) : null]);
+      [rowId, out && out.noteId != null ? String(out.noteId) : null])
+      .catch(async (dbErr) => {
+        console.error('[class] note sent but not recorded:', rowId, dbErr && dbErr.message);
+        // …and the ROW has to say so, or it reads as "sending…" for ever on a message
+        // Class already has, and somebody sends it twice.
+        await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED])
+          .catch(() => {});
+      });
     return { ok: true, id: rowId, noteId: out && out.noteId };
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'send_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, storedFailNote(e)]).catch(() => {});
+    return { ok: false, error: e.code || 'send_failed', id: rowId, message: sendFailMessage(e, 'Your message') };
   }
 }
 
@@ -92,10 +107,25 @@ async function note(orderRowId, content, { staffId } = {}) {
  * receipt (re-marking it unread every time the list refreshed would make the desk's
  * "new message" badge meaningless).
  */
+// THE SAME NORMALIZER THE CALLBACK WRITER USES — imported, not re-written. Two things
+// depend on it. First, the vendor's timestamp is part of a note's identity, so if one
+// writer stored a JS Date at millisecond resolution and the other handed Postgres the
+// raw string at microsecond resolution, the two would file ONE vendor message as TWO
+// rows (a .NET seven-digit fraction is enough to differ). Second, it returns null for
+// anything unparseable: passing the raw string straight into a timestamptz let one odd
+// date from Class abort this whole statement, and every later press of "check for
+// replies" stopped at the same note — so the messages behind it never arrived.
+const whenTs = require('./callbacks')._internals.when;
+
 async function syncNotes(orderRowId) {
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
-  if (!client.configured().enabled) return { ok: false, error: 'disabled' };
+  // Every refusal carries plain words as well as its code: the desk renders
+  // `message`, and a bare code reaches the screen as the literal word 'disabled'.
+  if (!client.configured().enabled) {
+    return { ok: false, error: 'disabled',
+      message: 'The appraisal company connection is switched off, so nothing was fetched.' };
+  }
   try {
     const out = await client.notes(order.class_order_id);
     // Accept BOTH envelope shapes and BOTH id spellings, exactly as the callback
@@ -113,18 +143,38 @@ async function syncNotes(orderRowId) {
       if (!n || typeof n !== 'object') continue;
       const id = text(n.noteId || n.NoteId || n.id || n.Id);
       const dir = text(n.direction || n.Direction) === 'FromClient' ? 'FromClient' : 'ToClient';
+      // AND A NOTE WITH NO ID NEEDS THE SAME GUARD AS THE CALLBACK PATH. The partial
+      // index arbitrates nothing when `class_note_id` is NULL — their guide allows a
+      // note with content and no id — so every press of "check for replies"
+      // re-inserted it and the unread badge counted every copy. That hole was closed
+      // on the callback writer; this is the OTHER writer of the same table, and it is
+      // the one a human presses. Same identity: same order, same direction, same
+      // words. `vendor_created_at` is compared too, so a genuine later message that
+      // happens to repeat an earlier one still lands whenever Class stamps it.
       const r = await db.query(
         `INSERT INTO class_notes (class_order_row, application_id, class_note_id, direction, content, vendor_created_at,
                                   sent_at)
-         VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $4 = 'FromClient' THEN now() ELSE NULL END)
+         SELECT $1::bigint, $2::uuid, $3::text, $4::text, $5::text, $6::timestamptz,
+                CASE WHEN $4 = 'FromClient' THEN now() ELSE NULL END
+          WHERE $3::text IS NOT NULL
+             OR NOT EXISTS (
+                  SELECT 1 FROM class_notes
+                   WHERE class_order_row = $1::bigint
+                     AND class_note_id IS NULL
+                     AND direction = $4::text
+                     AND content IS NOT DISTINCT FROM $5::text
+                     AND vendor_created_at IS NOT DISTINCT FROM $6::timestamptz)
          ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING
          RETURNING id`,
-        [order.id, order.application_id, id, dir, text(n.content || n.Content), text(n.created || n.Created)]);
+        [order.id, order.application_id, id, dir, text(n.content || n.Content), whenTs(n.created || n.Created)]);
       if (r.rowCount) added++;
     }
     return { ok: true, added, total: list.length };
   } catch (e) {
-    return { ok: false, error: e.code || 'lookup_failed', message: (e && e.message) || String(e) };
+    // A read has no row to stamp, so the log is where the detail lives — the browser
+    // gets the sentence, we keep what actually happened.
+    console.warn('[class] reading the note thread failed for order', order && order.id, ':', (e && e.message) || e);
+    return { ok: false, error: e.code || 'lookup_failed', message: sendFailMessage(e, 'The replies', { reading: true }) };
   }
 }
 
@@ -136,7 +186,10 @@ async function syncNotes(orderRowId) {
 async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, note: noteText, supporting, staffId } = {}) {
   const wanted = kind === 'rov' ? 'rov' : 'revision';
   const { reasons: clean, problems } = reasons.normalizeReasons(raw, { kind: wanted });
-  if (problems.length) return { ok: false, error: 'bad_reasons', problems };
+  if (problems.length) {
+    return { ok: false, error: 'bad_reasons', problems,
+      message: 'Please fix these before sending: ' + problems.map((x) => (x && x.why) || x).join('; ') };
+  }
 
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
@@ -157,25 +210,37 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
     const out = await client.requestRevision(order.class_order_id, { reasons: clean });
     if (out && out.__dryrun) {
       await db.query('UPDATE class_revisions SET status = $2, last_error = $3 WHERE id = $1',
-        [rowId, 'requested', 'TEST MODE — recorded here, not sent to Class.']);
+        [rowId, 'requested', TEST_MODE_PREFIX + 'recorded here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId, kind: recordedKind, reasons: clean };
     }
+    // THE RECEIPT IS WRITTEN OUTSIDE THE SEND'S OWN CATCH — the same rule as `note()`
+    // above, and the reason it is repeated here rather than left to the one that got it:
+    // a database hiccup on this line used to fall into the catch below, which marks the
+    // row `status='error'` and writes "you can send it again" about a revision request
+    // Class has already accepted. Sending it again asks the appraiser twice.
     await db.query(
       `UPDATE class_revisions SET status = 'sent', sent_at = now(), transaction_id = $2, vendor_response = $3::jsonb,
               last_error = NULL WHERE id = $1`,
-      [rowId, out && out.transactionId != null ? String(out.transactionId) : null, JSON.stringify(out || {})]);
+      [rowId, out && out.transactionId != null ? String(out.transactionId) : null, JSON.stringify(out || {})])
+      .catch(async (dbErr) => {
+        console.error('[class] revision sent but not recorded:', rowId, dbErr && dbErr.message);
+        await db.query('UPDATE class_revisions SET last_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED]).catch(() => {});
+      });
     return { ok: true, id: rowId, kind: recordedKind, reasons: clean, transactionId: out && out.transactionId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, storedFailNote(e)]).catch(() => {});
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }
 
 /** Ask Class to cancel the order. Same reason vocabulary, its own endpoint. */
 async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId } = {}) {
   const { reasons: clean, problems } = reasons.normalizeReasons(raw, { kind: 'cancel' });
-  if (problems.length) return { ok: false, error: 'bad_reasons', problems };
+  if (problems.length) {
+    return { ok: false, error: 'bad_reasons', problems,
+      message: 'Please fix these before sending: ' + problems.map((x) => (x && x.why) || x).join('; ') };
+  }
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
 
@@ -191,18 +256,23 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
       // badged a live cancellation request at Class that was never sent. Marked the
       // same way requestRevision marks its own dry run — the two must read alike.
       await db.query(`UPDATE class_revisions SET last_error=$2 WHERE id=$1`,
-        [rowId, 'TEST MODE — recorded here, not sent to Class.']).catch(() => {});
+        [rowId, TEST_MODE_PREFIX + 'recorded here, not sent to Class.']).catch(() => {});
       return { ok: true, dryrun: true, id: rowId };
     }
+    // Outside the catch, for the reason above: they accepted the cancellation request.
     await db.query(`UPDATE class_revisions SET status='sent', sent_at=now(), vendor_response=$2::jsonb WHERE id=$1`,
-      [rowId, JSON.stringify(out || {})]);
+      [rowId, JSON.stringify(out || {})])
+      .catch(async (dbErr) => {
+        console.error('[class] cancel sent but not recorded:', rowId, dbErr && dbErr.message);
+        await db.query('UPDATE class_revisions SET last_error = $2 WHERE id = $1', [rowId, SENT_NOT_RECORDED]).catch(() => {});
+      });
     // NOT marked cancelled here. Asking is not the same as them agreeing — the order
     // moves when their StatusChanged callback says Cancelled.
     return { ok: true, id: rowId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status='error', last_error=$2 WHERE id=$1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, storedFailNote(e)]).catch(() => {});
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: sendFailMessage(e, 'The request') };
   }
 }
 

@@ -62,6 +62,13 @@
  * document and deliberately sent the typo.)
  */
 
+// The ONE rule for "is this address a way to reach somebody", shared with the AMC
+// desk. This module is otherwise dependency-free and stays that way in spirit: the
+// import is PURE (appraisal-contacts pulls in person-name and nothing else — no
+// database, no network), and a second copy of the rule living here is exactly how
+// the two appraisal desks came to disagree about the same borrower.
+const { usableEmail } = require('../lib/appraisal-contacts');
+
 // ---------------------------------------------------------------------------
 // THE VERSION PROFILES. Everything that differs between UAD 2.6 and UAD 3.6 is
 // here and ONLY here — the value lists (transcribed from the guide verbatim, in
@@ -225,21 +232,43 @@ function contact(profile, type, person, { primary = false } = {}) {
   const first = text(person.firstName);
   const last = text(person.lastName);
   const methods = [];
-  const email = text(person.email);
+  // THE SAME RULE THE OTHER APPRAISAL DESK USES, from the same module. The ClickUp
+  // sync mints `noemail+<taskId>@clickup.local` for a borrower with NO email; sending
+  // it to an appraisal company reads as a real address to everyone downstream, and it
+  // would also satisfy the borrower-contact gate below — so Class would place an order
+  // whose only way to reach the borrower is an address that goes nowhere. The rule was
+  // written into the shared module for both desks and then wired into one of them.
+  const email = usableEmail(person.email);
   const mobile = text(person.mobile || person.cell);
   const work = text(person.workPhone || person.phone);
   if (email) methods.push({ value: email, type: 'Email', primaryContact: true });
   if (mobile) methods.push({ value: mobile, type: 'MobilePhone', primaryContact: !email });
   if (work) methods.push({ value: work, type: 'WorkPhone', primaryContact: false });
-  if (!first && !last && !methods.length) return null;
+  // A COMPANY IS A NAME WHEN THERE IS NO PERSON. Their contact has only firstName and
+  // lastName, so a realtor recorded company-only — which the file-contacts door allows
+  // and the shared reader deliberately carries as `company` — reached Class as a
+  // nameless phone number and rendered as "(no name on file)", while the AMC received
+  // it properly as a legal entity. It goes in the surname field, which is where a
+  // company lands in a name-only schema; it is never SPLIT into a fake first and last.
+  const company = text(person.company);
+  // ONLY when there is no person at all. With a name on the contact, their schema has
+  // nowhere for a company to go — and appending it to the surname would invent a person
+  // called "Bob Keystone Realty". So a named contact's company is deliberately dropped
+  // here while the AMC carries it as a legal entity: the one difference between the two
+  // desks that is the VENDOR's shape, not our drift. Revisit if Class adds a company field.
+  const lastOrCompany = last || (!first ? company : null);
+  if (!first && !lastOrCompany && !methods.length) return null;
   return {
     [profile.contactTypeKey]: type,
-    firstName: first, lastName: last, primaryContact: !!primary, contactMethods: methods,
+    firstName: first, lastName: lastOrCompany, primaryContact: !!primary, contactMethods: methods,
   };
 }
 // Read a contact's role back out whichever way it is spelled, so the checks below
 // never have to know which version built the list.
 const roleOf = (c) => (c && (c.Type != null ? c.Type : c.type)) || null;
+// Who can actually let an appraiser into the property. Our loan officer cannot, which
+// is why they are deliberately absent from this set.
+const ACCESS_ROLES = new Set(['Borrower', 'Coborrower', 'PropertyAccess']);
 
 /**
  * @param ctx {
@@ -391,6 +420,21 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
   ].filter(Boolean);
   if (!contacts.some((c) => roleOf(c) === 'Borrower')) {
     missing.push({ field: 'contacts.Borrower', why: 'Class needs a borrower contact to arrange access' });
+  }
+  // A NAME IS NOT A WAY TO REACH SOMEBODY. The check above is satisfied by a borrower
+  // with a name and no phone or email — and that is a real state, because the one
+  // address such a file often carries is the ClickUp placeholder, which is now
+  // correctly dropped rather than sent. An appraiser cannot arrange entry with a name,
+  // so the order is refused for the same reason the AMC desk refuses it.
+  // AND IT MUST BE SOMEONE WHO CAN OPEN THE DOOR. Asking "does ANY contact carry a
+  // method" was satisfied by the LOAN OFFICER — whose email and phone come off
+  // `staff_users` for every file with an officer assigned — so the rule fired on
+  // essentially no real file while the AMC desk refused the identical one. The
+  // question is the AMC's: the borrower (or co-borrower), or a property-access
+  // contact. Our own officer is not who the appraiser calls to be let in.
+  else if (!contacts.some((c) => ACCESS_ROLES.has(roleOf(c)) && (c.contactMethods || []).length)) {
+    missing.push({ field: 'contacts.reachable',
+      why: 'nobody on this file has a phone number or a real email address — the appraiser needs someone to call to get in' });
   }
   if (!contacts.some((c) => roleOf(c) === 'PropertyAccess')) {
     assumptions.push({ field: 'contacts.PropertyAccess', value: '(none)',

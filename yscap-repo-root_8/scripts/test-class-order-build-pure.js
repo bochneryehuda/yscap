@@ -47,6 +47,10 @@ ok(r.body.contacts[0].Type === 'Borrower' && r.body.contacts[0].primaryContact =
    'the borrower is the primary contact');
 ok(r.body.contacts[0].contactMethods.some((m) => m.type === 'Email' && m.value === 'ada@example.com'),
    'their email rides as a contact method');
+// PINNED, because a "simplification" to `company || last` would otherwise pass every
+// suite while quietly replacing a real person's surname with a company name.
+ok(r.body.contacts[0].firstName === 'Ada' && r.body.contacts[0].lastName === 'Reyes',
+   'a named person keeps their own first and last name');
 
 // ---------------------------------------------------------------------------
 console.log('\n--- a DERIVED value is declared, never silent ---');
@@ -311,6 +315,19 @@ const masked = client._internals.maskSafe({ client_secret: 'abc', password: 'p',
 ok(masked.client_secret === '***' && masked.password === '***' && masked.nested.access_token === '***',
    'every credential shape is masked before it can reach a log');
 ok(masked.nested.keep === 'ok', 'ordinary values survive masking');
+
+// THE CALLBACK REGISTRATION IS A CREDENTIAL PAIR, NOT A PASSWORD PLUS A SETTING.
+// Its body is {callbackUrl, userName, password, authMode}, and those two together are
+// the Basic-auth pair for our PUBLIC receiver — masking only the password wrote half
+// of it to the application log in clear on any dry-run registration.
+const reg = client._internals.maskSafe({
+  callbackUrl: 'https://pilot.example/api/class/callbacks',
+  userName: 'pilot-class', password: 'pw-secret', authMode: 'BasicAuth',
+});
+ok(reg.userName === '***', 'the callback USERNAME is masked too — it is half the credential');
+ok(reg.password === '***', 'and the password, as before');
+ok(reg.callbackUrl === 'https://pilot.example/api/class/callbacks' && reg.authMode === 'BasicAuth',
+   'while the url and the auth mode — the two things an operator is checking — survive');
 
 // A non-JSON body must be PRESERVED — this is the AMC firewall lesson.
 const raw = client._internals.readBody(Buffer.from('<html>Blocked by proxy</html>'));

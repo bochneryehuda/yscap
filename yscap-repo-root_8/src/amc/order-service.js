@@ -25,6 +25,10 @@ const session = require('./session');
 const lookups = require('./lookups');
 const formSelect = require('./form-select');
 const orderBuild = require('./order-build');
+const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
+// One definition for both desks — never a pasted copy; see the module header.
+const { sendFailMessage, nackMessage, storedFailNote, storedNackNote } = require('../lib/appraisal-messages');
+
 
 // ---------------------------------------------------------------------------
 // Loan-file context loader — one query into the normalized shape order-build
@@ -128,7 +132,12 @@ async function loadContext(db, appId) {
       salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
-    parties: { bestContact: 'Borrower' },
+    // The four roles the appraiser may have to call, read by the ONE shared reader
+    // both appraisal desks use (src/lib/appraisal-contacts.js). Never re-read a
+    // borrower or an officer here — the two desks must name the same people.
+    contacts: (await loadAppraisalContacts(db, appId)) || {},
+    parties: {},
+
     // The appraisal-fee card, so the order desk shows whether payment is on file and
     // the same card fills the appraisal_card condition (bidirectional — owner-directed).
     card: await cardStatus(db, appId),
@@ -155,14 +164,94 @@ async function cardStatus(db, appId) {
 // ---------------------------------------------------------------------------
 // Form-selection rules (admin-editable amc_form_map rows).
 // ---------------------------------------------------------------------------
+// SCOPED TO THE ENVIRONMENT THIS SERVICE IS POINTED AT. db/481 gave the table an
+// `environment` column precisely because their product ids differ between UAT and
+// production, and said "the resolver only ever reads rows matching the environment
+// the service is pointed at" — but nothing implemented it, so a UAT rule could pick a
+// production form (and, now that a rule also supplies a NAME, could label one). Every
+// seeded row is 'production', which is the default, so this changes nothing today.
 async function formRules(db) {
   const r = await db.query(
-    `SELECT id, program, property_category, loan_purpose, product_code, subproduct_codes,
+    `SELECT id, program, property_category, loan_purpose, loan_type, property_key,
+            product_code, product_name, subproduct_codes,
             amc_identifier, priority, active
        FROM amc_form_map
       WHERE active = true
-      ORDER BY priority ASC, id ASC`);
+        AND COALESCE(environment, 'production') = $1
+      ORDER BY priority ASC, id ASC`,
+    [(cfg.amc && cfg.amc.environment) || 'production']);
   return r.rows;
+}
+
+// ---------------------------------------------------------------------------
+// The form's NAME — "we need to see the full form name in the order", not #56634
+// (owner-directed 2026-08-09).
+//
+// A bare product code is the appraisal company's internal id and says nothing about
+// what was ordered; "1004 - Single Family Residence - Completed Subject to (w/As Is
+// Value)" is the thing a human is checking before an order goes out. Both names we
+// already hold are used, most authoritative first:
+//   1. the FORM CATALOG (`amc_lookup_cache`, GetJobType) — the vendor's own name for
+//      that id on THIS tenant, so it stays right when they rename a product;
+//   2. the rule's `product_name` (db/481) — what the owner called it when they set
+//      the default, which covers an auto-picked form before any live lookup has run.
+// Catalog rows are matched inside ONE subdomain only: their ids are per environment
+// (db/481's own rule), and a name borrowed from another tenant would confidently
+// describe the wrong report.
+// Returns null when we genuinely do not know — the screen then says "Form #<code>"
+// rather than inventing a name.
+// ---------------------------------------------------------------------------
+const idOf = (row) => {
+  const v = row && (row.id != null ? row.id : (row.Id != null ? row.Id : (row.jobTypeId != null ? row.jobTypeId : row.job_type_id)));
+  return v == null ? null : String(v).trim();
+};
+const nameOf = (row) => {
+  const v = row && (row.name || row.Name || row.jobTypeName || row.job_type_name || row.description);
+  const s = v == null ? '' : String(v).trim();
+  return s || null;
+};
+
+function formNameFor(productCode, forms, rules) {
+  const code = productCode == null ? null : String(productCode).trim();
+  if (!code) return null;
+  const hit = (Array.isArray(forms) ? forms : []).find((f) => idOf(f) === code);
+  const fromCatalog = hit ? nameOf(hit) : null;
+  if (fromCatalog) return fromCatalog;
+  const rule = (Array.isArray(rules) ? rules : []).find(
+    (r) => r && r.product_code != null && String(r.product_code).trim() === code && r.product_name);
+  return rule ? String(rule.product_name).trim() || null : null;
+}
+
+/**
+ * The form catalog for a tenant, best-effort — an unreachable cache must never stop
+ * an order being built. Always an array.
+ *
+ * WITH NO SUBDOMAIN CONFIGURED IT USES THE ONE CACHED TENANT, and that is the whole
+ * point rather than a convenience. `AMC_SUBDOMAIN` is not set today — the commit that
+ * added the form NAME says so itself — while db/481 seeded the live NAN catalog under
+ * `subdomain='nan'`. Reading the catalog under the configured (blank) key found
+ * nothing, so the desk could only name the nine forms db/481 ALSO wrote onto a rule,
+ * and every other form — a staff override, a 1004D update, a field review, ground-up
+ * — still printed a bare number, which is the complaint this was meant to answer. The
+ * override dropdown was empty for the same reason.
+ *
+ * The fallback is deliberately narrow: it applies ONLY when nothing is configured, so
+ * there is no second tenant it could be confused with, and only when exactly ONE
+ * subdomain is cached. A CONFIGURED subdomain whose catalog is empty falls back to
+ * nothing at all — borrowing another tenant's names there is exactly the "confidently
+ * describes the wrong report" failure the per-subdomain rule exists to prevent.
+ */
+async function formCatalog(db, subdomain) {
+  try {
+    const rows = await lookups.forms(db, subdomain);
+    if (rows.length || subdomain) return rows;
+    const only = await db.query(
+      `SELECT DISTINCT subdomain FROM amc_lookup_cache
+        WHERE lookup_type IN ('Get_JobTypes_By_LoanType','GetJobType')
+          AND COALESCE(subdomain,'') <> ''`);
+    if (only.rows.length !== 1) return rows;
+    return await lookups.forms(db, only.rows[0].subdomain);
+  } catch (_) { return []; }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,14 +266,26 @@ async function buildPreview(db, appId, opts = {}) {
   const chosen = formSelect.chooseForm(deal, rules);
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
-  let forms = [];
-  try { forms = await lookups.forms(db, ctx.subdomain); } catch (_) { forms = []; }
+  const forms = await formCatalog(db, ctx.subdomain);
+  // The name of the form that would ACTUALLY be ordered — spec.productCode, so a
+  // staff override is named too, not just the auto-picked default.
+  const formName = formNameFor(spec.productCode, forms, rules);
   return {
     context: ctx,
     deal,
-    chosenForm: chosen,
+    // `chosenForm` is the AUTO-PICKED form, so it is named from ITS OWN code — never
+    // from `spec.productCode`, which a staff override replaces. Naming it from the
+    // spec labelled the auto-picked code with the overridden form's name, which is the
+    // "confidently describes the wrong report" failure this feature exists to avoid,
+    // arriving through a staff override instead of through a wrong tenant.
+    chosenForm: chosen ? { ...chosen, formName: formNameFor(chosen.productCode, forms, rules) } : null,
+    // Named at the top level too: with no rule matched there is no chosenForm at all,
+    // and a staff-picked form still has a name worth showing.
+    productCode: spec.productCode || null,
+    formName,
     spec,
     missing,
+    contactNotes: orderBuild.contactNotes(spec),
     canPlace: missing.length === 0,
     forms,        // the cached form catalog, for a staff override dropdown
     card: ctx.card,
@@ -203,14 +304,21 @@ async function insertOrder(db, appId, spec, maskedMessage, staffId, extra = {}) 
     `INSERT INTO amc_orders
        (application_id, checklist_item_id, client_order_number, client_reference_number,
         request_action, parent_order_id, product_code, subproduct_codes, amc_identifier,
+        form_description,
         status, rush, need_by_date, job_fee, management_fee,
         request_payload, dryrun, ordered_by, sp_subdomain)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [appId, extra.checklistItemId || null, spec.clientOrderNumber || null, spec.clientReferenceNumber || null,
      spec.requestAction || 'CreateAppraisal', extra.parentOrderId || null,
      spec.productCode || null, (spec.subproductCodes && spec.subproductCodes.length) ? spec.subproductCodes : null,
-     spec.amcIdentifier || null, 'draft', !!spec.rush, spec.needByDate || null,
+     spec.amcIdentifier || null,
+     // The form's NAME is recorded ON THE ORDER at the moment it is placed, so the
+     // orders list reads "1004 - Single Family Residence …" from the first second
+     // rather than "Form 56634" until the AMC's own ACK happens to carry a
+     // description. applyAck's COALESCE keeps the vendor's wording when it arrives.
+     extra.formName || null,
+     'draft', !!spec.rush, spec.needByDate || null,
      spec.jobFee != null ? spec.jobFee : null, spec.managementFee != null ? spec.managementFee : null,
      maskedMessage ? JSON.stringify(maskedMessage) : null, false, staffId || null,
      (cfg.amc && cfg.amc.subdomain) || null]);
@@ -263,34 +371,63 @@ async function applyAck(db, orderId, ack, resp) {
  */
 async function createOrder(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
-  if (!ctx) return { ok: false, error: 'file_not_found' };
+  if (!ctx) return { ok: false, error: 'file_not_found', message: 'That loan file could not be found.' };
   const rules = await formRules(db);
   const deal = orderBuild.dealShapeFor(ctx);
   const chosen = formSelect.chooseForm(deal, rules);
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
 
-  if (opts.place && missing.length) return { ok: false, missing, error: 'incomplete' };
-
-  // Build the message up front so the DRAFT stores the masked payload either way.
-  let built = null;
-  let authCtx = null;
-  if (opts.place) {
-    authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
-    built = cdg.buildCreateAppraisal(spec, authCtx);
-  } else {
-    // A draft still records what WOULD be sent (masked), using the config identifiers
-    // without a live api key — buildCreateAppraisal only needs them for the envelope.
-    const a = cfg.amc || {};
-    built = cdg.buildCreateAppraisal(spec, {
-      apiKey: null, subdomain: a.subdomain, lenderIdentifier: a.lenderIdentifier, sourceClientId: a.sourceClientId,
-    });
+  // The panel lists `missing` field by field, so the sentence only has to say why
+  // nothing was sent — but it must exist, or the desk shows the word 'incomplete'.
+  if (opts.place && missing.length) {
+    return { ok: false, missing, error: 'incomplete',
+      message: 'The order is not complete yet, so nothing was sent. What is still needed is listed below.' };
   }
 
+  const formName = formNameFor(spec.productCode, await formCatalog(db, ctx.subdomain), rules);
+
+  // The identifiers the envelope needs when there is no live session — a draft, and
+  // TEST MODE, both build the exact message without one.
+  const a = cfg.amc || {};
+  const offlineCtx = { apiKey: null, subdomain: a.subdomain, lenderIdentifier: a.lenderIdentifier, sourceClientId: a.sourceClientId };
+
+  // TEST MODE MUST NOT LOG IN. The whole point of the dry run is to build the request
+  // and send NOTHING, but this used to call DoLogin first — so on a tenant whose
+  // AppraisalScope login is not set up yet (which is the state today) pressing "Place
+  // order" in test mode threw, the route had nothing to catch it, and the desk showed
+  // the server's generic "Something went wrong on our end". A test run now needs no
+  // credentials at all, and a REAL send that cannot log in is answered in plain words
+  // instead of a 500.
+  const dryrun = !!client.configured().dryrun;
+  let built = cdg.buildCreateAppraisal(spec, offlineCtx);
+
+  // The draft row is written BEFORE anything can fail, so a refusal below leaves the
+  // work saved rather than thrown away — and the message we then show can honestly
+  // say so.
   const order = await insertOrder(db, appId, spec, cdg.maskRequest(built.message ? built : { message: built }),
-    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId });
+    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId, formName });
 
   if (!opts.place) return { ok: true, order, missing, draft: true };
+
+  if (!dryrun) {
+    let authCtx = null;
+    try {
+      authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
+    } catch (e) {
+      const why = session.signInMessage(e, { savedDraft: true });
+      // THE ROW GETS THE STORED FORM, THE PERSON GETS `why`. They are different jobs:
+      // `why` is written for whoever just pressed the button (it says their draft was
+      // saved), while the column is read later by somebody who was not there — and every
+      // stored sentence has to carry the shared opening a panel recognises, or a screen
+      // rendering this column would discard it as a legacy raw exception.
+      await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`,
+        [order.id, storedFailNote(e)]);
+      await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: why, staffId: opts.staffId });
+      return { ok: false, error: 'not_connected', message: why, order: await getOrder(db, order.id) };
+    }
+    built = cdg.buildCreateAppraisal(spec, authCtx);
+  }
 
   // Place it. An AddForm rides the parent's CDG order number as ?orderId=.
   let orderIdParam = null;
@@ -303,12 +440,20 @@ async function createOrder(db, appId, opts = {}) {
 
   let resp;
   try {
-    resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction });
+    // `dryrun` is passed, not re-read. It decided above whether to sign in, so if the
+    // transport asked the switch again and got a different answer it would post the
+    // message we built WITHOUT an api key — a real order, with real borrower details,
+    // unauthenticated. The transport still re-checks the switch on its own; this only
+    // ever forces the dry run on.
+    resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction, dryrun });
   } catch (e) {
+    // The ROW keeps a sentence, never the exception's own text — see
+    // lib/appraisal-messages.storedFailNote. The raw text goes to the journal below,
+    // which is where we read it.
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
-      [order.id, String(e.message || e)]);
+      [order.id, storedFailNote(e)]);
     await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: String(e.message || e), staffId: opts.staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e) };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'The order') };
   }
 
   // Dry-run: the transport short-circuited without sending. Record the attempt.
@@ -323,9 +468,9 @@ async function createOrder(db, appId, opts = {}) {
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, last_status_response = $3, updated_at = now() WHERE id = $1`,
-      [order.id, err.description || err.code || 'AMC error', JSON.stringify(resp)]);
+      [order.id, storedNackNote(err, 'the order'), JSON.stringify(resp)]);
     await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: false, error: err.description || err.code, staffId: opts.staffId });
-    return { ok: false, error: 'amc_nack', message: err.description || err.code };
+    return { ok: false, error: 'amc_nack', message: nackMessage(err, 'the order') };
   }
 
   const ack = cdg.parseAck(resp);
@@ -337,6 +482,39 @@ async function createOrder(db, appId, opts = {}) {
 // ---------------------------------------------------------------------------
 // Reads.
 // ---------------------------------------------------------------------------
+/**
+ * NAME THE FORM ON EVERY ORDER, INCLUDING THE ONES ALREADY ON DISK.
+ *
+ * `form_description` is written when an order is CREATED (or when the vendor's answer
+ * carries a name). The owner's report — "it says only the form number, we need to see
+ * the full form name" — is about orders that were placed BEFORE the name was stored, so
+ * on those the column is NULL and the screen falls back to "Form 56634" exactly as it
+ * did the day it was reported. A backfill cannot fix it either: the names live in the
+ * vendor's per-tenant catalog, so the answer is only knowable at read time.
+ *
+ * So it is resolved on READ, through the SAME `formNameFor` the preview and the order
+ * builder use — one definition, so the list, the detail and the order we would place
+ * can never name the same form differently. FILL-ONLY: a stored description (the
+ * vendor's own wording, or what we recorded when it was placed) always wins. Never
+ * throws — an unreachable catalog just leaves the number showing, as before.
+ */
+async function nameOrders(db, rows) {
+  const filled = (v) => !!(v == null ? '' : String(v).trim());
+  const need = rows.filter((o) => o && !filled(o.form_description) && filled(o.product_code));
+  if (!need.length) return rows;
+  try {
+    const [forms, rules] = await Promise.all([
+      formCatalog(db, (cfg.amc && cfg.amc.subdomain) || ''),
+      formRules(db),
+    ]);
+    for (const o of need) {
+      const name = formNameFor(o.product_code, forms, rules);
+      if (name) o.form_description = name;
+    }
+  } catch (_) { /* the number still shows; naming is a nicety, never a failure */ }
+  return rows;
+}
+
 async function listOrders(db, appId) {
   const r = await db.query(
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
@@ -344,17 +522,18 @@ async function listOrders(db, appId) {
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, created_at, ordered_at, completed_at, last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
-  return r.rows;
+  return nameOrders(db, r.rows);
 }
 
 async function getOrder(db, orderId) {
   const r = await db.query(`SELECT * FROM amc_orders WHERE id = $1`, [orderId]);
-  return r.rows[0] || null;
+  if (!r.rows[0]) return null;
+  return (await nameOrders(db, [r.rows[0]]))[0];
 }
 
 module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
   createOrder, listOrders, getOrder, journal,
   // exported for tests
-  addrParts, borrowerCtx,
+  addrParts, borrowerCtx, formNameFor,
 };

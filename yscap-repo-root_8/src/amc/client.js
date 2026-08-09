@@ -88,7 +88,13 @@ async function getAccessToken() {
   if (!a.clientId || !a.clientSecret) {
     // No OAuth creds: a lower-env fallback api key may be configured instead.
     if (a.fallbackApiKey) return null;
-    throw new Error('AMC_CLIENT_ID / AMC_CLIENT_SECRET are not set');
+    // THE CODE IS THE SIBLING OF session.js's. Both mean "the connection was never
+    // finished", both are read by `storedFailNote` and `signInMessage`, and only one of
+    // them carried a code — so this half was reported as "could not be reached. You can
+    // send it again", which is a switch nobody will ever turn on by retrying.
+    const e = new Error('AMC_CLIENT_ID / AMC_CLIENT_SECRET are not set');
+    e.code = 'AMC_NOT_CONFIGURED';
+    throw e;
   }
   const now = Date.now();
   if (_tok.value && now < _tok.exp) return _tok.value;
@@ -106,9 +112,11 @@ async function getAccessToken() {
     // the call — a corporate proxy, an egress allowlist — answers text/plain, and that
     // sentence is the difference between "your secret is wrong" and "your firewall is".
     let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }
-    if (!res.ok) throw httpError('GetToken', res.status, undefined, data);
+    // TAGGED AS A CREDENTIAL FAILURE — the sibling of the Class desk's, and for the same
+    // reason: the status of a TOKEN call is not evidence about the thing we sent.
+    if (!res.ok) { const e = httpError('GetToken', res.status, undefined, data); e.code = 'AMC_TOKEN_REJECTED'; throw e; }
     const token = data.accessToken || data.access_token;
-    if (!token) throw new Error('AMC GetToken returned no accessToken');
+    if (!token) { const e = new Error('AMC GetToken returned no accessToken'); e.code = 'AMC_TOKEN_REJECTED'; throw e; }
     const ttl = Number(data.expiresIn || data.expires_in || 3600);
     _tok = { value: token, exp: Date.now() + Math.max(30, ttl - 60) * 1000 };
     return token;
@@ -135,7 +143,14 @@ async function post(baseUrl, message, opts = {}) {
     const e = new Error('AMC_DISABLED: the AMC integration master switch is off');
     e.code = 'AMC_DISABLED'; throw e;
   }
-  if (write && switches.on('AMC_DRYRUN')) {
+  // `opts.dryrun` is the CALLER'S already-made decision, and it can only ever force a
+  // dry run — never cancel one. A caller that builds its message differently for a dry
+  // run (order-service builds it with no api key, because a test run must not need a
+  // login) has to be sure the message it built is the one this gate judges: the switch
+  // is an in-memory flag refreshed on a timer, so reading it a second time here could
+  // legitimately disagree with the first read and post an UNAUTHENTICATED live order
+  // carrying real borrower details. Decided once, passed down, and still re-checked.
+  if (write && (opts.dryrun === true || switches.on('AMC_DRYRUN'))) {
     console.warn(`[amc][DRYRUN] would POST ${label || 'action'} body=${JSON.stringify(cdgMaskSafe(message))}`);
     return { __dryrun: true };
   }
@@ -154,7 +169,11 @@ async function post(baseUrl, message, opts = {}) {
       const headers = await authHeaders({ 'Content-Type': 'application/json' });
       ({ res, buf } = await fetchWithTimeout(url, { method: 'POST', headers, body: payload }, TIMEOUT_MS));
     } catch (netErr) {
-      netErr.retryable = true; lastErr = netErr;
+      // …but never over an error that already SAID what it was. `authHeaders()` runs
+      // inside this try, so a gate refusal (AMC_DISABLED) or a rejected credential was
+      // being restamped as a retryable network blip and looped three times with backoff.
+      if (!netErr.code) netErr.retryable = true;
+      lastErr = netErr;
       if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;
     }
@@ -184,9 +203,12 @@ function login(message, opts = {}) { return post(AMC().loginUrl, message, { ...o
 // ---- document upload (multipart) → getdocument retrieval URLs ----
 // files: [{ fileName, contentType, bytes(Buffer) }]. Returns
 // [{ name, fileName, uploadStatus, retrievalUrl, errorTraceID }].
-async function postDocuments(files) {
+async function postDocuments(files, opts = {}) {
   if (!switches.on('AMC_ENABLED')) { const e = new Error('AMC_DISABLED'); e.code = 'AMC_DISABLED'; throw e; }
-  if (switches.on('AMC_DRYRUN')) {
+  // Like `post`, the caller's decision can only force the dry run ON. This one matters
+  // as much as the order path: staging is what mints the `dryrun://` URLs, and if the
+  // send that follows read a different answer those fake links went to the vendor.
+  if (opts.dryrun === true || switches.on('AMC_DRYRUN')) {
     console.warn(`[amc][DRYRUN] would upload ${files.length} document(s) to /postdocuments`);
     return files.map((f, i) => ({ name: `part${i}`, fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: `dryrun://getdocument/${i}`, errorTraceID: null }));
   }

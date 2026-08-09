@@ -399,11 +399,25 @@ async function main() {
   ok(!!poison, 'the malformed delivery is stored, as every delivery must be');
 
   // It no longer throws at all — a null element is simply not an attachment.
+  //
+  // The row is WAITED for rather than read straight after our own drain: the receiver
+  // fires its own drain from `setImmediate` on every accepted delivery, and since a
+  // delivery is now CLAIMED before it is worked (the duplicate-messages fix), exactly
+  // ONE of the two drains does the work — so ours may legitimately find it already
+  // taken. Before the claim both drains processed it, which is precisely the defect.
+  // The assertion is unchanged in substance: it must end up processed, and no drain
+  // may report a failure.
   const d1 = await cb.drain({ limit: 25 });
-  const after1 = (await db.query(
-    'SELECT processed_at, attempts, dead_at FROM class_callback_events WHERE id=$1', [poison.id])).rows[0];
+  let after1 = null;
+  for (let i = 0; i < 40; i++) {
+    after1 = (await db.query(
+      'SELECT processed_at, attempts, dead_at FROM class_callback_events WHERE id=$1', [poison.id])).rows[0];
+    if (after1 && after1.processed_at != null) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
   ok(after1.processed_at != null,
      'a null element in the attachment list is skipped, not thrown on — the event processes normally');
+  ok(after1.attempts === 0 && after1.dead_at == null, 'and it was never recorded as a failed attempt');
   ok(d1.failed === 0, 'and the drain reports no failure');
 
   // A genuinely unprocessable row (an amount past what the column can hold used to
@@ -472,6 +486,223 @@ async function main() {
      "their order id still wins outright — it identifies the order, unlike our reference");
 
   await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+
+  // =========================================================================
+  // ONE VENDOR MESSAGE MUST APPEAR ON THE THREAD EXACTLY ONCE.
+  // Found by the post-merge security audit and reproduced against the real
+  // receiver: `drain` read `WHERE processed_at IS NULL` and only stamped the row
+  // at the END, while the receiver fires a drain from `setImmediate` on EVERY
+  // accepted delivery — so two drains worked the SAME stored event and both
+  // inserted its notes. Class pushes in bursts, so this is ordinary behaviour,
+  // not a contrived race. Measured before the fix: one delivery carrying ONE
+  // message produced four to seven rows, and the unread badge counted them all.
+  // =========================================================================
+  console.log('\n--- one message, one row, however many drains race ---');
+  {
+    // A note with NO vendor id — the shape the partial unique index cannot
+    // arbitrate, and the one their guide explicitly allows.
+    const ev = (await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3) RETURNING id`,
+      [`cls26-${tag}`,
+       JSON.stringify({ data: [{ content: 'Please confirm access with the tenant.' }] }),
+       `burst-notes-${tag}`])).rows[0];
+
+    // Six drains at once, exactly as six deliveries landing together would.
+    await Promise.all(Array.from({ length: 6 }, () => cb.drain({ limit: 25 })));
+    const notes = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(notes.rows[0].n === 1,
+       `one vendor message stays ONE row on the thread under six concurrent drains (got ${notes.rows[0].n})`);
+    const done = await db.query('SELECT processed_at FROM class_callback_events WHERE id=$1', [ev.id]);
+    ok(done.rows[0].processed_at != null, 'and the delivery is still processed — the claim never strands one');
+
+    // A genuine RE-delivery of the same id-less note, days later, is still the
+    // same message: the second layer of the guard, independent of the claim.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`,
+       JSON.stringify({ data: [{ content: 'Please confirm access with the tenant.' }] }),
+       `burst-notes-again-${tag}`]);
+    await cb.drain({ limit: 25 });
+    const again = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(again.rows[0].n === 1, 're-delivering the same id-less note adds nothing');
+
+    // The same hole, mirrored: an attachment announcement with an id and NO name.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewAttachments', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`, JSON.stringify({ data: [{ attachmentId: `att-${tag}` }] }),
+       `burst-attach-${tag}`]);
+    await Promise.all(Array.from({ length: 6 }, () => cb.drain({ limit: 25 })));
+    const att = await db.query(
+      `SELECT count(*)::int AS n FROM class_attachments
+        WHERE class_order_row = $1 AND name IS NULL`, [order26]);
+    ok(att.rows[0].n === 1,
+       `a name-less attachment announcement stays ONE row (got ${att.rows[0].n})`);
+
+    // THE OTHER WRITER OF THE SAME TABLE. "Check for replies" (messages.syncNotes) is
+    // the one a human presses, and it carried the identical partial-index hole: every
+    // press re-inserted an id-less note and the unread badge counted every copy.
+    // The integration is switched OFF in a test environment and `syncNotes` refuses
+    // early when it is, so both the switch reading and the vendor call are stubbed —
+    // what is under test is the INSERT, not the transport.
+    // Absolute numbers: the thread is cleared first, so this block does not depend on
+    // how many rows the assertions above happened to leave behind.
+    await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+    const classClient = require('../src/class/client');
+    const realNotes = classClient.notes;
+    const realConfigured = classClient.configured;
+    classClient.configured = () => ({ ...realConfigured(), enabled: true });
+    classClient.notes = async () => ({ data: [
+      { content: 'Please confirm access with the tenant.', created: '2026-08-12T10:00:00Z' },
+      { noteId: `n-${tag}-1`, content: 'The appraiser will call you.' },
+    ] });
+    const messages = require('../src/class/messages');
+    const counts = [];
+    for (let i = 0; i < 4; i++) {
+      await messages.syncNotes(order26);
+      counts.push((await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26])).rows[0].n);
+    }
+    classClient.notes = realNotes;
+    classClient.configured = realConfigured;
+    ok(counts[0] === counts[3],
+       `pressing "check for replies" four times adds nothing after the first (${counts.join(' → ')})`);
+    ok(counts[3] === 2, 'the id-bearing note is added once and the id-less one is not duplicated');
+
+    // A DIFFERENT message must still land — the guard dedupes, it does not swallow.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`, JSON.stringify({ data: [{ content: 'The appraiser is running late.' }] }),
+       `burst-notes-other-${tag}`]);
+    await cb.drain({ limit: 25 });
+    const two = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(two.rows[0].n === 2, 'a genuinely different message still lands');
+
+    // …but a genuine NUDGE days later, with the same wording and the vendor's own new
+    // timestamp, is a NEW message and must land. Without the timestamp in the identity
+    // the guard was a permanent swallow: those words, ever again, dropped in silence.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`,
+       JSON.stringify({ data: [{ content: 'Please confirm access with the tenant.', created: '2026-08-20T09:00:00Z' }] }),
+       `burst-notes-nudge-${tag}`]);
+    await cb.drain({ limit: 25 });
+    const nudged = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(nudged.rows[0].n === 3, 'a later nudge repeating the same wording still lands — the guard dedupes, it does not swallow');
+
+
+    // THE TWO WRITERS MUST AGREE ABOUT WHAT A NOTE IS. The vendor's timestamp is part
+    // of an id-less note's identity, so if the callback writer stored a JS Date at
+    // millisecond resolution and "check for replies" handed Postgres the raw string at
+    // microsecond resolution, ONE vendor message became TWO rows — a .NET seven-digit
+    // fraction is enough to differ. Both go through the same normalizer now.
+    {
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      const stamp = '2026-08-14T11:22:33.1234567Z';   // the shape a .NET API emits
+      await db.query(
+        `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+         VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+        [`cls26-${tag}`, JSON.stringify({ data: [{ content: 'Precision matters.', created: stamp }] }),
+         `precision-${tag}`]);
+      await cb.drain({ limit: 25 });
+
+      const classClient2 = require('../src/class/client');
+      const keepNotes = classClient2.notes, keepCfg = classClient2.configured;
+      classClient2.configured = () => ({ ...keepCfg(), enabled: true });
+      classClient2.notes = async () => ({ data: [{ content: 'Precision matters.', created: stamp }] });
+      await require('../src/class/messages').syncNotes(order26);
+      classClient2.notes = keepNotes; classClient2.configured = keepCfg;
+
+      const both = await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26]);
+      ok(both.rows[0].n === 1,
+         `one vendor message is ONE row however it reached us (got ${both.rows[0].n})`);
+
+      // A RE-DELIVERY still collapses. The identity is the note's OWN stamp, never the
+      // envelope's — the envelope says when THIS DELIVERY was sent, so folding it in
+      // made every retry look like a new message.
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      for (const sentAt of ['2026-08-15T06:00:00Z', '2026-08-15T06:00:04Z']) {
+        await db.query(
+          `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+           VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+          [`cls26-${tag}`,
+           JSON.stringify({ created: sentAt, data: [{ content: 'The appraiser is on his way.' }] }),
+           `redeliver-${tag}-${sentAt}`]);
+      }
+      await cb.drain({ limit: 25 });
+      const red = await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26]);
+      ok(red.rows[0].n === 1,
+         `the same message delivered twice, seconds apart, is still ONE row (got ${red.rows[0].n})`);
+
+      // ONE ODD DATE MUST NOT STOP THE WHOLE SYNC. An unparseable timestamp used to be
+      // handed straight to a timestamptz, which aborted the statement — and every
+      // later press of "check for replies" stopped at the same note, so the real
+      // replies behind it never arrived.
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      const classClient3 = require('../src/class/client');
+      const kN = classClient3.notes, kC = classClient3.configured;
+      classClient3.configured = () => ({ ...kC(), enabled: true });
+      classClient3.notes = async () => ({ data: [
+        { noteId: `ok-1-${tag}`, content: 'N-1' },
+        { noteId: `bad-${tag}`, content: 'N-2', created: 'n/a' },
+        { noteId: `ok-3-${tag}`, content: 'N-3 — the real reply' },
+      ] });
+      const synced = await require('../src/class/messages').syncNotes(order26);
+      classClient3.notes = kN; classClient3.configured = kC;
+      ok(synced.ok === true, 'one unreadable date does not fail the whole sync');
+      const after = await db.query(
+        `SELECT content FROM class_notes WHERE class_order_row = $1 ORDER BY id`, [order26]);
+      ok(after.rows.length === 3, `every note still lands (got ${after.rows.length})`);
+      ok(after.rows.some((r) => /the real reply/.test(r.content || '')),
+         'including the one AFTER the bad date — the reply that used to be lost');
+      ok(after.rows.every((r) => r.content !== null), 'and none of them arrived blank');
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+    }
+
+    await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+    await db.query('DELETE FROM class_attachments WHERE class_order_row = $1', [order26]);
+    await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  }
+
+  // The claim must never lose a delivery: a row taken by a drain that then dies is
+  // due again once its lease expires, and its attempt count is untouched — a crash
+  // costs a retry, not one of the six tries before a delivery is given up on.
+  {
+    const ev = (await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('StatusChanged', $1, $2::jsonb, $3) RETURNING id`,
+      [`cls26-${tag}`, JSON.stringify({ data: { StatusName: 'Completed' } }), `lease-${tag}`])).rows[0];
+    // Claim it the way drain does, then abandon it.
+    await db.query(
+      `UPDATE class_callback_events SET next_attempt_at = now() + interval '120 seconds' WHERE id=$1`, [ev.id]);
+    const skipped = await cb.drain({ limit: 25 });
+    const mid = (await db.query(
+      'SELECT processed_at, attempts FROM class_callback_events WHERE id=$1', [ev.id])).rows[0];
+    ok(mid.processed_at == null && mid.attempts === 0,
+       'a claimed delivery is not worked twice, and the claim costs it no attempt');
+    ok(skipped.failed === 0, 'and skipping it is not a failure');
+    // Lease expires -> due again.
+    await db.query(`UPDATE class_callback_events SET next_attempt_at = now() - interval '1 second' WHERE id=$1`, [ev.id]);
+    await cb.drain({ limit: 25 });
+    const back = (await db.query('SELECT processed_at FROM class_callback_events WHERE id=$1', [ev.id])).rows[0];
+    ok(back.processed_at != null, 'once the lease expires the delivery is picked up again — nothing is lost');
+    await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  }
 
   // ---- cleanup ------------------------------------------------------------
   server.close();

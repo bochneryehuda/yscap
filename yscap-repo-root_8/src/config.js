@@ -1050,6 +1050,12 @@ module.exports = {
     loginAccount:  process.env.AMC_LOGIN_ACCOUNT || null,      // DoLogin loginAccountIdentifier
     loginPassword: process.env.AMC_LOGIN_PASSWORD || null,     // DoLogin loginAccountPassword
 
+    // Which tenant's ids this service is pointed at. `amc_form_map` and
+    // `amc_party_map` are both keyed on it (db/481) because their ids differ between
+    // UAT and production — a rule from the wrong environment names, or routes to, the
+    // wrong thing. Defaults to production, which is what every seeded row carries.
+    environment:   (process.env.AMC_ENVIRONMENT || 'production').trim().toLowerCase(),
+
     // ---- required message identifiers (provided by CoreLogic / the vendor) ----
     subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)

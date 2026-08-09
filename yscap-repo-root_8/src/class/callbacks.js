@@ -75,6 +75,11 @@ function when(v) {
 // its own, short enough that a genuinely malformed payload stops being asked about.
 const MAX_ATTEMPTS = 6;
 const backoffSeconds = (attempt) => Math.min(3600, 30 * Math.pow(2, Math.max(0, attempt - 1)));
+// How long a claimed delivery is held before it becomes due again (see `drain`).
+// Long enough that no ordinary event is worked twice, short enough that a process
+// killed mid-drain does not strand its batch for long. A completed row sets
+// `processed_at` and leaves the queue regardless, so this only ever governs a crash.
+const CLAIM_LEASE_SECONDS = 120;
 
 // Cents, as a bigint the column can actually hold. A number past that range does not
 // merely round badly — it serialises in exponent notation ("1e+32"), Postgres refuses
@@ -232,7 +237,15 @@ function notesFrom(payload) {
     .map((n) => ({
       noteId: text(n.noteId || n.NoteId || n.id || n.Id),
       content: text(n.content || n.Content),
-      created: when(n.created || n.Created) || when(payload && payload.created),
+      // THE NOTE'S OWN STAMP, AND ONLY ITS OWN. This used to fall back to the
+      // ENVELOPE's `created`, which is when THIS DELIVERY was sent — different on
+      // every retry. Once the stamp became part of a note's identity that made a
+      // re-delivery look like a new message and put the same words on the thread
+      // twice. It is also the wrong value to show a reader: the row's own `created_at`
+      // already records when we received it, so a borrowed delivery time added
+      // nothing and disagreed with what the OTHER writer (messages.syncNotes) stores
+      // for the same note.
+      created: when(n.created || n.Created),
     }))
     .filter((n) => n.noteId || n.content);
 }
@@ -275,9 +288,31 @@ async function processEvent(row, { dbc } = {}) {
       // this idempotent, so a retried delivery cannot duplicate a message.
       if (eventName === 'NewNotes') {
         for (const n of notesFrom(payload)) {
+          // THE GUARD HAS TO COVER A NOTE WITH NO ID. `uq_class_notes_vendor_id` is a
+          // PARTIAL index, so `ON CONFLICT (class_note_id)` arbitrates nothing when
+          // their note carries no id — and their guide allows exactly that (content,
+          // no noteId). The claim in `drain` is what stops two drains racing; this is
+          // the second layer, and it is the one that also covers a genuine RE-delivery
+          // of an id-less note days later. Same message, same order, same direction is
+          // the same message: `IS NOT DISTINCT FROM` so a NULL body compares equal to
+          // a NULL body rather than to nothing.
           await q.query(
             `INSERT INTO class_notes (class_order_row, application_id, class_note_id, direction, content, vendor_created_at)
-             VALUES ($1,$2,$3,'ToClient',$4,$5)
+             SELECT $1::bigint, $2::uuid, $3::text, 'ToClient', $4::text, $5::timestamptz
+              WHERE $3::text IS NOT NULL
+                 OR NOT EXISTS (
+                      SELECT 1 FROM class_notes
+                       WHERE class_order_row = $1::bigint
+                         AND direction = 'ToClient'
+                         AND class_note_id IS NULL
+                         AND content IS NOT DISTINCT FROM $4::text
+                         -- THE VENDOR'S OWN TIMESTAMP IS PART OF THE IDENTITY, so a
+                         -- genuine nudge days later that repeats the same wording is
+                         -- a NEW message and still lands. Without it the guard was a
+                         -- permanent swallow: same words, ever, meant dropped in
+                         -- silence. (With no timestamp on either there is nothing left
+                         -- to tell them apart, and one row is the safe reading.)
+                         AND vendor_created_at IS NOT DISTINCT FROM $5::timestamptz)
              ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING`,
             [order.id, order.application_id, n.noteId, n.content, n.created]);
         }
@@ -285,9 +320,20 @@ async function processEvent(row, { dbc } = {}) {
 
       if (eventName === 'NewAttachments') {
         for (const a of attachmentsFrom(payload)) {
+          // Same hole, mirrored: `uq_class_attach_name` is partial on `name`, so an
+          // announcement carrying an id and NO name is arbitrated by nothing. Their id
+          // identifies it when the name cannot; with neither, one nameless idless
+          // announcement per order is all we will record, which is the safe reading —
+          // the desk's job here is "there is a document to fetch", not a count.
           await q.query(
             `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, class_attachment_id)
-             VALUES ($1,$2,$3,$4,$5)
+             SELECT $1::bigint, $2::uuid, $3::text, $4::text, $5::text
+              WHERE $3::text IS NOT NULL
+                 OR NOT EXISTS (
+                      SELECT 1 FROM class_attachments
+                       WHERE class_order_row = $1::bigint
+                         AND name IS NULL
+                         AND class_attachment_id IS NOT DISTINCT FROM $5::text)
              ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL DO NOTHING`,
             [order.id, order.application_id, a.name, a.contentType, a.attachmentId]);
         }
@@ -325,7 +371,10 @@ async function processEvent(row, { dbc } = {}) {
       console.warn(`[class] callback ${row.id} (${row.event_name}) given up after ${attempt} attempts:`,
         String((e && e.message) || e).slice(0, 200));
     }
-    return { ok: false, error: (e && e.message) || String(e), attempts: attempt, dead };
+    // The raw text is kept for the worker and the log; `message` is what any screen
+    // that ever renders this would show.
+    return { ok: false, error: 'callback_failed',       message: 'An update from the appraisal company could not be recorded. It will be retried.',
+      attempts: attempt, dead };
   }
 }
 
@@ -337,17 +386,39 @@ async function processEvent(row, { dbc } = {}) {
 async function drain({ limit = 100 } = {}) {
   let done = 0, failed = 0, dead = 0;
   try {
-    // A row that is due, oldest first — with a never-tried row (NULL next_attempt_at)
-    // always ahead of a retry, so live traffic is never queued behind a failure.
-    // `dead_at IS NULL` takes a given-up delivery out of the rotation for good; it is
-    // still in the table, and `deadLetter()` is how a human sees it.
+    // A ROW IS CLAIMED BEFORE IT IS WORKED, and that is not a refinement — it is the
+    // difference between a message appearing once on the desk and appearing four
+    // times. The receiver fires this from `setImmediate` on EVERY accepted delivery,
+    // and Class pushes in bursts, so two drains running at once is the ordinary case,
+    // not a race worth discounting. Reading `WHERE processed_at IS NULL` and only
+    // stamping it at the END let both drains pick up the same stored event and both
+    // insert its notes; measured on a real database, one delivery carrying ONE vendor
+    // message produced four to seven rows on the thread, and the unread badge counted
+    // every one of them.
+    //
+    // The claim is a LEASE written into `next_attempt_at`, so it needs no new column:
+    // `FOR UPDATE SKIP LOCKED` stops two drains selecting the same row inside the same
+    // instant, and pushing the row's due time out stops the second drain's next pass
+    // from picking it up again. Nothing is lost if we die mid-work — the lease simply
+    // expires and the row is due again — and `attempts` is deliberately NOT bumped
+    // here, so a crash costs a retry, not one of the six tries before a delivery is
+    // given up on.
     const r = await db.query(
-      `SELECT * FROM class_callback_events
-        WHERE processed_at IS NULL
-          AND dead_at IS NULL
-          AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-        ORDER BY next_attempt_at ASC NULLS FIRST, received_at ASC
-        LIMIT $1`, [Math.max(1, Math.min(500, limit))]);
+      `WITH due AS (
+         SELECT id FROM class_callback_events
+          WHERE processed_at IS NULL
+            AND dead_at IS NULL
+            AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+          ORDER BY next_attempt_at ASC NULLS FIRST, received_at ASC
+          LIMIT $1
+          FOR UPDATE SKIP LOCKED
+       )
+       UPDATE class_callback_events e
+          SET next_attempt_at = now() + ($2 || ' seconds')::interval
+         FROM due
+        WHERE e.id = due.id
+       RETURNING e.*`,
+      [Math.max(1, Math.min(500, limit)), String(CLAIM_LEASE_SECONDS)]);
     for (const row of r.rows) {
       const out = await processEvent(row);
       if (out.ok) done++; else { failed++; if (out.dead) dead++; }
@@ -391,7 +462,9 @@ async function refreshOrder(order) {
     const body = await client.order(order.class_order_id, { version: v.version });
     return { ok: true, version: v, order: body };
   } catch (e) {
-    return { ok: false, reason: 'lookup_failed', message: (e && e.message) || String(e) };
+    console.warn('[class] reading order', order && order.class_order_id, 'failed:', (e && e.message) || e);
+    return { ok: false, reason: 'lookup_failed',
+      message: 'That order could not be read from the appraisal company just now. Please try again in a moment.' };
   }
 }
 

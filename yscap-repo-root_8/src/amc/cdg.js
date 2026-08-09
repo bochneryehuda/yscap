@@ -141,6 +141,12 @@ function buildCreateAppraisal(spec, ctx) {
   // Best-person-to-contact is REQUIRED (enum Borrower | Co-Borrower | Owner | Agent | …).
   // The exact leaf is not pinned in the vendor mapping — verify against UAT.
   if (p.bestContact) parties.push({ partyRoleType: 'BestContact', partyRoleTypeIdentifier: p.bestContact });
+  // The person who opens the door, by name. The other three roles on `spec.contacts`
+  // travel elsewhere and must NOT be added here: the borrower and co-borrower are
+  // already on their own borrowers[] entries, and OUR loan officer may never occupy
+  // their LoanOfficer slot (that slot carries the note buyer — see order-build.js).
+  // Named-party leaves are on the same "verify against UAT" footing as BestContact.
+  for (const c of namedParties(spec.contacts)) parties.push(c);
   if (parties.length) deal.parties = parties;
 
   const message = {
@@ -180,6 +186,34 @@ function borrower(b) {
   }
   if (b.residence) {
     out.residences = [{ borrowerResidencyType: 'Current', address: address(b.residence) }];
+  }
+  return out;
+}
+
+// Role contacts that travel as a NAMED party on the deal. Only PropertyAccess does
+// today (see the call site for why the other three do not), but the shape is written
+// as a filter rather than a special case so a role the vendor later accepts is one
+// entry away. A row with no name and no way to reach them is dropped — a party
+// carrying a role and nothing else tells the appraiser there is somebody to call.
+const PARTY_ROLES = { PropertyAccess: 'PropertyAccess' };
+function namedParties(contacts) {
+  if (!Array.isArray(contacts)) return [];
+  const out = [];
+  for (const c of contacts) {
+    const roleType = c && PARTY_ROLES[c.role];
+    if (!roleType) continue;
+    const name = c.name || [c.firstName, c.lastName].filter(Boolean).join(' ') || null;
+    if (!name && !c.email && !c.phone) continue;
+    const party = { partyRoleType: roleType };
+    if (name) party.fullName = name;
+    if (c.firstName) party.firstName = c.firstName;
+    if (c.lastName) party.lastName = c.lastName;
+    if (c.company) party.legalEntityName = c.company;
+    const methods = [];
+    if (c.email) methods.push({ contactType: 'Work', contactEmail: c.email });
+    if (c.phone) methods.push({ contactType: 'Work', contactPhone: c.phone });
+    if (methods.length) party.contacts = methods;
+    out.push(party);
   }
   return out;
 }
@@ -420,5 +454,5 @@ module.exports = {
   buildGetStatus, buildGetDetail, parseStatus,
   parseError, mapStatusToLifecycle, maskRequest,
   // exported for tests
-  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup },
+  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, namedParties },
 };

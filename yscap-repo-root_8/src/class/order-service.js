@@ -23,6 +23,7 @@
 
 const orderBuild = require('./order-build');
 const client = require('./client');
+const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
 
 function addrParts(v) {
   const a = (v && typeof v === 'object') ? v : {};
@@ -45,21 +46,14 @@ async function loadContext(db, appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.loan_type, a.property_address, a.property_type,
             a.occupancy, a.purchase_price, a.loan_amount, a.est_closing_date,
-            a.borrower_id, a.co_borrower_id, a.loan_officer_id,
-            b.first_name AS b_first, b.last_name AS b_last, b.full_name AS b_full,
-            b.email AS b_email, b.cell_phone AS b_cell,
-            cb.first_name AS c_first, cb.last_name AS c_last, cb.full_name AS c_full,
-            cb.email AS c_email, cb.cell_phone AS c_cell,
-            lo.full_name AS lo_name, lo.email AS lo_email, lo.phone AS lo_phone
+            a.borrower_id, a.co_borrower_id, a.loan_officer_id
        FROM applications a
-       JOIN borrowers b ON b.id = a.borrower_id
-       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
-       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   const a = r.rows[0];
   if (!a) return null;
 
   const pa = addrParts(a.property_address);
+  const people = (await loadAppraisalContacts(db, appId)) || {};
   return {
     appId: a.id,
     referenceNumber: a.ys_loan_number || null,
@@ -79,16 +73,13 @@ async function loadContext(db, appId) {
     },
     contractPrice: a.purchase_price,
     dueDate: null,                               // staff choose on the screen
-    borrower: { firstName: a.b_first, lastName: a.b_last, fullName: a.b_full, email: a.b_email, mobile: a.b_cell },
-    coBorrower: a.co_borrower_id
-      ? { firstName: a.c_first, lastName: a.c_last, fullName: a.c_full, email: a.c_email, mobile: a.c_cell }
-      : null,
-    loanOfficer: a.loan_officer_id
-      ? { firstName: (a.lo_name || '').split(' ')[0] || null,
-          lastName: (a.lo_name || '').split(' ').slice(1).join(' ') || null,
-          email: a.lo_email, workPhone: a.lo_phone }
-      : null,
-    propertyContact: null,                       // filled from file contacts once wired
+    // The four people the appraiser may have to call, read by the ONE shared reader
+    // both appraisal desks use (src/lib/appraisal-contacts.js). It is what finally
+    // fills `propertyContact` — the realtor or contractor who can open the door was
+    // sitting on the file all along and neither vendor was ever told about them.
+    // Reading it here rather than off the query above is deliberate: two desks
+    // naming two different people for one property is the drift this prevents.
+    ...people,
     lender: { clientName: 'YS Capital Group' },
     notifyEmails: [],
   };
@@ -145,7 +136,7 @@ const OVERRIDE_KEY_FOR_PATH = {
   propertyTypeEnum: 'propertyTypeEnum',
 };
 
-function fieldRows(built) {
+function fieldRows(built, extra) {
   const rows = [];
   const derived = new Map((built.assumptions || []).map((a) => [a.field, a]));
   const missing = new Map((built.missing || []).map((m) => [m.field, m]));
@@ -165,6 +156,10 @@ function fieldRows(built) {
         path,
         label: LABELS[path] || path,
         value: v,
+        // A display string only — `value` stays the raw id, because that is what is
+        // sent and what an override must match.
+        display: path === 'productId' && extra && extra.productTitle
+          ? `${extra.productTitle} (#${v})` : undefined,
         state: m ? 'missing' : wasOverridden(k, path) ? 'overridden' : d ? 'derived' : 'read',
         why: (m && m.why) || (d && d.why) || null,
       });
@@ -179,6 +174,17 @@ function fieldRows(built) {
       rows.push({ path: field, label: LABELS[field] || field, value: null, state: 'missing', why: m.why });
     }
   }
+  // AND SO DOES AN ASSUMPTION ABOUT SOMETHING THAT IS NOT IN THE BODY. The builder
+  // says "no property-access contact on the file — the appraiser will contact the
+  // borrower to arrange entry", and that sentence reached nothing: the loop above
+  // covers `missing` and had no twin for `assumptions`, so the one thing the reviewer
+  // most needs to know about access was computed and dropped. The AMC desk shows the
+  // same sentence.
+  for (const a of (built.assumptions || [])) {
+    if (!a || !a.field || rows.some((r) => r.path === a.field)) continue;
+    rows.push({ path: a.field, label: LABELS[a.field] || a.field,
+      value: a.value == null ? null : String(a.value), state: 'derived', why: a.why });
+  }
   return rows;
 }
 
@@ -191,10 +197,19 @@ async function buildPreview(db, appId, opts = {}) {
   // could describe one version while the order goes out on the other.
   const cfg = client.configured();
   const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfg.apiVersion });
+  // THE FORM'S NAME, NOT ONLY ITS NUMBER. "Class product #1042" tells nobody what is
+  // being ordered — the person placing the order has to know they are buying an
+  // interior 1004, not a desktop. Their catalogue is the only place the name lives,
+  // so it is looked up here (cached, best-effort) rather than being retyped into our
+  // own list, which would silently rot the day they rename a form. Resolving it can
+  // never block or fail an order: with the connection off, or their list unreadable,
+  // the number stands alone exactly as before.
+  const productTitle = cfg.enabled ? await client.productTitle(built.body.productId) : null;
   return {
     context: ctx,
     body: built.body,
-    fields: fieldRows(built),
+    productTitle,
+    fields: fieldRows(built, { productTitle }),
     contacts: built.body.contacts || [],
     missing: built.missing,
     assumptions: built.assumptions,

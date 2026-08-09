@@ -52,6 +52,12 @@ const switches = require('../lib/integrations/switches');
 // PURE — no database, no network, no cycle back into this module.
 const orderBuild = require('./order-build');
 
+// Their product catalogue, cached for a few minutes. Only ever used to put a NAME
+// beside a number on a screen — never to decide what is ordered.
+const PRODUCT_CACHE_MS = 5 * 60 * 1000;
+let _productCache = null;
+const text = (v) => { const t = v == null ? '' : String(v).trim(); return t || null; };
+
 // A version-specific READ must be told which version; it may never fall back. The
 // caller that knows is the stored order row (`class_orders.api_version`), and when
 // THAT is unknown the documented behaviour is to decline the call, not to guess.
@@ -146,6 +152,10 @@ function httpError(label, status, body, retryAfterSec) {
   if (retryAfterSec) e.retryAfterSec = retryAfterSec;
   return e;
 }
+// A failure of the CREDENTIAL rather than of the thing we sent. Tagged where it is
+// raised, because that is the only place that knows which call it was.
+function credentialError(e) { e.code = 'CLASS_TOKEN_REJECTED'; return e; }
+
 function gateError(code, message) { const e = new Error(`${code}: ${message}`); e.code = code; return e; }
 
 async function fetchWithTimeout(url, opts, timeoutMs) {
@@ -200,9 +210,14 @@ async function getAccessToken() {
       body: form.toString(),
     }, c.timeoutMs);
     const data = readBody(buf);
-    if (!res.ok) throw httpError('token', res.status, data);
+    // A CREDENTIAL FAILURE SAYS SO ITSELF. It used to be inferred downstream from the
+    // status — and the status of a TOKEN call means something entirely different from
+    // the status of an order call: OAuth2 answers a wrong client secret with 400
+    // invalid_client, which read as "the appraisal company would not accept the order.
+    // Sending the same thing again will not help." Nothing about the order was wrong.
+    if (!res.ok) throw credentialError(httpError('token', res.status, data));
     const tok = data && data.access_token;
-    if (!tok) throw httpError('token', res.status, data);   // 200 with no token is still a failure
+    if (!tok) throw credentialError(httpError('token', res.status, data));   // 200 with no token is still a failure
     const ttl = Math.max(60, parseInt(data.expires_in, 10) || 3600);
     _token = { value: tok, expiresAtMs: Date.now() + ttl * 1000 };
     return tok;
@@ -217,12 +232,18 @@ async function getAccessToken() {
 //                 CLASS_OUTBOUND_ENABLED and short-circuited by CLASS_DRYRUN.
 //   opts.label  — what to call it in an error.
 // ---------------------------------------------------------------------------
-async function request(method, path, { body, query, write, label } = {}) {
+async function request(method, path, { body, query, write, label, dryrun } = {}) {
   if (!switches.on('CLASS_ENABLED')) throw gateError('CLASS_DISABLED', 'the Class Valuation integration master switch is off');
 
   // Dry-run is checked BEFORE the write gate, so it is always safe to leave on
   // while verifying — exactly the AMC ordering.
-  if (write && switches.on('CLASS_DRYRUN')) {
+  //
+  // `opts.dryrun` is a caller's already-made decision and can only ever force the dry
+  // run ON, never cancel one. The order route STAMPS `class_orders.dryrun` from its
+  // own read of this switch, so without passing it down a switch flipped between the
+  // two reads left a real order permanently labelled a test — the same read-it-twice
+  // shape the AMC side was fixed for, in the other vendor's route.
+  if (write && (dryrun === true || switches.on('CLASS_DRYRUN'))) {
     console.warn(`[class][DRYRUN] would ${method} ${path} body=${JSON.stringify(maskSafe(body))}`);
     return { __dryrun: true };
   }
@@ -287,13 +308,49 @@ function backoff(attempt, retryAfterSec) {
 // body carries borrower names and contact details, so this is deliberately about
 // CREDENTIALS, not PII — a dry-run log is a staff-only diagnostic, and the loan
 // file's own data is what the operator is trying to check.
-const SECRET_KEYS = /^(client_?secret|password|access_?token|authorization|token)$/i;
+// `userName` is in here for a specific reason: the callback REGISTRATION body is
+// {callbackUrl, userName, password, authMode}, and those two are the Basic-auth pair
+// for our PUBLIC receiver. Masking only the password writes half the credential to
+// the application log in clear on any dry-run registration.
+const SECRET_KEYS = /^(client_?secret|password|access_?token|authorization|token|user_?name|login_?account)$/i;
 function maskSafe(v) {
   if (v == null || typeof v !== 'object') return v;
   if (Array.isArray(v)) return v.map(maskSafe);
   const out = {};
   for (const [k, val] of Object.entries(v)) out[k] = SECRET_KEYS.test(k) ? '***' : maskSafe(val);
   return out;
+}
+
+// THE WHOLE CATALOGUE, ONCE — the shape a caller with SEVERAL ids to name needs.
+//
+// `productTitle` answers null both when the fetch failed and when the id is simply not
+// in the catalogue, and those two are opposite instructions: one means "stop, the vendor
+// is unreachable and every further lookup is another 60-second timeout", the other means
+// "that one id is unknown, carry on". A caller naming a LIST cannot tell them apart from
+// a null, and the one that tried inferred it from the first row — so a single retired
+// product id on the newest order stopped every other order on that file from ever being
+// named. This returns the map, or null when the catalogue could not be read, which is
+// the distinction stated rather than guessed at.
+//
+// NEVER throws and never blocks an order: a number with no name is still a placeable
+// order, it just reads worse.
+async function productTitles() {
+  try {
+    const now = Date.now();
+    if (!_productCache || now - _productCache.at > PRODUCT_CACHE_MS) {
+      const r = await get('/products', { limit: 500 }, 'products');
+      const list = (r && (r.products || r.data)) || [];
+      const byId = new Map();
+      for (const p of Array.isArray(list) ? list : []) {
+        if (p && p.id != null) byId.set(String(p.id), text(p.title || p.name || p.productName));
+      }
+      _productCache = { at: now, byId };
+    }
+    // A COPY, not the live cache. Handing out the Map itself let any caller mutate this
+    // module's catalogue for the rest of the process — and the caller here loops over it
+    // per order, which is exactly where a stray `set`/`delete` would go unnoticed.
+    return new Map(_productCache.byId);
+  } catch (_) { return null; }
 }
 
 // ---- the documented surface, each a thin named call -----------------------
@@ -304,6 +361,21 @@ module.exports = {
   configured, hosts, invalidateToken, getAccessToken, request, get, post,
   // READS (master switch only)
   products: (query) => get('/products', query, 'products'),
+  // Their catalogue is small and changes rarely, so it is cached briefly: the order
+  // screen asks for a name on every preview, and re-fetching a price list per keystroke
+  // would be absurd. The whole map, or null when it could not be read — see above.
+  productTitles,
+  // The chosen form's NAME, not just its number — the single-id form, and deliberately
+  // a thin wrapper over the map above so the cache and its expiry live in ONE place.
+  productTitle: async (id) => {
+    const key = String(id == null ? '' : id).trim();
+    if (!key) return null;
+    // NOT `this.productTitles()` — a caller that destructures (`const { productTitle }
+    // = require(...)`) would lose the receiver and throw. The hoisted function is the
+    // one definition either way.
+    const byId = await productTitles();
+    return (byId && byId.get(key)) || null;
+  },
   // READING AN ORDER IS VERSION-SPECIFIC. `GET /orders/{id}` and `GET /v2/orders/{id}`
   // describe the SAME order with different field names (propertyTypeEnum vs
   // propertyType, a typed occupancy, the renamed GSE references). Reading a 3.6 order
@@ -345,7 +417,7 @@ module.exports = {
   // the body and the endpoint can never disagree. Defaulting to `/orders` keeps
   // every existing caller on 2.6 exactly as before.
   createOrder: (body, query, opts = {}) =>
-    request('POST', opts.path || '/orders', { body, query, write: true, label: 'createOrder' }),
+    request('POST', opts.path || '/orders', { body, query, write: true, label: 'createOrder', dryrun: opts.dryrun }),
   addNote: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/notes`, body, { label: 'addNote' }),
   requestRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-revision`, body, { label: 'requestRevision' }),
   requestCancel: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-cancel`, body, { label: 'requestCancel' }),

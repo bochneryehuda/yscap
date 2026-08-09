@@ -18,6 +18,9 @@ const cdg = require('./cdg');
 const client = require('./client');
 const session = require('./session');
 const { journal } = require('./order-service');
+// One definition for both desks — never a pasted copy; see the module header.
+const { sendFailMessage, nackMessage } = require('../lib/appraisal-messages');
+
 
 async function insertComment(dbh, orderId, { direction, body, authorName, staffId, amcCommentId, amcDatetime }) {
   const r = await dbh.query(
@@ -31,19 +34,28 @@ async function insertComment(dbh, orderId, { direction, body, authorName, staffI
 // and journals the write. Never throws for an expected refusal.
 async function postComment(dbh, order, { staffId, staffName, body }, deps = {}) {
   const text = String(body || '').trim();
-  if (!text) return { ok: false, error: 'empty' };
+  if (!text) return { ok: false, error: 'empty', message: 'Type a message before sending it.' };
   const transport = deps.transport || client;
-  const authCtx = deps.authContext || (await session.authContext());
+  const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
+  let authCtx;
+  try {
+    // TEST MODE MUST NOT NEED A LOGIN, and a login that fails is answered in plain
+    // words rather than thrown at the route's catch-all — which reported it as the
+    // server's generic "Something went wrong on our end".
+    authCtx = deps.authContext || (await session.authContext(dryrun ? { offline: true } : undefined));
+  } catch (e) {
+    return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
+  }
   const built = cdg.buildAddComment({
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number, text,
   });
   let resp;
   try {
-    resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: 'AddComment' });
+    resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: 'AddComment', dryrun });
   } catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'AddComment', request: built, ok: false, error: String(e.message || e), staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e) };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'Your message') };
   }
   if (resp && resp.__dryrun) {
     const row = await insertComment(dbh, order.id, { direction: 'outbound', body: text, authorName: staffName, staffId, amcCommentId: null });
@@ -54,7 +66,7 @@ async function postComment(dbh, order, { staffId, staffName, body }, deps = {}) 
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'AddComment', request: built, response: resp, ok: false, error: err.description || err.code, staffId });
-    return { ok: false, error: 'amc_nack', message: err.description || err.code };
+    return { ok: false, error: 'amc_nack', message: nackMessage(err, 'your message') };
   }
   // The AMC may echo the created comment with its id — capture it when present.
   const echoed = cdg.parseComments(resp);
@@ -69,6 +81,13 @@ async function postComment(dbh, order, { staffId, staffName, body }, deps = {}) 
 // check so a re-poll never re-files it. Returns { ok, added }.
 async function syncComments(dbh, order, deps = {}) {
   const transport = deps.transport || client;
+  // A READ IS NEVER A DRY RUN, so it needs a REAL api key. The dry-run gate in the
+  // transport applies to WRITES only (`client.read` passes `write:false`), so building
+  // this with the offline, key-less context would not stop it — it would post an
+  // UNAUTHENTICATED request to the vendor, get NACKed -100, and `session.invalidate()`
+  // below would then throw away the good key the poller had just obtained: a forced
+  // sign-in per order per tick, and the vendor's replies never filed, for as long as
+  // test mode was on. Reading is free and harmless; it signs in properly.
   const authCtx = deps.authContext || (await session.authContext());
   const resp = await transport.read(cdg.buildGetComments({
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
@@ -77,7 +96,9 @@ async function syncComments(dbh, order, deps = {}) {
   const err = cdg.parseError(resp);
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
-    return { ok: false, error: err };
+    // `err` is the vendor's own error OBJECT — the panel renders `message`, and an
+    // object reaches the screen as [object Object] or as nothing at all.
+    return { ok: false, error: 'amc_nack', message: nackMessage(err, 'a request to read the message thread'), nack: err };
   }
   const comments = cdg.parseComments(resp);
   let added = 0;

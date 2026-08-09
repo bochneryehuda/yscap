@@ -81,7 +81,7 @@ export default function ClassAppraisalPanel({ appId }) {
     try {
       const pv = await api.classPreview(appId, ov || {});
       setPreview(pv || null);
-    } catch (e) { setErr(e.message || 'Could not load the order preview.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load the order preview.'); }
   }, [appId]);
 
   const loadOrders = useCallback(async () => {
@@ -129,7 +129,7 @@ export default function ClassAppraisalPanel({ appId }) {
         setErr((out && out.message) || 'Could not place the order.');
       }
     } catch (e) {
-      setErr(e.message || 'Could not place the order.');
+      setErr(refusal(e.data) || e.message || 'Could not place the order.');
     }
     setBusy(false);
   }, [appId, overrides, load, loadOrders]);
@@ -263,6 +263,81 @@ const fmtDay = (d) => { if (!d) return null; try { return new Date(d).toLocaleDa
 const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleString('en-US'); } catch (_) { return ''; } };
 
 // The orders already placed on this file, with everything Class has told us since.
+// A refused action, in the words the SERVER used. `api.js` throws with `e.message`
+// set to the error CODE, so without reading the body the desk shows "not_connected"
+// where the server wrote a plain sentence a person can act on. Same helper, same
+// wording, as the other appraisal desk — a refusal must read the same on both.
+// A contact's ROLE, whichever way this order spells it: their key is `Type` on UAD 2.6
+// and `type` on 3.6, and the server has read both since day one. Reading only `Type`
+// made every role label vanish on a 3.6 order — and gave every row the same React key —
+// on the very screen this branch first put a property-access person on.
+function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
+
+// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT — and the deciding is now the
+// SERVER'S, at the moment of writing (`src/lib/appraisal-messages.storedFailNote`), so
+// the column holds a plain sentence and this only chooses a TONE. Two things were wrong
+// with translating it here instead, and both put a false statement on the screen:
+//
+//   • TEST MODE. On the dry-run path the server deliberately writes
+//     "TEST MODE — recorded here, not sent to Class." to mark a row that is fine. This
+//     rewrote it to "not delivered — it will be retried" IN RED, so the one marker that
+//     exists to say "this is a rehearsal" was replaced by an alarm about a real failure.
+//   • "IT WILL BE RETRIED" was never true. Nothing retries these rows — a person presses
+//     Send again — and a message they think is queued is a message nobody sends. It also
+//     said the same thing about a refusal Class had ANSWERED, where sending the identical
+//     text again cannot work, so it sent people to wait for something that never happens.
+//
+// Legacy rows still hold the raw exception text, and THE TEST FOR THEM RUNS THE OTHER
+// WAY ROUND — recognise OURS, translate everything else. An allow-by-shape filter
+// (`/HTTP \d{3}|ECONN\w*|…/`) was tried and is fail-OPEN: anything it does not happen to
+// match is shown verbatim, so it put on the owner's screen exactly what this function
+// exists to keep off it — "Class addNote refused: Loan number already exists" (their
+// `success:false` inside an HTTP 200, the ordinary refusal), "Class notes failed after 3
+// attempts", "class: the UAD version of this order is unknown…", "socket hang up",
+// "Unexpected token < in JSON at position 0". The old version could not leak at all;
+// that was a fix trading one bug for a worse one.
+//
+// So the contract is a PREFIX the server owns (`src/lib/appraisal-messages.js`), which
+// is a thing this side can actually verify, rather than a list of shapes an exception
+// might take, which it cannot.
+// The openings the server owns. `Could not be read — ` is the same contract for a poll
+// or a document read, where "Not sent" would be a plain untruth.
+const OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
+
+function failNote(stored) {
+  // Only a string is a stored note. `false`, `0`, `{}` and `[]` are not failures with
+  // unrecognised wording — they are the column holding something it never holds, and
+  // turning them into a red "not sent" would invent a failure that did not happen.
+  if (typeof stored !== 'string') return null;
+  const t = stored.trim();
+  if (!t) return null;
+  if (/^TEST MODE\b/.test(t)) return { text: 'test mode — recorded here, not sent to Class', bad: false };
+  // A sentence the server wrote: show it as it is. It already names the state and the
+  // next step, and re-deciding either here would be a second place for them to live.
+  // `Sent — …` is not a failure: the appraisal company HAS it, only our own note of that
+  // failed. Painting it red would tell somebody to send it again, which is the one thing
+  // that must not happen.
+  if (/^Sent —/.test(t)) return { text: t.replace(/^Sent — /, 'sent — '), bad: false };
+  if (OURS_RE.test(t)) return { text: t.replace(/^(Not sent|Could not be read) — /, (x) => x.toLowerCase()), bad: true };
+  // Anything else is a row written before that contract existed, so it is the
+  // exception's own text. The one distinction a person can act on is a switch of ours.
+  if (/switched off|disabled/i.test(t)) return { text: 'not sent — the connection is switched off', bad: true };
+  return { text: 'not sent — you can send it again', bad: true };
+}
+
+// The form's NAME on an order, or null. The server fills it in on read for orders
+// placed before it was stored, so this is deliberately not a second place that decides
+// what a form is called — it only asks whether we have a name to show.
+function titleOf(o) { const t = o && o.product_title; return t ? String(t) : null; }
+
+function refusal(out) {
+  if (!out) return '';
+  if (Array.isArray(out.missing) && out.missing.length) {
+    return 'Still needed: ' + out.missing.map((m) => (m && m.field ? (m.why || m.field) : m)).join(', ');
+  }
+  return out.message || '';
+}
+
 function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
   const rows = (data && data.orders) || [];
   if (!rows.length) return null;
@@ -285,8 +360,26 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
                                fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: INK, fontWeight: 600 }}>
-                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
+                    {/* THE FORM'S NAME, on the order — the same thing the other
+                        appraisal desk shows on its own order row. It was stored on the
+                        order and sent to this screen, and then nothing rendered it, so
+                        the list said only "Class order 12345" and never which report
+                        was actually bought. */}
+                    {/* A title is stored when the order is PLACED, so every order placed
+                        before that existed has none — which is the exact "it says only
+                        the form number" the owner reported. The catalogue is already
+                        loaded on this screen for the form picker, so name it from there
+                        rather than leave the number standing alone; and when nothing can
+                        name it, lead with the ORDER, which is what a person identifies
+                        it by, instead of demoting the order beneath a bare number. */}
+                    {titleOf(o) || (o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class')}
                     {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: MUTED }}>
+                    {titleOf(o)
+                      ? (o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class')
+                      : (o.product_id ? `Their form #${o.product_id}` : 'Form not recorded')}
+                    {titleOf(o) && o.product_id ? ` · their form #${o.product_id}` : ''}
                   </div>
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {/* Which form version this order is on. It is on the row rather than
@@ -323,7 +416,7 @@ function OrderDetail({ appId, order, onChanged }) {
   const [draft, setDraft] = useState('');
 
   const load = useCallback(async () => {
-    try { setThread(await api.classThread(appId, order.id)); } catch (e) { setErr(e.message || 'Could not load the conversation.'); }
+    try { setThread(await api.classThread(appId, order.id)); } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load the conversation.'); }
   }, [appId, order.id]);
 
   useEffect(() => { load(); }, [load]);
@@ -340,7 +433,7 @@ function OrderDetail({ appId, order, onChanged }) {
       if (!(out && out.ok)) setErr((out && out.message) || 'We could not deliver that to Class. It is saved here and can be sent again.');
       await load();
     } catch (e) {
-      setErr(e.message || 'We could not deliver that to Class. It is saved here.');
+      setErr(refusal(e.data) || e.message || 'We could not deliver that to Class. It is saved here.');
       await load();
     }
     setBusy(false);
@@ -352,7 +445,7 @@ function OrderDetail({ appId, order, onChanged }) {
       const out = await api.classThreadSync(appId, order.id);
       if (!(out && out.ok)) setErr((out && out.message) || 'Could not check with Class right now.');
       await load();
-    } catch (e) { setErr(e.message || 'Could not check with Class right now.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not check with Class right now.'); }
     setBusy(false);
   };
 
@@ -394,11 +487,23 @@ function OrderDetail({ appId, order, onChanged }) {
                   }}>
                     {n.content || <span style={{ color: MUTED }}>(no text)</span>}
                   </div>
-                  <div style={{ fontSize: 11, color: n.send_error ? BAD : MUTED, marginTop: 2 }}>
-                    {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
-                    {n.send_error ? ` · not delivered: ${n.send_error}` : ''}
-                    {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
-                  </div>
+                  {(() => {
+                    // A test-mode row is not a failure, so it must not be painted like
+                    // one — the tone comes from the note, never from the column merely
+                    // being filled in.
+                    // THE ONE QUESTION, ASKED ONCE. Guarding "still sending" on the raw
+                    // column while the note is decided from a TRIMMED copy let a
+                    // whitespace-only value produce neither a note nor `sending…`, so a
+                    // message that never left read as delivered.
+                    const note = failNote(n.send_error);
+                    return (
+                      <div style={{ fontSize: 11, color: note && note.bad ? BAD : MUTED, marginTop: 2 }}>
+                        {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
+                        {note ? ` · ${note.text}` : ''}
+                        {ours && !note && !n.sent_at ? ' · sending…' : ''}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             }) : <div style={{ color: MUTED, fontSize: 13 }}>Nothing said yet.</div>}
@@ -431,7 +536,11 @@ function OrderDetail({ appId, order, onChanged }) {
               <ul style={{ margin: '4px 0 0 18px', padding: 0, color: MUTED, fontSize: 13 }}>
                 {(r.reasons || []).map((x, j) => <li key={j}>{x.reason || x.reasonType}</li>)}
               </ul>
-              {r.last_error ? <div style={{ fontSize: 12, color: BAD, marginTop: 4 }}>{r.last_error}</div> : null}
+              {(() => {
+                const note = failNote(r.last_error);
+                if (!note) return null;
+                return <div style={{ fontSize: 12, color: note.bad ? BAD : MUTED, marginTop: 4 }}>{note.text}</div>;
+              })()}
             </div>
           )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>We haven’t asked Class for anything on this order.</div>}
         </div>
@@ -482,7 +591,7 @@ function AskForm({ appId, order, kind, onDone }) {
       }
       if (onDone) await onDone();
     } catch (e) {
-      setErr(e.message || 'We could not send that to Class. It is recorded here.');
+      setErr(refusal(e.data) || e.message || 'We could not send that to Class. It is recorded here.');
       if (onDone) await onDone();
     }
     setBusy(false);
@@ -615,14 +724,20 @@ function VersionRow({ preview, chosen, onPick }) {
 function ProductRow({ preview, chosen, enabled, open, onOpen, onPick }) {
   const row = (preview.fields || []).find((f) => f.path === 'productId');
   const value = row ? row.value : null;
+  // The full form NAME, resolved by the server from Class's own catalogue. A number
+  // on its own does not say whether this is an interior 1004 or a desktop.
+  const title = preview.productTitle || null;
   return (
     <div style={{ border: `1px solid ${value ? LINE : BAD}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>Which report to order</div>
           <div style={{ color: value ? INK : BAD, fontWeight: 600 }}>
-            {value ? `Class product #${value}` : 'Not chosen yet'}
+            {value ? (title || `Class product #${value}`) : 'Not chosen yet'}
           </div>
+          {value && title ? (
+            <div style={{ fontSize: 12, color: MUTED }}>Their form #{value}</div>
+          ) : null}
           <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
             {chosen ? 'You picked this one.' : 'Class hasn’t given us a standard report to default to, so this is picked by hand for now.'}
           </div>
@@ -650,7 +765,7 @@ function ProductPicker({ onPick }) {
         if (r && r.available) setRows(r.products || []);
         else { setRows([]); setErr('Their list of reports could not be read right now.'); }
       } catch (e) {
-        if (alive) { setRows([]); setErr(e.message || 'Their list of reports could not be read right now.'); }
+        if (alive) { setRows([]); setErr(refusal(e.data) || e.message || 'Their list of reports could not be read right now.'); }
       }
     })();
     return () => { alive = false; };
@@ -692,7 +807,7 @@ function FieldRow({ field, enums, occSuggestions, occIsList, value, onChange }) 
   const key = overrideKeyFor(field.path);
   const enumName = key ? ENUM_FOR[key] : null;
   const options = enumName ? (enums[enumName] || []) : null;
-  const shownValue = field.value == null || field.value === '' ? '—' : String(field.value);
+  const shownValue = field.display || (field.value == null || field.value === '' ? '—' : String(field.value));
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: '9px 12px', background: field.state === 'missing' ? '#FDF6F5' : '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -754,13 +869,13 @@ function Contacts({ contacts }) {
       <SectionTitle>Who Class will contact</SectionTitle>
       <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
         {contacts.map((c, i) => (
-          <div key={`${c.Type}-${i}`} style={{ borderTop: i ? `1px solid ${LINE}` : 'none', padding: '9px 12px' }}>
+          <div key={`${roleOf(c) || 'contact'}-${i}`} style={{ borderTop: i ? `1px solid ${LINE}` : 'none', padding: '9px 12px' }}>
             <div style={{ color: INK, fontWeight: 550 }}>
               {[c.firstName, c.lastName].filter(Boolean).join(' ') || '(no name on file)'}
               {c.primaryContact ? <span style={{ color: TEAL, fontSize: 12, fontWeight: 600 }}> · main contact</span> : null}
             </div>
             <div style={{ fontSize: 12, color: MUTED }}>
-              {NAME[c.Type] || c.Type}
+              {NAME[roleOf(c)] || roleOf(c) || 'Contact'}
               {(c.contactMethods || []).length ? ' · ' + c.contactMethods.map((m) => m.value).join(' · ') : ' · no phone or email on file'}
             </div>
           </div>

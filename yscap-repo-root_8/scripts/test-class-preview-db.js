@@ -53,6 +53,33 @@ async function main() {
   ok(ctx.property.category === 'sfr', 'the property type is the CANONICAL key, not the raw label');
   ok(ctx.borrower.email === `ada.${tag}@example.com`, 'the borrower comes through');
 
+  // The person who can open the door. Both appraisal desks carried
+  // `propertyContact: null, // filled from file contacts once wired`, so a realtor or
+  // contractor recorded on the file for exactly this purpose was never sent to either
+  // vendor. One shared reader (src/lib/appraisal-contacts.js) fills it for both.
+  {
+    const sc = await db.query(
+      `INSERT INTO service_contacts (borrower_id, contact_type, company_name, contact_name, email, phone)
+       VALUES ($1,'realtor','Keystone Realty','Pat Agent',$2,'570-555-0101') RETURNING id`,
+      [borrowerId, `pat.${tag}@example.com`]);
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type, added_by_kind)
+       VALUES ($1,$2,'realtor','staff')`, [appId, sc.rows[0].id]);
+    const withAccess = await orderService.loadContext(db, appId);
+    ok(withAccess.propertyContact && withAccess.propertyContact.company === 'Keystone Realty',
+      'the file’s realtor is finally read as the property-access contact');
+    ok(withAccess.propertyContact.firstName === 'Pat' && withAccess.propertyContact.lastName === 'Agent',
+      'their name is split for a vendor that wants first + last');
+    const built = require('../src/class/order-build').buildOrder(withAccess);
+    const roles = (built.body.contacts || []).map((c) => c.Type || c.type);
+    ok(roles.includes('PropertyAccess'), 'and Class is actually told about them');
+    // Every other file is unaffected: with nobody recorded, the order still says so
+    // rather than inventing a contact.
+    await db.query('DELETE FROM application_service_contacts WHERE application_id=$1', [appId]);
+    const without = await orderService.loadContext(db, appId);
+    ok(without.propertyContact === null, 'a file with no such contact still reports none');
+  }
+
   // --- the preview shows everything --------------------------------------
   const pv = await orderService.buildPreview(db, appId);
   ok(!!pv, 'a preview is produced');
@@ -211,6 +238,39 @@ async function main() {
   const smuggle = await call('GET', `/api/class/files/${appId}/preview?productId=42&amcName=Someone%20Else`);
   ok(smuggle.status === 200 && smuggle.body.body.amcName === undefined,
      'a field outside the allowlist cannot be smuggled into the order body');
+
+  // ==========================================================================
+  // AN ORDER-ROW ID IS SANITIZED ONCE AND THAT SANITIZED VALUE IS WHAT TRAVELS.
+  // Found by the post-merge security audit: the range check ran on a trimmed copy
+  // and the six handlers then bound the RAW parameter, so a value JavaScript trims
+  // and Postgres does not — a non-breaking space, U+2028, a byte-order mark — got
+  // past the check and reached a bigint bind, where 22P02 was answered by the
+  // server's global error mapper rather than by the check written for it. No file
+  // could ever be read across (the gate still governs that), but the guarantee was
+  // resting on a catch-all.
+  // ==========================================================================
+  {
+    const order = (await db.query(
+      `INSERT INTO class_orders (application_id, reference_number, api_version, uad, order_path, status)
+       VALUES ($1,$2,'v1','2.6','/orders','ordered') RETURNING id`,
+      [appId, 'YSCAP' + tag])).rows[0].id;
+
+    const good = await call('GET', `/api/class/files/${appId}/orders/${order}/thread`);
+    ok(good.status === 200, 'the order on this file answers on its own id (the control)');
+
+    for (const [name, prefix] of [['a non-breaking space', '%C2%A0'], ['a line separator', '%E2%80%A8'],
+                                  ['a byte-order mark', '%EF%BB%BF'], ['an em space', '%E2%80%83']]) {
+      const r = await call('GET', `/api/class/files/${appId}/orders/${prefix}${order}/thread`);
+      ok(r.status === 404 && r.body && r.body.error === 'not_found',
+         `${name} in the id is answered as "no such order here", not as a server error`);
+    }
+    // And the ordinary hostile shapes still land on the same path.
+    for (const bad of ['99999999999999999999', '0', '-1', 'abc', '1.5']) {
+      const r = await call('GET', `/api/class/files/${appId}/orders/${bad}/thread`);
+      ok(r.status === 404, `a ${bad} id is 404, never 500`);
+    }
+    await db.query('DELETE FROM class_orders WHERE id=$1', [order]);
+  }
 
   // --- cleanup ------------------------------------------------------------
   server.close();

@@ -14,6 +14,7 @@ import { moneyNum } from '../lib/money';
  */
 
 const INK = '#141B22', MUTED = '#4B585C', LINE = '#E7E1D4', GOLD = '#AE8746', TEAL = '#2F7F86';
+const BAD = '#B4453B';
 
 const STATUS_LABEL = {
   draft: 'Draft', placing: 'Placing…', ordered: 'Ordered', in_process: 'In process',
@@ -28,7 +29,49 @@ function statusColor(s) {
   return TEAL;
 }
 function money(n) { return n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
+// A refused order, in the words the server used. `missing` first (it is the actionable
+// list), then the route's own sentence; never the bare error CODE, which is for us.
+function refusal(out) {
+  if (!out) return '';
+  if (Array.isArray(out.missing) && out.missing.length) return 'Still needed: ' + out.missing.join(', ');
+  return out.message || '';
+}
+// What the appraisal company would not take, and its own reason. `already_uploaded`
+// is not a refusal — it means we had already sent it — so it is not shown as one.
+function heldBack(out) {
+  return ((out && out.skipped) || []).filter((s) => s && s.reason !== 'already_uploaded');
+}
+// The form the appraiser fills in. The NAME is the point — a bare product code is the
+// appraisal company's internal id and says nothing about what was ordered.
+function formLabel(name, code) {
+  if (name) return name;
+  return code ? ('Form #' + code) : 'auto-select pending';
+}
 function fmtDate(d) { if (!d) return '—'; try { return new Date(d).toLocaleDateString('en-US'); } catch (_) { return String(d); } }
+
+// A STORED FAILURE IS SHOWN AS A STATE, NEVER AS ITS TEXT — the AMC sibling of the same
+// rule on the Class desk, and the reason it exists here at all is that this panel had NO
+// reading of `last_error` while the server was carefully writing plain sentences into it.
+//
+// The openings are a CONTRACT the server owns (`src/lib/appraisal-messages.js`): anything
+// starting one of them is our wording and is shown as written; anything else is a row
+// from before that contract and is the exception's own text, so it is translated. The
+// test the other way round — recognising computer-ish text and showing the rest — is
+// fail-OPEN and put a vendor's raw refusal on the Class desk once already.
+const AMC_OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
+
+function orderNote(stored) {
+  if (typeof stored !== 'string') return null;
+  const t = stored.trim();
+  if (!t) return null;
+  if (/^TEST MODE\b/.test(t)) return { text: 'test mode — built here, not sent', bad: false };
+  // `Sent — …` means they HAVE it and only our note of that failed; painting it red
+  // would tell somebody to send it again, which is the one thing that must not happen.
+  if (/^Sent —/.test(t)) return { text: t.replace(/^Sent — /, 'sent — '), bad: false };
+  if (AMC_OURS_RE.test(t)) return { text: t.replace(/^(Not sent|Could not be read) — /, (x) => x.toLowerCase()), bad: true };
+  if (/switched off|disabled/i.test(t)) return { text: 'not sent — the connection is switched off', bad: true };
+  return { text: 'not sent — you can try again', bad: true };
+}
 
 export default function AmcAppraisalPanel({ appId }) {
   const [config, setConfig] = useState(null);
@@ -51,7 +94,7 @@ export default function AmcAppraisalPanel({ appId }) {
       setConfig(cfg && cfg.amc ? cfg.amc : null);
       setPreview(pv || null);
       setOrders((od && od.orders) || []);
-    } catch (e) { setErr(e.message || 'Could not load appraisal ordering.'); }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not load appraisal ordering.'); }
     setLoading(false);
   }, [appId]);
 
@@ -62,13 +105,19 @@ export default function AmcAppraisalPanel({ appId }) {
     try {
       const out = await api.amcPlaceOrder(appId, { place: doPlace });
       if (!out.ok) {
-        setErr(out.missing && out.missing.length ? ('Still needed: ' + out.missing.join(', ')) : (out.message || 'Could not place the order.'));
+        setErr(refusal(out));
       } else {
         setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Appraisal order placed.') : 'Draft saved.');
         await load();
         if (out.order) setSelected(out.order.id);
       }
-    } catch (e) { setErr(e.message || 'Could not place the order.'); }
+    } catch (e) {
+      // A refused order comes back as a non-2xx, so `api` throws and the SERVER's own
+      // sentence is on `e.data` — `e.message` is only the short code. Reading the
+      // body is what turns "order_failed" back into the plain explanation the route
+      // wrote (and, before that, the generic "Something went wrong on our end").
+      setErr(refusal(e.data) || e.message || 'Could not place the order.');
+    }
     setBusy(false);
   }, [appId, load]);
 
@@ -107,6 +156,17 @@ export default function AmcAppraisalPanel({ appId }) {
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {o.cdg_order_number ? ('AMC #' + o.cdg_order_number + ' · ') : ''}Ordered {fmtDate(o.ordered_at || o.created_at)}{o.dryrun ? ' · test' : ''}
                   </div>
+                  {/* WHAT WENT WRONG, IN WORDS. `amc_orders.last_error` has been written
+                      since this desk was built — by the order path, the status poll and
+                      the document read — and shipped to this screen by `listOrders`, and
+                      nothing ever rendered it: an order sat on a red "error" pill that
+                      said only "error". The server now stores a plain sentence there
+                      (`src/lib/appraisal-messages`), so it is shown as written. */}
+                  {orderNote(o.last_error) ? (
+                    <div style={{ fontSize: 12, color: orderNote(o.last_error).bad ? BAD : MUTED, marginTop: 2 }}>
+                      {orderNote(o.last_error).text}
+                    </div>
+                  ) : null}
                 </div>
                 <span style={{ color: TEAL, fontSize: 13 }}>{selected === o.id ? 'Hide' : 'Open'}</span>
               </div>
@@ -115,7 +175,11 @@ export default function AmcAppraisalPanel({ appId }) {
         </div>
       ) : null}
 
-      {selected ? <OrderDetail appId={appId} orderId={selected} onChange={load} /> : null}
+      {/* KEYED ON THE ORDER, so switching orders REMOUNTS the detail. Without it the
+          Documents tab's held-back list, picks, notice and error survived the change and
+          order A's red "These were NOT sent:" showed on order B. The Class panel does
+          not have this only because its detail already sits inside a keyed row. */}
+      {selected ? <OrderDetail key={selected} appId={appId} orderId={selected} onChange={load} /> : null}
 
       {/* Place a new order */}
       {!notConfigured && preview ? (
@@ -135,10 +199,23 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
   const card = preview.card || {};
   const prop = spec.property || {};
   const loan = spec.loan || {};
+  // BOTH READ FROM THE SAME PAIR. `preview.formName` is the name of the form that
+  // would actually be ordered; `chosenForm.formName` is the name of the AUTO-PICKED
+  // one, and on a staff override those are two different forms. Falling back from one
+  // to the other printed the auto-picked form's NAME above the overridden form's
+  // NUMBER — the "confidently describes the wrong report" failure, on the screen
+  // instead of on the wire. With no name at all, formLabel() shows "Form #<code>".
+  const code = preview.productCode || spec.productCode || form.productCode || null;
+  const formName = preview.formName || null;
+  const contacts = spec.contacts || [];
+  const contactNotes = preview.contactNotes || [];
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-        <Field label="Form">{form.productCode ? ('#' + form.productCode) : 'auto-select pending'}</Field>
+        <Field label="Form">
+          <div>{formLabel(formName, code)}</div>
+          {formName && code ? <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>Their form #{code}</div> : null}
+        </Field>
         <Field label="Loan #">{spec.clientOrderNumber || '—'}</Field>
         <Field label="Property">{[prop.addressLine, prop.city, prop.state].filter(Boolean).join(', ') || '—'}</Field>
         <Field label="Type">{prop.titleCategory || '—'}</Field>
@@ -147,6 +224,8 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
         <Field label="Borrowers">{(spec.borrowers || []).map((b) => b.fullName || [b.firstName, b.lastName].filter(Boolean).join(' ') || b.legalEntityName).filter(Boolean).join(', ') || '—'}</Field>
         <Field label="Payment card">{card.onFile ? ((card.brand || 'card') + ' ••' + (card.last4 || '')) : 'not on file'}</Field>
       </div>
+
+      <ContactList contacts={contacts} notes={contactNotes} />
 
       {missing.length ? (
         <div style={{ marginTop: 10, color: '#9A3B33', fontSize: 13 }}>
@@ -164,6 +243,46 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
         </button>
       </div>
       {!outbound ? <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>Sending to the AMC is off — you can save a draft now and place it once it’s turned on.</div> : null}
+    </div>
+  );
+}
+
+// Who the appraiser gets, by role — the same four people the Class Valuation order
+// carries. HOW each one travels differs (the borrower rides their own record, the
+// property-access person is sent as a named contact, our loan officer is copied on
+// the appraisal company's notices), so each line says which — otherwise the screen
+// implies our loan officer is somebody the appraiser will phone.
+const ROLE_LABEL = {
+  Borrower: 'Borrower', Coborrower: 'Co-borrower',
+  PropertyAccess: 'Property access', LoanOfficer: 'Loan officer (us)',
+};
+const SENT_AS = {
+  borrower: 'sent with the borrower',
+  party: 'sent as the property contact',
+  notification: 'copied on updates',
+};
+function ContactList({ contacts, notes }) {
+  if (!contacts.length && !notes.length) return null;
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+      <SectionTitle>Contacts sent with the order</SectionTitle>
+      {contacts.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {contacts.map((c, i) => (
+            <div key={c.role + i} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              <span style={{ color: MUTED, fontSize: 12, minWidth: 130 }}>{ROLE_LABEL[c.role] || c.role}</span>
+              <span style={{ color: INK, fontWeight: 550 }}>{c.name || '—'}</span>
+              <span style={{ color: MUTED, fontSize: 12 }}>
+                {[c.company, c.email, c.phone].filter(Boolean).join(' · ') || 'no email or phone on file'}
+              </span>
+              <span style={{ color: TEAL, fontSize: 11 }}>{SENT_AS[c.sentAs] || ''}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {notes.map((n, i) => (
+        <div key={i} style={{ marginTop: 6, fontSize: 12, color: MUTED }}>{n}</div>
+      ))}
     </div>
   );
 }
@@ -199,8 +318,8 @@ function Messages({ orderId }) {
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
-    try { const o = await api.amcPostComment(orderId, text.trim()); if (!o.ok) setErr(o.message || 'Could not send.'); else { setText(''); await load(); } }
-    catch (e) { setErr(e.message || 'Could not send.'); }
+    try { const o = await api.amcPostComment(orderId, text.trim()); if (!o.ok) setErr(refusal(o) || 'Could not send.'); else { setText(''); await load(); } }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Could not send.'); }
     setBusy(false);
   };
   return (
@@ -238,8 +357,8 @@ function Revisions({ appId, orderId }) {
   const sendRevision = async (kind) => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
-    try { const o = await api.amcPostRevision(orderId, { kind, body: text.trim() }); if (!o.ok) setErr(o.message || 'Could not send.'); else { setText(''); await load(); } }
-    catch (e) { setErr(e.message || 'Could not send.'); }
+    try { const o = await api.amcPostRevision(orderId, { kind, body: text.trim() }); if (!o.ok) setErr(refusal(o) || 'Could not send.'); else { setText(''); await load(); } }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Could not send.'); }
     setBusy(false);
   };
 
@@ -344,7 +463,7 @@ function RovBuilder({ appId, orderId, onCancel, onSent }) {
   const runSearch = async () => {
     setSearching(true); setErr('');
     try { const r = await api.amcRovCompSearch(appId, { q: q.trim() }); setResults((r && r.comps) || []); }
-    catch (e) { setErr(e.message || 'Search failed.'); setResults([]); }
+    catch (e) { setErr(refusal(e.data) || e.message || 'Search failed.'); setResults([]); }
     setSearching(false);
   };
 
@@ -372,8 +491,8 @@ function RovBuilder({ appId, orderId, onCancel, onSent }) {
         opinionValue: opinionValue ? Number(opinionValue) : null,
         comps: selected, note: note.trim() || null,
       });
-      if (!o.ok) setErr(o.message || 'Could not send the dispute.'); else onSent();
-    } catch (e) { setErr(e.message || 'Could not send the dispute.'); }
+      if (!o.ok) setErr(refusal(o) || 'Could not send the dispute.'); else onSent();
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not send the dispute.'); }
     setBusy(false);
   };
 
@@ -469,6 +588,7 @@ function Documents({ appId, orderId, onChange }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  const [skipped, setSkipped] = useState([]);
   const load = useCallback(async () => {
     try { const r = await api.amcDocuments(appId, orderId); setRows((r && r.documents) || []); } catch (_) { /* ignore */ }
   }, [appId, orderId]);
@@ -477,17 +597,47 @@ function Documents({ appId, orderId, onChange }) {
   const ids = Object.keys(pick).filter((k) => pick[k]);
   const send = async () => {
     if (!ids.length) return;
-    setBusy(true); setErr(''); setNotice('');
+    // The held-back list belongs to THIS attempt — clearing the banners but leaving it
+    // showed the previous attempt's refusals beside a fresh error.
+    setBusy(true); setErr(''); setNotice(''); setSkipped([]);
     try {
       const o = await api.amcUploadDocs(orderId, ids);
-      if (!o.ok) setErr(o.message || 'Could not upload.'); else { setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.'); setPick({}); await load(); if (onChange) onChange(); }
-    } catch (e) { setErr(e.message || 'Could not upload.'); }
+      if (!o.ok) { setErr(refusal(o) || 'Could not upload.'); setSkipped(heldBack(o)); }
+      else {
+        setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.');
+        // A PARTIAL REFUSAL IS STILL A REFUSAL. The appraisal company answers per file,
+        // so three picked and two sent comes back `ok:true` — and without this the
+        // screen showed only the green line and the third document was never mentioned
+        // again. The operator has to be told which one, and why they said no.
+        setSkipped(heldBack(o));
+        setPick({}); await load(); if (onChange) onChange();
+      }
+    } catch (e) { setErr(refusal(e.data) || e.message || 'Could not upload.'); setSkipped(heldBack(e.data)); }
     setBusy(false);
   };
   return (
     <div>
       {err ? <Banner tone="bad">{err}</Banner> : null}
       {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {skipped.length ? (
+        <Banner tone="bad">
+          <strong>These were NOT sent:</strong>
+          <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+            {/* THE REASON IN WORDS, and the appraisal company's own reference under it.
+                `errorTraceID` is a support ticket number, not an explanation — it used
+                to BE the explanation, which told nobody anything — so it reads as what
+                it is: the thing to quote when somebody calls them about this file. */}
+            {skipped.map((s2, i) => (
+              <li key={i}>
+                {s2.filename || 'a document'} — {s2.detail || s2.reason}
+                {s2.traceId
+                  ? <div style={{ fontSize: 11, opacity: 0.75 }}>Their reference: {s2.traceId}</div>
+                  : null}
+              </li>
+            ))}
+          </ul>
+        </Banner>
+      ) : null}
       <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', marginBottom: 8 }}>
         {rows.length ? rows.map((d) => (
           <label key={d.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderTop: `1px solid ${LINE}`, cursor: d.alreadyUploaded ? 'default' : 'pointer', opacity: d.alreadyUploaded ? 0.6 : 1 }}>

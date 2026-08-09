@@ -25,6 +25,7 @@ const db = require('../db');
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
 const cdg = require('./cdg');
+const { storedNackNote, nackMessage } = require('../lib/appraisal-messages');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
@@ -66,7 +67,7 @@ async function applyStatusResponse(dbh, order, resp) {
     // A stale api key surfaces as an auth NACK — drop it so the next call re-logs in.
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await dbh.query(`UPDATE amc_orders SET last_error=$2, last_polled_at=now(), updated_at=now() WHERE id=$1`,
-      [order.id, err.description || err.code || 'AMC status NACK']);
+      [order.id, storedNackNote(err, 'a status check on the order', { reading: true })]);
     return { error: err };
   }
   const st = cdg.parseStatus(resp);
@@ -119,8 +120,11 @@ async function ingestDocuments(dbh, order, deps = {}) {
   const err = cdg.parseError(resp);
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
-    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, err.description || err.code]);
-    return { ok: false, error: err };
+    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, storedNackNote(err, 'a request for the documents', { reading: true })]);
+    // A REFUSAL CARRIES PLAIN WORDS, not only the vendor's error object. This one
+    // reaches the caller — and the poller's log line — with `error` alone, so whatever
+    // read it had nothing a person could act on.
+    return { ok: false, error: err, message: nackMessage(err, 'a request for the documents') };
   }
 
   const app = (await dbh.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
@@ -210,8 +214,7 @@ async function syncOne(dbh, order) {
   catch (e) { console.error('[amc] revision sync failed for order', order.id, (e && e.message) || e); }
   // Auto-upload the corrected SOW / the contract when they change or arrive (deduped on
   // documents.id, gated by AMC_OUTBOUND_ENABLED). Best-effort — never breaks the poll.
-  try { await require('./documents').autoUploadForOrder(dbh, order); }
-  catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+  await autoUploadStep(dbh, order);
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }
@@ -256,4 +259,57 @@ module.exports = {
   start, pollOpenOrdersOnce, syncOne, ingestDocuments,
   applyStatusResponse, recordStatusEvent, statusDedupeKey,
   looksXml, looksPdf, OPEN_STATUSES,
+  _internals: { autoUploadStep },
 };
+
+// Extracted so it is testable: what the poller does with the upload's ANSWER is the
+// whole point, and a step whose result is discarded can only be proven by calling it.
+async function autoUploadStep(dbh, order) {
+  try {
+    const up = await require('./documents').autoUploadForOrder(dbh, order);
+    // A REFUSAL ON THIS PATH HAS NOBODY LOOKING AT IT. The desk shows what the
+    // appraisal company would not take when a person presses Send; this is the
+    // poller doing the same thing unattended, and its return value was discarded —
+    // so the scope of work being rejected produced a successful-looking tick, no
+    // row, and not one word anywhere. It is the batch where silence costs most.
+    const held = ((up && up.skipped) || []).filter((x) => x && x.reason !== 'already_uploaded');
+    // WHOSE FAULT IT WAS DECIDES WHO HAS TO ACT. `read_failed` / `empty` are OUR
+    // storage — the bytes never left the building — and logging those under "the
+    // appraisal company would not accept" points ops at the wrong party on the one
+    // path where this line is the only signal anybody gets.
+    const theirs = held.filter((x) => x.reason === 'stage_rejected');
+    const ours = held.filter((x) => x.reason !== 'stage_rejected');
+    const list = (xs) => xs.map((x) => `${x.filename || x.documentId} (${x.detail || x.reason})`).join('; ');
+    if (theirs.length) {
+      console.warn('[amc] the appraisal company would not accept', theirs.length,
+        'document(s) on order', order.id + ':', list(theirs));
+    }
+    if (ours.length) {
+      console.warn('[amc] could not send', ours.length, 'document(s) on order', order.id + ':', list(ours));
+    }
+    // ONLY WHAT THE TWO LINES ABOVE DID NOT ALREADY SAY — and that is decided by the
+    // batch's own ERROR CODE, not by whether anything was held back.
+    //
+    // Exactly two codes are composed FROM the skips (`documents.js` builds their
+    // sentence out of the same list the lines above print), so those two would repeat.
+    // Every other refusal — the send failed, the connection is switched off, the vendor
+    // refused the whole message — says something the per-file lines do NOT contain, and
+    // `uploadToOrder` returns `skipped` on those paths too. Keying on `held.length`
+    // therefore silenced them: one unreadable document was reported while two documents
+    // failing to send, or the connection being off entirely, went unlogged on the one
+    // path where this line is the only signal anybody gets.
+    // …and it only REPEATS when there were skips to print in the first place: the same
+    // code with an EMPTY list (every file refused before any per-file line existed)
+    // makes the batch sentence the only signal there is, so it must still be said.
+    //
+    // `nothing_to_upload` is silent either way, and always was: there was nothing to
+    // send, which is not a refusal and not news. When it DOES carry skips (every picked
+    // document failed to be read) those are printed above as ours, which is the story.
+    const code = up && up.error;
+    const REPEATS_SKIPS = new Set(['stage_rejected', 'unmatched_answer']);
+    const alreadySaid = code === 'nothing_to_upload' || (REPEATS_SKIPS.has(code) && held.length > 0);
+    if (up && up.ok === false && code && !alreadySaid) {
+      console.warn('[amc] auto document upload refused for order', order.id + ':', up.message || up.error);
+    }
+  } catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+}
