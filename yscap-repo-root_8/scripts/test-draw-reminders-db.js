@@ -227,6 +227,55 @@ const ACTIONS = {
     await db.query(`UPDATE sitewire_property_links SET matched_by='created' WHERE application_id=$1`, [app]);
   }
 
+  // ======================================================================
+  // H. ONE DEFINITION OF "HOW MANY DAYS IS TOO MANY"
+  //
+  // The chase threshold is a SETTING, not a constant, and two things read it: the sweep that sends
+  // the email, and the "Fees owed by investors" card that tells a coordinator which fee is overdue.
+  // A screen that hard-coded the catalog fallback would silently disagree with the email the moment
+  // somebody changed the setting — so both go through draw-settings.daysSettingFor, and this pins
+  // that they agree on every shape the setting can take.
+  // ======================================================================
+  {
+    const DS = require('../src/sitewire/draw-settings');
+    const KEY = 'fee_owed_chase_days';
+    const prior = (await db.query(`SELECT value FROM sitewire_settings WHERE key=$1`, [KEY])).rows[0];
+    // `sitewire_settings.value` is JSONB, so every write here is a JSON literal — and the restore is
+    // in a `finally` because a throw between the set and the reset leaves the company setting
+    // poisoned for every later run of this file (which is exactly how this section was first
+    // written, and it silently broke section E on the next pass).
+    const put = (json) => db.query(`INSERT INTO sitewire_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [KEY, json]);
+    const both = async (label, expected) => {
+      const a = await DS.daysSettingFor(KEY);
+      const b = await D._internals.settingDays(KEY);
+      eq(`H1 ${label} — resolves to ${expected}`, a, expected);
+      eq(`H2 ${label} — the sweep and the screen read the SAME number`, b, a);
+    };
+    try {
+      await db.query(`DELETE FROM sitewire_settings WHERE key=$1`, [KEY]);
+      // Unset falls back to the CATALOG's own number, so the fallback lives in exactly one place.
+      await both('unset', Number(DS.BY_KEY[KEY].fallback));
+
+      await put('7');
+      await both('set to 7', 7);
+
+      // ZERO IS A REAL ANSWER — it is how the chase is switched off — and must never read as "unset"
+      // and quietly fall back to 14, which would nag on a schedule somebody deliberately turned off.
+      await put('0');
+      await both('set to 0 (chase switched off)', 0);
+      eq('H3 …and the sweep sends nothing when it is off', await D.investorFeeOwedOnce(), 0);
+
+      // Not a number, so it falls back rather than becoming NaN days.
+      await put('"whenever"');
+      await both('set to something that is not a number', Number(DS.BY_KEY[KEY].fallback));
+
+      eq('H4 a key the catalog does not know answers 0, never NaN', await DS.daysSettingFor('no_such_setting_key'), 0);
+    } finally {
+      await db.query(`DELETE FROM sitewire_settings WHERE key=$1`, [KEY]);
+      if (prior) await put(JSON.stringify(prior.value));
+    }
+  }
+
   // ---- clean up ----
   await db.query(`DELETE FROM audit_log WHERE entity_id::text=$1::text`, [app]);
   await db.query(`DELETE FROM draw_disbursements WHERE application_id=$1`, [app]);

@@ -197,6 +197,18 @@ const n = (x) => Number(x || 0);
     const aged = await AR.feesOwed({ scopeWhere: ' AND a.id = $1', scopeParams: [app], olderThanDays: 14 });
     eq('7d a fee owed since today is not yet overdue', aged.count, 0);
 
+    // The "Fees owed by investors" card renders these per row, so a silently-null one would put a
+    // dash where a coordinator expects to read which draw and whose money it is. `draw_number` comes
+    // through a LEFT JOIN, so it is the one that can go null without anything erroring — and it is
+    // the DRAW NUMBER, not the platform id, because "Draw 2" is what every other surface says.
+    const r0 = owed.rows[0];
+    eq('7h the row names WHICH DRAW, by its number', Number(r0.draw_number), 1);
+    ok('7i …and the property, so it can be chased', !!(r0.address || r0.ys_loan_number));
+    eq('7j …and the investor who owes it', r0.note_buyer_label, BUYER);
+    eq('7k …and how long it has been outstanding, as a real number', Number.isFinite(Number(r0.days_outstanding)), true);
+    ok('7l …never negative — a release dated today is 0 days out, not -1', Number(r0.days_outstanding) >= 0);
+    eq('7m …and the fee itself', Number(r0.fee_receivable_cents), 29900);
+
     const id = (await ledgerRows())[0].id;
     eq('7e marking it received works', (await AR.markFeeReceived(id, {})).changed, true);
     eq('7f a second click changes nothing — it never re-dates a settled fee', (await AR.markFeeReceived(id, {})).changed, false);

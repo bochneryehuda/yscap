@@ -1158,14 +1158,10 @@ function activeManagedLink(appIdExpr) {
 
 /** One company-level day count from the draw settings, with the catalog's own fallback. Never throws. */
 async function settingDays(key) {
-  try {
-    const DS = require('../sitewire/draw-settings');
-    const e = DS.BY_KEY[key];
-    const row = (await db.query(`SELECT value FROM sitewire_settings WHERE key=$1`, [e && e.company ? e.company : key])).rows[0];
-    const v = Number(row && row.value);
-    if (Number.isFinite(v) && v >= 0) return v;
-    return Number((e && e.fallback) || 0);
-  } catch (_) { return 0; }
+  // Delegates to the ONE reader in draw-settings, so a sweep and the screen that describes it can
+  // never disagree about the threshold. Same fail-to-0 contract as before: an unreadable setting
+  // sends nothing rather than nagging on a guessed number.
+  try { return await require('../sitewire/draw-settings').daysSettingFor(key); } catch (_) { return 0; }
 }
 
 /* A) INSPECTION ORDERED, NO REPORT. A draw sitting in an inspecting state past the inspection SLA
@@ -2787,4 +2783,7 @@ module.exports = {
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
   weeklyOfficerPipelineOnce,
   backupFreshnessWatchOnce,
+  // Exposed so a test can prove the sweeps and the screens that describe them read the SAME
+  // threshold — the whole point of routing both through draw-settings.daysSettingFor.
+  _internals: { settingDays },
 };

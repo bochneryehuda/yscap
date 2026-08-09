@@ -249,9 +249,32 @@ async function resolvedFor(appId) {
   return { settings: resolveAll({ company, rule, project }), levels: LEVELS, levelLabels: LEVEL_LABEL };
 }
 
+/**
+ * A COMPANY-LEVEL day count, resolved once so every consumer agrees.
+ *
+ * The reminder sweeps and the screens that describe them both need the same answer to "how many days
+ * is too many?" — and a screen that hard-codes the catalog fallback silently disagrees with the email
+ * the moment somebody changes the setting. So this is the ONE reader: the stored company value when
+ * it is a real number (0 included — that is how a sweep is switched off), otherwise the catalog's own
+ * fallback.
+ *
+ * Fails to 0, which every caller reads as "not configured, send nothing" — an unreadable setting must
+ * never turn into a nag nobody asked for.
+ */
+async function daysSettingFor(key) {
+  const e = BY_KEY[key];
+  try {
+    const row = (await db.query(`SELECT value FROM sitewire_settings WHERE key=$1`, [(e && e.company) || key])).rows[0];
+    const v = Number(row && row.value);
+    if (Number.isFinite(v) && v >= 0) return v;
+  } catch (_) { return 0; }
+  const f = Number(e && e.fallback);
+  return Number.isFinite(f) && f >= 0 ? f : 0;
+}
+
 module.exports = {
   retainagePctFor, lienGateEnabled,
   CATALOG, BY_KEY, LEVELS, LEVEL_LABEL,
-  resolveOne, resolveAll, companyMapFrom, resolvedFor,
+  resolveOne, resolveAll, companyMapFrom, resolvedFor, daysSettingFor,
   _internals: { clampPct, answered },
 };

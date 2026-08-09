@@ -1726,6 +1726,10 @@ router.get('/fees-owed', requirePermission('manage_draws'), async (req, res) => 
       scopeWhere: sc.where, scopeParams: sc.params,
       olderThanDays: Number.isFinite(olderThan) && olderThan > 0 ? olderThan : null,
     });
+    // The threshold the chase reminder uses, resolved from the SAME setting it reads, so the screen
+    // and the email can never disagree about which fee is overdue. It is a configurable knob, not the
+    // fallback 14 — hard-coding it on the screen would drift the moment somebody changed it.
+    out.chase_days = await drawSettings.daysSettingFor('fee_owed_chase_days');
     res.json(out);
   } catch (e) { console.warn('[sitewire] fees owed:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
