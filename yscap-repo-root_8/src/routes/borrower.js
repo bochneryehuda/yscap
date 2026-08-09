@@ -3044,6 +3044,10 @@ router.post('/track-records', async (req, res) => {
     trId = ex.rows[0] && ex.rows[0].id;
   }
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  // AUDITED, like the staff door (staff_add_track_record). Without this the only
+  // trace of a borrower-created line was an SSE event and entered_by_kind — so
+  // "who put this deal on the record, and when" had no durable answer.
+  await audit(req, 'add_track_record', 'track_record', trId, { address: b.propertyAddress || null, dealType: b.dealType || null });
   // Live cross-user refresh (#112): staff viewing this borrower's record reload.
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, trackRecordId: trId, missing: trackRecordMissing(b) });
@@ -3069,6 +3073,7 @@ router.put('/track-records/:id', async (req, res) => {
       WHERE id=$1 AND borrower_id=$2`,
     [req.params.id, me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'edit_track_record', 'track_record', req.params.id, { address: b.propertyAddress || null, dealType: b.dealType || null });
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true, missing: trackRecordMissing(b) });
 });
@@ -3080,6 +3085,7 @@ router.delete('/track-records/:id', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'delete_track_record', 'track_record', req.params.id);
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true });
 });

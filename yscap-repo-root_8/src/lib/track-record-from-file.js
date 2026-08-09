@@ -103,11 +103,15 @@ async function addFromFundedFile(appId, client = db) {
       }
 
       await client.query(
+        /* entered_by_kind/at stamped here rather than left to db/458's boot backfill
+           (which would read 'system' from `origin` on the next deploy) — until then
+           the row said "we don't know who entered this", which is never read as
+           reviewed but does hide it from provenance-aware surfaces. */
         `INSERT INTO track_records
            (borrower_id, llc_id, property_address, address_key, deal_type, inferred,
             is_verified, origin, notes, purchase_price, purchase_date, rehab_amount,
-            current_value, property_type)
-         VALUES ($1,$2,$3,$4,$5,true,false,$6,$7,$8,$9,$10,$11,$12)`,
+            current_value, property_type, entered_by_kind, entered_at)
+         VALUES ($1,$2,$3,$4,$5,true,false,$6,$7,$8,$9,$10,$11,$12,'system',now())`,
         [borrowerId, app.llc_id || null, JSON.stringify(app.property_address),
          TRK.trackRecordKey(app.property_address), dealTypeOf(app), ORIGIN, NOTE,
          figures.purchase_price, figures.purchase_date, figures.rehab_amount,

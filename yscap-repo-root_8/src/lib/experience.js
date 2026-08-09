@@ -12,10 +12,64 @@ const db = require('../db');
 // never be inflated by stale deals. Reuse RECENT_EXIT_SQL — don't re-derive it.
 const EXIT_DATE_SQL =
   "(CASE WHEN lower(coalesce(deal_type,'')) LIKE '%flip%' THEN sale_date ELSE COALESCE(rent_date, refi_date) END)";
+const EXIT_WINDOW_MONTHS = 36;   // frozen; the SQL below and exitCounts() both read it
 const RECENT_EXIT_SQL =
   `${EXIT_DATE_SQL} IS NOT NULL`
   + ` AND ${EXIT_DATE_SQL} <= CURRENT_DATE`
   + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '36 months')`;
+
+/* ── THE SAME TWO RULES, IN JAVASCRIPT ────────────────────────────────────────
+   EXIT_DATE_SQL and RECENT_EXIT_SQL are the definition, but not every consumer
+   can run SQL: the investor export renders rows it already has in hand. It used
+   to carry its OWN version — `sale_date || refi_date || rent_date`, no deal_type
+   branch, and a 30.44-day "month" — which meant the TPR package's "Recent (3yr)"
+   column disagreed with the counts the sign-off gate uses, on two axes:
+
+     · a hold carrying BOTH a rent date and a refi date exited on a different day
+       in the export than in the count (SQL prefers rent_date; it preferred refi);
+     · an approximated month drifts against calendar months, so deals near the
+       boundary fell on opposite sides.
+
+   These are the JS twins. Anything that needs the rule without a database calls
+   THEM — never a fourth re-derivation. Dates are compared as YYYY-MM-DD strings
+   so a timezone can never move a deal across the boundary. */
+
+/** A date-ish value (pg Date, ISO string, 'YYYY-MM-DD') as 'YYYY-MM-DD', or null. */
+function ymd(v) {
+  if (!v) return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`;
+  }
+  const s = String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+/** Calendar-month subtraction that matches Postgres: 2024-02-29 - 36mo = 2021-02-28. */
+function minusMonths(d, n) {
+  const day = d.getDate();
+  const t = new Date(d.getFullYear(), d.getMonth() - n, 1);
+  const lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  t.setDate(Math.min(day, lastDay));
+  return t;
+}
+
+/** JS twin of EXIT_DATE_SQL: a flip exits on its sale, anything else on lease-up or refi. */
+function exitDateOf(row) {
+  if (!row) return null;
+  const flip = String(row.deal_type || '').toLowerCase().includes('flip');
+  return ymd(flip ? row.sale_date : (row.rent_date || row.refi_date));
+}
+
+/** JS twin of RECENT_EXIT_SQL: a completed, non-future exit inside the frozen 36 months. */
+function exitCounts(row, today = new Date()) {
+  const exit = exitDateOf(row);
+  if (!exit) return false;
+  const t = ymd(today);
+  if (!t || exit > t) return false;                       // no exit, or still in the future
+  return exit >= ymd(minusMonths(today, EXIT_WINDOW_MONTHS));
+}
 
 function int(v) {
   const n = parseInt(v, 10);
@@ -334,4 +388,8 @@ module.exports = {
   syncExperienceChecklistForBorrower,
   RECENT_EXIT_SQL,
   EXIT_DATE_SQL,
+  EXIT_WINDOW_MONTHS,
+  exitDateOf,
+  exitCounts,
+  _internals: { ymd, minusMonths },
 };

@@ -8487,8 +8487,13 @@ async function signOffGate(itemId, actor) {
      This runs BEFORE the claimed-experience check on purpose: a duplicated line
      or the file's own subject property sitting on the record is wrong whether or
      not this particular deal is priced on experience, and it is the same list of
-     evidence either way. It FAILS OPEN on a read error — see the module. */
-  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(app.id);
+     evidence either way. It FAILS OPEN on a read error — see the module.
+
+     `item.application_id`, NOT `app.id`: the SELECT above does not fetch `id`, so
+     `app.id` was `undefined`, bound as NULL, matched no borrower, and this gate
+     silently never fired — every open finding was invisible to the sign-off while
+     the Track record section went on displaying it. */
+  const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(item.application_id);
   if (trkBlock) return trkBlock;
   // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
   // the file (nothing to verify for the chosen structure), it may be signed off

@@ -671,19 +671,37 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
   if (isRefi && hit) { dealType = 'fix-and-hold'; inferred = true; }
 
   if (exists.rows[0]) {
-    // Also (re)fill the property address — early track records were written with
-    // the raw ClickUp location shape (or none), so a re-run repopulates them with
-    // the normalized address. COALESCE keeps an existing value if this read lacks one.
-    await db.query(`UPDATE track_records SET deal_type=$2, inferred=$3,
-                      property_address=COALESCE($4, property_address), updated_at=now() WHERE id=$1`,
+    /* A RE-INGEST NEVER OVERWRITES A HUMAN, AND NEVER RE-SPELLS AN ADDRESS.
+       Both columns are MATERIAL to db/485's verify guard, so writing either one
+       unconditionally knocked the line back to pending — on every webhook, forever.
+
+       deal_type: only while the row is still `inferred`, i.e. a machine wrote it
+       and nobody has corrected it. The inference here reads `program` alone and
+       yields 'fix-and-hold' for everything except one exact label, so a staffer's
+       correction to 'flip' was being reverted AND the verification dropped, every
+       time ClickUp touched that card.
+
+       property_address: FILL-ONLY. `hit` came from matchTrackRecord, which already
+       confirmed sameAddress — so an incoming address on a matched row is the same
+       place, and rewriting it is a re-spelling, not a restatement. Repairing the
+       SHAPE of an old raw-ClickUp address is address-heal's job, and db/490 lets
+       it do that without un-verifying. */
+    await db.query(`UPDATE track_records
+                       SET deal_type = CASE WHEN inferred THEN $2 ELSE deal_type END,
+                           inferred  = CASE WHEN inferred THEN $3 ELSE inferred END,
+                           property_address = COALESCE(property_address, $4),
+                           updated_at = now()
+                     WHERE id=$1`,
       [exists.rows[0].id, dealType, inferred, a.property_address ? JSON.stringify(a.property_address) : null]).catch(() => {});
     return exists.rows[0].id;
   }
   try {
     const r = await db.query(
+      // entered_by_kind/at stamped here, not left to db/458's next-boot backfill.
       `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_price, purchase_date, sale_date,
-                                 is_verified, origin, source_task_id, inferred, address_key, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10) RETURNING id`,
+                                 is_verified, origin, source_task_id, inferred, address_key, notes,
+                                 entered_by_kind, entered_at)
+       VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10,'clickup',now()) RETURNING id`,
       [borrowerId, a.property_address ? JSON.stringify(a.property_address) : null, dealType,
        a.purchase_price || null, saneDay(a.acquisition_date), saneDay(a.actual_closing),
        taskId, inferred, key, 'Auto-derived from ClickUp; unverified']);
