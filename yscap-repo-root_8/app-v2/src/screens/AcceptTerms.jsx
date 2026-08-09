@@ -215,21 +215,21 @@ export default function AcceptTerms() {
           <p className="sos-h" style={{ margin: '0 0 6px' }}>Step 1 of 2 — create your password</p>
           <div className="grid cols-2" style={{ gap: 12 }}>
             <label>First name
-              <input value={firstName} onChange={(e) => setFirstName(e.target.value)} autoComplete="given-name" />
+              <input className="input" value={firstName} onChange={(e) => setFirstName(e.target.value)} autoComplete="given-name" />
             </label>
             <label>Last name
-              <input value={lastName} onChange={(e) => setLastName(e.target.value)} autoComplete="family-name" />
+              <input className="input" value={lastName} onChange={(e) => setLastName(e.target.value)} autoComplete="family-name" />
             </label>
           </div>
           <label>Email
-            <input value={offer.borrowerEmail} readOnly disabled />
+            <input className="input" value={offer.borrowerEmail} readOnly disabled />
           </label>
           <label>Create a password
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
               autoComplete="new-password" required />
           </label>
           <label>Confirm your password
-            <input type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+            <input className="input" type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
               autoComplete="new-password" required />
           </label>
           <button className="btn primary" type="submit" disabled={busy} style={{ marginTop: 8 }}>
@@ -245,11 +245,11 @@ export default function AcceptTerms() {
             Everything from your term sheet is already on your file. We just need these.
           </p>
           <label>Property address
-            <input value={addressText} onChange={(e) => setAddressText(e.target.value)}
+            <input className="input" value={addressText} onChange={(e) => setAddressText(e.target.value)}
               placeholder="123 Main St, Town, NJ 07000" autoComplete="off" />
           </label>
           <label>Your mobile number
-            <input value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="tel" />
+            <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="tel" />
           </label>
           <label>How will you take title?
             <select value={vesting} onChange={(e) => setVesting(e.target.value)}>
@@ -259,7 +259,7 @@ export default function AcceptTerms() {
           </label>
           {vesting === 'entity' && (
             <label>Company name (if you have one yet)
-              <input value={entityName} onChange={(e) => setEntityName(e.target.value)}
+              <input className="input" value={entityName} onChange={(e) => setEntityName(e.target.value)}
                 placeholder="Leave blank if it isn’t formed yet" />
             </label>
           )}
