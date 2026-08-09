@@ -163,19 +163,51 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     const byPart = staged.find((s) => s && s.name === 'part' + i);
     if (byPart) return byPart;
     const byName = staged.filter((s) => s && s.fileName === files[i].fileName);
-    return byName.length === 1 ? byName[0] : (staged.length === files.length ? staged[i] : null);
+    if (byName.length === 1) return byName[0];
+    // THE POSITIONAL FALLBACK IS THE LAST RESORT, AND IT IS CHECKED. Taking
+    // `staged[i]` on faith is precisely how one document's bytes are sent under
+    // another's name — reproduced: with the vendor's answers reordered, the purchase
+    // contract went out carrying the scope of work's link, both rows said `uploaded`,
+    // and the picker then greyed the contract out so it could never be retried. So the
+    // position is only trusted when the vendor gives us NOTHING to check it against;
+    // a `fileName` that disagrees means the answer is not about this file, and the
+    // honest outcome is to refuse it rather than to guess which document it belongs to.
+    if (staged.length !== files.length) return null;
+    const at = staged[i];
+    if (!at) return null;
+    // A disagreeing filename means this answer is not about this file.
+    if (at.fileName && at.fileName !== files[i].fileName) return null;
+    // AND WITH NO IDENTIFYING FIELD AT ALL, POSITION IS NOT EVIDENCE — it is the
+    // assumption this whole function exists to remove. On a SINGLE file there is
+    // nothing to confuse it with, so position is certain; on a batch it is a guess,
+    // and guessing wrong sends one document's bytes under another's name. Refusing
+    // costs a retry; guessing costs a document that everything then reports as
+    // delivered.
+    if (!at.fileName && !at.name && files.length > 1) return null;
+    return at;
   };
-  const okStage = (s) => !!(s && s.retrievalUrl
-    && !/fail|error|reject/i.test(String(s.uploadStatus == null ? '' : s.uploadStatus)));
+  // A DENYLIST, DELIBERATELY, NOT AN ALLOWLIST. The vendor's success word is not
+  // documented (the only shape in this repo is our own dry-run stub's 'Success'), so an
+  // allowlist would silently refuse every document the day they answer "Uploaded" —
+  // and a document not sent is the expensive direction. A URL is the real evidence of
+  // staging; the words below are the ones that mean a refusal in anybody's vocabulary.
+  const REFUSED = /fail|error|reject|deny|denied|invalid|quarantin|block|refus|virus|malware/i;
+  const okStage = (s) => !!(s && s.retrievalUrl && String(s.retrievalUrl).trim()
+    && !REFUSED.test(String(s.uploadStatus == null ? '' : s.uploadStatus)));
 
   const sendable = [];      // the specs whose bytes really are staged
   const documents = [];
   for (let i = 0; i < specs.length; i++) {
     const st = stagedFor(i);
     if (!okStage(st)) {
+      // The reason must not contradict itself: a missing link with a "Success" status
+      // is not a refusal the vendor stated, it is an answer we cannot use.
+      const stated = st && REFUSED.test(String(st.uploadStatus || '')) ? String(st.uploadStatus) : null;
       skipped.push({ documentId: specs[i].documentId,
+        filename: specs[i].filename,
         reason: 'stage_rejected',
-        detail: (st && (st.uploadStatus || st.errorTraceID)) || 'the appraisal company did not accept the file' });
+        detail: stated || (st && st.errorTraceID)
+          || (st ? 'the appraisal company returned no link for this file' : 'the appraisal company did not answer for this file') });
       continue;
     }
     sendable.push({ ...specs[i], staged: st });
@@ -186,7 +218,10 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   }
   if (!documents.length) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false, error: 'every file was rejected at staging', staffId });
-    return { ok: false, error: 'stage_rejected', skipped };
+    return { ok: false, error: 'stage_rejected', skipped,
+      message: 'The appraisal company would not accept '
+        + (skipped.length === 1 ? 'that document' : 'any of those documents')
+        + ': ' + skipped.map((x) => `${x.filename || 'a file'} — ${x.detail}`).join('; ') };
   }
   const built = cdg.buildUploadDocuments({
     action: action || (documents.length > 1 ? 'UploadDocumentMulti' : 'UploadDocument'),
@@ -239,7 +274,7 @@ async function autoUploadForOrder(dbh, order, deps = {}) {
     && !/html/i.test(String(d.contentType || ''))
     && !/\.html?$/i.test(String(d.filename || '')));
   if (!pick.length) return { ok: true, uploaded: 0 };
-  const out = await uploadToOrder(dbh, order, { staffId: null, documentIds: pick.map((d) => d.id) }, deps);
+  const out = await uploadToOrder(dbh, order, { staffId: null, documentIds: pick.map((d) => d.id) }, { ...deps, dryrun: autoDry });
   return { ok: out.ok, uploaded: out.uploaded ? out.uploaded.length : 0, error: out.error, skipped: out.skipped };
 }
 

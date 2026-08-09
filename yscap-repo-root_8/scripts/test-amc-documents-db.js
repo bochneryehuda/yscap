@@ -223,6 +223,56 @@ function makeDeps() {
     ok(urlRow.rows[0].retrieval_url === 'https://amc/getdoc/good-a.pdf',
       'and the link recorded for it is ITS OWN — matched by name, not by position');
 
+    // =====================================================================
+    // THE POSITIONAL FALLBACK MUST NOT MIS-FILE. If the vendor echoes neither the
+    // part name nor a matching filename, taking `staged[i]` on faith sends one
+    // document's bytes under another's name — the purchase contract going out with
+    // the scope of work's link, both rows saying `uploaded`, and the picker then
+    // greying the contract out so it can never be retried.
+    // =====================================================================
+    const docA = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'Purchase Contract.pdf','application/pdf','ref-pc','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const docB = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'Scope of Work.pdf','application/pdf','ref-sow','contract',true) RETURNING id`, [appId])).rows[0].id;
+
+    const swapped = makeDeps();
+    const swappedSent = [];
+    // Answers REORDERED, with no `name` — the shape the fallback existed for.
+    swapped.postDocuments = async (files) => files
+      .map((f) => ({ fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: 'https://amc/url-for-' + f.fileName }))
+      .reverse()
+      .map((x) => ({ ...x, fileName: undefined }));
+    swapped.transport = { write: async (built) => { swappedSent.push(built); return { message: {} }; } };
+    const sw = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [docA, docB] }, swapped);
+    const wire = swappedSent.length ? (swappedSent[0].message.products[0].embeddedFiles || []) : [];
+    ok(!wire.some((f) => /Purchase Contract/.test(f.objectName || '') && /Scope/.test(f.objectURL || '')),
+      'a document is never sent under another document’s link');
+    ok(!wire.some((f) => /Scope/.test(f.objectName || '') && /Purchase/.test(f.objectURL || '')),
+      '…in either direction');
+    ok(sw.ok === false || (sw.skipped || []).length === 2,
+      'an answer we cannot match to a file is refused, not guessed at');
+    const swRows = await c.query(
+      `SELECT count(*)::int n FROM amc_order_documents WHERE order_id=$1 AND document_id = ANY($2::uuid[])`,
+      [order.id, [docA, docB]]);
+    ok(swRows.rows[0].n === 0, 'and nothing is recorded as delivered, so both can still be retried');
+    const retryBoth = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [docA, docB] }, makeDeps());
+    ok(retryBoth.ok && retryBoth.uploaded.length === 2, 'the retry sends both properly');
+
+    // A vendor that echoes the filename is matched by it, whatever the order.
+    const docC = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'named-echo.pdf','application/pdf','ref-ne','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const named = makeDeps();
+    named.postDocuments = async (files) => files
+      .map((f) => ({ fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: 'https://amc/by-name/' + f.fileName }));
+    const nm = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [docC] }, named);
+    ok(nm.ok === true, 'a filename echo is matched normally');
+    const nmRow = await c.query(
+      `SELECT retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`, [order.id, docC]);
+    ok(nmRow.rows[0].retrieval_url === 'https://amc/by-name/named-echo.pdf', 'and it gets its own link');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

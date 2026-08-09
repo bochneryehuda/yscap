@@ -251,7 +251,7 @@ router.post('/orders/:orderId/documents', async (req, res) => {
   if (!order) return;
   const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
   if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
-  // CLAMPED to the two actions the builder accepts. `requestActionType` reaches the
+  // CLAMPED to the three actions the builder accepts (cdg.js buildUploadDocuments). `requestActionType` reaches the
   // vendor verbatim, and every other field on that message is pinned — this one was
   // passed straight through from the request body.
   const UPLOAD_ACTIONS = ['UploadDocument', 'UploadDocumentMulti', 'UploadContract'];

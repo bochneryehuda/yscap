@@ -35,6 +35,11 @@ function refusal(out) {
   if (Array.isArray(out.missing) && out.missing.length) return 'Still needed: ' + out.missing.join(', ');
   return out.message || '';
 }
+// What the appraisal company would not take, and its own reason. `already_uploaded`
+// is not a refusal — it means we had already sent it — so it is not shown as one.
+function heldBack(out) {
+  return ((out && out.skipped) || []).filter((s) => s && s.reason !== 'already_uploaded');
+}
 // The form the appraiser fills in. The NAME is the point — a bare product code is the
 // appraisal company's internal id and says nothing about what was ordered.
 function formLabel(name, code) {
@@ -543,6 +548,7 @@ function Documents({ appId, orderId, onChange }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  const [skipped, setSkipped] = useState([]);
   const load = useCallback(async () => {
     try { const r = await api.amcDocuments(appId, orderId); setRows((r && r.documents) || []); } catch (_) { /* ignore */ }
   }, [appId, orderId]);
@@ -554,7 +560,16 @@ function Documents({ appId, orderId, onChange }) {
     setBusy(true); setErr(''); setNotice('');
     try {
       const o = await api.amcUploadDocs(orderId, ids);
-      if (!o.ok) setErr(refusal(o) || 'Could not upload.'); else { setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.'); setPick({}); await load(); if (onChange) onChange(); }
+      if (!o.ok) { setErr(refusal(o) || 'Could not upload.'); }
+      else {
+        setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.');
+        // A PARTIAL REFUSAL IS STILL A REFUSAL. The appraisal company answers per file,
+        // so three picked and two sent comes back `ok:true` — and without this the
+        // screen showed only the green line and the third document was never mentioned
+        // again. The operator has to be told which one, and why they said no.
+        setSkipped(heldBack(o));
+        setPick({}); await load(); if (onChange) onChange();
+      }
     } catch (e) { setErr(refusal(e.data) || e.message || 'Could not upload.'); }
     setBusy(false);
   };
@@ -562,6 +577,14 @@ function Documents({ appId, orderId, onChange }) {
     <div>
       {err ? <Banner tone="bad">{err}</Banner> : null}
       {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {skipped.length ? (
+        <Banner tone="bad">
+          <strong>These were NOT sent:</strong>
+          <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+            {skipped.map((s2, i) => <li key={i}>{s2.filename || 'a document'} — {s2.detail || s2.reason}</li>)}
+          </ul>
+        </Banner>
+      ) : null}
       <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', marginBottom: 8 }}>
         {rows.length ? rows.map((d) => (
           <label key={d.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderTop: `1px solid ${LINE}`, cursor: d.alreadyUploaded ? 'default' : 'pointer', opacity: d.alreadyUploaded ? 0.6 : 1 }}>

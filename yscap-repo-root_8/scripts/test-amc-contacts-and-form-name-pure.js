@@ -264,6 +264,26 @@ ok(splitName('').firstName === null, 'a blank name splits to nothing');
      'the Class order never carries the manufactured address either');
   ok(out.missing.some((m) => m.field === 'contacts.reachable'),
      'and Class refuses the order for the same reason the AMC does — a name is not a way to reach somebody');
+  // AND OUR LOAN OFFICER DOES NOT SATISFY IT. The first cut asked "does ANY contact
+  // carry a method", and the officer's email and phone come off `staff_users` for
+  // every file with one assigned — so the rule fired on essentially no real file while
+  // the AMC desk refused the identical one. The appraiser calls the borrower or the
+  // person with the keys, never us.
+  const withOfficer = classBuild.buildOrder({ ...ctx,
+    loanOfficer: { firstName: 'Moshe', lastName: 'Officer', email: 'lo@yscap.com', workPhone: '555-7' } });
+  ok(withOfficer.missing.some((m) => m.field === 'contacts.reachable'),
+     'an assigned loan officer does NOT make the borrower reachable');
+  // …while anyone who can actually open the door does.
+  const withRealtor = classBuild.buildOrder({ ...ctx,
+    propertyContact: { company: 'Keystone Realty', workPhone: '570-555-0101' } });
+  ok(!withRealtor.missing.some((m) => m.field === 'contacts.reachable'),
+     'a realtor with a phone number does — the same answer the AMC gives');
+  const pa = (withRealtor.body.contacts || []).find((c) => (c.Type || c.type) === 'PropertyAccess');
+  ok(pa && pa.lastName === 'Keystone Realty',
+     'and a company-only contact reaches Class by NAME, not as a nameless phone number');
+  const withCo = classBuild.buildOrder({ ...ctx, coBorrower: { firstName: 'Sara', lastName: 'Weiss', mobile: '555-2' } });
+  ok(!withCo.missing.some((m) => m.field === 'contacts.reachable'), 'so does a co-borrower with a phone');
+
   // A real address still travels, on both desks.
   const real = classBuild.buildOrder({ ...ctx, borrower: { ...ctx.borrower, email: 'y@x.com' } });
   ok(JSON.stringify(real.body).includes('y@x.com'), 'a real address still reaches Class');
