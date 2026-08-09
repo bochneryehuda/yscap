@@ -293,7 +293,11 @@ function backoff(attempt, retryAfterSec) {
 // body carries borrower names and contact details, so this is deliberately about
 // CREDENTIALS, not PII — a dry-run log is a staff-only diagnostic, and the loan
 // file's own data is what the operator is trying to check.
-const SECRET_KEYS = /^(client_?secret|password|access_?token|authorization|token)$/i;
+// `userName` is in here for a specific reason: the callback REGISTRATION body is
+// {callbackUrl, userName, password, authMode}, and those two are the Basic-auth pair
+// for our PUBLIC receiver. Masking only the password writes half the credential to
+// the application log in clear on any dry-run registration.
+const SECRET_KEYS = /^(client_?secret|password|access_?token|authorization|token|user_?name|login_?account)$/i;
 function maskSafe(v) {
   if (v == null || typeof v !== 'object') return v;
   if (Array.isArray(v)) return v.map(maskSafe);

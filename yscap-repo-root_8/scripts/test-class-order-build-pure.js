@@ -312,6 +312,19 @@ ok(masked.client_secret === '***' && masked.password === '***' && masked.nested.
    'every credential shape is masked before it can reach a log');
 ok(masked.nested.keep === 'ok', 'ordinary values survive masking');
 
+// THE CALLBACK REGISTRATION IS A CREDENTIAL PAIR, NOT A PASSWORD PLUS A SETTING.
+// Its body is {callbackUrl, userName, password, authMode}, and those two together are
+// the Basic-auth pair for our PUBLIC receiver — masking only the password wrote half
+// of it to the application log in clear on any dry-run registration.
+const reg = client._internals.maskSafe({
+  callbackUrl: 'https://pilot.example/api/class/callbacks',
+  userName: 'pilot-class', password: 'pw-secret', authMode: 'BasicAuth',
+});
+ok(reg.userName === '***', 'the callback USERNAME is masked too — it is half the credential');
+ok(reg.password === '***', 'and the password, as before');
+ok(reg.callbackUrl === 'https://pilot.example/api/class/callbacks' && reg.authMode === 'BasicAuth',
+   'while the url and the auth mode — the two things an operator is checking — survive');
+
 // A non-JSON body must be PRESERVED — this is the AMC firewall lesson.
 const raw = client._internals.readBody(Buffer.from('<html>Blocked by proxy</html>'));
 ok(raw.raw && /Blocked by proxy/.test(raw.raw),

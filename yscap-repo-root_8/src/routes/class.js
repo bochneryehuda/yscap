@@ -209,7 +209,14 @@ router.post('/files/:id/order', async (req, res) => {
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
       return res.status(409).json({ error: e.code, message: 'Placing orders with Class Valuation is switched off.' });
     }
-    res.status(502).json({ error: e.code || 'order_failed', detail: e.message, vendor: e.body || null });
+    // The vendor's own body is NOT relayed. `client.request` deliberately preserves a
+    // non-JSON error body so an operator can tell "your firewall blocked this" from
+    // "your secret is wrong" — but that body is an EGRESS PROXY's or Class's, and it
+    // has carried an internal hostname, a service-account name and a vendor stack
+    // trace. Those belong in the server log, which is where they go; the browser gets
+    // our own sentence, the same discipline /products already follows.
+    console.warn('[class] order failed:', e && e.message, e && e.body ? JSON.stringify(e.body).slice(0, 500) : '');
+    res.status(502).json({ error: e.code || 'order_failed', detail: e.message });
   }
 });
 
@@ -261,20 +268,44 @@ router.get('/files/:id/orders', async (req, res) => {
 // "something went wrong on our end" — which reads as PILOT being broken rather than as
 // a bad id. `id` is a bigserial, so anything outside it is simply not an order of ours
 // and belongs on the same "no such order here" path as a wrong-file id.
+//
+// AND IT DOES NOT TRIM. `String.trim()` and Postgres disagree about what whitespace
+// is — JavaScript strips a non-breaking space, U+2028 and a byte-order mark, Postgres
+// strips none of them — so trimming first meant the value that PASSED the check was
+// not the value that reached the bind. There is exactly one spelling of an order id
+// here: digits, nothing around them. Anything else is not an order of ours.
 const MAX_BIGINT = 9223372036854775807n;
 function bigintId(v) {
-  const s = String(v == null ? '' : v).trim();
+  const s = String(v == null ? '' : v);
   if (!/^[0-9]{1,19}$/.test(s)) return null;
   const n = BigInt(s);
   return n > 0n && n <= MAX_BIGINT ? s : null;
 }
 
+// Returns the SANITIZED id when the order is on this file, else null. It returns the
+// id rather than a boolean on purpose: every handler below then passes THAT value
+// downstream instead of the raw `req.params.orderRowId`, so the check and the query
+// can never be looking at two different strings. They already could — JavaScript's
+// `trim()` removes a non-breaking space and Postgres does not, so `%C2%A049` passed
+// this gate and then reached a bigint bind as a distinct value. Nothing could be
+// read across files (this gate still governs that), but the resulting 22P02 was
+// answered by the server's global error mapper rather than by the check written to
+// answer it — a guarantee resting on a catch-all is a guarantee waiting to move.
 async function orderOnFile(appId, orderRowId) {
   const id = bigintId(orderRowId);
-  if (!id) return false;
+  if (!id) return null;
   const r = await db.query('SELECT id FROM class_orders WHERE id = $1 AND application_id = $2',
     [id, appId]);
-  return r.rowCount > 0;
+  return r.rowCount > 0 ? id : null;
+}
+
+// The status for a refused vendor action. `not_accepted_yet` is a state of OUR file —
+// Class has not numbered the order yet — so answering 502 blames an upstream that is
+// perfectly healthy, and reads that way in the logs too.
+function vendorFailStatus(out) {
+  if (out && (out.error === 'bad_reasons' || out.error === 'empty')) return 400;
+  if (out && out.error === 'not_accepted_yet') return 409;
+  return 502;
 }
 
 // The reason vocabulary the screen offers. Served from the one place the validator
@@ -296,34 +327,38 @@ router.get('/revision-reasons', async (req, res) => {
 router.get('/files/:id/orders/:orderRowId/thread', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
-  res.json(await messages.thread(req.params.orderRowId));
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
+  res.json(await messages.thread(rowId));
 });
 
 // Pull THEIR side of the thread on demand. A read — master switch only.
 router.post('/files/:id/orders/:orderRowId/thread/sync', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
-  const out = await messages.syncNotes(req.params.orderRowId);
-  res.status(out.ok ? 200 : 502).json(out);
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
+  const out = await messages.syncNotes(rowId);
+  res.status(out.ok ? 200 : vendorFailStatus(out)).json(out);
 });
 
 router.post('/files/:id/orders/:orderRowId/notes', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
-  const out = await messages.note(req.params.orderRowId, (req.body || {}).content, { staffId: req.actor.id });
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
+  const out = await messages.note(rowId, (req.body || {}).content, { staffId: req.actor.id });
   // A send failure is NOT a lost message — the note is stored either way — so the
   // status says "we could not deliver it", never "it did not happen".
-  res.status(out.ok ? 200 : (out.error === 'empty' ? 400 : 502)).json(out);
+  res.status(out.ok ? 200 : vendorFailStatus(out)).json(out);
 });
 
 router.post('/files/:id/orders/:orderRowId/read', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
-  res.json(await messages.markRead(req.params.orderRowId));
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
+  res.json(await messages.markRead(rowId));
 });
 
 // A REVISION or a RECONSIDERATION OF VALUE. One route, because it is one call at
@@ -331,31 +366,33 @@ router.post('/files/:id/orders/:orderRowId/read', async (req, res) => {
 router.post('/files/:id/orders/:orderRowId/revision', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
-  const out = await messages.requestRevision(req.params.orderRowId, {
+  const out = await messages.requestRevision(rowId, {
     kind: b.kind === 'rov' ? 'rov' : 'revision',
     reasons: b.reasons,
     note: b.note,
     supporting: b.supporting,
     staffId: req.actor.id,
   });
-  res.status(out.ok ? 200 : (out.error === 'bad_reasons' ? 400 : 502)).json(out);
+  res.status(out.ok ? 200 : vendorFailStatus(out)).json(out);
 });
 
 router.post('/files/:id/orders/:orderRowId/cancel', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'not_found' });
+  const rowId = await orderOnFile(appId, req.params.orderRowId);
+  if (!rowId) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
   // Cancelling costs real work at their end and cannot be taken back from here, so
   // it needs the same explicit confirmation placing the order does.
   if (b.confirm !== true) {
     return res.status(400).json({ error: 'confirm_required', message: 'Cancelling an order needs an explicit confirmation.' });
   }
-  const out = await messages.requestCancel(req.params.orderRowId, {
+  const out = await messages.requestCancel(rowId, {
     reasons: b.reasons, note: b.note, staffId: req.actor.id });
-  res.status(out.ok ? 200 : (out.error === 'bad_reasons' ? 400 : 502)).json(out);
+  res.status(out.ok ? 200 : vendorFailStatus(out)).json(out);
 });
 
 // ---------------------------------------------------------------------------
@@ -416,7 +453,8 @@ router.post('/callback-setup/register', requirePermission('platform_setup'), asy
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
       return res.status(409).json({ error: e.code, message: 'Writing to Class Valuation is switched off, so we cannot register the callback yet.' });
     }
-    res.status(502).json({ error: e.code || 'register_failed', detail: e.message, vendor: e.body || null });
+    console.warn('[class] callback registration failed:', e && e.message, e && e.body ? JSON.stringify(e.body).slice(0, 500) : '');
+    res.status(502).json({ error: e.code || 'register_failed', detail: e.message });
   }
 });
 

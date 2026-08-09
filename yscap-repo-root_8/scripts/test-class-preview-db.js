@@ -239,6 +239,39 @@ async function main() {
   ok(smuggle.status === 200 && smuggle.body.body.amcName === undefined,
      'a field outside the allowlist cannot be smuggled into the order body');
 
+  // ==========================================================================
+  // AN ORDER-ROW ID IS SANITIZED ONCE AND THAT SANITIZED VALUE IS WHAT TRAVELS.
+  // Found by the post-merge security audit: the range check ran on a trimmed copy
+  // and the six handlers then bound the RAW parameter, so a value JavaScript trims
+  // and Postgres does not — a non-breaking space, U+2028, a byte-order mark — got
+  // past the check and reached a bigint bind, where 22P02 was answered by the
+  // server's global error mapper rather than by the check written for it. No file
+  // could ever be read across (the gate still governs that), but the guarantee was
+  // resting on a catch-all.
+  // ==========================================================================
+  {
+    const order = (await db.query(
+      `INSERT INTO class_orders (application_id, reference_number, api_version, uad, order_path, status)
+       VALUES ($1,$2,'v1','2.6','/orders','ordered') RETURNING id`,
+      [appId, 'YSCAP' + tag])).rows[0].id;
+
+    const good = await call('GET', `/api/class/files/${appId}/orders/${order}/thread`);
+    ok(good.status === 200, 'the order on this file answers on its own id (the control)');
+
+    for (const [name, prefix] of [['a non-breaking space', '%C2%A0'], ['a line separator', '%E2%80%A8'],
+                                  ['a byte-order mark', '%EF%BB%BF'], ['an em space', '%E2%80%83']]) {
+      const r = await call('GET', `/api/class/files/${appId}/orders/${prefix}${order}/thread`);
+      ok(r.status === 404 && r.body && r.body.error === 'not_found',
+         `${name} in the id is answered as "no such order here", not as a server error`);
+    }
+    // And the ordinary hostile shapes still land on the same path.
+    for (const bad of ['99999999999999999999', '0', '-1', 'abc', '1.5']) {
+      const r = await call('GET', `/api/class/files/${appId}/orders/${bad}/thread`);
+      ok(r.status === 404, `a ${bad} id is 404, never 500`);
+    }
+    await db.query('DELETE FROM class_orders WHERE id=$1', [order]);
+  }
+
   // --- cleanup ------------------------------------------------------------
   server.close();
   await db.query('DELETE FROM applications WHERE id=$1', [appId]);
