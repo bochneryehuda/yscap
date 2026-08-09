@@ -262,7 +262,7 @@ main,.footer{ position:relative; z-index:1; }
     border-right:1px solid var(--line); border-bottom:1px solid var(--line);
     display:flex; flex-direction:column; align-items:center;
 }
-.stat-tag{ font-size:.62rem; font-weight:700; text-transform:uppercase; letter-spacing:.16em; color:var(--gold); margin-bottom:.6rem; }
+.stat-tag{ font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.16em; color:var(--gold); margin-bottom:.6rem; }
 .stat-num{
     display:block; font-family:var(--font-d); font-size:2rem; font-weight:500; color:var(--ivory);
     line-height:1; white-space:nowrap; font-variant-numeric:tabular-nums; letter-spacing:-.01em;
@@ -320,7 +320,7 @@ section{ padding:6rem 1.5rem; }
 .prog-card.feature{ background:var(--ink-1); }
 .prog-card.feature::before{ content:""; position:absolute; top:0; left:0; right:0; height:2px; background:var(--gold); }
 .prog-chip{
-    display:inline-block; font-size:.68rem; letter-spacing:.1em; text-transform:uppercase;
+    display:inline-block; font-size:.7rem; letter-spacing:.1em; text-transform:uppercase;
     color:var(--teal-br); font-weight:700; margin-bottom:1rem;
 }
 .prog-card h3{ font-family:var(--font-d); font-weight:500; font-size:1.5rem; margin-bottom:.55rem; }

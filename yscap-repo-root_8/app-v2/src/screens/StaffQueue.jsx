@@ -314,7 +314,7 @@ function Row({ a }) {
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
           {/* Note buyer / where the file is sold — INTERNAL staff pipeline only
               (this whole screen is staff-gated; the borrower API strips `lender`). */}
-          {a.lender ? <> · <span style={{ color: 'var(--gold)' }}>Note buyer: {a.lender}</span></> : ''}
+          {a.lender ? <> · <span style={{ color: 'var(--gold-ink)' }}>Note buyer: {a.lender}</span></> : ''}
         </div>
       </div>
       <div className="q-prog">{a.program || '—'}</div>

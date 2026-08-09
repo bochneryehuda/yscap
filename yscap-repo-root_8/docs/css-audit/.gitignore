@@ -1,0 +1,6 @@
+# Everything a run REGENERATES stays out of the repository: 56MB of full-page
+# screenshots, the downloaded web fonts, and the raw finding list. Re-create
+# them any time with `node scripts/audit-css.mjs`.
+shots/
+.fontcache/
+findings.json

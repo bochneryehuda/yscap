@@ -16,8 +16,15 @@
     --ink:#F4F0E7; --ink-1:#FBF9F3; --ink-2:#EDE6D7; --ink-3:#E4DCCB;
     --line:rgba(20,27,34,.16); --line-2:rgba(20,27,34,.08);
     --teal:#2F7F86; --teal-br:#256469; --teal-dp:#1F5A60; --teal-glow:rgba(47,127,134,.12);
-    --gold:#AE8746; --ivory:#141B22; --ivory-soft:#1D2830; --muted:#4B585C; --muted-2:#6E7A7E;
-    --good:#2E7A5E; --warn:#B07A1E; --bad:#B4522A;
+    --gold:#AE8746; --ivory:#141B22; --ivory-soft:#1D2830; --muted:#4B585C; --muted-2:#636B6E;
+    /* --gold-ink: the brand gold darkened just enough to be READABLE as text
+       on this ivory paper. --gold measures 2.9:1 here and 3.3:1 on white —
+       both under the 4.5:1 ordinary text needs — so gold eyebrows, rank
+       labels and totals were hard to read, and white-on-gold buttons worse.
+       --gold stays the brand gold for rules, borders and hover edges, where
+       contrast is not a reading question. GOLD TEXT ON LIGHT USES THIS. */
+    --gold-ink:#856529;
+    --good:#2E7A5E; --warn:#8A5F14; --bad:#A94B26;
     --maxw:1240px; --r:4px; --ease:cubic-bezier(.22,.61,.36,1);
     --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,sans-serif;
 }
@@ -28,6 +35,10 @@
     --line:rgba(244,240,231,.15); --line-2:rgba(244,240,231,.075);
     --teal:#5FA9B0; --teal-br:#8FCBD1; --teal-dp:#3C6B71; --teal-glow:rgba(95,169,176,.20);
     --gold:#C9A86A; --ivory:#F4F0E7; --ivory-soft:#E4DFD3; --muted:#AAB4B8; --muted-2:#7E8A8E;
+    /* On the dark canvas the LIGHT gold is already the readable one (8.4:1),
+       so gold text maps straight back to it. Without this line every rule
+       that switched to --gold-ink would paint dark bronze on a dark card. */
+    --gold-ink:#C9A86A;
     --good:#7FB08A; --warn:#C9A86A; --bad:#C98A6A;
 }
 *{ box-sizing:border-box; }
@@ -101,7 +112,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
    =========================================================== */
 .suite-hero{ max-width:var(--maxw); margin:0 auto; padding:5rem 1.5rem 2.5rem; text-align:center; }
 .suite-eyebrow{
-    display:inline-block; font-size:.75rem; letter-spacing:.22em; text-transform:uppercase; color:var(--gold);
+    display:inline-block; font-size:.75rem; letter-spacing:.22em; text-transform:uppercase; color:var(--gold-ink);
     font-weight:600; margin-bottom:1.4rem;
 }
 .suite-hero h1{
@@ -129,7 +140,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 }
 .tool-ico svg{ width:24px; height:24px; stroke:var(--teal); fill:none; stroke-width:1.6; }
 .tool-card h3{ font-family:var(--font-d); font-weight:500; font-size:1.4rem; position:relative; }
-.tool-card .tm{ font-size:.7em; color:var(--gold); vertical-align:super; }
+.tool-card .tm{ font-size:.7em; color:var(--gold-ink); vertical-align:super; }
 .tool-card .tool-desc{ color:var(--muted); font-size:.95rem; margin:.5rem 0 1rem; position:relative; flex:1; }
 .tool-card .tool-q{ color:var(--muted-2); font-size:.82rem; border-top:1px solid var(--line-2); padding-top:.9rem; position:relative; }
 .tool-card .tool-go{ color:var(--teal-br); font-size:.85rem; font-weight:600; margin-top:1rem; display:inline-flex; gap:.4rem; align-items:center; position:relative; }
@@ -202,7 +213,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
     border:1px solid var(--line); border-top:2px solid var(--gold); border-radius:var(--r); padding:1.8rem; margin-bottom:1.2rem;
     background:var(--ink-1);
 }
-.result-hero .rh-label{ font-size:.78rem; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); font-weight:600; }
+.result-hero .rh-label{ font-size:.78rem; letter-spacing:.14em; text-transform:uppercase; color:var(--gold-ink); font-weight:600; }
 .result-hero .rh-value{ font-family:var(--font-d); font-weight:600; font-size:3.2rem; line-height:1.05; margin-top:.4rem; color:var(--ivory); }
 .result-hero .rh-value.tealed{ color:var(--teal-br); }
 .result-hero .rh-sub{ color:var(--muted); margin-top:.4rem; font-size:.95rem; }
@@ -334,8 +345,9 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
   --ink:#F4F0E7; --ink-1:#FBF9F3; --ink-2:#EDE6D7; --ink-3:#E4DCCB;
   --line:rgba(20,27,34,.16); --line-2:rgba(20,27,34,.08);
   --teal:#2F7F86; --teal-br:#256469; --teal-dp:#1F5A60; --teal-glow:rgba(47,127,134,.12);
-  --gold:#AE8746; --ivory:#141B22; --ivory-soft:#1D2830; --muted:#4B585C; --muted-2:#6E7A7E;
-  --good:#2E7A5E; --warn:#B07A1E; --bad:#B4522A; --on-accent:#FFFFFF;
+  --gold:#AE8746; --ivory:#141B22; --ivory-soft:#1D2830; --muted:#4B585C; --muted-2:#636B6E;
+  --gold-ink:#856529;                 /* see the :root block — gold TEXT on light */
+  --good:#2E7A5E; --warn:#8A5F14; --bad:#A94B26; --on-accent:#FFFFFF;
 }
 /* light theme: sharper + bolder so it reads as crisp, not washed out */
 :root[data-theme="light"] body{ font-weight:430; -webkit-font-smoothing:antialiased; }
@@ -346,9 +358,9 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 :root[data-theme="light"] .btn-solid:hover{ background:var(--teal-dp); box-shadow:none; }
 :root[data-theme="light"] .btn-line{ background:transparent; border-color:var(--line); color:var(--ivory); box-shadow:none; }
 :root[data-theme="light"] .btn-line:hover{ border-color:var(--ivory); background:transparent; color:var(--ivory); }
-:root[data-theme="light"] .btn-gold{ background:var(--gold); color:#fff; box-shadow:none; }
+:root[data-theme="light"] .btn-gold{ background:var(--gold-ink); color:#fff; box-shadow:none; }
 :root[data-theme="light"] .btn-gold:hover{ background:#96702f; box-shadow:none; }
-:root[data-theme="light"] .ys-theme-toggle:hover{ color:var(--gold); border-color:var(--gold); }
+:root[data-theme="light"] .ys-theme-toggle:hover{ color:var(--gold-ink); border-color:var(--gold); }
 :root[data-theme="light"] .input:focus-within{ box-shadow:0 0 0 3px rgba(47,127,134,.12); }
 
 /* theme toggle button (injected by theme.js) */
