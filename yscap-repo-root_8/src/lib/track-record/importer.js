@@ -46,6 +46,7 @@ const TRK = require('../track-record-key');
 const entityLib = require('../track-record-entity');
 const lookups = require('../elementix/lookups');
 const MATCH = require('./match');
+const NB = require('../number-bounds');
 
 const str = (v) => String(v == null ? '' : v).trim();
 const ymd = (v) => {
@@ -93,6 +94,28 @@ const MATERIAL = [
  * by IMPORT time a human is present to answer, so the honest states are
  * "derived, and stated" or "ask", never "left null".
  */
+/**
+ * One of the three real kinds, spelled the way the rest of the system spells
+ * them — or null for anything that names none of them.
+ *
+ * The tokens and their PRIORITY are `experience.bucketOf`'s own (ground before
+ * flip, hold's words last), so a label this module writes can never count in a
+ * different bucket than the word the human read. 'sold', 'BRRRR', a typo, an
+ * emoji — all null, all refused upstream, never a silently zeroed line.
+ */
+function canonicalDealType(v) {
+  const s = str(v).toLowerCase();
+  if (!s) return null;
+  if (s.indexOf('ground') >= 0 || s.indexOf('construction') >= 0) return 'ground-up';
+  if (s.indexOf('flip') >= 0) return 'flip';
+  if (s.indexOf('hold') >= 0 || s.indexOf('rental') >= 0 || s.indexOf('rent') >= 0) return 'fix-and-hold';
+  return null;
+}
+/** Which bucket a canonical label counts in — for the contradiction test. */
+function bucketNameOf(v) {
+  try { return require('../experience').bucketOf(v); } catch (_) { return String(v || ''); }
+}
+
 function dealTypeFromRecords(c) {
   const bought = ymd(c && c.purchase_date);
   const sold = ymd(c && c.sale_date);
@@ -106,10 +129,15 @@ function dealTypeFromRecords(c) {
       : 'The records show a purchase but no sale, so they do not say what the plan was.' };
 }
 
-/** Fields a candidate can carry onto a line. */
+/** Fields a candidate can carry onto a line. `rent_*`/`refi_*` joined
+ *  2026-08-09 (db/505) — the hold's exit, read off the county mortgage record
+ *  and the MLS lease outcome; without them every imported hold counted toward
+ *  nothing. All four are MATERIAL, so a fill onto a verified line still goes
+ *  through the confirm-to-reopen guard like any other figure. */
 const FILLABLE = [
   'property_address', 'deal_type', 'purchase_price', 'purchase_date',
   'sale_price', 'sale_date', 'entity_name',
+  'rent_amount', 'rent_date', 'refi_amount', 'refi_date',
 ];
 
 /** The property a vendor row is about. `addresses[]` is the canonical shape
@@ -220,6 +248,74 @@ function candidatesFrom(research, entityNames) {
     if (!existing) byKey.set(addrKey, c);
   }
 
+  /* ═══ THE MORTGAGES WERE PAID FOR AND THROWN AWAY — no longer (2026-08-09).
+     The owner: "You need to add some enhancements to understand from
+     Elementix: when this LLC purchased it, when this LLC sold it, when this
+     LLC refinanced it." Verified live: a mortgage row states `isRefinance`,
+     `loanPurpose`, `recordingDate`, `mortgageAmount` and `deedConsideration`.
+     Three uses, in order of how much they carry:
+
+     · A REFINANCE (`isRefinance === true`) is a HOLD'S EXIT — the frozen rule
+       sends a hold to COALESCE(rent_date, refi_date), and with no refi date
+       every imported hold counted toward nothing.
+     · A PURCHASE-MONEY mortgage evidences the buy in a county whose DEEDS are
+       not in coverage — a very ordinary shape, previously invisible.
+     · The MLS RENT block on the row is the one lease signal the records
+       carry. A stated OUTCOME ('rented'/'leased') dates the lease; a listing
+       alone is evidence for the reviewer and never a staged date — listed for
+       rent is not rented. */
+  for (const m of (research.mortgages || [])) {
+    const ours = isOurs(m.grantees);
+    if (!ours) continue;                       // a stranger's loan is not a skip worth recording
+    const addr = firstAddress(m);
+    const addrKey = TRK.trackRecordKey(addr) || addressLabel(addr).toLowerCase();
+    if (!addrKey) {
+      skips.push({ address: addressLabel(addr), reason: 'no_address',
+        why: 'The mortgage does not name a property address we can read, so it cannot be matched or staged.' });
+      continue;
+    }
+    const existing = [...byKey.values()].find((c) => c._addrKey === addrKey);
+    const c = existing || {
+      _addrKey: addrKey,
+      dedupe_key: dedupeKeyFor({ documentId: m.countyDocumentId || m.documentId || m.id,
+        property_address: addr, purchase_date: null, sale_date: null }),
+      property_address: addr, deal_type: null,
+      purchase_price: null, purchase_date: null, sale_price: null, sale_date: null,
+      rent_amount: null, rent_date: null, refi_amount: null, refi_date: null,
+      entity_name: null, raw: { deeds: [] },
+    };
+    if (m.isRefinance === true) {
+      c.refi_date = c.refi_date || ymd(m.date);
+      c.refi_amount = c.refi_amount ?? (m.amount == null ? null : num(m.amount));
+    } else if (str(m.loanPurpose).toLowerCase() === 'purchase' && !c.purchase_date) {
+      /* The purchase-money loan records the same day as the deed it financed,
+         and states that deed's price on its own row. Only ever FILLS — a deed
+         already read is the better record. */
+      c.purchase_date = ymd(m.date);
+      c.purchase_price = c.purchase_price ?? (m.deedConsideration == null ? null : num(m.deedConsideration));
+    }
+    c.entity_name = c.entity_name || firstOurName(m.grantees, names);
+    (c.raw.mortgages = c.raw.mortgages || []).push(m);
+    if (!existing) byKey.set(addrKey, c);
+  }
+
+  /* The MLS rent outcome, off whichever rows carry it. A date only when the
+     status STATES the lease happened — never off-market, which also means
+     withdrawn. */
+  for (const c of byKey.values()) {
+    if (c.rent_date) continue;
+    const rows = [...(c.raw.deeds || []), ...(c.raw.mortgages || [])];
+    for (const r of rows) {
+      const mls = r && r.mls;
+      if (!mls) continue;
+      if (/^(rented|leased)$/i.test(str(mls.rentStatus)) && (mls.rentRemovedOn || mls.rentListedOn)) {
+        c.rent_date = mls.rentRemovedOn || mls.rentListedOn;
+        c.rent_amount = c.rent_amount ?? (mls.rentPrice == null ? null : num(mls.rentPrice));
+        break;
+      }
+    }
+  }
+
   /* A DEAL TYPE IS NEVER GUESSED. A deed says a property was bought and a deed
      says it was sold; nothing in the records says whether the plan was a flip, a
      hold or a ground-up, and writing "flip" because a sale exists would put a
@@ -267,11 +363,43 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     [borrowerId, staffId || null, JSON.stringify({ names: b.name ? [b.name] : [], entities: entityNames, states: states || [] })])).rows[0];
 
   let found = 0; let staged = 0; let apiCalls = 0;
+  let searchedAny = false;
   const skips = [];
-
   if (!entityNames.length) {
-    skips.push({ reason: 'no_entities', why: 'This borrower has no companies on their profile, so there is nothing to search under.' });
+    skips.push({ reason: 'no_entities',
+      why: 'This borrower has no companies on their profile — only their personal name was searched. Add the company they buy under for the full picture.' });
   }
+  /* The names a PERSONAL-NAME deed can match against — the borrower plus their
+     companies, so a deed granted to "Moses Weil" is theirs the same way one
+     granted to "MW Trading LLC" is. */
+  const allNames = [b.name, ...entityNames].filter(Boolean);
+
+  /* NOTHING 500s THE WHOLE SEARCH. One unstorable row (a mis-keyed
+     consideration bigger than numeric(14,2), a shape nobody predicted) used to
+     escape the loop, answer 500, leave the search row with NULL counts, and —
+     because every re-run re-spends the vendor allowance and dies on the same
+     row — permanently truncate the results behind it. A row that cannot be
+     staged is a SKIP with a reason, like every other row that cannot be
+     staged. */
+  const stageAll = async (candidates, proposedLlcId, tagName) => {
+    for (const c of candidates) {
+      try {
+        const staged1 = await stageOne(db, { borrowerId, searchId: search.id, candidate: c, proposedLlcId });
+        if (staged1.staged) staged += 1;
+        else skips.push({ address: addressLabel(c.property_address), reason: staged1.reason, why: staged1.why });
+      } catch (err) {
+        skips.push({ address: addressLabel(c.property_address), entity: tagName || null,
+          reason: 'could_not_store',
+          why: `This one could not be saved (${(err && err.message) || 'storage error'}) — the rest of the search continued.` });
+      }
+    }
+  };
+  const noteTruncation = (research, under) => {
+    for (const t of (research.truncated || [])) {
+      skips.push({ entity: under, reason: 'more_pages',
+        why: `The records service has MORE ${t.list} than the ${t.shown} shown for ${under} — the list was cut at the page limit, so this search is not the complete history.` });
+    }
+  };
 
   for (const ent of entities) {
     const research = await lookups.researchProperty({
@@ -279,18 +407,47 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       borrowerNames: b.name ? [b.name] : [], staffId, db,
     });
     apiCalls += research.calls || 0;
+    searchedAny = searchedAny || research.searched === true;
     for (const e of (research.errors || [])) {
       skips.push({ entity: ent.llc_name, reason: e.reason, why: e.detail || 'The records service could not answer.' });
     }
-    const { candidates, skips: theirSkips } = candidatesFrom(research, [ent.llc_name, ...entityNames]);
+    noteTruncation(research, ent.llc_name);
+    const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
     for (const s of theirSkips) skips.push({ entity: ent.llc_name, ...s });
     found += candidates.length;
+    await stageAll(candidates, ent.id, ent.llc_name);
+  }
 
-    for (const c of candidates) {
-      const staged1 = await stageOne(db, { borrowerId, searchId: search.id, candidate: c, proposedLlcId: ent.id });
-      if (staged1.staged) staged += 1;
-      else skips.push({ address: addressLabel(c.property_address), reason: staged1.reason, why: staged1.why });
+  /* ═══ THE BORROWER'S OWN NAME IS SEARCHED TOO (owner-directed 2026-08-09:
+     "He should also use the borrower's personal name to search"). A deal
+     bought in a personal name has no entity to search under, and an
+     entity-only search read that whole class of borrowers as having no
+     history. Same never-guess discipline: the person route auto-resolves only
+     an EXACT name (order-blind), refuses a too-common one, and everything it
+     stages still goes through the same scoring ladder and the same human
+     review — a personal-name candidate has no proposed entity, so the line it
+     becomes is owned personally unless the reviewer says otherwise. */
+  if (b.name) {
+    const research = await lookups.researchPerson({
+      personName: b.name, state: (states && states[0]) || '', staffId, db,
+    });
+    apiCalls += research.calls || 0;
+    searchedAny = searchedAny || research.searched === true;
+    for (const e of (research.errors || [])) {
+      skips.push({ entity: b.name, reason: e.reason, why: e.detail || 'The records service could not answer.' });
     }
+    if (research.tooCommon) {
+      skips.push({ entity: b.name, reason: 'name_too_common',
+        why: `"${b.name}" is too common a name for the records to identify one person — the personal-name half of the search was skipped rather than guessed.` });
+    } else if (research.ambiguousPerson) {
+      skips.push({ entity: b.name, reason: 'ambiguous_person',
+        why: `The records hold more than one "${b.name}" and picking one would be a guess — the personal-name half of the search was skipped.` });
+    }
+    noteTruncation(research, b.name);
+    const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
+    for (const s of theirSkips) skips.push({ entity: b.name, ...s });
+    found += candidates.length;
+    await stageAll(candidates, null, b.name);
   }
 
   await db.query(
@@ -299,29 +456,49 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       WHERE id=$1`,
     [search.id, found, staged, skips.length, JSON.stringify(skips), apiCalls]);
 
-  /* WHAT WAS SEARCHED, ALWAYS — because "we found nothing" and "we had nothing
-     to look under" are completely different sentences, and only one of them is
-     about the borrower.
-     A search runs ONLY under the companies on the profile, so a borrower with
-     none gets a zero and, without this, the reason sits inside `skips` where a
-     screen has to go looking for it. Read as "we searched and this person has no
-     history", that is a finding against them produced by a gap in OUR data — the
-     same class as D3, where a coverage gap was painted as a failed verification.
-     The caller can now say which companies were searched, or that there were
-     none to search, without interpreting anything. */
-  const nothingToSearch = entityNames.length === 0;
+  /* WHAT WAS SEARCHED, ALWAYS — because "we found nothing", "we had nothing to
+     look under" and "the records service never answered" are three completely
+     different sentences, and only the first is about the borrower.
+
+     THE THIRD ONE IS THE ONE THAT BURNED US (owner-reported 2026-08-09): with
+     the records service switched off, every call failed, `found` was 0, and
+     the summary told the reviewer "that usually means the county does not
+     publish online" — a confident claim about a county nobody had asked, on a
+     borrower with a massive real history. A vendor that is off, paused or
+     erroring must say SO, in the headline, not in a skips list a screen has
+     to go digging through. `searchedAny` is true only when a records list
+     actually came back, so it cannot be faked by a run of failures. */
+  const searchedUnder = [...(b.name ? [b.name] : []), ...entityNames];
+  const nothingToSearch = searchedUnder.length === 0;
+  const vendorProblem = !searchedAny && !nothingToSearch
+    ? (skips.find((s) => ['disabled', 'not_configured', 'dry_run'].includes(s.reason)) ? 'off'
+      : skips.find((s) => s.reason === 'rate_limited') ? 'paused'
+        : skips.some((s) => ['error', 'unknown_tool', 'bad_args', 'unauthorized', 'transport',
+          'initialize_failed', 'not_connected', 'reapproval_needed', 'store_unreadable',
+          'no_response', 'unreadable_response', 'tool_error'].includes(s.reason)) ? 'failed' : null)
+    : null;
+  const underText = entityNames.length
+    ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
+    : (b.name || 'nothing');
   return {
     ok: true,
     searchId: search.id,
     found, staged, skipped: skips.length, skips, apiCalls,
-    searchedUnder: entityNames,
+    searchedUnder,
     nothingToSearch,
+    vendorProblem,
     /* One plain sentence, decided HERE so two screens cannot word it two ways. */
     summary: nothingToSearch
-      ? 'We could not search: this borrower has no companies on their profile yet, and a public-records search runs under a company name. Add the company they buy under and run it again.'
-      : (found === 0
-        ? `We searched the public records under ${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
-        : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}${staged === found ? '' : ` — ${staged} new`}.`),
+      ? 'We could not search: this borrower has no name and no companies on their profile yet. Fill in the profile and run it again.'
+      : (vendorProblem === 'off'
+        ? 'The public-records service is switched off in PILOT\'s settings, so NOTHING was actually searched. Nobody should read this as "no history" — turn the service on and run it again.'
+        : vendorProblem === 'paused'
+          ? 'The public-records service paused us (the hourly allowance is used up), so this search did not run. Try again in a little while — nothing here says anything about the borrower.'
+          : vendorProblem === 'failed'
+            ? 'The public-records service could not answer, so this search did not really run. The reasons are listed below — nothing here says anything about the borrower.'
+            : (found === 0
+              ? `We searched the public records under ${underText} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
+              : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${underText}${staged === found ? '' : ` — ${staged} new`}.`)),
   };
 }
 
@@ -334,6 +511,19 @@ async function runSearch({ borrowerId, staffId, states }, client) {
  */
 async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) {
   const key = candidate.dedupe_key || dedupeKeyFor(candidate);
+
+  /* A VALUE MUST FIT ITS COLUMN, AND THIS DOOR HAS NO HUMAN AT IT — so an
+     unstorable figure is DROPPED with a note, never a refusal and never the
+     22003 that used to escape as a 500 and truncate the whole search. The
+     property itself always stages: losing a real property over one garbled
+     number is the worse trade, and the raw record still holds the original. */
+  const dropped = [];
+  for (const col of ['purchase_price', 'sale_price', 'rent_amount', 'refi_amount']) {
+    const v = candidate[col];
+    if (v == null) continue;
+    const problem = NB.tableColumnProblem('track_record_candidates', col, Number(v));
+    if (problem) { dropped.push(`${col} (${v})`); candidate[col] = null; }
+  }
 
   /* A DECISION IS DURABLE. The partial unique index only stops a second row
      while the first is still `staged`, so without this a declined property
@@ -403,15 +593,23 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
     `INSERT INTO track_record_candidates
        (borrower_id, search_id, source, raw, property_address, deal_type,
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
-        proposed_llc_id, dedupe_key, match_track_record_id, match_confidence, match_why, status)
-     VALUES ($1,$2,'elementix',$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11::uuid,$12,$13::uuid,$14,$15::jsonb,'staged')
+        rent_amount, rent_date, refi_amount, refi_date,
+        proposed_llc_id, dedupe_key, match_track_record_id, match_confidence, match_why, status,
+        internal_notes)
+     VALUES ($1,$2,'elementix',$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::uuid,$16,$17::uuid,$18,$19::jsonb,'staged',$20)
      RETURNING id`,
     [borrowerId, searchId, JSON.stringify(candidate.raw || {}),
       JSON.stringify(candidate.property_address || null), candidate.deal_type,
       candidate.purchase_price, candidate.purchase_date, candidate.sale_price, candidate.sale_date,
-      candidate.entity_name, proposedLlcId || null, key,
+      candidate.entity_name,
+      candidate.rent_amount ?? null, candidate.rent_date ?? null,
+      candidate.refi_amount ?? null, candidate.refi_date ?? null,
+      proposedLlcId || null, key,
       confidence === 'none' ? null : (hit ? hit.id : null), confidence,
-      JSON.stringify(why)]);
+      JSON.stringify(why),
+      dropped.length
+        ? `[auto] ${dropped.join(', ')} could not be stored as a real figure and was left blank — the raw record still holds what the vendor sent.`
+        : null]);
 
   return { staged: true, id: ins.rows[0].id };
 }
@@ -482,11 +680,59 @@ async function loadQueue(borrowerId, client, opts) {
 
 const ACTIONS = ['import_new', 'match_existing', 'decline', 'snooze'];
 
-async function decideCandidate(candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen }, client) {
-  const db = client || require('../../db');
-  if (!ACTIONS.includes(str(action))) { const e = new Error('that is not one of the choices'); e.status = 400; throw e; }
+/**
+ * ═══ ONE PROPERTY, ONE DECISION — AND THAT IS A LOCK, NOT A CHECK ══════════
+ *
+ * This used to read the candidate, test `status !== 'staged'`, and then write,
+ * with nothing in between and no `AND status='staged'` on the settling UPDATE.
+ * Two reviewers pressing the same button in the same moment BOTH passed the
+ * check. Measured over real HTTP before the fix: two simultaneous clicks
+ * produced two track-record lines in 5 of 6 trials; eight produced seven lines
+ * for ONE property; duplication in 11 of 12 trials. It reaches the number that
+ * prices the loan — once verified, one property counted as two deals.
+ *
+ * Worse, the two racers need not agree. One clicking "import" while the other
+ * clicks "not theirs" left the candidate `declined` — durably, so `stageOne`'s
+ * `declined_before` branch means no future search ever raises it again — while
+ * the line the first click created sat on the record and counted. The queue and
+ * the track record said opposite things about one property and nothing
+ * reconciled them.
+ *
+ * THE FIX IS THE DATABASE, not a bigger check. The whole decision runs in ONE
+ * transaction opened here, and the candidate is taken with `SELECT … FOR
+ * UPDATE`, so the second reviewer waits and then reads the row as the first
+ * left it — and gets the 409 they should always have got. It is the same
+ * discipline `claims.js` states in its own header ("claiming is ONE statement,
+ * never read-then-write") and that db/401 applied to the conditions engine;
+ * this path simply never got it.
+ *
+ * A caller that passes its OWN `client` owns its own transaction and its own
+ * locking; that path is unchanged, and the conditional settle below is what
+ * still protects it.
+ */
+async function decideCandidate(candidateId, opts, client) {
+  if (!ACTIONS.includes(str(opts && opts.action))) {
+    const e = new Error('that is not one of the choices'); e.status = 400; throw e;
+  }
+  if (client) return decideLocked(client, candidateId, opts);
 
-  const c = (await db.query(`SELECT * FROM track_record_candidates WHERE id=$1`, [candidateId])).rows[0];
+  const conn = await require('../../db').getClient();
+  try {
+    await conn.query('BEGIN');
+    const out = await decideLocked(conn, candidateId, opts);
+    await conn.query('COMMIT');
+    return out;
+  } catch (e) {
+    await conn.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen }) {
+  const c = (await db.query(
+    `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
   if (c.status !== 'staged' && c.status !== 'snoozed') {
     const e = new Error('Somebody has already decided this one.'); e.status = 409; throw e;
@@ -500,13 +746,14 @@ async function decideCandidate(candidateId, { action, staffId, note, snoozeDays,
 
   if (action === 'snooze') {
     const days = Math.min(Math.max(Number(snoozeDays) || 7, 1), 180);
-    await db.query(
+    const r = await db.query(
       `UPDATE track_record_candidates
           SET status='snoozed', snoozed_until = now() + ($2 || ' days')::interval,
               decided_by=$3::uuid, decided_at=now(),
               internal_notes = CASE WHEN $4 = '' THEN internal_notes ELSE COALESCE(internal_notes,'') || $4 END
-        WHERE id=$1`,
+        WHERE id=$1 AND ${UNDECIDED_SQL}`,
       [candidateId, String(days), staffId || null, str(note) ? `\n${str(note)}` : '']);
+    if (!r.rowCount) throw alreadyDecided();
     return { ok: true, action, status: 'snoozed', days };
   }
 
@@ -514,11 +761,30 @@ async function decideCandidate(candidateId, { action, staffId, note, snoozeDays,
   return importNew(db, c, { staffId, note, dealType });
 }
 
+/* THE UNDECIDED STATES. A settle may only ever move a candidate OUT of one of
+   these — never re-decide something already decided. Written once so the four
+   settling statements below cannot drift from the check in `decideLocked`. */
+const UNDECIDED_SQL = "status IN ('staged','snoozed')";
+
+/** Nobody decided this first. Raised by every settling statement when its
+ *  conditional UPDATE touched no row, which means somebody else got there. */
+function alreadyDecided() {
+  const e = new Error('Somebody has already decided this one.');
+  e.status = 409; e.code = 'already_decided';
+  return e;
+}
+
 async function settle(db, id, status, staffId, note) {
-  await db.query(
+  /* CONDITIONAL ON PURPOSE — this is the belt to `decideLocked`'s FOR UPDATE.
+     The lock is the real fix, but it only covers the transaction this module
+     opens; a caller passing its own client, or a future caller that forgets,
+     still cannot double-settle through here. */
+  const r = await db.query(
     `UPDATE track_record_candidates
         SET status=$2, decided_by=$3::uuid, decided_at=now(), resolution_note=$4
-      WHERE id=$1`, [id, status, staffId || null, str(note).slice(0, 500) || null]);
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
+    [id, status, staffId || null, str(note).slice(0, 500) || null]);
+  if (!r.rowCount) throw alreadyDecided();
 }
 
 /**
@@ -544,13 +810,41 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
      the three produces one, this REFUSES rather than writing a line that will
      silently credit nobody — the caller is a screen with a human in front of
      it, so asking is always possible. */
-  const effectiveDealType = str(dealType) || str(c.deal_type) || dealTypeFromRecords(c).dealType;
+  const typedRaw = str(dealType) || str(c.deal_type);
+  /* THE ANSWER IS ONE OF THREE THINGS, AND JUNK IS REFUSED — measured before
+     this guard: 'sold' was accepted, `bucketOf('sold')` filed it under HOLDS,
+     the exit date read NULL, and a textbook recent flip counted toward
+     nothing. A 410-character string was stored verbatim. Any spelling that
+     clearly names one of the three kinds canonicalizes (the same tokens
+     `bucketOf` reads, in the same priority, so the label written here can
+     never land in a different bucket than the screen implied); anything else
+     is a 400 naming the choices, never a silently zeroed line. */
+  const typed = canonicalDealType(typedRaw);
+  if (typedRaw && !typed) {
+    const e = new Error('Say which kind of deal this was: flip, hold, or ground-up.');
+    e.status = 400; e.code = 'deal_type_unrecognized';
+    throw e;
+  }
+  const derived = dealTypeFromRecords(c);
+  const effectiveDealType = typed || derived.dealType;
   if (!effectiveDealType) {
     const e = new Error('Say what kind of deal this was — a line with no deal type counts toward nothing.');
     e.status = 400; e.code = 'deal_type_needed';
-    e.why = dealTypeFromRecords(c).why;
+    e.why = derived.why;
     throw e;
   }
+  /* A HUMAN CONTRADICTING THE DEED PAIR IS RECORDED, NEVER SILENT. The records
+     read bought-and-sold as a flip; a person may genuinely know better (built
+     from the ground up and then sold IS ground-up, with the same two deeds) —
+     so the answer stands, but the verifier must see the contradiction: the
+     audit's exact finding was a borrower choosing 'ground-up' over the derived
+     flip with "nothing anywhere recording that they contradicted the deed
+     pair". db/485 keeps the line pending either way; this is the signal the
+     human verifying it reads. */
+  const contradicted = typed && derived.dealType && bucketNameOf(typed) !== bucketNameOf(derived.dealType);
+  const contradictionNote = contradicted
+    ? ` [auto] The records read this as a ${derived.dealType} (${derived.why}) but it was recorded as a ${typed} by the ${enteredByKind === 'borrower' ? 'borrower' : 'reviewer'} — confirm which is right when verifying.`
+    : '';
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
@@ -563,29 +857,43 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
     `INSERT INTO track_records
        (borrower_id, llc_id, property_address, address_key, deal_type,
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
+        rent_amount, rent_date, refi_amount, refi_date,
         origin, entered_by_kind, entered_at, notes)
-     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,'public_records',$12,now(),$11)
+     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15)
      RETURNING id, is_verified, verification_status`,
     [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
       TRK.trackRecordKey(c.property_address) || '', effectiveDealType,
       c.purchase_price, c.purchase_date, c.sale_price, c.sale_date, c.entity_name,
-      enteredByKind === 'borrower'
+      c.rent_amount ?? null, c.rent_date ?? null, c.refi_amount ?? null, c.refi_date ?? null,
+      /* NOTE: borrower-confirm's undo pristine test pins the borrower wording
+         VERBATIM — a contradiction note counts as "worked" there, correctly:
+         a line whose deal type contradicts the records should never be
+         silently deletable. */
+      (enteredByKind === 'borrower'
         ? 'The borrower confirmed this one from the public records.'
-        : 'Brought on from the public records.',
+        : 'Brought on from the public records.') + contradictionNote,
       enteredByKind]);
 
   const row = ins.rows[0];
   /* EXACTLY ONE DECIDER (db/504's `trc_one_decider_check`): a staffer or a
      borrower, never both. `decided_by` is a staff_users FK, so a borrower's id
      may never go there — that constraint is the schema doing its job. */
-  await db.query(
+  /* CONDITIONAL, and the reason it is safe to insert the line first is that
+     every caller runs this inside a transaction (`decideLocked` and
+     `borrower-confirm.answerCandidate` both open one and take the candidate
+     FOR UPDATE). A loser here throws, the transaction rolls back, and the line
+     it had just written goes with it — so a race can never leave an orphan
+     track-record row behind. */
+  const settled = await db.query(
     `UPDATE track_record_candidates
         SET status='imported', imported_track_record_id=$2,
             decided_by=$3::uuid, decided_by_borrower=$5::uuid, decided_by_kind=$6,
             decided_at=now(), resolution_note=$4
-      WHERE id=$1`,
-    [c.id, row.id, borrowerActor ? null : (staffId || null), str(note).slice(0, 500) || null,
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
+    [c.id, row.id, borrowerActor ? null : (staffId || null),
+      (str(note) + contradictionNote).trim().slice(0, 500) || null,
       borrowerActor || null, borrowerActor ? 'borrower' : 'staff']);
+  if (!settled.rowCount) throw alreadyDecided();
 
   return {
     ok: true, action: 'import_new', status: 'imported',
@@ -647,10 +955,12 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
     await db.query(`UPDATE track_records SET ${sets.join(', ')} WHERE id=$1`, vals);
   }
 
-  await db.query(
+  const settled = await db.query(
     `UPDATE track_record_candidates
         SET status='merged', imported_track_record_id=$2, decided_by=$3::uuid, decided_at=now(), resolution_note=$4
-      WHERE id=$1`, [c.id, c.match_track_record_id, staffId || null, str(note).slice(0, 500) || null]);
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
+    [c.id, c.match_track_record_id, staffId || null, str(note).slice(0, 500) || null]);
+  if (!settled.rowCount) throw alreadyDecided();
 
   const after = (await db.query(
     `SELECT is_verified, verification_status FROM track_records WHERE id=$1`, [c.match_track_record_id])).rows[0];

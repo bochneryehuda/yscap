@@ -1,17 +1,17 @@
 # CSS / layout audit
 
-240 screen-loads across 3 widths (1440, 1280, 390px), 80 screens. **2479 findings**, 29 high.
+240 screen-loads across 3 widths (1440, 1280, 390px), 80 screens. **1738 findings**, 28 high.
 
 | what | count | screens |
 |---|---:|---:|
 | spill | 1 | 1 |
 | clipped | 6 | 1 |
 | covered-text | 13 | 3 |
-| overlap | 9 | 3 |
-| contrast | 190 | 15 |
-| contrast-near | 526 | 18 |
-| tiny-text | 561 | 62 |
-| covered-by-overlay | 290 | 44 |
+| overlap | 8 | 3 |
+| contrast | 70 | 14 |
+| contrast-near | 124 | 15 |
+| tiny-text | 344 | 58 |
+| covered-by-overlay | 289 | 44 |
 | ellipsized | 15 | 4 |
 | tap-target | 868 | 40 |
 
@@ -32,7 +32,7 @@
   > Ask about no closing cost options Zero points on eligible Fix & Hold renovation loans Defe
 - `section#reviews > div.review-viewport` 11021px of content cut off with no ellipsis
   > ★★★★★Just closed with YS Capital and had a great experience! They offer good rates and min
-- `main#top > section.offer-bar` 4035px of content cut off with no ellipsis
+- `main#top > section.offer-bar` 4034px of content cut off with no ellipsis
   > Ask about no closing cost options Zero points on eligible Fix & Hold renovation loans Defe
 - `section#reviews > div.review-viewport` 11181px of content cut off with no ellipsis
   > ★★★★★Just closed with YS Capital and had a great experience! They offer good rates and min
@@ -76,13 +76,11 @@
   > Contact
 - …and 2 more
 
-## overlap (9)
+## overlap (8)
 
 
 **staff api health** — desktop, laptop, phone
 
-- `div.dd-wrap > div.ah-note.ah-t-info.ah-monitor > div.ah-monitor-t > b` overlaps "more than 30 minutes" (div.dd-wrap > div.ah-note.ah-t-info.ah-monitor > div.ah-monitor-t > b) by 100%
-  > Automatic down-alerts are on.
 - `div.dd-wrap > div.dd-card > p.ah-purpose > b` overlaps "Retry stuck ones" (div.dd-wrap > div.dd-card > p.ah-purpose > b) by 100%
   > Copy everything now
 - `div.dd-wrap > div.dd-card > p.ah-purpose > b` overlaps "Retry stuck ones" (div.dd-wrap > div.dd-card > p.ah-purpose > b) by 100%
@@ -106,7 +104,7 @@
 - `div.wrap > div.card > div.muted > span.muted` overlaps "(none)" (div.wrap > div.card > div.muted > b) by 100%
   > (the new pipeline runs in shadow only)
 
-## contrast (190)
+## contrast (70)
 
 
 **staff file** — desktop, laptop, phone
@@ -122,36 +120,12 @@
 
 - `div > div.kicker.reveal > a.chip > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 12.5px
   > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
+- `div > div.kicker.reveal > a.chip > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 12.5px
   > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
+- `div#navMobile > a.btn.btn-solid` 3.22:1 (needs 4.5:1) — rgb(29, 40, 48) on rgb(47,127,134) at 15.68px
+  > Apply Now
+- `div > div.kicker.reveal > a.chip > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 12.5px
   > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
-  > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
-  > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
-  > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
-  > ★★★★★
-- `div#reviewTrack > figure.review > div.rv-top > span.stars` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 17px
-  > ★★★★★
-- …and 110 more
-
-**site investor suite** — desktop, laptop, phone
-
-- `section#suite > div.ssx-wrap > span.ssx-eyebrow.ssx-rise` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > —Powered by YS Capital Group
-- `main > section.ssx-disclaimer > div.ssx-wrap > span.ssx-eyebrow` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > Please note
-- `section#suite > div.ssx-wrap > span.ssx-eyebrow.ssx-rise` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > —Powered by YS Capital Group
-- `main > section.ssx-disclaimer > div.ssx-wrap > span.ssx-eyebrow` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > Please note
-- `section#suite > div.ssx-wrap > span.ssx-eyebrow.ssx-rise` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > —Powered by YS Capital Group
-- `main > section.ssx-disclaimer > div.ssx-wrap > span.ssx-eyebrow` 2.91:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(244,240,231) at 12px
-  > Please note
 
 **site privacy** — desktop, laptop, phone
 
@@ -289,28 +263,8 @@
 - `section.tr-summary > div.tr-rank.t0 > div.tr-rank-main > span.tr-rank-eyebrow` 3.14:1 (needs 4.5:1) — rgb(174, 135, 70) on rgb(251,249,243) at 11.2px
   > Experience ranking
 
-## contrast-near (526)
+## contrast-near (124)
 
-
-**staff api health** — desktop, laptop, phone
-
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > AZURE_DOCINT_ENDPOINT
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > AZURE_DOCINT_KEY
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > AZURE_OPENAI_ENDPOINT
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > AZURE_OPENAI_KEY
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > AZURE_OPENAI_DEPLOYMENT
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > GOOGLE_DOCAI_KEY_JSON
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > GOOGLE_DOCAI_PROJECT_ID
-- `div.ah-card.ah-t-mute > div.ah-body > div.ah-note.ah-t-warn > code` 4.26:1 (needs 4.5:1) — rgb(138, 97, 16) on rgb(232,225,210) at 11.5px
-  > GOOGLE_DOCAI_LOCATION
-- …and 151 more
 
 **site home** — desktop, laptop, phone
 
@@ -320,97 +274,82 @@
   > Live
 - `main#top > section.m-proof > div.m-wrap > p.proof-note` 3.49:1 (needs 4.5:1) — rgba(244, 240, 231, 0.4) on rgb(20,27,34) at 11px
   > *Business-purpose, investment (non-owner-occupied) loans only. The figure shown is a repre
-- `section#team > div.team-grid > article.member > span.role` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 12.8px
-  > President
-- `section#team > div.team-grid > article.member > span.role` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 12.8px
-  > Sales Manager
-- `section#team > div.team-grid > article.member > p` 4.20:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(251,249,243) at 13.12px
-  > Cell 929-454-2924
-- `section#team > div.team-grid > article.member > span.role` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 12.8px
-  > Loan Coordinator
-- `section#team > div.team-grid > article.member > p` 4.20:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(251,249,243) at 13.12px
-  > Ext 103 · Direct 718-247-8703
-- …and 256 more
-
-**site investor suite** — desktop, laptop, phone
-
-- `main > section.ssx-callout > div.ssx-wrap.in > a.ssx-btn.ssx-btn-gold.ssx-btn-lg` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 15px
-  > Choose your application →
-- `main > section.ssx-callout > div.ssx-wrap.in > a.ssx-btn.ssx-btn-gold.ssx-btn-lg` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 15px
-  > Choose your application →
-- `main > section.ssx-callout > div.ssx-wrap.in > a.ssx-btn.ssx-btn-gold.ssx-btn-lg` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 15px
-  > Choose your application →
+- `footer.footer > div.footer-top > div.footer-brand > p.footer-tag` 4.34:1 (needs 4.5:1) — rgb(133, 101, 41) on rgb(237,230,215) at 17px
+  > The answer is yes.™
+- `footer.footer > div.footer-top > nav.footer-nav > h5` 4.34:1 (needs 4.5:1) — rgb(133, 101, 41) on rgb(237,230,215) at 11.52px
+  > Programs
+- `footer.footer > div.footer-top > nav.footer-nav > h5` 4.34:1 (needs 4.5:1) — rgb(133, 101, 41) on rgb(237,230,215) at 11.52px
+  > Company
+- `footer.footer > div.footer-top > div.footer-compliance > h5` 4.34:1 (needs 4.5:1) — rgb(133, 101, 41) on rgb(237,230,215) at 11.52px
+  > Compliance
+- `form#subscribeForm > button.btn.btn-gold` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 15.2px
+  > Subscribe
+- …and 37 more
 
 **site privacy** — desktop, laptop, phone
 
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
 
 **site terms** — desktop, laptop, phone
 
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
 
 **site disclosures** — desktop, laptop, phone
 
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
 
 **site sms terms** — desktop, laptop, phone
 
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
-- `body > footer.footer > div.disclosures > p.copyright` 3.56:1 (needs 4.5:1) — rgb(110, 122, 126) on rgb(237,230,215) at 12.16px
+- `body > footer.footer > div.disclosures > p.copyright` 4.38:1 (needs 4.5:1) — rgb(99, 107, 110) on rgb(237,230,215) at 12.16px
   > © 2026 YS Capital Group. All rights reserved.
 
 **tool deal analyzer** — desktop, laptop, phone
 
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 10.88px
-  > Live
 - `span#cfVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
   > Positive cash flow
 - `footer#daFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
 - `footer#daFoot > div.sf-inner > p.sf-copy > a` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > Disclosures
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 10.88px
-  > Live
 - `span#cfVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
   > Positive cash flow
 - `footer#daFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
 - `footer#daFoot > div.sf-inner > p.sf-copy > a` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > Disclosures
-- …and 4 more
+- `span#cfVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
+  > Positive cash flow
+- `footer#daFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
+  > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
+- …and 1 more
 
 **tool equity compare** — desktop, laptop, phone
 
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 
 **tool flip analyzer** — desktop, laptop, phone
 
@@ -467,64 +406,43 @@
 - `div.tool-grid > div.results-col > div.ts-live-head > span.est` 4.10:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(244,240,231) at 11px
   > Live
 
-**tool portfolio tracker** — desktop, laptop, phone
-
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
-
 **tool qualifier pro** — desktop, laptop, phone
 
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 10.88px
-  > Live
 - `span#dscrVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
   > Strong — 1.25× or better
 - `footer#qpFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
 - `footer#qpFoot > div.sf-inner > p.sf-copy > a` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > Disclosures
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 10.88px
-  > Live
 - `span#dscrVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
   > Strong — 1.25× or better
 - `footer#qpFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
 - `footer#qpFoot > div.sf-inner > p.sf-copy > a` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
   > Disclosures
-- …and 4 more
+- `span#dscrVerdict` 4.32:1 (needs 4.5:1) — rgb(46, 122, 94) on rgb(231,236,228) at 13.12px
+  > Strong — 1.25× or better
+- `footer#qpFoot > div.sf-inner > p.sf-copy` 3.71:1 (needs 4.5:1) — rgba(244, 240, 231, 0.42) on rgb(20,27,34) at 12.16px
+  > © 2026 YS Capital Group. All rights reserved. Equal Housing Lender. Disclosures.
+- …and 1 more
 
 **tool ratesaver** — desktop, laptop, phone
 
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 
 **tool refi breakpoint** — desktop, laptop, phone
 
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div.results-col.out-col > aside.result-card > div.result-top > span.est` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 11px
   > Live
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 
 **tool term sheet** — desktop, laptop, phone
 
@@ -545,18 +463,12 @@
 
 - `div#tr-app > section.tr-toolbar > button.tr-btn.primary` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 14.72px
   > + Add a property
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div#tr-app > section.tr-toolbar > button.tr-btn.primary` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 14.72px
   > + Add a property
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 - `div#tr-app > section.tr-toolbar > button.tr-btn.primary` 3.31:1 (needs 4.5:1) — rgb(255, 255, 255) on rgb(174,135,70) at 16px
   > + Add a property
-- `footer.suite-footer > div.sf-inner > div.sf-top > span.sf-tag` 4.43:1 (needs 4.5:1) — rgb(47, 127, 134) on rgb(251,249,243) at 16px
-  > The answer is yes.™
 
-## tiny-text (561)
+## tiny-text (344)
 
 
 **borrower dashboard** — desktop, laptop, phone
@@ -591,19 +503,18 @@
   > by YS Capital
 - `header.header > div.wrap > a.brand > span.sub` 10px text
   > Borrower console
-- `div.wrap > div.file-top > span.file-top-amt > span.k` 10.5px text
-  > Loan amount
 - `div.cv-head > div.cv-head-actions > button.cv-avastack > span.cv-ava.small.online` 9.5px text
   > MB
 - `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
   > by YS Capital
 - `header.header > div.wrap > a.brand > span.sub` 10px text
   > Borrower console
-- `div.wrap > div.file-top > span.file-top-amt > span.k` 10.5px text
-  > Loan amount
 - `div.cv-head > div.cv-head-actions > button.cv-avastack > span.cv-ava.small.online` 9.5px text
   > MB
-- …and 2 more
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
+- `div.cv-head > div.cv-head-actions > button.cv-avastack > span.cv-ava.small.online` 9.5px text
+  > MB
 
 **borrower apply** — desktop, laptop, phone
 
@@ -760,13 +671,6 @@
   > Admin console
 - `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
   > by YS Capital
-- `div.loan-prog > ol.lp-track > li.lp-step.done > span.lp-label` 9.5px text
-  > Intake
-- `div.loan-prog > ol.lp-track > li.lp-step.done > span.lp-label` 9.5px text
-  > Submitted
-- `div.loan-prog > ol.lp-track > li.lp-step.done > span.lp-label` 9.5px text
-  > In review
-- …and 5 more
 
 **staff file draws** — desktop, laptop, phone
 
@@ -852,19 +756,12 @@
   > by YS Capital
 - `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
   > Admin console
-- `div > div > div > span` 10.5px text
-  > ocr:docint-2024-11-30
-- `div > div > div > span` 10.5px text
-  > model:gpt5
-- `div > div > div > span` 10.5px text
-  > extractionSchema:uw-schema-r1
-- `div > div > div > span` 10.5px text
-  > splitter:azure-custom-splitter-r1
-- `div > div > div > span` 10.5px text
-  > classifier:azure-custom-classifier-r1
-- `div > div > div > span` 10.5px text
-  > deterministic:uw-checks-r2
-- …and 30 more
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
+- `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
+  > Admin console
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
 
 **staff archived** — desktop, laptop, phone
 
@@ -1113,19 +1010,12 @@
   > by YS Capital
 - `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
   > Admin console
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- `div.ah-sw > div.ah-sw-l > div.ah-sw-t > span.ah-tag.ah-t-bad` 9.5px text
-  > changes live behavior
-- …and 24 more
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
+- `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
+  > Admin console
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
 
 **staff pipeline shadow** — desktop, laptop, phone
 
@@ -1198,19 +1088,12 @@
   > by YS Capital
 - `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
   > Admin console
-- `div.dd-wrap > div.dd-card > div.inv-buyer > div.act-label` 10.5px text
-  > Fidelis
-- `div.dd-wrap > div.dd-card > div.inv-add > div.act-label` 10.5px text
-  > Add a contact
 - `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
   > by YS Capital
 - `aside.app-sidebar > div.app-brandrow > a.brand > span.sub` 10px text
   > Admin console
-- `div.dd-wrap > div.dd-card > div.inv-buyer > div.act-label` 10.5px text
-  > Fidelis
-- `div.dd-wrap > div.dd-card > div.inv-add > div.act-label` 10.5px text
-  > Add a contact
-- …and 3 more
+- `a.brand > span.pilot-lockup > span.pilot-stack > span.pilot-by` 9px text
+  > by YS Capital
 
 **staff tapes** — desktop, laptop, phone
 
@@ -1281,21 +1164,10 @@
 
 - `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
   > Inputs
-- `div.results-col > div.result-hero > div.rh-top > span.rh-ey` 10.88px text
-  > Deal result · Estimate
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 10.88px text
-  > Live
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Cap rate
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Cash-on-cash ROI
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > DSCR — residential
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > DSCR — all-in
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > NOI (annual)
-- …and 49 more
+- `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
+  > Inputs
+- `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
+  > Inputs
 
 **tool equity compare** — desktop, laptop, phone
 
@@ -1313,58 +1185,18 @@
   > (%)
 - `div.form-grid > div.field.span2 > label > em` 9.35px text
   > (years)
-- `div.vs > div.opt > div.obl > span.bk` 10.5px text
-  > Blended rate
-- …and 19 more
-
-**tool term sheet studio** — desktop, laptop, phone
-
-- `span#manBadge` 9.92px text
-  > Admin-priced
-- `span#manBadge` 9.92px text
-  > Admin-priced
-- `span#manBadge` 9.92px text
-  > Admin-priced
-
-**tool portfolio tracker** — desktop, laptop, phone
-
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Address
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Type
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Purchase $
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Value $
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Mortgage $
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Equity $
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Cash in deal $
-- `table.pf-table > thead > tr > th` 10.5px text
-  > Rent /mo
-- …and 25 more
+- `div.form-grid > div.field > label > em` 9.35px text
+  > (%)
+- …and 13 more
 
 **tool qualifier pro** — desktop, laptop, phone
 
 - `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
   > Sizing
-- `div.results-col > div.result-hero > div.rh-top > span.rh-ey` 10.88px text
-  > DSCR result · Estimate
-- `div.results-col > div.result-hero > div.rh-top > span.rh-live` 10.88px text
-  > Live
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Final loan amount
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Down payment
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Monthly P&I
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > Monthly PITIA
-- `div.results-col > div.result-grid > div.result > div.r-label` 10.88px text
-  > All-in monthly
-- …and 19 more
+- `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
+  > Sizing
+- `div.inputs-col > div.panel > div.panel-head > span.panel-tag` 10.56px text
+  > Sizing
 
 **tool ratesaver** — desktop, laptop, phone
 
@@ -1401,35 +1233,6 @@
 - `div.form-grid > div.field > label > em` 9.35px text
   > (%)
 
-**tool term sheet** — desktop, laptop, phone
-
-- `span#manBadge` 9.92px text
-  > Admin-priced
-- `span#manBadge` 9.92px text
-  > Admin-priced
-- `span#manBadge` 9.92px text
-  > Admin-priced
-
-**tool track record** — desktop, laptop, phone
-
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Deals on record
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Fix & flips
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Fix & holds
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Acquisition volume
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Rehab invested
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Avg hold
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Deals on record
-- `section.tr-summary > div.tr-stats > div.tr-stat > div.tr-stat-l` 10.88px text
-  > Fix & flips
-- …and 10 more
-
 **design system** — desktop, laptop, phone
 
 - `div.ds-panel > div.hero-stats > div.stat > div.stat-tag` 9.92px text
@@ -1450,7 +1253,7 @@
   > Loan Size
 - …and 4 more
 
-## covered-by-overlay (290)
+## covered-by-overlay (289)
 
 
 **borrower track record** — desktop, laptop, phone
@@ -1844,8 +1647,6 @@
   > Notifications
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows
   > My settings
-- `div.ah-tools > div.ah-chips > button.ah-chip > span.ah-chip-n` sits under div#root > div.app > button.chat-fab until you scroll — check it is not the only place this value shows
-  > 23
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > span.pill until you scroll — check it is not the only place this value shows
   > Borrower view
 - `div#root > div.app > aside.app-sidebar > a.sb-link` sits under div.app > aside.app-sidebar > div.sb-foot > button.btn.ghost.small until you scroll — check it is not the only place this value shows

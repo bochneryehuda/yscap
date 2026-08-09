@@ -258,6 +258,24 @@ const COLUMN_KIND = Object.freeze({
     housing_payment: { precision: 12, scale: 2 },
     years_at_residence: { precision: 4, scale: 1 },
   }),
+  /* The track record and its staging table (2026-08-09). The vendor's own
+     `totalConsideration` is machine-fed straight into numeric(14,2) — one
+     garbled consideration used to raise 22003 mid-search, 500 the whole run,
+     and permanently truncate every property behind it (each retry re-spent
+     the vendor allowance and died on the same row). The DOORS here are all
+     no-human-at-the-keyboard doors, so the answer is DROP-with-a-note, never
+     a refusal — see stageOne. */
+  track_records: Object.freeze({
+    purchase_price: 'money', sale_price: 'money', rehab_amount: 'money',
+    rent_amount: 'money', refi_amount: 'money', current_value: 'money',
+    /* GENERATED (db/499) — no door writes it; declared because this table
+       answers "what can the column hold" for EVERY numeric column. */
+    hold_days: 'int',
+  }),
+  track_record_candidates: Object.freeze({
+    purchase_price: 'money', sale_price: 'money',
+    rent_amount: 'money', refi_amount: 'money',
+  }),
 });
 
 /* What a message should CALL a column. Only the ones a person actually sees are
