@@ -142,7 +142,8 @@ async function sweepOnce(db, { limit = DEFAULT_LIMIT } = {}) {
       out.properties += r.properties || 0;
     } else if (r.considered) {
       // It IS an appraisal: either already in the warehouse, or the parser could not
-      // read it (a UAD 3.6 report, a truncated file). Either way the answer is settled
+      // read it (a truncated file, a grid it could not resolve — both standards are
+      // read, so this is no longer a version problem). Either way the answer is settled
       // for these bytes, and the ledger row carries the reason in words.
       if (r.reason && /already in the database/i.test(r.reason)) out.alreadyThere++;
       else out.unreadable++;

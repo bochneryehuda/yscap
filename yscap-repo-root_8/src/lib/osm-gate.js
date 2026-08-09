@@ -41,6 +41,13 @@ function osmGate() {
   const turn = chain.then(async () => {
     const wait = MIN_GAP_MS - (Date.now() - last);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    // …AND THE SHARED BUDGET, because the gap above is one clock per PROCESS and
+    // render.yaml runs two (owner-directed 2026-08-07, after ClickUp phoned about
+    // exactly this hole). Two processes each honouring 1100ms is 2 requests/second at
+    // Nominatim, which is the policy breach this file exists to prevent — and the
+    // consequence there is the user agent being blocked for everyone. Never throws; with
+    // no database reachable the per-process clock above still holds.
+    try { await require('./api-rate-limit').acquire('osm', { maxWaitMs: 15000 }); } catch (_) { /* the local gap still applies */ }
     last = Date.now();
     // CLAMPED. `reset()` (tests) or any future re-initialisation can zero the
     // counter while turns are still pending, and their decrements would then drive

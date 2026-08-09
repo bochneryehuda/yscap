@@ -309,6 +309,16 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  /* An officer's emailed term sheet (owner-directed 2026-08-07). The READ is public —
+     the borrower has no account yet when they click the link, and the token is the
+     authorization — so it must not be filed under the borrower routes. `start` needs
+     the session /auth/accept just handed out. */
+  termSheetOffer:     (token) => req('GET', `/api/term-sheet-offers/${encodeURIComponent(token)}`),
+  startFromTermSheetOffer: (token, initial) =>
+    req('POST', `/api/term-sheet-offers/${encodeURIComponent(token)}/start`, { initial }),
+  // Staff side: send a term sheet built in the Investor Suite to a borrower.
+  sendTermSheetOffer: (b) => req('POST', '/api/staff/term-sheet-offers', b),
+  termSheetOffersSent: () => req('GET', '/api/staff/term-sheet-offers'),
   // Borrower HELPER (assistant) login — a standing second login a borrower
   // authorized (can do everything but see personal info / sign). Its own creds.
   assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),
@@ -494,6 +504,27 @@ export const api = {
   // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
   // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
   setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
+
+  // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
+  amcConfig:        () => req('GET', '/api/amc/config'),
+  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
+  amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
+  amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
+  amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
+  amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
+  amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
+  amcRevisions:     (orderId) => req('GET', `/api/amc/orders/${orderId}/revisions`),
+  amcPostRevision:  (orderId, b) => req('POST', `/api/amc/orders/${orderId}/revisions`, b),
+  amcRovComps:      (appId) => req('GET', `/api/amc/files/${appId}/rov-comps`),
+  amcRovCompSearch: (appId, query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/amc/files/${appId}/rov-comp-search${qs ? '?' + qs : ''}`);
+  },
+  amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
+  amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
+  amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
@@ -606,7 +637,9 @@ export const api = {
   staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
   staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
   staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
-  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
+  // `reason` rides only on a CANCEL — it goes into the email outside counsel receives. A reopen
+  // emails nobody, so it carries none.
+  staffCancelClosingPrep:   (appId, reopen, reason) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : (reason ? { reason } : {})),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -943,6 +976,15 @@ export const api = {
   sharepointReconciliation: () => req('GET', '/api/admin/sharepoint/reconciliation'),
   sharepointRunSweep:  () => req('POST', '/api/admin/sharepoint/mirror', {}),
   sharepointRetryStuck: () => req('POST', '/api/admin/sharepoint/retry-exhausted', {}),
+  // Elementix (recorded deeds / mortgages). The connection is approved ONCE in a
+  // browser and then renews itself. `elementixConnect` returns the sign-in URL as
+  // JSON rather than a redirect ON PURPOSE — a 302 inside fetch() is followed
+  // invisibly, and this hand-off has to happen in the address bar so the person
+  // actually sees Elementix's own sign-in page.
+  elementixStatus:     () => req('GET', '/api/admin/elementix/status'),
+  elementixDiscover:   () => req('GET', '/api/admin/elementix/discover'),
+  elementixConnect:    () => req('GET', '/api/admin/elementix/connect'),
+  elementixDisconnect: () => req('POST', '/api/admin/elementix/disconnect', {}),
   integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
   integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
   integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),

@@ -89,12 +89,23 @@ function drawFigures(m, { borrower = false } = {}) {
   // draw is still just a request, whatever its status column says.
   const hasApproval = !!m.has_inspector_amounts && approved > 0;
 
+  const fee = N(m.fee_cents);
+
   let primary;
   if (moving && net > 0) {
     primary = {
       label: m.is_released ? 'Released to you' : 'To be released',
       value: usd(net),
-      sub: borrower ? 'wired to you' : 'net of the draw fee',
+      // SHOW THE ARITHMETIC, not just a label (owner-reported 2026-08-07 on the approved email:
+      // *"This email also needs to have more information: the approved amount, the released
+      // amount, the fee."*). With a fee on the draw the approved figure and the release differ,
+      // and the secondary row for "Approved" is deliberately suppressed when it would merely
+      // repeat the headline — so on a zero-fee draw the two ARE the same number and saying so
+      // once is honest. Spelling the subtraction out here covers all three figures in one line
+      // whichever way it falls.
+      sub: fee > 0
+        ? `${usd(approved)} approved − ${usd(fee)} draw fee${borrower ? ' — wired to you' : ''}`
+        : (borrower ? 'wired to you' : 'no draw fee on this release'),
     };
   } else if (hasApproval) {
     primary = {
@@ -152,17 +163,34 @@ function drawFacts({ money = null, rollup = null, draw = null, dates = {}, borro
   add('Approved on', day(dates.approved_at));
   add(dates.released_at ? 'Funds released on' : 'Expected release', day(dates.released_at || dates.wire_due_at));
 
+  // THE WHOLE-PROJECT PICTURE, in the order somebody actually asks the questions (owner-directed
+  // 2026-08-07): what is the construction budget · how much has been drawn already · how much
+  // counting this draw · how much is left after it. Every figure comes off the rollup — none is
+  // computed here.
   const p = rollup && rollup.project;
   if (p && N(p.budget) > 0) {
     add('Rehab budget', usd(p.budget));
-    // "Drawn so far" is released money only — the figure the borrower can reconcile against
-    // their own bank statements. Committed money is described by what is left, below.
+    // "Drawn so far" is RELEASED money only — the figure the borrower can reconcile against their
+    // own bank statements. `committed` is that plus everything in flight, which is the number the
+    // owner asked for ("how much was drawn already, INCLUDING this amount"). The two are shown as
+    // separate rows because they answer different questions, and the second is omitted when the
+    // draw is already released and they are the same number.
     add('Drawn so far', usd(p.drawn));
+    if (N(p.committed) !== N(p.drawn)) {
+      add(borrower ? 'Drawn including this draw' : 'Drawn including draws in flight', usd(p.committed));
+    }
     add(borrower ? 'Still available to draw' : 'Still available (this draw counted)', usd(p.available));
   }
 
+  // The meter measures COMMITTED against the budget — this draw included, which is exactly what
+  // the owner asked for ("the construction budget used percentage should be the percentage of
+  // this draw as well, included already"). The label says so, so nobody reads it as released-only.
   const progress = p && N(p.budget) > 0
-    ? { done: Math.max(0, Math.min(N(p.budget), N(p.committed))), total: N(p.budget), label: 'Construction budget used' }
+    ? {
+      done: Math.max(0, Math.min(N(p.budget), N(p.committed))),
+      total: N(p.budget),
+      label: 'Construction budget used (this draw included)',
+    }
     : null;
 
   if (draw && draw.number != null) rows.unshift({ label: 'Draw', value: `#${draw.number}` });

@@ -307,7 +307,10 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     const tiles = [
       ['Budget', usd(p.budget)],
       ['Released', usd(p.drawn)],
-      ['Approved, not yet released', usd(Math.max(0, committed - p.drawn))],
+      // Owner-directed 2026-08-07: a draw counts against the budget from the moment it is
+      // REQUESTED, not from the moment the inspector answers — so this tile can no longer be
+      // called "approved". It is everything in flight.
+      ['Committed on draws in flight', usd(Math.max(0, committed - p.drawn))],
       ['Still available', usd(available)],
     ];
     const tw = (W - 2 * M - 3 * 8) / 4;

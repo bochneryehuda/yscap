@@ -59,14 +59,20 @@ ok(/function trackRecordEnteredCols\(kind\)/.test(borrower),
 {
   const helper = borrower.slice(borrower.indexOf('function trackRecordEnteredCols'), borrower.indexOf('function trackRecordEnteredCols') + 400);
   ok(/entered_by_kind: kind/.test(helper) && /entered_at:/.test(helper), 'it stamps who and when');
-  ok(/if \(kind === 'borrower'\) cols\.verification_status = 'pending'/.test(helper),
-    'a BORROWER write resets the line to pending review');
-  /* THE STAFF DOOR DELIBERATELY DOES NOT RESET. A staffer may correct a VERIFIED
-     line's figures; writing 'pending' over that leaves the row claiming both at
-     once — verification_status 'pending' next to is_verified true — which every
-     count reads as verified and every screen reads as pending. */
-  ok(!/verification_status: 'pending'/.test(helper.replace(/if \(kind === 'borrower'\)[^\n]*\n/, '')),
-    "…and only the borrower's, so a staff correction can't leave a row claiming pending AND verified");
+  /* EVERY WRITE RESETS THE LINE, WHOEVER TYPED IT (owner-directed 2026-08-07: "There
+     should not even be a single thing where somebody entered their track record that
+     should come up as verified… no matter how you enter it").
+     This used to read `if (kind === 'borrower')`, and the reason recorded here was a
+     REAL one worth keeping: writing 'pending' while leaving `is_verified` true leaves
+     the row claiming BOTH at once — pending on every screen, verified in every count.
+     The answer is not to skip the reset for staff; it is to write BOTH halves, which is
+     what the helper now does, so the contradiction it warned about is impossible. */
+  ok(!/kind === 'borrower'/.test(helper),
+    'no per-actor branch — a helper that takes the actor and behaves differently is two rules, not one');
+  ok(/verification_status: 'pending'/.test(helper),
+    'EVERY write — borrower or staff — resets the line to pending review');
+  ok(/is_verified: false/.test(helper),
+    "…and clears is_verified in the same breath, so a row can never claim pending AND verified");
 }
 {
   // Both borrower doors (create + edit) and the staff door must go through it —

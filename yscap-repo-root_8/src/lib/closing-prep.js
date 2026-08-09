@@ -55,6 +55,8 @@
 const db = require('../db');
 const cfg = require('../config');
 const tpl = require('./email/template');
+// The reply delimiter both halves of the chain key on — printed at the TOP of every message we
+// put on the chain, and cut at on the way back in (lib/email/reply-cut.js).
 const storage = require('./storage');
 const closingThread = require('./closing-thread');
 
@@ -1008,7 +1010,18 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     officer: officerCard(data),
     files: attach ? attach.attachments.map((a) => a.filename) : [],
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
   return built;
@@ -1045,7 +1058,74 @@ function buildAttachmentPartEmail(data, { address = null, part = 2, of = 2, file
     officer: officerCard(data),
     files,
     note: 'Reply to this email and it reaches the whole loan team — and files into the loan file.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     replyable: true,
+    audience: 'staff',
+  });
+}
+
+/**
+ * STAND DOWN — the cancellation that goes to outside counsel (owner-directed 2026-08-07).
+ *
+ * Cancelling used to be silent: the order row flipped to 'cancelled', every automatic update
+ * stopped, and the attorney — who had our package, our contacts and a term sheet — heard nothing.
+ * The worst version of that is the one the owner had already lived through by hand: a file sent to
+ * counsel by mistake, followed by an email typed from scratch asking them to ignore it.
+ *
+ * WHAT IT HAS TO BE UNMISTAKABLE ABOUT, in this order: stop work, do not draft from what we sent,
+ * and this is not a reflection on them. It rides the SAME chain as the original request (so it
+ * lands in the conversation they already have, under the same subject) and it deliberately does
+ * NOT repeat the deal block — restating the loan on a message telling somebody to drop it reads
+ * as a fresh instruction.
+ *
+ * The `reason` is optional and free text a human typed. It is rendered as the callout because on
+ * this one message the reason is the most useful thing on the page: "closing with RCN as a broker
+ * file" is what stops counsel chasing us about it.
+ */
+function buildCancelEmail(data, { reason = '', address = null, senderName = '' } = {}) {
+  const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+  const note = String(reason || '').trim();
+  return tpl.render({
+    // The SAME subject as the order, so this lands INSIDE the conversation it cancels rather than
+    // arriving as an unrelated email they have to connect up themselves. The headline is what
+    // differs, and it says the whole thing on its own.
+    title: CLOSING_PREP_TITLE,
+    heading: 'Please disregard — this file is no longer closing with you',
+    subjectTag: subjectTagFor(data),
+    kicker: 'Closing prep cancelled',
+    badge: { text: 'Cancelled', tone: 'action' },
+    preheader: `Please disregard the closing prep for ${data.propertyLine || 'this file'}`,
+    greeting: 'Hello,',
+    intro: 'We are standing this file down — please disregard the closing-prep request we sent on this chain '
+      + 'and stop any work in progress on it.',
+    lines: [
+      'Nothing further is needed from you, and you will not receive any more updates on this file from us '
+      + '— no executed term sheet, no closing-date changes, nothing.',
+      'Please do not draft from the documents we sent. If you have already started, let us know and we will '
+      + 'sort out anything outstanding.',
+      'If this file comes back to you we will send a fresh request on a new chain.',
+      '', signOff,
+    ],
+    meta: [
+      { label: 'Loan number', value: data.loanNumber || '(pending)' },
+      { label: 'Property', value: data.propertyLine || '—' },
+      { label: 'Borrower', value: data.borrowerName },
+    ],
+    callout: note ? { title: 'Why', body: note, tone: 'neutral' } : null,
+    officer: officerCard(data),
+    note: 'Reply to this email and it reaches the whole loan team.',
+    replyable: true,
+    // The shared reply delimiter (lib/email/quote.js) — printed at the top of the
+    // content, so it lands just below whatever counsel types once their client quotes
+    // us underneath, and the inbound cut keeps only their words.
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1073,7 +1153,15 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
     callout: chainCallout(address),
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1175,7 +1263,15 @@ function buildAutoEmail(eventKind, data, extra = {}) {
     callout: extra.address ? chainCallout(extra.address) : null,
     officer: officerCard(data),
     note: 'Reply to this email and it reaches the whole loan team.',
+    // EVERY MESSAGE ON THIS CHAIN CARRIES THE DELIMITER (owner-directed 2026-08-07: *"the reply
+    // needs to be above the three dots, and only those three dots should be part of the reply. If
+    // not, it is messing everything up terribly."*). It is printed at the TOP of the body, so when
+    // the recipient's mail client quotes this message BELOW their fresh reply, the marker lands
+    // immediately under what they typed — which is what makes Gmail/Outlook/Apple Mail collapse
+    // the history behind the "…". The inbound half cuts at the same phrase, so what the portal
+    // records is what they actually wrote rather than the whole conversation again.
     replyable: true,
+    replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
     audience: 'staff',
   });
 }
@@ -1474,6 +1570,51 @@ async function markCarriedByOrder(applicationId, thread, pkg) {
   }
 }
 
+/**
+ * ADDRESSES THAT MAY NEVER BE ADDED TO A CLOSING CHAIN, whoever puts them on it.
+ *
+ * `thread-participants` keeps the people the OTHER SIDE looped in (owner-directed
+ * 2026-08-07, extremely important). Two sets of addresses are carved out of that,
+ * because both are HARD RULES of this desk and a vendor's Cc must not be able to
+ * rewrite either:
+ *
+ *  · THE BORROWER (and co-borrower). This chain carries lender-to-counsel
+ *    correspondence — pricing, the whole entity file. `routes/staff.js` documents
+ *    leaking it to the borrower as the exact trap the closing reply branch exists to
+ *    prevent; a party who CC's the borrower once must not make that policy.
+ *  · THE INSURANCE CONTACT. "The insurance contact is never included" — not as a
+ *    recipient, not in the body — and `getClosingPrepData` excludes them in SQL,
+ *    testing BOTH the directory row's type AND the per-file link's own copy. This
+ *    reads them the same way, so it can never be looser than that exclusion.
+ *
+ * Best-effort: an unreadable list returns [] and the caller still sends. A missed
+ * carve-out is caught by the caller's own base list (we never ADD the borrower), so
+ * failing open here cannot leak — it can only fail to suppress a vendor's own Cc.
+ */
+async function neverLoopIn(applicationId) {
+  const out = [];
+  try {
+    const r = await db.query(
+      `SELECT b.email AS borrower_email, cb.email AS co_email
+         FROM applications a
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id = $1`, [applicationId]);
+    if (r.rows[0]) { out.push(r.rows[0].borrower_email, r.rows[0].co_email); }
+  } catch (_) { /* best-effort */ }
+  try {
+    const r = await db.query(
+      `SELECT sc.email
+         FROM application_service_contacts l
+         JOIN service_contacts sc ON sc.id = l.service_contact_id
+        WHERE l.application_id = $1
+          AND (sc.contact_type = ANY($2::text[]) OR COALESCE(l.contact_type,'') = ANY($2::text[]))`,
+      [applicationId, NEVER_SHARE_CONTACT_TYPES]);
+    for (const x of r.rows) out.push(x.email);
+  } catch (_) { /* best-effort */ }
+  return out.filter(Boolean).map((e) => String(e).trim().toLowerCase());
+}
+
 /** The To/Cc the chain was last sent to. */
 async function lastRecipients(threadId) {
   try {
@@ -1574,8 +1715,8 @@ module.exports = {
   gatherPackage, applicableMissing, groupOf, isFrozenOut, insuranceSlots, buildAttachments, packAttachments, attachBudget,
   attachBudgetRawBytes, maxParts, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
-  buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail,
-  announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
+  buildClosingPrepEmail, buildAttachmentPartEmail, buildFollowupEmail, buildAutoEmail, buildCancelEmail,
+  announce, lastRecipients, neverLoopIn, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
   isSizeSkip,

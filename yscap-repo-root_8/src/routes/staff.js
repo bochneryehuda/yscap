@@ -10,6 +10,7 @@ const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
 const email = require('../lib/email');                    // Email Center: send staff replies
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
+const replyCut = require('../lib/email/reply-cut');        // where a reply ends and the quoted history begins
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const { claimOncePerPeriod } = require('../lib/throttle-claim');
@@ -33,7 +34,11 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
-const portalInvite = require('../lib/portal-invite');     // ONE definition of "where do they stand with the portal"
+const portalInvite = require('../lib/portal-invite');
+// EVERYONE ON THIS CONVERSATION, including whoever the other side added — one
+// definition for the title/insurance orders and the closing chain (owner-directed
+// 2026-08-07: "our system is looping them back out").
+const threadParticipants = require('../lib/thread-participants');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1405,11 +1410,23 @@ router.post('/applications', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
-// Invite the file's borrower to the portal (they need not have signed up yet).
-// Issues a borrower invite bound to their email; on acceptance they link to the
-// SAME borrower record (ON CONFLICT email) and immediately see this file. If
-// they already have a login they're simply pointed to sign in.
-async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }) {
+/**
+ * Invite a borrower to the portal (they need not have signed up yet).
+ *
+ * Issues a borrower invite bound to their EMAIL; on acceptance they link to the SAME
+ * borrower record (ON CONFLICT email). If they already have a login they are simply
+ * pointed to sign in.
+ *
+ * `appId` IS OPTIONAL (owner-directed 2026-08-07: "You need to be able to invite the
+ * Borrower, even if it doesn't have any active loans in our system. Just invite this
+ * Borrower so he should be able to create an active loan."). With a file, the invite
+ * names the property and lands them on it. WITHOUT one, it is a plain portal
+ * invitation — which is all the invite ever needed, because `invite_tokens` is keyed
+ * on the email and never on an application; `POST /invite-to-portal` has proved that
+ * since #102. On arrival the borrower starts their own application
+ * (`POST /api/borrower/applications`), which is exactly what the owner asked for.
+ */
+async function inviteBorrowerToFile({ appId = null, borrowerId, email, firstName, req }) {
   const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
   let acceptUrl, token = null;
   if (hasAuth.rows[0]) {
@@ -1422,9 +1439,13 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
       [C.sha256(token), email, req.actor.id]);
     acceptUrl = mail.link('/accept?token=' + token);
   }
-  const meta = await db.query(
-    `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
-            ys_loan_number FROM applications WHERE id=$1`, [appId]);
+  // No file → nothing to name, and no query to run. `rows[0]` is then undefined and
+  // the optional chains below already fall back to "your loan".
+  const meta = appId
+    ? await db.query(
+      `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
+              ys_loan_number FROM applications WHERE id=$1`, [appId])
+    : { rows: [] };
   // #150 — LO branding: the invite arrives FROM the inviting officer (display
   // name) and carries their full contact block, so the client knows exactly
   // who is inviting them — not just "the company."
@@ -1437,8 +1458,14 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     inviter: inv.full_name || null,
     officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
-  await audit(req, 'invite_borrower', 'application', appId, { email });
+    // With no file there is nothing to name, so the email must not promise one.
+    noFile: !appId,
+    // #68 reply reaches the team; #150 From = the officer. With no file there is no
+    // per-file address, so the provider layer's default Reply-To applies.
+  }, { replyTo: appId ? fileReplyTo(appId) : undefined, from: require('../lib/email').fromWithName(inv.full_name) });
+  // Audited against whichever thing this invitation was actually about, so the trail
+  // never points at an application id that does not exist.
+  await audit(req, 'invite_borrower', appId ? 'application' : 'borrower', appId || borrowerId, { email, noFile: !appId });
   // Record that it went out, on the PERSON (lib/portal-invite) — otherwise the
   // file can never say whether anyone has invited them, and the only safe move
   // is to send it again. Note this fires for the already-has-a-login case too:
@@ -2553,6 +2580,9 @@ async function loadFileForPricing(appId) {
 // completeness paths can never drift.
 const { sanitizeStaffOverrides, pricingOverridesEngaged, describeOverrides } = require('../lib/pricing-overrides');
 const pricingSettings = require('../lib/pricing-settings');
+// The ONE composer for every pricing / exception / registration email (owner-directed
+// 2026-08-07). Pure — it decides what these emails SHOW; it never computes a pricing number.
+const pricingEmail = require('../lib/email/pricing-email');
 function sanitizeOverrides(req, raw) {
   return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
 }
@@ -3114,6 +3144,41 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
+      /* THE STALE CLEAR IS THE LAST WORD ON THIS REGISTRATION — and it has to live
+         HERE, not inside persistProductRegistration (owner-reported 2026-08-07:
+         "even after you re-register, you sign off, and you upload your appraisal …
+         it still says the registration needs to be current. Deal economics has
+         changed … who changed the deal economics?").
+
+         ROOT CAUSE. `persistProductRegistration` already knows its own write-back
+         trips the db/071/072/466 economics trigger, and clears `stale` on the fresh
+         row — its comment says "do it LAST, after the experience sync, so nothing
+         re-flags it". It was not last. THIS ROUTE then writes more watched columns:
+         the four sticky `file_markup_*` values and the typed cash-out. The trigger
+         fires on the markup write and stamps `stale = true` on the very registration
+         that was created a few statements earlier (its UPDATE targets
+         `is_current AND NOT stale`, which the clear had just made true). Reproduced
+         on a real database: a fresh registration goes stale on the next statement,
+         with the GENERIC reason — "deal economics changed" and nothing named,
+         because the markups are not in the trigger's itemized list (db/486 fixes
+         that half). So `esignSendGate` refused the term sheet on
+         `registration_stale` forever: re-registering repeated the sequence, and the
+         trigger's second UPDATE re-opened Products & Pricing, so signing off could
+         not settle it either. Both halves of the report, one cause.
+
+         A MARKUP IS NOT NEWS TO THE REGISTRATION THAT WAS PRICED ON IT. The trigger
+         is right to watch these columns — a markup change after the fact genuinely
+         invalidates a registration — and it stays untouched. What is wrong is a
+         registration marking ITSELF stale over the values it was just priced with.
+
+         Guarded on `AND stale` so it can only ever undo a flag raised inside this
+         transaction, and placed immediately before COMMIT so any post-register file
+         write added later is covered by construction rather than by remembering.
+         THE RULE: anything in this route that writes a watched column on
+         `applications` belongs ABOVE this line. */
+      await client.query(
+        `UPDATE product_registrations SET stale=false, stale_reason=NULL
+          WHERE id=$1 AND stale`, [reg.id]);
       await client.query('COMMIT');
     } catch (e) {
       /* RELEASE THE CONNECTION ON THE WAY OUT — the `finally` below belongs to
@@ -3200,28 +3265,48 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         } catch (_) { /* the escalation is the required record; the register row is additive */ }
       }
       try {
-        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const szn0 = quote.sizing || {};
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
           : overrideOnly ? `${pricing.PROGRAM_LABEL[program]} — pricing override`
           : `${pricing.PROGRAM_LABEL[program]} — manual review`;
+        // The approval email is now BUILT, not written as a sentence (owner-directed 2026-08-07:
+        // *"this email is so [confusing] I can't even see what they want from me … What exactly
+        // is the exception request for?"*). `pricingEmail.approvalRequestEmail` supplies the
+        // headline, the money band, the CHANGE LEDGER (one row per moved value, the company
+        // default struck through) and the deal facts. The file identity still rides in the
+        // enrichment `meta` block, so nothing about WHICH file is lost.
+        //
+        // The two run-on `meta` rows that used to restate the whole override list and the whole
+        // manual-review reason list are GONE: the ledger says both, once, legibly. Repeating them
+        // was the "said it twice, explained it neither time" half of the complaint.
         const ectx = await notify.fileContext(appId, [
           { label: 'Requested product', value: productDesc },
-          { label: 'Loan amount', value: dollars },
-          isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
-          manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
-          overrideLines.length ? { label: 'Changed from the defaults', value: overrideLines.join(' · ') } : null,
-        ].filter(Boolean));
-        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
-        const why = isManual
-          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.${changed}`
-          : overrideOnly
-            ? `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} was priced OFF the company defaults and is waiting for approval in the Escalations box.${changed} The borrower is NOT sent terms, and no term sheet can be sent, until it's approved. Loan amount ${dollars}.`
-            : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.${changed}`;
+        ]);
+        const built = pricingEmail.approvalRequestEmail({
+          kind: escKind,
+          deal: {
+            loanAmount: total,
+            noteRate: quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : null,
+            programLabel: pricing.PROGRAM_LABEL[program],
+            productLabel: productDesc,
+            termMonths: inputs && inputs.term,
+            purchasePrice: szn0.purchasePrice != null ? szn0.purchasePrice : (inputs && inputs.purchasePrice),
+            asIsValue: inputs && inputs.asIsValue,
+            arv: inputs && inputs.arv,
+            rehabBudget: inputs && inputs.rehabBudget,
+            initialAdvance: szn0.initial,
+            rehabHoldback: szn0.rehabHoldback != null ? szn0.rehabHoldback : szn0.holdback,
+            cashToClose: quote.cashToClose,
+            liquidity: quote.liquidity ?? quote.liquidityRequired,
+            downPayment: szn0.downPayment,
+            acqLtvPct: szn0.acqLtvPct, arvPct: szn0.arvPct, ltcPct: szn0.ltcPct,
+            assetMonths: isManual ? assetMonths : null,
+          },
+          overrideChanges, overrideLines, manualReasons,
+        });
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: isManual ? 'Manual product needs approval'
-            : overrideOnly ? 'Pricing override needs approval' : 'Registration needs approval',
-          body: why,
+          ...built,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
         });
@@ -3283,16 +3368,42 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const dollars = '$' + Math.round(total).toLocaleString('en-US');
       const money2 = (n) => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
       const szn = quote.sizing || {};
-      const ctx = await notify.fileContext(appId, [
-        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
-        { label: 'Total loan', value: `${dollars} @ ${pctRate}` },
-        szn.downPayment != null ? { label: 'Down payment', value: money2(szn.downPayment) } : null,
-        quote.cashToClose != null ? { label: 'Cash to close', value: money2(quote.cashToClose) } : null,
-        (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money2(quote.liquidity ?? quote.liquidityRequired) } : null,
-      ].filter(Boolean));
+      // The numbers ARE the message on this one, so they get the money band and a deal table
+      // instead of the old single comma-run under a plain-text "Product registered" headline
+      // (owner-directed 2026-08-07). The file identity keeps riding in the enrichment meta, and
+      // the deal rows that used to be hand-listed here are now built once by the shared composer,
+      // so the register notice, the approval request and the decision email all describe a deal
+      // the same way. `body` is kept as the ONE-LINE summary the in-app notification row shows —
+      // that row has no room for a table, and it is what the notification centre lists.
+      const ctx = await notify.fileContext(appId, []);
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
+      const reg0 = pricingEmail.productRegisteredEmail({
+        needsApproval: needsEscalation,
+        statusNote: quote.status !== 'ELIGIBLE'
+          ? `The engine returned ${String(quote.status).toLowerCase()} on this scenario.` : null,
+        deal: {
+          loanAmount: total,
+          noteRate: quote.noteRate != null ? pctRate : null,
+          programLabel: [quote.programLabel, quote.productLabel].filter(Boolean).join(' — ') || pricing.PROGRAM_LABEL[program],
+          termMonths: inputs && inputs.term,
+          purchasePrice: szn.purchasePrice != null ? szn.purchasePrice : (inputs && inputs.purchasePrice),
+          asIsValue: inputs && inputs.asIsValue,
+          arv: inputs && inputs.arv,
+          rehabBudget: inputs && inputs.rehabBudget,
+          initialAdvance: szn.initial,
+          rehabHoldback: szn.rehabHoldback != null ? szn.rehabHoldback : szn.holdback,
+          cashToClose: quote.cashToClose,
+          liquidity: quote.liquidity ?? quote.liquidityRequired,
+          downPayment: szn.downPayment,
+          acqLtvPct: szn.acqLtvPct, arvPct: szn.arvPct, ltcPct: szn.ltcPct,
+        },
+      });
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'product_registered', title: 'Product registered',   // file identity (loan# · borrower · property) rides in the subject tag — never in the title (no double loan number)
+          type: 'product_registered',
+          ...reg0,
+          // file identity (loan# · borrower · property) rides in the subject tag — never in the
+          // title (no double loan number). `body` stays the in-app one-liner; the email's own
+          // opening sentence is the composer's `intro`.
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
@@ -5184,6 +5295,7 @@ router.get('/applications/:id/activity', async (req, res) => {
 // prior history is backdated in by the boot backfill. Staff-only, file-scoped.
 // ════════════════════════════════════════════════════════════════════════════
 
+
 // Shape one email_messages row for the client (used by the file view + mailbox).
 function emailRowShape(r) {
   return {
@@ -5475,6 +5587,18 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
     const out = emailRowShape({ ...row, has_body: true });
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     // Historical/lightweight outbound row → re-render the branded body on demand.
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
@@ -5600,6 +5724,22 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        /* KEEP EVERYONE THE OTHER SIDE LOOPED IN (owner-directed 2026-08-07, extremely
+           important). `lastRecipients` reads the messages WE sent, so the assistant
+           counsel — or the settlement agent, or the realtor — that the attorney CC'd on
+           their own reply was never a candidate, and every reply PILOT sent quietly
+           removed them from the conversation. Their address WAS captured on the inbound
+           message; nothing read it. Scoped to THIS chain's thread_key so two closings on
+           one file can never cross, and the borrower + any insurance contact are carved
+           out because both are hard rules of this desk that a vendor's Cc must not
+           rewrite (closing-prep.neverLoopIn). */
+        const closingParties = await threadParticipants.replyRecipients({
+          applicationId: appId,
+          msgTypes: ['closing_message', 'attorney_message'],
+          threadKey: thread.thread_key || undefined,
+          to: last.to, cc: last.cc,
+          never: await closingPrep.neverLoopIn(appId),
+        });
         // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
         // (write to closing counsel on this chain) must agree, and a chain row is NOT
         // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
@@ -5614,7 +5754,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const senderName = meRow.full_name || meRow.email || '';
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
-          to: last.to, cc: last.cc, fromName: senderName, staffId: req.actor.id,
+          to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
           msgType: 'closing_followup',
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
@@ -5658,7 +5798,21 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-      const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
+         important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
+         the officer and processor — the vendor's own assistant, whom they CC'd on their
+         reply, is not in that data at all, so every reply removed them.
+         The BORROWER is deliberately NOT added this way: whether the borrower is on an
+         order is governed by the owner-directed ccBorrower setting (off by default),
+         and a vendor's one-off Cc must not turn that into policy. */
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      const { to, cc } = parties;
+      const { replyTo } = base;
       // Reply on the SAME vendor chain the order was placed on (owner-directed
       // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
       const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
@@ -6240,7 +6394,16 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
     const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    // Same rule as the reply door above: a follow-up must not drop the party the vendor
+    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    const fuParties = await threadParticipants.replyRecipients({
+      applicationId: appId, msgTypes: [`${kind}_message`],
+      to: fuBase.to, cc: fuBase.cc,
+      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+    });
+    const { to, cc } = fuParties;
+    const { replyTo } = fuBase;
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     // THE PROVIDER'S ANSWER DECIDES (orders.sendOrderMail). A bare send recorded a
     // follow-up the vendor never received whenever email was off or the API key had
@@ -7161,17 +7324,67 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
          ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled', updated_at=now()`,
         [appId]);
     }
+    /* TELL THE ATTORNEY (owner-directed 2026-08-07: *"which should send them a cancellation email
+       to disregard this file, and then it should stop sending them the updates"*).
+
+       The SILENCING half already worked — `attorneyEngaged` reads the 'cancelled' status above as
+       an explicit stand-down, so `mayAnnounce` refuses the executed term sheet, the closing-date
+       updates and the clear-to-close from this moment on. What was missing is that nobody told
+       outside counsel, who were left holding our package and a term sheet.
+
+       It rides the SAME chain, so it lands in the conversation it cancels. Ordered AFTER the
+       status write on purpose: the stand-down is the thing that must be true, and a provider
+       hiccup must never leave a file that looks cancelled on the desk while the automatic updates
+       keep going out. Best-effort for the same reason — the response reports whether it went, so
+       the desk can say "cancelled, but we could not reach them" rather than implying it did. */
+    let notified = { ok: false, reason: 'not_engaged' };
+    if (engaged) {
+      try {
+        const data = await closingPrep.getClosingPrepData(appId);
+        const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
+        const base = data ? closingPrep.recipientsFor(data, {}) : { to: [], cc: [] };
+        const to = last.to.length ? last.to : base.to;
+        const cc = last.cc.length ? last.cc : base.cc;
+        const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+        const senderName = meRow.full_name || meRow.email || '';
+        const reason = String((req.body && req.body.reason) || '').trim().slice(0, 2000);
+        if (data && to.length) {
+          notified = await closingThread.sendOnThread({
+            applicationId: appId, eventKind: 'cancel',
+            // NULL, so a second cancellation can genuinely be sent. Somebody who
+            // cancels twice means it — and the alternative is a silent no-op on the
+            // one message whose whole job is to be received.
+            dedupeKey: null,
+            to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_cancelled',
+            build: ({ address }) => closingPrep.buildCancelEmail(data, { reason, address, senderName }),
+          });
+        } else {
+          notified = { ok: false, reason: to.length ? 'no_file_data' : 'no_recipients' };
+        }
+      } catch (e) {
+        notified = { ok: false, reason: 'send_failed' };
+        console.error('[closing-prep] cancellation email', appId, e && e.message);
+      }
+    }
+
     // Same history the other two orders keep.
     await orderTracking.recordEvent({
       applicationId: appId, orderType: 'attorney', kind: 'cancelled', actorId: req.actor.id,
+      detail: { notified: !!notified.ok, reason: notified.ok ? null : notified.reason },
     });
-    await audit(req, 'closing_prep_cancelled', 'application', appId, {});
+    await audit(req, 'closing_prep_cancelled', 'application', appId, { notified: !!notified.ok });
     // NOT `upd.rows[0].status`. The recovery branch above runs precisely when that
     // row does not exist, so reading through it threw a TypeError into the catch
     // and answered 500 — on the one path that exists to make Cancel reachable when
     // the row was lost, which is the moment it matters most. The status is known
     // either way: this branch only ever writes 'cancelled'.
-    res.json({ ok: true, status: 'cancelled' });
+    res.json({
+      ok: true, status: 'cancelled',
+      // The desk says which of the two things happened, so nobody assumes counsel was told when
+      // they were not.
+      notified: !!notified.ok,
+      notifiedReason: notified.ok ? null : notified.reason,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -7438,6 +7651,18 @@ router.get('/emails/:msgId', async (req, res) => {
     const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
     out.body_html = row.body_html || null;
     out.body_text = row.body_text || null;
+    // ONLY THEIR REPLY, WITH THE HISTORY ONE CONTROL AWAY (owner-reported
+    // 2026-08-07: "in the chat within the system, we should only see their reply.
+    // We shouldn't see all the old messages"). Computed AT READ TIME, so every
+    // message already in the store reads right on the next page load — no migration
+    // and nothing to back-fill — and the full stored body is still returned above
+    // for the audit trail and for the day a boundary pattern proves wrong.
+    Object.assign(out, emailLog.splitStoredBody(row));
+    /* KEEP THIS SPLIT ADDITIVE. It returns `replyHtml`/`replyText`/`quotedText` and leaves
+       `body_html`/`body_text` as stored. A second implementation once rewrote `body_html` to
+       the reply half here, in place, and the two ran back to back — which made the reader's
+       "show the original" control open an already-trimmed body, putting the history out of
+       reach of the one button meant to reach it. Do not re-add an in-place rewrite. */
     if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
       const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
       if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
@@ -9182,14 +9407,37 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const app = (await db.query(
       `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
-    // A borrower with NO active file has nothing to be invited TO. Rather than a
-    // dead end, the profile offers to START an application for them and invite them
-    // to fill it in — a `code` the client keys on to reach the invite-only new-file
-    // path (owner-directed 2026-08-04, #23). Passing borrowerId there links the new
-    // file to THIS exact profile, so their records carry over.
-    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to', code: 'no_active_file' });
-    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
-    res.json({ ok: true, ...out });
+    /* A BORROWER WITH NO FILE IS STILL INVITABLE (owner-reported 2026-08-07: "we have
+       in our Borrower profiles all the borrowers, even though they didn't take a loan
+       on our system because it was not an RTL loan. If somebody takes a DSCR loan, it
+       takes the information from ClickUp and builds them up a profile. When we tried
+       to invite the Borrower into our system to be able to apply for an RTL loan, it
+       comes up that there are no active loans that you can invite this Borrower to.
+       You need to be able to invite the Borrower, even if it doesn't have any active
+       loans in our system. Just invite this Borrower so he should be able to create an
+       active loan.").
+
+       ROOT CAUSE, and it is the repo's own documented class. This route used to refuse
+       with a 400 + `code:'no_active_file'`, and the 2026-08-04 fix for it was written
+       in ONE SCREEN'S CLICK HANDLER (StaffBorrowerDetail) instead of here. There are
+       FOUR buttons that call this endpoint — the borrowers LIST, the shared
+       BorrowerProfilePanel (mounted on the CRM profile AND on every loan file), the
+       co-borrower invite, and that one detail screen — so three of them still
+       dead-ended, including the two a staffer is most likely to press. A per-screen
+       workaround for a server refusal is a workaround every future screen must
+       remember; the server is the only place it can be fixed once.
+
+       So the refusal is GONE rather than handled: with no file this sends a plain
+       portal invitation. `invite_tokens` is keyed on the EMAIL and never on an
+       application (`POST /invite-to-portal` has relied on that since #102), so nothing
+       had to be invented. And it deliberately does NOT manufacture an empty
+       application the way the old client fallback did — that minted a loan number, a
+       checklist and a ClickUp task for a deal nobody has, to satisfy a check that
+       should not have existed. The owner's words are "so he should be able to create
+       an active loan": the borrower starts it themselves from the portal. */
+    const out = await inviteBorrowerToFile({
+      appId: app ? app.id : null, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, noFile: !app, ...out });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -10003,9 +10251,14 @@ router.put('/track-records/:id', async (req, res) => {
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
   // Same stamp as the create door: whoever last put these figures on the line is
-  // recorded, so "who typed this?" is answerable on an edit and not only on a
-  // create. (No status reset — see trackRecordEnteredCols: a staffer may
-  // deliberately correct a VERIFIED line.)
+  // recorded, so "who typed this?" is answerable on an edit and not only on a create.
+  //
+  // AND IT NOW RESETS THE REVIEW (2026-08-07). A staffer may still correct a VERIFIED
+  // line — that has not changed — but the correction lands PENDING, because the
+  // reviewer confirmed the OLD figures and nobody has looked at the new ones. The
+  // owner's rule: "Every single detail of a track record you need to click on verify."
+  // db/485's trigger enforces it for every writer including the imports; this door
+  // states it too so the intent is readable where the edit happens.
   const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('staff') };
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
   if (b.llcId !== undefined) {
@@ -12763,9 +13016,38 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
     }
     // Notify the recipient it's in their Workflow (best-effort — the hand-off
     // already committed, so a notify hiccup must never fail the submit).
+    // THE LOAN OFFICER IS LOOPED IN, VISIBLY (owner-directed 2026-08-07: *"an email like this
+    // should have more information for the processor, and it should also loop in the loan
+    // officer"*). A VISIBLE Cc, not a Bcc — the point is that the person picking the file up and
+    // the officer who owns it can reply to each other on one thread; a Bcc splits that into two
+    // conversations neither of them knows about. The officer is skipped when THEY are the
+    // recipient (nobody should be Cc'd on their own message), and the whole lookup is
+    // best-effort: a hand-off notification must never fail for want of a Cc address.
+    let loCc = null;
+    let noteBuyerMeta = [];
+    try {
+      const lo = (await db.query(
+        `SELECT s.id, s.email, a.lender FROM applications a
+           LEFT JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active = true
+          WHERE a.id = $1`, [appId])).rows[0];
+      if (lo && lo.email && String(lo.id) !== String(toStaffId)) loCc = [lo.email];
+      // THE NOTE BUYER IS ATTACHED TO *THIS* EMAIL, NOT TO THE SHARED BLOCK (owner-directed
+      // 2026-08-07: *"it should say in the email who the loan officer on the file is and who the
+      // note buyer on the file is"*). It was first added to `notify.fileContext`'s staff meta,
+      // which every staff email on a file inherits — and that broke the investor draw reminders,
+      // which speak of "the investor" on purpose so the desk can forward one without disclosing
+      // who funds the loan. The hand-off is the email the owner named, so the name rides here as
+      // `extraMeta` and nowhere else. STAFF-ONLY by construction: `notifyStaff` never renders
+      // `borrowerMeta`, and this row is not on it.
+      if (lo && lo.lender) noteBuyerMeta = [{ label: 'Note buyer', value: String(lo.lender) }];
+    } catch (_) { /* the hand-off still goes without the officer copied */ }
     await notify.notifyStaff(toStaffId, {
       type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
       body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
+      // The loan officer, the processor and the deal's numbers ride in the shared enrichment `meta`
+      // block (see notify.fileContext); only the note buyer is hand-attached, for the reason above.
+      extraMeta: noteBuyerMeta,
+      cc: loCc || undefined,
       applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
     }).catch(() => {});
     await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
@@ -13955,6 +14237,72 @@ router.get('/leads', async (req, res) => {
          ${where}
         ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
                  l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ── EMAIL A TERM SHEET TO A BORROWER (owner-directed 2026-08-07) ───────────────
+   The owner: "Any term sheet generator from the staff's log-in, whenever he finishes
+   building up the term sheet, should have an option to deliver to a borrower via
+   email, with the loan officer's branding, all the terms nicely together with an
+   attached initial term sheet."
+
+   OPEN TO EVERY STAFF ROLE, deliberately: the officer building the sheet is the person
+   who sends it, and the 2026-07-27 rule already opened the studio's whole admin zone
+   to every role because gating it killed the feature for the people who use it. The
+   control is that a manual / off-default scenario carries its APPROVAL through to the
+   registration (lib/term-sheet-offer), exactly as pressing Register on a file does.
+
+   `officerId` is NOT taken from the body — the sender is the officer. Sending on
+   somebody else's behalf would put their name and Reply-To on an email they never saw,
+   which is the class the 2026-08-07 term-sheet attribution work exists to prevent. */
+router.post('/term-sheet-offers', async (req, res) => {
+  const b = req.body || {};
+  const offers = require('../lib/term-sheet-offer');
+  try {
+    const problem = offers.offerProblem({
+      borrowerEmail: b.borrowerEmail, program: b.program, draft: b.draft });
+    if (problem) return res.status(400).json({ error: problem });
+    const created = await offers.createOffer({
+      officerId: req.actor.id, createdBy: req.actor.id,
+      borrowerEmail: b.borrowerEmail, borrowerName: b.borrowerName, borrowerPhone: b.borrowerPhone,
+      draft: b.draft, program: b.program, overrides: b.overrides, termOptions: b.termOptions,
+      isManual: !!b.isManual, quote: b.quote,
+      pdfBase64: b.pdfBase64, pdfFilename: b.pdfFilename,
+    });
+    if (!created.ok) return res.status(400).json({ error: created.problem || 'Could not create the offer.' });
+    const officer = (await db.query(
+      `SELECT id, full_name, email, phone, nmls, title FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || null;
+    // The SEND is separate from the record on purpose: the offer row already exists,
+    // so a provider hiccup is a re-send rather than a rebuilt term sheet.
+    const sent = await offers.sendOfferEmail(created.offer, created.token, { officer, quote: b.quote });
+    await audit(req, 'term_sheet_offer_sent', 'borrower', null, {
+      offerId: created.offer.id, email: created.offer.borrower_email,
+      program: created.offer.program, isManual: !!created.offer.is_manual,
+      attached: sent.attached || 0, ok: !!sent.ok });
+    if (!sent.ok) {
+      return res.status(502).json({ error: 'The terms were saved but the email could not be sent: ' + (sent.problem || 'unknown'),
+        offerId: created.offer.id });
+    }
+    res.json({ ok: true, offerId: created.offer.id, to: created.offer.borrower_email,
+      attached: sent.attached || 0, expiresAt: created.offer.expires_at, skipped: !!sent.skipped });
+  } catch (e) {
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : e.message });
+  }
+});
+
+/* What this officer has sent, and where each one stands. Scoped to the SENDER — an
+   offer carries a borrower's email and their terms, so it is not a shared list. */
+router.get('/term-sheet-offers', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT o.id, o.borrower_email, o.borrower_name, o.program, o.is_manual, o.property_address,
+              o.sent_at, o.send_error, o.opened_at, o.accepted_at, o.expires_at, o.revoked_at,
+              o.application_id, o.register_result, a.ys_loan_number
+         FROM term_sheet_offers o
+         LEFT JOIN applications a ON a.id = o.application_id
+        WHERE o.officer_id = $1
+        ORDER BY o.created_at DESC LIMIT 100`, [req.actor.id]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

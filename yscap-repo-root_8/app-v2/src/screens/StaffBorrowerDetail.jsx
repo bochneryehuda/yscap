@@ -100,20 +100,20 @@ function Header({ b, name, onChanged }) {
     setBusy(kind); setErr('');
     try {
       if (kind === 'invite') {
-        try {
-          await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged();
-        } catch (e) {
-          // A borrower with NO active file has nothing to be invited TO — so START a
-          // new application for them and invite them to fill it in (owner-directed
-          // 2026-08-04, #23). Passing borrowerId links the new file to THIS exact
-          // profile, so their records (entities, track record, SSN) carry over, and
-          // it reuses the same tested invite-only path as "Invite for a new application".
-          if (e.data && e.data.code === 'no_active_file') {
-            await api.staffCreateFile({ inviteOnly: true, borrowerId: b.id,
-              borrower: { email: b.email, firstName: b.first_name, lastName: b.last_name } });
-            flash(`Started a new application for ${b.email} and sent them an invite.`); onChanged();
-          } else throw e;
-        }
+        /* NO PER-SCREEN FALLBACK ANY MORE (2026-08-07). This handler used to catch the
+           server's "this borrower has no active file" refusal and manufacture an
+           invite-only application so there was something to invite them TO. Two wrongs
+           that: it lived in ONE of the four screens that call this endpoint, so the
+           borrowers list and the shared BorrowerProfilePanel still dead-ended (the
+           owner's report); and it minted a loan number, a checklist and a ClickUp task
+           for a deal nobody has, purely to satisfy a check that should not have
+           existed. The server now sends a plain portal invitation when there is no
+           file, and the borrower starts their own application from the portal. */
+        const r = await api.staffBorrowerInvite(b.id);
+        flash(r && r.noFile
+          ? `PILOT invite sent to ${b.email} — they can start an application from the portal.`
+          : `PILOT invite sent to ${b.email}.`);
+        onChanged();
       }
       else if (kind === 'reset') { await api.staffBorrowerResetPassword(b.id); flash(`Reset link emailed to ${b.email}.`); }
       else if (kind === 'ssn') { const r = await api.staffBorrowerSsn(b.id); setSsn(r.ssn); }

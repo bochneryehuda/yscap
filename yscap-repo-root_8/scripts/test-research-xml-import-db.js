@@ -518,8 +518,24 @@ const propByAddress = async (street) => (await db.query(
       'the imports are listed');
     ok(list.body.rows.some((x) => x.filename === 'poplar.xml'),
       'including the one just uploaded');
-    ok(list.body.rows.some((x) => x.status === 'error'),
+    /* ASK THE ROUTE FOR THE FAILURES, rather than scanning the newest 100 rows for one.
+       The header row is keyed ON CONFLICT (sha256) and 'nonsense' hashes the same every
+       run, so the SECOND time this suite runs the bad file's row is UPDATED in place —
+       its status returns to 'error' but its `created_at` stays at the first run. The
+       list is ordered created_at DESC, so on a long-lived database (CI is fresh; a
+       developer's is not) that row sits outside the window and the assertion failed
+       while the feature worked. Verified: the row is present with status='error', and
+       this passes on pristine main where the unfiltered form did not. */
+    const errs = await call(server, 'GET', '/api/research/imports?status=error&limit=100', token);
+    ok(errs.status === 200 && Array.isArray(errs.body.rows) && errs.body.rows.length > 0
+      && errs.body.rows.every((x) => x.status === 'error'),
       'and the failures are listed too, not hidden');
+    /* Each failure CARRIES ITS REASON — that is the requirement, so a red row is
+       actionable. Deliberately not matched against the parser's exact wording ("not a
+       MISMO VALUATION_RESPONSE / REPORT"), which is a vendor-shaped string this test has
+       no business pinning. */
+    ok(errs.body.rows.every((x) => x.error && String(x.error).trim().length > 0),
+      '…each with the reason it could not be read, so a red row is actionable');
 
     console.log(`test-research-xml-import-db: ${pass} passed, ${fail} failed`);
   } catch (e) {

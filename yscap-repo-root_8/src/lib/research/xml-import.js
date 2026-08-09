@@ -32,7 +32,8 @@
  *     (The reverse case, where the file copy arrives later, is handled on the other
  *     side by `ingest.retireDuplicateImports`.)
  *
- *  4. It never guesses. A file that is not a readable MISMO 2.6 appraisal is
+ *  4. It never guesses. A file that is not a readable appraisal — UAD 2.6 (MISMO
+ *     2.6) or UAD 3.6 (MISMO 3.6), both read by the same `extract()` — is
  *     recorded with the parser's own reason, in words, and nothing is written.
  */
 const crypto = require('crypto');

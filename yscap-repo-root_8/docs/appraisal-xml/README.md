@@ -27,6 +27,8 @@ prototype parser and `per-file-extraction-proof.md` cover all 33.)
 | `field-reliability.md` | Every field + how often it's present across all 33 (ALWAYS/USUALLY/SOMETIMES/RARELY) + borrower/LLC matching rule + error-handling principles. |
 | `placement-variability.md` | The "can't use one-size-fits-all" map: which fields are ONE-WAY (safe) vs NEEDS-FALLBACK (same field, different spot/format — error-prone) vs SOMETIMES-MISSING. |
 | `per-file-extraction-proof.md` | The prototype parser's output for **every one of the 33 files** — evidence placement was verified per file. |
+| `uad-3.6-research.md` | **UAD 3.6 / the redesigned URAR** — industry research, the Fannie/Freddie appendix set to download (A-1 … G-1), what changed, what PILOT built, what is still unverified, and how to finish the map against a real report. |
+| `uad-3.6-field-map.md` | The **UAD 3.6 → PILOT field map** — the 2.6→3.6 shape changes, the candidate data points per canonical field, the As-Is/ARV ladder, and the derived form type. |
 | `as-is-value-sources.md` | **Which XMLs give the As-Is and which cannot** (measured: 64% narrative / 21% comp-estimate-only / 15% absent), the decoy attributes, and the OCR + AI ladder + write rule that takes over when the data file is silent. |
 | `prototype/` | Runnable prototype scripts (`strip.py`, `extract2.py`, `asis_miner.py`, `value_engine.py`). |
 

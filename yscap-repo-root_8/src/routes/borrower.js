@@ -28,6 +28,7 @@ const numberBounds = require('../lib/number-bounds');     // ONE definition of e
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
+const stickyOverrides = require('../lib/pricing-sticky');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
@@ -1009,6 +1010,13 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  // The Silver ladder's value-side rung. Same class as targetLTC — a voluntary
+  // REDUCTION the studio lets a borrower pick, and one the engine can only ever
+  // apply as a MIN against the cap, so it can never enlarge a loan. It is clamped
+  // to a real ratio: a tampered client sending 5 (i.e. 500%) would simply be
+  // inert, but bounding it keeps a nonsense value out of the persisted inputs.
+  const targetARLTV = Number(raw && raw.targetARLTV);
+  if (isFinite(targetARLTV) && targetARLTV > 0 && targetARLTV <= 1) out.targetARLTV = targetARLTV;
   // An explicit blank clears the reserve: pass '' through so buildInputs resolves
   // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
   // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
@@ -1051,7 +1059,11 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
-    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // The panel's live quote is what the borrower READS, so it is priced with the
+    // file's own carried values too — otherwise the screen advertises a loan that
+    // registering cannot produce (owner-directed 2026-08-07).
+    const effPanel = await stickyOverrides.effectiveOverrides(f.app.id, {}, db);
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effPanel)); quote.experience = f.exp; } catch (_) {} }
     // If the borrower's registration is a manual-review exception waiting on a
     // super-admin, surface that state so the studio shows "registered but NOT
     // confirmed — waiting for approval" on reload (not just the transient submit
@@ -1082,7 +1094,10 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    // The SAME effective overrides the register will use — a what-if that ignores
+    // what the file carries would quote a loan the register cannot produce.
+    const effQ = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effQ));
     res.json({ ...out, experience: f.exp });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1128,7 +1143,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
     // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
-    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* A STAFF-SET LOAN AMOUNT IS STICKY ACROSS A BORROWER RE-REGISTER (owner-directed
+       2026-08-06 typed loan amount). `targetLoan` lives in the studio's ADMIN zone,
+       which is removed from the DOM for a borrower — so their studio cannot show it,
+       cannot restore it, and their allowlist rightly refuses to accept one from the
+       client. The consequence, without this, is a silent way to UNDO an officer's
+       ceiling: staff register a file at a typed $500,000, the borrower opens their
+       own Products & Pricing, sees the deal at its maximum, presses Register, and the
+       file re-registers at the full amount — a bigger loan at a worse rate, with no
+       approval, no escalation and no record that a ceiling was ever removed.
+       So it is carried forward from the file's own last registration, exactly as the
+       per-file markup is (pricing.js) and for exactly the same stated reason: a
+       borrower can never reprice away the basis the file was structured at. STAFF
+       still change it freely — they can see the box, and their own door never runs
+       this. Best-effort: an unreadable prior registration must never block a
+       borrower's register, and it can only ever make the loan SMALLER. */
+    const effReg = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const inputs = pricing.buildInputs(f.app, f.exp, effReg);
     /* A refinance is sized on the as-is value, so with none on file there is no
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a
@@ -2954,10 +2985,28 @@ function trackRecordCols(b) {
    `verification_status = 'pending'` next to `is_verified = true`, which every
    count reads as verified and every screen reads as pending. Staff stamp who and
    when; a new staff-entered line is pending by the column default anyway. */
+/**
+ * The "somebody entered this" stamp every track-record create carries.
+ *
+ * `verification_status` IS SET FOR EVERY KIND (2026-08-07). It used to read
+ * `if (kind === 'borrower')`, so the STAFF door got no status at all — while the comment
+ * at that call site stated it "lands pending review exactly as the borrower's does".
+ * A helper that takes the actor as an argument and then behaves differently per actor is
+ * not a shared rule; it is two rules sharing a function, and this is exactly the gap the
+ * owner reported ("staff are entering track records, since it's coming up as verified").
+ *
+ * `is_verified` is stated explicitly for the same reason: relying on the column default
+ * is right on a plain INSERT and WRONG on the create doors' `ON CONFLICT … DO UPDATE`
+ * branch, where a retried save lands on an existing — possibly already verified — row.
+ * db/485's trigger is the belt behind all of it, for every writer including the imports.
+ */
 function trackRecordEnteredCols(kind) {
-  const cols = { entered_by_kind: kind, entered_at: new Date().toISOString() };
-  if (kind === 'borrower') cols.verification_status = 'pending';
-  return cols;
+  return {
+    entered_by_kind: kind,
+    entered_at: new Date().toISOString(),
+    verification_status: 'pending',
+    is_verified: false,
+  };
 }
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};

@@ -517,6 +517,31 @@ module.exports = {
   // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
   trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
 
+  // ---- Elementix (recorded deeds / mortgages, reached over MCP). READ-ONLY. ----
+  // No API key is bought: the endpoint uses the standard MCP OAuth flow, so PILOT
+  // signs in on the seat the owner already pays for, approved once in a browser.
+  // Auth lives in src/elementix/oauth.js; the guarded client is src/elementix/client.js.
+  // Capability map + the county-by-county coverage caveats: docs/ELEMENTIX-RESEARCH.md.
+  elementix: {
+    url:          (process.env.ELEMENTIX_URL || 'https://app.elementix.com/api/mcp').replace(/\/+$/, ''),
+    enabled:      process.env.ELEMENTIX_ENABLED === '1',   // master switch (default off)
+    dryrun:       process.env.ELEMENTIX_DRYRUN === '1',    // log the intended call, send nothing
+    // Only needed if Elementix declines self-registration and hands us a client id
+    // instead. Render env ONLY, never committed.
+    clientId:     process.env.ELEMENTIX_CLIENT_ID || null,
+    clientSecret: process.env.ELEMENTIX_CLIENT_SECRET || null,
+    // Escape hatch for when the endpoint publishes no discoverable metadata.
+    authServer:   process.env.ELEMENTIX_AUTH_SERVER || null,
+    // At-rest key for the stored tokens; falls back to the SSN key. Changing it
+    // does not lose anything dangerous — somebody re-approves once.
+    tokenKey:     process.env.ELEMENTIX_TOKEN_KEY || null,
+    // Self-cap well under the platform ceiling of 1,000 requests/hour, which is
+    // shared by the WHOLE organization across every connected client — every
+    // officer's session and every background job draw from the same bucket.
+    maxPerHour:   parseInt(process.env.ELEMENTIX_MAX_PER_HOUR || '400', 10),
+    maxPerSec:    parseInt(process.env.ELEMENTIX_MAX_PER_SEC || '3', 10),
+  },
+
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
   sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
   // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
@@ -977,4 +1002,64 @@ module.exports = {
       jobLeaseSeconds:   Math.max(30, parseInt(process.env.UW_JOB_LEASE_SECONDS || '300', 10) || 300),
     };
   })(),
+
+  // --- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ---
+  // The outbound appraisal-ordering integration: place the order directly with the
+  // AMC, track its lifecycle, message the AMC back and forth, request revisions /
+  // ROV reconsiderations, push + pull documents, and pull the finished report back
+  // into the file. It talks to CoreLogic's Digital Gateway (CDG), a synchronous
+  // "pull" gateway in front of AppraisalScope — WE always initiate, and it never
+  // pushes to us, so status / comments / revisions / documents are all polled.
+  //
+  // Modeled on the Sitewire draw integration. Staged rollout, ALL default OFF:
+  //   AMC_ENABLED          master switch — the lookups cache + the poll worker (reads)
+  //   AMC_OUTBOUND_ENABLED separate gate — actually place / message / upload (WRITES)
+  //   AMC_DRYRUN           build + log the exact request body, send nothing
+  // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
+  // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
+  // id/password, the ServiceProviderSubDomain, the DigitalGatewayLenderIdentifier
+  // (a CoreLogic reporting id), and the sourceClientIdentifier. Nothing talks to the
+  // AMC until AMC_ENABLED=1 and these are set.
+  amc: {
+    enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
+    outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:         process.env.AMC_DRYRUN === '1',             // build + log, send nothing
+
+    // ---- endpoints (UAT vs PROD). CoreLogic assigns these; overridable so an env
+    // flip needs no redeploy. Defaults are the documented UAT hosts. ----
+    // OAuth2 token endpoint (client_credentials grant).
+    oauthUrl:  (process.env.AMC_OAUTH_URL
+                 || 'https://api-uat.corelogic.com/order-gateway-oauth2/token?grant_type=client_credentials')
+                 .trim(),
+    // DoLogin endpoint (returns the AppraisalScope api_key).
+    loginUrl:  (process.env.AMC_LOGIN_URL
+                 || 'https://uat1.globalgateway.corelogic.com/direct/appraisal_service/request/appraisalscope/client')
+                 .trim().replace(/\/+$/, ''),
+    // Order + lookup endpoint (the ?orderId= is appended for order-specific updates).
+    orderUrl:  (process.env.AMC_ORDER_URL
+                 || 'https://uat1.globalgateway.corelogic.com/order/appraisal_service/request/appraisalscope/client')
+                 .trim().replace(/\/+$/, ''),
+    // Document multipart-upload endpoint (returns a getdocument retrieval URL).
+    postDocumentsUrl: (process.env.AMC_POSTDOCUMENTS_URL
+                 || 'https://uat1.globalgateway.corelogic.com/postdocuments')
+                 .trim().replace(/\/+$/, ''),
+
+    // ---- credentials (Render env ONLY) ----
+    clientId:      process.env.AMC_CLIENT_ID || null,          // OAuth GetToken client id
+    clientSecret:  process.env.AMC_CLIENT_SECRET || null,      // OAuth GetToken client secret
+    loginAccount:  process.env.AMC_LOGIN_ACCOUNT || null,      // DoLogin loginAccountIdentifier
+    loginPassword: process.env.AMC_LOGIN_PASSWORD || null,     // DoLogin loginAccountPassword
+
+    // ---- required message identifiers (provided by CoreLogic / the vendor) ----
+    subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
+    lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
+    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier
+
+    // Lower-env fallback API key when OAuth creds have not been issued yet (UAT only,
+    // never available in production). Sent as an `apikey` HTTP header. Optional.
+    fallbackApiKey:  process.env.AMC_FALLBACK_APIKEY || null,
+
+    pollSec:   Math.max(60, parseInt(process.env.AMC_POLL_SEC || '600', 10) || 600),  // status/comment poll cadence
+    lookupRefreshHours: Math.max(1, parseInt(process.env.AMC_LOOKUP_REFRESH_HOURS || '24', 10) || 24),
+  },
 };
