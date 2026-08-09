@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { goToSection, requestAppDetailTab } from './FileSections.jsx';
+import { askConfirm } from '../lib/dialog.js';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
@@ -179,9 +180,9 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
   // Clear a package: void it (if still out for signature) OR clear a completed
   // one, remove its signed document from the file, and reopen its conditions so a
   // fresh package can be sent. Warns first — this cannot be undone.
-  const clearPkg = (e) => {
+  const clearPkg = async (e) => {
     const label = PURPOSE[e.purpose] || e.purpose;
-    const ok = window.confirm(
+    const ok = await askConfirm(
       `Clear the ${label} package?\n\n`
       + `This permanently clears and DELETES this package from the file:\n`
       + `  • the signed document is removed (from its condition and from Documents)\n`

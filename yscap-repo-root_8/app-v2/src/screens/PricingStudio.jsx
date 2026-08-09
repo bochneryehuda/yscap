@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import TermSheetStudio, { buildStudioState } from '../components/TermSheetStudio.jsx';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* #103 — Borrower self-service pricing. The borrower prices loans in the SAME
    frozen Term Sheet Studio the staff use (embedded as an iframe — the engine and
@@ -73,7 +74,7 @@ export default function PricingStudio() {
     else flash('Give the studio a moment to finish loading, then try again.');
   }
   async function removeScenario(s) {
-    if (!window.confirm(`Delete the saved scenario "${s.label}"?`)) return;
+    if (!(await askConfirm(`Delete the saved scenario "${s.label}"?`))) return;
     try { await api.deletePricingScenario(s.id); await loadScenarios(); }
     catch (e) { flash(e.message || 'Could not delete the scenario'); }
   }

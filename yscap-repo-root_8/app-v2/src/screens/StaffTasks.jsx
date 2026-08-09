@@ -55,7 +55,7 @@ export default function StaffTasks() {
       // same moment — the refusal (owner-directed 2026-07-27). A staffer who
       // works from this queue must not have to open the file to get through.
       if (isCompletion(body) && !body.adminOverride && canOverride(role)) {
-        const extra = askOverride(label, { blocked: msg });
+        const extra = await askOverride(label, { blocked: msg });
         if (extra) { setBusy(null); return patchItem(itemId, { ...body, ...extra }, label); }
       }
       setErr(msg);
@@ -190,7 +190,7 @@ export default function StaffTasks() {
                                 {canOverride(role) && (
                                   <button className="btn ghost small" disabled={b} style={{ color: 'var(--gold, #AE8746)' }}
                                     title="Super admin: clear this WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
-                                    onClick={() => { const x = askOverride(it.label); if (x) patchItem(it.id, { signedOff: true, ...x }, it.label); }}>Override</button>
+                                    onClick={async () => { const x = await askOverride(it.label); if (x) patchItem(it.id, { signedOff: true, ...x }, it.label); }}>Override</button>
                                 )}
                               </>)}
                           <Link className="btn ghost small" to={`/internal/app/${it.application_id}`} title="Open the file">Open</Link>

@@ -3,6 +3,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { audienceLabel } from '../lib/conditions-vocab.js';
 import RuleBuilder, { emptyGroup, summarize } from '../components/RuleBuilder.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * The Condition Center studio (admin + super admin).
@@ -188,17 +189,17 @@ export default function StaffConditionStudio() {
     let removeFromFiles = false;
     if (d.instanceCount > 0) {
       // Ask whether to also strip it off the files it's on, or just retire it.
-      const both = window.confirm(
+      const both = await askConfirm(
         `“${d.label}” is on ${d.instanceCount} file(s).\n\n` +
         `• OK = DELETE it everywhere: remove it from those ${d.instanceCount} file(s) AND delete the definition. (Uploaded documents stay in each file's history, just unlinked.)\n` +
         `• Cancel = choose to only retire it (kept on existing files, never added again).`);
       if (both) {
         removeFromFiles = true;
       } else {
-        if (!window.confirm(`Retire “${d.label}” instead? It stays on the ${d.instanceCount} existing file(s) but is never added anywhere new.`)) return;
+        if (!(await askConfirm(`Retire “${d.label}” instead? It stays on the ${d.instanceCount} existing file(s) but is never added anywhere new.`))) return;
       }
     } else {
-      if (!window.confirm(`Delete “${d.label}”? It has never been used, so it will be removed completely.`)) return;
+      if (!(await askConfirm(`Delete “${d.label}”? It has never been used, so it will be removed completely.`))) return;
     }
     setBusy(true);
     try {

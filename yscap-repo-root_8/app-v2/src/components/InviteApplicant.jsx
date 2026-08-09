@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { EmailInput } from './FormattedInputs.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* "Invite for a new application" (owner-directed): a staffer starts a loan file
    from JUST an email address, and the borrower takes it from there — they get an
@@ -40,7 +41,7 @@ export default function InviteApplicant({ className = 'btn btn-ghost btn-sm', la
         // Shared-mailbox case (husband and wife on one email): confirm and keep
         // BOTH profiles on that address — nothing is merged (mirrors New file).
         if (e1.data && e1.data.sharedEmail && e1.data.sharedEmail.canShare
-            && window.confirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
+            && await askConfirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
           r = await api.staffCreateFile({ ...body, allowSharedEmail: true });
         } else throw e1;
       }

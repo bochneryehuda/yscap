@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* General file contacts (#144). Any party can add any kind of vendor to a file;
    every contact flows into the company-wide vendor directory and is shared with
@@ -76,7 +77,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
     finally { setBusy(false); }
   }
   async function remove(linkId) {
-    if (!window.confirm('Remove this contact from the file? (It stays in the company vendor directory.)')) return;
+    if (!(await askConfirm('Remove this contact from the file? (It stays in the company vendor directory.)'))) return;
     try { await (isStaff ? api.staffDelFileContact(linkId) : api.delFileContact(linkId)); await load(); } catch (_) { /* ignore */ }
   }
 

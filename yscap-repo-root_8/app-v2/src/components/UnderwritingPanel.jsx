@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import DocCompare from './DocCompare.jsx';
@@ -117,7 +117,7 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
         {templateCode && (
           <button disabled={busy} style={btn(true)}
             title={`Create the "${templateCode}" condition on this file`}
-            onClick={() => { if (window.confirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
+            onClick={async () => { if (await askConfirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
             Post the condition
           </button>
         )}
@@ -172,7 +172,7 @@ function EntityAdoptButton({ appId, entityName, findingId, onChange }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const run = async () => {
-    if (!window.confirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`)) return;
+    if (!(await askConfirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`))) return;
     setBusy(true);
     try {
       const r = await api.adoptEntityToProfile(appId, entityName, findingId);
@@ -273,7 +273,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
     const ids = Object.keys(simPicked).filter(id => simPicked[id]);
     if (!ids.length) { showMessage('No findings selected.'); return; }
     if (simAction === 'dismiss' && !simNote.trim()) { showMessage('Please add a dismissal reason.'); return; }
-    if (!window.confirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`)) return;
+    if (!(await askConfirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`))) return;
     setSimBusy(true);
     try {
       const r = await api.bulkResolveFindings(appId, ids, simAction, simNote);
@@ -318,13 +318,13 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
     catch (e) { showMessage(e.message || 'Could not resolve the finding'); }
     finally { setBusy(false); }
   };
-  const click = (a) => {
+  const click = async (a) => {
     // "Fix the file" (needs a value): pre-fill with what the DOCUMENT says (the
     // suggested correction) so the underwriter just confirms; for price / as-is /
     // ARV / rehab budget the server writes it straight onto the loan file.
     if (a.needs === 'value') { setPending(a); setText(docVal != null ? String(docVal) : ''); return; }
     if (a.needs === 'note') { setPending(a); setText(''); return; }
-    if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    if (a.key === 'decline' && !(await askConfirm('Decline this file on this finding?'))) return;
     submit(a.key);
   };
   const confirmPending = () => {
@@ -2704,7 +2704,7 @@ function SovereignAskAdminSection({ appId }) {
     finally { setBusy(false); }
   };
   const runXd = async () => {
-    if (!window.confirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).')) return;
+    if (!(await askConfirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).'))) return;
     setXdBusy(true); setXdRes(null);
     try {
       const r = await api.aiCrossDocCheck(appId);
@@ -3037,7 +3037,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       showMessage('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
       return;
     }
-    if (!window.confirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`)) return;
+    if (!(await askConfirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`))) return;
     await doAction('convert_to_condition', { templateCode: tplCode });
   };
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PER-FILE NOTIFICATION OVERRIDES
@@ -49,7 +50,7 @@ export default function FileNotificationOverrides({ applicationId, isMyFile }) {
         // Clear all overrides — full defaults. Ask once before dropping any
         // per-key overrides the LO built up; the wildcard-only case is silent.
         const perKeyCount = (overrides || []).filter((o) => o.notif_key !== '*').length;
-        if (perKeyCount > 0 && !window.confirm(`Clear ${perKeyCount} per-notification override${perKeyCount > 1 ? 's' : ''} on this file? It will use your Notification Center defaults from now on.`)) {
+        if (perKeyCount > 0 && !(await askConfirm(`Clear ${perKeyCount} per-notification override${perKeyCount > 1 ? 's' : ''} on this file? It will use your Notification Center defaults from now on.`))) {
           setBusy(false);
           return;
         }

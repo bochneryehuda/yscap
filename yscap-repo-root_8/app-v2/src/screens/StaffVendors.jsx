@@ -4,6 +4,7 @@ import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useFlash } from '../components/FlashToast.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Vendor directory (admin): every title company / insurance agent contact
    entered anywhere on the platform, tagged by type. Admins enrich, correct,
@@ -419,7 +420,7 @@ export default function StaffVendors() {
     catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
   }
   async function del(v) {
-    if (!window.confirm(`Delete this ${TYPE_LABEL[v.contact_type] || 'vendor'} (${v.company_name || v.contact_name || v.email})? Borrowers will no longer see it in autocomplete.`)) return;
+    if (!(await askConfirm(`Delete this ${TYPE_LABEL[v.contact_type] || 'vendor'} (${v.company_name || v.contact_name || v.email})? Borrowers will no longer see it in autocomplete.`))) return;
     try { await api.staffDeleteVendor(v.id); flash('Deleted ✓'); await load(); }
     catch (e) { setErr(e.message || 'Could not delete'); }
   }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fullNameOf } from '../lib/personName.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    LOAN OFFICER — NOTIFICATION CENTER (major product)
@@ -212,7 +213,7 @@ function CatalogTab() {
 
   const bulkSet = useCallback(async (kind) => {
     if (!data) return;
-    if (kind === 'all-off' && !window.confirm('Turn off every non-required notification for every borrower on your files? DocuSign, security and account emails will still send.')) return;
+    if (kind === 'all-off' && !(await askConfirm('Turn off every non-required notification for every borrower on your files? DocuSign, security and account emails will still send.'))) return;
     const changes = data.items
       .filter((i) => !i.forced)
       .map((i) => ({ key: i.key, enabled: kind !== 'all-off', mode: kind === 'all-on-manual' ? 'manual' : 'automatic' }));
@@ -844,7 +845,7 @@ function DraftsTab({ onCountChange, showToast }) {
     finally { setBusy(false); }
   };
   const handleDiscard = async (draft) => {
-    if (!window.confirm('Discard this notification? The borrower will never see it.')) return;
+    if (!(await askConfirm('Discard this notification? The borrower will never see it.'))) return;
     setBusy(true); setErr('');
     try { await api.loNotifDraftDiscard(draft.id); await load({ soft: true }); }
     catch (e) { setErr(e.message || 'Discard failed'); }
@@ -869,7 +870,7 @@ function DraftsTab({ onCountChange, showToast }) {
 
   const bulk = async (action, extra) => {
     if (!checked.size) return;
-    if (action === 'discard' && !window.confirm(`Discard ${checked.size} drafts?`)) return;
+    if (action === 'discard' && !(await askConfirm(`Discard ${checked.size} drafts?`))) return;
     setBusy(true);
     try {
       const r = await api.loNotifDraftsBulk([...checked], action, extra);
@@ -1046,7 +1047,7 @@ function RulesTab({ showToast }) {
     finally { setSaving(false); }
   };
   const startLearning = async () => {
-    if (!window.confirm('Start Learning Mode for the next 72 hours? EVERY notification will be parked as a draft so you can watch what would go out — nothing sends automatically. You can leave it early from this page.')) return;
+    if (!(await askConfirm('Start Learning Mode for the next 72 hours? EVERY notification will be parked as a draft so you can watch what would go out — nothing sends automatically. You can leave it early from this page.'))) return;
     setSaving(true);
     try { await api.loNotifRulesPut({ ...r, learning_mode_hours: 72 }); const x = await api.loNotifRulesGet(); setR(x.rules); showToast && showToast('Learning mode on for 72 hours.'); }
     catch (e) { setErr(e.message || 'Save failed'); }
