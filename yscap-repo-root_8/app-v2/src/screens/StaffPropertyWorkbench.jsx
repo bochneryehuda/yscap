@@ -85,6 +85,18 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   const [run, setRun] = useState(null);      // the review run: ids, in order
   const [runAt, setRunAt] = useState(0);     // where we are in it
   const [compare, setCompare] = useState(null);
+  /* THE BUDGET METER (mega-workspace phase F): what a search costs is visible
+     BEFORE the button is pressed — lookups this hour against the office's
+     shared hourly allowance, and paid contact credits this month against the
+     owner's monthly cap. Read-only; the caps that actually refuse a call live
+     server-side. Unknown reads as "unknown", never as zero. */
+  const [usage, setUsage] = useState(null);
+  const loadUsage = useCallback(() => {
+    api.staffElementixUsage()
+      .then((u) => setUsage(u && typeof u === 'object' ? u : null))
+      .catch(() => setUsage(null));
+  }, []);
+  useEffect(() => { loadUsage(); }, [loadUsage]);
 
   const load = useCallback(async () => {
     if (!borrowerId) return;
@@ -136,6 +148,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
       setSearchMsg({ text: out.summary, nothingToSearch: out.nothingToSearch === true,
         skips: out.skips || [] });
       await load();
+      loadUsage();
     } catch (e) {
       await showMessage((e && e.message) || 'The search did not run.', { title: 'Not searched' });
     } finally { setBusy(false); }
@@ -238,6 +251,19 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
           {busy ? 'Working…' : 'Search the records'}
         </button>
       </div>
+
+      {usage && (
+        <div className="small" style={{ marginTop: 6, color: MUTED }}>
+          Lookups this hour:{' '}
+          <strong style={{ color: INK }}>
+            {usage.ok ? `${usage.callsLastHour} of ${usage.hourCap}` : 'unknown'}
+          </strong>
+          {' '}(shared by the whole office) · Paid contact credits this month:{' '}
+          <strong style={{ color: INK }}>
+            {usage.ok ? `${usage.paidThisMonth} of ${usage.paidCap}` : 'unknown'}
+          </strong>
+        </div>
+      )}
 
       {searchMsg ? (
         <div style={{

@@ -43,9 +43,16 @@ function reoReason(line, todo) {
   return null; // counting
 }
 
+/* TWO LENSES, ONE LEDGER (phase D): the LOAN FILE passes the three per-line
+   file actions (request/raise/post — they mint conditions on that file) and
+   the doc review handlers; the borrower PROFILE has no file, so it omits them
+   — an absent handler simply renders no button — and passes `extraActions`
+   (verify / revoke / check-the-records, the profile's own verbs) plus
+   `onOpenEntity` so the entity pill cross-links to the Entities tab. */
 export default function RecordLedger({
   lines, docs, todoByLine, busyId, msg, completer, canDelete,
   onRequestDoc, onRaiseIssue, onPostCondition, onReviewDoc,
+  extraActions = null, onOpenEntity = null, lens = 'file',
 }) {
   const all = Array.isArray(lines) ? lines : [];
   if (!all.length) return null;
@@ -70,17 +77,23 @@ export default function RecordLedger({
           <span className="small" style={{ flex: 1, minWidth: 160, color: INK }}>{addr}</span>
           {t.owned_personally
             ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
-            : (t.entity_name ? <span className="pill small" title="Entity on record">{t.entity_name}</span> : null)}
+            : (t.entity_name
+              ? (onOpenEntity
+                ? <button type="button" className="pill small" style={{ cursor: 'pointer' }}
+                    title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
+                : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
+              : null)}
           {t.verification_status && <span className="pill small">{t.verification_status}</span>}
-          <button className="btn ghost small" disabled={busyId === t.id}
+          {onRequestDoc && <button className="btn ghost small" disabled={busyId === t.id}
             title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
-            onClick={() => onRequestDoc(t, addr)}>Request a document</button>
-          <button className="btn ghost small" disabled={busyId === t.id}
+            onClick={() => onRequestDoc(t, addr)}>Request a document</button>}
+          {onRaiseIssue && <button className="btn ghost small" disabled={busyId === t.id}
             title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
-            onClick={() => onRaiseIssue(t, addr)}>Raise an issue</button>
-          <button className="btn ghost small" disabled={busyId === t.id}
+            onClick={() => onRaiseIssue(t, addr)}>Raise an issue</button>}
+          {onPostCondition && <button className="btn ghost small" disabled={busyId === t.id}
             title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
-            onClick={() => onPostCondition(t, addr)}>Post a condition</button>
+            onClick={() => onPostCondition(t, addr)}>Post a condition</button>}
+          {extraActions && extraActions(t, addr)}
         </div>
         {r.reo && (
           <div className="small" style={{ color: '#8A6D3B', padding: '1px 0 0 8px' }}>
@@ -102,9 +115,9 @@ export default function RecordLedger({
             <div className="row" key={d.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
               <span className="small muted" style={{ flex: 1, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
               <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-              {completer && rs !== 'accepted' && <button className="btn primary small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
-              {rs !== 'rejected' && <button className="btn link small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
-              {canDelete && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busyId === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
+              {onReviewDoc && completer && rs !== 'accepted' && <button className="btn primary small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+              {onReviewDoc && rs !== 'rejected' && <button className="btn link small" disabled={busyId === d.id} onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
+              {onReviewDoc && canDelete && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busyId === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
               {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
             </div>
           );
@@ -119,13 +132,15 @@ export default function RecordLedger({
         <div className="small" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8,
           border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: INK }}>
           <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
-          Nothing counts toward this file&rsquo;s experience until it is verified — read the closing
-          statement, deed or lease on each one, then verify it.{' '}
+          Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
+          it is verified — read the closing statement, deed or lease on each one, then verify it.{' '}
           <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
         </div>
       )}
       <div className="muted small" style={{ marginBottom: 6 }}>
-        The record — raise a request against a specific past project and it becomes a named condition on this file.
+        {lens === 'borrower'
+          ? 'The record — check each past project against the county records, then verify it.'
+          : 'The record — raise a request against a specific past project and it becomes a named condition on this file.'}
       </div>
       {msg && <div className="small" style={{ color: 'var(--ok)', marginBottom: 6 }}>{msg}</div>}
       {GROUPS.map((g) => {
