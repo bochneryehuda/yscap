@@ -418,12 +418,18 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
 
 /* ── the queue ───────────────────────────────────────────────────────────── */
 
-async function loadQueue(borrowerId, client) {
+async function loadQueue(borrowerId, client, opts) {
   const db = client || require('../../db');
+  /* WHO IS LOOKING decides how a claim reads — my own claim is invisible (it is
+     just me), somebody else's is a line of text. Absent, every claim reads as
+     somebody else's, which is the safe direction for a signal nobody acts on. */
+  const viewerStaffId = (opts && opts.viewerStaffId) || null;
   const rows = (await db.query(
-    `SELECT c.*, t.property_address AS match_address
+    `SELECT c.*, t.property_address AS match_address,
+            NULLIF(TRIM(COALESCE(u.full_name,'')),'') AS claimed_by_name
        FROM track_record_candidates c
        LEFT JOIN track_records t ON t.id = c.match_track_record_id
+       LEFT JOIN staff_users u ON u.id = c.claimed_by
       WHERE c.borrower_id=$1
         AND (c.status <> 'snoozed' OR c.snoozed_until IS NULL OR c.snoozed_until <= now())
       ORDER BY c.created_at`, [borrowerId])).rows;
@@ -455,6 +461,9 @@ async function loadQueue(borrowerId, client) {
     decidedByKind: r.decided_by_kind || null,
     decidedByBorrower: r.decided_by_borrower ? true : false,
     deedCount: (r.raw && Array.isArray(r.raw.deeds)) ? r.raw.deeds.length : 0,
+    /* WHO IS ON IT — advisory, and never a reason a decision is refused. A
+       claim older than the expiry reads as no claim at all. */
+    claim: require('./claims').claimStateOf(r, viewerStaffId),
   });
 
   return {

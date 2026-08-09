@@ -11246,7 +11246,22 @@ router.post('/borrowers/:id/track-record-search', async (req, res) => {
 router.get('/borrowers/:id/track-record-candidates', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
-    res.json(await require('../lib/track-record/importer').loadQueue(req.params.id));
+    res.json(await require('../lib/track-record/importer')
+      .loadQueue(req.params.id, null, { viewerStaffId: req.actor.id }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* CLAIM / RELEASE — advisory only. Starting a review run says "I am on these"
+   so a colleague opening the same borrower is not re-reading the same deeds;
+   it can never refuse anybody's decision (see track-record/claims.js). */
+router.post('/borrowers/:id/track-record-candidates/claim', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const CLAIMS = require('../lib/track-record/claims');
+    const b = req.body || {};
+    const out = b.release === true
+      ? { released: await CLAIMS.releaseClaims(b.ids, req.actor.id) }
+      : await CLAIMS.claimForReview(b.ids, req.actor.id);
+    res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 router.get('/track-record-candidates/:id/compare', async (req, res) => {

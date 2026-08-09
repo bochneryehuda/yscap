@@ -134,11 +134,27 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
     setTicked((s) => { const n = new Set(s); rows.forEach((r) => n.add(r.id)); return n; });
   }
 
-  /* THE TICK IMPORTS NOTHING. It builds the run, and the run is walked. */
-  function startRun() {
+  /* THE TICK IMPORTS NOTHING. It builds the run, and the run is walked.
+     Starting a run also says "I am on these", so a colleague opening the same
+     borrower is not re-reading the same deeds. That claim is ADVISORY — it is
+     never checked before a decision, and a property somebody else is holding
+     still goes into the run. We only SAY so. */
+  async function startRun() {
     const ids = rows.filter((r) => ticked.has(r.id)).map((r) => r.id);
     if (!ids.length) return;
     setRun(ids); setRunAt(0); setCompare(null);
+    try {
+      const out = await api.staffClaimCandidates(borrowerId, { ids });
+      const held = (out && out.heldByOthers) || [];
+      if (held.length) {
+        const names = [...new Set(held.map((h) => h.by))].join(', ');
+        await showMessage(
+          `${held.length === 1 ? 'One of these is' : `${held.length} of these are`} already being reviewed by ${names}.`
+          + '\n\nYou can still review them — this is only so two people do not read the same deeds twice.',
+          { title: 'Somebody else is on it' });
+      }
+      load();
+    } catch { /* advisory — a failed claim never stops the review */ }
   }
 
   /* BULK DECLINE IS ALLOWED — it can only ever WITHHOLD credit. It still needs
@@ -360,6 +376,14 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                         </span>
                         {r.matchConfidence === 'near' ? (
                           <span style={{ display: 'block', color: AMBER, fontSize: 12, marginTop: 4 }}>{band.hint}</span>
+                        ) : null}
+                        {/* SOMEBODY ELSE IS ON IT — advisory, and it names them:
+                            "another reviewer" sends you hunting, a name ends it.
+                            Never disables anything. */}
+                        {r.claim && r.claim.held && !r.claim.mine ? (
+                          <span style={{ display: 'block', color: MUTED, fontSize: 12, marginTop: 4 }}>
+                            {r.claim.by} is reviewing this now
+                          </span>
                         ) : null}
                       </span>
                     </label>

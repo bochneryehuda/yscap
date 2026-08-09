@@ -610,6 +610,10 @@ export const api = {
   staffTrackRecordCandidates: (borrowerId) =>
     req('GET', `/api/staff/borrowers/${borrowerId}/track-record-candidates`),
   staffCompareCandidate: (id) => req('GET', `/api/staff/track-record-candidates/${id}/compare`),
+  /* WHO IS ON IT — advisory. Starting a review run says "I am on these" so two
+     reviewers do not read the same deeds; it never gates a decision. */
+  staffClaimCandidates: (borrowerId, body) =>
+    req('POST', `/api/staff/borrowers/${borrowerId}/track-record-candidates/claim`, body || {}),
   staffDecideCandidate: (id, body) => req('POST', `/api/staff/track-record-candidates/${id}/decide`, body),
   staffTrackRecordDocTypes: () => req('GET', '/api/staff/track-record-doc-types'),
   staffRequestTrackRecordDocTyped: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc`, body),
