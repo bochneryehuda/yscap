@@ -37,6 +37,7 @@ const autoRelease = require('../sitewire/auto-release');   // final approve writ
 const stageEvents = require('../sitewire/stage-events');   // when each draw reached each step, forward-only
 const drawAttachments = require('../sitewire/draw-attachments'); // invoices/receipts/photos ON a draw
 const drawSettings = require('../sitewire/draw-settings');       // every knob, its three levels, and which one won
+const drawChecklist = require('../sitewire/draw-checklist');     // what's left on a draw, stated forward
 
 /**
  * EVERY OVERRIDE CAN CARRY ITS PROOF (owner-directed 2026-08-09: "when we override something, we
@@ -684,6 +685,49 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       address: addressReady,
       capital_partner: !!cp.id,
     };
+    // A READINESS LIST, in the same shape as a draw's own checklist (owner-directed 2026-08-09:
+    // the coordinator should see what is missing BEFORE pressing Start, not be refused after).
+    // It is a DESCRIPTION — Start still enforces its own gates; this only says what they will find.
+    // `prereqs` above is unchanged for every existing reader.
+    let reconcile = null;
+    try {
+      if (prereqs.scope_of_work && prereqs.budget) {
+        const budgetCents = Math.round(Number(budgetDollars) * 100);
+        const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
+        const total = (ex && Array.isArray(ex.items)) ? ex.items.reduce((t, i) => t + (Number(i.budgeted_cents) || 0), 0) : null;
+        reconcile = total == null ? null : { ok: total === budgetCents, exploded_cents: total, budget_cents: budgetCents };
+      }
+    } catch (_) { reconcile = null; }   // unreadable → the step reports unknown, never a false "ready"
+    // The DURABLE record that the borrower was invited is the stamp on the link, not the live
+    // invite-status read — that answers "can we send one right now?" (and reports `available:false`
+    // whenever the integration switch is off), which is a different question and would show a file
+    // whose borrower was invited weeks ago as still waiting.
+    const borrowerInvited = link ? !!link.setup_email_sent_at : null;
+    let wireForm = null;
+    try { wireForm = await investorSend.wireFormStatus(appId); } catch (_) {}
+    const step = (key, label, state, detail, action) => ({ key, label, state, detail: detail || null, action: state === 'done' ? null : action });
+    const readiness = [
+      step('funded', 'The loan is funded', prereqs.funded ? 'done' : 'waiting', null, 'Draws start after funding'),
+      step('loan_number', 'The file has a loan number', prereqs.loan_number ? 'done' : 'waiting', null, 'Add the YS loan number'),
+      step('scope_of_work', 'Scope of Work saved', prereqs.scope_of_work ? 'done' : 'waiting', null, 'Complete the Scope of Work'),
+      step('budget_reconciles', 'Scope of Work reconciles to the budget',
+        reconcile == null ? 'unknown' : (reconcile.ok ? 'done' : 'waiting'),
+        reconcile && !reconcile.ok ? `The line items add up to ${T.usd(reconcile.exploded_cents)} against a ${T.usd(reconcile.budget_cents)} budget — they must match to the cent.` : null,
+        'Fix the Scope of Work so the line items total the frozen budget'),
+      step('address', 'The property address is complete', prereqs.address ? 'done' : 'waiting', null, 'Fill in the street, city, state and ZIP'),
+      step('capital_partner', 'Capital partner matched', prereqs.capital_partner ? 'done' : 'waiting',
+        cp.candidate != null ? `Closest match: ${cp.candidateName || cp.candidate} — confirm it on the draw rules screen.` : null,
+        'Match this note buyer to a capital partner'),
+      step('inspection', 'Inspection method and fee set', insp && insp.method ? 'done' : 'unknown',
+        insp && insp.method ? `${insp.method === 'traditional' ? 'On-site' : 'Virtual'} — ${T.usd(Number(insp.feeCents))} per draw` : null,
+        'Set the inspection rule for this capital partner'),
+      step('borrower_invited', 'Borrower invited to the draw portal',
+        borrowerInvited == null ? 'unknown' : (borrowerInvited ? 'done' : 'waiting'), null, 'Send the borrower their invitation'),
+      step('wire_form', 'Wire instructions signed',
+        wireForm == null ? 'unknown' : (wireForm.present ? (wireForm.accepted ? 'done' : 'waiting') : 'waiting'),
+        wireForm && wireForm.present && !wireForm.accepted ? 'Signed, but not accepted yet — review it.' : null,
+        'Send the wire form for signature'),
+    ];
     const cpName = cp.id ? (await db.query(`SELECT name FROM sitewire_capital_partners WHERE sitewire_id=$1`, [cp.id])).rows[0] : null;
     // Unit count preview (owner-directed 2026-07-20 — "use physical building units"). The count PUSHED to
     // Sitewire = the physical building count = the LARGER of the file's unit count and the Scope of Work's.
@@ -699,6 +743,8 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
     const oopFloorCents = (link && Number(link.oop_floor_cents) > 0) ? Number(link.oop_floor_cents) : await orchestrator.registrationOopCents(appId);
     const fullRehabCents = budgetDollars != null ? Math.round(Number(budgetDollars) * 100) : null;
     res.json({
+      readiness,
+      readiness_done: readiness.filter((r) => r.state === 'done').length,
       started: !!(link && link.sitewire_property_id),
       state: link ? link.state : null,
       started_at: link ? link.draw_setup_started_at : null,
@@ -2139,6 +2185,28 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // a loan file's stages"). Staff voice — includes the capital-partner step. The resolved shape is
     // attached here so the desk renders it without re-deriving; `stage_times` come off the rollup.
     for (const d of rollup.draws) d.timeline = drawTimeline.stageTimeline(d.stage_times, d.approval_stage, { borrower: false });
+    // WHAT'S LEFT ON THIS DRAW — the same facts the refusals are built from, stated FORWARD, so a
+    // coordinator sees what is missing without having to press a button and be refused. It is a
+    // DESCRIPTION and never a gate: the real refusals stay exactly where they are. Also the plain
+    // status, which now says "unknown" instead of quietly reading as progress. Best-effort per draw
+    // and bounded to the live ones — a long-finished project should not re-read every step.
+    const CHECKLIST_MAX = 12;
+    for (const d of rollup.draws.slice(0, CHECKLIST_MAX)) {
+      try {
+        const c = await drawChecklist.checklistFor(db, appId, d.sitewire_draw_id, { stage: d.approval_stage });
+        if (c) { d.checklist = { steps: c.steps, done: c.done, total: c.total, next_up: c.nextUp, waiting_on: c.waitingOn, complete: c.complete }; d.status_words = c.status; }
+      } catch (_) { /* the desk still renders without it */ }
+    }
+    // The stage HISTORY (when each draw actually reached each step) + how long it has sat where it
+    // is. Absent history reads as null, never as "0 days" — a draw whose stages predate the history
+    // is unknown, not brand new.
+    for (const d of rollup.draws.slice(0, CHECKLIST_MAX)) {
+      try {
+        const h = await stageEvents.historyFor(appId, { sitewireDrawId: d.sitewire_draw_id });
+        d.stage_history = h;
+        d.days_in_stage = stageEvents.daysInCurrentStage(h);
+      } catch (_) { /* history is additive */ }
+    }
     // retainage held vs released + the lien-waiver register (roadmap money model)
     const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
@@ -2916,6 +2984,32 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
 //  (owner-directed 2026-08-03). See src/sitewire/investor-delivery.js for the rules.
 //  (`investorDelivery` / `investorSend` / `releaseParty` are required at the top of the file.)
 // ===================================================================================
+
+// ---- POST /files/:id/findings/:findingId/review — a human READ the inspection ----
+// Findings used to go to the borrower the moment somebody pressed Deliver, with nothing recording
+// that anybody read the inspector's report first (the unbuilt "increment D" in
+// docs/DRAW-WORKFLOW-STATUS-RESEARCH.md). This records the read.
+//
+// DELIBERATELY NOT A GATE. Deliver still works exactly as it does today — making the review a
+// refusal would be a new hold on live files that nobody asked for. It drives the readiness
+// checklist, which is where an unreviewed inspection now shows up before anyone presses anything.
+router.post('/files/:id/findings/:findingId/review', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^\d+$/.test(String(req.params.findingId))) return res.status(404).json({ error: 'not found' });
+  const note = req.body && req.body.note ? String(req.body.note).slice(0, 2000) : null;
+  const upd = (await db.query(
+    `UPDATE draw_findings SET reviewed_at=now(), reviewed_by=$3, review_note=COALESCE($4, review_note), updated_at=now()
+      WHERE id=$1 AND application_id=$2 RETURNING id, sitewire_draw_id, reviewed_at`,
+    [req.params.findingId, appId, req.actor.id, note])).rows[0];
+  if (!upd) return res.status(404).json({ error: 'not found' });
+  try {
+    await stageEvents.record(appId, { sitewireDrawId: upd.sitewire_draw_id }, 'inspector_approved', {
+      detail: `Inspection reviewed by us${note ? ' — ' + note.slice(0, 160) : ''}`,
+      actorStaffId: req.actor.id, source: 'pilot' });
+  } catch (_) {}
+  res.json({ ok: true, reviewed_at: upd.reviewed_at });
+});
 
 // ---- POST /files/:id/findings/:findingId/mark-accepted ----
 // The borrower agreed OUTSIDE the portal — verbally, or by email. That is a real acceptance, so it
