@@ -66,6 +66,37 @@ const DEFAULTS = {
     still apply, so this never means "unlimited". */
 const DISABLED = () => process.env.API_RATE_LIMIT_DISABLED === '1';
 
+/* ── A HEALTH PROBE NEVER QUEUES ────────────────────────────────────────────────────
+ *
+ * THE BUG THIS EXISTS TO KILL (owner-reported 2026-08-09: "why is everything going down
+ * every day a few times and getting back up so soon?"). Nothing was going down. The API
+ * Health probes wrap each call in an 8-SECOND deadline, and `acquire()` deliberately WAITS
+ * — up to a minute — when a bucket is empty. So during any busy period the probe sat in
+ * OUR OWN queue, blew its 8 seconds, and reported a perfectly healthy vendor as "not
+ * reachable"; minutes later the bucket refilled and it reported a recovery. Two emails per
+ * blip, several times a day, about an outage that never happened. The probe was measuring
+ * our own pacing, not the vendor.
+ *
+ * A health check is ONE request every few minutes — utterly negligible against a 90/min
+ * budget — and its whole job is to report what the far end is doing. So inside this
+ * context the limiter does not hold it: no wait, and no `waits` increment either, because
+ * that counter is the owner's signal that a real cap is biting and a probe must not
+ * pollute it.
+ *
+ * AsyncLocalStorage rather than an argument: the wait happens deep inside six different
+ * vendor clients (ClickUp, Encompass, Sitewire, TrustPoint, SharePoint/Graph, OSM), and
+ * threading an option through every one of them would be six chances to miss one — and the
+ * one missed would keep flapping. The context follows the call automatically, so a client
+ * added next year is covered without knowing this rule exists. It is scoped to the probe's
+ * own async tree, so concurrent real traffic is completely unaffected.
+ */
+const { AsyncLocalStorage } = require('node:async_hooks');
+const probeCtx = new AsyncLocalStorage();
+/** Run `fn` as a health probe: the limiter will never make it wait. */
+function runAsHealthProbe(fn) { return probeCtx.run({ probe: true }, fn); }
+/** Are we inside a health probe right now? */
+function inHealthProbe() { const s = probeCtx.getStore(); return !!(s && s.probe); }
+
 function rpmFor(api) {
   const d = DEFAULTS[api];
   const raw = d && d.env ? process.env[d.env] : null;
@@ -163,6 +194,11 @@ async function noteWait(api) {
  * @returns {Promise<{waitedMs:number, capped:boolean, shared:boolean}>}
  */
 async function acquire(api, { maxWaitMs = 60000 } = {}) {
+  // A health probe is one request every few minutes and its job is to report on the FAR
+  // END — so it takes its token if one is free and otherwise proceeds immediately, rather
+  // than queueing and timing out against its own caller's deadline. See runAsHealthProbe.
+  const probe = inHealthProbe();
+  if (probe) maxWaitMs = 0;
   const started = Date.now();
   const deadline = started + Math.max(0, maxWaitMs);
   // A local-bucket timeout is the SAME outcome as a shared-bucket one: we held the
@@ -171,8 +207,10 @@ async function acquire(api, { maxWaitMs = 60000 } = {}) {
   if (DISABLED() || !DEFAULTS[api]) return { waitedMs: Date.now() - started, capped: !localOk, shared: false };
   if (!localOk) {
     // A hold is a hold whichever layer imposed it — counting only the shared one would
-    // understate exactly when the cap is biting hardest.
-    await noteWait(api);
+    // understate exactly when the cap is biting hardest. A PROBE is never counted: `waits`
+    // is the owner's signal that a real cap is squeezing real work, and a health check
+    // inflating it would send them raising a limit that is not actually in anyone's way.
+    if (!probe) await noteWait(api);
     return { waitedMs: Date.now() - started, capped: true, shared: false };
   }
   let noted = false;
@@ -205,4 +243,7 @@ async function status() {
   } catch (_) { return []; }
 }
 
-module.exports = { acquire, status, rpmFor, DEFAULTS, _internals: { takeLocal, takeShared, DISABLED } };
+module.exports = {
+  acquire, status, rpmFor, DEFAULTS, runAsHealthProbe, inHealthProbe,
+  _internals: { takeLocal, takeShared, DISABLED },
+};
