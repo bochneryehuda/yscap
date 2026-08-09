@@ -45,6 +45,7 @@
 const TRK = require('../track-record-key');
 const entityLib = require('../track-record-entity');
 const lookups = require('../elementix/lookups');
+const MATCH = require('./match');
 
 const str = (v) => String(v == null ? '' : v).trim();
 const ymd = (v) => {
@@ -334,10 +335,46 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
     }
   }
 
-  // Is it already on the real record?
+  /* IS IT ALREADY ON THE REAL RECORD, AND HOW SURE ARE WE?
+     `match_confidence` used to be written as 'exact' or 'none' and nothing else,
+     so the third value the CHECK has always allowed — 'near' — was never
+     produced by anything. That made "we think this is the same property but we
+     are not certain" PHYSICALLY UNRENDERABLE: every match reached a reviewer as
+     either settled or absent, and the in-between, which is the case a human is
+     actually needed for, had nowhere to live.
+     `match.decideMatch` already computes exactly that three-way answer and had
+     no caller at stage time. It needs BOTH address comparers to agree before it
+     will say 'exact', and `sqlSamePlace` is an ARGUMENT so a caller that cannot
+     reach the database fails CLOSED to 'near' rather than quietly auto-binding. */
   const mine = (await db.query(
     `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1`, [borrowerId])).rows;
   const hit = TRK.matchTrackRecord(mine, candidate.property_address);
+
+  let confidence = 'none';
+  let why = {};
+  if (hit) {
+    let sqlSamePlace;
+    try {
+      const r = await db.query('SELECT pilot_address_same_place($1::jsonb, $2::jsonb) AS same',
+        [JSON.stringify(hit.property_address || null), JSON.stringify(candidate.property_address || null)]);
+      sqlSamePlace = r.rows[0] ? r.rows[0].same === true : undefined;
+    } catch (_) { sqlSamePlace = undefined; }   // unreachable → decideMatch fails closed
+    const d = MATCH.decideMatch(hit, { addresses: [addressLabel(candidate.property_address)] },
+      { elxStatus: 'exact', sqlSamePlace });
+    confidence = d.action === 'auto_confirm' ? 'exact' : (d.action === 'reject' ? 'none' : 'near');
+    why = confidence === 'none'
+      ? {}
+      : {
+        why: confidence === 'exact'
+          ? 'The same address is already on the track record, and both address comparisons agree.'
+          : 'This looks like a property already on the track record, but we are not certain it is the same one.',
+        /* The REASONS a human needs, not a score. A percentage here would be
+           saying something about county data and would read as something about
+           the borrower. */
+        blockers: (d.blockers || []).map((b) => b.why),
+        matchedAddress: addressLabel(hit.property_address),
+      };
+  }
 
   const ins = await db.query(
     `INSERT INTO track_record_candidates
@@ -350,8 +387,8 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
       JSON.stringify(candidate.property_address || null), candidate.deal_type,
       candidate.purchase_price, candidate.purchase_date, candidate.sale_price, candidate.sale_date,
       candidate.entity_name, proposedLlcId || null, key,
-      hit ? hit.id : null, hit ? 'exact' : 'none',
-      JSON.stringify(hit ? { why: 'The same address is already on the track record.' } : {})]);
+      confidence === 'none' ? null : (hit ? hit.id : null), confidence,
+      JSON.stringify(why)]);
 
   return { staged: true, id: ins.rows[0].id };
 }

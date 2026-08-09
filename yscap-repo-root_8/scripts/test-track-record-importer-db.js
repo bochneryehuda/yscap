@@ -214,6 +214,68 @@ const found = (name) => {
     ok((await lines()).length === 2, 'no second line was created — a match joins the one already there');
   }
 
+  console.log('\n5b. ALL THREE match bands are reachable — "we are not sure" has somewhere to live');
+  {
+    /* db/496's CHECK has always allowed 'exact' | 'near' | 'none', and stageOne
+       wrote only two of them. So the state a reviewer is actually NEEDED for —
+       "this looks like a line you already have, but we are not certain" — could
+       not be produced by any input, and every match arrived either settled or
+       absent. `match.decideMatch` already computed the three-way answer and had
+       no caller here. */
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
+
+    const key = require('../src/lib/track-record-key').trackRecordKey;
+    // Our line names a UNIT; the records do not. Same building, different claim.
+    const unitAddr = { line1: '200 Bridge St Apt 4B', city: 'Lakewood', state: 'NJ', zip: '08701' };
+    await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, address_key, deal_type, entered_by_kind)
+       VALUES ($1,$2::jsonb,$3,'flip','borrower')`,
+      [borrowerId, JSON.stringify(unitAddr), key(unitAddr)]);
+
+    const bare = { line1: '200 Bridge St', city: 'Lakewood', state: 'NJ', zip: '08701' };
+    const staged = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: bare, dedupe_key: 'near_test_1', raw: {} },
+    });
+    ok(staged.staged === true, 'a look-alike stages');
+    const row = (await db.query(
+      `SELECT match_confidence, match_track_record_id, match_why FROM track_record_candidates WHERE id=$1`,
+      [staged.id])).rows[0];
+    ok(row.match_confidence === 'near',
+      'ONE SIDE NAMES A UNIT AND THE OTHER DOES NOT — that is "near", not "exact": a deed for one unit is not evidence about the whole building');
+    ok(!!row.match_track_record_id, '…and it still points at the line it resembles, so a reviewer can compare them');
+    ok(Array.isArray(row.match_why.blockers) && row.match_why.blockers.length > 0,
+      '…and carries the REASONS in words, never a confidence score — a percentage would describe county data and read as a judgement about the borrower');
+
+    // And an exact one is still exact.
+    const same = { line1: '9 Plain Rd', city: 'Lakewood', state: 'NJ', zip: '08701' };
+    await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, address_key, deal_type, entered_by_kind)
+       VALUES ($1,$2::jsonb,$3,'flip','borrower')`,
+      [borrowerId, JSON.stringify(same), key(same)]);
+    const s2 = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: same, dedupe_key: 'near_test_2', raw: {} },
+    });
+    const r2 = (await db.query('SELECT match_confidence FROM track_record_candidates WHERE id=$1', [s2.id])).rows[0];
+    ok(r2.match_confidence === 'exact', 'a genuine same-address match is still EXACT');
+
+    // A property nobody has is 'none' and points at nothing.
+    const s3 = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: { line1: '1 Nowhere Blvd', city: 'Lakewood', state: 'NJ', zip: '08701' },
+        dedupe_key: 'near_test_3', raw: {} },
+    });
+    const r3 = (await db.query(
+      'SELECT match_confidence, match_track_record_id FROM track_record_candidates WHERE id=$1', [s3.id])).rows[0];
+    ok(r3.match_confidence === 'none' && r3.match_track_record_id === null,
+      'and a property that is on nobody\'s record is "none", pointing at nothing');
+
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
+  }
+
   console.log('\n6. "Not theirs" is durable — the next search must not raise it again');
   {
     // Stage something fresh, then decline it.
