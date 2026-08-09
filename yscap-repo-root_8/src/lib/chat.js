@@ -28,6 +28,10 @@ const email = require('./email');
 const storage = require('./storage');
 const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
+// One event, one copy (owner-directed 2026-08-09): a message that arrived BY
+// EMAIL carries who that email already reached, and those people keep their
+// bell row but are never emailed a duplicate. See src/lib/looped-in.js.
+const loopedIn = require('./looped-in');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const CHAT_EMAIL_DELAY_MIN = 5;       // online recipient: wait this long, email only if STILL unread
@@ -239,7 +243,7 @@ function replyToFor(replyKey) {
     their unique reply-to. Skips the participant who SENT it (inbound echo) and
     is best-effort (a failed send never breaks posting). Borrower-visible chats
     are scrubbed of any capital-partner name per the frozen rule. */
-async function emailExternalParticipants(conv, message, senderName) {
+async function emailExternalParticipants(conv, message, senderName, alreadyEmailed = null) {
   if (!message || message.kind !== 'text') return;
   const externals = await externalParticipantsOf(conv.id).catch(() => []);
   if (!externals.length) return;
@@ -248,8 +252,19 @@ async function emailExternalParticipants(conv, message, senderName) {
   const bodyLine = message.body ? `“${scrub(message.body)}”`
     : (message.attachment_kind ? 'shared an attachment (open the portal to view it)' : 'sent a message');
   const canReply = !!cfg.chatReplyDomain;
+  // Guests the message's own inbound email already reached (the replier Cc'd
+  // them directly) — their inbox holds it; sending our copy too is the
+  // duplicate the owner flagged (2026-08-09). Empty set = unchanged behavior.
+  const suppressed = loopedIn.toSet(alreadyEmailed);
   for (const ep of externals) {
     if (message.sender_kind === 'external' && message.sender_id === ep.id) continue;   // no echo
+    if (suppressed.size && suppressed.has(String(ep.email || '').trim().toLowerCase())) {
+      // Advance the watermark exactly as a send would — what they already have
+      // must never come back to them through any later catch-up.
+      db.query(`UPDATE conversation_external_participants SET last_emailed_seq=GREATEST(last_emailed_seq,$2) WHERE id=$1`,
+        [ep.id, message.seq]).catch(() => {});
+      continue;
+    }
     const msg = notify.buildEmail({
       title: `New message in ${scrub(conv.name)}`,
       body: `${scrub(senderName || 'The team')} wrote${ctx ? ` on ${ctx.addr}` : ''}:`,
@@ -276,7 +291,7 @@ async function emailExternalParticipants(conv, message, senderName) {
 /** Post an inbound email reply from an external participant back into the chat.
     Matches the opaque reply_key (the address secret). Returns the posted message
     or null if the key is unknown/removed. */
-async function postExternalReply(replyKey, body) {
+async function postExternalReply(replyKey, body, opts = {}) {
   const text = String(body || '').trim();
   if (!text) return null;
   const r = await db.query(
@@ -289,6 +304,7 @@ async function postExternalReply(replyKey, body) {
   if (!conv || conv.app_deleted_at || conv.archived_at) return null;
   const { message } = await postMessage({
     conv, actor: { kind: 'external', id: ep.id }, body: text.slice(0, 8000),
+    alreadyEmailed: opts.alreadyEmailed || null,
   });
   return message;
 }
@@ -317,7 +333,7 @@ async function memberReplyToFor(conversationId, memberKind, memberId) {
     other member, incl. the assignees). Returns the posted message, or null for an
     unknown/removed key, a dead conversation, or a borrower PII block (terminal —
     never retried). */
-async function postMemberReply(replyKey, body) {
+async function postMemberReply(replyKey, body, opts = {}) {
   const text = String(body || '').trim();
   if (!text) return null;
   const r = await db.query(
@@ -332,6 +348,7 @@ async function postMemberReply(replyKey, body) {
     const { message } = await postMessage({
       conv, actor: { kind: cm.member_kind, id: cm.member_id, roleLabel: cm.role_label },
       body: text.slice(0, 8000),
+      alreadyEmailed: opts.alreadyEmailed || null,
     });
     return message;
   } catch (e) {
@@ -349,10 +366,10 @@ async function postMemberReply(replyKey, body) {
     tried first (a distinct key space); a member key is tried when no external one
     matches. Returns the posted message or null. This is the single resolver every
     inbound path should call. */
-async function postInboundReply(replyKey, body) {
-  const ext = await postExternalReply(replyKey, body);
+async function postInboundReply(replyKey, body, opts = {}) {
+  const ext = await postExternalReply(replyKey, body, opts);
   if (ext) return ext;
-  return postMemberReply(replyKey, body);
+  return postMemberReply(replyKey, body, opts);
 }
 
 /* --------------------------------------------------------------- messages */
@@ -449,7 +466,11 @@ async function pushUnreadUpdate(cid, kind, id) {
  */
 async function postMessage({ conv, actor, body, attachment = null, entityRefs = null,
   checklistItemId = null, isTaskRequest = false, clientMsgId = null,
-  replyToMessageId = null, priority = 'normal', kind = 'text' }) {
+  replyToMessageId = null, priority = 'normal', kind = 'text',
+  // Set ONLY when this message arrived by inbound email: who that email already
+  // reached (sender + To/Cc). Those members/guests keep their bell rows and
+  // their unread bumps; only the duplicate EMAIL notification is skipped.
+  alreadyEmailed = null }) {
 
   let text = String(body || '').slice(0, 4000);
 
@@ -601,13 +622,14 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
   // email only goes out if the recipient is still unread after the delay
   // window (the sweeper checks the watermark). Muted members get neither.
   if (kind === 'text' && actor.kind !== 'system') {
-    queueMessageNotifications({ conv, actor, message, members: members.rows }).catch(() => {});
+    queueMessageNotifications({ conv, actor, message, members: members.rows, alreadyEmailed }).catch(() => {});
   }
 
   // #75 — external EMAIL participants get every message immediately (email is
-  // their only channel), with their unique reply-to. Skips the one who sent it.
+  // their only channel), with their unique reply-to. Skips the one who sent it,
+  // and anyone the message's own inbound email already reached.
   if (kind === 'text' && actor.kind !== 'system') {
-    emailExternalParticipants(conv, message, message.sender_name).catch(() => {});
+    emailExternalParticipants(conv, message, message.sender_name, alreadyEmailed).catch(() => {});
   }
 
   return { message, seq };
@@ -727,13 +749,36 @@ async function sendChatEmailToMember({ conv, member, message, ctx, senderName, a
     [conv.id, member.member_kind, member.member_id, Number(message.seq) || 0]).catch(() => {});
 }
 
-async function queueMessageNotifications({ conv, actor, message, members }) {
+async function queueMessageNotifications({ conv, actor, message, members, alreadyEmailed = null }) {
   const ctx = await notify.fileContext(conv.application_id);
   const senderName = message.sender_name || (actor.kind === 'staff' ? 'Your loan team' : 'A borrower');
   const now = new Date();
   // Load the message's attachment ONCE (same bytes for every recipient) so each
   // notification email carries the actual file, not just a "open the portal" line.
   const att = await chatAttachmentBytes(message).catch(() => ({ attachments: [], name: null, tooBig: false }));
+  // ALREADY IN THEIR OWN INBOX (owner-directed 2026-08-09): when this message
+  // arrived BY EMAIL, a member the sender had on that email's To/Cc already
+  // holds the text — the bell row below still writes, but neither the immediate
+  // chat email nor the deferred backstop goes to them (queuing the backstop and
+  // suppressing later would be the same duplicate on a timer). Resolved as ONE
+  // lookup per family, and failing toward NOTIFYING: an unreadable roster means
+  // nobody is suppressed, which is the pre-existing behavior.
+  const suppressed = loopedIn.toSet(alreadyEmailed);
+  const addrOf = new Map();
+  if (suppressed.size) {
+    try {
+      const staffIds = members.filter((m) => m.member_kind === 'staff').map((m) => m.member_id);
+      const borrowerIds = members.filter((m) => m.member_kind === 'borrower').map((m) => m.member_id);
+      if (staffIds.length) {
+        const r = await db.query(`SELECT id, lower(email) AS email FROM staff_users WHERE id = ANY($1)`, [staffIds]);
+        for (const row of r.rows) if (row.email) addrOf.set('staff:' + row.id, row.email);
+      }
+      if (borrowerIds.length) {
+        const r = await db.query(`SELECT id, lower(email) AS email FROM borrowers WHERE id = ANY($1)`, [borrowerIds]);
+        for (const row of r.rows) if (row.email) addrOf.set('borrower:' + row.id, row.email);
+      }
+    } catch (_) { /* fail toward notifying */ }
+  }
   for (const m of members) {
     if (m.member_kind === actor.kind && m.member_id === actor.id) continue;
     if (m.muted_until && new Date(m.muted_until) > now) continue;
@@ -781,15 +826,21 @@ async function queueMessageNotifications({ conv, actor, message, members }) {
     // immediate send failed (watermark not advanced), in which case the sweeper
     // retries it. For an online recipient only the deferred job runs. This closes
     // the "transient failure silently drops the only notification" gap.
-    const online = events.isOnline(m.member_kind, m.member_id);
-    if (!online) {
-      sendChatEmailToMember({ conv, member: m, message, ctx, senderName, att, link, isBorrower })
-        .catch((e) => console.error('[chat] immediate notification email failed:', e && e.message));
+    // On the very email that carried this message? Their inbox already has it —
+    // skip both the immediate send and the deferred backstop for this member.
+    const memberAddr = addrOf.get(`${m.member_kind}:${m.member_id}`);
+    const alreadyHasEmail = !!(memberAddr && suppressed.has(memberAddr));
+    if (!alreadyHasEmail) {
+      const online = events.isOnline(m.member_kind, m.member_id);
+      if (!online) {
+        sendChatEmailToMember({ conv, member: m, message, ctx, senderName, att, link, isBorrower })
+          .catch((e) => console.error('[chat] immediate notification email failed:', e && e.message));
+      }
+      await db.query(
+        `INSERT INTO chat_notification_jobs (job_kind, conversation_id, message_id, message_seq, recipient_kind, recipient_id, run_after)
+         VALUES ('chat_email',$1,$2,$3,$4,$5, now() + ($6 || ' minutes')::interval)`,
+        [conv.id, message.id, message.seq, m.member_kind, m.member_id, String(CHAT_EMAIL_DELAY_MIN)]).catch(() => {});
     }
-    await db.query(
-      `INSERT INTO chat_notification_jobs (job_kind, conversation_id, message_id, message_seq, recipient_kind, recipient_id, run_after)
-       VALUES ('chat_email',$1,$2,$3,$4,$5, now() + ($6 || ' minutes')::interval)`,
-      [conv.id, message.id, message.seq, m.member_kind, m.member_id, String(CHAT_EMAIL_DELAY_MIN)]).catch(() => {});
 
     // Urgent: re-ping every 2 minutes until read (max 20 minutes).
     if (message.priority === 'urgent') {

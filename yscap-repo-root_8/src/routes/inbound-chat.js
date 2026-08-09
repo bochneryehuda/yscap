@@ -50,6 +50,9 @@ function collectRecipients(body) {
   };
   const d = (body && body.data) || body || {};
   push(d.to); push(d.To); push(d.recipient); push(d.envelope && d.envelope.to);
+  // Cc/Bcc too — harmless for finding the chat+ key, and they are what tells the
+  // one-copy rule (owner-directed 2026-08-09) who the reply already reached.
+  push(d.cc); push(d.Cc); push(d.bcc); push(d.Bcc);
   return out;
 }
 
@@ -57,12 +60,18 @@ router.post('/', express.json({ limit: '2mb' }), async (req, res) => {
   try {
     const body = req.body || {};
     const d = (body.data && typeof body.data === 'object') ? body.data : body;
-    const key = replyKeyFromRecipients(collectRecipients(body));
+    const recipients = collectRecipients(body);
+    const key = replyKeyFromRecipients(recipients);
     if (!key) return res.json({ ok: true, skipped: 'no reply key' });
     const text = topReply(d.text || d.plain || d['stripped-text'] || d.body || '');
     if (!text) return res.json({ ok: true, skipped: 'empty body' });
-    // #144 — an external guest OR an internal/borrower member: resolve against both.
-    const msg = await chat.postInboundReply(key, text);
+    // #144 — an external guest OR an internal/borrower member: resolve against
+    // both. Who the reply already reached rides along so a member the sender
+    // Cc'd directly keeps the bell row but is never emailed a duplicate
+    // (owner-directed 2026-08-09 — see lib/looped-in.js).
+    const msg = await chat.postInboundReply(key, text, {
+      alreadyEmailed: [...recipients, d.from || null].filter(Boolean),
+    });
     return res.json({ ok: true, posted: !!msg });
   } catch (e) {
     // Never 500 back to a provider (it would retry forever); log + accept.
