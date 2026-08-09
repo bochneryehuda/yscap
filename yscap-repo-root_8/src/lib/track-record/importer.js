@@ -138,6 +138,12 @@ const FILLABLE = [
   'property_address', 'deal_type', 'purchase_price', 'purchase_date',
   'sale_price', 'sale_date', 'entity_name',
   'rent_amount', 'rent_date', 'refi_amount', 'refi_date',
+  /* The entity LINK fills too (pre-merge audit 2026-08-09: the proposed_llc_id
+     ternary in matchExisting/compareCandidate was DEAD without this entry —
+     the loop walks FILLABLE, so a fill the list does not name never runs).
+     llc_id is already in MATERIAL, so filling it onto a verified line engages
+     the would_reopen confirm exactly like a figure. */
+  'llc_id',
 ];
 
 /** The property a vendor row is about. `addresses[]` is the canonical shape
@@ -589,7 +595,7 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
       const others = await db.query(
         `SELECT status, property_address FROM track_record_candidates
           WHERE borrower_id=$1 AND status IN ('declined','staged')
-          ORDER BY created_at DESC LIMIT 400`, [borrowerId]);
+          ORDER BY created_at DESC LIMIT 2000`, [borrowerId]);
       prior = others.rows.find((r) => TRK.trackRecordKey(r.property_address) === addrKey) || null;
     }
   }

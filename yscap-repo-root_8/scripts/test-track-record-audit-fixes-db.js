@@ -91,6 +91,43 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok(anywhere.some((r) => String(r.address || '').includes('Snooze Ln')), '…and is in SOME bucket (never fetched-but-rendered-nowhere)');
   }
 
+  console.log('\nM2b. match_existing FILLS the entity link from proposed_llc_id (audit: was dead without llc_id in FILLABLE)');
+  {
+    const llcId = (await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,'AZ LINK LLC') RETURNING id`, [borrowerId])).rows[0].id;
+    const lineId = (await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_date, entered_by_kind)
+       VALUES ($1,$2::jsonb,'flip','2025-04-01','staff') RETURNING id`,
+      [borrowerId, JSON.stringify({ oneLine: `12 Fill Link Dr, Lakewood, NJ 08701` })])).rows[0].id;
+    const cid = (await db.query(
+      `INSERT INTO track_record_candidates
+         (borrower_id, property_address, dedupe_key, status, raw, proposed_llc_id, match_track_record_id, match_confidence, sale_date, sale_price)
+       VALUES ($1,$2::jsonb,$3,'staged','{}'::jsonb,$4,$5,'exact','2026-03-01',410000) RETURNING id`,
+      [borrowerId, JSON.stringify({ oneLine: `12 Fill Link Dr, Lakewood, NJ 08701` }), `doc:${tag}-m2b`, llcId, lineId])).rows[0].id;
+    const cmp = await IMP.compareCandidate(cid);
+    ok(cmp.rows.some((r) => r.field === 'llc_id' && r.willFill), 'the compare names the entity link as a fill');
+    const out = await IMP.decideCandidate(cid, { action: 'match_existing', staffId });
+    const row = (await db.query(`SELECT llc_id, sale_price FROM track_records WHERE id=$1`, [lineId])).rows[0];
+    ok(row.llc_id === llcId, `the merge LINKED the entity (got ${row.llc_id === llcId ? 'linked' : row.llc_id})`);
+    ok(Number(row.sale_price) === 410000 && out.filled.includes('llc_id'), '…alongside the figures, and the response says so');
+  }
+
+  console.log('\nL2. The borrower payload allowlist is ENFORCED (pickSafe)');
+  {
+    const CONFIRM = require('../src/lib/track-record/borrower-confirm');
+    await db.query(
+      `INSERT INTO track_record_candidates (borrower_id, property_address, dedupe_key, status, raw, internal_notes)
+       VALUES ($1,$2::jsonb,$3,'staged','{}'::jsonb,'INTERNAL SECRET')`,
+      [borrowerId, JSON.stringify({ oneLine: `3 Allowlist Ct, Lakewood, NJ 08701` }), `doc:${tag}-l2`]);
+    const view = await CONFIRM.loadForBorrower(borrowerId);
+    const bad = [];
+    for (const prop of (view.properties || [])) {
+      for (const k of Object.keys(prop)) if (!CONFIRM.SAFE_FIELDS.includes(k)) bad.push(k);
+    }
+    ok(bad.length === 0, `every borrower-facing key is on SAFE_FIELDS (leaked: ${bad.join(',') || 'none'})`);
+    ok(JSON.stringify(view).indexOf('INTERNAL SECRET') < 0, 'internal notes never reach the borrower payload');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OK'}  a decline is durable by place, the counterparty is kept, and a snooze comes back — ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('SUITE FAILED:', e); process.exit(1); });
