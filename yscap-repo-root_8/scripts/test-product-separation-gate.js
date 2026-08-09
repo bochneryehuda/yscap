@@ -380,6 +380,59 @@ scenario('an RTL migration whose name merely contains _lt_ is NOT a Long-Term mi
     'CREATE OR REPLACE FUNCTION pilot_reopen_pricing() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;\n');
 }, 'pass');
 
+// ---- second post-merge audit: quoted names, ONLY, lists, and English prose ----
+scenario('a QUOTED, schema-qualified write of the borrower record is still a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('UPDATE \"public\".\"borrowers\" SET cell_phone=$1'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('a QUOTED RTL table read from Long-Term is still a read', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT id FROM \"public\".\"applications\"'); }\n");
+}, 'fail', 'reads the RTL table');
+
+scenario('RTL reading a QUOTED Long-Term table is still caught', (app) => {
+  write(app, 'src/routes/staff.js',
+    "async function f(db){ return db.query('SELECT id FROM \"public\".\"lt_loans\"'); }\n");
+}, 'fail', 'reads the Long-Term table');
+
+scenario('DELETE FROM ONLY an RTL table is a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('DELETE FROM ONLY borrowers WHERE id=$1'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('SELECT FROM ONLY an RTL table is a read', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT id FROM ONLY applications'); }\n");
+}, 'fail', 'reads the RTL table');
+
+scenario('TRUNCATE with a comma list reaches every table named', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('TRUNCATE lt_loans, applications;'); }\n");
+}, 'fail', 'writes the RTL table');
+
+scenario('a real MERGE INTO an RTL table is a write', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('MERGE INTO borrowers b USING staged s ON b.id = s.id WHEN MATCHED THEN UPDATE SET x=1'); }\n");
+}, 'fail', 'only authorized to READ', { ledger: ['sql-read borrowers'] });
+
+scenario('an English label in a Long-Term screen is not a query', (app) => {
+  write(app, 'app-v2/src/longterm/LtFile.jsx',
+    'export const HINT = "Select a program from the dropdown";\n' +
+    'export const TIP = "delete from the list of applications you no longer need";\n' +
+    'export const M = "Merge into master using the newest copy";\n');
+}, 'pass');
+
+scenario('…and a Long-Term screen still cannot really read an RTL table', (app) => {
+  write(app, 'app-v2/src/longterm/api.js',
+    "export const q = 'SELECT id FROM applications WHERE id = $1';\n");
+}, 'fail', 'reads the RTL table');
+
+scenario('a Long-Term migration named with capitals is still a Long-Term migration', (app) => {
+  write(app, 'db/530_LT_link.sql',
+    'ALTER TABLE borrowers ADD COLUMN IF NOT EXISTS preferred_channel text;\n');
+}, 'fail', 'every table it touches is RTL');
+
 // ---- 3. foreign keys across the line ---------------------------------------
 scenario('an lt_ table with a foreign key to an RTL table FAILS', (app) => {
   write(app, 'db/500_lt_loans.sql',
