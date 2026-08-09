@@ -74,6 +74,14 @@ function matchStaged(files, staged) {
     const fn = nameOf(files[i]);
     return fn != null && files.filter((f) => nameOf(f) === fn).length === 1;
   };
+  // …and the same question asked of the OTHER side. A filename TWO ANSWERS claim
+  // identifies neither of them: one of the two is echoing a name that is not its own,
+  // so this response's filenames cannot be taken at face value at all. Pass 2 already
+  // refuses on this (it wants exactly one file AND exactly one answer); pass 3 must ask
+  // it too, or it hands the file the answer that merely happens to sit in its position
+  // and calls the agreeing filename corroboration — which is pass 2's refusal undone.
+  const claimedOnce = (fn) => answers.filter((s) => s.fileName != null
+    && String(s.fileName) === fn).length === 1;
 
   // ---- pass 1: the part name, corroborated ---------------------------------
   for (let i = 0; i < files.length; i++) {
@@ -123,7 +131,8 @@ function matchStaged(files, staged) {
       // nothing at all (see above), or there is only one file, where there is nothing
       // to confuse it with. A filename that two of our files share is not usable: it
       // agrees with both, so agreeing proves nothing.
-      const usable = at.name != null || (at.fileName != null && discriminates(i));
+      const usable = at.name != null
+        || (at.fileName != null && discriminates(i) && claimedOnce(String(at.fileName)));
       if (!usable && files.length > 1) continue;
       out[i] = at; taken.add(at);
     }

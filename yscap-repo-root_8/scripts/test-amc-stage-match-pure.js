@@ -155,6 +155,20 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
   ]);
   ok(got[0] === null && got[1] === null, 'a vendor’s own identifier never stands in for our part number');
 }
+// TWO ANSWERS CLAIMING ONE FILE: exactly one of them is lying, and there is nothing
+// that says which. Taking the first is a coin flip on the worst failure this
+// integration has, so both are refused. (A sweep cannot catch this: the losing answer
+// necessarily carries a false label, so every outcome is "undefendable" by evidence —
+// it has to be pinned by hand. Reverting pass 2 to `hits.length >= 1` revives it.)
+{
+  const files = F('SOW.pdf', 'photo.pdf');
+  const got = matchStaged(files, [
+    { fileName: 'SOW.pdf', retrievalUrl: 'URL-a' },
+    { fileName: 'SOW.pdf', retrievalUrl: 'URL-b' },
+  ]);
+  ok(got[0] === null, 'two answers claiming one file is not resolved by picking the first');
+  ok(got[1] === null, 'and the file neither of them named is left alone');
+}
 // The greedy-claim regression: a weak filename match must not steal a strong one.
 {
   const files = F('Scope of Work.pdf', 'Scope of Work.pdf');
