@@ -802,6 +802,49 @@ function MirrorBackfillPanel() {
   );
 }
 
+/* THE DOWN-ALERT MONITOR, as a control rather than a caption.
+   It is the one switch that belongs to no single integration — it watches all of them — so
+   it lives here instead of on a card, and it is driven through the SAME toggle/reset
+   endpoints (and the same audit row) as every other switch on this page. Nothing is
+   `dangerous` about it: it sends no borrower-facing mail and writes nothing outward except
+   an email to our own admins, so it never asks for a typed confirmation. */
+function MonitorBanner({ monitor, busy, onToggle, onReset }) {
+  const sw = monitor.switch;
+  const on = !!monitor.enabled;
+  const swept = since(monitor.lastSweepAt);
+  return (
+    <div className={`ah-note ${on ? 'ah-t-info' : 'ah-t-warn'} ah-monitor`}>
+      <span className="ah-monitor-ic"><Icon name="bell" /></span>
+      <div className="ah-monitor-t">
+        <b>{on ? 'Automatic down-alerts are on.' : 'Automatic down-alerts are off.'}</b>{' '}
+        {on
+          ? <>Every service is checked every {monitor.intervalMin} minutes, and the admins are emailed when something
+            that WAS working stops — and again when it recovers.{swept ? ` Last swept ${swept} ago.` : ' No sweep recorded yet.'}</>
+          : <>Nothing checks these services between visits, so one can go down and nobody is emailed. Turning this on
+            checks every service every {monitor.intervalMin} minutes and emails the admins on a real change only —
+            never on every check, and never for a service that is switched off or awaiting keys.</>}
+        {sw && sw.overridden && (
+          <> <span className="ah-tag ah-t-warn">overridden</span> The hosting default is {sw.envDefault ? 'on' : 'off'}.</>
+        )}
+      </div>
+      {/* No switch in the payload (an older server, or the read failed) → say what to set
+          rather than render a control that cannot work. */}
+      {sw ? (
+        <div className="ah-monitor-act">
+          <Toggle on={on} disabled={busy === sw.key} onClick={() => onToggle({ ...sw, name: sw.key, on })}
+            label="Automatic down-alerts" />
+          {sw.overridden && (
+            <button className="btn ghost small" disabled={busy === sw.key}
+              onClick={() => onReset({ ...sw, name: sw.key })}>Reset</button>
+          )}
+        </div>
+      ) : (
+        <code>INTEGRATIONS_MONITOR_ENABLED=1</code>
+      )}
+    </div>
+  );
+}
+
 /* HOW MUCH ROOM IS LEFT ON EACH OUTSIDE SERVICE (owner-directed 2026-08-07, after ClickUp
    phoned about our request rate). "Held back" is the number to watch: while it stays at
    zero the cap is never in anybody's way, and a climbing count is the signal to raise a
@@ -918,16 +961,24 @@ export default function StaffApiHealth() {
     finally { setTesting(null); }
   };
 
-  // Merge a server-returned switch (from toggle/reset) back into whichever integration owns it.
+  // Merge a server-returned switch (from toggle/reset) back into whichever integration owns it —
+  // or into the monitor block, for the one PLATFORM-level switch that belongs to no card.
   const mergeSwitch = (after) => {
-    setData((prev) => prev ? {
-      ...prev,
-      integrations: prev.integrations.map((it) => ({
-        ...it,
-        switches: (it.switches || []).map((s) => s.name === after.key
-          ? { ...s, on: after.on, overridden: after.overridden, envDefault: after.envDefault } : s),
-      })),
-    } : prev);
+    setData((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        integrations: prev.integrations.map((it) => ({
+          ...it,
+          switches: (it.switches || []).map((s) => s.name === after.key
+            ? { ...s, on: after.on, overridden: after.overridden, envDefault: after.envDefault } : s),
+        })),
+      };
+      if (prev.monitor && prev.monitor.switch && prev.monitor.switch.key === after.key) {
+        next.monitor = { ...prev.monitor, enabled: after.on, switch: { ...prev.monitor.switch, ...after } };
+      }
+      return next;
+    });
   };
 
   // After a switch actually changes, re-run that integration's live check so its status
@@ -1078,28 +1129,12 @@ export default function StaffApiHealth() {
           </div>
         </div>
 
-        {/* Nothing is watching between visits — say so rather than let an all-green page
-            imply cover it does not have. The monitor is opt-in by design. */}
-        {monitor && !monitor.enabled && (
-          <div className="ah-note ah-t-warn" style={{ marginTop: 0, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <span style={{ width: 18, height: 18, flex: '0 0 auto', marginTop: 1 }}><Icon name="bell" /></span>
-            <span>
-              <b>Automatic down-alerts are off.</b> Nothing checks these services between visits, so a service can go
-              down and nobody is emailed. To turn it on, set <code>INTEGRATIONS_MONITOR_ENABLED=1</code> in the hosting
-              settings (Render → Environment); it then checks every {monitor.intervalMin} minutes and emails the admins
-              when something that WAS working stops, and again when it recovers.
-            </span>
-          </div>
-        )}
-        {monitor && monitor.enabled && (
-          <div className="dd-sub">
-            Automatic down-alerts are on — checking every {monitor.intervalMin} minutes
-            {/* Only claim a last sweep when there is a readable one. A monitor switched on
-                a minute ago has swept nothing yet, and "last swept null ago" is worse than
-                saying nothing at all. */}
-            {since(monitor.lastSweepAt) ? `, last swept ${since(monitor.lastSweepAt)} ago.` : ' — no sweep recorded yet.'}
-          </div>
-        )}
+        {/* IS ANYTHING WATCHING BETWEEN VISITS? A page full of green lights means something
+            quite different when the only thing checking is whoever opened it, so the answer
+            is stated — and it is a real control, not an instruction to go elsewhere. The
+            monitor's timer is always armed and re-reads this switch every tick, so flipping
+            it here takes effect without a redeploy. */}
+        {monitor && <MonitorBanner monitor={monitor} busy={switchBusy} onToggle={onToggle} onReset={onReset} />}
 
         {err && !loading && <div className="ah-note ah-t-bad" style={{ marginTop: 0 }}>{err}</div>}
 

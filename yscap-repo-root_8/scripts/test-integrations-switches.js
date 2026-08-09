@@ -13,6 +13,13 @@ const flags = require('../src/lib/flags');
 const switches = require('../src/lib/integrations/switches');
 const health = require('../src/lib/integrations/health-registry');
 
+/* PLATFORM-level switches: the deliberate exceptions to "every switch belongs to a card",
+   ENUMERATED so a typo in an `integration` key cannot quietly promote a broken switch into
+   one. A switch listed here belongs to no integration because it governs all of them; the
+   API Health page renders it in its own banner. Adding one is a decision, not an accident —
+   which is why it goes in this list by hand. */
+const PLATFORM_SWITCHES = new Set(['INTEGRATIONS_MONITOR_ENABLED']);
+
 // ---- PURE: the allowlist is well-formed and every switch maps to a real integration ----
 {
   const regKeys = new Set(health.INTEGRATIONS.map((e) => e.key));
@@ -21,9 +28,22 @@ const health = require('../src/lib/integrations/health-registry');
     assert.ok(s.key && !seen.has(s.key), `switch key present + unique: ${s.key}`);
     seen.add(s.key);
     assert.ok(s.label, `${s.key} has a label`);
-    assert.ok(regKeys.has(s.integration), `${s.key} points at a real integration (${s.integration})`);
+    if (s.integration === null) {
+      assert.ok(PLATFORM_SWITCHES.has(s.key),
+        `${s.key} has no integration — add it to PLATFORM_SWITCHES if that is deliberate, or fix the key`);
+    } else {
+      assert.ok(regKeys.has(s.integration), `${s.key} points at a real integration (${s.integration})`);
+    }
     assert.strictEqual(typeof s.envDefault, 'function', `${s.key} has an envDefault()`);
     assert.strictEqual(switches.BY_KEY[s.key], s, `${s.key} is in BY_KEY`);
+  }
+  /* A platform switch must never be rendered on a card: the health registry attaches a switch
+     with `s.integration === entry.key`, and `entry.key` is never null — assert that directly
+     rather than trusting the filter to stay that way. */
+  for (const k of PLATFORM_SWITCHES) {
+    assert.strictEqual(switches.BY_KEY[k].integration, null, `${k} is platform-level (integration: null)`);
+    const onACard = health.INTEGRATIONS.some((e) => (e.switches || []).some((x) => x.name === k));
+    assert.ok(!onACard, `${k} is not declared on an integration card either`);
   }
   // The dangerous (write/creation) switches are flagged so the UI forces a typed confirm.
   const danger = new Set(switches.SWITCHES.filter((s) => s.dangerous).map((s) => s.key));

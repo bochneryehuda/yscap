@@ -87,16 +87,34 @@ async function runOnce(deps = {}) {
   return { checked: results.length, alerts };
 }
 
+// The one key this monitor is gated on. Declared in src/lib/integrations/switches.js as the
+// single PLATFORM-level switch (integration: null), so an admin can turn the alerts off and
+// on from the API Health page without a redeploy.
+const SWITCH_KEY = 'INTEGRATIONS_MONITOR_ENABLED';
+
 /**
  * WHAT THIS MONITOR IS DOING RIGHT NOW — for the API Health page, which has to be able
  * to say whether anything is WATCHING these services between visits. "Every service is
  * green" means something quite different when nobody is checking except the person who
  * happens to open the page, so the screen states it rather than implying coverage it
- * does not have. Reads the SAME two env vars `start()` reads, in ONE place, so the page
- * can never describe a schedule the monitor is not actually running.
+ * does not have.
+ *
+ * The verdict comes from the SWITCH, not the raw env var: `switches.on()` resolves the
+ * admin's runtime override first and falls back to the env default, so the page can never
+ * describe a schedule the monitor is not actually running — including in the seconds after
+ * somebody flips it. `start()` and every tick ask this same function, so there is one
+ * answer to "is this on?" in the whole system.
  */
 function describe() {
-  return { enabled: process.env.INTEGRATIONS_MONITOR_ENABLED === '1', intervalMin: intervalMinutes() };
+  return { enabled: enabledNow(), intervalMin: intervalMinutes(), switchKey: SWITCH_KEY };
+}
+// Required lazily: switches.js pulls in config, and monitor.js is loaded by the health route
+// on a hot path. `require` is cached, so this costs nothing after the first call.
+function enabledNow() {
+  try { return require('./switches').on(SWITCH_KEY); }
+  // A switch layer that cannot answer must not silently stop the alerts — fall back to the
+  // env default, which is the value the process booted with.
+  catch (_) { return process.env.INTEGRATIONS_MONITOR_ENABLED !== '0'; }
 }
 function intervalMinutes() {
   return Math.max(5, parseInt(process.env.INTEGRATIONS_MONITOR_INTERVAL_MIN || '15', 10) || 15);
@@ -106,8 +124,8 @@ function intervalMinutes() {
  * "Since when?" for the API Health page — the stored `down_since` from THIS monitor's own
  * row, but ONLY while the CURRENT probe still agrees the service is unreachable.
  *
- * This monitor is opt-in and sweeps on a timer, so its row lags reality by up to an
- * interval: a service that came back five minutes ago still has yesterday's `down_since`
+ * This monitor sweeps on a timer, so its row lags reality by up to an interval: a
+ * service that came back five minutes ago still has yesterday's `down_since`
  * sitting in the table. Reading the column on its own would print "down for 3 days" beside
  * a green light — a page that contradicts itself, which is worse than one that says
  * nothing. The live probe is the authority on WHETHER; the row is only consulted for
@@ -118,22 +136,32 @@ function downSinceFor(currentState, row) {
   return (row && row.down_since) || null;
 }
 
+/**
+ * THE TIMER IS ALWAYS ARMED; THE SWITCH DECIDES WHETHER A TICK DOES ANYTHING.
+ *
+ * `start()` used to read the env var once and return early when it was off, which meant the
+ * only way to begin alerting was a redeploy — and an admin turning the switch on from the API
+ * Health page would have watched it sit there doing nothing. Arming unconditionally and asking
+ * `enabledNow()` per tick costs one no-op check every few minutes and makes the switch real.
+ * The same reason `resume: false` is the honest flag on this switch.
+ */
 let started = false;
 function start() {
   if (started) return;
-  if (!describe().enabled) {
-    console.log('[integrations-monitor] disabled (set INTEGRATIONS_MONITOR_ENABLED=1 to turn on down-alerts)');
-    return;
-  }
   started = true;
   const mins = intervalMinutes();
+  const tick = (when) => {
+    if (!enabledNow()) return Promise.resolve(null); // switched off — nothing probed, nothing emailed
+    return runOnce().catch((e) => console.error(`[integrations-monitor] ${when}`, e && e.message));
+  };
   // Boot pass shortly after startup, then every `mins` minutes (unref so it never holds the process open).
-  setTimeout(() => runOnce().catch((e) => console.error('[integrations-monitor] boot', e && e.message)), 120000);
-  setInterval(() => runOnce().catch((e) => console.error('[integrations-monitor] tick', e && e.message)), mins * 60 * 1000).unref();
-  console.log(`[integrations-monitor] down-alerts started (every ${mins} min)`);
+  setTimeout(() => tick('boot'), 120000);
+  setInterval(() => tick('tick'), mins * 60 * 1000).unref();
+  console.log(`[integrations-monitor] armed every ${mins} min — down-alerts currently `
+    + `${enabledNow() ? 'ON' : 'OFF'} (switch ${SWITCH_KEY}, flip it on the API Health page)`);
 }
 
 module.exports = {
-  start, runOnce, evaluateTransitions, describe, downSinceFor,
-  _internals: { isDownState, sendAlert, intervalMinutes },
+  start, runOnce, evaluateTransitions, describe, downSinceFor, SWITCH_KEY,
+  _internals: { isDownState, sendAlert, intervalMinutes, enabledNow },
 };
